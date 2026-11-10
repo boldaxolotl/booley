@@ -347,7 +347,7 @@ def test_common_state_check_skips_a_worktree_it_cannot_scan(
     def fail(_worktree: Path, _booley_dir: Path) -> list[str]:
         raise error
 
-    monkeypatch.setattr(doctor, "_untracked_common_paths", fail)
+    monkeypatch.setattr(doctor, "untracked_common_paths", fail)
 
     findings = _common_state_findings(tmp_path / "project")
 
@@ -364,7 +364,7 @@ def test_common_state_check_skips_a_worktree_removed_while_scanning(
     def vanish(_worktree: Path, _booley_dir: Path) -> list[str]:
         raise FileNotFoundError
 
-    monkeypatch.setattr(doctor, "_untracked_common_paths", vanish)
+    monkeypatch.setattr(doctor, "untracked_common_paths", vanish)
 
     assert [f.severity for f in _common_state_findings(tmp_path / "project")] == ["pass"]
 
@@ -381,7 +381,7 @@ def test_common_state_warning_counts_paths_beyond_the_shown_limit(
 ) -> None:
     _linked_worktree(tmp_path, versioned=False, paired=False)
     paths = [f"common{index}" for index in range(7)]
-    monkeypatch.setattr(doctor, "_untracked_common_paths", lambda _worktree, _dir: paths)
+    monkeypatch.setattr(doctor, "untracked_common_paths", lambda _worktree, _dir: paths)
 
     warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
 

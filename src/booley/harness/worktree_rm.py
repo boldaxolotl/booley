@@ -16,21 +16,27 @@ last-used stamp. Branches are kept and other registrations are never touched
 ``<Main Booley Directory>/worktrees/.removing/<name>.json`` records which
 removals began. It is the only proof that a *broken* component is a removal an
 interruption cut short rather than a damaged worktree, so re-running finishes
-it. An *intact* component is always checked again: a removal interrupted before
-anything was deleted never removes work added since.
+it. Each removal drops the component's ``.git`` pointer first (see
+:func:`detach_checkout`), so an
+interruption always leaves it broken. An *intact* component is always checked
+again, whatever the record says: a removal interrupted before anything was
+deleted, or a stale record of an earlier worktree of the same name, never
+removes work added since.
 """
 
 from __future__ import annotations
 
 import argparse
+import filecmp
 import json
+import re
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, cast, get_args
 
 from booley.config.goals import quiet_after
 from booley.core.booley_dir import resolve_common_booley_dir, resolve_main_checkout_root
@@ -52,6 +58,7 @@ from booley.runtime.handles import HandleStore
 from booley.runtime.project_repositories import run_git
 from booley.runtime.project_worktree_pairing import (
     ProjectPairingError,
+    detach_checkout,
     project_pairing_source,
     remove_paired_checkout,
     remove_worktree_registration,
@@ -64,7 +71,10 @@ _RECORD_SCHEMA = 1
 Label = Literal["outer", "paired"]
 State = Literal["intact", "gone", "broken"]
 
-_LABELS = ("paired", "outer")
+_LABELS: tuple[Label, ...] = get_args(Label)
+# One evidence directory per attempt: ``<name>-<UTC time>``.
+_STAMP_FORMAT = "%Y%m%dT%H%M%S%fZ"
+_STAMP_PATTERN = r"\d{8}T\d{12}Z"
 _SUBJECT: dict[Label, str] = {"outer": "the worktree", "paired": "its Paired Checkout"}
 
 
@@ -133,7 +143,9 @@ def _component(label: Label, path: Path, registrations: list[Registration]) -> _
     if not path.exists():
         if registration is None:
             return _Component(label, path, "gone", "", None)
-        return _Component(label, path, "broken", "registered, but its directory is missing", None)
+        return _Component(
+            label, path, "broken", "registered, but its directory is missing", registration
+        )
     if not _is_checkout_root(path):
         return _Component(label, path, "broken", "its directory has no working .git", registration)
     if registration is None:
@@ -141,6 +153,18 @@ def _component(label: Label, path: Path, registrations: list[Registration]) -> _
             label, path, "broken", "its directory is not a registered worktree", None
         )
     return _Component(label, path, "intact", "", registration)
+
+
+def _paired_component(path: Path, registrations: list[Registration]) -> _Component | None:
+    """The Paired Checkout of worktree *path*; ``None`` when its Booley Directory is a copy.
+
+    A Snapshot made before the Booley Directory became versioned holds a plain
+    copy that the outer worktree owns: no pointer, no registration.
+    """
+    nested = own_booley_dir(path)
+    component = _component("paired", nested, registrations)
+    plain_copy = component.state == "broken" and component.registration is None and nested.is_dir()
+    return None if plain_copy and not (nested / ".git").exists() else component
 
 
 def _read_started(record_path: Path) -> list[str] | None:
@@ -179,11 +203,7 @@ def _locate(project_root: Path, main: Path, name: str) -> _Target:
     outer_registrations = registered_worktrees(main)
     paired_registrations = [] if source is None else registered_worktrees(source)
     outer = _component("outer", path, outer_registrations)
-    paired = (
-        None
-        if source is None
-        else _component("paired", own_booley_dir(path), paired_registrations)
-    )
+    paired = None if source is None else _paired_component(path, paired_registrations)
     record_path = common / "worktrees" / ".removing" / f"{name}.json"
     started = _read_started(record_path)
     target = _Target(
@@ -210,13 +230,13 @@ def _cwd_inside(path: Path) -> bool:
 
 def _refuse_nested(target: _Target) -> None:
     """Never delete another worktree's files: refuse while one is registered inside."""
-    paired_path = None if target.paired is None else target.paired.path.resolve()
+    own = {target.path.resolve()}
+    if target.paired is not None:
+        own.add(target.paired.path.resolve())
     nested = [
         registration.path
         for registration in target.registrations
-        if registration.path.resolve() != target.path.resolve()
-        and registration.path.resolve() != paired_path
-        and _is_inside(registration.path, target.path)
+        if registration.path.resolve() not in own and _is_inside(registration.path, target.path)
     ]
     if nested:
         listed = "\n".join(f"  - {path}" for path in nested)
@@ -224,6 +244,36 @@ def _refuse_nested(target: _Target) -> None:
             f"worktree {target.name} contains other worktrees:\n{listed}\n"
             "Remove them first with booley worktree rm or git worktree remove."
         )
+
+
+def _refuse_foreign_booley_dir(target: _Target) -> None:
+    """Never move or delete a Booley Directory that is not the worktree's own.
+
+    A symlink to the Main Booley Directory would send the whole Project's Common
+    Booley State into the evidence directory.
+    """
+    booley_dir = own_booley_dir(target.path)
+    if not booley_dir.is_symlink() and not booley_dir.exists():
+        return
+    if (
+        booley_dir.is_symlink()
+        or not _is_inside(booley_dir, target.path)
+        or booley_dir.resolve() == target.common.resolve()
+    ):
+        raise WorktreeRemovalError(
+            f"the Booley Directory of worktree {target.name} is a link or lies outside it: "
+            f"{booley_dir}\nRemove that link first; removal would otherwise touch the "
+            "Main Booley Directory."
+        )
+
+
+def _resuming(target: _Target, component: _Component) -> bool:
+    """Whether the record proves an interruption cut short *component*'s removal.
+
+    Only a component that is no longer intact counts: an intact one may hold work
+    added since, so every check and the evidence move apply to it again.
+    """
+    return component.label in target.started and component.state != "intact"
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +356,39 @@ def _intact_reasons(target: _Target, component: _Component) -> list[str]:
 def _component_reasons(target: _Target, component: _Component) -> list[str]:
     if component.state == "intact":
         return _intact_reasons(target, component)
-    if component.state == "broken" and component.label not in target.started:
+    if component.state == "broken" and not _resuming(target, component):
         return [f"{_SUBJECT[component.label]} is not a working Git checkout: {component.detail}"]
     return []
+
+
+def _booley_dir_reasons(target: _Target) -> list[str]:
+    """Untracked files of a Snapshot's Booley Directory that removal would lose.
+
+    The outer worktree's change count skips them, because a Snapshot's copy of the
+    Booley Directory is mostly untracked noise. Evidence is moved and a file equal
+    to the Main Booley Directory's is a copy; anything else exists nowhere else.
+    """
+    if target.paired is not None or target.outer.state != "intact":
+        return []
+    booley_dir = own_booley_dir(target.path)
+    if not booley_dir.is_dir():
+        return []
+    relative = booley_dir.relative_to(target.path).as_posix()
+    listed = run_git(target.path, "ls-files", "-o", "--exclude-standard", "-z", "--", relative)
+    if listed.returncode != 0:
+        raise WorktreeRemovalError(f"cannot list the untracked files of {booley_dir}")
+    saved = _evidence_entries(target)
+    lost = 0
+    for name in listed.stdout.split("\0"):
+        file = name.removeprefix(f"{relative}/")
+        if not name or any(file == entry or file.startswith(f"{entry}/") for entry in saved):
+            continue
+        copy = target.common / file
+        if not (copy.is_file() and filecmp.cmp(booley_dir / file, copy, shallow=False)):
+            lost += 1
+    if not lost:
+        return []
+    return [f"{lost} untracked file(s) in its Booley Directory that are not evidence or copies"]
 
 
 def _busy_reasons(target: _Target) -> list[str]:
@@ -318,19 +398,23 @@ def _busy_reasons(target: _Target) -> list[str]:
     Git failure while counting raises :class:`WorktreeListError` (nothing changed).
     """
     reasons: list[str] = []
-    if "outer" not in target.started:
+    if not _resuming(target, target.outer):
         reasons += _session_reasons(target) + _goal_reasons(target)
     for component in (target.outer, target.paired):
         if component is not None:
             reasons += _component_reasons(target, component)
-    return reasons
+    return reasons + _booley_dir_reasons(target)
 
 
 def _earlier_evidence(target: _Target) -> list[Path]:
     """Evidence directories an earlier, interrupted attempt already filled."""
     if not target.record_exists:
         return []
-    return sorted(_evidence_root(target.common).glob(f"{target.name}-*"))
+    pattern = re.compile(f"{re.escape(target.name)}-{_STAMP_PATTERN}")
+    root = _evidence_root(target.common)
+    if not root.is_dir():
+        return []
+    return sorted(path for path in root.iterdir() if pattern.fullmatch(path.name))
 
 
 # ---------------------------------------------------------------------------
@@ -366,26 +450,35 @@ def _owning_component(target: _Target) -> _Component:
     return target.outer if target.paired is None else target.paired
 
 
-def _move_evidence(target: _Target) -> Path | None:
-    """Move the worktree's evidence into a new directory of Common Booley State.
+def _evidence_entries(target: _Target) -> list[str]:
+    """Evidence of the owning Booley Directory that removal must still move.
 
-    Every attempt gets its own directory, so earlier evidence is never overwritten.
-    Entries Git tracks stay: they are on the branch the removal keeps.
+    Paths are relative to that directory. Files Git tracks stay: they are on the
+    branch the removal keeps.
     """
     owner = _owning_component(target)
     booley_dir = own_booley_dir(target.path)
-    if owner.label in target.started or owner.state == "gone" or not booley_dir.is_dir():
-        return None
+    if _resuming(target, owner) or owner.state == "gone" or not booley_dir.is_dir():
+        return []
     try:
         tracked = (
             tracked_booley_paths(target.path, booley_dir) if owner.state == "intact" else None
         )
-        entries = worktree_evidence_paths(booley_dir, tracked=tracked)
+        return worktree_evidence_paths(booley_dir, tracked=tracked)
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         raise WorktreeRemovalError(f"cannot list the evidence of {target.name}: {exc}") from exc
+
+
+def _move_evidence(target: _Target) -> Path | None:
+    """Move the worktree's evidence into a new directory of Common Booley State.
+
+    Every attempt gets its own directory, so earlier evidence is never overwritten.
+    """
+    entries = _evidence_entries(target)
     if not entries:
         return None
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    booley_dir = own_booley_dir(target.path)
+    stamp = datetime.now(UTC).strftime(_STAMP_FORMAT)
     destination = _evidence_root(target.common) / f"{target.name}-{stamp}"
     try:
         for entry in entries:
@@ -399,7 +492,7 @@ def _move_evidence(target: _Target) -> Path | None:
     return destination
 
 
-def _kept(target: _Target) -> Removal:
+def _kept(target: _Target) -> tuple[tuple[str, ...], str | None]:
     """Branches and the detached HEAD the removal leaves reachable, read before deleting."""
     branches: list[str] = []
     detached = None
@@ -411,11 +504,11 @@ def _kept(target: _Target) -> Removal:
             branches.append(registration.branch.removeprefix("refs/heads/"))
         elif component is target.outer:
             detached = registration.head
-    return Removal(None, tuple(branches), detached)
+    return tuple(branches), detached
 
 
 def _remove(target: _Target) -> Removal:
-    kept = _kept(target)
+    branches, detached = _kept(target)
     _write_record(target)
     evidence = _move_evidence(target)
     if target.source is not None and target.paired and target.paired.state != "gone":
@@ -423,23 +516,25 @@ def _remove(target: _Target) -> Removal:
         remove_paired_checkout(target.source, target.path)
     if target.outer.state != "gone":
         _begin(target, "outer")
+        detach_checkout(target.outer.path)
         remove_worktree_registration(target.main, target.path)
     (target.common / "worktrees" / ".last-used" / target.name).unlink(missing_ok=True)
     target.record_path.unlink(missing_ok=True)
-    return Removal(evidence, kept.kept_branches, kept.detached_head)
+    return Removal(evidence, branches, detached)
 
 
 def remove_worktree(project_root: Path, name: str, *, force: bool) -> Removal:
     """Remove worktree *name*, or raise :class:`WorktreeRemovalRefusedError` / ``Error``.
 
     Works from the main checkout or any other worktree. ``force`` skips only the
-    refusal check: nested worktrees and a removal from inside the worktree are
-    refused regardless.
+    refusal check: nested worktrees, a Booley Directory that is a link, and a removal from
+    inside the worktree are refused regardless.
     """
     main = resolve_main_checkout_root(project_root)
     with layout_gate(main):
         target = _locate(project_root, main, name)
         _refuse_nested(target)
+        _refuse_foreign_booley_dir(target)
         if not force:
             reasons = _busy_reasons(target)
             if reasons:
@@ -486,6 +581,7 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
         ProjectPairingError,
         BooleyLayoutError,
         OSError,
+        ValueError,
     ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

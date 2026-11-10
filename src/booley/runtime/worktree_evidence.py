@@ -8,6 +8,7 @@ worktree.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from booley.runtime import project_repositories
 
 # Checkout-tied Flow reports (with their run artifacts, Trace Artifacts included)
 # are not Common Booley State, yet they are the evidence of a worktree's Flow runs.
-FLOW_REPORT_DIRS = frozenset(
+_FLOW_REPORT_DIRS = frozenset(
     {"flow-reports", "mcp-tool-reports", ".runtime/flow-reports", ".runtime/mcp-tool-reports"}
 )
 
@@ -67,13 +68,32 @@ def is_tracked(path: str, tracked: set[str]) -> bool:
     return path in tracked or any(name.startswith(f"{path}/") for name in tracked)
 
 
+def _untracked_within(booley_dir: Path, path: str, tracked: set[str]) -> list[str]:
+    """Return *path*, or the files below it that Git does not track when it tracks some.
+
+    A directory Git tracks in part (``plans/`` with one committed plan) keeps its
+    tracked files on the branch; the untracked ones beside them are still evidence.
+    """
+    if not is_tracked(path, tracked):
+        return [path]
+    location = booley_dir / path
+    if path in tracked or location.is_symlink() or not location.is_dir():
+        return []
+    with os.scandir(location) as children:
+        names = sorted(child.name for child in children)
+    return [
+        item for name in names for item in _untracked_within(booley_dir, f"{path}/{name}", tracked)
+    ]
+
+
 def worktree_evidence_paths(booley_dir: Path, *, tracked: set[str] | None) -> list[str]:
     """Return the entries of a worktree's Booley Directory that hold evidence.
 
     That is every Common Booley State entry except other worktrees, plus the
     Flow report directories. Paths are ``/``-separated and relative to
-    *booley_dir*. With *tracked* (from :func:`tracked_booley_paths`), entries Git
-    tracks are left out: they are on the branch the removal keeps.
+    *booley_dir*. With *tracked* (from :func:`tracked_booley_paths`), what Git
+    tracks is left out, as it is on the branch the removal keeps: an entry Git
+    tracks in part is replaced by its untracked files.
 
     Raises:
         OSError: the directory cannot be walked.
@@ -81,9 +101,9 @@ def worktree_evidence_paths(booley_dir: Path, *, tracked: set[str] | None) -> li
     entries = [
         path
         for path, booley_class in iter_booley_dir(booley_dir)
-        if path in FLOW_REPORT_DIRS
+        if path in _FLOW_REPORT_DIRS
         or (booley_class is BooleyDirClass.COMMON and not _is_nested_worktree_entry(path))
     ]
     if tracked is None:
         return entries
-    return [path for path in entries if not is_tracked(path, tracked)]
+    return [item for path in entries for item in _untracked_within(booley_dir, path, tracked)]

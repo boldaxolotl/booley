@@ -120,7 +120,17 @@ def merge_target(repo: Path) -> str:
 
 def count_uncommitted(repo: Path, excluded_untracked: str | None) -> int:
     """Count ``git status`` entries, skipping untracked ones under *excluded_untracked*."""
-    changes = parse_porcelain_z(_text(_git(repo, "status", "--porcelain=v1", "-z")))
+    # Explicit flags: Git configuration (`ignore = dirty`, `showUntrackedFiles = no`)
+    # must not hide changes that removal would delete.
+    status = _git(
+        repo,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--ignore-submodules=none",
+        "--untracked-files=normal",
+    )
+    changes = parse_porcelain_z(_text(status))
     count = 0
     for change in changes:
         under_excluded = excluded_untracked is not None and (

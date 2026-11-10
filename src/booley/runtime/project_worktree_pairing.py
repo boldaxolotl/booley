@@ -258,10 +258,23 @@ def rollback_project_pairing(source: Path, worktree: Path, name: str) -> None:
         run_git(source, "config", "--unset", key)
 
 
+def detach_checkout(checkout: Path) -> None:
+    """Drop a checkout's ``.git`` pointer so that an interrupted removal leaves it broken.
+
+    Git deletes files in directory order: a worktree it cut short could still look
+    intact, with its deleted files counted as uncommitted changes.
+    """
+    pointer = checkout / ".git"
+    if pointer.is_file():
+        pointer.unlink()
+
+
 def remove_paired_checkout(source: Path, worktree: Path) -> None:
     """Remove *worktree*'s Paired Checkout from *source*; its branch stays."""
     with _project_lock(source):
-        remove_worktree_registration(source, own_booley_dir(worktree))
+        nested = own_booley_dir(worktree)
+        detach_checkout(nested)
+        remove_worktree_registration(source, nested)
 
 
 def rollback_outer_worktree(project_root: Path, worktree: Path) -> None:

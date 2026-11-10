@@ -504,7 +504,8 @@ def _start_interrupted_removal(
         if worktree != path:
             real_removal(repository, worktree)
             return
-        (worktree / ".git").unlink()
+        # Git was cut short after deleting some files; `rm` had dropped `.git` first.
+        assert not (worktree / ".git").exists()
         (worktree / "base.txt").unlink()
         raise KeyboardInterrupt
 
@@ -631,3 +632,182 @@ def test_a_leftover_record_of_a_removed_worktree_is_cleaned_up(repo: Path) -> No
 
     assert _rm(repo, "done") == 0
     assert not record.exists()
+
+
+def test_partly_tracked_evidence_directories_keep_their_untracked_files(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A committed plan beside an untracked one: the untracked plan is still evidence."""
+    for name, paired in (("snap", False), ("pair", True)):
+        if paired:
+            booley_dir = _versioned(repo)
+            (booley_dir / "plans").mkdir()
+            _commit(booley_dir, "plans/a.md")
+        path = _add(repo, name, paired=paired)
+        if not paired:
+            (path / ".booley" / "plans").mkdir(parents=True)
+            _commit(path, ".booley/plans/a.md")
+        (path / ".booley" / "plans" / "b.md").write_bytes(b"precious\n")
+
+        assert _rm(repo, name, "--force") == 0, name
+
+        (kept,) = _evidence_dirs(repo, name)
+        assert [
+            item.relative_to(kept).as_posix() for item in kept.rglob("*") if item.is_file()
+        ] == ["plans/b.md"]
+    capsys.readouterr()
+
+
+def test_rm_refuses_untracked_work_in_a_snapshots_booley_directory(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An untracked core is neither counted by `list` nor evidence; a copy is harmless."""
+    path = _add(repo, "snap")
+    (repo / ".booley" / "booley.toml").write_bytes(b"# main\n")
+    (path / ".booley" / "cores").mkdir(parents=True)
+    (path / ".booley" / "cores" / "new.core").write_bytes(b"work\n")
+    (path / ".booley" / "booley.toml").write_bytes(b"# main\n")
+
+    assert _rm(repo, "snap") == 1
+
+    assert "1 untracked file(s) in its Booley Directory" in capsys.readouterr().err
+    (path / ".booley" / "cores" / "new.core").unlink()
+    assert _rm(repo, "snap") == 0
+
+
+def test_rm_refuses_a_booley_directory_that_links_to_the_main_one(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Moving a linked Booley Directory would carry off the whole Project's state."""
+    (repo / ".booley" / "handoffs").mkdir(parents=True)
+    (repo / ".booley" / "handoffs" / "h.md").write_bytes(b"main\n")
+    path = _add(repo, "linked")
+    try:
+        (path / ".booley").symlink_to(repo / ".booley", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks need privileges on this host")
+
+    assert _rm(repo, "linked", "--force") == 1
+
+    assert "is a link or lies outside it" in capsys.readouterr().err
+    assert (repo / ".booley" / "handoffs" / "h.md").is_file() and path.is_dir()
+
+
+def test_rm_sees_git_configuration_hiding_changes(repo: Path) -> None:
+    """`status.showUntrackedFiles=no` must not hide an untracked file from the check."""
+    path = _add(repo, "quiet")
+    git(repo, "config", "status.showUntrackedFiles", "no")
+    (path / "notes.txt").write_bytes(b"work\n")
+
+    assert _rm(repo, "quiet") == 1
+
+
+def test_a_stale_record_never_excuses_an_intact_worktree(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A record of an earlier removal does not hide work of a worktree that reuses the name."""
+    path = _add(repo, "reused")
+    record = repo / ".booley" / "worktrees" / ".removing" / "reused.json"
+    record.parent.mkdir(parents=True)
+    record.write_bytes(b'{"schema": 1, "started": ["paired", "outer"]}\n')
+    (path / ".booley" / "handoffs").mkdir(parents=True)
+    (path / ".booley" / "handoffs" / "h.md").write_bytes(b"handoff\n")
+    _commit(path, "unmerged.txt")
+
+    assert _rm(repo, "reused") == 1
+    assert "1 commit(s) on booley/reused not in" in capsys.readouterr().err
+
+    assert _rm(repo, "reused", "--force") == 0
+    (kept,) = _evidence_dirs(repo, "reused")
+    assert (kept / "handoffs" / "h.md").is_file()
+
+
+def test_a_lock_timeout_before_the_paired_removal_changes_nothing_for_good(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record is written before the lock wait; handoffs added after still move."""
+    from booley.core.file_lock import LockTimeoutError
+
+    _versioned(repo)
+    path = _add(repo, "locked", paired=True)
+
+    def timeout(_source: Path) -> None:
+        raise LockTimeoutError("busy")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("booley.runtime.project_worktree_pairing._project_lock", timeout)
+        assert _rm(repo, "locked") == 1
+    assert (path / ".booley" / ".git").is_file()
+    (path / ".booley" / "handoffs").mkdir()
+    (path / ".booley" / "handoffs" / "h.md").write_bytes(b"added since\n")
+
+    assert _rm(repo, "locked") == 0
+    (kept,) = _evidence_dirs(repo, "locked")
+    assert (kept / "handoffs" / "h.md").is_file()
+
+
+def test_an_interrupted_paired_removal_completes_on_rerun(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import project_worktree_pairing as pairing
+
+    real_removal = pairing.remove_worktree_registration
+    _versioned(repo)
+    path = _add(repo, "half", paired=True)
+
+    def die_inside_paired(repository: Path, worktree: Path) -> None:
+        if worktree == path / ".booley":
+            (worktree / "booley.toml").unlink()
+            raise KeyboardInterrupt
+        real_removal(repository, worktree)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pairing, "remove_worktree_registration", die_inside_paired)
+        with pytest.raises(KeyboardInterrupt):
+            _rm(repo, "half")
+
+    assert _rm(repo, "half") == 0
+    assert not path.exists() and str(path / ".booley") not in _registered(repo / ".booley")
+
+
+def test_a_snapshot_made_before_the_booley_directory_was_versioned_needs_no_force(
+    repo: Path,
+) -> None:
+    path = _add(repo, "old")
+    (path / ".booley").mkdir()
+    (path / ".booley" / "booley.toml").write_bytes(b"# old\n")
+    _versioned(repo)
+    (repo / ".booley" / "booley.toml").write_bytes(b"# old\n")
+
+    assert _rm(repo, "old") == 0
+    assert not path.exists()
+
+
+def test_rm_reports_a_value_error_instead_of_a_traceback(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _add(repo, "bad")
+
+    def refuse(_repository: Path, _worktree: Path) -> None:
+        raise ValueError("refusing to remove git root")
+
+    monkeypatch.setattr(_module(), "remove_worktree_registration", refuse)
+
+    assert _rm(repo, "bad") == 1
+    assert "ERROR: refusing to remove git root" in capsys.readouterr().err
+
+
+def test_earlier_evidence_of_a_similarly_named_worktree_is_not_listed(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _add(repo, "a")
+    record = repo / ".booley" / "worktrees" / ".removing" / "a.json"
+    record.parent.mkdir(parents=True)
+    record.write_bytes(b'{"schema": 1, "started": []}\n')
+    other = repo / ".booley" / "worktrees" / ".evidence" / "a-b-20261107T203255123456Z"
+    other.mkdir(parents=True)
+    _commit(path, "unmerged.txt")
+
+    assert _rm(repo, "a") == 1
+
+    assert "An earlier attempt" not in capsys.readouterr().err

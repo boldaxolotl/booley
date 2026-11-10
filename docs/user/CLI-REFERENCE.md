@@ -198,7 +198,9 @@ Without `--force` it refuses, listing every reason, while the worktree has:
 
 - a live Session or an active Goal Mode (an unreadable Session Registry or Goal
   Record also refuses);
-- uncommitted changes, in the worktree or in its Paired Checkout;
+- uncommitted changes, in the worktree or in its Paired Checkout, including
+  untracked files in a Snapshot's `.booley/` that are neither evidence nor a
+  copy of the Main Booley Directory's file;
 - commits not yet in the main checkout's branch (a branch merged by squash
   counts as merged);
 - a populated submodule at a commit the main checkout's submodule lacks;
@@ -209,9 +211,11 @@ Without `--force` it refuses, listing every reason, while the worktree has:
 `--force` removes it anyway; the evidence is still kept. Another worktree
 registered inside the one you remove (a `.baseline-wt-*` checkout, a Snapshot's
 own `worktrees/`) is refused even with `--force`: remove it first with
-`booley worktree rm` or `git worktree remove`.
+`booley worktree rm` or `git worktree remove`. So is a worktree whose `.booley/`
+is a link or lies outside it.
 
-Evidence is the worktree's `.booley/` content that Git does not keep: Common
+Evidence is the worktree's `.booley/` content that Git does not keep (the
+untracked files of a directory Git tracks in part, such as `plans/`, included): Common
 Booley State such as `reviewer-evidence/`, `handoffs/`, the Findings Log
 (`findings.jsonl`), `setup-evidence/`, reports, and logs, plus Flow reports with
 their Trace Artifacts. It moves to

@@ -165,7 +165,7 @@ from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
-from booley.runtime.worktree_evidence import untracked_common_paths as _untracked_common_paths
+from booley.runtime.worktree_evidence import untracked_common_paths
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
@@ -1181,7 +1181,7 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
         ):
             continue
         try:
-            untracked = _untracked_common_paths(entry.path, booley_dir)
+            untracked = untracked_common_paths(entry.path, booley_dir)
         except FileNotFoundError:
             continue  # A baseline worktree removed while scanning.
         except subprocess.CalledProcessError as exc:
