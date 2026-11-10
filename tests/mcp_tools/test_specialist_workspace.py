@@ -515,7 +515,7 @@ def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(repo / "custom-runtime"))
     reset_cache()
     (data / config_name).write_text(
-        '[project]\nname="fixture"\n[flows.sim]\noutput_dir="custom-output"\n'
+        '[project]\nname="fixture"\n[flows.synth]\noutput_dir="custom-output"\n'
     )
     roots = [
         data / "selftest/sim/bad-overlay",

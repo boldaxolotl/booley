@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `[flows.sim].output_dir` is retired. It has had no effect; Doctor now warns
+  `config.flow-key-retired` while it is set. Delete it. `[flows.synth].output_dir`
+  is unchanged.
 - Stealth Mode is now off unless `.booley/booley.toml` sets
   `[stealth] enabled = true`; a missing key means off. A fresh `booley init`
   no longer hides `.booley/` or gives it its own repository before setup
