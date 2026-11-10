@@ -48,7 +48,7 @@ _AGENT_EXIT_CODE = 7
 # The fake agent. Runs as the `claude` script and, in a copy of the interpreter
 # named `codex`, via `-c`. Everything it records is written before AGENT-READY.
 _AGENT_SOURCE = r"""
-import _thread, importlib.util, json, os, signal, subprocess, sys, threading, time
+import _thread, importlib.util, json, os, select, signal, subprocess, sys, threading, time
 from pathlib import Path
 
 OUT = Path(os.environ["AGENT_OUT"])
@@ -144,6 +144,11 @@ if VARIANT == "read-tripped":
     ).start()
 
 if VARIANT in ("read", "read-tripped"):
+    # Poll for input instead of blocking in read(2): a signal the C handler caught
+    # just before the read starts would otherwise defer its Python handler (and
+    # the count file) until input arrives. Each poll returns to bytecode, so the
+    # handler runs within one poll; the read then finds a line already waiting.
+    wait_until(lambda: select.select([0], [], [], 0)[0])
     sys.stdin.readline()
 elif VARIANT == "bg":
     wait_until(lambda: state["resumed"])
