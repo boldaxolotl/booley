@@ -13,8 +13,9 @@ import pytest
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.backends import cocotb_results
-from booley.flows.sim.campaign import collect_pre_sim_firings, serial_execution
+from booley.flows.sim.campaign import codec, collect_pre_sim_firings, serial_execution
 from booley.flows.sim.campaign.codec import (
+    MAX_COMMAND_BYTES,
     SimulationCampaignIntegrityError,
     decode_simulation_result,
     encode_simulation_result,
@@ -31,6 +32,7 @@ from booley.flows.sim.campaign.coverage_execution import (
     _CoverageAggregateError,
 )
 from booley.flows.sim.campaign.flow_planning import plan_coarse_simulation_campaign
+from booley.flows.sim.campaign.model import SimulationResult
 from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.campaign.resume import (
     ValidatedManifestNode,
@@ -366,15 +368,14 @@ class _ImageCheckingExecution(NativeExecution):
 
 
 class _FailedCoverageBuild(NativeExecution):
-    def __init__(self, *, infrastructure: bool) -> None:
+    def __init__(self, *, infrastructure: bool, reason: str = "compile failed") -> None:
         super().__init__()
         self.infrastructure = infrastructure
+        self.reason = reason
 
     def build(self, request):
         del request
-        return SimulationBuildResult(
-            False, "compile failed", infrastructure_error=self.infrastructure
-        )
+        return SimulationBuildResult(False, self.reason, infrastructure_error=self.infrastructure)
 
     def run(self, request):
         raise AssertionError(f"failed build launched {request.run_id}")
@@ -608,6 +609,20 @@ def test_coverage_campaign_rejects_score_bearing_invalid_nested_result(
         _run_coverage_campaign(tmp_path, NativeExecution())
 
     assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
+
+
+def test_coverage_campaign_refuses_an_oversized_result_at_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schema, fields, _limit, reader = codec._DOCUMENT_SPECS[SimulationResult]
+    monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64, reader))
+
+    with pytest.raises(CampaignPublicationError) as caught:
+        _run_coverage_campaign(tmp_path, NativeExecution())
+
+    assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
+    assert "size ceiling" in str(caught.value.__cause__)
+    assert not list(tmp_path.rglob("work-items/*/result.json"))
 
 
 class _TimeoutThenMissingInputExecution(NativeExecution):
@@ -849,10 +864,21 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
         assert observation["assertions"] == "not_observed"
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        pytest.param("compile failed", id="short-reason"),
+        pytest.param("x" * (MAX_COMMAND_BYTES + 1), id="over-ceiling-reason"),
+        # The odd-length ASCII prefix puts the byte cut inside a two-byte character.
+        pytest.param("x" + "\u00e9" * MAX_COMMAND_BYTES, id="multibyte-straddles-cut"),
+    ],
+)
 def test_coverage_infrastructure_build_failure_has_terminal_error_result(
-    tmp_path: Path,
+    tmp_path: Path, reason: str
 ) -> None:
-    outcome, _store = _run_coverage_campaign(tmp_path, _FailedCoverageBuild(infrastructure=True))
+    outcome, _store = _run_coverage_campaign(
+        tmp_path, _FailedCoverageBuild(infrastructure=True, reason=reason)
+    )
     assert outcome.complete
     assert outcome.aggregate_grade == "error"
 
@@ -864,6 +890,9 @@ def test_coverage_infrastructure_build_failure_has_terminal_error_result(
     assert len(attempts) == 1
     build = json.loads((attempts[0] / "private-build/build-result.json").read_bytes())
     assert build["state"] == "infrastructure_error"
+    message = build["observation"]["message"]
+    assert len(message.encode()) <= MAX_COMMAND_BYTES
+    assert message.startswith(reason[:64])
     assert (directory / "result.json").exists()
     result = recovery.items[0].result
     assert result is not None
