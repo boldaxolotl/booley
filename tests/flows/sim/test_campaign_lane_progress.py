@@ -28,8 +28,7 @@ from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
 from booley.flows.terminal_progress import TerminalProgress, announce_unit
 from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
-from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
-from tests.flows.sim.test_campaign_phase4 import _managed
+from tests.flows.sim.campaign_test_support import _managed, _two_item_manifest
 from tests.flows.test_terminal_progress import settled_lines
 
 # Bound for every cross-lane wait so a regression fails instead of hanging.
@@ -215,7 +214,7 @@ def test_one_lane_command_start_keeps_other_lane_tail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     now = [0.0]
     screen = Screen(tty=True)
     sink = TerminalProgress(
@@ -285,7 +284,7 @@ def test_tty_lanes_are_summarised_once_after_an_intermediate_drain(
     """A terminal keeps one result line per lane, even when one lane's command ends
     while the other lane is open but has not started a command (#2885)."""
     monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     screen = Screen(tty=True)
     sink = TerminalProgress(
         "sim",

@@ -27,9 +27,21 @@ from booley.targets.domain import TargetHandle
 
 from .capacity import HeavyCapacity, HeavyCapacityError
 from .child_protocol import recover_interrupted_attempts
-from .codec import SimulationCampaignIntegrityError, linked_manifest_path
+from .codec import (
+    SimulationCampaignIntegrityError,
+    linked_manifest_path,
+    reads_campaign_records,
+)
 from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
-from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
+from .model import (
+    AssertionObservation,
+    ExecutionObservation,
+    FailureClass,
+    FunctionalObservation,
+    SimulationCampaignManifest,
+    SimulationCampaignPlan,
+    SimulationResult,
+)
 from .planning import (
     WorkloadDiagnostic,
     WorkloadMismatch,
@@ -296,7 +308,7 @@ class SimulationCampaign:
         validated: ValidatedResumeManifest,
     ) -> tuple[CampaignRecovery, CampaignRecoveryStatus]:
         store = CampaignStore(validated.path.parent, booley_dir=validated.booley_dir)
-        recovery = store.scan_validated(validated.manifest, validated.sha256)
+        recovery = store.scan(validated.manifest, validated.sha256)
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
     @staticmethod
@@ -358,7 +370,7 @@ class SimulationCampaign:
         self._preflight_owner(store, manifest, authenticated_sha256, request)
         owner = cast(str, manifest.document["campaign_id"])
         self._run_prerequisites(store, manifest, request, frozenset({owner}), set())
-        recovery = _scan_recovery(store, manifest, authenticated_sha256)
+        recovery = store.scan(manifest, authenticated_sha256)
         self._run_pending(store, manifest, recovery, request)
         self._raise_if_cancelled(request)
         target = cast(Mapping[str, str], manifest.document["target"])
@@ -382,7 +394,7 @@ class SimulationCampaign:
                 )
                 failure = replace(failure, nested_campaign=nested)
             self._publication_checkpoint("before:summary_replace")
-            summary = _regenerate_summary(store, manifest, authenticated_sha256)
+            summary = store.regenerate_summary(manifest, authenticated_sha256)
             self._publication_checkpoint("after:summary_replace")
             if failure is not None:
                 reference = self._publish_coverage_reference(
@@ -395,7 +407,7 @@ class SimulationCampaign:
             raise CampaignPublicationError(
                 str(exc), replace(failure, coverage_reference=reference)
             ) from exc
-        final = _scan_recovery(store, manifest, authenticated_sha256)
+        final = store.scan(manifest, authenticated_sha256)
         return _outcome(store, manifest, summary, final, reference)
 
     @staticmethod
@@ -468,7 +480,7 @@ class SimulationCampaign:
         """Reject a missing run_cwd anywhere in the prerequisite tree before any build."""
         if not manifest.document["prerequisites"]:
             return  # _run_pending performs the same check for the sole campaign.
-        recovery = _scan_recovery(store, manifest, authenticated_sha256)
+        recovery = store.scan(manifest, authenticated_sha256)
         self._preflight_incomplete(manifest, recovery, request)
         self._preflight_prerequisites(
             store, manifest, request, {cast(str, manifest.document["campaign_id"])}
@@ -544,9 +556,7 @@ class SimulationCampaign:
                     )
                     recovery = prerequisite_store.scan(prerequisite)
                     self._run_pending(prerequisite_store, prerequisite, recovery, request)
-                    prerequisite_store.regenerate_summary_validated(
-                        prerequisite, manifest_digest(prerequisite)
-                    )
+                    prerequisite_store.regenerate_summary(prerequisite)
                 finished.add(campaign_id)
             selected = prerequisite_store.scan(prerequisite)
             match = next(
@@ -754,7 +764,7 @@ def _committed_coverage_result(
     manifest: SimulationCampaignManifest,
     authenticated_manifest_sha256: str | None,
 ) -> tuple[str, SimulationResult]:
-    recovery = _scan_recovery(store, manifest, authenticated_manifest_sha256)
+    recovery = store.scan(manifest, authenticated_manifest_sha256)
     completed = [item for item in recovery.items if item.result is not None]
     if len(completed) != 1:
         raise SimulationCampaignIntegrityError(
@@ -877,26 +887,6 @@ def _preflight_run_directory(manifest: SimulationCampaignManifest, project_root:
     )
 
 
-def _scan_recovery(
-    store: CampaignStore,
-    manifest: SimulationCampaignManifest,
-    authenticated_manifest_sha256: str | None,
-) -> CampaignRecovery:
-    if authenticated_manifest_sha256 is None:
-        return store.scan(manifest)
-    return store.scan_validated(manifest, authenticated_manifest_sha256)
-
-
-def _regenerate_summary(
-    store: CampaignStore,
-    manifest: SimulationCampaignManifest,
-    authenticated_manifest_sha256: str | None,
-) -> Mapping[str, object]:
-    if authenticated_manifest_sha256 is None:
-        return store.regenerate_summary_validated(manifest, manifest_digest(manifest))
-    return store.regenerate_summary_validated(manifest, authenticated_manifest_sha256)
-
-
 def _acceptance_ready(
     manifest: SimulationCampaignManifest,
     observations: tuple[Mapping[str, object], ...],
@@ -1015,9 +1005,53 @@ def collected_result_facts(
                 "finished_at": document["finished_at"],
             }
         )
-        results = cast(tuple[Mapping[str, object], ...], document["observations"])
+        results = result_observations(recovered.result)
         observations.extend(_observation_facts(recovered.work_item_id, item, digest, results))
     return consumed, observations
+
+
+_OBSERVATION_MEMBERS = frozenset(
+    {
+        "test_run",
+        "test",
+        "execution",
+        "failure_class",
+        "functional",
+        "assertions",
+        "assertion_count",
+        "detail",
+        "cycle_count",
+    }
+)
+
+
+@reads_campaign_records
+def result_observations(result: SimulationResult) -> tuple[Mapping[str, object], ...]:
+    """The observations of a stored *result*, each checked for the members facts read.
+
+    The result decoder checks only the document boundary (#1744), so the
+    enum values, test name and cycle count that feed acceptance are checked
+    here. A bad value raises the campaign integrity error.
+    """
+    observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
+    if not isinstance(observations, tuple):
+        raise TypeError("result observations must be a list")
+    for item in observations:
+        # Facts spread each observation after the identity members, so an extra key would
+        # override them.
+        if set(item) != _OBSERVATION_MEMBERS:
+            raise ValueError("observation must have exactly the recorded members")
+        ExecutionObservation(item["execution"])
+        FunctionalObservation(item["functional"])
+        AssertionObservation(item["assertions"])
+        if item["failure_class"] is not None:
+            FailureClass(item["failure_class"])
+        if not isinstance(item["test"], str | None):
+            raise TypeError("observation test must be a string or null")
+        cycle_count = item["cycle_count"]
+        if cycle_count is not None and (type(cycle_count) is not int or cycle_count < 0):
+            raise ValueError("observation cycle count must be a nonnegative integer or null")
+    return observations
 
 
 def _observation_facts(
@@ -1170,11 +1204,10 @@ def _selected_prerequisite_result(recovery: CampaignRecovery, entry: Mapping[str
 def _healthy_cycle_observation(
     result: SimulationResult, expected_test: str
 ) -> Mapping[str, object] | None:
-    observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
     return next(
         (
             item
-            for item in observations
+            for item in result_observations(result)
             if item["test"] == expected_test
             and item["cycle_count"] is not None
             and item["execution"] == "completed"

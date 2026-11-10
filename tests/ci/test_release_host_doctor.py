@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import colors
 from booley.harness import terminal_status as ts
+from booley.presentation import colors
 
 ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / ".github/scripts"))
@@ -59,7 +59,8 @@ def _fake_booley(root: Path, *, init_output: str = "[OK] initialized") -> tuple[
 def test_no_failure_check_reads_real_doctor_counts(
     scenario: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from booley.harness import colors, doctor
+    from booley.harness import doctor
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", scenario == "colored")
     reporter = doctor._Reporter.create()

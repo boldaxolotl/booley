@@ -17,8 +17,6 @@ from booley.flows.sim.campaign_files import document_digest, stream_digest
 
 from .codec import (
     SimulationCampaignIntegrityError,
-    canonical_json_bytes,
-    decode_executable_snapshot,
     encode_executable_snapshot,
     validate_relative_path,
 )
@@ -84,7 +82,7 @@ def create_executable_snapshot(
     snapshot_root.chmod(0o700)
     copied = _copy_snapshot_artifacts(bundle, bundle_root, snapshot_root)
     document = _snapshot_document(identity, bundle, build_result, created_at, copied)
-    value = decode_executable_snapshot(canonical_json_bytes(document))
+    value = ExecutableSnapshot(document)
     _create_file(snapshot_root / "snapshot.json", encode_executable_snapshot(value))
     return value
 

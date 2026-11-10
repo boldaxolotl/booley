@@ -63,8 +63,14 @@ started inside the container.
 close the window, or use **Dev Containers: Rebuild Container**.
 
 `session refresh` rebuilds only what changed and keeps the current Sandbox if
-nothing did. If it fails or you interrupt it, Booley restores the previous
-Sandbox. The Sandbox is unavailable while the new container starts. A Sandbox
+nothing did. If the Sandbox replacement fails or you interrupt it, Booley
+restores the previous Sandbox. The Sandbox is unavailable while the new
+container starts. Afterwards it re-applies Project Initialization (Git hooks,
+Git settings, guidance links, core projections, exclude entries and the
+Dashboard task). It never rewrites tracked files: CRLF files and pending
+`.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
+applies them. If that step fails, you keep the new Sandbox and the command
+exits non-zero. A Sandbox
 using a [floating license](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy)
 can't be refreshed in place: run `booley session down` first.
 

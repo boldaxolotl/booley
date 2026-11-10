@@ -388,8 +388,11 @@ def _bundle_tracking_detail(locations: _Locations) -> str | None:
     )
 
 
-def _report_bundle_tracking(ctx: InitContext, locations: _Locations) -> None:
-    """Keep a manual tracking advisory separate from mechanical pending work."""
+def _report_bundle_tracking(ctx: InitContext, locations: _Locations) -> str | None:
+    """Keep a manual tracking advisory separate from mechanical pending work.
+
+    Returns the advisory so a caller that must not touch tracked files can act on it.
+    """
     try:
         detail = _bundle_tracking_detail(locations)
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
@@ -397,6 +400,26 @@ def _report_bundle_tracking(ctx: InitContext, locations: _Locations) -> None:
     if detail:
         warn(detail)
         ctx.record("project_git_hook_tracking", "skip", detail)
+    return detail
+
+
+def _without_tracked_rewrites(
+    actions: list[_Action], bundle_advisory: str | None
+) -> list[_Action]:
+    """Turn actions that could rewrite tracked content into reports.
+
+    Legacy-hook removal and renames and a republish of an already-tracked bundle stay
+    for host init. Adapters and an untracked bundle are not tracked content.
+    """
+    deferred = {"remove", "rename", "rmdir"}
+    if bundle_advisory:
+        deferred.add("publish")
+    return [
+        _Action("keep", action.path, f"left for host init: {action.detail}")
+        if action.kind in deferred
+        else action
+        for action in actions
+    ]
 
 
 def step_project_git_hooks(ctx: InitContext) -> None:
@@ -405,10 +428,12 @@ def step_project_git_hooks(ctx: InitContext) -> None:
     locations = _locations(ctx)
     if locations is None:
         return
-    _report_bundle_tracking(ctx, locations)
+    bundle_advisory = _report_bundle_tracking(ctx, locations)
     try:
         bundle = build_project_git_hook_bundle().content
         actions = _plan(ctx, locations, bundle)
+        if ctx.preserve_tracked_content:
+            actions = _without_tracked_rewrites(actions, bundle_advisory)
         if not actions:
             current("project Git-hook bundle and adapters are current")
             ctx.record("project_git_hooks", "current", "current")
