@@ -35,7 +35,7 @@ def test_shipped_policies_install_a_hook_for_every_translated_event(tmp_path):
     claude = json.loads((root / CLAUDE_POLICY).read_text(encoding="utf-8"))["hooks"]
     codex = tomllib.loads((root / CODEX_POLICY).read_text(encoding="utf-8"))["hooks"]
     # SessionStart records the conversation; it is not an activity event (#2610).
-    every = {*EVENT_STATES, END_EVENT, activity_hooks.START_EVENT}
+    every = {*EVENT_STATES, END_EVENT, "SessionStart"}
     # Each client is given exactly the events it emits.
     assert set(claude) == every - {"Interrupt"}
     assert set(codex) == every - {"PostToolUseFailure", "Notification"}
