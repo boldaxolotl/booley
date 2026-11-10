@@ -910,6 +910,24 @@ def test_fatal_coverage_failure_lists_completed_campaigns(tmp_path, monkeypatch)
     assert expected.is_file()
 
 
+def test_unmatched_coverage_failure_lists_completed_campaigns(tmp_path, monkeypatch):
+    from booley.flows.sim import flow as sim_flow
+
+    monkeypatch.setattr(sim_flow, "_campaign_structured_details", lambda *_args: {})
+    finished = SimpleNamespace(
+        manifest_path=tmp_path / "targets/sim_0/campaign/manifest.json",
+        coverage_reference=object(),
+    )
+
+    result = sim_flow._unmatched_coverage_failure([finished], {}, RuntimeError("no such Target"))
+
+    assert result.report_text.splitlines() == [
+        "Simulation Campaign coverage execution failed: cannot match failed Target to the "
+        "prepared Coverage plan (no such Target)",
+        f"  coverage campaign: {(tmp_path / 'targets/sim_0/coverage.json').resolve()}",
+    ]
+
+
 def test_shared_execution_failure_terminalizes_without_losing_completed_reports(
     tmp_path, monkeypatch
 ):
