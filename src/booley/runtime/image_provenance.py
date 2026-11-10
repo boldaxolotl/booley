@@ -9,7 +9,6 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 PROVENANCE_SCHEMA = "3"
-LEGACY_PROVENANCE_SCHEMA = "1"
 LABEL_SCHEMA = "io.booley.provenance.schema"
 LABEL_ARTIFACT_ROLE = "io.booley.artifact.role"
 LABEL_EFFECTIVE_INPUTS = "io.booley.artifact.effective-inputs"
@@ -29,7 +28,6 @@ ENV_VERSION = "BOOLEY_VERSION"
 ENV_REVISION = "BOOLEY_SOURCE_REVISION"
 ENV_PAYLOAD_FINGERPRINT = "BOOLEY_PAYLOAD_FINGERPRINT"
 ENV_SANDBOX_FLAVOR = "BOOLEY_SANDBOX_FLAVOR"
-LEGACY_FINGERPRINT_LABEL = "booley.build-fingerprint"
 PARENT_ARTIFACT_LOCAL_IMAGE_ID = "local-image-id"
 PARENT_ARTIFACT_REGISTRY_DIGEST = "registry-digest"
 

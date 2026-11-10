@@ -16,6 +16,7 @@ from booley.fusesoc.core_projection import (
     projection_issues,
     reconcile_isolated_registry,
     reconcile_projected_cores,
+    registry_issues,
     render_private_mirror,
 )
 from tests.conftest import symlink_or_skip
@@ -299,3 +300,37 @@ def test_private_mirror_refuses_an_existing_mirror_root(tmp_path: Path) -> None:
     (tmp_path / "mirror").mkdir()
     with pytest.raises(FileExistsError):
         render_private_mirror(root, tmp_path / "mirror")
+
+
+def test_registry_issues_describe_what_reconcile_would_write_without_writing(
+    tmp_path: Path,
+) -> None:
+    root, core = _project(tmp_path)
+    assert registry_issues(root) == ()  # Native cores are not ignored: no private registry.
+    (root / ".booley" / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+    registry = isolated_registry_root(root)
+    assert registry_issues(root) == ("missing private registry",)
+    assert not registry.exists()
+
+    reconcile_isolated_registry(root)
+    assert registry_issues(root) == ()
+
+    core.write_text(_CORE.replace("demo:0", "demo:1"), encoding="utf-8")
+    owned = next(registry.glob("*.core"))
+    (registry / "booley-isolated-old.core").write_text(
+        owned.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (registry / "foreign.core").write_text("user data\n", encoding="utf-8")
+    (registry / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    assert registry_issues(root) == (
+        "FUSESOC_IGNORE blocks the private registry",
+        "foreign foreign.core",
+        f"stale {owned.name}",
+        "stale booley-isolated-old.core",
+    )
+    owned.unlink()
+    assert f"missing {owned.name}" in registry_issues(root)
+    owned.write_text("user data\n", encoding="utf-8")
+    assert f"foreign file blocks {owned.name}" in registry_issues(root)

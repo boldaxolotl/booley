@@ -246,7 +246,7 @@ Authoring rules:
   dead one (drop it from a depended-on core and that core silently
   contributes zero filesets).
 - **Per-Target Flow families:** the `fpga` name axis is authoritative:
-  `fpga`/`fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
+  `fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
   FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
   FPGA-axis Target does not also carry sim/lint/synth Criteria. Unprefixed
   vendored Targets retain `tool: vivado` as a compatibility fallback. Other
@@ -724,8 +724,9 @@ What goes here:
   owns the merged git-history policy. Write the plan's `[stealth]` values
   exactly, including hand-set values, volunteered exceptions, and unattended
   fallbacks.
-  Do not omit the block: Booley's runtime fallback for a missing key is on,
-  so omission would reverse an explicit disabled choice.
+  Do not omit the block: a missing `enabled` key means Stealth Mode is off,
+  so omission would silently drop a hidden answer and leave the choice
+  unrecorded (Doctor warns `stealth.enabled-unset` while `.booley/` is excluded).
   If row 16 explicitly chose to exclude repository-native `.core` files, also
   write `ignore_native_cores = true`; otherwise omit it (default false). This
   switch is valid only with `enabled = true`.

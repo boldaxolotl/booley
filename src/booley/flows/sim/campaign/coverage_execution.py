@@ -314,7 +314,6 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         nested_plan = replace(
             plan,
             invocation_dir=origin_invocation,
-            acceptance=None,
             started_at=utc_now_rfc3339(),
         )
         try:

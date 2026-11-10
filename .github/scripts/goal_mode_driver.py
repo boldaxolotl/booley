@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -518,7 +519,7 @@ def stop_baseline_jobs(booley_dir: Path, *, timeout_s: float = BASELINE_STOP_SEC
     until it stamps a PID and can be signalled.
     """
     job_roots = [baseline_jobs_dir(booley_dir, family) for family in BASELINE_FAMILIES]
-    started = time.monotonic()
+    started = monotonic()
     deadline = started + timeout_s
     kill_at = started + timeout_s * BASELINE_KILL_FRACTION
     last_signalled: dict[int, float] = {}
@@ -531,7 +532,7 @@ def stop_baseline_jobs(booley_dir: Path, *, timeout_s: float = BASELINE_STOP_SEC
         ]
         if not active:
             return
-        now = time.monotonic()
+        now = monotonic()
         for record in active:
             if record.pid is None:
                 continue

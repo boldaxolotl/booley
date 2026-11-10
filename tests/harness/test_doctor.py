@@ -46,6 +46,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
+from tests.conftest import add_git_command_config
 from tests.devcontainer_spec_support import build_spec
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
@@ -463,18 +464,6 @@ def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, cap
     assert "Booley files excluded from git" in output
 
 
-def test_git_exclude_warnings_are_scoped_per_missing_entry(tmp_path):
-    _git_init(tmp_path)
-    (tmp_path / ".git" / "info" / "exclude").write_text("/.devcontainer\n", encoding="utf-8")
-    findings: list[doctor.DoctorWarning] = []
-
-    doctor._check_devcontainer_excludes(tmp_path, lambda _msg: None, findings.append)
-
-    assert len(findings) == 1
-    assert findings[0].check_id == "project.git-excludes-missing"
-    assert findings[0].subject == ".booley"
-
-
 @pytest.mark.parametrize("concise", [False, True])
 def test_doctor_clean_run_records_freshness_stamp(tmp_path, monkeypatch, capsys, concise):
     booley_dir = _write_project(tmp_path)
@@ -734,6 +723,33 @@ def _gitignore_probe(booley_dir: Path) -> list[DiagnosticFinding]:
     doctor._check_project_gitignore(booley_dir, reporter.pass_, reporter.warn_)
     assert reporter.findings is not None
     return reporter.findings
+
+
+def test_init_fix_hints_name_where_to_run_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plain `booley init` fix hints follow the runtime location, in Doctor and readiness."""
+    wording = {
+        "HOST": "booley init",
+        "HAND_WRITTEN_SANDBOX": "booley init in this Sandbox",
+        "ISSUED_SANDBOX": "booley init on the host",
+    }
+    # A Booley Directory without .gitignore, in a repository that lacks the projection exclude.
+    subprocess.run(
+        ["git", "init", str(tmp_path)],
+        capture_output=True,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+    for name, where in wording.items():
+        kind = runtime_context.RuntimeLocation[name]
+        monkeypatch.setattr(runtime_context, "runtime_location", lambda kind=kind: kind)
+        findings = readiness.Findings()
+        readiness._check_projection_exclude(tmp_path, findings)
+
+        assert [finding.fix for finding in _gitignore_probe(tmp_path)] == [where]
+        (fix,) = [finding.fix for finding in findings.report().findings]
+        assert fix.startswith(f"run {where} to add the generated projection pattern")
 
 
 def test_project_gitignore_passes_with_every_init_pattern(tmp_path: Path) -> None:
@@ -2211,7 +2227,7 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
-        if cmd[:2] == ["git", "ls-files"]:
+        if cmd[:4] == ["git", "ls-files", "--", ".interactive_logs"]:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
@@ -5298,9 +5314,7 @@ class TestWorktreePortability:
             monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
             monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
         elif source == "environment":
-            monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-            monkeypatch.setenv("GIT_CONFIG_KEY_0", "worktree.useRelativePaths")
-            monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+            add_git_command_config(monkeypatch, "worktree.useRelativePaths", "true")
         elif source == "file":
             monkeypatch.setenv("GIT_CONFIG", str(config))
         elif source == "worktree":
@@ -6950,7 +6964,7 @@ targets:
 
 
 class TestCheckTargetNaming:
-    """The <axis>_<subject> convention — WARN, and only on cores the project owns."""
+    """The <axis>_<subject> convention: a note, and only on cores the project owns."""
 
     _CORE = """\
 CAPI=2:
@@ -7052,6 +7066,52 @@ sim_ok:
         assert len(warns) == 1
         assert "Target 'soc'" in warns[0]
         assert "rename it 'sim_soc'" in warns[0]
+
+    @pytest.mark.parametrize(
+        ("axis", "flow", "tool"),
+        [
+            ("sim", "sim", "verilator"),
+            ("lint", "lint", "verilator"),
+            ("synth", "generic", "yosys"),
+            ("fpga", "generic", "vivado"),
+        ],
+    )
+    def test_bare_axis_target_notes_core_name_rename(self, tmp_path, axis, flow, tool):
+        """A bare axis says nothing about the design; the note suggests <axis>_<core name>."""
+        block = f"""\
+{axis}:
+    filesets: [rtl]
+    flow: {flow}
+    flow_options: {{tool: {tool}, booley: {{doctor: [{axis}]}}}}
+    toplevel: dut
+"""
+        passes, warns = self._run(tmp_path, block, {"flows": {axis: {}}})
+        assert not passes
+        assert len(warns) == 1
+        assert "bare axis; add a subject" in warns[0]
+        assert f"rename it '{axis}_demo'" in warns[0]
+
+    def test_bare_axis_note_skips_vendored_core(self, tmp_path):
+        """Only the selected, owned core's bare Target is noted; an unselected one stays exempt."""
+        (tmp_path / "vendor.core").write_text(
+            "CAPI=2:\nname: ::upstream:0\nfilesets:\n"
+            "  rtl: {files: [dut.v], file_type: verilogSource}\n"
+            "targets:\n  lint:\n    filesets: [rtl]\n    flow: lint\n"
+            "    flow_options: {tool: verilator}\n    toplevel: dut\n",
+            encoding="utf-8",
+        )
+        block = """\
+sim:
+    filesets: [rtl]
+    flow: sim
+    flow_options: {tool: verilator, booley: {doctor: [sim]}}
+    toplevel: tb
+"""
+        passes, warns = self._run(tmp_path, block, {"flows": {"sim": {}}})
+        assert not passes
+        assert len(warns) == 1
+        assert "Target 'sim' in design.core" in warns[0]
+        assert "lint" not in warns[0]
 
 
 class TestCheckStrayDefaultTargets:
@@ -7524,6 +7584,15 @@ class TestDisplayReportDir:
         assert doctor._display_report_dir(project, report_dir) == str(report_dir)
 
 
+def _inspect_line_endings(root: Path, booley_dir: Path | None = None) -> DiagnosticReport:
+    """Run the line-ending owner the way Doctor does, returning its report."""
+    return readiness.inspect_line_endings(readiness.LineEndingInspectionRequest(root, booley_dir))
+
+
+def _findings(report: DiagnosticReport, severity: Severity) -> list[DiagnosticFinding]:
+    return [finding for finding in report.findings if finding.severity is severity]
+
+
 class TestLineEndingsCheck:
     """`booley init` fixes CRLF checkouts, but a git config reset or a fresh
     Windows clone can drift back — doctor re-asks every run."""
@@ -7574,11 +7643,11 @@ class TestLineEndingsCheck:
         _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.passed and not c.warned and not c.failed
+        assert _findings(report, Severity.PASS)
+        assert not _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
 
     def test_lf_tree_with_stale_crlf_index_stat_fails(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -7613,13 +7682,12 @@ class TestLineEndingsCheck:
             ).returncode
             == 0
         )
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert len(c.failed) == 1
-        assert "stale" in c.failed[0][0]
-        assert "booley init" in c.failed[0][1]
+        failed = _findings(report, Severity.FAIL)
+        assert len(failed) == 1
+        assert "stale" in failed[0].message
+        assert "booley init" in failed[0].fix
 
     def test_crlf_tree_fails_with_the_init_remediation(self, tmp_path: Path):
         # Ticket Mode is broken right now: the container reads every one of
@@ -7632,31 +7700,29 @@ class TestLineEndingsCheck:
             capture_output=True,
             check=True,
         )
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert len(c.failed) == 1
-        assert "booley init" in c.failed[0][1]
-        assert "--fix-line-endings" not in c.failed[0][1]
+        failed = _findings(report, Severity.FAIL)
+        assert len(failed) == 1
+        assert "booley init" in failed[0].fix
+        assert "--fix-line-endings" not in failed[0].fix
 
     def test_autocrlf_true_with_lf_tree_warns(self, tmp_path: Path):
         # Nothing is broken yet — the next checkout is what breaks it.
         self._repo(tmp_path, autocrlf="true")
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.warned and not c.failed
+        assert _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
 
     @pytest.mark.parametrize("true_value", ["yes", "on", "1"])
     def test_autocrlf_true_alias_with_lf_tree_warns(self, tmp_path: Path, true_value: str):
         self._repo(tmp_path, autocrlf=true_value)
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.warned and not c.failed and not c.passed
+        assert _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
+        assert not _findings(report, Severity.PASS)
 
     def test_explicit_crlf_checkout_policy_is_not_a_finding(self, tmp_path: Path):
         self._repo(tmp_path, autocrlf="false")
@@ -7668,11 +7734,11 @@ class TestLineEndingsCheck:
             capture_output=True,
             check=True,
         )
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.passed and not c.warned and not c.failed
+        assert _findings(report, Severity.PASS)
+        assert not _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
 
     def test_minus_text_payload_is_not_a_finding(self, tmp_path: Path):
         # A `*.bat -text` file is stored CRLF and checked out CRLF deliberately:
@@ -7681,11 +7747,11 @@ class TestLineEndingsCheck:
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, ".gitattributes", b"* text eol=lf\n*.bat -text\n")
         self._commit(tmp_path, "run.bat", b"@echo off\r\n")
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.passed and not c.warned and not c.failed
+        assert _findings(report, Severity.PASS)
+        assert not _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
 
     def test_missing_gitattributes_rule_alone_is_silent(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -7694,18 +7760,15 @@ class TestLineEndingsCheck:
         # would be unfollowable advice on every Linux project.
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert not c.warned
+        assert not _findings(report, Severity.WARN)
 
     def test_not_a_git_repo_skips(self, tmp_path: Path):
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.skipped and not c.failed
+        assert _findings(report, Severity.SKIP)
+        assert not _findings(report, Severity.FAIL)
 
     def test_nested_crlf_failure_names_project_data_repository(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -7723,21 +7786,13 @@ class TestLineEndingsCheck:
             capture_output=True,
             check=True,
         )
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path, booley_dir)
 
-        doctor._check_line_endings(
-            tmp_path,
-            c._pass,
-            c._warn,
-            c._skip,
-            c._fail,
-            booley_dir=booley_dir,
-        )
-
-        assert len(c.failed) == 1
-        assert "Booley Directory" in c.failed[0][0]
-        assert str(booley_dir) in c.failed[0][0]
-        assert any("Project Root" in message for message in c.passed)
+        failed = _findings(report, Severity.FAIL)
+        assert len(failed) == 1
+        assert "Booley Directory" in failed[0].message
+        assert str(booley_dir) in failed[0].message
+        assert any("Project Root" in f.message for f in _findings(report, Severity.PASS))
 
     def test_nested_autocrlf_warning_has_project_data_subject(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -7745,19 +7800,9 @@ class TestLineEndingsCheck:
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir(exist_ok=True)
         self._repo(booley_dir, autocrlf="true")
-        reporter = doctor._Reporter.create()
+        report = _inspect_line_endings(tmp_path, booley_dir)
 
-        doctor._check_line_endings(
-            tmp_path,
-            reporter.pass_,
-            reporter.warn_,
-            reporter.skip_,
-            reporter.fail_,
-            booley_dir=booley_dir,
-        )
-
-        assert reporter.findings is not None
-        warnings = [finding for finding in reporter.findings if finding.severity == "warn"]
+        warnings = _findings(report, Severity.WARN)
         assert len(warnings) == 1
         assert warnings[0].check_id == "git.autocrlf-risk"
         assert warnings[0].subject == "project-data"
@@ -7778,18 +7823,9 @@ class TestLineEndingsCheck:
             capture_output=True,
             check=True,
         )
-        reporter = doctor._Reporter.create()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(
-            tmp_path,
-            reporter.pass_,
-            reporter.warn_,
-            reporter.skip_,
-            reporter.fail_,
-        )
-
-        assert reporter.findings is not None
-        warnings = [finding for finding in reporter.findings if finding.severity == "warn"]
+        warnings = _findings(report, Severity.WARN)
         assert len(warnings) == 1
         assert warnings[0].check_id == "git.autocrlf-risk"
         assert warnings[0].subject == "project-checkout"
@@ -7812,18 +7848,19 @@ class TestLineEndingsCheck:
     def test_unreadable_repository_report_maps_failed_probe(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
         code: str,
         expected: str,
     ):
         from booley.harness.setup.line_endings import (
             LineEndingObservation,
             LineEndingObservationCode,
+            LineEndingReport,
             LineEndingRepository,
             LineEndingStatus,
             RepositoryLineEndingReport,
         )
 
-        collector = _Collector()
         repository = LineEndingRepository("project-checkout", tmp_path)
         report = RepositoryLineEndingReport(
             repository,
@@ -7832,26 +7869,28 @@ class TestLineEndingsCheck:
             (),
         )
 
-        doctor._report_repository_line_endings(
-            report,
-            collector._pass,
-            collector._warn,
-            collector._fail,
+        monkeypatch.setattr(
+            readiness,
+            "reconcile_project_line_endings",
+            lambda *_args, **_kwargs: LineEndingReport(LineEndingStatus.UNSAFE, (report,), ()),
         )
+        result = _inspect_line_endings(tmp_path)
+        warned = _findings(result, Severity.WARN)
+        assert len(warned) == 1
+        assert expected in warned[0].message
 
-        assert len(collector.warned) == 1
-        assert expected in collector.warned[0]
-
-    def test_unreadable_index_comparison_report_warns(self, tmp_path: Path):
+    def test_unreadable_index_comparison_report_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         from booley.harness.setup.line_endings import (
             LineEndingObservation,
             LineEndingObservationCode,
+            LineEndingReport,
             LineEndingRepository,
             LineEndingStatus,
             RepositoryLineEndingReport,
         )
 
-        collector = _Collector()
         repository = LineEndingRepository("project-checkout", tmp_path)
         report = RepositoryLineEndingReport(
             repository,
@@ -7865,26 +7904,28 @@ class TestLineEndingsCheck:
             (),
         )
 
-        doctor._report_repository_line_endings(
-            report,
-            collector._pass,
-            collector._warn,
-            collector._fail,
+        monkeypatch.setattr(
+            readiness,
+            "reconcile_project_line_endings",
+            lambda *_args, **_kwargs: LineEndingReport(LineEndingStatus.UNSAFE, (report,), ()),
         )
+        result = _inspect_line_endings(tmp_path)
+        warned = _findings(result, Severity.WARN)
+        assert len(warned) == 1
+        assert "git diff timed out" in warned[0].message
 
-        assert len(collector.warned) == 1
-        assert "git diff timed out" in collector.warned[0]
-
-    def test_crlf_failure_precedes_candidate_warning(self, tmp_path: Path):
+    def test_crlf_failure_precedes_candidate_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         from booley.harness.setup.line_endings import (
             LineEndingObservation,
             LineEndingObservationCode,
+            LineEndingReport,
             LineEndingRepository,
             LineEndingStatus,
             RepositoryLineEndingReport,
         )
 
-        collector = _Collector()
         report = RepositoryLineEndingReport(
             LineEndingRepository("project-checkout", tmp_path),
             LineEndingStatus.UNSAFE,
@@ -7898,15 +7939,14 @@ class TestLineEndingsCheck:
             (),
         )
 
-        doctor._report_repository_line_endings(
-            report,
-            collector._pass,
-            collector._warn,
-            collector._fail,
+        monkeypatch.setattr(
+            readiness,
+            "reconcile_project_line_endings",
+            lambda *_args, **_kwargs: LineEndingReport(LineEndingStatus.UNSAFE, (report,), ()),
         )
-
-        assert len(collector.failed) == 1
-        assert not collector.warned
+        result = _inspect_line_endings(tmp_path)
+        assert len(_findings(result, Severity.FAIL)) == 1
+        assert not _findings(result, Severity.WARN)
 
     def test_autocrlf_check_id_precedes_unreadable_status(
         self,
@@ -7942,22 +7982,14 @@ class TestLineEndingsCheck:
             (),
         )
         monkeypatch.setattr(
-            doctor, "reconcile_project_line_endings", lambda *_args, **_kwargs: report
-        )
-        reporter = doctor._Reporter.create()
-
-        doctor._check_line_endings(
-            tmp_path,
-            reporter.pass_,
-            reporter.warn_,
-            reporter.skip_,
-            reporter.fail_,
+            readiness, "reconcile_project_line_endings", lambda *_args, **_kwargs: report
         )
 
-        assert reporter.findings is not None
-        assert len(reporter.findings) == 1
-        assert reporter.findings[0].check_id == "git.autocrlf-risk"
-        assert reporter.findings[0].severity == "warn"
+        findings = _inspect_line_endings(tmp_path).findings
+
+        assert len(findings) == 1
+        assert findings[0].check_id == "git.autocrlf-risk"
+        assert findings[0].severity is Severity.WARN
 
 
 # =============================================================
@@ -8057,7 +8089,7 @@ class TestSubscriptionCredsHealth:
 
         now = datetime(2026, 10, 8, 10, 30, tzinfo=UTC).timestamp()
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
-        monkeypatch.setattr(doctor.time, "time", lambda: now)
+        monkeypatch.setattr(doctor, "wall_clock", lambda: now)
         monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
         monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: "auto")
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
@@ -8684,10 +8716,10 @@ def test_doctor_stealth_missing_local_policy_is_read_only(tmp_path):
     (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
     paths = [tmp_path / ".git/config", tmp_path / ".git/index"]
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
-    c = _Collector()
-    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, booley_dir=data)
-    assert c.warned and not c.passed and not c.failed
-    assert str(tmp_path / ".git/info/attributes") in c.warned[0]
+    report = _inspect_line_endings(tmp_path, data)
+    warned = _findings(report, Severity.WARN)
+    assert warned and not _findings(report, Severity.PASS) and not _findings(report, Severity.FAIL)
+    assert str(tmp_path / ".git/info/attributes") in warned[0].message
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
     assert not (tmp_path / ".git/info/attributes").exists()
     assert not (tmp_path / ".gitattributes").exists()
@@ -9290,23 +9322,17 @@ def test_doctor_opt_out_migration_read_only_and_direct_init_hint(tmp_path):
         config,
     ]
     before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths]
-    c = _Collector()
-    hints = []
-
-    def warn(message, fix=""):
-        c._warn(message, fix)
-        hints.append(fix)
-
-    doctor._check_line_endings(tmp_path, c._pass, warn, c._skip, c._fail, booley_dir=data)
-    assert c.warned and not c.failed and not c.passed
-    assert "migration" in c.warned[0]
-    assert "booley init" in hints[0]
-    assert "cannot prove ownership" not in c.warned[0]
+    report = _inspect_line_endings(tmp_path, data)
+    warned = _findings(report, Severity.WARN)
+    assert warned and not _findings(report, Severity.FAIL) and not _findings(report, Severity.PASS)
+    assert "migration" in warned[0].message
+    assert "booley init" in warned[0].fix
+    assert "cannot prove ownership" not in warned[0].message
     assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths] == before
     reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
-    c = _Collector()
-    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, booley_dir=data)
-    assert c.passed and not c.warned and not c.failed
+    report = _inspect_line_endings(tmp_path, data)
+    assert _findings(report, Severity.PASS)
+    assert not _findings(report, Severity.WARN) and not _findings(report, Severity.FAIL)
 
 
 @pytest.mark.parametrize("ignored", [False, True])
@@ -10064,22 +10090,20 @@ def test_goal_history_versioned_hint_for_relocated_booley_dir(tmp_path):
 
 
 def test_stealth_exclude_check_requires_relocated_entry(tmp_path):
-    root, _project = _relocated_project(tmp_path, stealth=True)
+    root, project = _relocated_project(tmp_path, stealth=True)
     exclude = root / ".git/info/exclude"
     exclude.write_bytes(b"/.devcontainer\n/.booley\n/tools/booley\n")
-    findings: list[doctor.DoctorWarning] = []
-    doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
-    assert findings == []
+    request = doctor.inspection.InteractiveGitRequest(root, project)
+    assert _findings(doctor.inspection.inspect_interactive_git(request), Severity.WARN) == []
 
     # Only the default spelling present: the relocated entry is reported missing.
     exclude.write_bytes(b"/.devcontainer\n/.booley\n")
-    doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
+    findings = _findings(doctor.inspection.inspect_interactive_git(request), Severity.WARN)
     assert [f.subject for f in findings] == ["tools/booley"]
 
     # The writers also hide `.booley`, so Doctor requires it beside the relocated entry.
-    findings.clear()
     exclude.write_bytes(b"/.devcontainer\n/tools/booley\n")
-    doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
+    findings = _findings(doctor.inspection.inspect_interactive_git(request), Severity.WARN)
     assert [f.subject for f in findings] == [".booley"]
 
 

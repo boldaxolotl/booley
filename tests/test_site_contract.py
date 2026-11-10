@@ -293,6 +293,45 @@ def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
         assert span == sum(doc.section == section for doc in SITE_DOCS), section
 
 
+def test_stylesheet_urls_change_when_their_content_changes(tmp_path):
+    """A deploy must not pair new pages with a cached old stylesheet (Pages caches 10 min)."""
+    spec = importlib.util.spec_from_file_location(
+        "site_asset_versions", WEBSITE / "hooks/asset_versions.py"
+    )
+    assert spec and spec.loader
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    sheet = tmp_path / "stylesheets/site.css"
+    sheet.parent.mkdir()
+
+    sheet.write_text(".a { color: var(--ink); }", encoding="utf-8")
+    before = hook.asset_versions(tmp_path, ["stylesheets/site.css"])
+    sheet.write_text(".a { color: var(--mask); }", encoding="utf-8")
+    after = hook.asset_versions(tmp_path, ["stylesheets/site.css"])
+
+    assert before["stylesheets/site.css"] != after["stylesheets/site.css"]
+    base = (WEBSITE / "overrides/base.html").read_text(encoding="utf-8")
+    assert "{{ path | url }}?v={{ asset_versions[path] }}" in base
+
+
+def test_site_workflow_runs_when_a_published_doc_changes():
+    """A contributor doc lives outside docs/user/, so pages.yml must name it to redeploy."""
+    import yaml
+
+    from booley.runtime.docs_links import SITE_DOCS
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/pages.yml").read_text(encoding="utf-8"))
+    triggers = workflow.get("on", workflow.get(True))  # YAML 1.1 reads a bare `on` as True
+    for event in ("push", "pull_request"):
+        paths = triggers[event]["paths"]
+        uncovered = [
+            doc.path
+            for doc in SITE_DOCS
+            if doc.path not in paths and f"{doc.directory}/**" not in paths
+        ]
+        assert not uncovered, f"pages.yml {event} paths miss {uncovered}"
+
+
 def test_demo_page_keeps_the_gateway_bring_your_own_key_anchor():
     """The demo gateway's notice and errors link to booley.dev/demo#bring-your-own-key."""
     page = (WEBSITE / "docs/demo.md").read_text(encoding="utf-8")

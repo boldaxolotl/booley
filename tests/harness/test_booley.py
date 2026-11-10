@@ -957,15 +957,25 @@ class TestEnforceVenue:
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # must not raise
 
-    def test_host_only_init_refused_in_container(self, monkeypatch, capsys):
-        """`booley init` builds the container boundary -> refused inside it."""
+    def test_init_in_container_follows_sandbox_kind(self, tmp_path, monkeypatch, capsys):
+        """`init` is never venue-refused; a Booley-issued Sandbox refuses it itself."""
+        import argparse
+
+        from booley.harness import init_cmd
+        from booley.runtime import runtime_context
+
+        cases = (
+            ("/work/.devcontainer", "cannot run inside a Booley-issued Sandbox"),
+            ("/mnt", "`booley init --seed` is host-side setup"),
+        )
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-        with pytest.raises(SystemExit) as exc:
-            tlr._enforce_runtime_location("init")
-        assert exc.value.code == 2
-        err = capsys.readouterr().err
-        assert "booley init" in err
-        assert "HOST terminal" in err
+        for mount_point, message in cases:
+            mountinfo = tmp_path / "mountinfo"
+            mountinfo.write_text(f"1 0 0:1 / {mount_point} rw - ext4 /dev/x rw\n")
+            monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
+            tlr._enforce_runtime_location("init")  # must not raise
+            assert init_cmd.run_init(argparse.Namespace(seed=True), tmp_path) == 2
+            assert message in capsys.readouterr().err
 
     def test_init_allowed_on_host(self, monkeypatch):
         with _host_venue(monkeypatch):
@@ -1275,6 +1285,8 @@ class TestCmdFlow:
         help_text = tlr._build_parser().format_help()
         assert "flow" in help_text
         assert "Run a Booley Flow directly" in help_text
+        # Collapse whitespace so argparse wrapping cannot split the example.
+        assert "--target lint_soc" in " ".join(help_text.split())
 
 
 class TestEndpointResolution:
@@ -1686,6 +1698,8 @@ def test_host_commands_use_persistent_venv_identity(tmp_path, monkeypatch, comma
         "abc123",
         "f" * 64,
     )
+    # `init` is dual: its installation check applies on the host only.
+    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(host_install.sys, "prefix", "/home/user/venv")
     monkeypatch.setattr(host_install.sys, "base_prefix", "/usr")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

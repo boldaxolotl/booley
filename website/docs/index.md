@@ -82,16 +82,6 @@ document: Booley product datasheet
           <marker id="f2a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
         </defs>
 
-        <!-- title block: the status lives here, like a drawing revision -->
-        <rect class="tb" x="10" y="14" width="270" height="22"/>
-        <path class="tb" d="M60 14 V36 M180 14 V36"/>
-        <text class="tbt" x="35" y="29" text-anchor="middle">Fig. 2</text>
-        <text class="tbt only-local" x="120" y="29" text-anchor="middle">Local setup</text>
-        <text class="tbt only-server" x="120" y="29" text-anchor="middle">Server setup</text>
-        <rect class="okbox only-local" x="190" y="21" width="7" height="7"/>
-        <text class="tbt only-local" x="203" y="29">Supported</text>
-        <rect class="wipbox only-server" x="190" y="21" width="7" height="7"/>
-        <text class="tbt only-server" x="203" y="29">In progress</text>
 
         <!-- the server: shown in server mode only -->
         <g class="only-server">
@@ -105,7 +95,6 @@ document: Booley product datasheet
         <g class="pc">
           <rect class="mach" x="10" y="64" width="410" height="384"/>
           <text class="m" x="26" y="90">Your PC</text>
-          <text class="des" x="36" y="109">J1</text>
           <rect class="bx" x="36" y="114" width="124" height="46"/>
           <text class="t only-local" x="98" y="142" text-anchor="middle">VS Code</text>
           <text class="t only-server" x="98" y="134" text-anchor="middle">VS Code</text>
@@ -129,19 +118,16 @@ document: Booley product datasheet
           <text class="t" x="356" y="33" text-anchor="middle">The Internet</text>
           <path class="ln" d="M356 48 V104" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
           <text class="e" x="348" y="84" text-anchor="end">LLM provider only</text>
-          <text class="des" x="296" y="99">U2</text>
           <rect class="bx" x="296" y="104" width="120" height="46"/>
           <text class="t" x="356" y="132" text-anchor="middle">Egress proxy</text>
           <path class="ln" d="M356 150 V176"/>
-          <text class="pn" x="364" y="168">3</text>
 
           <g class="only-server">
             <path class="chip ghost" d="M218 188 H305 A8 8 0 0 0 321 188 H408 V414 H218 Z"/>
             <path class="chip ghost" d="M212 182 H299 A8 8 0 0 0 315 182 H402 V408 H212 Z"/>
           </g>
           <path class="chip" d="M206 176 H293 A8 8 0 0 0 309 176 H396 V402 H206 Z"/>
-          <text class="des only-local" x="206" y="170">U1</text>
-          <text class="des only-server" x="206" y="170">U1 … Un, one per user</text>
+          <text class="e only-server" x="206" y="170">One Sandbox per user</text>
           <text class="mark" x="301" y="199" text-anchor="middle">BOOLEY SANDBOX</text>
           <text class="s2" x="301" y="214" text-anchor="middle">Docker container</text>
           <rect class="blk" x="222" y="224" width="158" height="42"/>
@@ -154,10 +140,7 @@ document: Booley product datasheet
           <text class="t2" x="301" y="345" text-anchor="middle">EDA tools</text>
           <text class="s2" x="301" y="363" text-anchor="middle">Verilator, Icarus, Yosys</text>
           <path class="ln" d="M190 245 H206 M190 350 H206"/>
-          <text class="pn" x="198" y="239" text-anchor="middle">1</text>
-          <text class="pn" x="198" y="344" text-anchor="middle">2</text>
 
-          <text class="des" x="36" y="379">U3</text>
           <rect class="bx" x="36" y="384" width="160" height="50"/>
           <text class="t2" x="116" y="404" text-anchor="middle">Licensed EDA tools</text>
           <text class="s2" x="116" y="422" text-anchor="middle">installed outside the container</text>
@@ -170,12 +153,6 @@ document: Booley product datasheet
         <defs>
           <marker id="f2l" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
         </defs>
-        <rect class="tb" x="8" y="14" width="200" height="22"/>
-        <path class="tb" d="M48 14 V36 M128 14 V36"/>
-        <text class="tbt" x="28" y="29" text-anchor="middle">Fig. 2</text>
-        <text class="tbt" x="88" y="29" text-anchor="middle">Local setup</text>
-        <rect class="okbox" x="136" y="21" width="7" height="7"/>
-        <text class="tbt" x="149" y="29">Supported</text>
         <rect class="bx" x="236" y="8" width="130" height="40"/>
         <text class="t" x="301" y="33" text-anchor="middle">The Internet</text>
 
@@ -183,10 +160,8 @@ document: Booley product datasheet
         <text class="m" x="20" y="88">Your PC</text>
         <path class="ln" d="M301 48 V108" marker-start="url(#f2l)" marker-end="url(#f2l)"/>
         <text class="e" x="293" y="84" text-anchor="end">LLM provider only</text>
-        <text class="des" x="24" y="103">J1</text>
         <rect class="bx" x="24" y="108" width="140" height="46"/>
         <text class="t" x="94" y="136" text-anchor="middle">VS Code</text>
-        <text class="des" x="236" y="103">U2</text>
         <rect class="bx" x="236" y="108" width="130" height="46"/>
         <text class="t" x="301" y="136" text-anchor="middle">Egress proxy</text>
         <path class="ln" d="M94 154 V198" marker-end="url(#f2l)"/>
@@ -194,7 +169,6 @@ document: Booley product datasheet
         <path class="ln" d="M301 154 V198"/>
 
         <path class="chip" d="M24 198 H182 A8 8 0 0 0 198 198 H356 V412 H24 Z"/>
-        <text class="des" x="24" y="192">U1</text>
         <text class="mark" x="190" y="222" text-anchor="middle">BOOLEY SANDBOX</text>
         <text class="s2" x="190" y="237" text-anchor="middle">Docker container</text>
         <rect class="blk" x="40" y="248" width="300" height="42"/>
@@ -207,7 +181,6 @@ document: Booley product datasheet
         <text class="t2" x="190" y="369" text-anchor="middle">EDA tools</text>
         <text class="s2" x="190" y="387" text-anchor="middle">Verilator, Icarus, Yosys</text>
 
-        <text class="des" x="24" y="445">U3</text>
         <rect class="bx" x="24" y="450" width="200" height="50"/>
         <text class="t2" x="124" y="470" text-anchor="middle">Licensed EDA tools</text>
         <text class="s2" x="124" y="488" text-anchor="middle">installed outside the container</text>
@@ -215,20 +188,13 @@ document: Booley product datasheet
         <text class="e" x="132" y="436">read-only</text>
       </svg>
 
-      <svg class="dep-tall dep-tall--server" viewBox="0 0 390 696" role="img" aria-label="Server setup, in progress: your PC runs only VS Code or a browser; one Booley Sandbox per user, the egress proxy, and licensed EDA tools run on a shared server.">
+      <svg class="dep-tall dep-tall--server" viewBox="0 40 390 656" role="img" aria-label="Server setup, in progress: your PC runs only VS Code or a browser; one Booley Sandbox per user, the egress proxy, and licensed EDA tools run on a shared server.">
         <defs>
           <marker id="f2s" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
         </defs>
-        <rect class="tb" x="8" y="14" width="200" height="22"/>
-        <path class="tb" d="M48 14 V36 M128 14 V36"/>
-        <text class="tbt" x="28" y="29" text-anchor="middle">Fig. 2</text>
-        <text class="tbt" x="88" y="29" text-anchor="middle">Server setup</text>
-        <rect class="wipbox" x="136" y="21" width="7" height="7"/>
-        <text class="tbt" x="149" y="29">In progress</text>
 
         <rect class="mach" x="4" y="48" width="382" height="122"/>
         <text class="m" x="20" y="72">Your PC</text>
-        <text class="des" x="24" y="91">J1</text>
         <rect class="bx" x="24" y="96" width="140" height="46"/>
         <text class="t" x="94" y="116" text-anchor="middle">VS Code</text>
         <text class="s2" x="94" y="133" text-anchor="middle">or browser</text>
@@ -245,7 +211,6 @@ document: Booley product datasheet
         <text class="e" x="102" y="193">SSH / tunnel</text>
         <path class="ln" d="M301 224 V280" marker-start="url(#f2s)" marker-end="url(#f2s)"/>
         <text class="e" x="293" y="256" text-anchor="end">LLM provider only</text>
-        <text class="des" x="236" y="275">U2</text>
         <rect class="bx" x="236" y="280" width="130" height="46"/>
         <text class="t" x="301" y="308" text-anchor="middle">Egress proxy</text>
         <path class="ln" d="M301 326 V370"/>
@@ -253,7 +218,7 @@ document: Booley product datasheet
         <path class="chip ghost" d="M36 382 H194 A8 8 0 0 0 210 382 H368 V596 H36 Z"/>
         <path class="chip ghost" d="M30 376 H188 A8 8 0 0 0 204 376 H362 V590 H30 Z"/>
         <path class="chip" d="M24 370 H182 A8 8 0 0 0 198 370 H356 V584 H24 Z"/>
-        <text class="des" x="24" y="364">U1 … Un, one per user</text>
+        <text class="e" x="24" y="364">One Sandbox per user</text>
         <text class="mark" x="190" y="394" text-anchor="middle">BOOLEY SANDBOX</text>
         <text class="s2" x="190" y="409" text-anchor="middle">Docker container</text>
         <rect class="blk" x="40" y="420" width="300" height="42"/>
@@ -266,7 +231,6 @@ document: Booley product datasheet
         <text class="t2" x="190" y="541" text-anchor="middle">EDA tools</text>
         <text class="s2" x="190" y="559" text-anchor="middle">Verilator, Icarus, Yosys</text>
 
-        <text class="des" x="24" y="617">U3</text>
         <rect class="bx" x="24" y="622" width="200" height="50"/>
         <text class="t2" x="124" y="642" text-anchor="middle">Licensed EDA tools</text>
         <text class="s2" x="124" y="660" text-anchor="middle">installed outside the container</text>

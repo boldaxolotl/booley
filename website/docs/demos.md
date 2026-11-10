@@ -57,7 +57,7 @@ document: Evaluation designs
       </p>
     </article>
   </div>
-  <p class="note"><b>Using your own design.</b> Booley is not limited to these designs. Run <code>booley init</code> in your own RTL repository, then let the <code>booley-setup</code> skill plan and configure the project with you. Starting a new IP from scratch? <code>booley init --scaffold</code> writes a working starter project. See the <a href="https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md">setup guide</a>.</p>
+  <p class="note"><b>Using your own design.</b> Booley is not limited to these designs. Run <code>booley init</code> in your own RTL repository, then let the <code>booley-setup</code> skill plan and configure the project with you. Starting a new IP from scratch? Run <code>booley init</code>, then <code>/booley-setup new</code>: it asks the design choices and writes a working starter project. See the <a href="https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md">setup guide</a>.</p>
 </section>
 
 <section aria-labelledby="s2">

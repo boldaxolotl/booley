@@ -4,7 +4,7 @@
 Subcommands:
     goal      Work with Goal Records and evidence
     chat      Open the Project's default (or --cli chosen) Agent CLI
-    worktree  Create a linked worktree with paired or snapshot Project inputs
+    worktree  Create, list, or remove linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
     doctor    Run environment health checks
     bootstrap Prepare Project-independent host resources
@@ -94,7 +94,7 @@ COMMAND_LOCATIONS = {
     "cheat": CommandLocation.EITHER,
     "doctor": CommandLocation.EITHER,
     "bootstrap": CommandLocation.HOST,
-    "init": CommandLocation.HOST,
+    "init": CommandLocation.EITHER,
     "eda": CommandLocation.HOST,
     "auth": CommandLocation.HOST,
     "session": CommandLocation.HOST,
@@ -655,8 +655,9 @@ def _add_init_scaffold_arguments(init_p) -> None:
         "--scaffold",
         metavar="IP_NAME",
         help="Scaffold a new IP from scratch in a fresh repo: starter RTL, testbench, "
-        ".core, and populated config, then run the regular init steps. Interactive "
-        "wizard on a TTY; the flags below preset/replace its answers",
+        ".core, and populated config, then run the regular init steps. Asks nothing: "
+        "a missing flag below takes the default init reports, and `/booley-setup new` "
+        "runs this with your answers. May follow a plain `booley init`",
     )
     init_p.add_argument(
         "--sim-eda-tool",
@@ -701,7 +702,15 @@ def _add_init_scaffold_arguments(init_p) -> None:
 
 def _add_init_subparser(sub) -> None:
     """Add project initialization and Sandbox seeding."""
-    init_p = sub.add_parser("init", help="Set up a new Booley project")
+    init_p = sub.add_parser(
+        "init",
+        help="Set up a Booley project (in a Sandbox: Project files only)",
+        description="Set up a Booley project. On the host this is full setup. Inside a "
+        "hand-written Sandbox (for example a Codespace) it runs Project Initialization "
+        "only: guidance links, Dashboard task, git settings and line endings. It is "
+        "idempotent, so a spec can call it from onCreateCommand. A Booley-issued "
+        "Sandbox refuses it; run it on the host.",
+    )
     init_p.add_argument(
         "--check-only", action="store_true", help="Run health checks without modifying anything"
     )
@@ -794,7 +803,7 @@ def _add_flow_subparser(sub) -> None:
     """Add direct Flow execution."""
     flow_p = sub.add_parser(
         "flow",
-        help="Run a Booley Flow directly (e.g. `booley flow lint --target lint`)",
+        help="Run a Booley Flow directly (e.g. `booley flow lint --target lint_soc`)",
     )
     flow_p.add_argument(
         "endpoint_name",
@@ -1975,8 +1984,10 @@ _CONTAINER_ONLY_COMMANDS = frozenset(
     for command, location in COMMAND_LOCATIONS.items()
     if location is CommandLocation.SESSION_RUNTIME
 )
-# `session` drives the Sandbox from outside it: like `init` it needs host
-# Docker, and the sandbox has none (ADR 0016).
+# `session` drives the Sandbox from outside it: it needs host Docker, and the
+# sandbox has none (ADR 0016). `init` is dual: on the host it is full Project
+# setup; in a hand-written Sandbox it runs Project Initialization only, and a
+# Booley-issued Sandbox refuses it (see `init_cmd.run_sandbox_init`).
 _HOST_ONLY_COMMANDS = frozenset(
     command for command, location in COMMAND_LOCATIONS.items() if location is CommandLocation.HOST
 )
@@ -2011,7 +2022,10 @@ def _enforce_runtime_location(command: str | None) -> None:
 
 def _host_install_authority_error(command: str | None) -> str | None:
     """Reject host lifecycle commands imported from a noncanonical installation."""
-    if command not in _HOST_ONLY_COMMANDS or command == "bootstrap":
+    host_install_governed = command in _HOST_ONLY_COMMANDS or (
+        command == "init" and not runtime_context.inside_session_runtime()
+    )
+    if not host_install_governed or command == "bootstrap":
         return None
     from booley.runtime.host_install import host_install_error
     from booley.runtime.paths import skills_dir
@@ -2079,7 +2093,7 @@ def _require_command_project(command: str, project_root: Path) -> None:
         present = True
     if not present:
         raise ProjectRequiredError(
-            "not a Booley Project; cd into one or run `booley init` on the host."
+            f"not a Booley Project; cd into one or run {runtime_context.booley_init_hint(code=True)}."
         )
 
 
@@ -2135,7 +2149,8 @@ def _auth_project_root(args: argparse.Namespace) -> Path | None:
         # A linked worktree needs the Project Root, not `booley init`.
         raise ProjectRootDiscoveryError(
             linked_auth_error(root)
-            or "not a Booley Project; cd into one or run `booley init` on the host."
+            or "not a Booley Project; cd into one or run "
+            f"{runtime_context.booley_init_hint(code=True)}."
         )
     return None
 

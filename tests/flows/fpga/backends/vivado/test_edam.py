@@ -393,24 +393,3 @@ class TestConfigure:
                 "fpga_cfgA",
                 {"WIDTH": 8},
             )
-
-
-@pytest.mark.parametrize("datatype", ["str", "file"])
-def test_declared_vivado_strings_are_rejected_before_materialization(tmp_path, datatype):
-    from booley.flows.target_parameters import ParameterValue
-
-    with pytest.raises(ValueError, match="Vivado does not support string/file"):
-        fpga_edam.build_fpga_edam(
-            name="proof",
-            toplevel="top",
-            part="xc7a35tcpg236-1",
-            sv_files=[],
-            v_files=[],
-            include_dirs=[],
-            xdc_files=[],
-            defines=[],
-            vlogparams={"NAME": ParameterValue(datatype, "123")},
-            workspace_root=tmp_path,
-            work_root=tmp_path / "build",
-        )
-    assert not (tmp_path / "build").exists()

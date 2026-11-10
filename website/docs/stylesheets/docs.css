@@ -120,3 +120,19 @@
   .search { order: 1; flex: 1; width: auto; max-width: 320px; margin-left: auto; }
   .search ~ .theme { margin-left: 0; }
 }
+
+/* Variant callouts ("In stealth mode", "On Windows", ...): a collapsed
+   <details> box that says only what changes in that variant. The prose
+   around it describes the baseline setup; docs/internals/CONTRIBUTING.md
+   ("Writing user docs") has the rule. GitHub renders the same markup. */
+.doc-prose details { border: 1px solid var(--rule); margin: 0 0 1.2em; }
+.doc-prose summary { cursor: pointer; list-style: none; display: flex; gap: 10px; align-items: center;
+  padding: 7px 14px; background: var(--fill-2); font: 650 15px/1.4 var(--sans); }
+.doc-prose summary::-webkit-details-marker { display: none; }
+.doc-prose summary::before { content: ""; border-left: 7px solid var(--mask);
+  border-top: 5px solid transparent; border-bottom: 5px solid transparent; transition: transform .15s; }
+.doc-prose details[open] summary { border-bottom: 1px solid var(--rule); }
+.doc-prose details[open] summary::before { transform: rotate(90deg); }
+.doc-prose details > :not(summary) { margin-left: 16px; margin-right: 16px; font-size: 16.5px; }
+.doc-prose details > summary + * { margin-top: 12px; }
+@media (prefers-reduced-motion: reduce) { .doc-prose summary::before { transition: none; } }

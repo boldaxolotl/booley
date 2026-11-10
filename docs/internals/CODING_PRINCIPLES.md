@@ -200,8 +200,9 @@ than accepting silent skips.
 
 Tests that touch time, processes, sockets, or the filesystem also:
 
-- Wait by polling a condition against a deadline, then assert; a fixed `sleep`
-  followed by an assertion is a race.
+- Order concurrent steps with events, handshakes, or polling a condition
+  against a deadline. A fixed `sleep` before an assertion, or a stand-in that
+  waits a fixed time before answering, is a race.
 - Size inner deadlines (`subprocess.run(timeout=...)`, poll loops) from the
   suite's timeout budget rather than a tight literal; Windows CI fails any test
   that uses more than 80% of its timeout.
@@ -209,6 +210,27 @@ Tests that touch time, processes, sockets, or the filesystem also:
 - Pass on Windows or skip there with the reason: guard POSIX-only signals
   (`SIGKILL`, `SIGHUP`), file modes, and symlinks, and close handles before
   deleting or renaming files.
+- **Leave nothing running.** A test ends with every thread, subprocess, and
+  detached job it started stopped, including work that tools start on their
+  own, such as Git auto-maintenance. Code that starts a background thread
+  stops and joins it on every way its owner exits.
+- **Patch time narrowly.** Inject a clock, or patch a name the module under
+  test owns. Never replace `time.monotonic` or `time.time` on the shared
+  `time` module, whether directly, through a module's `time` alias, or by a
+  dotted string ending in `.time.monotonic` or `.time.time`: every thread in
+  the worker sees it.
+- **The checkout is live.** A test that needs a copy of the repository copies
+  only the files it needs, such as the tracked files `git ls-files` lists. It
+  never snapshots the working directory, where other processes create and
+  delete caches and coverage files.
+- **Fake a process identity fully.** A fake PID in the real range (such as
+  `4242`) can belong to a live host process, so a test that stubs
+  `is_pid_alive` but leaves `/proc/<pid>` reads real sees a foreign process.
+  Use a PID above the kernel limit (`4_194_305`) or fake every check.
+- **Ready means ready to observe.** A child that prints "ready" and then blocks
+  in `read()` can lose a signal sent in between: Python runs its handler only
+  between bytecodes, so the read blocks anyway. Wait with `select` on
+  `signal.set_wakeup_fd`, or with a timeout.
 - Exercise new process, signal, or cancellation code with a repeated run of
   its test modules (`pytest <module> --count=10 -n 4 --dist=load`) before
   review. The `flake-stress` CI job repeats only the test modules a pull

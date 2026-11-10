@@ -21,6 +21,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tests.conftest import add_git_command_config
 
 from booley.dev_support import pre_push_hook
 from booley.dev_support.pre_push_hook import main
@@ -61,6 +62,7 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     (root / "file.txt").write_text("hello\n", encoding="utf-8")
     _git(root, "add", "file.txt")
     _git(root, "commit", "-q", "--no-verify", "-m", "feat(core): add the file")
+    _enable_stealth(root / ".booley")
     destination = tmp_path / "destination.git"
     _git(root, "init", "--bare", str(destination))
     monkeypatch.setattr(sys, "argv", ["pre-push", "destination", str(destination)])
@@ -68,6 +70,12 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
     monkeypatch.chdir(root)
     return root
+
+
+def _enable_stealth(booley_dir: Path) -> None:
+    """The leak guard runs only in Stealth Mode, which a Project must enable explicitly."""
+    booley_dir.mkdir(parents=True, exist_ok=True)
+    (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n")
 
 
 def _head(repo: Path) -> str:
@@ -242,8 +250,6 @@ class TestMain:
 
     def test_blocks_symlink_to_project_state(self, repo, monkeypatch, capsys):
         monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
-        booley_dir = repo / ".booley"
-        booley_dir.mkdir()
         sha = _commit_symlink(repo, "AGENTS.md", ".booley/AGENTS.md")
         with (
             _stdin(sha),
@@ -264,8 +270,11 @@ class TestMain:
     ):
         _configure_external_project_state(repo, monkeypatch)
         if relative_path == ".booley":
-            # Isolate tracked paths from strict configuration-node validation.
+            # Isolate tracked paths from strict configuration-node validation; a
+            # file at `.booley` holds no Stealth choice, so assert the policy directly.
             monkeypatch.setattr(pre_push_hook, "validate_push_configuration", lambda root: None)
+            monkeypatch.setattr(pre_push_hook, "stealth_enabled", lambda root: True)
+            shutil.rmtree(repo / ".booley")
         path = repo / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("private project state\n", encoding="utf-8")
@@ -279,6 +288,7 @@ class TestMain:
         _configure_external_project_state(repo, monkeypatch)
         monkeypatch.setattr(pre_push_hook, "validate_push_configuration", lambda root: None)
         (repo / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+        _enable_stealth(repo / "state")  # the relocated Booley Directory owns the choice
         path = repo / "state" / "docs" / "example.md"
         path.parent.mkdir(parents=True)
         path.write_text("private project state\n", encoding="utf-8")
@@ -320,8 +330,8 @@ class TestMain:
     def test_allows_checkout_project_state_name_lookalikes(self, repo, monkeypatch, relative_path):
         _configure_external_project_state(repo, monkeypatch)
         config = repo / ".booley" / "booley.toml"
-        config.parent.mkdir()
-        config.write_text("[stealth]\nbanned_words = []\n")
+        config.parent.mkdir(exist_ok=True)
+        config.write_text("[stealth]\nenabled = true\nbanned_words = []\n")
         path = repo / relative_path
         path.parent.mkdir(parents=True)
         path.write_text("ordinary docs\n", encoding="utf-8")
@@ -412,7 +422,7 @@ def _upstream_pair(repo, upstream, base=None):
     config.parent.mkdir(exist_ok=True)
     location = upstream.as_posix() if isinstance(upstream, Path) else upstream
     config.write_text(
-        f'[stealth]\nupstream_repository = "{location}"\nupstream_base = "{base or _head(repo)}"\n',
+        f'[stealth]\nenabled = true\nupstream_repository = "{location}"\nupstream_base = "{base or _head(repo)}"\n',
         encoding="utf-8",
     )
 
@@ -450,7 +460,7 @@ def test_minimum_git_destination_protected_ancestry_and_fresh_metadata(
     sys.argv[2] = str(upstream)
     config = repo / ".booley" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
-    config.write_text('[stealth]\nallowed_authors = ["*@example.com"]\n')
+    config.write_text('[stealth]\nenabled = true\nallowed_authors = ["*@example.com"]\n')
     assert _push(base) == 0
     assert "destination advertisement unavailable" not in capsys.readouterr().err
     assert _push(_commit(repo, "fix(core): clean", author="Foreign <foreign@elsewhere.test>")) == 1
@@ -480,9 +490,7 @@ def test_minimum_git_partial_state_preflight(
         included.write_text('[remote "origin"]\n promisor = false\n')
         _git(repo, "config", "include.path", str(included))
     elif state == "environment":
-        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-        monkeypatch.setenv("GIT_CONFIG_KEY_0", "remote.origin.promisor")
-        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+        add_git_command_config(monkeypatch, "remote.origin.promisor", "false")
     else:
         key = {
             "promisor": "remote.origin.promisor",
@@ -536,6 +544,7 @@ def test_minimum_git_complete_alternate_and_symlink_storage(
             pytest.skip("native platform cannot create directory symlink")
     _git(clone, "config", "user.name", "Real Dev")
     _git(clone, "config", "user.email", "dev@example.com")
+    _enable_stealth(clone / ".booley")
     monkeypatch.chdir(clone)
     assert _push(_head(clone)) == 0
     assert _push(_commit(clone, "fix(core): claude metadata")) == 1
@@ -768,9 +777,7 @@ def test_merged_protocol_restrictions_are_respected(
         included.write_text("[protocol]\nallow = never\n")
         _git(repo, "config", "include.path", str(included))
     else:
-        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-        monkeypatch.setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
-        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "never")
+        add_git_command_config(monkeypatch, "protocol.file.allow", "never")
     _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 0
 
@@ -921,6 +928,7 @@ def test_shallow_selected_boundary_refuses_but_destination_covered_increment_pas
     _git(repo, "clone", "--depth=1", upstream.as_uri(), str(clone))
     _git(clone, "config", "user.name", "Real Dev")
     _git(clone, "config", "user.email", "dev@example.com")
+    _enable_stealth(clone / ".booley")
     monkeypatch.chdir(clone)
     boundary = _head(clone)
     assert _push(boundary) == 1
@@ -979,6 +987,7 @@ def test_real_blobless_clone_missing_committed_symlink_never_fetches(
     _git(upstream, "config", "uploadpack.allowFilter", "true")
     clone = repo.parent / "blobless"
     _git(repo, "clone", "--filter=blob:none", "--no-checkout", upstream.as_uri(), str(clone))
+    _enable_stealth(clone / ".booley")
     monkeypatch.chdir(clone)
     absent_before = subprocess.run(
         ["git", "--no-lazy-fetch", "cat-file", "-e", blob],
@@ -1020,6 +1029,7 @@ def test_cloned_origin_is_not_destination_authority(
     upstream = _clone_upstream(repo)
     clone = repo.parent / "cloned-project"
     _git(repo, "clone", str(upstream), str(clone))
+    _enable_stealth(clone / ".booley")
     monkeypatch.chdir(clone)
     assert _push(base) == 1
     assert _push(base) == 1
@@ -1043,7 +1053,7 @@ def test_destination_imported_path_identity_and_allowlist_exempt_but_new_state_r
     sys.argv[2] = str(upstream)
     config = repo / ".booley" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
-    config.write_text('[stealth]\nallowed_authors = ["dev@example.com"]\n')
+    config.write_text('[stealth]\nenabled = true\nallowed_authors = ["dev@example.com"]\n')
     assert _push(base) == 0
     sha = _commit_symlink(repo, "state-link", ".booley/private")
     assert _push(sha) == 1
@@ -1120,6 +1130,7 @@ def test_minimum_git_reference_and_inherited_alternate_are_complete(
     )
     _git(clone, "config", "user.name", "Real Dev")
     _git(clone, "config", "user.email", "dev@example.com")
+    _enable_stealth(clone / ".booley")
     clean = _head(clone)
     leak = _commit(clone, "fix(core): claude fresh identity")
     if storage == "inherited":
@@ -1134,7 +1145,7 @@ def test_disabled_project_does_not_load_upstream_pair(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = repo / ".booley" / "booley.toml"
-    config.parent.mkdir()
+    config.parent.mkdir(exist_ok=True)
     config.write_text('[stealth]\nenabled = false\nupstream_repository = "invalid"\n')
 
     def forbidden(*args, **kwargs):
@@ -1916,10 +1927,12 @@ def test_minimum_git_zero_active_push_needs_no_selected_config(
     config = repo / ".booley" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
     config.write_text(
-        '[stealth]\nupstream_base = ""\n' if configuration == "incomplete-pair" else "[stealth]\n"
+        '[stealth]\nenabled = true\nupstream_base = ""\n'
+        if configuration == "incomplete-pair"
+        else "[stealth]\nenabled = true\n"
     )
     if configuration == "malformed":
-        config.write_text("[stealth]\nallowed_authors = [")
+        config.write_text("[stealth]\nenabled = true\nallowed_authors = [")
     if configuration == "unreadable":
         original = Path.open
 

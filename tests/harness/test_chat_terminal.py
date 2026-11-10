@@ -46,9 +46,9 @@ _SETTLE_SECONDS = 0.3
 _AGENT_EXIT_CODE = 7
 
 # The fake agent. Runs as the `claude` script and, in a copy of the interpreter
-# named `codex`, via `-c`. Everything it records is written before AGENT-READY.
+# named `codex`, via `-c`. Its identity (agent.json) is written before AGENT-READY.
 _AGENT_SOURCE = r"""
-import importlib.util, json, os, signal, subprocess, sys, time
+import _thread, importlib.util, json, os, select, signal, subprocess, sys, threading, time
 from pathlib import Path
 
 OUT = Path(os.environ["AGENT_OUT"])
@@ -115,7 +115,40 @@ write_json("agent.json", {
 })
 os.write(1, b"AGENT-READY\n")
 
-if VARIANT == "read":
+
+def trip_when_blocked(main_tid):
+    # Self-test only: deliver a SIGINT the way the C handler does (flag the
+    # signal, defer the Python handler to the main thread's next eval-breaker
+    # check) once the main thread sleeps in the kernel waiting for input. A real
+    # kernel signal would interrupt read(2); this one lands "just before" it.
+    task = Path("/proc/self/task") / str(main_tid)
+    stop = time.monotonic() + 10
+    state_name, wchan = "?", "?"
+    while time.monotonic() < stop:
+        try:
+            state_name = (task / "stat").read_text().rsplit(")", 1)[1].split()[0]
+            wchan = (task / "wchan").read_text().strip()
+        except OSError:
+            wchan = "unreadable"
+        if state_name == "S" and wchan not in ("0", "", "unreadable") and "futex" not in wchan:
+            write_json("trip.json", {"tripped": True, "state": state_name, "wchan": wchan})
+            _thread.interrupt_main(signal.SIGINT)
+            return
+        time.sleep(0.005)
+    write_json("trip.json", {"tripped": False, "state": state_name, "wchan": wchan})
+
+
+if VARIANT == "read-tripped":
+    threading.Thread(
+        target=trip_when_blocked, args=(threading.get_native_id(),), daemon=True
+    ).start()
+
+if VARIANT in ("read", "read-tripped"):
+    # Poll for input instead of blocking in read(2): a signal the C handler caught
+    # just before the read starts would otherwise defer its Python handler (and
+    # the count file) until input arrives. Each poll returns to bytecode, so the
+    # handler runs within one poll; the read then finds a line already waiting.
+    wait_until(lambda: select.select([0], [], [], 0)[0])
     sys.stdin.readline()
 elif VARIANT == "bg":
     wait_until(lambda: state["resumed"])
@@ -166,16 +199,17 @@ from booley.harness import chat_cmd, codex_chat
 booley_dir = Path(os.environ["AGENT_BOOLEY_DIR"])
 chat_cmd.resolve_checkout_booley_dir = lambda root: booley_dir
 chat_cmd.resolve_common_booley_dir = lambda root: booley_dir
+codex_chat.resolve_common_booley_dir = lambda root: booley_dir
 chat_cmd.load_agent_settings = lambda root, *, booley_dir: None
 chat_cmd.get_agent_settings = lambda: SimpleNamespace(default_cli=provider)
 
 real_command = codex_chat._command
 
 
-def command_running_the_fake(executable, handle):
+def command_running_the_fake(executable):
     # Keep the real validation, handle and --no-daemon; only add the fake's program.
-    program, argv = real_command(executable, handle)
-    return program, [argv[0], "-c", os.environ["AGENT_CODEX_PROGRAM"], *argv[1:]]
+    program, before, after = real_command(executable)
+    return program, before, ["-c", os.environ["AGENT_CODEX_PROGRAM"], *after]
 
 
 codex_chat._command = command_running_the_fake
@@ -456,6 +490,7 @@ def test_codex_agent_is_the_forked_child_that_owns_the_marked_allocation(scene: 
     assert "--no-daemon" in agent["cmdline"]
     assert agent["hook"]["key"] == agent["key"]
     identity = capture_process_identity(agent["pid"])
+    assert identity is not None
     owner = codex_chat_owner(scene.booley_dir, identity)
     assert owner is not None
     assert process_session_key(owner) == agent["key"]
@@ -614,11 +649,48 @@ def test_exit_status_propagates_without_a_terminal(scene: _Scene) -> None:
     assert agent["pgrp"] == driver["pgrp"] == process.pid
     assert agent["pid"] != driver["pid"]
 
+    # AGENT-READY is written after the agent installed its handlers, and the
+    # shared group was asserted above: the INT cannot beat either.
     os.killpg(process.pid, signal.SIGINT)  # what the kernel does for a tty Ctrl-C
     scene.wait_for_count("INT", 1)
     _settle()
     assert scene.counts()["INT"] == 1
     assert process.poll() is None, "Booley died of a SIGINT meant for the agent"
+
+    process.stdin.write(b"done\n")
+    process.stdin.flush()
+    assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
+
+
+def test_fake_agent_counts_a_signal_caught_before_its_input_wait(scene: _Scene) -> None:
+    """A handled signal flagged just before the agent blocks must not wait for input."""
+    process = subprocess.Popen(
+        [sys.executable, scene.agent_file],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=scene.env("read-tripped", "claude"),
+        process_group=0,
+    )
+    scene.processes.append(process)
+    assert process.stdout is not None
+    assert process.stdin is not None
+    _read_until(process.stdout.fileno(), b"AGENT-READY")
+
+    wait_for(
+        lambda: "tripped" in scene.read("trip.json"),
+        failure="the fake agent never reported whether it tripped a signal",
+        timeout_s=_WAIT_SECONDS,
+    )
+    trip = scene.read("trip.json")
+    assert trip["tripped"], (
+        f"never saw the agent blocked in a kernel wait (needs /proc wchan): {trip}"
+    )
+
+    scene.wait_for_count("INT", 1)
+    _settle()
+    assert scene.counts()["INT"] == 1
+    assert process.poll() is None, "the handler must not end the agent's input wait"
 
     process.stdin.write(b"done\n")
     process.stdin.flush()

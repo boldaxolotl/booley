@@ -9,6 +9,31 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley init` now runs inside a hand-written Sandbox (such as a Codespace)
+  and performs Project Initialization only, so a spec can call it from
+  `onCreateCommand` on every create: guidance links, Dashboard task, Git
+  settings, and line endings, with no Docker or image work. It is idempotent
+  and exits 0 when nothing changes. A Booley-issued Sandbox still refuses it
+  and names the host command. The Dashboard attach refusal and Doctor hints
+  now say where to run `booley init`.
+- Stealth Mode is now off unless `.booley/booley.toml` sets
+  `[stealth] enabled = true`; a missing key means off. A fresh `booley init`
+  no longer hides `.booley/` or gives it its own repository before setup
+  records your choice; the booley-setup skill's hidden answer does both. A
+  Project set up earlier whose `booley.toml` has no `enabled` key has left
+  Stealth: commit messages are no longer cleaned and pushes are no longer
+  checked. `booley init` and Doctor warn `stealth.enabled-unset` while
+  `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
+  `enabled = false` to confirm it is off. A `booley.toml` that can't be read
+  keeps Stealth on. Unattended setup now keeps `.booley/` in your repository
+  instead of hiding it.
+- String parameters now reach Verilator and Icarus through Edalize's own
+  quoting again, narrowing the 0.4.0 note that `str` and `file` vlogparams reach
+  them as strings. Plain values such as `MAC` work; values with quotes,
+  backslashes or whitespace, are not supported there. `default: ""` string
+  parameters are dropped by FuseSoC again in every flow: Yosys (slang) and sv2v
+  use the module's own HDL default for them, and the Vivado refusal does not
+  fire for them. Non-empty Yosys (slang), sv2v and Vivado behavior is unchanged.
 - `booley bootstrap --egress proxy|unproxied` records `[sandbox] egress` in the
   host config, creating the file if needed and changing nothing else in it, then
   bootstraps under that mode. `--check-only` reports the pending change without
@@ -25,6 +50,18 @@ Packaged release history starts at 0.2.7. For older changes, see
   timed-out conversion reports a trace incident: a failing simulation stays
   failed, a passing one is reported inconclusive, and neither is `timeout`.
   Icarus no longer reports an unconverted raw VCD as a waveform.
+- A new IP now follows the same sequence as a port: `booley init`, then
+  `/booley-setup new` on the host. `/booley-setup new` asks the design choices
+  and writes the starter project with your answers, without prompting again. It
+  now also works after a completed plain `booley init`: it keeps the `[agent]`
+  settings, and unless you choose Stealth it removes an empty inner `.booley`
+  repository and `/.booley` git exclusion left by an older `booley init`, or
+  refuses (changing nothing) when that repository has commits. Plain `booley init` in a repo with no RTL now suggests
+  `/booley-setup new`.
+- `booley init --scaffold` now names Targets `<axis>_<ip>` (`sim_<ip>`,
+  `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`) with a matching `tests.toml` section.
+  Doctor notes a Target it runs (or one in a stealth core) named just `sim`,
+  `lint`, `synth`, or `fpga` and suggests `<axis>_<core name>`.
 - A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
   with its points now loads with values recomputed from the points instead of
   failing. A forged pass/fail on a blocked or not-requested evaluation or one
@@ -47,6 +84,30 @@ Packaged release history starts at 0.2.7. For older changes, see
   removed, naming the file. Remove it, then run
   `booley init --seed --project <root>` on the host to reissue the Sandbox
   spec. Linux and macOS file names do not change.
+- A Sandbox that Booley issues now accepts `[agent.auth] codex = "gateway"`. It
+  forwards the gateway settings from your shell for Codex only, and hides them
+  from Claude sessions. Start VS Code from a shell that exports them (see
+  "Codex through a model gateway" in `docs/user/SANDBOX.md`).
+- Booley no longer migrates Sandbox state from releases before 0.3.0. The
+  host-issued Sandbox spec stamp format version is bumped, so every spec issued
+  by an earlier release is rejected as stale. Stamps at the old
+  `eda/session-specs` location, specs that use the old registrar module or the
+  `--project-root` initialize command, and stamps without a Booley Directory
+  layout are rejected the same way. Doctor names the repair: run
+  `booley init --seed` on the host.
+
+  Finish or recover any interrupted `booley session refresh` before upgrading,
+  because its journal cannot be resumed after the upgrade. If you already
+  upgraded, every lifecycle command fails closed naming the journal file:
+  remove it, then run `booley init --seed --project <root>` on the host.
+
+  A Sandbox Image without the current provenance schema is stale and is rebuilt
+  or re-pulled.
+
+  `booley session prepare` now refuses, rather than stops and removes, a running
+  VS Code container whose Booley Directory mounts are outdated, including any
+  from before 0.3.0. Close VS Code, stop and remove that container, run
+  `booley init --seed`, then reopen the folder in the container.
 
 ## 0.4.0 - 04 NOV 2026
 

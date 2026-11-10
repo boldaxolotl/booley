@@ -1,7 +1,7 @@
 """Build timeout/OOM evidence must reach the agent-visible report (issue #882).
 
 Every consumer of an infrastructure build outcome (campaign Build Result,
-typed campaign error, endpoint report, legacy report, coverage build) must lead
+typed campaign error, endpoint report, coverage build) must lead
 with the actionable reason and a bounded, marker-free output tail.
 """
 
@@ -31,7 +31,7 @@ from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution import SimulationOptions
-from booley.flows.sim.flow import MissingExecutableError, SimulateFlow
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.mcp.base import EXIT_ERROR
 from tests.flows.sim import test_campaign_crash_matrix as crash_matrix
@@ -310,22 +310,6 @@ def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
     assert HEAD_LINE not in endpoint.report_text
 
 
-def test_legacy_build_infrastructure_result_uses_shared_tail(capsys) -> None:
-    outcome = classify_build_outcome(
-        _timed_out_result("BOOLEY_BUILD_STAGE token=stale rc=0\n" + _long_output()),
-        "abc123",
-        timeout_s=600,
-    )
-    error = build_module.SimulationBuildInfrastructureError("sim", outcome)
-
-    result = SimulateFlow._build_infrastructure_result(error)
-
-    assert TIMEOUT_REASON in result.report_text.splitlines()[0]
-    assert "BOOLEY_BUILD_STAGE" not in result.report_text
-    assert LAST_LINE in result.report_text
-    capsys.readouterr()
-
-
 def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     execution, target, _raw, _captured = _execution_fixture(tmp_path, monkeypatch)
     execution._options = SimulationOptions(build_timeout_ms=600_000)
@@ -443,10 +427,6 @@ def test_prepared_build_failure_reports_missing_executable(tmp_path: Path) -> No
         )
         assert outcome.infrastructure_failure is not None
         assert outcome.infrastructure_failure.missing_executable == "verilator"
-        # Legacy Flow projection; the Flow-deletion part drops only these lines.
-        with pytest.raises(MissingExecutableError) as caught:
-            SimulateFlow()._project_execution_outcome(outcome)
-        assert caught.value.binary == "verilator"
 
 
 def test_build_report_fits_codec_detail_ceiling() -> None:
@@ -641,35 +621,3 @@ def test_escaped_build_metadata_stays_within_canonical_detail_budget(
     assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES
     assert detail["build_stage"]["timed_out"] is True
     assert store.scan().interrupted == ()
-
-
-def test_parameter_record_failure_is_a_preparation_diagnostic(tmp_path, monkeypatch):
-    from booley.flows.sim.build import SimulationBuildPreparationError, prepare_simulation_build
-
-    resolved = SimpleNamespace(
-        name="sim",
-        toplevel="top",
-        build_root=tmp_path,
-        configured_eda_tool="verilator",
-        parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": "MAC"}},
-    )
-    monkeypatch.setattr(
-        build_module,
-        "_simulation_recipe_inputs",
-        lambda *_args, **_kwargs: (tmp_path, SimpleNamespace(), ()),
-    )
-
-    monkeypatch.setattr(
-        build_module.fusesoc_registry,
-        "resolve_target_handle",
-        lambda *_args, **_kwargs: resolved,
-    )
-    monkeypatch.setattr(
-        build_module,
-        "_verilator_cache_environment",
-        lambda *_args: pytest.fail("invalid record reached cache capture"),
-    )
-    with pytest.raises(
-        SimulationBuildPreparationError, match=r"parameter transport.*missing or ambiguous"
-    ):
-        prepare_simulation_build(SimpleNamespace(selector="sim"), build_root=tmp_path)

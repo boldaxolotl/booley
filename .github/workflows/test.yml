@@ -21,7 +21,7 @@ on:
         description: Windows Python 3.14 shard count for CI benchmarking
         required: true
         type: choice
-        default: "10"
+        default: "4"
         options:
           - "4"
           - "6"
@@ -135,7 +135,7 @@ jobs:
           python .github/scripts/ci_changes.py
           --repo . --base "${BASE_SHA}" --head "${HEAD_SHA}"
           --event-name "${EVENT_NAME}" --head-ref "${HEAD_REF}" --ref "${REF}"
-          --windows-shard-count "${{ inputs.windows_shard_count || '10' }}"
+          --windows-shard-count "${{ inputs.windows_shard_count || '4' }}"
           --windows-shard-benchmark "${{ inputs.windows_shard_benchmark || false }}"
           --linux-shard-count "${{ inputs.linux_shard_count || '2' }}"
           --linux-scheduler "${{ inputs.linux_scheduler || 'loadscope' }}"
@@ -533,11 +533,18 @@ jobs:
         run: |
           # NUL-delimited: Windows Python would turn "\n" into "\r\n".
           mapfile -d '' -t modules < <(python -c 'import json, os, sys; sys.stdout.write("\0".join(json.loads(os.environ["STRESS_MODULES"])))')
+          status=0
           # shellcheck disable=SC2086 # HEADROOM holds zero or two options.
           pytest "${modules[@]}" -q --tb=short -n 4 --dist=load \
             --count="${STRESS_COUNT}" --basetemp "${RUNNER_TEMP}/pytest" \
             -m "not native_bwave" --timeout=60 ${HEADROOM} \
-            --durations=30 --junitxml="${RUNNER_TEMP}/junit.xml"
+            --durations=30 --junitxml="${RUNNER_TEMP}/junit.xml" || status=$?
+          # Exit 5 (nothing ran) is fine when every changed module skipped itself at
+          # import on this runner, such as a Linux-only module on Windows. The JUnit
+          # assertion below still fails the job when no test or skip was recorded.
+          if [ "${status}" -ne 0 ] && [ "${status}" -ne 5 ]; then
+            exit "${status}"
+          fi
 
       - name: Publish pytest evidence
         if: always()
@@ -672,7 +679,7 @@ jobs:
 
       - name: Prove every sharded test ran exactly once
         env:
-          WINDOWS_SHARD_COUNT: ${{ inputs.windows_shard_count || '10' }}
+          WINDOWS_SHARD_COUNT: ${{ inputs.windows_shard_count || '4' }}
         run: >-
           python .github/scripts/ci_test_shards.py
           --root "${RUNNER_TEMP}/shards"

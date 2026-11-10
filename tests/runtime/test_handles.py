@@ -9,11 +9,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.booley_checkouts_support import isolate_git, main_project
 from tests.conftest import symlink_or_skip
+from tests.project_runtime_git_support import git
 
 from booley.mcp import session_registry
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import handles, job_records
+from booley.runtime.chat_sessions import reserve_codex_chat
+from booley.runtime.pid import ProcessIdentity
 
 STAMP = "2026-10-14T10:00:00Z"
 
@@ -344,7 +348,7 @@ def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
         elif map_state == "broken":
             store.path.write_text("broken")
         monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
-        monkeypatch.setattr("booley.harness.dashboard.model.time.time", lambda: 101)
+        monkeypatch.setattr("booley.harness.dashboard.model.wall_clock", lambda: 101)
         load, reads = handles.HandleStore.load, []
 
         def counted_load(self, reads=reads, load=load):
@@ -562,7 +566,7 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch
         )
         job_records.write_record(record, root)
     monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
-    monkeypatch.setattr("booley.harness.dashboard.model.time.time", lambda: now)
+    monkeypatch.setattr("booley.harness.dashboard.model.wall_clock", lambda: now)
     views = {j.record.run_id: j for j in DashboardReader(tmp_path, tmp_path).read().jobs.jobs}
     expired, recent = views["sim-expired"], views["sim-recent"]
     assert app._job_label(expired) == "sim-expired"
@@ -570,3 +574,28 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch
     assert app._job_label(recent) == "J-SIM?"
     assert app._owner_handle(recent, {}) == "S?"
     assert app._job_label(views["sim-running"]) == "J-SIM?"
+
+
+def test_every_session_allocation_path_skips_taken_numbers(tmp_path, monkeypatch):
+    """Session maps load with the worktree/branch rule, so no allocation path can reuse a number."""
+    isolate_git(tmp_path, monkeypatch)
+    main = main_project(tmp_path)
+    booley_dir = main / ".booley"
+    (booley_dir / "worktrees" / "s1").mkdir(parents=True)
+    git(main, "branch", "booley/s2")
+    store = handles.HandleStore(booley_dir)
+
+    def allocate_with_registry():
+        attributed = attribution("codex:registry")
+        SessionRegistry(booley_dir).upsert(attributed, "sim", "completed", now=100)
+
+    paths = {
+        "codex:store": lambda: handles.reserve_session_handle(booley_dir, "codex:store"),
+        "codex:chat": lambda: reserve_codex_chat(booley_dir, ProcessIdentity(4242, "fixture", 7)),
+        "codex:registry": allocate_with_registry,
+    }
+    for key, allocate in paths.items():
+        store.path.unlink(missing_ok=True)  # A full prune: numbering restarts.
+        allocate()
+        labels = store.load().labels()
+        assert set(labels.values()) == {"S3"}, (key, labels)

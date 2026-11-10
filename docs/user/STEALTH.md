@@ -19,16 +19,25 @@ all.
     enabled = true
     ```
 
-    For a new IP, `booley init --scaffold <ip_name> --stealth` does the same.
+    For a new IP, answer yes to the Stealth question in `/booley-setup new`.
 2. `booley init` hides `.booley/` from your repository and makes it a separate
    Git repository. Commit your Booley setup there, not in the RTL repo.
 3. Commit and push the RTL repo as usual; the hooks below do their work.
 
-To turn it off, set `enabled = false`. Write the key either way: when it is
-missing, the hooks treat Stealth as on, but Booley doesn't set up hidden cores.
-Turning Stealth off stops the hooks at once, but `.booley/` stays hidden and
+Stealth is off unless `booley.toml` says `enabled = true`; a missing key means
+off. To turn it off again, set `enabled = false` or delete the key. Turning
+Stealth off stops the hooks at once, but `.booley/` stays hidden and
 stays its own repository. Booley doesn't undo that; `booley init` warns about
-the hidden files instead.
+the hidden files instead. The one exception is a new IP: an open
+`/booley-setup new` run removes a still-empty inner repository and the
+`/.booley` exclusion, and refuses (changing nothing) if the inner repository
+already has commits.
+
+Before this release a missing key meant on, so an older Project may have a
+hidden `.booley/` and no `enabled` key. That Project is now out of Stealth:
+commit messages aren't cleaned and pushes aren't checked. `booley init` and
+Doctor warn `stealth.enabled-unset`; add `enabled = true` to keep Stealth, or
+`enabled = false` to confirm it's off.
 
 ## What changes
 
@@ -44,6 +53,10 @@ the hidden files instead.
 - **Pushes are checked**, see [Push checks](#push-checks).
 - **Goal Mode summaries stay local** instead of being committed on the Goal
   Branch ([GOAL-MODE.md](GOAL-MODE.md)).
+- **Worktrees get a Paired Checkout** of `.booley/`: a checkout of its
+  repository's last commit on its own branch, so commit Booley changes there
+  before you create a worktree
+  ([CLI-REFERENCE.md](CLI-REFERENCE.md#worktrees)).
 
 If your repository ships `.core` files that are broken, obsolete, or that you
 don't want Booley to see, add `ignore_native_cores = true`. Booley then reads

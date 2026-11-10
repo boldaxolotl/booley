@@ -16,8 +16,8 @@ in the wrong place stops and prints how to run it in the right one.
 | Location | Public commands, in order |
 |---|---|
 | Sandbox | `chat`, `dashboard`, `flow`, `specialist`, `worktree` |
-| Either | `cheat`, `doctor`, `help`, `resources`, `targets` |
-| Host-only | `auth`, `bootstrap`, `eda`, `init`, `projects` |
+| Either | `cheat`, `doctor`, `help`, `init`, `resources`, `targets` |
+| Host-only | `auth`, `bootstrap`, `eda`, `projects` |
 
 `booley flow` and `booley specialist` run and list only in the Sandbox, but
 `booley flow <name> --help` and `booley specialist <name> --help` also work on
@@ -37,7 +37,6 @@ booley bootstrap --update         # rerun after every Booley upgrade
 booley bootstrap --check-only     # report pending work; change nothing
 booley bootstrap --egress unproxied  # record the Sandbox egress mode, then bootstrap
 booley init                       # set up the Project in the current directory
-booley init --scaffold my_ip      # start a new IP from scratch in a fresh repo
 booley auth                       # save a long-lived Claude login for unattended runs
 booley auth --cli codex           # the same for Codex: paste an API key
 booley auth --status              # show which login each agent would use
@@ -46,6 +45,10 @@ booley auth --status              # show which login each agent would use
 Host Bootstrap is described in [INSTALL.md](INSTALL.md#host-bootstrap);
 `init` and its options in [SETUP.md](SETUP.md); logins and billing in
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
+
+`booley init` also runs inside a hand-written Sandbox such as a Codespace, where it does Project
+Initialization only; a Booley-issued Sandbox refuses it. See
+[Project setup in a hand-written spec](SANDBOX.md#project-setup-in-a-hand-written-spec-booley-init).
 
 ### Work in the Sandbox · container
 
@@ -58,6 +61,7 @@ booley chat -- --help             # the agent CLI's help (Booley's is booley cha
 booley dashboard                  # sessions and Jobs; see Usage
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
+booley worktree rm <name>         # remove a worktree, keeping its evidence and branches
 ```
 
 The Dashboard opens by itself when you attach to the container; see
@@ -95,7 +99,7 @@ booley projects prune-keepers            # preview images left by earlier forget
 booley projects prune-keepers --confirm <digest>   # remove exactly that preview
 ```
 
-Each successful `booley init` remembers its Project Root. `booley projects`
+Each successful host `booley init` remembers its Project Root. `booley projects`
 marks each one `present`, `missing`, or `uninitialized`.
 
 `discover` scans only the directories you name and doesn't follow symlinks.
@@ -151,19 +155,25 @@ submodule step or the hook fails, Booley removes the worktree and its
 `booley/<name>` and `booley-worktree/<name>` branches and exits nonzero. A
 branch that already gained commits is kept.
 
-The worktree gets its own Booley Directory (the `.booley/` folder):
+The worktree gets its own Booley Directory (the `.booley/` folder), a
+**Snapshot**: a copy of the Booley Directory's configuration (settings,
+`cores/`, hooks, Goal and Ticket history). Build results, reports, logs, and
+evidence stay in the main Booley Directory. A path Booley does not classify is
+not copied, and the command names it.
 
-- **Paired Checkout**, when your Booley Directory is its own Git repository:
-  a checkout of its last commit on branch `booley-worktree/<name>`.
-  Uncommitted and untracked files are left out; one warning names them (the
-  first 10, then a count). Commit them first if the worktree needs them.
-  Booley refuses a repository with no commits or an existing branch of that
-  name. Ignored files stay behind. Booley refuses to create a worktree from
-  inside a Paired Checkout.
-- **Snapshot**, otherwise: a copy of the Booley Directory's configuration
-  (settings, `cores/`, hooks, Goal and Ticket history). Build results, reports, logs,
-  and evidence stay in the main Booley Directory. A path Booley does not
-  classify is not copied, and the command names it.
+<details markdown>
+<summary>In stealth mode</summary>
+
+Your Booley Directory is its own Git repository, so the worktree gets a
+**Paired Checkout** instead: a checkout of its last commit on branch
+`booley-worktree/<name>`. Uncommitted and untracked files are left out; one
+warning names them (the first 10, then a count). Commit them first if the
+worktree needs them. Booley refuses a repository with no commits or an
+existing branch of that name. Ignored files stay behind. Booley refuses to
+create a worktree from inside a Paired Checkout. See
+[STEALTH.md](STEALTH.md).
+
+</details>
 
 **Listing worktrees.** `booley worktree list` shows one row per worktree
 under `.booley/worktrees/`, from the main checkout or from any worktree:
@@ -181,41 +191,68 @@ under `.booley/worktrees/`, from the main checkout or from any worktree:
 
 A worktree whose directory is gone is not listed; a warning names it.
 
-**Removing a worktree** deletes everything in it, ignored files included, and
-Booley has no command for it. First save what you need:
+**Removing a worktree** takes one command, run in the Sandbox from the main
+checkout or another worktree (never from inside the one you remove):
 
-1. Put the commits you want on a branch you keep. Commits made in the worktree
-   are on `booley/<name>`; an older worktree, or one named
-   `<branch>--<description>`, may be on a detached HEAD, so its commits may be
-   on no branch at all. For a Paired Checkout, the same goes for its
-   `booley-worktree/<name>` branch.
-2. Copy needed untracked and ignored files into a new folder outside the
-   worktree, overwriting nothing. Look through the whole worktree, including
-   its `.booley/`: `reviewer-evidence/`, `handoffs/`, the Findings Log
-   (`findings.jsonl`), reports, and logs. A finding can attach files that live
-   elsewhere; copy those as well. Keep this archive separate from the
-   Project's own Findings Log; don't merge the two.
+```text
+booley worktree rm <name> [--force]
+```
 
-Then, in the same Sandbox and from outside the worktree:
+It moves the worktree's evidence aside, removes the worktree, and keeps its
+branch (`booley/<name>`, or the Goal Branch), so commits made in the worktree
+stay reachable. A worktree on a detached HEAD, which has no branch, is reported
+as `detached HEAD was <commit>`; save that commit on a branch if you need it.
 
-1. Clean dirty and untracked files, including a Snapshot's copied files when
-   Git lists them as untracked.
-2. Paired Checkout only: remove the inner checkout with
-   `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley`.
-3. Remove the worktree with
-   `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
-4. Optional: to reuse the name, delete its branch with
-   `git -C <absolute-project-root> branch -D booley/<name>`, and for a Paired
-   Checkout also
-   `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+Without `--force` it refuses, listing every reason, while the worktree has:
 
-Git refuses to remove a worktree that holds populated submodules; once your
-files are saved, add `--force` to each `git worktree remove`. Check for locks
-before you unlock a worktree or force a removal.
+- a live Session or an active Goal Mode (an unreadable Session Registry or Goal
+  Record also refuses);
+- uncommitted changes in the worktree, including untracked files in a
+  Snapshot's `.booley/` that are neither evidence nor a copy of the Main
+  Booley Directory's file;
+- commits not yet in the main checkout's branch (a branch merged by squash
+  counts as merged);
+- a populated submodule at a commit the main checkout's submodule lacks;
+- a Git lock (`git worktree lock`);
+- a damaged checkout: registered but its directory is gone, or no working
+  `.git`.
 
-Use Sandbox paths in these commands, not host paths: the host may see the
-worktree somewhere else. If `booley worktree new` fails and leaves a checkout
-behind, it prints these steps with the real paths.
+`--force` removes it anyway; the evidence is still kept. Another worktree
+registered inside the one you remove (a `.baseline-wt-*` checkout, a Snapshot's
+own `worktrees/`) is refused even with `--force`: remove it first with
+`booley worktree rm` or `git worktree remove`. So is a worktree whose `.booley/`
+is a link or lies outside it.
+
+Evidence is the worktree's `.booley/` content that Git does not keep (the
+untracked files of a directory Git tracks in part, such as `plans/`, included): Common
+Booley State such as `reviewer-evidence/`, `handoffs/`, the Findings Log
+(`findings.jsonl`), `setup-evidence/`, reports, and logs, plus Flow reports with
+their Trace Artifacts. It moves to
+`.booley/worktrees/.evidence/<name>-<time>/` in the Main Booley Directory, at
+the same relative paths; each attempt gets its own new directory and nothing is
+overwritten. Copy out what you need from there, and keep that archive separate
+from the Project's own Findings Log; don't merge the two. If the move fails, for
+example across file systems, nothing is removed.
+
+If the command is interrupted, run it again: it finishes the removal, and checks
+a worktree that is still intact again, so work added since is never removed
+without the refusal. It never prunes other worktrees' registrations. To reuse
+the name, delete the kept branch first with
+`git -C <absolute-project-root> branch -D booley/<name>`.
+
+If `booley worktree new` fails and leaves a checkout behind, it prints the
+manual Git steps with the real Sandbox paths; use those, not host paths.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+`booley worktree rm` removes the Paired Checkout first, then the outer
+worktree, and also keeps the `booley-worktree/<name>` branch. Uncommitted
+changes in the Paired Checkout count toward the refusal too. To reuse the name,
+also delete that branch with
+`git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+
+</details>
 
 ### Commands for skills
 

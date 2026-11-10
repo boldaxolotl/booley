@@ -20,6 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    GATEWAY_FORWARDED_ENV,
+    GATEWAY_TOKEN_COMMAND_ENV,
+    GATEWAY_TOKEN_ENV,
+    GATEWAY_URL_ENV,
+)
 from booley.config.host_config import HostConfigError, load_host_policy
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.booley_dir_pin import BooleyDirPinError, require_pinned_entry
@@ -60,11 +67,11 @@ from booley.runtime.incontainer_git_identity import (
 )
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.private_store import SESSION_STORE_REPAIR
+from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 _IS_WINDOWS = os.name == "nt"
-STAMP_VERSION = 4
-DEVCONTAINER_TARGET = "/work/.devcontainer"
+STAMP_VERSION = 5
 _ALLOWED_TOP_LEVEL_KEYS = frozenset(
     {
         "name",
@@ -87,12 +94,9 @@ _ALLOWED_TOP_LEVEL_KEYS = frozenset(
 )
 _ESCAPE_KEYS = frozenset({"dockerComposeFile", "service", "runServices", "workspaceFolder"})
 _FIXED_REGISTRAR = "python -m booley.harness.incontainer_register"
-_LEGACY_FIXED_REGISTRAR = "python -m booley.runtime.incontainer_register"
-_ACCEPTED_FIXED_REGISTRARS = frozenset({_FIXED_REGISTRAR, _LEGACY_FIXED_REGISTRAR})
 _FIXED_GIT_IDENTITY = "python -m booley.runtime.incontainer_git_identity_cleanup"
 _ACCEPTED_FIXED_START_TAILS = frozenset(
-    {_FIXED_GIT_IDENTITY}
-    | {f"{_FIXED_GIT_IDENTITY} && {registrar}" for registrar in _ACCEPTED_FIXED_REGISTRARS}
+    {_FIXED_GIT_IDENTITY, f"{_FIXED_GIT_IDENTITY} && {_FIXED_REGISTRAR}"}
 )
 _FIXED_ATTACH = "python -m booley.runtime.incontainer_live_preview && python -m booley.runtime.incontainer_vaporview"
 _FIXED_SEED_FRAGMENTS = frozenset(
@@ -256,7 +260,7 @@ def issuance_from_document(raw: object) -> Issuance:
     except BoundaryError as exc:
         raise RuntimeSpecError(str(exc)) from exc
     expected = {field.name for field in fields(Issuance)}
-    if set(values) not in (expected, expected - {"project_data_layout"}):
+    if set(values) != expected:
         raise RuntimeSpecError("host-issued spec stamp has unexpected or missing fields")
     try:
         issuance = Issuance(
@@ -276,11 +280,7 @@ def issuance_from_document(raw: object) -> Issuance:
             validator_sha256=require_str(values, "validator_sha256"),
             file_sha256=require_opt_str(values, "file_sha256"),
             project_data_source=require_opt_str(values, "project_data_source"),
-            project_data_layout=(
-                require_str(values, "project_data_layout")
-                if "project_data_layout" in values
-                else "legacy"
-            ),
+            project_data_layout=require_str(values, "project_data_layout"),
         )
     except BoundaryError as exc:
         raise RuntimeSpecError(f"host-issued spec stamp is invalid: {exc}") from exc
@@ -326,7 +326,7 @@ def invalidate_project(project_root: str) -> None:
     """Remove the host-issued stamp for an already-canonical Project identity."""
     # Withdrawal also removes a stamp named by the pre-normalisation Windows
     # rule: removal is not migration, and it must not outlive a revoked Project.
-    for path in (*stamp_store().paths(project_root), _legacy_stamp_path(project_root)):
+    for path in stamp_store().paths(project_root):
         unlink_file(path, missing_ok=True)
 
 
@@ -368,23 +368,16 @@ def validate_auth_reseed_storage(project_root: Path) -> None:
         raise RuntimeSpecError(str(exc)) from exc
 
 
-def _legacy_stamp_path(project_root: str) -> Path:
-    identity = hashlib.sha256(project_root.encode()).hexdigest()
-    return config_dir() / "eda" / "session-specs" / f"{identity}.json"
-
-
 def _stamp_read_path(project_root: Path) -> Path:
     # `locate` refuses a stamp named by the old Windows rule rather than ignoring it.
     located = stamp_store().locate(str(project_root.resolve()))
     if located is not None:
         return located
-    preferred = stamp_path(project_root)
-    legacy = _legacy_stamp_path(str(project_root.resolve()))
-    return legacy if legacy.exists() or legacy.is_symlink() else preferred
+    return stamp_path(project_root)
 
 
 def recovery_stamp_path(project_root: Path) -> Path:
-    """Return the current or legacy stamp path that recovery must snapshot."""
+    """Return the stamp path that recovery must snapshot."""
     return _stamp_read_path(project_root.resolve(strict=True))
 
 
@@ -455,12 +448,6 @@ def initialize_command(executable: str = "booley") -> list[str]:
         "--project",
         "${localWorkspaceFolder}",
     ]
-
-
-def _legacy_initialize_command() -> list[str]:
-    command = initialize_command()
-    command[3] = "--project-root"
-    return command
 
 
 def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> str:
@@ -759,8 +746,8 @@ def _persist_prepared(
         raise RuntimeSpecError(f"refusing to write through symlinked {path}")
     previous = path.read_bytes() if path.is_file() else None
     previous_mode = stat.S_IMODE(path.stat().st_mode) if previous is not None else 0o644
-    stamp_paths = (stamp_path_for_identity(str(project)), _legacy_stamp_path(str(project)))
-    stamp_snapshots = tuple(_file_snapshot(item, default_mode=0o600) for item in stamp_paths)
+    stamp_file = stamp_path_for_identity(str(project))
+    stamp_snapshot = _file_snapshot(stamp_file, default_mode=0o600)
     previous_issuance = None
     previous_stamp_path = _stamp_read_path(project)
     if previous_stamp_path.is_file():
@@ -789,8 +776,7 @@ def _persist_prepared(
         if task_transaction is not None:
             task_transaction.rollback()
         _restore_file(path, previous, previous_mode)
-        for stamp_file, (content, mode) in zip(stamp_paths, stamp_snapshots, strict=True):
-            _restore_file(stamp_file, content, mode)
+        _restore_file(stamp_file, *stamp_snapshot)
         _restore_keeper(project, previous_keeper_id)
         raise
 
@@ -878,7 +864,6 @@ def _issue_document_with_requirements(
         _validate_image_contract(image_id)
     _retain_issued_image(issuance)
     _write_stamp(stamp_path(project), issuance)
-    unlink_file(_legacy_stamp_path(str(project)), missing_ok=True)
     return issuance
 
 
@@ -1051,7 +1036,7 @@ def _issuance(
         validator_sha256=_file_sha256(_initialize_executable(spec)),
         file_sha256=file_sha256,
         project_data_source=project_data_source,
-        project_data_layout=_spec_project_data_layout(spec),
+        project_data_layout=spec_project_data_layout(spec),
     )
 
 
@@ -1279,6 +1264,8 @@ def _validate_remote_environment(
     proxy_env = _PROXY_REMOTE_ENV if egress == "proxy" else {}
     required = _REQUIRED_REMOTE_ENV | set(proxy_env)
     allowed_remote = _ALLOWED_REMOTE_ENV - (set(_PROXY_REMOTE_ENV) - set(proxy_env))
+    if record.get("codex") == GATEWAY_AUTH:
+        allowed_remote |= set(GATEWAY_FORWARDED_ENV)
     fixed_remote = {**proxy_env, **_FIXED_REMOTE_ENV}
     if not required.issubset(remote):
         expected_presence = dict.fromkeys(sorted(required), "present")
@@ -1291,6 +1278,7 @@ def _validate_remote_environment(
         not isinstance(key, str) or not isinstance(value, str) for key, value in remote.items()
     ):
         raise RuntimeSpecError("devcontainer.json environment must contain strings only")
+    _validate_gateway_environment(remote, record)
     if set(remote) - allowed_remote:
         raise RuntimeSpecError(
             "devcontainer.json contains unsupported Sandbox environment: "
@@ -1320,6 +1308,29 @@ def _validate_remote_environment(
     for key in auth_token.CREDENTIAL_ENV_KEYS:
         if key in remote and (key not in allowed or remote[key] != f"${{localEnv:{key}}}"):
             raise RuntimeSpecError("devcontainer.json credential environment has drifted")
+
+
+def _validate_gateway_environment(remote: dict[str, Any], record: dict[str, str]) -> None:
+    """Gateway settings are forwarded as host references, and only for Codex on the gateway."""
+    gateway_keys = {key for key in remote if key.startswith("BOOLEY_GATEWAY_")}
+    if record.get("codex") != GATEWAY_AUTH:
+        if gateway_keys:
+            raise RuntimeSpecError(
+                "devcontainer.json forwards gateway environment but Codex is not on the "
+                "gateway policy; refresh the Sandbox"
+            )
+        return
+    token_keys = gateway_keys & {GATEWAY_TOKEN_ENV, GATEWAY_TOKEN_COMMAND_ENV}
+    if (
+        GATEWAY_URL_ENV not in gateway_keys
+        or len(token_keys) != 1
+        or gateway_keys - set(GATEWAY_FORWARDED_ENV)
+        or any(remote[key] != f"${{localEnv:{key}}}" for key in gateway_keys)
+    ):
+        raise RuntimeSpecError(
+            "devcontainer.json gateway environment has drifted: expected the gateway URL and "
+            "exactly one token source, each a host reference; refresh the Sandbox"
+        )
 
 
 def _format_cli_record(record: dict[str, str]) -> str:
@@ -1377,7 +1388,7 @@ def _validate_seed_targets(spec: dict[str, Any], record: dict[str, str]) -> None
         # The config file can hold a primary API key, whether seeded or bound directly.
         forbidden |= {dc._CLAUDE_CONFIG_SEED_TARGET, dc._CLAUDE_CONFIG_TARGET}
     for cli, policy in record.items():
-        if policy == "api_key":
+        if policy in ("api_key", GATEWAY_AUTH):  # neither policy copies a login
             forbidden.add(dc._APP_CREDS_SEED_TARGET[cli])
         if auth_token.CREDENTIALS[cli].env_var not in auth_token.allowed_credential_keys(
             cli, policy
@@ -1703,7 +1714,7 @@ def _project_data_shadow_target(project: Path, source: Path) -> str | None:
 
 
 def _pin_initialize_command(project: Path, spec: dict[str, Any]) -> None:
-    if spec.get("initializeCommand") not in (initialize_command(), _legacy_initialize_command()):
+    if spec.get("initializeCommand") != initialize_command():
         raise RuntimeSpecError("devcontainer.json has no fixed host validation command")
     executable = _find_trusted_validator(project)
     if executable is None:
@@ -1715,11 +1726,7 @@ def _pin_initialize_command(project: Path, spec: dict[str, Any]) -> None:
 
 
 def _validate_initialize_command(project: Path, raw: object) -> None:
-    if (
-        not isinstance(raw, list)
-        or len(raw) != 5
-        or raw[1:] not in (initialize_command()[1:], _legacy_initialize_command()[1:])
-    ):
+    if not isinstance(raw, list) or len(raw) != 5 or raw[1:] != initialize_command()[1:]:
         raise RuntimeSpecError("devcontainer.json has no fixed host validation command")
     executable = Path(raw[0]) if isinstance(raw[0], str) else Path()
     if not _trusted_validator(executable, project):
@@ -2220,7 +2227,8 @@ def _write_stamp(path: Path, issuance: Issuance) -> None:
         temp_path.unlink(missing_ok=True)
 
 
-def _spec_project_data_layout(spec: dict[str, Any]) -> str:
+def spec_project_data_layout(spec: dict[str, Any]) -> str:
+    """Return the Booley Directory layout the spec mounts: `legacy` or `canonical-alias`."""
     mounts = spec.get("mounts", [])
     return (
         "legacy"

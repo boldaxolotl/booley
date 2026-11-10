@@ -112,6 +112,13 @@ DIRECTION_RULES = (
         "Job observation owns process and artifact facts without interpreting Target policy",
     ),
     DirectionRule(
+        "D41",
+        (prefix("booley.runtime"),),
+        (prefix("booley.flows"),),
+        "Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through "
+        "booley.core and never imports a Flow",
+    ),
+    DirectionRule(
         "D38",
         (prefix("booley.flows"), prefix("booley.specialists")),
         (prefix("booley.goals"),),
@@ -227,7 +234,11 @@ DIRECTION_RULES = (
     ),
     DirectionRule(
         "D26",
-        (exact("booley.harness.host_diagnostics"), exact("booley.harness.setup.readiness")),
+        (
+            exact("booley.harness.host_diagnostics"),
+            exact("booley.harness.setup.readiness"),
+            exact("booley.runtime.inspection"),
+        ),
         (
             exact("booley.harness.doctor"),
             exact("booley.harness.init_cmd"),
@@ -424,37 +435,14 @@ COMPOSITION_PERMISSIONS = (
         "booley.specialists.specialist",
         "The MCP server classifies and composes Specialist endpoints.",
     ),
-    CompositionPermission(
-        "C8",
-        "D6",
-        "booley.runtime.incontainer_register",
-        "booley.harness.incontainer_register",
-        "The former module path remains an exact compatibility entry point.",
-    ),
 )
 
 LEGACY_WAIVERS = ()
 
-# Measured after integrating #530 and #531. The production SCC metadata test
-# requires tightening on every split.
-APPROVED_LEGACY_SCCS = (
-    frozenset(
-        f"booley.{name}"
-        for name in (
-            "agent_workspace",
-            "bwave",
-            "criteria",
-            "dev_support",
-            "feedback",
-            "flows",
-            "goals",
-            "harness",
-            "mcp",
-            "runtime",
-        )
-    ),
-    frozenset(("booley.fusesoc", "booley.targets")),
-)
+# Measured after #3061 removed the Runtime edges into Flows and Harness, which
+# dissolved the last large group once Flows no longer imported Harness. The
+# production SCC metadata test requires tightening on every split.
+APPROVED_LEGACY_SCCS = (frozenset(("booley.fusesoc", "booley.targets")),)
 
 BOOLEY_SOURCE_DEPENDENCY_CONTRACT = ArchitectureContract(
     rules=DIRECTION_RULES,

@@ -6,12 +6,14 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Generator, Iterator
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, BinaryIO
 
 import pytest
+
+from tests.python_command_support import interpreter_first_path, python_path_entry
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,6 +23,7 @@ sys.path.insert(0, str(_SOURCE_ROOT / "src"))
 pytest_plugins = [
     "tests.timeout_evidence",
     "tests.timeout_headroom",
+    "tests.sandbox_only",
     "tests.thread_leak_guard",
 ]
 
@@ -32,6 +35,141 @@ def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -
         "PYTHONPATH",
         os.pathsep.join(filter(None, (str(_SOURCE_ROOT / "src"), os.environ.get("PYTHONPATH")))),
     )
+
+
+# Git settings every Git child of the suite runs with, exported as command-scope
+# configuration (``GIT_CONFIG_COUNT`` / ``GIT_CONFIG_KEY_n`` / ``GIT_CONFIG_VALUE_n``).
+#
+# Why: a Git command can detach ``git maintenance`` / ``gc`` that outlives its test
+# and keeps ``objects/maintenance.lock`` open in the test's directory (#3120), which
+# breaks cleanup (WinError 32 on Windows) and leaks processes.
+#
+# How: command scope outranks every file scope, so the setting holds whichever
+# global/system file a test selects with ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_NOSYSTEM``.
+# ``pytest_configure`` exports it before workers start, and ``isolated_git_excludes``,
+# ``reset_git_command_config`` and ``add_git_command_config`` keep it when a test
+# rewrites command scope.
+#
+# Known gaps (not covered by this setting):
+# - ``src/booley/goals/committed_bytes.py`` replaces command scope with
+#   ``GIT_CONFIG_COUNT=0`` / ``GIT_CONFIG_PARAMETERS=""`` for its shadow-repository Git.
+# - ``src/booley/runtime/incontainer_git_identity_cleanup.py`` strips every
+#   ``GIT_CONFIG_*`` for its ``git config --file`` reads.
+# - ``src/booley/runtime/incontainer_git_identity.py`` defines the Sandbox container's
+#   own ``GIT_CONFIG_COUNT=2`` identity environment; it governs Git inside a Sandbox,
+#   not the host children the suite starts.
+# - Git itself drops ``GIT_CONFIG_COUNT``/``GIT_CONFIG_PARAMETERS`` for the receiving
+#   process on local-path transports (``local_repo_env``), so ``receive-pack`` /
+#   ``upload-pack`` of a push or fetch to a local path runs without these settings.
+# - An inherited ``GIT_CONFIG_PARAMETERS`` (what ``git -c`` exports) is read after the
+#   numbered entries, so one that sets these keys overrides them.
+# - Test helpers build a child environment from scratch instead of inheriting it, for
+#   example ``tests/dev_support/test_pre_push_hook.py::_git``,
+#   ``tests/qa/test_uart_evaluator.py`` and
+#   ``tests/runtime/test_incontainer_git_identity.py``. ``sandbox_git`` in
+#   ``tests/harness/test_doctor_sandbox_git_identity.py`` clears command scope because
+#   it needs exact contents.
+_SESSION_GIT_COMMAND_CONFIG: tuple[tuple[str, str], ...] = (
+    ("maintenance.auto", "false"),
+    ("gc.auto", "0"),
+)
+
+
+def _git_command_entries(environ: Mapping[str, str]) -> list[tuple[str, str]]:
+    """Return the ``(key, value)`` command-scope pairs Git reads from ``environ``.
+
+    Git reads an empty ``GIT_CONFIG_COUNT`` as 0. A non-numeric count raises
+    ``ValueError`` and a count above the entries present raises ``KeyError``, just
+    as Git rejects both.
+    """
+    count = int(environ.get("GIT_CONFIG_COUNT") or "0")
+    return [
+        (environ[f"GIT_CONFIG_KEY_{index}"], environ[f"GIT_CONFIG_VALUE_{index}"])
+        for index in range(count)
+    ]
+
+
+def _disable_git_auto_maintenance_for_children() -> None:
+    """Append the session settings to the command scope child processes inherit.
+
+    Idempotent: a key whose effective (last) value already is the wanted one is not
+    appended again, so repeated ``pytest_configure`` calls (mutmut) and xdist workers
+    re-running it on an inherited environment add nothing. Inherited entries stay.
+    """
+    entries = _git_command_entries(os.environ)
+    for key, value in _SESSION_GIT_COMMAND_CONFIG:
+        effective = [entry_value for name, entry_value in entries if name.lower() == key]
+        if effective and effective[-1] == value:
+            continue
+        os.environ[f"GIT_CONFIG_KEY_{len(entries)}"] = key
+        os.environ[f"GIT_CONFIG_VALUE_{len(entries)}"] = value
+        entries.append((key, value))
+    os.environ["GIT_CONFIG_COUNT"] = str(len(entries))
+
+
+def add_git_command_config(monkeypatch: pytest.MonkeyPatch, key: str, value: str) -> None:
+    """Append ``key=value`` to the command scope, keeping the entries already there.
+
+    The last entry for a key wins, so the test's value takes effect while the
+    session's auto-maintenance settings stay in place.
+    """
+    index = len(_git_command_entries(os.environ))
+    monkeypatch.setenv(f"GIT_CONFIG_KEY_{index}", key)
+    monkeypatch.setenv(f"GIT_CONFIG_VALUE_{index}", value)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", str(index + 1))
+
+
+def reset_git_command_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the command scope exactly the session's settings, dropping inherited ones.
+
+    For fixtures that isolate the host's inherited policy: inherited entries beyond
+    the session's are ignored once ``GIT_CONFIG_COUNT`` is lowered. Leaves
+    ``GIT_CONFIG_PARAMETERS`` alone.
+    """
+    for index, (key, value) in enumerate(_SESSION_GIT_COMMAND_CONFIG):
+        monkeypatch.setenv(f"GIT_CONFIG_KEY_{index}", key)
+        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{index}", value)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", str(len(_SESSION_GIT_COMMAND_CONFIG)))
+
+
+@pytest.fixture(scope="session")
+def _python_shim_entry(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Write the bare ``python``/``python3`` shims once per session (xdist worker).
+
+    Returns the PATH entry on which both names run the test interpreter.
+    """
+    return python_path_entry(tmp_path_factory.mktemp("python-shim"))
+
+
+@pytest.fixture(autouse=True)
+def subprocesses_run_the_test_interpreter(
+    monkeypatch: pytest.MonkeyPatch, _python_shim_entry: str
+) -> None:
+    """A launched bare ``python3``, ``python`` or ``fusesoc`` must come from the test interpreter.
+
+    Production launches adapters as ``python3 -m booley...`` and FuseSoC as
+    ``fusesoc``; both resolve from ``PATH``, which on a developer host finds the
+    system interpreter and a user-site FuseSoC. Putting the interpreter shims and
+    its scripts directory first makes children independent of the host. Tests that
+    set their own ``PATH`` keep precedence. Like the ``PYTHONPATH`` fixture, this
+    covers test bodies and function-scoped fixtures, not module or session
+    fixtures, import-time ``PATH`` captures, or a test's own ``monkeypatch.undo()``.
+    """
+    monkeypatch.setenv(
+        "PATH", interpreter_first_path(_python_shim_entry, os.environ.get("PATH", os.defpath))
+    )
+
+
+@pytest.fixture
+def monkeypatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Undo every patch before ``tmp_path`` is torn down.
+
+    ``tmp_path`` is requested first, so it is finalized last: patches of
+    ``os.scandir``, ``os.walk`` or ``os.close`` are gone before the lock walk
+    in the ``tmp_path`` override below and before pytest deletes a passing
+    test's directory under ``tmp_path_retention_policy = "failed"``.
+    """
+    return monkeypatch
 
 
 @pytest.fixture
@@ -47,13 +185,17 @@ def isolated_git_attributes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 def isolated_git_excludes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_git_attributes: None
 ) -> Path:
-    """Return an empty excludes file without inherited command-scope Git policy."""
+    """Return an empty excludes file without inherited command-scope Git policy.
+
+    The suite's auto-maintenance settings are the only command-scope entries kept.
+    """
     for key in tuple(os.environ):
         if key.startswith("GIT_CONFIG_") and key not in {
             "GIT_CONFIG_GLOBAL",
             "GIT_CONFIG_NOSYSTEM",
         }:
             monkeypatch.delenv(key)
+    reset_git_command_config(monkeypatch)
     empty = tmp_path / "empty-excludes"
     empty.write_bytes(b"")
     return empty
@@ -273,8 +415,11 @@ def pytest_configure(config: pytest.Config) -> None:
 
     Runs for every session mutmut starts (it calls ``pytest.main`` repeatedly in
     one process), so the stats marker is hidden before any test starts a child.
+
+    Also exports the session's Git auto-maintenance settings to every child.
     """
     hide_mutmut_stats_mode_from_children()
+    _disable_git_auto_maintenance_for_children()
     _configure_test_profile(config)
     _begin_coverage_stamp(config)
     prune_orphan_basetemps(config)
@@ -373,7 +518,30 @@ def _track_flow_invocations(request: pytest.FixtureRequest) -> Iterator[None]:
         yield
 
 
-def _publication_leaks(item: pytest.Item, stacks: list[tuple[str, Any]]) -> list[str]:
+# Open (path, read handle) pairs for the invocation locks found under tmp_path.
+_INVOCATION_LOCKS = pytest.StashKey[list[tuple[Path, BinaryIO]]]()
+
+
+@pytest.fixture
+def tmp_path(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[Path]:
+    """Hold read handles on invocation locks before pytest deletes a passing test's tmp_path.
+
+    ``tmp_path_retention_policy = "failed"`` removes the directory of a passing
+    test in pytest's own ``tmp_path`` finalizer, before the teardown guard below
+    walks it.  This fixture tears down first, so the guard can still probe locks
+    a passing test leaked.  It only sees locks created while the test ran under
+    the directory this fixture yields.
+    """
+    yield tmp_path
+    if sys.platform != "win32":
+        from tests.file_lock_probe import open_invocation_locks
+
+        request.node.stash[_INVOCATION_LOCKS] = open_invocation_locks(tmp_path)
+
+
+def _publication_leaks(
+    stacks: list[tuple[str, Any]], locks: list[tuple[Path, BinaryIO]]
+) -> list[str]:
     """Observe callbacks and locks before emergency cleanup can hide a leak."""
     # ExitStack has no public callback-count API; this is test-only introspection.
     leaks = [
@@ -381,14 +549,13 @@ def _publication_leaks(item: pytest.Item, stacks: list[tuple[str, Any]]) -> list
         for name, stack in stacks
         if stack._exit_callbacks
     ]
-    tmp_path = getattr(item, "funcargs", {}).get("tmp_path")
-    if sys.platform != "win32" and isinstance(tmp_path, Path):
-        from tests.file_lock_probe import invocation_lock_paths, lock_is_held
+    if locks:
+        from tests.file_lock_probe import handle_lock_is_held
 
         leaks.extend(
             f"Simulation invocation lock still held: {path}"
-            for path in sorted(invocation_lock_paths(tmp_path))
-            if lock_is_held(path)
+            for path, handle in locks
+            if handle_lock_is_held(handle)
         )
     return leaks
 
@@ -397,18 +564,22 @@ def _publication_leaks(item: pytest.Item, stacks: list[tuple[str, Any]]) -> list
 def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     """Detect leaked publication resources, then close every tracked stack.
 
-    Direct Flow calls must own their publication scope. Observe leaks after all
-    fixture finalizers so test patches of Path or fcntl are no longer active.
+    Direct Flow calls must own their publication scope. Probe the held lock
+    handles after all fixture finalizers so test patches of Path or fcntl are
+    no longer active.
     Emergency cleanup still runs when a finalizer or the leak probe fails.
     """
     try:
         return (yield)
     finally:
         stacks = item.stash.get(_FLOW_PUBLICATIONS, [])
+        locks = item.stash.get(_INVOCATION_LOCKS, [])
         try:
-            leaks = _publication_leaks(item, stacks)
+            leaks = _publication_leaks(stacks, locks)
         finally:
             with ExitStack() as cleanup:
+                for _name, handle in locks:
+                    cleanup.callback(handle.close)
                 for _name, stack in stacks:
                     cleanup.callback(stack.close)
         if leaks:

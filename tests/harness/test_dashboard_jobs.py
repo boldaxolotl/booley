@@ -24,12 +24,18 @@ layout = goal_fixtures.layout
 
 
 def snapshot_jobs(
-    booley_dir, *, interactive_root=None, slots_root=None, proc_root=None, reader=None
+    booley_dir,
+    *,
+    interactive_root=None,
+    slots_root=None,
+    proc_root=None,
+    reader=None,
+    now=None,
 ):
     options = {} if proc_root is None else {"proc_root": proc_root}
     reader = reader or JobReader(booley_dir, slots_root=slots_root, **options)
     records = GoalStore(booley_dir).list_records().records
-    return reader.read(records, interactive_root=interactive_root)
+    return reader.read(records, interactive_root=interactive_root, now=now)
 
 
 def files(root):
@@ -309,11 +315,7 @@ def test_sandbox_capacity_is_explicit_in_resource_projection(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("stage", [None, "simulation"])
-def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(
-    tmp_path, monkeypatch, stage
-):
-    import time
-
+def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(tmp_path, stage):
     from booley.flows.progress_lifecycle import progress_document
     from booley.runtime.pid import capture_process_identity
     from tests.mcp_tools.test_session_registry import _fake_process
@@ -351,16 +353,16 @@ def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(
     )
     progress.write_text(json.dumps(document))
     before = files(tmp_path)
-    monkeypatch.setattr(time, "time", lambda: 1791453605)
-    view = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
-    text = job_detail(view)
+    now = 1791453605
+    view = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc, now=now).jobs[0]
+    text = job_detail(view, now=now)
     assert "elapsed 5s" in text
     assert f"Stage: {stage}" in text if stage else "Stage:" not in text
     assert "EDA tool: icarus" in text
     assert files(tmp_path) == before
     (work / "fixture.core").unlink()
-    missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
-    assert "EDA tool:" not in job_detail(missing)
+    missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc, now=now).jobs[0]
+    assert "EDA tool:" not in job_detail(missing, now=now)
 
 
 def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
@@ -712,6 +714,39 @@ def test_zero_resource_measurements_are_recorded(tmp_path):
     )
     assert "CPU time: 0s" in text
     assert "Peak memory (largest process): 0 MiB" in text
+
+
+def test_job_detail_read_latency_unread_and_legacy():
+    from pathlib import Path
+
+    from booley.harness.dashboard.app import job_detail
+    from booley.harness.dashboard.jobs import JobView
+    from booley.runtime.timefmt import format_clock
+
+    def detail(state, **fields):
+        record = rec(status="done", **fields)
+        return job_detail(JobView(Path("/jobs"), record, state))
+
+    finished = {"ended_at": "2026-10-08T10:01:00Z", "owner": "mcp-stdio:one"}
+    # (a) The first-read time and how long the result waited after the Job ended.
+    read_at = "2026-10-08T10:03:10Z"
+    assert f"Read: {format_clock(read_at)} · 2m 10s after end" in detail(
+        "completed", **finished, read_at=read_at
+    )
+    # (b) A finished, owned, unread Job says so, orphaned ones included.
+    assert "Read: unread" in detail("completed", **finished)
+    assert "Read: unread" in detail("orphaned", **finished)
+    # (c) A record without an owner invents no latency, and (d) neither does a running Job.
+    assert "Read:" not in detail("completed", ended_at=finished["ended_at"])
+    assert "Read:" not in detail("running", owner="mcp-stdio:one")
+    # (e) A read without an end time shows the clock only.
+    clock_only = detail("completed", owner="mcp-stdio:one", read_at=read_at)
+    assert f"Read: {format_clock(read_at)}" in clock_only
+    assert "after end" not in clock_only
+    # A read stamped before the end clamps to zero rather than going negative.
+    assert "· 0s after end" in detail(
+        "completed", ended_at="2026-10-08T10:05:00Z", owner="o", read_at=read_at
+    )
 
 
 def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):

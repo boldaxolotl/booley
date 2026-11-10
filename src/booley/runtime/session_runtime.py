@@ -30,7 +30,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.config import gateway
 from booley.core.differences import format_differences
+from booley.core.project_identity import project_label_id
 from booley.runtime import auth_token, image_identity, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
@@ -243,19 +245,81 @@ class DockerRunArgv(list[str]):
         self.environment = environment
 
 
-def _allowed_credential_keys(spec: dict) -> frozenset[str]:
-    """Credential env keys the spec may forward: those of every CLI in its record."""
+def _spec_record(spec: dict) -> dict[str, str]:
+    """The spec's Agent CLI record, or a ``SessionError`` when it is malformed."""
     try:
-        record = dc.spec_cli_policies(spec)
+        return dc.spec_cli_policies(spec)
     except ValueError as exc:
         raise SessionError(
             f"Sandbox Agent CLI record is malformed ({exc}); refresh the Sandbox"
         ) from exc
+
+
+def _allowed_credential_keys(spec: dict) -> frozenset[str]:
+    """Credential env keys the spec may forward: those of every CLI in its record."""
     # Issuance (``_validate_credential_policy``) requires the record to list the CLI app,
     # so an app absent from it earns no key.
     return frozenset().union(
-        *(auth_token.allowed_credential_keys(c, p) for c, p in record.items())
+        *(auth_token.allowed_credential_keys(c, p) for c, p in _spec_record(spec).items())
     )
+
+
+def _forwarded_gateway_keys(spec: dict) -> tuple[str, ...]:
+    """Gateway variables the spec forwards from the host: empty unless Codex is on the gateway.
+
+    A hand-written spec (no ``BOOLEY_AGENT_CLIS`` record, or no ``codex=gateway`` in it)
+    keeps its literal environment.
+    """
+    recorded = dc.AGENT_CLIS_ENV in (spec.get("remoteEnv") or {})
+    if not recorded or _spec_record(spec).get("codex") != gateway.GATEWAY_AUTH:
+        return ()
+    named = {*(spec.get("containerEnv") or {}), *(spec.get("remoteEnv") or {})}
+    return tuple(key for key in gateway.GATEWAY_FORWARDED_ENV if key in named)
+
+
+def _require_forwarded_gateway(spec: dict) -> None:
+    """Refuse a ``codex=gateway`` spec whose gateway settings this process cannot supply.
+
+    The host's gateway variables are resolved from *this* process's environment, which
+    is VS Code's own for ``initializeCommand``. An empty forwarded variable (including a
+    token source other than the one issued) or an invalid gateway configuration would
+    start a Sandbox whose registrar and MCP server lack the gateway, so name it instead.
+    """
+    keys = _forwarded_gateway_keys(spec)
+    for key in keys:
+        if not os.environ.get(key, "").strip():
+            raise SessionError(
+                f"the Sandbox routes Codex through the gateway but {key} is not set in this "
+                "environment; export it (VS Code: reopen it from a shell that exports it)"
+            )
+    if keys:
+        try:
+            gateway.gateway_forwarded_keys(os.environ)
+        except gateway.GatewayConfigError as exc:
+            raise SessionError(str(exc)) from exc
+
+
+def _append_environment(
+    argv: DockerRunArgv, spec: dict, workspace: Path, forwarded: frozenset[str]
+) -> None:
+    """Add ``-e`` for ``containerEnv`` and ``remoteEnv``; secrets ride the child env only.
+
+    A credential or forwarded-gateway key must be its own ``${localEnv:KEY}`` reference:
+    the resolved value goes into ``argv.environment`` and the argv carries a bare ``-e KEY``.
+    """
+    credential_keys = auth_token.CREDENTIAL_ENV_KEYS | forwarded
+    allowed = _allowed_credential_keys(spec) | forwarded
+    remote = spec.get("remoteEnv") or {}
+    for section in (spec.get("containerEnv") or {}, remote):
+        for key, value in section.items():
+            resolved = substitute(str(value), workspace)
+            if key in credential_keys:
+                if key not in allowed or str(value) != f"${{localEnv:{key}}}":
+                    raise SessionError("credential environment violates Sandbox policy")
+                argv.environment[key] = resolved
+                argv += ["-e", key]
+            else:
+                argv += ["-e", f"{key}={resolved}"]
 
 
 def docker_run_argv(
@@ -280,22 +344,13 @@ def docker_run_argv(
     argv = DockerRunArgv(["docker", "run", "-d", "--name", name], dict(os.environ))
     remote = spec.get("remoteEnv") or {}
     policy = remote.get("BOOLEY_PRIMARY_AUTH", "auto")
-    allowed = _allowed_credential_keys(spec)
+    _require_forwarded_gateway(spec)
 
     for mount in [spec.get("workspaceMount"), *(spec.get("mounts") or [])]:
         if mount:
             argv += ["--mount", substitute(str(mount), workspace)]
 
-    for section in (spec.get("containerEnv") or {}, remote):
-        for key, value in section.items():
-            resolved = substitute(str(value), workspace)
-            if key in auth_token.CREDENTIAL_ENV_KEYS:
-                if key not in allowed or str(value) != f"${{localEnv:{key}}}":
-                    raise SessionError("credential environment violates Sandbox policy")
-                argv.environment[key] = resolved
-                argv += ["-e", key]
-            else:
-                argv += ["-e", f"{key}={resolved}"]
+    _append_environment(argv, spec, workspace, frozenset(_forwarded_gateway_keys(spec)))
     if policy == "api_key":
         key = auth_token.API_KEY_ENV.get(remote.get("BOOLEY_AGENT_APP"))
         if key and (
@@ -1218,10 +1273,9 @@ def _prepare_unlocked(workspace: Path) -> str:
             "headless Sandbox is running; run `booley session down` before opening VS Code"
         )
     spec = _load_spec(workspace)
-    issuance, quiesced = _authenticate_quiesce_validate(workspace, spec)
-    if quiesced is not None:
-        _remove_quiesced_legacy_container(quiesced)
-        selected = None
+    issuance = _refuse_then_validate(workspace, spec)
+    # VS Code's own environment resolves the gateway refs: refuse before any start claim.
+    _require_forwarded_gateway(spec)
     _reconcile_stopped_vscode_containers(
         workspace, issuance, selected_editor_id=selected.container_id if selected else None
     )
@@ -1275,33 +1329,20 @@ def prepare(workspace: Path) -> str:
         return _prepare_unlocked(workspace)
 
 
-@dataclass(frozen=True)
-class _LegacyVscodeContainer:
-    name: str
-    container_id: str
+def _refuse_then_validate(workspace: Path, spec: dict[str, Any]) -> Issuance:
+    """Refuse outdated running VS Code containers, then fully validate the issuance.
 
-
-def _authenticate_quiesce_validate(
-    workspace: Path, spec: dict[str, Any]
-) -> tuple[Issuance, _LegacyVscodeContainer | None]:
-    """Authenticate issuance, quiesce one legacy runtime, then fully validate."""
+    The refusal runs first so that a stale stamp (the usual state of a pre-0.3.0
+    Project) still gets the container repair in one message.
+    """
     from booley.runtime import session_issuance as runtime_spec
 
-    quiesced: _LegacyVscodeContainer | None = None
     try:
-        authenticated = runtime_spec.authenticate(workspace, spec, dc.devcontainer_path(workspace))
-        assert authenticated.project_data_source is not None
-        quiesced = _quiesce_legacy_vscode_container(
-            Path(authenticated.project_root),
-            Path(authenticated.project_data_source),
-            authenticated,
-        )
-        issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
+        _refuse_outdated_vscode_containers(workspace, spec)
+        return runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
-        recovery = _quiesced_validation_recovery(quiesced)
         remedy = _spec_refusal_remedy(workspace, exc, vscode=True)
-        raise SessionError(f"refusing Sandbox preparation: {exc}; {remedy}{recovery}") from exc
-    return issuance, quiesced
+        raise SessionError(f"refusing Sandbox preparation: {exc}; {remedy}") from exc
 
 
 def _spec_refusal_remedy(workspace: Path, exc: Exception, *, vscode: bool) -> str:
@@ -1360,92 +1401,70 @@ def _vscode_config_matches_workspace(labels: Mapping[str, Any], workspace: Path)
     )
 
 
-def _legacy_vscode_identity(state: dict, workspace: Path, expected: dict[str, str]) -> str | None:
-    labels = _vscode_runtime_labels_for_workspace(state, workspace, expected)
-    if labels is None or not _vscode_config_matches_workspace(labels, workspace):
-        return None
-    container_id = state.get("Id")
-    return container_id if isinstance(container_id, str) and container_id else None
+def _outdated_vscode_container_remedy(names: list[str]) -> str:
+    """Name the host repair for running VS Code containers with outdated mounts."""
+    joined = " ".join(names)
+    return (
+        f"close VS Code, then on the host run `docker stop {joined}` and `docker rm {joined}`, "
+        "run `booley init --seed`, and reopen the folder in the container "
+        "(Dev Containers: Rebuild Container)"
+    )
 
 
-def _quiesce_legacy_vscode_container(
-    workspace: Path, pending_project_data: Path, issuance: Issuance
-) -> _LegacyVscodeContainer | None:
-    """Stop one authenticated legacy VS Code container before full validation."""
+def _ambiguous_sandbox_remedy(names: list[str]) -> str:
+    """Name the manual inspection for Sandbox resources Booley cannot identify as its own."""
+    joined = ", ".join(repr(name) for name in names)
+    return f"inspect ambiguous Sandbox resource(s) {joined}; Booley will not remove them automatically"
+
+
+def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) -> None:
+    """Refuse, never migrate, running containers with an outdated Booley Directory layout.
+
+    Reads the not yet validated spec only to pick the layout to check; a
+    tampered spec still fails `validate` right after.  A spec too malformed to
+    read is left to `validate`.  Proving a canonical-alias layout probes the
+    spec's image, and a failed probe raises `SessionError` unchanged.
+    """
     from booley.runtime import session_issuance as runtime_spec
 
-    expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
-    candidates: list[_LegacyVscodeContainer] = []
+    mounts = spec.get("mounts", [])
+    image = spec.get("image")
+    if not isinstance(image, str) or not isinstance(mounts, list):
+        return
+    if not all(isinstance(mount, str) for mount in mounts):
+        return
+    pending = runtime_spec.authorized_project_data_source(workspace)
+    layout = runtime_spec.spec_project_data_layout(spec)
+    expected = {"booley.project-id": project_label_id(str(workspace.resolve()))}
+    identified: list[str] = []
     ambiguous: list[str] = []
     for name, raw in _strict_running_interactive_states():
-        if not _inspected_container_serves_workspace(name, raw, workspace):
-            continue
-        if _project_data_mount_root_is_pinned(
-            raw, workspace, pending_project_data, issuance=issuance
+        if not _inspected_container_serves_workspace(
+            name, raw, workspace
+        ) or _project_data_mount_root_is_pinned(
+            raw, workspace, pending, layout=layout, image_id=image
         ):
             continue
         state = _decode_container_inspect(raw)
         assert state is not None
-        container_id = _legacy_vscode_identity(state, workspace, expected)
-        if container_id is None or _inspected_running(state) is not True:
-            ambiguous.append(name)
+        labels = _vscode_runtime_labels_for_workspace(state, workspace, expected)
+        if labels is not None and _vscode_config_matches_workspace(labels, workspace):
+            identified.append(name)
         else:
-            candidates.append(_LegacyVscodeContainer(name, container_id))
-    if ambiguous or len(candidates) > 1:
-        names = ", ".join(repr(name) for name in ambiguous + [row.name for row in candidates])
+            ambiguous.append(name)
+    if identified or ambiguous:
+        # Only a positively identified VS Code Sandbox gets removal commands.
+        repairs = []
+        if identified:
+            repairs.append(_outdated_vscode_container_remedy(identified))
+        if ambiguous:
+            repairs.append(_ambiguous_sandbox_remedy(ambiguous))
+        names = ", ".join(repr(name) for name in identified + ambiguous)
         raise SessionError(
-            f"cannot safely migrate multiple or ambiguous legacy Sandboxes: {names}; "
-            "close VS Code and stop/remove those containers before retrying"
+            f"refusing Sandbox preparation: running Sandbox(es) {names} mount an outdated "
+            "Booley Directory layout (for example from before Booley 0.3.0) and are not "
+            f"migrated; {'; '.join(repairs)}"
         )
-    if not candidates:
-        return None
-    _stop_legacy_vscode_container(candidates[0])
-    return candidates[0]
-
-
-def _stop_legacy_vscode_container(container: _LegacyVscodeContainer) -> None:
-    result = _run(["docker", "stop", container.container_id])
-    raw = _docker_stdout(["docker", "inspect", container.container_id])
-    if raw is None:
-        return
-    state = _decode_container_inspect(raw)
-    if result.returncode != 0 or state is None or state.get("Id") != container.container_id:
-        detail = result.stderr.strip() or result.stdout.strip() or "container identity changed"
-        raise SessionError(f"cannot stop legacy Sandbox {container.name!r}: {detail}")
-    if _inspected_running(state) is not False:
-        raise SessionError(f"legacy Sandbox {container.name!r} is still running after stop")
-
-
-def _quiesced_validation_recovery(container: _LegacyVscodeContainer | None) -> str:
-    if container is None:
-        return ""
-    raw = _docker_stdout(["docker", "inspect", container.container_id])
-    if raw is None:
-        return f"; legacy container {container.name!r} is no longer present"
-    return f"; legacy container {container.name!r} was stopped and preserved"
-
-
-def _remove_quiesced_legacy_container(container: _LegacyVscodeContainer) -> None:
-    """Remove only the immutable container ID authenticated and stopped above."""
-    raw = _docker_stdout(["docker", "inspect", container.container_id])
-    if raw is None:
-        return
-    state = _decode_container_inspect(raw)
-    if state is None or state.get("Id") != container.container_id:
-        raise SessionError(f"cannot re-inspect legacy Sandbox {container.name!r}")
-    if _inspected_running(state) is not False:
-        raise SessionError(f"legacy Sandbox {container.name!r} restarted during migration")
-    result = _run(["docker", "rm", container.container_id])
-    if (
-        result.returncode == 0
-        or _docker_stdout(["docker", "inspect", container.container_id]) is None
-    ):
-        return
-    detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
-    raise SessionError(
-        f"cannot remove legacy Sandbox {container.name!r}: {detail}; its container-local "
-        "data remains available while the container exists"
-    )
 
 
 def _strict_running_interactive_states() -> list[tuple[str, str]]:
@@ -1509,14 +1528,17 @@ def issued_runtime_drift_fix(
     rebuild = "run `booley session down`, then `booley session up --rebuild`"
     expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     running_vscode: list[str] = []
+    outdated: list[str] = []
     ambiguous: list[str] = []
     canonical = session_container_name(workspace)
+    assert issuance.project_data_source is not None
+    pending = Path(issuance.project_data_source)
     for name in drifted:
         if name == canonical:
             continue
         raw = _docker_stdout(["docker", "inspect", name])
         state = _decode_container_inspect(raw) if raw is not None else None
-        if state is None:
+        if raw is None or state is None:
             ambiguous.append(name)
             continue
         labels = _vscode_runtime_labels_for_workspace(state, workspace, expected)
@@ -1525,14 +1547,24 @@ def issued_runtime_drift_fix(
         if not is_ours or running is None:
             ambiguous.append(name)
         elif running:
-            running_vscode.append(name)
+            try:
+                pinned = _project_data_mount_root_is_pinned(
+                    raw,
+                    workspace,
+                    pending,
+                    layout=issuance.project_data_layout,
+                    image_id=issuance.image_id,
+                )
+            except SessionError:
+                # The image probe failed: treat the container as unproven, not as a crash.
+                ambiguous.append(name)
+                continue
+            (running_vscode if pinned else outdated).append(name)
     actions: list[str] = []
     if ambiguous:
-        names = ", ".join(repr(name) for name in ambiguous)
-        actions.append(
-            f"inspect ambiguous Sandbox resource(s) {names}; "
-            "Booley will not remove them automatically"
-        )
+        actions.append(_ambiguous_sandbox_remedy(ambiguous))
+    if outdated:
+        actions.append(_outdated_vscode_container_remedy(outdated))
     if running_vscode:
         names = ", ".join(repr(name) for name in running_vscode)
         actions.append(f"stop VS Code Sandbox(s) {names}, then {rebuild}")
@@ -1763,7 +1795,7 @@ def _inspected_container_serves_workspace(name: str, raw: str, workspace: Path) 
 
 
 def _project_data_mount_root_is_pinned(
-    raw: str, workspace: Path, pending_project_data: Path, *, issuance: Issuance | None = None
+    raw: str, workspace: Path, pending_project_data: Path, *, layout: str, image_id: str
 ) -> bool:
     local_source = workspace.resolve() / ".booley"
     if pending_project_data != local_source:
@@ -1773,9 +1805,9 @@ def _project_data_mount_root_is_pinned(
     if not isinstance(mounts, list) or any(not isinstance(item, dict) for item in mounts):
         return False
     by_target = {item.get("Destination"): item for item in mounts}
-    canonical_alias = issuance is not None and issuance.project_data_layout == "canonical-alias"
+    canonical_alias = layout == "canonical-alias"
     if canonical_alias and (
-        not _project_data_alias_capable(issuance.image_id)
+        not _project_data_alias_capable(image_id)
         or any(
             isinstance(target, str)
             and (target == "/booley-project" or target.startswith("/booley-project/"))
@@ -2273,6 +2305,10 @@ def resolve_running_sandbox(workspace: Path) -> Sandbox | None:
 
 
 def _validate_selected_runtime(workspace: Path, request: _UpRequest, selected: Sandbox) -> None:
+    if not selected.vscode:
+        # Name a missing gateway export instead of the generic "does not match" below;
+        # a VS Code-owned Sandbox is matched without reading ``localEnv``.
+        _require_forwarded_gateway(request.spec)
     if not container_matches_issuance(
         selected.container_id,
         request.issuance,
@@ -2303,7 +2339,8 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
     command_env = {
         name: value
         for name, value in remote_env.items()
-        if name not in auth_token.CREDENTIAL_ENV_KEYS
+        # The container already holds these; the spec's value is a ``${localEnv:}`` placeholder.
+        if name not in auth_token.CREDENTIAL_ENV_KEYS and name not in gateway.GATEWAY_FORWARDED_ENV
     }
     if selected is not None:
         _validate_selected_runtime(workspace, request, selected)

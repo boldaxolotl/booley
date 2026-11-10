@@ -81,6 +81,7 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
         "ruff.ci-check",
         "ruff.ci-format",
         "pyright.ci-check",
+        "packaged-copies.check",
         "pytest.broad",
         "coverage.changed-lines",
     ]
@@ -90,6 +91,15 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
     assert commands[3].argv == (python, "-m", "pyright", "--pythonpath", python)
     assert commands[3].cwd == str(tmp_path)
     assert commands[3].required_at == "handoff"
+    packaged = commands[4]
+    assert packaged.argv == (
+        python,
+        "-B",
+        str(tmp_path / ".github/scripts/sync_packaged_copies.py"),
+        "--check",
+    )
+    assert (packaged.cwd, packaged.purpose) == (str(tmp_path), "lint")
+    assert packaged.required_at == "before-commit"
     report = readiness.coverage_xml_path(tmp_path)
     broad, coverage = commands[-2:]
     assert broad.argv == (
@@ -118,6 +128,25 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
         str(report),
     )
     assert (coverage.cwd, coverage.required_at) == (str(tmp_path), "handoff")
+
+
+def test_packaged_copies_check_runs_as_reported():
+    """The reported argv works as written: right launcher path, src insert, flag."""
+    root = Path(__file__).parents[2]
+    commands = readiness._verification_commands(Path(sys.executable), root)
+    command = next((item for item in commands if item.id == "packaged-copies.check"), None)
+    assert command is not None
+    environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    result = subprocess.run(
+        command.argv,
+        cwd=command.cwd,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert (result.returncode, result.stdout) == (0, "")
 
 
 def test_broad_pytest_keeps_default_basetemp_on_windows(tmp_path, monkeypatch):

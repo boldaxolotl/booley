@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Collection, Mapping
-from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -97,72 +96,15 @@ def _inspect_inputs(
     return tuple(inputs)
 
 
-def _explicit_empty_intent(
-    core: Any, flags: Mapping[str, Any], inherited: Mapping[str, Any]
-) -> set[str]:
-    """Recover selected string empties before FuseSoC removes their defaults."""
-    target = core.get_target(flags)
-    if target is None:
-        return set()
-    declarations = core.get_data(flags).parameters
-    recovered: set[str] = set()
-    for reference in target.parameters:
-        name, separator, assignment = reference.partition("=")
-        declaration = declarations.get(name)
-        if declaration is not None:
-            metadata = declaration.model_dump(exclude_unset=True)
-            string = metadata.get("datatype") == "str" and metadata.get("paramtype") == "vlogparam"
-            empty = metadata.get("default", None) == ""
-        else:
-            metadata = inherited.get(name, {})
-            string = metadata.get("datatype") == "str" and metadata.get("paramtype") == "vlogparam"
-            empty = metadata.get("default", None) == ""
-        if string and ((separator and assignment == "") or (not separator and empty)):
-            recovered.add(name)
-    return recovered
-
-
 def _inspect_parameters(cores: list[Any], flags: Mapping[str, Any]) -> dict[str, Any]:
-    """Resolve upstream precedence while retaining proven explicit string empties."""
+    """Resolve parameters in dependency order like FuseSoC's Edalizer."""
     parameters: dict[str, Any] = {}
-    empty: set[str] = set()
     top = cores[-1]
     for core in cores:
         core_flags = dict(flags)
         core_flags["is_toplevel"] = core.name == top.name
-        selected = _explicit_empty_intent(core, core_flags, parameters)
-        declarations = core.get_data(core_flags).parameters
-        target = core.get_target(core_flags)
-        references = target.parameters if target is not None else ()
-        for reference in references:
-            name, separator, _assignment = reference.partition("=")
-            if name in declarations or separator:
-                if name in empty:
-                    parameters[name].pop("default", None)
-                empty.discard(name)
-        merge_dict(parameters, core.get_parameters(core_flags, deepcopy(parameters)))
-        empty.update(selected)
-        for name in empty:
-            parameters[name]["default"] = ""
+        merge_dict(parameters, core.get_parameters(core_flags, parameters))
     return parameters
-
-
-def inspect_parameter_values(handle: TargetHandle) -> dict[str, Any]:
-    """Read selected source-owned parameters without requiring an RTL top."""
-    inspector = _TargetSourceInspector(handle.project_root)
-    flags = _inspection_flags(handle)
-    cores = inspector._cores(
-        identity=handle.identity,
-        vlnv=handle.vlnv,
-        core_file=handle.core_file,
-        flags=flags,
-    )
-    try:
-        return _inspect_parameters(cores, flags)
-    except (OSError, SyntaxError, RuntimeError, ValueError) as exc:
-        raise fusesoc_registry.FuseSocError(
-            f"could not inspect parameters for Target {handle.identity!r}: {exc}"
-        ) from exc
 
 
 _TARGET_CONDITION_RE = re.compile(r"\btarget_(?P<name>[A-Za-z0-9_.-]+)\b")

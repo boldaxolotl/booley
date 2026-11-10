@@ -195,7 +195,6 @@ def _public_hook_endpoint(flow, invocation):
         _automatic_target_notice_published=False,
         _console_publication_requested=True,
         _stdout_witness=None,
-        _human_report=None,
     )
     return endpoint
 
@@ -658,7 +657,9 @@ def test_cli_discloses_committed_manifest_before_executor(
     output = capsys.readouterr()
     assert observed
     assert f"  manifest: {observed[0]}" in output.out
-    assert f"  report: {(tmp_path / 'reports with spaces/sim.json').resolve()}" in output.out
+    assert (
+        f"  report: {(tmp_path / 'reports with spaces/sim/1/report.json').resolve()}" in output.out
+    )
     assert output.out.count("  manifest:") == target_count
     assert [path.parents[1].name for path in observed] == [
         f"sim_{index}" for index in range(target_count)
@@ -712,7 +713,8 @@ def test_cli_recovery_paths_survive_failures(
         assert result.exit_code in {2, 130}
         assert "  manifest: " in result.outcome.report_text
         assert (
-            f"  report: {(tmp_path / 'reports/sim.json').resolve()}" in result.outcome.report_text
+            f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}"
+            in result.outcome.report_text
         )
     _assert_recovery_announcement(capsys, seen, failure)
 
@@ -869,7 +871,9 @@ def test_ordinary_cli_manifest_and_card_paths(
     assert seen
     assert result.exit_code == (0 if grade == "pass" else 1)
     assert f"  manifest: {seen[0]}" in result.outcome.report_text
-    assert f"  report: {(tmp_path / 'reports/sim.json').resolve()}" in result.outcome.report_text
+    report = (tmp_path / "reports/sim/1/report.json").resolve()
+    assert f"  report: {report}" in result.outcome.report_text
+    assert report.is_file()
     assert result.outcome.report_text.count("  manifest:") == 1
 
     _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys, result, factory)
@@ -908,7 +912,9 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
     assert checkpoint["completed_targets"] == ["sim"]
     assert "active" not in checkpoint
     assert f"  manifest: {seen[0]}" in resumed.outcome.report_text
-    assert f"  report: {(destination / 'sim.json').resolve()}" in resumed.outcome.report_text
+    resumed_report = (destination / "sim/1/report.json").resolve()
+    assert f"  report: {resumed_report}" in resumed.outcome.report_text
+    assert resumed_report.is_file()
 
 
 def test_cli_manifest_is_flushed_before_execution(
@@ -1016,10 +1022,10 @@ def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) 
     flow = SimulateFlow()
     flow._args = SimpleNamespace(report_dir=tmp_path / "reports")
     path = tmp_path / "manifest.json"
-    result = flow._with_campaign_paths(EndpointOutcome(), [path, path])
-    assert result.report_text == (
-        f"  manifest: {path.resolve()}\n  report: {(tmp_path / 'reports/sim.json').resolve()}"
-    )
+    with flow.publication_resources:
+        result = flow._with_campaign_paths(EndpointOutcome(), [path, path])
+    report = (tmp_path / "reports/sim/1/report.json").resolve()
+    assert result.report_text == f"  manifest: {path.resolve()}\n  report: {report}"
 
 
 def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
@@ -1301,6 +1307,10 @@ def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monk
         SimpleNamespace(run=run), [_request("first"), _request("second")], progress
     )
     assert result.detail == {}
+    # The finished first Target keeps its public Coverage Campaign on the stopped card.
+    campaign_file = (outcome.manifest_path.parents[1] / "coverage.json").resolve()
+    assert campaign_file.is_file()
+    assert result.report_text.splitlines()[-1] == f"  coverage campaign: {campaign_file}"
     assert flow._simulation_campaign_outcomes == ()
     assert all(item["cycle_count"] is None for item in outcome.observations)
     _assert_partial_acceptance_policy(flow, result, tmp_path, outcome)

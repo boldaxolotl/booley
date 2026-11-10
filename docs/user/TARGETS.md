@@ -133,9 +133,12 @@ runs them:
 
 The prefix matters for synth and fpga: both use FuseSoC's `generic` flow, so
 the `synth_`/`fpga_` prefix decides which Flow runs the Target. Without a
-prefix, a Target whose tool is `vivado` counts as fpga. A bare `lint` is fine when
-there is only one lint Target. Doctor notes names that break the rule. Vendored
-upstream cores keep their own names.
+prefix, a Target whose tool is `vivado` counts as fpga. Every Target needs a
+subject after the axis, even when it is the only one. A bare `lint` still runs
+and keeps its axis, but breaks the convention. For the Targets Doctor runs (and
+any in a stealth core), it notes names that break the rule and suggests
+`<axis>_<core name>` for a bare axis (`lint_soc` for a core named `soc`).
+Vendored upstream cores keep their own names.
 
 Add a `default:` Target only when another core depends on this one. Booley
 doesn't list it as a Target you can run.
@@ -288,15 +291,21 @@ How it differs from an SV Target:
   every affected path. Put a `FUSESOC_IGNORE` in the directory holding the
   link. It hides all cores below it, so don't place it where wanted cores
   live. Commit the marker if you can: an uncommitted one in a subdirectory
-  doesn't reach Goal or baseline worktrees. To
-  leave a vendored repository untouched, use
-  [Stealth Mode](STEALTH.md) with `ignore_native_cores = true`
-  and keep your own cores in `.booley/cores/`.
+  doesn't reach Goal or baseline worktrees.
 - **Many cores in one repo** (ibex ships 208) need no extra configuration. Many
   cores may each have a Target called `lint` or `sim`; Booley asks you to
   pick only when a bare name is ambiguous, and you then name it as
   `vendor:library:name:version#target`.
 - **Git submodules** work, with one setup step; see [Submodules](#submodules).
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+To leave a vendored repository untouched, set `ignore_native_cores = true` and
+keep your own cores in `.booley/cores/`: Booley then ignores every other
+`.core` file. See [STEALTH.md](STEALTH.md#what-changes).
+
+</details>
 
 ### Submodules
 
@@ -309,9 +318,18 @@ Run this once on the host:
 
 ```bash
 git submodule update --init --recursive
-# If .booley is its own Git repository:
+```
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+`.booley` is its own Git repository, so initialize its submodules too:
+
+```bash
 git -C .booley submodule update --init --recursive
 ```
+
+</details>
 
 Each submodule must be present, clean, and have its full history (not a
 shallow clone) before a Goal or baseline run starts. Otherwise the run stops
@@ -336,9 +354,15 @@ paths = ["deps/bus_pkg", "deps/axi_verif"]
 
 Without `paths`, every top-level submodule is copied; `paths = []` copies
 none. Unlisted submodules appear as empty directories in the worktree.
-Submodules nested inside a listed one are always copied. The list applies to
-the outer repository only: when `.booley` is its own Git repository, all of
-its submodules are always copied.
+Submodules nested inside a listed one are always copied.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The list applies to the RTL repository only: every submodule of the `.booley`
+repository is always copied.
+
+</details>
 
 ---
 

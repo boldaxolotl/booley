@@ -322,6 +322,54 @@ def test_ephemeral_shell_forwards_only_listed_cli_credentials(tmp_path, monkeypa
         runner._env_file.unlink(missing_ok=True)
 
 
+def test_shell_with_codex_gateway_forwards_no_gateway_variable(tmp_path, monkeypatch):
+    """``booley shell`` never carries gateway settings, even with ``codex = "gateway"``.
+
+    Guard: the gateway reaches a Sandbox only through a Booley-issued spec, so the
+    ephemeral shell must not forward the host's exports (no argv entry, no env-file line).
+    """
+    gateway_keys = (
+        "BOOLEY_GATEWAY_URL",
+        "BOOLEY_GATEWAY_TOKEN",
+        "BOOLEY_GATEWAY_TOKEN_COMMAND",
+        "BOOLEY_GATEWAY_MODEL",
+        "BOOLEY_GATEWAY_EFFORT",
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    for key in (
+        "BOOLEY_DIR",
+        "BOOLEY_PRIMARY_AUTH",
+        "BOOLEY_PRIMARY_PROVIDER",
+        "BOOLEY_AGENT_APP",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key in gateway_keys:
+        monkeypatch.setenv(key, "SYNTHETIC_GATEWAY_VALUE")
+    data = tmp_path / "project" / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text(
+        '[agent]\nclis = ["claude", "codex"]\n[agent.auth]\ncodex = "gateway"\n'
+    )
+    runner = DockerRunner(
+        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+    )
+
+    command = " ".join(runner._build_docker_cmd(["true"]))
+    try:
+        body = runner._env_file.read_text() if runner._env_file else ""
+        for key in gateway_keys:
+            assert key not in command
+            assert key not in body
+        assert "SYNTHETIC_GATEWAY_VALUE" not in command + body
+    finally:
+        if runner._env_file:
+            runner._env_file.unlink(missing_ok=True)
+
+
 _INVALID_AGENT_CONFIGS = {
     "default-not-listed": '[agent]\ndefault = "codex"\nclis = ["claude"]\n',
     "unlisted-auth-key": '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n',

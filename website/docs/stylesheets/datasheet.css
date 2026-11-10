@@ -169,9 +169,6 @@ figcaption b { color: var(--ink); font-weight: 650; }
 .dep .note { font-size: 14px; fill: var(--ink-2); font-style: italic; }
 .dep .wip { font-size: 13px; fill: var(--ink-2); }
 .dep .mark { font-size: 13px; font-weight: 780; letter-spacing: 0.08em; }  /* chip marking */
-.dep .des { font-size: 12px; font-weight: 700; fill: var(--mask); }       /* reference designator */
-.dep .pn { font-size: 10px; fill: var(--ink-2); }                         /* pin number */
-.dep .tbt { font-size: 11.5px; font-weight: 600; }                        /* title block */
 .dep .mach { fill: var(--paper); stroke: var(--ink); stroke-width: 1.6; }
 .dep .bx { fill: var(--paper); stroke: var(--ink); stroke-width: 1.2; }
 .dep .chip { fill: var(--paper); stroke: var(--ink); stroke-width: 2; }
@@ -179,8 +176,6 @@ figcaption b { color: var(--ink); font-weight: 650; }
 .dep .blk { fill: var(--fill-2); stroke: var(--ink-2); stroke-width: 1; }
 .dep .ln { fill: none; stroke: var(--ink); stroke-width: 1.4; }
 .dep .ah { fill: var(--ink); }
-.dep .tb { fill: none; stroke: var(--ink); stroke-width: 1; }
-.dep .okbox { fill: var(--mask); }                               /* same marks as Table 1's status */
 .dep .wipbox { fill: none; stroke: var(--ink-2); stroke-width: 1.4; }
 /* the switch: a thumb slides under two buttons; the script unhides it */
 .dep__switch { position: relative; display: inline-grid; grid-template-columns: 1fr 1fr; margin: 0 0 12px; border: 1.5px solid var(--ink); }
