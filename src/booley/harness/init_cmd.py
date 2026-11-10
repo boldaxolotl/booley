@@ -85,7 +85,6 @@ from booley.harness.bootstrap import (
     parse_git_version,
     reconcile_bootstrap,
 )
-from booley.harness.image_lifecycle import reconcile as reconcile_images
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import (
     InitContext,
