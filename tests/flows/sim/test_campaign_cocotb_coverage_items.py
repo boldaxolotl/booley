@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -855,7 +856,17 @@ def test_unfiltered_cocotb_shared_build_failure_has_one_unnamed_observation(
     ]
 
 
-def _aggregate_result_bound_fixture(tmp_path):
+# Firings published for the overflow proof. Every firing adds one fixed-size
+# reference to the result; with 4000 observations about 1460 firings reach
+# RECORD_MAX_BYTES, so 2000 overflows it by about 10%. If format growth moves
+# the threshold past this count, the size assertion fails instead of passing
+# vacuously.
+_AGGREGATE_OVERFLOW_FIRINGS = 2000
+
+
+def _aggregate_result_bound_fixture(tmp_path, monkeypatch):
+    # Durability is not under test here; disk syncs dominate under load.
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
     from booley.flows.sim.campaign.codec import RESULT_SCHEMA
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
     from booley.flows.sim.execution.contract import PreSimEvidence
@@ -869,7 +880,7 @@ def _aggregate_result_bound_fixture(tmp_path):
         store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
     )
     _executor(tmp_path / "build", {}).prepare_attempt(request)
-    for ordinal, name in enumerate(names, 1):
+    for ordinal, name in enumerate(names[:_AGGREGATE_OVERFLOW_FIRINGS], 1):
         publish_pre_sim_firing(
             request,
             PreSimEvidence(("true",), (name,), "passed", 0.0, returncode=0),
@@ -893,19 +904,18 @@ def _aggregate_result_bound_fixture(tmp_path):
     return store, request, document
 
 
-# Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
-@pytest.mark.timeout(90)
-def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_path):
+def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_path, monkeypatch):
     from booley.flows.sim.campaign.codec import RECORD_MAX_BYTES, decode_simulation_result
 
-    store, request, document = _aggregate_result_bound_fixture(tmp_path)
+    store, request, document = _aggregate_result_bound_fixture(tmp_path, monkeypatch)
     raw = canonical_json_bytes(document)
-    assert len(document["evidence"]) == len(document["observations"]) == 4000
+    assert len(document["evidence"]) == _AGGREGATE_OVERFLOW_FIRINGS
+    assert len(document["observations"]) == 4000
     assert len(raw) > RECORD_MAX_BYTES
     with pytest.raises(SimulationCampaignIntegrityError, match="byte size ceiling"):
         store.publish_result(request.work_item["work_item_id"], SimulationResult(document))
     assert not (request.attempt_directory.parent.parent / "result.json").exists()
-    assert len(collect_pre_sim_firings(store.manifest_path)) == 4000
+    assert len(collect_pre_sim_firings(store.manifest_path)) == _AGGREGATE_OVERFLOW_FIRINGS
     without_hooks = {**document, "evidence": []}
     assert len(canonical_json_bytes(without_hooks)) < RECORD_MAX_BYTES
     assert (
