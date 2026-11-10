@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -397,25 +398,30 @@ class TestTimeoutKillsTheWholeTree:
         flow = self._grandchild_flow(tmp_path, pid_file)
 
         real_communicate = flow_base._communicate_local_process
+        waited_for_tree = False
 
-        def communicate_once_tree_is_up(*args, **kwargs):
+        def communicate_once_tree_is_up(
+            cmd: list[str], proc: subprocess.Popen[Any], *rest: Any, **kwargs: Any
+        ) -> SubprocessResult:
             """Start the timeout clock only once the grandchild exists.
 
             The flow's 2 s timeout starts at ``Popen``, so on a loaded machine
             interpreter start-up alone can eat it and the tree is killed before
             the grandchild's PID is written. Wait for the PID file (or for the
-            child to die, args[1] is the Popen) before the real, unchanged
-            communicate-with-timeout runs.
+            child to die) before the real, unchanged communicate-with-timeout
+            runs.
             """
-            proc = args[1]
+            nonlocal waited_for_tree
+            waited_for_tree = True
             deadline = time.monotonic() + 45
             while not pid_file.exists() and proc.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.05)
-            return real_communicate(*args, **kwargs)
+            return real_communicate(cmd, proc, *rest, **kwargs)
 
         with patch.object(flow_base, "_communicate_local_process", communicate_once_tree_is_up):
             result = flow._execute(flow._build_command())
 
+        assert waited_for_tree, "the patched communicate was bypassed"
         assert result.timed_out is True, f"child did not time out: {result.stderr}"
         assert result.returncode == -1
         assert pid_file.exists(), "the process tree never came up within 45s"
