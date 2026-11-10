@@ -130,9 +130,17 @@ def _wait_for_empty(execution_id: ExecutionId, signum: int, timeout_s: float) ->
 
 def _publish_recovered_terminal(
     execution_id: ExecutionId, *, booley_dir: Path | None = None
-) -> None:
+) -> bool:
+    """Publish the orphan verdict unless the supervisor already published its own.
+
+    The record was read non-terminal before the supervisor read dead, so the
+    supervisor may have written its real outcome and exited in between; that
+    record is left untouched and its ``tree_terminal`` is the answer.
+    """
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     current = read_json(paths.record) or {}
+    if current.get("state") == "terminal":
+        return current.get("tree_terminal") is True
     exit_code = as_int(current.get("exit_code"), 125) or 125
     atomic_write_json(
         paths.record,
@@ -146,6 +154,7 @@ def _publish_recovered_terminal(
             "updated_at": utc_now_rfc3339(),
         },
     )
+    return True
 
 
 def _recover_windows_execution(
@@ -157,8 +166,7 @@ def _recover_windows_execution(
     leader = ProcessIdentity.from_payload(record.get("leader") if record is not None else None)
     if leader is not None and observe_process(leader).state in {RUNNING, UNKNOWN}:
         return False
-    _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
-    return True
+    return _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
 
 
 def _recover_posix_execution(execution_id: ExecutionId, *, booley_dir: Path | None) -> bool:
@@ -166,8 +174,7 @@ def _recover_posix_execution(execution_id: ExecutionId, *, booley_dir: Path | No
         return False
     for signum, timeout_s in _RECOVERY_STAGES:
         if _wait_for_empty(execution_id, signum, timeout_s):
-            _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
-            return True
+            return _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
     return False
 
 
