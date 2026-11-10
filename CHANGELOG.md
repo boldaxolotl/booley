@@ -66,6 +66,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   removed, naming the file. Remove it, then run
   `booley init --seed --project <root>` on the host to reissue the Sandbox
   spec. Linux and macOS file names do not change.
+- A Sandbox that Booley issues now accepts `[agent.auth] codex = "gateway"`. It
+  forwards the gateway settings from your shell for Codex only, and hides them
+  from Claude sessions. Start VS Code from a shell that exports them (see
+  "Codex through a model gateway" in `docs/user/SANDBOX.md`).
 - Booley no longer migrates Sandbox state from releases before 0.3.0. The
   host-issued Sandbox spec stamp format version is bumped, so every spec issued
   by an earlier release is rejected as stale. Stamps at the old

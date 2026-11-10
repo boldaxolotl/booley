@@ -130,3 +130,84 @@ def test_gateway_handoff_with_surrounding_whitespace_is_one_policy_everywhere(ga
 
     assert agent_config.env_auth_handoff() == "gateway"
     assert agent_config.get_agent_settings().auth_for("codex") == "gateway"
+
+
+def test_handwritten_gateway_spec_without_record_routes_codex(gateway_container, tmp_path):
+    """No ``BOOLEY_AGENT_CLIS``: the Sandbox-wide hand-off still turns Codex's gateway on."""
+    gateway_container.delenv("BOOLEY_AGENT_CLIS", raising=False)
+    gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    (project / ".booley" / "booley.toml").write_bytes(
+        b'[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
+    )
+
+    settings = agent_config.load_agent_settings(project)
+
+    assert settings.auth_for("codex") == "gateway"
+    assert agent_config.gateway_handoff_active()
+
+
+def test_handwritten_spec_has_no_record_so_claude_keeps_its_environment(gateway_container):
+    gateway_container.delenv("BOOLEY_AGENT_CLIS", raising=False)
+    gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+
+    assert agent_config.sandbox_cli_policy("claude") == "gateway"
+    assert not agent_config.issued_codex_gateway()
+
+
+def test_cli_record_accepts_codex_gateway_and_refuses_claude_gateway():
+    assert agent_config.decode_cli_policies("claude=subscription,codex=gateway") == {
+        "claude": "subscription",
+        "codex": "gateway",
+    }
+    with pytest.raises(ValueError, match="malformed Agent CLI record entry"):
+        agent_config.decode_cli_policies("claude=gateway,codex=auto")
+
+
+def test_issued_record_rules_per_cli_and_hides_nothing_without_codex_gateway(gateway_container):
+    gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+    gateway_container.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=gateway")
+
+    assert agent_config.sandbox_cli_policy("claude") == "subscription"
+    assert agent_config.sandbox_cli_policy("codex") == "gateway"
+    assert agent_config.gateway_handoff_active()  # whichever CLI is the default
+    assert agent_config.issued_codex_gateway()
+
+    gateway_container.setenv("BOOLEY_AGENT_CLIS", "claude=subscription")
+    assert agent_config.sandbox_cli_policy("codex") is None
+    assert not agent_config.gateway_handoff_active()
+    assert not agent_config.issued_codex_gateway()
+
+
+def test_issued_codex_gateway_is_false_outside_a_sandbox(gateway_container):
+    gateway_container.setenv("BOOLEY_AGENT_CLIS", "claude=auto,codex=gateway")
+    gateway_container.setattr(agent_config, "_inside_container", lambda: False)
+
+    assert not agent_config.issued_codex_gateway()
+    assert not agent_config.gateway_handoff_active()
+
+
+def test_record_policies_apply_per_cli_over_the_handoff(gateway_container):
+    """With a record, ``_auth_policies`` applies it per CLI; the hand-off does not widen it."""
+    gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+    gateway_container.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=gateway")
+    data = {"agent": {"clis": ["claude", "codex"], "default": "claude"}}
+
+    settings = agent_config.settings_from_data(data, lazy=True)
+
+    assert dict(settings.auth) == {"claude": "subscription", "codex": "gateway"}
+    # The toml-only loader (not lazy) still routes Codex, whichever CLI is the default.
+    assert agent_config.settings_from_data(data, lazy=False).auth_for("codex") == "gateway"
+
+
+def test_gateway_policy_is_not_honored_outside_a_sandbox(gateway_container, tmp_path):
+    gateway_container.setattr(agent_config, "_inside_container", lambda: False)
+    gateway_container.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=gateway")
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    (project / ".booley" / "booley.toml").write_bytes(
+        b'[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
+    )
+
+    assert agent_config.load_agent_settings(project).auth_for("codex") == "auto"

@@ -3801,6 +3801,8 @@ _DAMAGED_RECORDS = {
     "malformed-record": "claude=auto,bogus=auto",
     "gateway-record": "claude=auto,codex=gateway",
 }
+# Codex on the gateway is a valid record entry since #2897: the Claude-only Sandbox it is
+# written into then differs from the record in name before anything else is checked.
 
 
 _REFUSALS = {
@@ -3815,7 +3817,8 @@ _REFUSALS = {
     "app-outside-clis-empty-record": "Agent CLI codex is not in",
     "typeless-volume": "agent state is not scoped",
     "claude-config-bind": "credential seed violates",
-    **dict.fromkeys(("malformed-record", "gateway-record"), "Agent CLI record is malformed"),
+    "malformed-record": "Agent CLI record is malformed",
+    "gateway-record": "Sandbox identity has drifted",
 }
 
 
@@ -4023,3 +4026,76 @@ def test_none_app_spec_keeps_default_policy(issued, monkeypatch, request):
     assert dc.spec_cli_policies(spec) == {}  # no CLI is seeded for ``none``
     issued_spec, path = _issue_spec(project, spec, monkeypatch)
     runtime_spec.validate(project, issued_spec, path)
+
+
+# --- Codex on the gateway in an issued Sandbox (#2897) -------------------------------
+
+_GATEWAY_TOML = (
+    '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n'
+    '[agent.auth]\nclaude = "subscription"\ncodex = "gateway"\n'
+)
+
+
+def _gateway_spec(issued, monkeypatch, request, toml: str = _GATEWAY_TOML):
+    """A pinned, unsealed Claude+Codex spec with the host gateway variables exported."""
+    monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gw.example/v1")
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_GATEWAY_TOKEN")
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN_COMMAND", raising=False)
+    return _multi_cli_project(issued, monkeypatch, request, toml)
+
+
+def test_issued_codex_gateway_spec_seals_and_validates(issued, monkeypatch, request):
+    project, spec, _ = _gateway_spec(issued, monkeypatch, request)
+    assert spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] == "claude=subscription,codex=gateway"
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, issued_spec, path)
+
+
+def _add_ref(key: str):
+    def damage(spec: dict, _home: Path) -> None:
+        spec["remoteEnv"][key] = f"${{localEnv:{key}}}"
+
+    return damage
+
+
+def _drop(key: str):
+    def damage(spec: dict, _home: Path) -> None:
+        del spec["remoteEnv"][key]
+
+    return damage
+
+
+def _literal_url(spec: dict, _home: Path) -> None:
+    spec["remoteEnv"]["BOOLEY_GATEWAY_URL"] = "https://gw.example/v1"
+
+
+def _codex_login_seed(spec: dict, home: Path) -> None:
+    _damage_codex_login(spec, home)
+
+
+_GATEWAY_GENERIC = "gateway environment has drifted"
+# (case, toml codex policy, damage, expected refusal)
+_GATEWAY_REFUSALS = {
+    "codex-login-seed": ("gateway", _codex_login_seed, "credential seed violates"),
+    "refs-without-gateway": (
+        "subscription",
+        _add_ref("BOOLEY_GATEWAY_URL"),
+        "forwards gateway environment but Codex is not on the gateway",
+    ),
+    "both-token-sources": ("gateway", _add_ref("BOOLEY_GATEWAY_TOKEN_COMMAND"), _GATEWAY_GENERIC),
+    "no-token-source": ("gateway", _drop("BOOLEY_GATEWAY_TOKEN"), _GATEWAY_GENERIC),
+    "no-url": ("gateway", _drop("BOOLEY_GATEWAY_URL"), _GATEWAY_GENERIC),
+    "literal-value": ("gateway", _literal_url, _GATEWAY_GENERIC),
+    "model-pin-ref": ("gateway", _add_ref("BOOLEY_GATEWAY_MODEL"), _GATEWAY_GENERIC),
+}
+
+
+@pytest.mark.parametrize("case", list(_GATEWAY_REFUSALS))
+def test_gateway_spec_refusals(issued, monkeypatch, request, case):
+    codex_policy, damage, refusal = _GATEWAY_REFUSALS[case]
+    toml = _GATEWAY_TOML.replace('codex = "gateway"', f'codex = "{codex_policy}"')
+    project, spec, home = _gateway_spec(issued, monkeypatch, request, toml)
+    runtime_spec.preview(project, fixed(spec))  # the undamaged spec previews
+    damage(spec, home)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal):
+        runtime_spec.preview(project, fixed(spec))

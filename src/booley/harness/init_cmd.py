@@ -58,6 +58,7 @@ import tomlkit
 
 from booley import __version__
 from booley.commit_policy import stealth_enabled
+from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
 from booley.core.boundary import as_dict, as_str, require_dict
@@ -1256,7 +1257,20 @@ def _cli_seeds(plan: auth_token.CredentialPlan) -> dc.CliSeeds:
         login_source=source(plan.subscription_seed),
         token_source=source(plan.token_seed),
         config_source=source(plan.config_seed),
+        gateway_env=_gateway_env_keys(plan),
     )
+
+
+def _gateway_env_keys(plan: auth_token.CredentialPlan) -> tuple[str, ...]:
+    """The host gateway variables a Codex-on-the-gateway plan forwards; none otherwise."""
+    if plan.app != "codex" or plan.policy != GATEWAY_AUTH:
+        return ()
+    try:
+        return gateway_forwarded_keys(os.environ)
+    except GatewayConfigError as exc:
+        raise RuntimeSpecError(
+            f"Codex uses the gateway: {exc}; export the gateway settings before issuing the Sandbox"
+        ) from exc
 
 
 def _credential_plans(
