@@ -1098,6 +1098,8 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
         patch.object(sr.idk, "image_exists", return_value=True),
         # No image metadata, as when the inspect finds nothing (no Docker CLI call).
         patch.object(sr.idk, "inspect_image_metadata", return_value=None),
+        # The stale-container probe resolves the image ID through the Docker helper.
+        patch.object(sr.idk, "image_id", return_value=None),
         lifecycle_reconcile,
         patch(
             "booley.runtime.session_issuance.validate",
@@ -3169,8 +3171,9 @@ class TestDownAndStatus:
 class TestSessionsOnStaleImage:
     """F-9: `booley init` rebuilds the tag, but a container born from the old
     image keeps serving it — and the tag being unchanged is what hides that. The
-    probe therefore compares resolved image IDs, and must stay silent (never
-    raise) on any Docker hiccup."""
+    probe therefore compares resolved image IDs. It only gates an advisory
+    warning, so it never raises: a missing image is silent, and a Docker failure
+    resolving the image logs a warning and reports no stale sessions."""
 
     NEW_ID = "sha256:aaa"
     OLD_ID = "sha256:bbb"
@@ -3203,6 +3206,7 @@ class TestSessionsOnStaleImage:
             return subprocess.CompletedProcess([], 1, "", "")
 
         monkeypatch.setattr(sr, "_run", fake_run)
+        monkeypatch.setattr(sr.idk, "image_id", lambda _image: image_id)
 
     def test_our_session_on_the_old_image_is_reported(self, workspace: Path, monkeypatch):
         ours = sr.session_container_name(workspace)
@@ -3245,12 +3249,23 @@ class TestSessionsOnStaleImage:
         )
         assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
 
-    def test_missing_docker_is_silent(self, workspace: Path, monkeypatch):
+    def test_docker_failure_warns_and_reports_no_stale_sessions(
+        self, workspace: Path, monkeypatch, caplog
+    ):
+        # Every Docker seam (sr._run, the image-ID helper's _run_docker) sees a
+        # missing Docker: the probe stays advisory, but says why it is blind.
         def no_docker(*_a, **_k):
             raise FileNotFoundError("docker")
 
         monkeypatch.setattr(sr, "_run", no_docker)
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
+        monkeypatch.setattr(sr.idk, "_run_docker", no_docker)
+        with caplog.at_level("WARNING", logger=sr.logger.name):
+            assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert self.IMAGE in warnings[0]
+        assert "cannot check running Sandboxes" in warnings[0]
+        assert "docker" in warnings[0]
 
     def test_failed_container_inspect_is_silent(self, workspace: Path, monkeypatch):
         # Container vanished between `docker ps` and the inspect: no ID to

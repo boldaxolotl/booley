@@ -73,6 +73,7 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_grade,
     test_run_row,
 )
+from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
@@ -85,8 +86,8 @@ from booley.flows.sim.config import (
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_json import FrozenJson
+from booley.flows.sim.coverage_policy import coverage_metrics
 from booley.flows.sim.coverage_progress import CoverageProgress
-from booley.flows.sim.coverage_report import coverage_metrics
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
 from booley.flows.sim.live_progress import (
     LiveProgressSink,
@@ -215,7 +216,6 @@ from .campaign.flow_planning import (
 from .campaign.model import simulation_status_from_observations
 from .campaign.planning import (
     SimulationCampaignWorkloadMismatchError,
-    canonical_sha256,
     manifest_digest,
     verify_workload,
 )
@@ -870,7 +870,7 @@ def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object
         target=dict(document["target"]),
         test_count=len(document["test_names"]),
         test_names=list(document["test_names"][:8]),
-        test_names_sha256=canonical_sha256(list(document["test_names"])),
+        test_names_sha256=document_digest(list(document["test_names"])),
         terminal=firing.terminal,
         reference=_report_artifact_reference(
             firing.path,
@@ -1684,7 +1684,7 @@ def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
     killing an in-flight synth). Growth, not total size — see
     :class:`booley.flows.sim.run_guard.DiskBudgetGuard` for why (F-23). ``0`` disables
     the guard. Forwarded to the builtin
-    run-halves as ``--max-rundir-bytes``; mirrors the other ``_resolve_*`` knob
+    run-halves in the prepared work document; mirrors the other ``_resolve_*`` knob
     readers. Defaults to :data:`_DEFAULT_MAX_RUNDIR_BYTES` when unset.
     """
     try:

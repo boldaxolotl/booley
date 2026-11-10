@@ -1,115 +1,65 @@
 """Parent-side Simulation adapter composition contract."""
 
 import ast
+import base64
 import dataclasses
-import importlib
+import json
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
+from booley.flows.test_runs import build_test_run
 
 
-def test_native_adapter_invocations_preserve_order_and_option_shaping() -> None:
-    common = {
-        "build_dir": "build/sim",
-        "run_cwd": "assets",
-        "work_dir": "attempt/evidence",
-        "timeout_s": 12,
-        "max_rundir_bytes": 2048,
-        "plusargs": ("test_id=2", "--firmware=image.elf"),
-        "trace": True,
-        "trace_files": ("dump.vcd",),
-        "pass_sentinels": ("PASS",),
-        "fail_sentinels": ("FAIL",),
-        "runtime_inputs": ("firmware.hex", "vectors/input.bin"),
-    }
-
-    verilator = prepare_adapter_invocation(
-        PreparedSimulationWork(
-            adapter="verilator",
-            top="tb",
-            trace_mode="native_fst",
-            trace_args=("--trace={file}",),
-            **common,
-        )
-    )
-    icarus = prepare_adapter_invocation(PreparedSimulationWork(adapter="icarus", **common))
-
-    assert verilator[:3] == ["python3", "-m", "booley.flows.sim.backends.verilator"]
-    assert "--trace-mode" in verilator
-    assert "--trace-arg=--trace={file}" in verilator
-    assert verilator[verilator.index("--work-dir") + 1] == "attempt/evidence"
-    assert icarus[:3] == ["python3", "-m", "booley.flows.sim.backends.icarus"]
-    assert "--top" not in icarus
-    assert "--plusarg=--firmware=image.elf" in icarus
-    assert icarus[icarus.index("--work-dir") + 1] == "attempt/evidence"
-    assert "--runtime-input=firmware.hex" in verilator
-    assert "--runtime-input=vectors/input.bin" in icarus
-
-
-def test_cocotb_adapter_supports_unfiltered_batch() -> None:
-    command = prepare_adapter_invocation(
-        PreparedSimulationWork(
-            adapter="cocotb",
-            build_dir="build/sim",
-            run_cwd=".",
-            timeout_s=20,
-            eda_tool="icarus",
-            cocotb_module="tests.counter",
-            tests=(),
-            result_verbosity="full",
-            sim_time_grace_s=4.5,
-            runtime_inputs=("firmware.hex",),
-        )
-    )
-
-    assert command[:3] == ["python3", "-m", "booley.flows.sim.backends.cocotb"]
-    assert not any(argument.startswith("--test=") for argument in command)
-    assert command[command.index("--eda-tool") + 1] == "icarus"
-    assert "--runtime-input=firmware.hex" in command
-
-
-def test_cocotb_adapter_receives_the_seed_as_its_own_option() -> None:
-    work = PreparedSimulationWork(
-        adapter="cocotb",
+def _work(adapter: str = "verilator", **fields: Any) -> PreparedSimulationWork:
+    return PreparedSimulationWork(
+        adapter=adapter,  # type: ignore[arg-type]
         build_dir="build/sim",
-        run_cwd=".",
-        timeout_s=20,
-        eda_tool="icarus",
-        cocotb_module="tests.counter",
-        tests=("test_a",),
-        cocotb_seed=2**31 - 1,
+        run_cwd="assets",
+        timeout_s=12,
+        **fields,
     )
-    command = prepare_adapter_invocation(work)
-    assert command[command.index("--seed") + 1] == "2147483647"
 
-    unseeded = prepare_adapter_invocation(
-        PreparedSimulationWork(
-            adapter="cocotb",
-            build_dir="build/sim",
-            run_cwd=".",
-            timeout_s=20,
-            eda_tool="icarus",
-            cocotb_module="tests.counter",
-        )
+
+def test_every_adapter_launch_is_one_work_document() -> None:
+    from booley.flows.sim.adapter_contract import encode_simulation_work
+
+    for adapter, module in (
+        ("verilator", "booley.flows.sim.backends.verilator"),
+        ("icarus", "booley.flows.sim.backends.icarus"),
+        ("cocotb", "booley.flows.sim.backends.cocotb"),
+    ):
+        work = _work(adapter, plusargs=("--firmware=image.elf",), trace=True)
+        document = encode_simulation_work(work)
+
+        assert prepare_adapter_invocation(work) == ["python3", "-m", module, document]
+        assert re.fullmatch(r"[\w-]+", document)  # nothing a shell or Git Bash would rewrite
+        assert prepare_adapter_invocation(work, python="/venv/python")[0] == "/venv/python"
+
+
+def test_work_document_round_trips_every_field() -> None:
+    from booley.flows.sim.adapter_contract import decode_simulation_work, encode_simulation_work
+
+    plain = build_test_run("test_a")
+    varied = build_test_run(
+        "test_b",
+        variant="slow",
+        seed=7,
+        args=("+slow",),
+        env={"K": "V"},
     )
-    assert "--seed" not in unseeded
-
-
-@pytest.mark.parametrize("adapter", ["icarus", "verilator", "cocotb"])
-def test_every_optional_field_renders_a_command_its_entry_point_accepts(adapter: str) -> None:
-    every_field = {
-        "build_dir": "build/sim",
-        "run_cwd": "assets",
-        "timeout_s": 12,
+    given: dict[str, Any] = {
         "work_dir": "attempt/evidence",
         "eda_tool": "icarus",
         "max_rundir_bytes": 2048,
-        "plusargs": ("test_id=2",),
-        "environment": (("K", "V"),),
+        "plusargs": ("test_id=2", "--firmware=a b.elf"),
+        "environment": (("K", "V"), ("K", "again"), ("EMPTY", "")),
         "cocotb_seed": 7,
+        "test_runs": (plain, varied),
         "artifact_group": "g",
         "trace": True,
         "trace_mode": "native_fst",
@@ -122,28 +72,71 @@ def test_every_optional_field_renders_a_command_its_entry_point_accepts(adapter:
         "fail_sentinels": ("FAIL",),
         "top": "tb",
         "cocotb_module": "tests.counter",
-        "tests": ("test_a",),
+        "tests": ("test_a", "test_b"),
         "result_verbosity": "full",
-        "sim_time_grace_s": 1.5,
+        "sim_time_grace_s": float("inf"),  # project config may say inf
         "adapter_result_path": "result.json",
         "attempt_token": "token",
         "target_identity": "target",
     }
-    # A new field must be added above so this guard keeps covering every flag.
-    unrendered = {"adapter", "test_runs"}  # test_runs is structured; no writer renders it
-    assert (
-        set(every_field)
-        == {f.name for f in dataclasses.fields(PreparedSimulationWork)} - unrendered
-    )
+    every_field = {f.name for f in dataclasses.fields(PreparedSimulationWork)}
+    # A field added to the work description must be given a value here, or it is not proven.
+    assert set(given) | {"adapter", "build_dir", "run_cwd", "timeout_s"} == every_field
 
-    argv = prepare_adapter_invocation(PreparedSimulationWork(adapter=adapter, **every_field))
+    work = _work("cocotb", **given)
 
-    entry_point = importlib.import_module(argv[2])
-    args = entry_point._parse_args(argv[3:])  # argparse exits 2 on a flag the entry point rejects
-    assert argv[argv.index("--trace-convert-timeout") + 1] == "90"
-    assert args.trace_convert_timeout == 90
-    if adapter == "icarus":
-        assert "--trace" in argv
+    assert decode_simulation_work(encode_simulation_work(work)) == work
+    assert decode_simulation_work(encode_simulation_work(_work())) == _work()
+
+
+def _armor(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode()).decode()
+
+
+def _document(**overrides: Any) -> str:
+    from booley.flows.sim.adapter_contract import encode_simulation_work
+
+    document = json.loads(base64.urlsafe_b64decode(encode_simulation_work(_work()) + "=="))
+    for name, value in overrides.items():
+        if value is None:
+            document.pop(name)
+        else:
+            document[name] = value
+    return _armor(json.dumps(document))
+
+
+def test_work_document_rejects_wrong_schema_and_field_set() -> None:
+    from booley.flows.sim.adapter_contract import SimulationWorkError, decode_simulation_work
+
+    rejected = {
+        "schema 2 is not supported": _document(schema=2),
+        "unknown fields: surprise": _document(surprise=1),
+        "missing fields: top": _document(top=None),
+        "plusargs": _document(plusargs="not-a-list"),
+        "environment entries must be": _document(environment=[["only-a-name"]]),
+        "timeout_s": _document(timeout_s=True),
+        "sim_time_grace_s must be a number": _document(sim_time_grace_s="1"),
+        "must be a mapping": _armor("[]"),
+        "Expecting value": _armor("not json"),
+        "Invalid base64": "A",
+        "timeout must be positive": _document(timeout_s=0),
+        "Test Run record": _document(test_runs=[{"name": "x"}]),
+    }
+    for message, text in rejected.items():
+        with pytest.raises(SimulationWorkError, match=message):
+            decode_simulation_work(text)
+
+
+def test_undecodable_document_is_an_infrastructure_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from booley.flows.sim.backends import cocotb, icarus, verilator
+
+    for main in (verilator.main, icarus.main, cocotb.main):
+        for argv in (["not a document"], [], [_document(), "extra"]):
+            assert main(argv) == 2
+            out = capsys.readouterr().out
+            assert out.startswith("[SIM_INFRA_ERROR] Simulation adapter work document rejected")
 
 
 def test_transport_identity_is_all_or_nothing() -> None:

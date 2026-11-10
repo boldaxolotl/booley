@@ -276,8 +276,10 @@ Simulation's private adapter boundary is split deliberately. `sim.build`
 prepares and authenticates the shared Edalize build stage. The
 `sim.execution` package owns caller invariants, Project-root-scoped Pre-Run and
 artifact-integrity policy, and the sole adapter composition point. The three
-leaf modules under `sim.backends` render and execute only their own simulator
-invocation; no leaf imports a sibling adapter or `sim.flow`.
+leaf modules under `sim.backends` execute only their own simulator
+invocation; the composition point renders every launch as one versioned
+prepared-work document that the shared contract module encodes and decodes.
+No leaf imports a sibling adapter or `sim.flow`.
 
 Parent-to-child result transport is a versioned JSON document bound to an
 unpredictable attempt token, adapter name, durable Target identity, and ordered

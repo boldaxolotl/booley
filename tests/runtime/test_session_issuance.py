@@ -20,6 +20,7 @@ from tests.devcontainer_spec_support import build_spec
 from tests.session_issuance_support import (
     damaged,
     fixed,
+    install_trusted_validator,
     issue_built,
     plain_builder,
     stub_keeper,
@@ -32,6 +33,7 @@ from booley.eda.provisioning.licensing import flexnet_docker
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.harness import booley, eda_grants
 from booley.runtime import devcontainer as dc
+from booley.runtime import interactive_docker as idk
 from booley.runtime import (
     issuance_invalidation,
     session_admission,
@@ -48,24 +50,9 @@ _HOST_PATH = os.environ.get("PATH", os.defpath)
 _HOST_GIT = shutil.which("git", path=_HOST_PATH)
 
 
-def _install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Create a host-owned validator without relying on the runner's install layout."""
-    prefix = tmp_path / "trusted-prefix"
-    executable = prefix / "bin" / ("booley.exe" if os.name == "nt" else "booley")
-    executable.parent.mkdir(parents=True)
-    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    executable.chmod(0o755)
-    monkeypatch.setattr(
-        runtime_spec,
-        "_validator_prefix_anchors",
-        lambda: {executable.parent.resolve(): prefix.resolve()},
-    )
-    return executable
-
-
 @pytest.fixture
 def trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    executable = _install_trusted_validator(tmp_path, monkeypatch)
+    executable = install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(executable.parent))
     return executable
 
@@ -357,6 +344,7 @@ def test_prepared_issue_restores_previous_spec_when_issuance_fails(
         lambda source, target: keeper_restores.append((source, target)),
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:old")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:old")
 
     def write_devcontainer(_project: Path, _spec: dict) -> Path:
         path.write_text("prospective\n", encoding="utf-8")
@@ -395,7 +383,7 @@ def test_prepared_issue_restores_spec_when_writer_partially_fails(
         raise OSError("disk full")
 
     monkeypatch.setattr(dc, "write_devcontainer", partial_write)
-    monkeypatch.setattr("booley.runtime.interactive_docker.image_id_strict", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
     monkeypatch.setattr("booley.runtime.interactive_docker.remove_image_tag", lambda _image: None)
 
     with pytest.raises(OSError, match="disk full"):
@@ -417,7 +405,7 @@ def test_failed_first_issue_removes_new_keeper_tag(
     def remove_keeper(image: str) -> None:
         removed.append(image)
 
-    monkeypatch.setattr("booley.runtime.interactive_docker.image_id_strict", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.interactive_docker.image_id", lambda _image: None)
     monkeypatch.setattr(
         "booley.runtime.interactive_docker.remove_image_tag",
         remove_keeper,
@@ -444,7 +432,7 @@ def test_issue_fails_before_writing_when_keeper_state_cannot_be_inspected(
     writer = Mock()
     monkeypatch.setattr(dc, "write_devcontainer", writer)
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.image_id_strict",
+        "booley.runtime.interactive_docker.image_id",
         lambda _image: (_ for _ in ()).throw(RuntimeError("daemon unavailable")),
     )
 
@@ -549,6 +537,16 @@ def test_resolve_image_id_rejects_missing_runtime_image(monkeypatch) -> None:
         runtime_spec._resolve_image_id("missing:latest")
 
 
+def test_resolve_image_id_reports_docker_failure_naming_the_image(monkeypatch) -> None:
+    def fail(_image: str) -> str | None:
+        raise idk.ImageInspectError("cannot inspect Docker image 'busy:latest': daemon down")
+
+    monkeypatch.setattr(idk, "image_id", fail)
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"'busy:latest'.*daemon down"):
+        runtime_spec._resolve_image_id("busy:latest")
+
+
 @pytest.fixture
 def issued_preview(
     tmp_path: Path,
@@ -564,6 +562,9 @@ def issued_preview(
     (host_skill / "SKILL.md").write_text("# Example skill\n", encoding="utf-8")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(
+        runtime_spec, "_keeper_image_id", lambda _image: "sha256:image", raising=False
+    )
 
     def build(_inputs: runtime_spec.SessionSpecInputs) -> dict:
         return build_spec(
@@ -606,6 +607,7 @@ def _egress_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (project / ".booley").mkdir(parents=True)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     return project
 
 
@@ -929,6 +931,7 @@ def test_legacy_registrar_remains_valid_for_issued_specs(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     legacy = "python -m booley.runtime.incontainer_register"
     prepared, path, stamp = issue_built(
         project,
@@ -1000,10 +1003,7 @@ def test_recovery_snapshot_rejects_different_keeper(issued, monkeypatch) -> None
 def test_recovery_snapshot_rejects_missing_keeper_image(issued, monkeypatch) -> None:
     project, spec, path, _stamp = issued
 
-    def missing(_image: str) -> str:
-        raise runtime_spec.RuntimeSpecError("missing")
-
-    monkeypatch.setattr(runtime_spec, "_resolve_image_id", missing)
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: None)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="Sandbox Image keeper is missing"):
         runtime_spec.load_recovery_snapshot(project, spec, path)
 
@@ -1020,6 +1020,7 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
 
     authority.state_dir().mkdir(parents=True, mode=0o700)
     authority.state_dir().parent.chmod(0o700)
@@ -1075,6 +1076,7 @@ def test_runtime_spec_rejects_non_mapping_container_environment(
     project.mkdir()
     (project / ".booley").mkdir()
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(
         project,
@@ -1111,6 +1113,7 @@ def test_host_eda_issuance_still_requires_authority(
     )
     monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
 
     build = plain_builder(project)
 
@@ -1167,6 +1170,7 @@ def test_active_image_vivado_cannot_omit_license_marker_to_bypass_authority(
         lambda _project: {"vivado": SimpleNamespace(provisioning="image")},
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
 
     @contextmanager
     def required(*_args):
@@ -1282,6 +1286,7 @@ def test_missing_vivado_bind_names_source_and_target(
         lambda _project: {"vivado": SimpleNamespace(provisioning="host")},
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     monkeypatch.setattr(runtime_spec, "_validate_image_contract", lambda _image: None)
 
     @contextmanager
@@ -1337,21 +1342,69 @@ def test_issuance_records_project_scoped_image_keeper(issued) -> None:
 
 
 def test_validate_rejects_missing_issued_image_keeper(issued, monkeypatch) -> None:
-    project, spec, path, stamp = issued
+    project, spec, path, _stamp = issued
 
-    def resolve(image: str) -> str:
-        if image == stamp.keeper_image:
-            raise runtime_spec.RuntimeSpecError("missing")
-        return stamp.image_id
-
-    monkeypatch.setattr(runtime_spec, "_resolve_image_id", resolve)
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="missing"):
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: None)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper is missing"):
         runtime_spec.validate(project, spec, path)
+
+
+# Captured at import, before any test patches them, so a test that needs the
+# real image lookups (not a fixture's constant stand-ins) can put them back.
+_REAL_IMAGE_LOOKUPS = {
+    name: getattr(runtime_spec, name)
+    for name in ("_resolve_image_id", "_keeper_image_id")
+    if hasattr(runtime_spec, name)
+}
+
+
+def _fake_docker_with_failing_keeper(
+    monkeypatch: pytest.MonkeyPatch, stamp: runtime_spec.Issuance
+) -> None:
+    """Route Docker so the runtime image resolves but the keeper lookup fails."""
+    for name, real in _REAL_IMAGE_LOOKUPS.items():
+        monkeypatch.setattr(runtime_spec, name, real)
+
+    def fake(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["image", "inspect"] and args[2] == stamp.keeper_image:
+            return subprocess.CompletedProcess(args, 1, "", "Cannot connect to the Docker daemon")
+        if args[:2] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(args, 0, stamp.image_id + "\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", fake)
+
+
+def test_keeper_docker_failure_is_not_reported_as_missing(issued, monkeypatch) -> None:
+    project, spec, path, stamp = issued
+    _fake_docker_with_failing_keeper(monkeypatch, stamp)
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Cannot connect") as caught:
+        runtime_spec.validate(project, spec, path)
+
+    assert "keeper is missing" not in str(caught.value)
+    assert stamp.keeper_image in str(caught.value)
+
+
+def test_retain_keeper_docker_failure_names_keeper_and_never_retags(issued, monkeypatch) -> None:
+    _project, _spec, _path, stamp = issued
+    _fake_docker_with_failing_keeper(monkeypatch, stamp)
+    tags: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "booley.runtime.interactive_docker.tag_image", lambda *args: tags.append(args)
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Cannot connect") as caught:
+        runtime_spec._retain_issued_image(stamp)
+
+    assert stamp.keeper_image in str(caught.value)
+    assert tags == []
 
 
 def test_validate_rejects_runtime_image_digest_drift(issued, monkeypatch) -> None:
     project, spec, path, stamp = issued
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:other")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:other")
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="tag/digest has drifted") as caught:
         runtime_spec.validate(project, spec, path)
@@ -1375,10 +1428,8 @@ def test_validate_rejects_keeper_for_another_project(issued, monkeypatch) -> Non
 def test_validate_rejects_keeper_pointing_at_other_bytes(issued, monkeypatch) -> None:
     project, spec, path, stamp = issued
 
-    def resolve(image: str) -> str:
-        return stamp.image_id if image == stamp.image else "sha256:other"
-
-    monkeypatch.setattr(runtime_spec, "_resolve_image_id", resolve)
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: stamp.image_id)
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:other")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper points at different bytes"):
         runtime_spec.validate(project, spec, path)
 
@@ -1390,17 +1441,11 @@ def test_reissuance_moves_keeper_to_new_immutable_image(issued, monkeypatch) -> 
     retained = {stamp.keeper_image: old_id, old_id: old_id, new_id: new_id}
     tags: list[tuple[str, str]] = []
 
-    def resolve(image: str) -> str:
-        try:
-            return retained[image]
-        except KeyError as exc:
-            raise runtime_spec.RuntimeSpecError("missing") from exc
-
     def tag(source: str, target: str) -> None:
         tags.append((source, target))
         retained[target] = retained[source]
 
-    monkeypatch.setattr(runtime_spec, "_resolve_image_id", resolve)
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", retained.get)
     monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", tag)
     runtime_spec._retain_issued_image(replace(stamp, image=new_id, image_id=new_id))
     assert tags == [(new_id, stamp.keeper_image)]
@@ -1409,15 +1454,9 @@ def test_reissuance_moves_keeper_to_new_immutable_image(issued, monkeypatch) -> 
 
 def test_reissuance_rejects_unverifiable_keeper(issued, monkeypatch) -> None:
     _project, _spec, _path, stamp = issued
-    resolutions = iter((runtime_spec.RuntimeSpecError("missing"), "sha256:other"))
+    resolutions = iter((None, "sha256:other"))
 
-    def resolve(_image: str) -> str:
-        value = next(resolutions)
-        if isinstance(value, Exception):
-            raise value
-        return value
-
-    monkeypatch.setattr(runtime_spec, "_resolve_image_id", resolve)
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: next(resolutions))
     monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", lambda *_args: None)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper could not be verified"):
         runtime_spec._retain_issued_image(stamp)
@@ -1563,6 +1602,7 @@ def test_dangerous_full_spec_drift_is_rejected_before_issuance(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(project, plain_builder(project))
     with pytest.raises(runtime_spec.RuntimeSpecError, match=match):
@@ -1580,6 +1620,7 @@ def test_readonly_false_does_not_satisfy_protected_mount(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(project, plain_builder(project))
 
@@ -1628,6 +1669,7 @@ provisioning = "host"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr("booley.eda.provisioning.configuration.sys.platform", "linux")
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     requested: list[bool] = []
 
     @contextmanager
@@ -1658,6 +1700,7 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     profile = SimpleNamespace(name="site", lmgrd_port=2100)
     _license_profile_stubs(monkeypatch, profile)
     prepared = runtime_spec.preview(
@@ -1755,6 +1798,7 @@ def test_issue_rejects_mutable_image_reference(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(project, plain_builder(project))
 
@@ -1827,6 +1871,7 @@ def test_seal_rejects_project_controlled_mount_source(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="not authorized"):
         runtime_spec.preview(project, plain_builder(project, booley_dir_source="/home/victim"))
 
@@ -1834,7 +1879,7 @@ def test_seal_rejects_project_controlled_mount_source(
 def test_seal_rejects_workspace_path_poisoned_booley(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    trusted = install_trusted_validator(tmp_path, monkeypatch)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -1844,6 +1889,7 @@ def test_seal_rejects_workspace_path_poisoned_booley(
     poisoned.chmod(0o755)
     monkeypatch.setenv("PATH", str(poisoned.parent))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="trusted host Booley"):
         runtime_spec.preview(project, plain_builder(project))
     assert trusted.is_file()
@@ -1859,10 +1905,11 @@ def test_seal_skips_tmp_path_poisoned_booley(
     poisoned.parent.mkdir()
     poisoned.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     poisoned.chmod(0o755)
-    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    trusted = install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", os.pathsep.join((str(poisoned.parent), str(trusted.parent))))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     prepared = runtime_spec.preview(project, plain_builder(project))
     assert Path(prepared.spec["initializeCommand"][0]) == trusted
 
@@ -1872,7 +1919,7 @@ def test_finder_uses_current_absolute_entry_point_before_path(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    invoked = _install_trusted_validator(tmp_path, monkeypatch)
+    invoked = install_trusted_validator(tmp_path, monkeypatch)
     fallback = tmp_path / "other-prefix" / "bin" / invoked.name
     fallback.parent.mkdir(parents=True)
     fallback.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -1941,7 +1988,7 @@ def test_normalized_project_launcher_does_not_fall_back_to_path(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    trusted = install_trusted_validator(tmp_path, monkeypatch)
     poisoned = project / ".venv" / "Scripts" / "booley.exe"
     poisoned.parent.mkdir(parents=True)
     poisoned.write_text("launcher", encoding="utf-8")
@@ -2023,7 +2070,7 @@ def test_find_trusted_validator_resolves_managed_cli_symlink(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    trusted = install_trusted_validator(tmp_path, monkeypatch)
     launcher = tmp_path / ".local" / "bin" / "booley"
     launcher.parent.mkdir(parents=True)
     launcher.symlink_to(trusted)
@@ -2169,6 +2216,7 @@ def test_validator_bytes_are_bound_into_issuance(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     prepared, path, _stamp = issue_built(project, plain_builder(project), monkeypatch)
     trusted_validator.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="validator has changed"):
@@ -2186,6 +2234,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     profile = authority.LicenseProfile(
         "site",
         "flexnet",
@@ -2393,6 +2442,7 @@ def test_seal_requires_canonical_hash_scoped_state_volume(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="canonical Project"):
         runtime_spec.preview(project, plain_builder(project, dc.APP_CLAUDE))
 
@@ -2801,6 +2851,7 @@ def test_previously_issued_legacy_prepare_survives_full_validation(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     original_pin = runtime_spec._pin_initialize_command
 
     def old_issuer_pin(root, spec):

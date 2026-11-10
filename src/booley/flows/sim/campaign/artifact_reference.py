@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
-import os
 import re
 from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from booley.flows.sim.campaign_files import read_bounded
 from booley.flows.sim.campaign_reports import is_report_link
-from booley.runtime.regular_file import open_regular_nofollow
+from booley.flows.sim.coverage_json import content_digest
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FIELDS = {"path_base", "path", "bytes", "sha256", "kind", "owner"}
@@ -58,12 +57,14 @@ def build_artifact_reference(
     except ValueError as exc:
         raise ArtifactReferenceError("artifact is outside its declared base") from exc
     contained = _contained_path(base, relative)
-    raw = _read_regular(contained, maximum, booley_dir=booley_dir)
+    raw = read_bounded(
+        contained, limit=maximum, error=ArtifactReferenceError, booley_dir=booley_dir
+    )
     return _artifact_reference(
         path_base=base_name,
         path=relative,
         bytes_=len(raw),
-        sha256=_digest(raw),
+        sha256=content_digest(raw),
         kind=kind,
         owner=owner,
     )
@@ -100,8 +101,8 @@ def resolve_artifact_reference(
     except KeyError as exc:
         raise ArtifactReferenceError("artifact base is unavailable") from exc
     path = _contained_path(base, reference.path)
-    raw = _read_regular(path, maximum, booley_dir=booley_dir)
-    if len(raw) != reference.bytes or _digest(raw) != reference.sha256:
+    raw = read_bounded(path, limit=maximum, error=ArtifactReferenceError, booley_dir=booley_dir)
+    if len(raw) != reference.bytes or content_digest(raw) != reference.sha256:
         raise ArtifactReferenceError("artifact bytes disagree with reference")
     return ResolvedArtifact(path, raw)
 
@@ -212,26 +213,10 @@ def _contained_path(base: Path, relative: str) -> Path:
     return path
 
 
-def _read_regular(path: Path, maximum: int, *, booley_dir: Path | None = None) -> bytes:
-    try:
-        descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
-        with os.fdopen(descriptor, "rb") as stream:
-            raw = stream.read(maximum + 1)
-    except OSError as exc:
-        raise ArtifactReferenceError(f"artifact is not a regular file: {path}") from exc
-    if len(raw) > maximum:
-        raise ArtifactReferenceError("artifact exceeds size limit")
-    return raw
-
-
 def _nonempty(value: object, field: str) -> str:
     if not isinstance(value, str) or not value or len(value.encode()) > 4096:
         raise ArtifactReferenceError(f"artifact {field} is invalid")
     return value
-
-
-def _digest(raw: bytes) -> str:
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
 __all__ = [

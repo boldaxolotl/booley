@@ -8,12 +8,8 @@ the sole completion marker for a work item.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
-import stat
-import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -25,7 +21,6 @@ from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import (
     BoundaryError,
     require_bool_value,
-    require_dict,
     require_finite_number,
     require_int,
     require_list,
@@ -37,10 +32,18 @@ from booley.flows.artifact_durability import (
     fsync_directory,
 )
 from booley.flows.sim.build_session import CacheDecision
+from booley.flows.sim.campaign_files import (
+    parse_json_object,
+    read_bounded,
+    read_json_object,
+    stream_digest,
+)
+from booley.flows.sim.campaign_reports import is_report_link
+from booley.flows.sim.coverage_json import content_digest
+from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import nonblocking_file_lock
-from booley.runtime.filesystem_utils import replace_file
-from booley.runtime.regular_file import open_regular_nofollow
 
+from .bundle import require_bundle_inventory
 from .codec import (
     MANIFEST_MAX_BYTES,
     RECORD_MAX_BYTES,
@@ -60,6 +63,7 @@ from .codec import (
     encode_simulation_campaign_manifest,
     encode_simulation_result,
     linked_manifest_path,
+    reads_campaign_records,
     validate_relative_path,
 )
 from .model import (
@@ -83,11 +87,6 @@ _COMMON_BUILD_FIELDS = (
     "workload_sha256",
     "build_variant_id",
 )
-
-
-def _manifest_sha256(manifest: SimulationCampaignManifest) -> str:
-    raw = encode_simulation_campaign_manifest(manifest)
-    return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,16 +143,6 @@ def _invocation_of(campaign_root: Path) -> Path | None:
     return None
 
 
-def _is_link(path: Path) -> bool:
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return False
-    return stat.S_ISLNK(info.st_mode) or bool(
-        getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    )
-
-
 def _require_safe_parents(path: Path, root: Path, booley_dir: Path | None = None) -> None:
     try:
         path.absolute().relative_to(root.absolute())
@@ -163,78 +152,12 @@ def _require_safe_parents(path: Path, root: Path, booley_dir: Path | None = None
     current = Path(absolute.anchor)
     for component in absolute.parts[1:]:
         current /= component
-        if _is_link(current) and not is_booley_dir_entry(current, booley_dir):
+        if is_report_link(current) and not is_booley_dir_entry(current, booley_dir):
             raise SimulationCampaignIntegrityError(f"campaign path contains a link: {current}")
 
 
 def _create_immutable(path: Path, raw: bytes) -> None:
     durable_create(path, raw)
-
-
-def _replace_projection(path: Path, raw: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        replace_file(temporary, path)
-        fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _read_regular(path: Path, *, limit: int, booley_dir: Path | None = None) -> bytes:
-    if _is_link(path):
-        raise SimulationCampaignIntegrityError(f"authoritative path is a link: {path}")
-    descriptor: int | None = None
-    current_descriptor: int | None = None
-    try:
-        descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
-        initial = _regular_identity(os.fstat(descriptor), path, limit)
-        raw = bytearray()
-        while len(raw) <= limit:
-            chunk = os.read(descriptor, min(64 * 1024, limit + 1 - len(raw)))
-            if not chunk:
-                break
-            raw.extend(chunk)
-        if len(raw) > limit:
-            raise SimulationCampaignIntegrityError(
-                f"authoritative file exceeds size ceiling: {path}"
-            )
-        final = _regular_identity(os.fstat(descriptor), path, limit)
-        current_descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
-        current = _regular_identity(os.fstat(current_descriptor), path, limit)
-        if initial != final or final != current or len(raw) != final[2]:
-            raise SimulationCampaignIntegrityError(
-                f"authoritative file changed during read: {path}"
-            )
-        return bytes(raw)
-    except OSError as exc:
-        raise SimulationCampaignIntegrityError(
-            f"cannot read authoritative file {path}: {exc}"
-        ) from exc
-    finally:
-        if current_descriptor is not None:
-            os.close(current_descriptor)
-        if descriptor is not None:
-            os.close(descriptor)
-
-
-def _regular_identity(
-    info: os.stat_result, path: Path, limit: int
-) -> tuple[int, int, int, int, int]:
-    if not stat.S_ISREG(info.st_mode):
-        raise SimulationCampaignIntegrityError(f"authoritative path is not a file: {path}")
-    if info.st_nlink != 1:
-        raise SimulationCampaignIntegrityError(
-            f"authoritative file has multiple filesystem links: {path}"
-        )
-    if info.st_size > limit:
-        raise SimulationCampaignIntegrityError(f"authoritative file exceeds size ceiling: {path}")
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
 class CampaignStore:
@@ -252,12 +175,20 @@ class CampaignStore:
         return tuple(sorted(self._authenticated_files))
 
     def _read(self, path: Path, *, limit: int) -> bytes:
-        raw = _read_regular(path, limit=limit, booley_dir=self.booley_dir)
+        raw = read_bounded(
+            path,
+            limit=limit,
+            error=SimulationCampaignIntegrityError,
+            booley_dir=self.booley_dir,
+            single_link=True,
+        )
         self._authenticated_files.add(path.absolute())
         return raw
 
     def _identity(self, path: Path) -> tuple[int, str]:
-        identity = _stream_identity(path)
+        if is_report_link(path) or not path.is_file():
+            raise SimulationCampaignIntegrityError(f"evidence is not a regular file: {path}")
+        identity = stream_digest(path)
         self._authenticated_files.add(path.absolute())
         return identity
 
@@ -282,7 +213,7 @@ class CampaignStore:
         raw = encode_simulation_campaign_manifest(manifest)
         _require_safe_parents(self.manifest_path, self.root, self.booley_dir)
         _create_immutable(self.manifest_path, raw)
-        return _manifest_sha256(manifest)
+        return manifest_digest(manifest)
 
     def load_manifest(self) -> SimulationCampaignManifest:
         _require_safe_parents(self.manifest_path, self.root, self.booley_dir)
@@ -294,12 +225,7 @@ class CampaignStore:
         """Load the bounded retention fields from the existing summary projection."""
         _require_safe_parents(self.summary_path, self.root, self.booley_dir)
         raw = self._read(self.summary_path, limit=SUMMARY_MAX_BYTES)
-        try:
-            document = require_dict(json.loads(raw), field="campaign summary")
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise SimulationCampaignIntegrityError("campaign summary is invalid JSON") from exc
-        except BoundaryError as exc:
-            raise SimulationCampaignIntegrityError("campaign summary is not an object") from exc
+        document = parse_json_object(raw, error=SimulationCampaignIntegrityError)
         try:
             schema = require_str_value(document.get("$schema"), field="campaign summary schema")
             require_bool_value(document.get("complete"), field="campaign summary complete")
@@ -318,7 +244,7 @@ class CampaignStore:
         return document
 
     def manifest_sha256(self) -> str:
-        return _manifest_sha256(self.load_manifest())
+        return manifest_digest(self.load_manifest())
 
     @contextmanager
     def mutation_lock(self) -> Iterator[None]:
@@ -392,6 +318,7 @@ class CampaignStore:
     def publish_build_result(self, directory: Path, result: BundleBuildResult) -> Path:
         return self._publish(directory / "build-result.json", result, encode_bundle_build_result)
 
+    @reads_campaign_records
     def recover_shared_build(
         self, build_variant_id: str, producer_invocation_id: int
     ) -> SharedBuildRecovery | None:
@@ -456,6 +383,8 @@ class CampaignStore:
         document = result.document
         if any(document[field] != expected[field] for field in _COMMON_BUILD_FIELDS):
             raise SimulationCampaignIntegrityError("shared Build Result identity disagrees")
+        if document["state"] not in {"ready", "design_failure", "infrastructure_error"}:
+            raise SimulationCampaignIntegrityError("shared Build Result state is invalid")
         reference = cast(Mapping[str, object], document["build_attempt"])
         attempt_id = attempt.document["build_attempt_id"]
         if (
@@ -483,12 +412,16 @@ class CampaignStore:
 
     def _load_shared_bundle(self, directory, attempt, result, expected) -> SimulatorBundle:
         binding = cast(Mapping[str, object], result.document["bundle"])
-        path = directory / cast(str, binding["manifest_path"])
+        path = directory / validate_relative_path(binding["manifest_path"])
         raw = self._read(path, limit=RECORD_MAX_BYTES)
-        if len(raw) != binding["manifest_bytes"] or _raw_digest(raw) != binding["manifest_sha256"]:
+        if (
+            len(raw) != binding["manifest_bytes"]
+            or content_digest(raw) != binding["manifest_sha256"]
+        ):
             raise SimulationCampaignIntegrityError("shared Build Result bundle digest disagrees")
         bundle = decode_simulator_bundle(raw)
         _validate_shared_bundle(bundle, binding, attempt, expected)
+        require_bundle_inventory(bundle)
         for artifact in cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"]):
             self._authenticate_reference(directory, artifact)
         return bundle
@@ -580,7 +513,7 @@ class CampaignStore:
         """Return firings from the same authenticated snapshot used by the full scan."""
         manifest = manifest or self.load_manifest()
         firings: list[PreSimFiring] = []
-        self._scan_manifest(manifest, _manifest_sha256(manifest), pre_sim_receiver=firings.extend)
+        self._scan_manifest(manifest, manifest_digest(manifest), pre_sim_receiver=firings.extend)
         return tuple(firings)
 
     def _reread_prior_attempt(
@@ -591,7 +524,7 @@ class CampaignStore:
         owned: list[PreSimFiring],
     ) -> dict[tuple[str, str, str, int], PreSimFiring]:
         """Check one attempt once and return the fresh firings matching its prior ones."""
-        digest = _manifest_sha256(manifest)
+        digest = manifest_digest(manifest)
         item = items.get(owned[0].key[1])
         if any(firing.document["manifest_sha256"] != digest for firing in owned):
             raise SimulationCampaignIntegrityError("prior hook manifest changed")
@@ -635,6 +568,7 @@ class CampaignStore:
                     snapshots[directory] = snapshot
         return snapshots
 
+    @reads_campaign_records
     def _read_attempt_pre_sim_snapshot(self, manifest, item, directory, terminal):
         if not (directory / "attempt.json").exists():
             return None
@@ -666,7 +600,7 @@ class CampaignStore:
         return snapshot
 
     def _authenticate_reference(self, root: Path, reference: Mapping[str, object]) -> None:
-        path = root / cast(str, reference["path"])
+        path = root / validate_relative_path(reference["path"])
         _require_safe_parents(path, root, self.booley_dir)
         size, digest = self._identity(path)
         if size != reference["bytes"] or digest != reference["sha256"]:
@@ -681,7 +615,7 @@ class CampaignStore:
 
     def scan(self, manifest: SimulationCampaignManifest | None = None) -> CampaignRecovery:
         manifest = manifest or self.load_manifest()
-        return self._scan_manifest(manifest, _manifest_sha256(manifest))
+        return self._scan_manifest(manifest, manifest_digest(manifest))
 
     def scan_validated(
         self,
@@ -725,7 +659,7 @@ class CampaignStore:
         decoded_attempts: list[SimulationAttempt] = []
         for ordinal, attempt_directory in enumerate(attempts, start=1):
             attempt_path = attempt_directory / "attempt.json"
-            if not attempt_path.exists() and not _is_link(attempt_path):
+            if not attempt_path.exists() and not is_report_link(attempt_path):
                 continue
             snapshot = snapshots.get(attempt_directory)
             attempt = (
@@ -743,7 +677,7 @@ class CampaignStore:
                 )
             decoded_attempts.append(attempt)
         result_path = directory / "result.json"
-        if result_path.exists() or _is_link(result_path):
+        if result_path.exists() or is_report_link(result_path):
             result = self._scan_result(
                 result_path,
                 work_item_id,
@@ -791,18 +725,18 @@ class CampaignStore:
     def _attempt_directories(root: Path) -> tuple[Path, ...]:
         if not root.exists():
             return ()
-        if _is_link(root) or not root.is_dir():
+        if is_report_link(root) or not root.is_dir():
             raise SimulationCampaignIntegrityError(f"invalid attempts directory: {root}")
         children = sorted(root.iterdir(), key=lambda item: item.name)
         for ordinal, child in enumerate(children, start=1):
             prefix = f"{ordinal:04d}-"
-            if not child.name.startswith(prefix) or _is_link(child) or not child.is_dir():
+            if not child.name.startswith(prefix) or is_report_link(child) or not child.is_dir():
                 raise SimulationCampaignIntegrityError(f"invalid attempt directory: {child}")
         return tuple(children)
 
     def regenerate_summary(self) -> Mapping[str, object]:
         manifest = self.load_manifest()
-        manifest_sha256 = _manifest_sha256(manifest)
+        manifest_sha256 = manifest_digest(manifest)
         recovery = self._scan_manifest(manifest, manifest_sha256)
         return self._regenerate_summary(manifest, manifest_sha256, recovery)
 
@@ -846,7 +780,7 @@ class CampaignStore:
         if len(raw) > MANIFEST_MAX_BYTES:
             raise SimulationCampaignIntegrityError("summary exceeds size ceiling")
         _require_safe_parents(self.summary_path, self.root, self.booley_dir)
-        _replace_projection(self.summary_path, raw)
+        atomic_replace_bytes(self.summary_path, raw)
         return json.loads(raw)
 
 
@@ -930,22 +864,6 @@ def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
     return "pass"
 
 
-def _stream_identity(path: Path) -> tuple[int, str]:
-    if _is_link(path) or not path.is_file():
-        raise SimulationCampaignIntegrityError(f"evidence is not a regular file: {path}")
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(64 * 1024), b""):
-            size += len(chunk)
-            digest.update(chunk)
-    return size, "sha256:" + digest.hexdigest()
-
-
-def _raw_digest(raw: bytes) -> str:
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
 def _variant_digest(build_variant_id: str) -> str:
     prefix, separator, digest = build_variant_id.partition(":")
     if prefix != "variant" or separator != ":" or _HEX64.fullmatch(digest) is None:
@@ -989,15 +907,14 @@ def _load_build_execution(
     matches = [item for item in references if item["kind"] == "simulation_build_execution"]
     if len(matches) != 1:
         raise SimulationCampaignIntegrityError("ready shared build lacks exact execution evidence")
-    raw = _read_regular(
-        directory / cast(str, matches[0]["path"]), limit=RECORD_MAX_BYTES, booley_dir=booley_dir
+    document = read_json_object(
+        directory / cast(str, matches[0]["path"]),
+        limit=RECORD_MAX_BYTES,
+        error=SimulationCampaignIntegrityError,
+        booley_dir=booley_dir,
+        single_link=True,
+        canonical=True,
     )
-    try:
-        document = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SimulationCampaignIntegrityError("build execution evidence is invalid JSON") from exc
-    if not isinstance(document, dict) or canonical_json_bytes(document) != raw:
-        raise SimulationCampaignIntegrityError("build execution evidence is not canonical")
     if set(document) != {"$schema", "process", "build"} or document["$schema"] != (
         "booley.simulation-build-execution/v1"
     ):

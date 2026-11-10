@@ -212,6 +212,7 @@ def test_fresh_recovery_restores_interrupted_park(tmp_path: Path, monkeypatch) -
         patch.object(sr, "restore_refresh_session") as restore_runtime,
         patch.object(sr, "verify_restored_refresh_session") as verify_runtime,
         patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:prior"),
+        patch.object(runtime_spec, "_keeper_image_id", return_value="sha256:prior"),
         patch(
             "booley.runtime.session_spec.subprocess.run",
             return_value=SimpleNamespace(returncode=0, stderr=""),
@@ -260,6 +261,7 @@ def test_checked_in_committed_fixture_resumes_forward(
         lambda: {validator.parent.resolve(): validator.parent.parent.resolve()},
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:fresh")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:fresh")
     prepared, spec_path, replacement = issue_built(
         project,
         lambda _inputs: build_spec(
@@ -583,6 +585,7 @@ def test_recovery_tolerates_egress_network_identity_change(tmp_path: Path, monke
         patch.object(sr, "restore_refresh_session", side_effect=restore_with_recovery_only),
         patch.object(sr, "verify_restored_refresh_session", side_effect=verify_with_recovery_only),
         patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:prior"),
+        patch.object(runtime_spec, "_keeper_image_id", return_value="sha256:prior"),
         patch(
             "booley.runtime.session_spec.subprocess.run",
             return_value=SimpleNamespace(returncode=0, stderr=""),
@@ -733,6 +736,7 @@ def test_recovery_snapshot_rejects_keeper_on_different_image(tmp_path: Path) -> 
         patch.object(runtime_spec, "_file_sha256", return_value=issuance.file_sha256),
         patch.object(runtime_spec, "_spec_digest", return_value=issuance.spec_sha256),
         patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:different"),
+        patch.object(runtime_spec, "_keeper_image_id", return_value="sha256:different"),
         pytest.raises(runtime_spec.RuntimeSpecError, match=r"keeper.*different"),
     ):
         runtime_spec.load_recovery_snapshot(project, spec, spec_path)

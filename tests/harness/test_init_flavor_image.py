@@ -68,8 +68,8 @@ def _stub_flavor_env(
     built: list[str] = []
     monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: exists)
     monkeypatch.setattr(
-        idi,
-        "_docker_image_id",
+        idi.idk,
+        "image_id",
         lambda image: "sha256:standard-parent" if image == idi.DOCKER_IMAGE else None,
     )
     monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: fingerprint)
@@ -97,8 +97,8 @@ def test_missing_flavor_binds_verified_standard_parent(flavor_repo, monkeypatch)
     monkeypatch.setattr(idi, "_expected_version", lambda _root: "0.2.0")
     monkeypatch.setattr(idi, "_try_pull_image", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
-        idi,
-        "_docker_image_id",
+        idi.idk,
+        "image_id",
         lambda image: parent_id if image == idi.DOCKER_IMAGE else None,
     )
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ def test_missing_flavor_binds_verified_standard_parent(flavor_repo, monkeypatch)
 def test_missing_standard_parent_stops_flavor_build(flavor_repo, monkeypatch):
     _stub_flavor_env(monkeypatch, exists=False, stale=False)
     monkeypatch.setattr(idi, "_try_pull_image", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(idi, "_docker_image_id", lambda _image: None)
+    monkeypatch.setattr(idi.idk, "image_id", lambda _image: None)
     monkeypatch.setattr(
         idi,
         "_docker_build_image",
@@ -161,7 +161,7 @@ class TestFlavorStaleness:
             idi.LABEL_BASE_IMAGE_ID: "sha256:old-base",
         }
         monkeypatch.setattr(idi, "_image_label", lambda _image, label: labels.get(label))
-        monkeypatch.setattr(idi, "_docker_image_id", lambda _image: "sha256:new-base")
+        monkeypatch.setattr(idi.idk, "image_id", lambda _image: "sha256:new-base")
 
         assert idi._image_is_stale("same-source", FLAVOR) is True
 
@@ -171,7 +171,7 @@ class TestFlavorStaleness:
             idi.LABEL_BASE_IMAGE_ID: "sha256:current-base",
         }
         monkeypatch.setattr(idi, "_image_label", lambda _image, label: labels.get(label))
-        monkeypatch.setattr(idi, "_docker_image_id", lambda _image: "sha256:current-base")
+        monkeypatch.setattr(idi.idk, "image_id", lambda _image: "sha256:current-base")
 
         assert idi._image_is_stale("same-source", FLAVOR) is False
 
@@ -181,7 +181,7 @@ class TestFlavorStaleness:
             "_image_label",
             lambda _image, label: "same-source" if label == idi.LABEL_FINGERPRINT else None,
         )
-        monkeypatch.setattr(idi, "_docker_image_id", lambda _image: "sha256:current-base")
+        monkeypatch.setattr(idi.idk, "image_id", lambda _image: "sha256:current-base")
 
         assert idi._image_is_stale("same-source", FLAVOR) is True
 
