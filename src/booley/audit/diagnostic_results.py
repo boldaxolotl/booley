@@ -44,15 +44,21 @@ class DiagnosticFinding:
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticDetail:
-    """Uncounted verbose text following one finding in the ordered report."""
+    """Uncounted text following one finding in the ordered report.
+
+    ``verbose_only`` is a display hint for the reporting caller: the default
+    marks text shown only in verbose output, ``False`` marks text the caller
+    shows whatever its verbosity (a failure's output excerpt).
+    """
 
     after_finding: int
     message: str
+    verbose_only: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticReport:
-    """Ordered observations and uncounted details shown only in verbose output."""
+    """Ordered observations and uncounted details, verbose-only unless marked."""
 
     findings: tuple[DiagnosticFinding, ...] = ()
     details: tuple[DiagnosticDetail, ...] = ()
@@ -120,8 +126,8 @@ class Findings:
             DiagnosticFinding(Severity.WARN, message, fix, check_id, subject, dedupe)
         )
 
-    def detail(self, message: str) -> None:
-        self._details.append(DiagnosticDetail(len(self._findings), message))
+    def detail(self, message: str, *, verbose_only: bool = True) -> None:
+        self._details.append(DiagnosticDetail(len(self._findings), message, verbose_only))
 
     def report(self) -> DiagnosticReport:
         return DiagnosticReport(tuple(self._findings), tuple(self._details))

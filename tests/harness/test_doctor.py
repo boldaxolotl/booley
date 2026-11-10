@@ -11,7 +11,7 @@ import stat
 import subprocess
 import sys
 import tomllib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -27,9 +27,15 @@ from booley.audit import (
     project_schema,
     resource_policy,
 )
-from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+from booley.audit.diagnostic_results import (
+    DiagnosticFinding,
+    DiagnosticReport,
+    Findings,
+    Severity,
+)
+from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
-from booley.harness import developer_probe, doctor, host_diagnostics
+from booley.harness import developer_probe, doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
 from booley.presentation import colors
 from booley.runtime import (
@@ -856,10 +862,56 @@ def _history_repo(tmp_path: Path, monkeypatch) -> Path:
     return tmp_path
 
 
+_COMPLETE_LOGICAL_SYNTH_REPORT = {
+    "synth_mode": "logical",
+    "termination": "completed",
+    "ppa_complete": True,
+    "area_source": "yosys_mapped",
+    "timing_complete": False,
+    "per_clock": [],
+}
+_CONTAINER_CLI = "doc" + "ker"
+
+
+def _write_synth_report(report_dir: Path, report: dict, target: str = "fast") -> None:
+    """Write *report* where Doctor reads a Target's deep synthesis report."""
+    from booley.flows.implementation_publication import target_report_path
+
+    path = target_report_path("synth", target, report_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+
+def _write_complete_synth_report(booley_dir: Path, target: str = "synth_fast") -> None:
+    """Write the terminal logical-synthesis report a real deep synth run leaves.
+
+    It carries no ``peak_rss_mb``, so Doctor's memory calibration reports the
+    measurement as unavailable instead of depending on host memory.
+    """
+    _write_synth_report(
+        booley_dir / doctor.DOCTOR_TMP_DIR / "flow-reports",
+        _COMPLETE_LOGICAL_SYNTH_REPORT,
+        target,
+    )
+
+
+def _deep_synth_writes_complete_report(monkeypatch, booley_dir: Path) -> None:
+    """Make the faked Sandbox leave a complete report after each deep synth command."""
+    base_run = doctor.subprocess.run
+
+    def run(cmd, **kwargs):
+        result = base_run(cmd, **kwargs)
+        if "booley.flows.synth" in cmd and "--dry-run" not in cmd:
+            _write_complete_synth_report(booley_dir)
+        return result
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+
 def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
-    monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
+    _deep_synth_writes_complete_report(monkeypatch, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=True), tmp_path)
 
@@ -884,11 +936,11 @@ def test_doctor_deep_surfaces_synthesis_warning_verdict(
 ):
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
-    monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
     base_run = doctor.subprocess.run
 
     def run_with_synth_warning(cmd, **kwargs):
         if "booley.flows.synth" in cmd and "--dry-run" not in cmd:
+            _write_complete_synth_report(booley_dir)
             return subprocess.CompletedProcess(
                 cmd,
                 0,
@@ -987,7 +1039,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
 ):
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
-    monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
+    _deep_synth_writes_complete_report(monkeypatch, booley_dir)
 
     def unexpected_agent_check(*_args, **_kwargs):
         raise AssertionError("agent check should have been skipped")
@@ -1046,20 +1098,19 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
     return project, calls
 
 
-def _run_flow_check(project, rec: _Rec, *, dry_run: bool) -> None:
-    doctor._run_flow_check(
+def _run_flow_check(project, *, dry_run: bool) -> doctor._FlowCheckOutcome:
+    return doctor._run_flow_check(
         project,
         "sim",
         target="fast",
         dry_run=dry_run,
         flow_runtime=doctor._DoctorFlowRuntime(project.project_root, "doc" + "ker"),
         timeout_s=10,
-        verbose=False,
-        _pass=rec.p,
-        _warn=rec.w,
-        _skip=rec.s,
-        _fail=rec.f,
     )
+
+
+def _kinds(report: DiagnosticReport) -> set[Severity]:
+    return {finding.severity for finding in report.findings}
 
 
 def test_doctor_flow_runtime_starts_once_and_reuses_container(tmp_path, monkeypatch):
@@ -1093,11 +1144,10 @@ def test_deep_check_routing_truth_table(
         monkeypatch,
         lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr=""),
     )
-    rec = _Rec()
 
-    _run_flow_check(project, rec, dry_run=dry_run)
+    outcome = _run_flow_check(project, dry_run=dry_run)
 
-    assert rec.kinds() == {"pass"}
+    assert _kinds(outcome.report) == {Severity.PASS}
     assert len(calls) == 1
     cmd = calls[0]
     assert cmd[:3] == ["doc" + "ker", "exec", "-e"]
@@ -1158,13 +1208,13 @@ def test_session_runtime_startup_failure_fails_loudly(tmp_path, monkeypatch):
         "up",
         lambda _root: (_ for _ in ()).throw(doctor.session_runtime.SessionError("bad issuance")),
     )
-    rec = _Rec()
 
-    _run_flow_check(project, rec, dry_run=False)
+    outcome = _run_flow_check(project, dry_run=False)
 
-    assert rec.kinds() == {"fail"}
-    assert "could not enter the Sandbox" in rec.fails()[0]
-    assert "bad issuance" in rec.fails()[0]
+    [finding] = outcome.report.findings
+    assert finding.severity is Severity.FAIL
+    assert "could not enter the Sandbox" in finding.message
+    assert "bad issuance" in finding.message
 
 
 def test_session_capacity_refusal_keeps_capacity_remedy(tmp_path, monkeypatch):
@@ -1180,11 +1230,12 @@ def test_session_capacity_refusal_keeps_capacity_remedy(tmp_path, monkeypatch):
             doctor.session_runtime.SessionError("Sandbox start refused: host is at capacity")
         ),
     )
-    rec = _Rec()
 
-    _run_flow_check(project, rec, dry_run=False)
+    outcome = _run_flow_check(project, dry_run=False)
 
-    assert rec.fix_hints == ["free Sandbox capacity using the command in the refusal, then retry"]
+    assert [finding.fix for finding in outcome.report.findings] == [
+        "free Sandbox capacity using the command in the refusal, then retry"
+    ]
 
 
 def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
@@ -1200,13 +1251,13 @@ def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
             stderr="boom",
         ),
     )
-    rec = _Rec()
 
-    _run_flow_check(project, rec, dry_run=False)
+    outcome = _run_flow_check(project, dry_run=False)
 
-    assert rec.kinds() == {"fail"}
-    assert "failed with exit 97" in rec.fails()[0]
-    assert "OUTSIDE" not in rec.fails()[0]
+    [finding] = outcome.report.findings
+    assert finding.severity is Severity.FAIL
+    assert "failed with exit 97" in finding.message
+    assert "OUTSIDE" not in finding.message
 
 
 def test_core_resolve_misroute_fails_loudly(tmp_path, monkeypatch):
@@ -1466,24 +1517,18 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
         monkeypatch,
         lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr=""),
     )
-    rec = _Rec()
 
-    doctor._run_flow_check(
+    outcome = doctor._run_flow_check(
         project,
         "sim",
         target="fast",
         dry_run=False,
         flow_runtime=doctor._DoctorFlowRuntime(project.project_root, None),
         timeout_s=10,
-        verbose=False,
-        _pass=rec.p,
-        _warn=rec.w,
-        _skip=rec.s,
-        _fail=rec.f,
     )
 
-    assert rec.kinds() == {"skip"}
-    skip_msg = next(m for lvl, m in rec.events if lvl == "skip")
+    assert _kinds(outcome.report) == {Severity.SKIP}
+    skip_msg = outcome.report.findings[0].message
     assert "runtime not available" in skip_msg
     assert "booley init --force" not in skip_msg
 
@@ -3968,12 +4013,6 @@ def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_pat
     project = _misplaced_booley_project(tmp_path)
     monkeypatch.setattr(doctor, "_check_design_size", lambda *args, **kwargs: None)
     monkeypatch.setattr(doctor, "_check_flow_runtime_reality", lambda *args, **kwargs: None)
-    dry_runs: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        doctor,
-        "_run_flow_check",
-        lambda _project, flow_name, **kwargs: dry_runs.append((flow_name, kwargs["target"])),
-    )
     reporter = doctor._Reporter.create()
 
     doctor._run_flow_and_core_phase(
@@ -3990,8 +4029,9 @@ def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_pat
     assert "fpga_core" in fails[0].message
     assert "booley" in fails[0].message
     assert "targets.fpga_core.flow_options" in fails[0].fix
-    assert dry_runs == []
     skips = [f.message for f in reporter.findings if f.severity == "skip"]
+    # A dry-run without a container runtime would report this SKIP for its Target.
+    assert not any("dry-run [" in m and "runtime not available" in m for m in skips), skips
     for target in ("lint_core", "synth_core"):
         assert any(target in m and "picorv32_impl.core" in m for m in skips), skips
     assert any("fpga has no Doctor Target" in m and "picorv32_impl.core" in m for m in skips)
@@ -4529,61 +4569,64 @@ def _fpga_doctor_project(
 
 
 def _run_isolated_flow_audit(project, monkeypatch):
+    """Run the Flow audit without a container runtime; return its sinks and dry-run reports.
+
+    Every dry-run then reports its real ``runtime not available`` SKIP, so
+    the reports name which flow and Target were dry-run.
+    """
     rec = _Rec()
-    calls: list[tuple[str, str, bool]] = []
+    reports: list[DiagnosticReport] = []
     monkeypatch.setattr(doctor, "_check_design_size", lambda *args, **kwargs: None)
     monkeypatch.setattr(doctor, "_check_flow_runtime_reality", lambda *args, **kwargs: None)
-
-    def record(_project, flow_name, **kwargs):
-        calls.append((flow_name, kwargs["target"], kwargs["dry_run"]))
-
-    monkeypatch.setattr(doctor, "_run_flow_check", record)
     doctor._run_flow_audit(
         project,
         doctor._DoctorFlowRuntime(project.project_root, None),
-        False,
         rec.p,
         rec.n,
         rec.w,
         rec.s,
         rec.f,
+        _diagnostics=reports.append,
     )
-    return rec, calls
+    dry_runs = [finding.message for report in reports for finding in report.findings]
+    return rec, dry_runs
 
 
 def test_flow_audit_dry_runs_marked_fpga_target_without_flow_table(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=True)
 
-    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+    rec, dry_runs = _run_isolated_flow_audit(project, monkeypatch)
 
-    assert calls == [("fpga", "fpga_board", True)]
+    assert dry_runs == [
+        f"fpga dry-run [fpga_board] skipped - '{doctor._CONTAINER_CLI}' runtime not available"
+    ]
     assert not rec.fails()
 
 
 def test_flow_audit_fails_enabled_fpga_table_without_marked_target(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=False, fpga_table={})
 
-    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+    rec, dry_runs = _run_isolated_flow_audit(project, monkeypatch)
 
-    assert calls == []
+    assert dry_runs == []
     assert any("fpga has no Doctor Target" in message for message in rec.fails())
 
 
 def test_flow_audit_skips_explicitly_disabled_marked_fpga_target(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=True, fpga_table={"enabled": False})
 
-    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+    rec, dry_runs = _run_isolated_flow_audit(project, monkeypatch)
 
-    assert calls == []
+    assert dry_runs == []
     assert ("skip", "fpga disabled in booley.toml") in rec.events
 
 
 def test_flow_audit_skips_fpga_when_not_configured_or_marked(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=False)
 
-    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+    rec, dry_runs = _run_isolated_flow_audit(project, monkeypatch)
 
-    assert calls == []
+    assert dry_runs == []
     assert any(
         level == "skip" and "fpga not applicable" in message for level, message in rec.events
     )
@@ -6472,7 +6515,7 @@ class TestDeveloperProbe:
         reporter = doctor._Reporter.create(profile=doctor._DoctorProfile(deep=True))
 
         doctor._run_deep_phase(
-            project, None, doctor._DoctorFlowRuntime(tmp_path, "docker"), False, reporter
+            project, None, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
         )
         reporter.finish()
 
@@ -9714,23 +9757,12 @@ def test_deep_doctor_accepts_completed_logical_synthesis(tmp_path):
 
     path = target_report_path("synth", "synth", tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "synth_mode": "logical",
-                "termination": "completed",
-                "ppa_complete": True,
-                "area_source": "yosys_mapped",
-                "timing_complete": False,
-                "per_clock": [],
-            }
-        )
-    )
+    path.write_text(json.dumps(_COMPLETE_LOGICAL_SYNTH_REPORT))
     assert doctor._synth_deep_report_error("synth", "synth", False, tmp_path) == "", (
         "logical deep Doctor report was rejected"
     )
-    passed, failed = [], []
-    doctor._report_flow_check_result(
+    findings = Findings()
+    doctor._grade_flow_check_result(
         SimpleNamespace(),
         "synth",
         subprocess.CompletedProcess([], 0, "", ""),
@@ -9738,13 +9770,11 @@ def test_deep_doctor_accepts_completed_logical_synthesis(tmp_path):
         dry_run=False,
         label="synth",
         report_dir=tmp_path,
-        verbose=False,
-        _pass=passed.append,
-        _warn=lambda *a: None,
-        _skip=lambda *a: None,
-        _fail=lambda *a: failed.append(a),
+        findings=findings,
     )
-    assert passed and not failed
+    assert [(f.severity, f.message) for f in findings.report().findings] == [
+        (Severity.PASS, "synth passed")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -10188,3 +10218,376 @@ def test_flow_check_doctor_output_is_stable(tmp_path, monkeypatch, capsys, verbo
         *(_LINT_VERBOSE_EXCERPT if verbose else []),
     ]
     assert exit_code == 1
+
+
+@dataclass(frozen=True)
+class _FlowCheckCase:
+    """One scripted Flow check and the report it must grade to.
+
+    ``<report_dir>`` in an expected fix stands for the Doctor report directory.
+    """
+
+    flow: str
+    dry_run: bool
+    findings: list[tuple[Severity, str, str, str | None, str | None]]
+    details: list[tuple[int, str, bool]]
+    process: bool
+    completed: bool
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    synth_report: dict | None = None
+    raises: BaseException | None = None
+    runtime_available: bool = True
+    first_config: dict | None = None
+    session_error: str | None = None
+
+
+_REPORT_DIR = "<report_dir>"
+
+_FLOW_CHECK_CASES = {
+    "pass": _FlowCheckCase(
+        "sim",
+        False,
+        [(Severity.PASS, "sim deep check [fast] passed", "", None, None)],
+        [(1, "    ok", True)],
+        process=True,
+        completed=True,
+        stdout="ok",
+    ),
+    "lint-findings": _FlowCheckCase(
+        "lint",
+        False,
+        [
+            (
+                Severity.PASS,
+                "lint deep check [fast] ran end-to-end; the design has lint findings "
+                "(exit 1 = WARN), which belong to `booley lint`",
+                "",
+                None,
+                None,
+            )
+        ],
+        [(1, "    RESULT: WARN (3 warnings)", True), (1, "    second line", True)],
+        process=True,
+        completed=True,
+        returncode=1,
+        stdout="RESULT: WARN (3 warnings)\nsecond line",
+    ),
+    "synth-warning": _FlowCheckCase(
+        "synth",
+        False,
+        [
+            (
+                Severity.WARN,
+                "synth deep check [fast] returned a WARN verdict",
+                "run `booley flow synth --target fast` and resolve its reported findings",
+                "flow.synth-deep-warning",
+                "fast",
+            )
+        ],
+        [(1, "    RESULT: WARN -- timing VIOLATED", True)],
+        process=True,
+        completed=True,
+        stdout="RESULT: WARN -- timing VIOLATED",
+        synth_report=_COMPLETE_LOGICAL_SYNTH_REPORT,
+    ),
+    "synth-incomplete-evidence": _FlowCheckCase(
+        "synth",
+        False,
+        [
+            (
+                Severity.FAIL,
+                "synth deep check [fast] produced incomplete synthesis evidence: "
+                "ppa_complete is not true",
+                f"see {_REPORT_DIR}",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=True,
+        completed=True,
+        synth_report={**_COMPLETE_LOGICAL_SYNTH_REPORT, "ppa_complete": False},
+    ),
+    "sim-tb-top-skip": _FlowCheckCase(
+        "sim",
+        True,
+        [
+            (
+                Severity.SKIP,
+                "sim dry-run [fast] skipped - tb_top is resolved at runtime "
+                "(no static tb_top in the first config)",
+                "",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=True,
+        completed=False,
+        returncode=2,
+        stderr="--tb-top is required",
+        first_config={"defines": []},
+    ),
+    "exit-failure": _FlowCheckCase(
+        "sim",
+        True,
+        [
+            (
+                Severity.FAIL,
+                "sim dry-run [fast] failed with exit 3",
+                f"see {_REPORT_DIR}",
+                None,
+                None,
+            )
+        ],
+        [(1, "    boom", False)],
+        process=True,
+        completed=True,
+        returncode=3,
+        stderr="boom",
+    ),
+    "timeout": _FlowCheckCase(
+        "sim",
+        False,
+        [
+            (
+                Severity.FAIL,
+                "sim deep check [fast] timed out after 10s",
+                f"see {_REPORT_DIR}",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=False,
+        completed=False,
+        raises=subprocess.TimeoutExpired("sim", 10),
+    ),
+    "launch-error": _FlowCheckCase(
+        "sim",
+        False,
+        [
+            (
+                Severity.FAIL,
+                "sim deep check [fast] failed to start: no exec",
+                f"see {_REPORT_DIR}",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=False,
+        completed=False,
+        raises=OSError("no exec"),
+    ),
+    "runtime-unavailable": _FlowCheckCase(
+        "sim",
+        False,
+        [
+            (
+                Severity.SKIP,
+                f"sim deep check [fast] skipped - '{_CONTAINER_CLI}' runtime not available",
+                "",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=False,
+        completed=False,
+        runtime_available=False,
+    ),
+    "sandbox-entry-failure": _FlowCheckCase(
+        "sim",
+        False,
+        [
+            (
+                Severity.FAIL,
+                "sim deep check [fast] could not enter the Sandbox: bad issuance",
+                "run 'booley init --seed' and retry",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=False,
+        completed=False,
+        session_error="bad issuance",
+    ),
+}
+
+
+@pytest.mark.parametrize("case_id", list(_FLOW_CHECK_CASES))
+def test_flow_check_report_grades_each_outcome(tmp_path, monkeypatch, case_id):
+    """Every grading outcome lands in the returned report, details and run facts included."""
+    case = _FLOW_CHECK_CASES[case_id]
+
+    def fake_run(cmd):
+        if case.synth_report is not None:
+            _write_synth_report(report_dir, case.synth_report)
+        if case.raises is not None:
+            raise case.raises
+        return subprocess.CompletedProcess(cmd, case.returncode, case.stdout, case.stderr)
+
+    project, calls = _tool_check_harness(tmp_path, monkeypatch, fake_run)
+    report_dir = project.booley_dir / doctor.DOCTOR_TMP_DIR / "flow-reports"
+    if case.first_config is not None:
+        project = replace(project, configs_toml={"fast": case.first_config})
+    if case.session_error is not None:
+        error = doctor.session_runtime.SessionError(case.session_error)
+        monkeypatch.setattr(
+            doctor.session_runtime, "up", lambda _root: (_ for _ in ()).throw(error)
+        )
+
+    outcome = doctor._run_flow_check(
+        project,
+        case.flow,
+        target="fast",
+        dry_run=case.dry_run,
+        flow_runtime=doctor._DoctorFlowRuntime(
+            project.project_root, _CONTAINER_CLI if case.runtime_available else None
+        ),
+        timeout_s=10,
+    )
+
+    assert [
+        (f.severity, f.message, f.fix.replace(_REPORT_DIR, str(report_dir)), f.check_id, f.subject)
+        for f in outcome.report.findings
+    ] == [
+        (severity, message, fix.replace(_REPORT_DIR, str(report_dir)), check_id, subject)
+        for severity, message, fix, check_id, subject in case.findings
+    ]
+    assert [
+        (d.after_finding, d.message, d.verbose_only) for d in outcome.report.details
+    ] == case.details
+    assert outcome.completed is case.completed
+    assert (outcome.process is not None) is case.process
+    assert bool(calls) is (case.process or case.raises is not None)
+
+
+def _graded_flow_report(tmp_path, monkeypatch, case_id: str) -> DiagnosticReport:
+    """Return the report of one scripted Flow check from ``_FLOW_CHECK_CASES``."""
+    case = _FLOW_CHECK_CASES[case_id]
+
+    def fake_run(cmd):
+        if case.synth_report is not None:
+            _write_synth_report(
+                tmp_path / ".booley" / doctor.DOCTOR_TMP_DIR / "flow-reports", case.synth_report
+            )
+        return subprocess.CompletedProcess(cmd, case.returncode, case.stdout, case.stderr)
+
+    project, _calls = _tool_check_harness(tmp_path, monkeypatch, fake_run)
+    return doctor._run_flow_check(
+        project,
+        case.flow,
+        target="fast",
+        dry_run=case.dry_run,
+        flow_runtime=doctor._DoctorFlowRuntime(project.project_root, _CONTAINER_CLI),
+        timeout_s=10,
+    ).report
+
+
+@pytest.mark.parametrize(
+    ("case_id", "verbose", "excerpt_shown"),
+    [
+        ("exit-failure", False, True),
+        ("pass", False, False),
+        ("pass", True, True),
+    ],
+)
+def test_flow_check_report_renders_through_reporter(
+    tmp_path, monkeypatch, capsys, case_id, verbose, excerpt_shown
+):
+    """An always-shown detail prints in concise runs; a default one only under --verbose."""
+    report = _graded_flow_report(tmp_path, monkeypatch, case_id)
+    reporter = doctor._Reporter.create(verbose=verbose)
+
+    reporter.diagnostics(report)
+
+    output = colors.strip_ansi(capsys.readouterr().out)
+    excerpt = report.details[0].message
+    assert (excerpt in output) is excerpt_shown
+    if excerpt_shown:
+        assert output.index(report.findings[0].message) < output.index(excerpt)
+
+
+def test_flow_check_report_waiver_turns_synth_warning_into_waived(tmp_path, monkeypatch, capsys):
+    """The WARN is rebuilt with its check ID and Target subject, so a waiver matches it."""
+    report = _graded_flow_report(tmp_path, monkeypatch, "synth-warning")
+    booley_dir = tmp_path / ".booley"
+    (booley_dir / "doctor-waivers.toml").write_text(
+        'version = 1\n\n[[waiver]]\ncheck = "flow.synth-deep-warning"\nsubject = "fast"\n'
+        'reason = "Hold slack is reviewed."\npermanent = true\n',
+        encoding="utf-8",
+    )
+    reporter = doctor._Reporter.create(load_doctor_waivers(booley_dir), verbose=True)
+
+    reporter.diagnostics(report)
+
+    assert [f.severity for f in reporter.findings] == [Severity.WAIVED]
+    assert reporter.counts["warn"] == 0
+    assert reporter.counts["waived"] == 1
+    # The verbose excerpt still follows its finding, as it did before waivers.
+    assert "RESULT: WARN -- timing VIOLATED" in colors.strip_ansi(capsys.readouterr().out)
+
+
+def test_deep_synth_calibration_follows_flow_check_findings(tmp_path, monkeypatch):
+    """Deep synth renders its Flow-check report first; calibration runs only after a launch."""
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        booley_dir=booley_dir,
+        booley_toml={
+            "flows": {"sim": {"enabled": False}, "lint": {"enabled": False}, "synth": {}}
+        },
+        configs_toml={},
+        first_target="",
+    )
+    base_run = doctor.subprocess.run
+    timed_out = False
+
+    def run(cmd, **kwargs):
+        if "booley.flows.synth" not in cmd:
+            return base_run(cmd, **kwargs)
+        if timed_out:
+            raise subprocess.TimeoutExpired(cmd, 1)
+        _write_complete_synth_report(booley_dir)
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    def deep_events() -> tuple[list[tuple[str, str]], doctor_deep.DeepCheckTracker]:
+        events: list[tuple[str, str]] = []
+        tracker = doctor_deep.DeepCheckTracker()
+        doctor._run_deep_checks(
+            project,
+            doctor._DoctorFlowRuntime(tmp_path, _CONTAINER_CLI),
+            lambda message: events.append(("pass", message)),
+            lambda message, fix="": events.append(("warn", message.check_id)),
+            lambda _message: None,
+            lambda message, fix: events.append(("fail", message)),
+            _diagnostics=lambda report: events.extend(
+                (f.severity.value, f.message) for f in report.findings
+            ),
+            completeness=tracker,
+        )
+        return events, tracker
+
+    events, tracker = deep_events()
+
+    assert events == [
+        ("pass", "synth deep check [synth_fast] passed"),
+        ("warn", "synth.memory-calibration-unavailable"),
+    ]
+    assert tracker.missing == ()
+
+    timed_out = True
+    events, tracker = deep_events()
+
+    assert [kind for kind, _message in events] == ["fail"]
+    assert "timed out" in events[0][1]
+    assert len(tracker.missing) == 1
+    assert tracker.missing[0].startswith("synth.smoke.")
