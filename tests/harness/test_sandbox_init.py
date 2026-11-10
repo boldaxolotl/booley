@@ -58,7 +58,9 @@ def _publish(publisher: Path) -> None:
     (booley_dir / "cores").mkdir(parents=True)
     (booley_dir / "AGENTS.md").write_text("# Project guide\n", encoding="utf-8", newline="\n")
     # Stealth Mode is opt-in: a published demo records it on so the Booley Directory is its own repository.
-    (booley_dir / "booley.toml").write_bytes(b'[agent]\nprovider = "claude"\n\n[stealth]\nenabled = true\n')
+    (booley_dir / "booley.toml").write_bytes(
+        b'[agent]\nprovider = "claude"\n\n[stealth]\nenabled = true\n'
+    )
     (booley_dir / "cores" / "cpu.core").write_text(CORE_TEXT, encoding="utf-8", newline="\n")
     (publisher / "README.md").write_bytes(b"# Demo\n")
     ctx = InitContext(project_root=publisher, interactive=False, show_step_banners=False)
