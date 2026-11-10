@@ -957,11 +957,25 @@ def test_inspect_prepared_rejects_missing_document_without_creating_it(issued) -
     assert not path.exists()
 
 
-def test_legacy_registrar_is_rejected(
+@pytest.mark.parametrize(
+    ("registrar", "accepted"),
+    [
+        pytest.param("python -m booley.harness.incontainer_register", True, id="current"),
+        pytest.param("python -m booley.runtime.incontainer_register", False, id="legacy"),
+    ],
+)
+def test_issued_spec_accepts_only_the_harness_registrar(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     trusted_validator: Path,
+    registrar: str,
+    accepted: bool,
 ) -> None:
+    """Issue-time preview and `validate()` of an on-disk spec share one lifecycle check.
+
+    Both run `_validate_generated_spec` -> `_validate_lifecycle`, so the refusal at
+    issuance is the one a stale issued spec naming the retired Runtime module meets.
+    """
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
@@ -969,17 +983,26 @@ def test_legacy_registrar_is_rejected(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
-    legacy = "python -m booley.runtime.incontainer_register"
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="differs from fixed Booley policy"):
-        issue_built(
+
+    def issue():
+        return issue_built(
             project,
             lambda _inputs: build_spec(
                 dc.APP_NONE,
-                mcp_start_command=legacy,
+                mcp_start_command=registrar,
                 protected_devcontainer_source=str(project / ".devcontainer"),
             ),
             monkeypatch,
         )
+
+    if not accepted:
+        with pytest.raises(
+            runtime_spec.RuntimeSpecError, match="differs from fixed Booley policy"
+        ):
+            issue()
+        return
+    prepared, path, stamp = issue()
+    assert runtime_spec.validate(project, prepared.spec, path) == stamp
 
 
 def test_recovery_snapshot_uses_sealed_issuance_without_current_authority(
