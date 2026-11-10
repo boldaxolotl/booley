@@ -100,7 +100,7 @@ WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
 # RISC-V tooling stage instead of reusing the published image, so it must build
 # the RISC-V image even when the dispatched commit does not touch its inputs.
 RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
-DEFAULT_WINDOWS_SHARD_COUNT = 10
+DEFAULT_WINDOWS_SHARD_COUNT = 4
 # Ubuntu Python 3.11 legs: two duration-balanced shards, adopted from the
 # controlled comparison in .github/ci/linux-shard-experiment.md. A manual run may
 # still pick 1 (one complete-suite job) or 3. Ubuntu Python 3.14 runs the suite
