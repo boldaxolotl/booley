@@ -26,18 +26,18 @@ from booley.flows.sim.campaign.run_directory import RunDirectory, claimed_run_di
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
+from tests.flows.sim.campaign_test_support import (
+    _admission,
+    _executor,
+    _handle,
+    _legacy_disclosures,
+    _run_coverage_campaign,
+)
 from tests.flows.sim.test_campaign_manifest_codec import (
     _baseline_manifest,
     _manifest,
     _sha,
 )
-from tests.flows.sim.test_campaign_phase3_integrity import (
-    _admission,
-    _executor,
-    _handle,
-    _legacy_disclosures,
-)
-from tests.flows.sim.test_campaign_phase5_adversarial import _run_coverage_campaign
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 
 _MISSING = "literal run directory must already exist"
@@ -202,7 +202,7 @@ def test_existing_literal_run_cwd_still_runs(harness: _Harness) -> None:
 def test_templated_run_cwd_is_not_preflighted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tests.flows.sim.test_campaign_phase3_integrity import _manifest_for
+    from tests.flows.sim.campaign_test_support import _manifest_for
 
     harness = _Harness(tmp_path, monkeypatch, "immutable")
 

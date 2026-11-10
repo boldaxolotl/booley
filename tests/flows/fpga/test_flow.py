@@ -2093,7 +2093,7 @@ def test_summary_table_aligns_targets_and_cuts_long_names(
 def test_summary_table_tty_colors_only_the_console_copy(
     tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.harness import colors
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
     out = _TtyOut()
@@ -2113,7 +2113,7 @@ def test_summary_table_tty_failure_prints_once_on_stdout(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from booley.flows.endpoint_reporting import _publish_console_report, _StdoutWitness
-    from booley.harness import colors
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
     flow = _flow(tmp_path, state_file)
@@ -2141,7 +2141,7 @@ def test_summary_table_tty_failure_prints_once_on_stdout(
 def test_summary_record_keeps_every_metric_with_delta_sub_row(
     tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.harness import colors
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
     out = _TtyOut()
@@ -2247,7 +2247,7 @@ def test_summary_rows_agree_with_result_reasons(
 def test_summary_notes_drop_the_flow_prefix(
     tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.harness import colors
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
     out = _TtyOut()

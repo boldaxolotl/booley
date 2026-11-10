@@ -14,6 +14,8 @@ import ast
 import re
 from pathlib import Path
 
+from tests.source_checkout_support import source_checkout_files
+
 _ROOT = Path(__file__).resolve().parents[1]
 _PRODUCTION = _ROOT / "src" / "booley"
 _RETIRED_WORD = re.compile(r"(?i)\btickets?\b")
@@ -111,9 +113,9 @@ def _python_hits() -> list[str]:
 
 def _text_file_hits() -> list[str]:
     hits: list[str] = []
-    for path in sorted(_PRODUCTION.rglob("*")):
+    for path in source_checkout_files(_ROOT, "src/booley"):
         relative = path.relative_to(_PRODUCTION).as_posix()
-        if not path.is_file() or path.suffix in {".py", ".pyc"} or relative in _ALLOWED_TEXT_FILES:
+        if path.suffix == ".py" or relative in _ALLOWED_TEXT_FILES:
             continue
         try:
             lines = path.read_text(encoding="utf-8").splitlines()

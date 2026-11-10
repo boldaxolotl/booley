@@ -16,8 +16,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
-from .colors import accent, bold, bold_accent, dim, green
-from .terminal_table import render_table
+from booley.presentation.colors import accent, bold, bold_accent, dim, green
+from booley.presentation.terminal_table import render_table
 
 if TYPE_CHECKING:
     from booley.targets.target_surface import SurfacePayload, TargetDetailPayload, TargetRow

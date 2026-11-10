@@ -1072,8 +1072,12 @@ The point store is flushed and committed without replacement before
 `coverage.json`; the manifest is published last as the Campaign commit marker.
 Deep readers open the canonical store without following links, gunzip it once under the
 uncompressed ceiling, check the header schema, then hand the manifest and points
-to the Campaign codec once. The codec validates every point, collection state,
-overall rollups (empty when collection is not complete), and evaluation before
+to the Campaign codec once. The codec validates every point and the shape of
+the collection state and evaluation, then derives the overall rollups (empty
+when collection is not complete) from the points. A stored pass/fail evaluation
+is re-scored from those rollups and its stored thresholds; the stored rollups
+and verdict rows are discarded. A pass/fail verdict whose suite did not match,
+that carries diagnostics, or that cannot be re-scored is refused before
 point-dependent evidence is accepted. Per-source rollups and scoring are
 writer-derived manifest content that readers do not re-derive. Criteria
 blocks on collection before denominator/metric work. Contract failures expose

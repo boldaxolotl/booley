@@ -43,8 +43,8 @@ from booley.mcp.base import EXIT_FAILURE
 from booley.targets.domain import TargetHandle
 from tests.flows.report_headline import final_report_omits_headline
 from tests.flows.sim.campaign_boundary import run_campaign_sim
+from tests.flows.sim.campaign_test_support import _admission, _facts, _plan
 from tests.flows.sim.launched_work import launched_work
-from tests.flows.sim.test_campaign_phase5_adversarial import _facts, _plan, _unmanaged
 from tests.flows.sim.test_flow import SimulateFlow
 
 
@@ -338,7 +338,7 @@ def test_adapter_termination_reaches_normalized_campaign_result(tmp_path: Path) 
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
 
@@ -403,7 +403,7 @@ def _run_campaign_result(tmp_path: Path, plan: Any, execution: Any) -> Any:
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -594,7 +594,7 @@ def test_infrastructure_guard_publishes_terminal_campaign(
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -642,7 +642,7 @@ def test_infrastructure_without_tests_retains_selected_identities(
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -684,7 +684,7 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete

@@ -32,11 +32,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from booley.config.agent import AGENT_CLIS
+from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
 from booley.harness import (
     cheatsheet,
-    colors,
     feedback_view,
     projects_view,
     resources_cli,
@@ -53,9 +53,10 @@ from booley.harness.render_md import render
 from booley.harness.setup import cleanup_cli
 from booley.harness.setup.common import configure_progress_output
 from booley.harness.terminal_status import MAX_WIDTH, section_header
-from booley.harness.terminal_table import render_table, width_budget
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table, width_budget
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import own_booley_dir
@@ -432,6 +433,7 @@ def _outer_endpoint_selection(args: argparse.Namespace) -> bool:
 
 def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
     from booley.flows.cli_selection import CliInvocation
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
     from booley.harness.endpoint_help import supports_shared_cli
 
     selected = getattr(args, "_cli_endpoint_project", None)
@@ -444,7 +446,10 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
             file=sys.stderr,
         )
         return 2
-    endpoint._cli_invocation = CliInvocation(project=selected)
+    # Flow code must not import Harness, so the command layer supplies the human advisory.
+    endpoint._cli_invocation = CliInvocation(
+        project=selected, goal_recording_advisory=warn_cli_goal_recording
+    )
     return endpoint.main(argv, **kwargs)
 
 
@@ -763,6 +768,11 @@ def _add_bootstrap_subparser(sub) -> None:
         dest="update",
         action="store_true",
         help="Update Host Bootstrap after upgrading Booley",
+    )
+    parser.add_argument(
+        "--egress",
+        choices=EGRESS_MODES,
+        help="Record the Sandbox egress mode in the host config, then bootstrap under it",
     )
     qa_skills = parser.add_mutually_exclusive_group()
     qa_skills.add_argument(
@@ -1725,8 +1735,13 @@ def _endpoint_help_candidate(args: argparse.Namespace) -> bool:
     )
 
 
-def _dispatch_endpoint(args, info: McpToolInfo, *, flow: bool) -> int:
-    """Dispatch a Flow or Specialist through its execution adapter."""
+def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: bool) -> int:
+    """Dispatch a Flow or Specialist through its execution adapter.
+
+    A shell run is a Standalone Job: it gets a Job record and a ``job.log`` copy of its output.
+    """
+    from booley.harness.standalone_job import StandaloneJob
+
     try:
         endpoint_cls = _load_mcp_tool_class(info)
     except Exception as exc:  # noqa: BLE001 — report failures at the Project plugin boundary
@@ -1741,27 +1756,41 @@ def _dispatch_endpoint(args, info: McpToolInfo, *, flow: bool) -> int:
     argv = list(getattr(args, "endpoint_args", []) or [])
     if argv and argv[0] == "--":
         argv = argv[1:]
-    endpoint = endpoint_cls()
-    if _endpoint_help_candidate(args):
-        from booley.harness.endpoint_help import supports_shared_cli, try_render_help
+    # Prepared before the endpoint exists: it reads BOOLEY_RUN_ID as its invocation identity.
+    job = StandaloneJob.prepare(project_root, args.command, info.name, argv)
+    try:
+        endpoint = endpoint_cls()
+        if _endpoint_help_candidate(args):
+            from booley.harness.endpoint_help import supports_shared_cli, try_render_help
 
-        if supports_shared_cli(endpoint):
-            try_render_help(endpoint, argv, getattr(args, "_cli_endpoint_project", None))
-        elif not runtime_context.inside_session_runtime():
-            print(
-                "ERROR: host help requires the shared CLI; inspect this custom command inside the Sandbox.",
-                file=sys.stderr,
-            )
-            return 2
-        _enforce_runtime_location(args.command)
-        runtime_context.ensure_proxy_env()
-    return _invoke_endpoint(endpoint, argv, args)
+            if supports_shared_cli(endpoint):
+                try_render_help(endpoint, argv, getattr(args, "_cli_endpoint_project", None))
+            elif not runtime_context.inside_session_runtime():
+                print(
+                    "ERROR: host help requires the shared CLI; inspect this custom command inside the Sandbox.",
+                    file=sys.stderr,
+                )
+                return 2
+            # A custom endpoint prints its own help: not a run.
+            elif job is not None:
+                job.discard()
+                job = None
+            _enforce_runtime_location(args.command)
+            runtime_context.ensure_proxy_env()
+        if job is None:
+            return _invoke_endpoint(endpoint, argv, args)
+        return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
+    finally:
+        if job is not None:
+            job.discard()
 
 
 def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     """Run a deterministic Flow through its existing entry point."""
     info = _select_endpoint(args, _discover_project_mcp_tools(project_root), "flow")
-    return info if isinstance(info, int) else _dispatch_endpoint(args, info, flow=True)
+    return (
+        info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root, flow=True)
+    )
 
 
 def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
@@ -1781,7 +1810,9 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
         flow_config=flows,
     )
     info = _select_endpoint(args, endpoints, "specialist")
-    return info if isinstance(info, int) else _dispatch_endpoint(args, info, flow=False)
+    return (
+        info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root, flow=False)
+    )
 
 
 def _target_detail_payload(

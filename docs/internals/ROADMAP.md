@@ -188,6 +188,58 @@ host-side integration rather than the Sandbox or Developer Agent, and
 remote updates must be idempotent and conflict-aware so a GitHub outage cannot
 corrupt local work or Criterion evidence.
 
+## Enterprise Model Endpoints
+
+**Partial.** A company running Booley on its own servers rarely sends model
+traffic straight to OpenAI or Anthropic. It goes through a gateway (LiteLLM,
+Portkey, Kong, an in-house proxy) that handles billing, logging, and policy; to
+a private cloud deployment (AWS Bedrock, Google Vertex AI, Azure OpenAI); or to
+open-weight models served with vLLM. Booley has one such path today, the
+[model gateway](GATEWAY.md): it routes Codex alone to one `https://` endpoint on
+the OpenAI Responses API with a bearer token. It was built for the Codespaces
+demo, and it shows: Claude never uses it, and one gateway's quirks (no priority
+tier, a generated model catalog) are hardcoded.
+
+The generic version treats a model endpoint as a named, operator-owned
+definition, separate from the Project:
+
+- **Endpoint.** URL and protocol: Anthropic Messages, OpenAI Responses, OpenAI
+  chat completions, Bedrock, Vertex AI, or Azure OpenAI. Gateway quirks become
+  per-endpoint settings.
+- **Credential.** A static token, a token command for short-lived tokens,
+  custom headers, client certificates, or the cloud's own identity (AWS or GCP
+  credentials). A definition names where a secret comes from (an environment
+  variable or a command); it never holds the secret.
+- **Model names.** Gateways rename models, and Bedrock has its own model ids. A
+  per-endpoint alias map keeps `[models]` and the
+  [model-to-CLI rule](../adr/0084-run-each-specialist-on-the-agent-cli-its-model-implies.md)
+  working.
+- **Binding.** A Project binds each listed Agent CLI to an endpoint or to the
+  vendor's own service. Each agent process receives only its own endpoint's
+  secrets, which generalizes the rule that keeps the Codex gateway token away
+  from Claude today.
+
+Endpoint definitions live in the host config next to the egress policy, not in
+`booley.toml`: the URL depends on the deployment, and
+[ADR 0080](../adr/0080-route-codex-specialists-through-an-env-selected-gateway.md)
+already keeps secret locations out of committed files. Both Agent CLIs support
+custom endpoints natively (Claude Code through `ANTHROPIC_BASE_URL`,
+`apiKeyHelper`, and its Bedrock and Vertex AI modes; Codex through
+`model_providers`), so Booley translates one definition into each CLI's
+configuration instead of proxying model traffic itself. One module owns that
+translation, the Sandbox hand-off, and the Doctor checks. Today's `gateway`
+policy becomes a built-in endpoint, so existing setups keep working.
+
+A related gap is in the network rather than the API. Corporate networks often
+require an outbound HTTPS proxy and a TLS-inspecting CA. Booley's egress proxy
+cannot forward to an upstream proxy, and a Sandbox cannot be given an extra CA
+bundle. That blocks Booley on such networks with or without a model gateway,
+so it ships as its own slice.
+
+Open questions: whether a Project may define endpoints too; whether a model
+alias or the endpoint's protocol picks the Agent CLI; and whether cloud
+identities (Bedrock, Vertex AI) belong in the first slice.
+
 ## Cocotb Support
 
 **Partial.** [cocotb](https://www.cocotb.org/) testbenches run on the sandbox simulators today (see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md)). What's left:

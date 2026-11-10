@@ -67,211 +67,238 @@ document: Booley product datasheet
     </div>
   </section>
 
-  <!-- Figure 2: architecture (wide on desktop, stacked on phones) -->
-  <figure aria-labelledby="fig2cap">
+  <!-- Figure 2: where Booley runs. The switch flips Local / Server; your PC keeps
+       its place while the Sandbox moves to the server (the script below). Desktop
+       animates one drawing; phones show one stacked drawing per setup. -->
+  <figure class="dep" id="fig2" data-mode="local" aria-labelledby="fig2cap">
+    <div class="dep__switch" role="group" aria-label="Setup shown in Figure 2" hidden>
+      <span class="dep__thumb" aria-hidden="true"></span>
+      <button type="button" data-mode="local" aria-pressed="true">Local setup</button>
+      <button type="button" data-mode="server" aria-pressed="false">Server setup<small>in progress</small></button>
+    </div>
     <div class="fig__frame">
-      <svg class="arch fig2-wide" viewBox="0 0 1126 600" role="img" aria-labelledby="fig2t fig2d">
-        <title id="fig2t">Booley architecture</title>
-        <desc id="fig2d">VS Code opens an agent session (Claude Code or Codex, in Interactive or Goal Mode) inside the Booley devcontainer Sandbox. Example requests: debug the backpressure test failure on the heavy target; compare synth area between commits; run a security review on the control unit module. The agent enters and finishes Goals, such as LINT:lint_fifo with no unwaived findings, SIM:sim_fifo with all selected tests passing, REVIEW:rtl_bugs clean on Target sim_fifo, SYNTH:synth_fifo with area increase at most 10 percent, and FPGA:fpga_fifo with Fmax at least 100 MHz. The agent edits the Project Git worktree (RTL and testbenches) and calls the MCP Server, Booley Flows, which drives EDA tools through the Edalize API: a linter (Verilator), a simulator (Verilator or Icarus Verilog), and a synthesis tool (Yosys). The MCP Server sends evidence to the Goals and calls Specialist Agents: reviewer for single-focus code review, mutation_tester for mutation testing, and coverage_analyst to explain coverage and suggest next steps. Outside the Sandbox, an Egress Proxy Container lets the agent reach the internet for the LLM provider only, and a heavy tool installed on the host (Vivado) is mounted read-only.</desc>
+      <svg class="dep-wide" viewBox="0 0 890 460" role="img" aria-label="Local setup: VS Code, the Booley Sandbox, the egress proxy, and licensed EDA tools all run on your PC.">
         <defs>
           <marker id="f2a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
-          <marker id="f2g" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah ok" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
         </defs>
 
-        <!-- outside, left: internet behind the egress proxy -->
-        <rect class="bx" x="10" y="140" width="130" height="36"/>
-        <text class="t" x="75" y="163" text-anchor="middle">The Internet</text>
-        <path class="ln" d="M75 176 V216" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
-        <text class="e" x="83" y="194">LLM provider</text>
-        <text class="e" x="83" y="209">only</text>
-        <rect class="bx" x="10" y="216" width="130" height="48"/>
-        <text class="t" x="75" y="237" text-anchor="middle">Egress Proxy</text>
-        <text class="t" x="75" y="255" text-anchor="middle">Container</text>
-        <path class="ln" d="M140 240 H190" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
+        <!-- title block: the status lives here, like a drawing revision -->
+        <rect class="tb" x="10" y="14" width="270" height="22"/>
+        <path class="tb" d="M60 14 V36 M180 14 V36"/>
+        <text class="tbt" x="35" y="29" text-anchor="middle">Fig. 2</text>
+        <text class="tbt only-local" x="120" y="29" text-anchor="middle">Local setup</text>
+        <text class="tbt only-server" x="120" y="29" text-anchor="middle">Server setup</text>
+        <rect class="okbox only-local" x="190" y="21" width="7" height="7"/>
+        <text class="tbt only-local" x="203" y="29">Supported</text>
+        <rect class="wipbox only-server" x="190" y="21" width="7" height="7"/>
+        <text class="tbt only-server" x="203" y="29">In progress</text>
 
-        <!-- outside, top: VS Code -->
-        <rect class="bx" x="380" y="10" width="120" height="38"/>
-        <text class="t" x="440" y="34" text-anchor="middle">VS Code</text>
-        <path class="ln" d="M440 48 V120" marker-end="url(#f2a)"/>
+        <!-- the server: shown in server mode only -->
+        <g class="only-server">
+          <rect class="mach" x="470" y="64" width="410" height="384"/>
+          <text class="m" x="486" y="90">Server</text>
+          <rect class="wipbox" x="548" y="79" width="7" height="7"/>
+          <text class="wip" x="561" y="88">In progress</text>
+        </g>
 
-        <!-- the Sandbox boundary -->
-        <rect class="sandbox" x="170" y="72" width="750" height="516"/>
-        <text class="sbl" x="186" y="98">Booley devcontainer Sandbox</text>
+        <!-- your PC: the same box in both setups; only its contents change -->
+        <g class="pc">
+          <rect class="mach" x="10" y="64" width="410" height="384"/>
+          <text class="m" x="26" y="90">Your PC</text>
+          <text class="des" x="36" y="109">J1</text>
+          <rect class="bx" x="36" y="114" width="124" height="46"/>
+          <text class="t only-local" x="98" y="142" text-anchor="middle">VS Code</text>
+          <text class="t only-server" x="98" y="134" text-anchor="middle">VS Code</text>
+          <text class="s2 only-server" x="98" y="151" text-anchor="middle">or browser</text>
+          <g class="only-local">
+            <path class="ln" d="M98 160 V245 H190" marker-end="url(#f2a)"/>
+            <text class="e" x="106" y="207">attach</text>
+          </g>
+          <text class="note only-server" x="215" y="300" text-anchor="middle">Only the editor runs here.</text>
+        </g>
 
-        <!-- agent session -->
-        <rect class="bx" x="190" y="120" width="330" height="150"/>
-        <rect class="hd" x="190" y="120" width="330" height="50"/>
-        <text class="t" x="355" y="142" text-anchor="middle">Agent session (Claude Code or Codex)</text>
-        <text class="s" x="355" y="161" text-anchor="middle">Interactive or Goal Mode</text>
-        <text class="s" x="204" y="192">Examples:</text>
-        <text class="q" x="204" y="214">“Debug the backpressure test failure on heavy target”</text>
-        <text class="q" x="204" y="234">“Compare synth area between the following commits: ...”</text>
-        <text class="q" x="204" y="254">“Run security review on the control unit module”</text>
+        <!-- server mode: the editor reaches its Sandbox over the network (drawn above the PC box) -->
+        <g class="only-server">
+          <path class="ln" d="M160 137 H560 V245 H650" marker-end="url(#f2a)"/>
+          <text class="e" x="310" y="129" text-anchor="middle">SSH / tunnel</text>
+        </g>
 
-        <!-- Goals: green marks the Goals path -->
-        <rect class="bx ok" x="600" y="120" width="300" height="150"/>
-        <rect class="hd ok" x="600" y="120" width="300" height="32"/>
-        <text class="t" x="614" y="141">Goals</text>
-        <text class="id" x="614" y="176">LINT:lint_fifo</text><text class="s" x="740" y="176">(no unwaived findings)</text>
-        <text class="id" x="614" y="197">SIM:sim_fifo</text><text class="s" x="740" y="197">(all selected tests pass)</text>
-        <text class="id" x="614" y="218">REVIEW:rtl_bugs</text><text class="s" x="740" y="218">(clean, Target sim_fifo)</text>
-        <text class="id" x="614" y="239">SYNTH:synth_fifo</text><text class="s" x="740" y="239">(area increase ≤ 10%)</text>
-        <text class="id" x="614" y="260">FPGA:fpga_fifo</text><text class="s" x="740" y="260">(Fmax ≥ 100 MHz)</text>
-        <path class="ln" d="M520 200 H600" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
-        <text class="e" x="560" y="191" text-anchor="middle">enter / finish</text>
+        <!-- everything that moves to the server: Sandbox, egress proxy, licensed tools -->
+        <g class="mv">
+          <rect class="bx" x="296" y="8" width="120" height="40"/>
+          <text class="t" x="356" y="33" text-anchor="middle">The Internet</text>
+          <path class="ln" d="M356 48 V104" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
+          <text class="e" x="348" y="84" text-anchor="end">LLM provider only</text>
+          <text class="des" x="296" y="99">U2</text>
+          <rect class="bx" x="296" y="104" width="120" height="46"/>
+          <text class="t" x="356" y="132" text-anchor="middle">Egress proxy</text>
+          <path class="ln" d="M356 150 V176"/>
+          <text class="pn" x="364" y="168">3</text>
 
-        <!-- worktree and MCP server -->
-        <path class="ln" d="M265 270 V320" marker-end="url(#f2a)"/>
-        <text class="e" x="273" y="300">edits</text>
-        <rect class="bx" x="190" y="320" width="150" height="64"/>
-        <text class="t" x="265" y="347" text-anchor="middle">Project Git worktree</text>
-        <text class="s" x="265" y="367" text-anchor="middle">(RTL, TB)</text>
+          <g class="only-server">
+            <path class="chip ghost" d="M218 188 H305 A8 8 0 0 0 321 188 H408 V414 H218 Z"/>
+            <path class="chip ghost" d="M212 182 H299 A8 8 0 0 0 315 182 H402 V408 H212 Z"/>
+          </g>
+          <path class="chip" d="M206 176 H293 A8 8 0 0 0 309 176 H396 V402 H206 Z"/>
+          <text class="des only-local" x="206" y="170">U1</text>
+          <text class="des only-server" x="206" y="170">U1 … Un, one per user</text>
+          <text class="mark" x="301" y="199" text-anchor="middle">BOOLEY SANDBOX</text>
+          <text class="s2" x="301" y="214" text-anchor="middle">Docker container</text>
+          <rect class="blk" x="222" y="224" width="158" height="42"/>
+          <text class="t2" x="301" y="242" text-anchor="middle">Developer Agent</text>
+          <text class="s2" x="301" y="258" text-anchor="middle">Claude Code or Codex</text>
+          <rect class="blk" x="222" y="274" width="158" height="42"/>
+          <text class="t2" x="301" y="292" text-anchor="middle">Project</text>
+          <text class="s2" x="301" y="308" text-anchor="middle">RTL, testbenches</text>
+          <rect class="blk" x="222" y="324" width="158" height="52"/>
+          <text class="t2" x="301" y="345" text-anchor="middle">EDA tools</text>
+          <text class="s2" x="301" y="363" text-anchor="middle">Verilator, Icarus, Yosys</text>
+          <path class="ln" d="M190 245 H206 M190 350 H206"/>
+          <text class="pn" x="198" y="239" text-anchor="middle">1</text>
+          <text class="pn" x="198" y="344" text-anchor="middle">2</text>
 
-        <path class="ln" d="M455 270 V320" marker-end="url(#f2a)"/>
-        <text class="e" x="463" y="300">MCP</text>
-        <rect class="bx" x="370" y="320" width="260" height="64"/>
-        <text class="t" x="500" y="347" text-anchor="middle">MCP Server: Booley Flows</text>
-        <text class="s" x="500" y="367" text-anchor="middle">(calls EDA tools using Edalize API)</text>
-
-        <path class="ln ok" d="M615 320 V270" marker-end="url(#f2g)"/>
-        <text class="e ok" x="623" y="300">evidence</text>
-
-        <!-- specialist agents -->
-        <path class="ln" d="M630 352 H670" marker-end="url(#f2a)"/>
-        <rect class="bx" x="670" y="320" width="230" height="140"/>
-        <rect class="hd" x="670" y="320" width="230" height="32"/>
-        <text class="t" x="684" y="341">Specialist Agents</text>
-        <text class="b" x="684" y="374">• <tspan class="k">reviewer:</tspan> single-focus code review</text>
-        <text class="s" x="694" y="392">(bugs, spec, protocol, security, ...)</text>
-        <text class="b" x="684" y="413">• <tspan class="k">mutation_tester:</tspan> mutation testing</text>
-        <text class="b" x="684" y="434">• <tspan class="k">coverage_analyst:</tspan> explains coverage,</text>
-        <text class="b" x="694" y="451">suggests next steps</text>
-
-        <!-- EDA tools row -->
-        <path class="ln" d="M500 384 V484" marker-end="url(#f2a)"/>
-        <rect class="grp" x="370" y="484" width="530" height="84"/>
-        <text class="s" x="384" y="502">EDA tools</text>
-        <rect class="bx" x="390" y="510" width="150" height="46"/>
-        <text class="b" x="465" y="530" text-anchor="middle" font-weight="600">Linter</text>
-        <text class="s" x="465" y="547" text-anchor="middle">(Verilator)</text>
-        <rect class="bx" x="560" y="510" width="150" height="46"/>
-        <text class="b" x="635" y="530" text-anchor="middle" font-weight="600">Simulator</text>
-        <text class="s" x="635" y="547" text-anchor="middle">(Verilator / iverilog)</text>
-        <rect class="bx" x="730" y="510" width="150" height="46"/>
-        <text class="b" x="805" y="530" text-anchor="middle" font-weight="600">Synthesis Tool</text>
-        <text class="s" x="805" y="547" text-anchor="middle">(Yosys)</text>
-
-        <!-- outside, right: host tool, mounted read-only -->
-        <rect class="bx" x="976" y="500" width="144" height="52"/>
-        <text class="t" x="1048" y="522" text-anchor="middle">Heavy tool installed</text>
-        <text class="t" x="1048" y="541" text-anchor="middle">on Host (Vivado)</text>
-        <path class="ln" d="M976 526 H900" marker-end="url(#f2a)"/>
-        <text class="e" x="948" y="500" text-anchor="middle">Read-only</text>
-        <text class="e" x="948" y="514" text-anchor="middle">Mount</text>
+          <text class="des" x="36" y="379">U3</text>
+          <rect class="bx" x="36" y="384" width="160" height="50"/>
+          <text class="t2" x="116" y="404" text-anchor="middle">Licensed EDA tools</text>
+          <text class="s2" x="116" y="422" text-anchor="middle">installed outside the container</text>
+          <path class="ln" d="M100 384 V350 H190" marker-end="url(#f2a)"/>
+          <text class="e" x="108" y="372">read-only</text>
+        </g>
       </svg>
 
-      <svg class="arch arch-m fig2-tall" viewBox="0 0 390 1446" role="img" aria-labelledby="fig2tt fig2d">
-        <title id="fig2tt">Booley architecture</title>
-        <!-- phone layout of Figure 2: same blocks and edges, stacked vertically -->
+      <svg class="dep-tall dep-tall--local" viewBox="0 0 390 516" role="img" aria-label="Local setup: VS Code, the Booley Sandbox, the egress proxy, and licensed EDA tools all run on your PC.">
         <defs>
-          <marker id="f2ma" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
-          <marker id="f2mg" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah ok" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
+          <marker id="f2l" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
         </defs>
+        <rect class="tb" x="8" y="14" width="200" height="22"/>
+        <path class="tb" d="M48 14 V36 M128 14 V36"/>
+        <text class="tbt" x="28" y="29" text-anchor="middle">Fig. 2</text>
+        <text class="tbt" x="88" y="29" text-anchor="middle">Local setup</text>
+        <rect class="okbox" x="136" y="21" width="7" height="7"/>
+        <text class="tbt" x="149" y="29">Supported</text>
+        <rect class="bx" x="236" y="8" width="130" height="40"/>
+        <text class="t" x="301" y="33" text-anchor="middle">The Internet</text>
 
-        <!-- outside: internet, egress proxy, VS Code -->
-        <rect class="bx" x="8" y="6" width="110" height="52"/>
-        <text class="t" x="63" y="37" text-anchor="middle">The Internet</text>
-        <path class="ln" d="M118 30 H222" marker-start="url(#f2ma)" marker-end="url(#f2ma)"/>
-        <text class="e" x="170" y="50" text-anchor="middle">LLM provider</text>
-        <text class="e" x="170" y="67" text-anchor="middle">only</text>
-        <rect class="bx" x="222" y="6" width="160" height="52"/>
-        <text class="t" x="302" y="28" text-anchor="middle">Egress Proxy</text>
-        <text class="t" x="302" y="48" text-anchor="middle">Container</text>
-        <rect class="bx" x="8" y="96" width="110" height="40"/>
-        <text class="t" x="63" y="122" text-anchor="middle">VS Code</text>
-        <path class="ln" d="M63 136 V200" marker-end="url(#f2ma)"/>
-        <path class="ln" d="M302 58 V200" marker-start="url(#f2ma)" marker-end="url(#f2ma)"/>
+        <rect class="mach" x="4" y="64" width="382" height="446"/>
+        <text class="m" x="20" y="88">Your PC</text>
+        <path class="ln" d="M301 48 V108" marker-start="url(#f2l)" marker-end="url(#f2l)"/>
+        <text class="e" x="293" y="84" text-anchor="end">LLM provider only</text>
+        <text class="des" x="24" y="103">J1</text>
+        <rect class="bx" x="24" y="108" width="140" height="46"/>
+        <text class="t" x="94" y="136" text-anchor="middle">VS Code</text>
+        <text class="des" x="236" y="103">U2</text>
+        <rect class="bx" x="236" y="108" width="130" height="46"/>
+        <text class="t" x="301" y="136" text-anchor="middle">Egress proxy</text>
+        <path class="ln" d="M94 154 V198" marker-end="url(#f2l)"/>
+        <text class="e" x="102" y="182">attach</text>
+        <path class="ln" d="M301 154 V198"/>
 
-        <!-- the Sandbox boundary -->
-        <rect class="sandbox" x="4" y="166" width="382" height="1174"/>
-        <text class="sbl" x="18" y="1324">Booley devcontainer Sandbox</text>
+        <path class="chip" d="M24 198 H182 A8 8 0 0 0 198 198 H356 V412 H24 Z"/>
+        <text class="des" x="24" y="192">U1</text>
+        <text class="mark" x="190" y="222" text-anchor="middle">BOOLEY SANDBOX</text>
+        <text class="s2" x="190" y="237" text-anchor="middle">Docker container</text>
+        <rect class="blk" x="40" y="248" width="300" height="42"/>
+        <text class="t2" x="190" y="266" text-anchor="middle">Developer Agent</text>
+        <text class="s2" x="190" y="282" text-anchor="middle">Claude Code or Codex</text>
+        <rect class="blk" x="40" y="298" width="300" height="42"/>
+        <text class="t2" x="190" y="316" text-anchor="middle">Project</text>
+        <text class="s2" x="190" y="332" text-anchor="middle">RTL, testbenches</text>
+        <rect class="blk" x="40" y="348" width="300" height="52"/>
+        <text class="t2" x="190" y="369" text-anchor="middle">EDA tools</text>
+        <text class="s2" x="190" y="387" text-anchor="middle">Verilator, Icarus, Yosys</text>
 
-        <!-- agent session -->
-        <rect class="bx" x="18" y="200" width="354" height="218"/>
-        <rect class="hd" x="18" y="200" width="354" height="54"/>
-        <text class="t" x="195" y="223" text-anchor="middle">Agent session (Claude Code or Codex)</text>
-        <text class="s" x="195" y="244" text-anchor="middle">Interactive or Goal Mode</text>
-        <text class="s" x="32" y="278">Examples:</text>
-        <text class="q" x="32" y="300">“Debug the backpressure test failure</text>
-        <text class="q" x="40" y="319">on heavy target”</text>
-        <text class="q" x="32" y="342">“Compare synth area between the</text>
-        <text class="q" x="40" y="361">following commits: ...”</text>
-        <text class="q" x="32" y="384">“Run security review on the control</text>
-        <text class="q" x="40" y="403">unit module”</text>
+        <text class="des" x="24" y="445">U3</text>
+        <rect class="bx" x="24" y="450" width="200" height="50"/>
+        <text class="t2" x="124" y="470" text-anchor="middle">Licensed EDA tools</text>
+        <text class="s2" x="124" y="488" text-anchor="middle">installed outside the container</text>
+        <path class="ln" d="M124 450 V412" marker-end="url(#f2l)"/>
+        <text class="e" x="132" y="436">read-only</text>
+      </svg>
 
-        <!-- three edges leave the agent: edits, enter / finish, MCP -->
-        <path class="ln" d="M56 418 V770" marker-end="url(#f2ma)"/>
-        <text class="e" x="64" y="448">edits</text>
-        <path class="ln" d="M191 418 V470" marker-start="url(#f2ma)" marker-end="url(#f2ma)"/>
-        <text class="e" x="199" y="448">enter / finish</text>
-        <path class="ln" d="M336 418 V770" marker-end="url(#f2ma)"/>
-        <text class="e" x="328" y="448" text-anchor="end">MCP</text>
+      <svg class="dep-tall dep-tall--server" viewBox="0 0 390 696" role="img" aria-label="Server setup, in progress: your PC runs only VS Code or a browser; one Booley Sandbox per user, the egress proxy, and licensed EDA tools run on a shared server.">
+        <defs>
+          <marker id="f2s" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
+        </defs>
+        <rect class="tb" x="8" y="14" width="200" height="22"/>
+        <path class="tb" d="M48 14 V36 M128 14 V36"/>
+        <text class="tbt" x="28" y="29" text-anchor="middle">Fig. 2</text>
+        <text class="tbt" x="88" y="29" text-anchor="middle">Server setup</text>
+        <rect class="wipbox" x="136" y="21" width="7" height="7"/>
+        <text class="tbt" x="149" y="29">In progress</text>
 
-        <!-- Goals -->
-        <rect class="bx ok" x="96" y="470" width="190" height="258"/>
-        <rect class="hd ok" x="96" y="470" width="190" height="32"/>
-        <text class="t" x="110" y="492">Goals</text>
-        <text class="id" x="110" y="524">LINT:lint_fifo</text><text class="s" x="110" y="543">(no unwaived findings)</text>
-        <text class="id" x="110" y="567">SIM:sim_fifo</text><text class="s" x="110" y="586">(all selected tests pass)</text>
-        <text class="id" x="110" y="610">REVIEW:rtl_bugs</text><text class="s" x="110" y="629">(clean, Target sim_fifo)</text>
-        <text class="id" x="110" y="653">SYNTH:synth_fifo</text><text class="s" x="110" y="672">(area increase ≤ 10%)</text>
-        <text class="id" x="110" y="696">FPGA:fpga_fifo</text><text class="s" x="110" y="715">(Fmax ≥ 100 MHz)</text>
+        <rect class="mach" x="4" y="48" width="382" height="122"/>
+        <text class="m" x="20" y="72">Your PC</text>
+        <text class="des" x="24" y="91">J1</text>
+        <rect class="bx" x="24" y="96" width="140" height="46"/>
+        <text class="t" x="94" y="116" text-anchor="middle">VS Code</text>
+        <text class="s2" x="94" y="133" text-anchor="middle">or browser</text>
+        <text class="note" x="275" y="124" text-anchor="middle">Only the editor runs here.</text>
 
-        <!-- worktree and MCP server -->
-        <rect class="bx" x="18" y="770" width="128" height="96"/>
-        <text class="t" x="82" y="802" text-anchor="middle">Project Git</text>
-        <text class="t" x="82" y="822" text-anchor="middle">worktree</text>
-        <text class="s" x="82" y="846" text-anchor="middle">(RTL, TB)</text>
-        <rect class="bx" x="166" y="770" width="206" height="96"/>
-        <text class="t" x="269" y="794" text-anchor="middle">MCP Server:</text>
-        <text class="t" x="269" y="814" text-anchor="middle">Booley Flows</text>
-        <text class="s" x="269" y="836" text-anchor="middle">(calls EDA tools using</text>
-        <text class="s" x="269" y="854" text-anchor="middle">Edalize API)</text>
-        <path class="ln ok" d="M226 770 V728" marker-end="url(#f2mg)"/>
-        <text class="e ok" x="234" y="750">evidence</text>
+        <rect class="bx" x="236" y="184" width="130" height="40"/>
+        <text class="t" x="301" y="209" text-anchor="middle">The Internet</text>
 
-        <!-- specialist agents -->
-        <path class="ln" d="M200 866 V916" marker-end="url(#f2ma)"/>
-        <rect class="bx" x="18" y="916" width="328" height="150"/>
-        <rect class="hd" x="18" y="916" width="328" height="32"/>
-        <text class="t" x="32" y="938">Specialist Agents</text>
-        <text class="b" x="32" y="972">• <tspan class="k">reviewer:</tspan> single-focus code review</text>
-        <text class="s" x="44" y="991">(bugs, spec, protocol, security, ...)</text>
-        <text class="b" x="32" y="1015">• <tspan class="k">mutation_tester:</tspan> mutation testing</text>
-        <text class="b" x="32" y="1039">• <tspan class="k">coverage_analyst:</tspan> explains coverage,</text>
-        <text class="b" x="44" y="1058">suggests next steps</text>
+        <rect class="mach" x="4" y="240" width="382" height="450"/>
+        <text class="m" x="20" y="264">Server</text>
+        <rect class="wipbox" x="78" y="255" width="7" height="7"/>
+        <text class="wip" x="91" y="264">In progress</text>
+        <path class="ln" d="M94 142 V200 H170 V370" marker-end="url(#f2s)"/>
+        <text class="e" x="102" y="193">SSH / tunnel</text>
+        <path class="ln" d="M301 224 V280" marker-start="url(#f2s)" marker-end="url(#f2s)"/>
+        <text class="e" x="293" y="256" text-anchor="end">LLM provider only</text>
+        <text class="des" x="236" y="275">U2</text>
+        <rect class="bx" x="236" y="280" width="130" height="46"/>
+        <text class="t" x="301" y="308" text-anchor="middle">Egress proxy</text>
+        <path class="ln" d="M301 326 V370"/>
 
-        <!-- EDA tools -->
-        <path class="ln" d="M358 866 V1110" marker-end="url(#f2ma)"/>
-        <rect class="grp" x="18" y="1110" width="354" height="180"/>
-        <text class="s" x="32" y="1131">EDA tools</text>
-        <rect class="bx" x="32" y="1142" width="326" height="38"/>
-        <text class="b" x="46" y="1166"><tspan class="k">Linter</tspan> (Verilator)</text>
-        <rect class="bx" x="32" y="1190" width="326" height="38"/>
-        <text class="b" x="46" y="1214"><tspan class="k">Simulator</tspan> (Verilator / iverilog)</text>
-        <rect class="bx" x="32" y="1238" width="326" height="38"/>
-        <text class="b" x="46" y="1262"><tspan class="k">Synthesis Tool</tspan> (Yosys)</text>
+        <path class="chip ghost" d="M36 382 H194 A8 8 0 0 0 210 382 H368 V596 H36 Z"/>
+        <path class="chip ghost" d="M30 376 H188 A8 8 0 0 0 204 376 H362 V590 H30 Z"/>
+        <path class="chip" d="M24 370 H182 A8 8 0 0 0 198 370 H356 V584 H24 Z"/>
+        <text class="des" x="24" y="364">U1 … Un, one per user</text>
+        <text class="mark" x="190" y="394" text-anchor="middle">BOOLEY SANDBOX</text>
+        <text class="s2" x="190" y="409" text-anchor="middle">Docker container</text>
+        <rect class="blk" x="40" y="420" width="300" height="42"/>
+        <text class="t2" x="190" y="438" text-anchor="middle">Developer Agent</text>
+        <text class="s2" x="190" y="454" text-anchor="middle">Claude Code or Codex</text>
+        <rect class="blk" x="40" y="470" width="300" height="42"/>
+        <text class="t2" x="190" y="488" text-anchor="middle">Project</text>
+        <text class="s2" x="190" y="504" text-anchor="middle">RTL, testbenches</text>
+        <rect class="blk" x="40" y="520" width="300" height="52"/>
+        <text class="t2" x="190" y="541" text-anchor="middle">EDA tools</text>
+        <text class="s2" x="190" y="559" text-anchor="middle">Verilator, Icarus, Yosys</text>
 
-        <!-- outside, below: host tool, mounted read-only -->
-        <rect class="bx" x="200" y="1384" width="182" height="52"/>
-        <text class="t" x="291" y="1406" text-anchor="middle">Heavy tool installed</text>
-        <text class="t" x="291" y="1426" text-anchor="middle">on Host (Vivado)</text>
-        <path class="ln" d="M290 1384 V1290" marker-end="url(#f2ma)"/>
-        <text class="e" x="282" y="1366" text-anchor="end">Read-only Mount</text>
+        <text class="des" x="24" y="617">U3</text>
+        <rect class="bx" x="24" y="622" width="200" height="50"/>
+        <text class="t2" x="124" y="642" text-anchor="middle">Licensed EDA tools</text>
+        <text class="s2" x="124" y="660" text-anchor="middle">installed outside the container</text>
+        <path class="ln" d="M124 622 V584" marker-end="url(#f2s)"/>
+        <text class="e" x="132" y="608">read-only</text>
       </svg>
     </div>
-    <figcaption id="fig2cap"><b>Figure 2.</b> Booley architecture.</figcaption>
+    <figcaption id="fig2cap"><span class="dep__cap--local"><b>Figure 2.</b> Local setup: everything runs on your PC.</span><span class="dep__cap--server"><b>Figure 2.</b> Server setup (in progress, <a href="https://github.com/boldaxolotl/booley/issues/2586">#2586</a>): Sandboxes, agents, and EDA tools move to a shared server, one Sandbox per user. Your PC only runs VS Code or a browser.</span> How the parts fit together: <a href="docs/architecture/">architecture</a>.</figcaption>
   </figure>
+  <script>
+    /* Figure 2's switch: set data-mode on the figure; CSS does the motion. */
+    (function () {
+      var fig = document.getElementById("fig2");
+      var wide = fig.querySelector(".dep-wide");
+      var labels = {
+        local: wide.getAttribute("aria-label"),
+        server: fig.querySelector(".dep-tall--server").getAttribute("aria-label")
+      };
+      var switcher = fig.querySelector(".dep__switch");
+      switcher.hidden = false;
+      switcher.addEventListener("click", function (event) {
+        var button = event.target.closest("button");
+        if (!button) return;
+        var mode = button.dataset.mode;
+        fig.dataset.mode = mode;
+        wide.setAttribute("aria-label", labels[mode]);
+        switcher.querySelectorAll("button").forEach(function (b) {
+          b.setAttribute("aria-pressed", String(b === button));
+        });
+      });
+    })();
+  </script>
 
   <h2 class="sec" id="flows"><span class="n">3</span>Flow characteristics</h2>
   <div class="tbl">

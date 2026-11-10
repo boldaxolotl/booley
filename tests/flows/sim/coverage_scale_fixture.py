@@ -8,12 +8,12 @@ from booley.flows.sim.coverage_campaign import (
     CoveragePoint,
     CoveragePointIdentity,
     DurableTargetIdentity,
-    decode_coverage_campaign,
     derive_coverage_rollups,
     encode_coverage_point,
     encode_coverage_point_id,
 )
 from booley.flows.sim.coverage_json import freeze_coverage_mapping
+from tests.flows.sim.coverage_campaign_test_support import decode_document
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 
@@ -21,7 +21,7 @@ def scale_campaign(point_count: int) -> CoverageCampaign:
     """Build a stable mixed Campaign whose point population has realistic query dimensions."""
     document = _valid_document()
     target = DurableTargetIdentity(document["target"]["identity"])
-    base = decode_coverage_campaign(document, target)
+    base = decode_document(document, target)
     attributes = base.collector.capabilities[0].attributes
     capabilities = tuple(
         CoverageCapability(metric, "reported", attributes)

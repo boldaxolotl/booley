@@ -85,8 +85,6 @@ from booley.harness.bootstrap import (
     parse_git_version,
     reconcile_bootstrap,
 )
-from booley.harness.colors import bold_amber, green, red, yellow
-from booley.harness.image_lifecycle import reconcile as reconcile_images
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import (
     InitContext,
@@ -147,6 +145,7 @@ from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
 from booley.harness.terminal_status import LineStatus, section_header, status_line
+from booley.presentation.colors import bold_amber, green, red, yellow
 from booley.projects.inventory import ProjectInventoryError, remember_project
 from booley.runtime import auth_token, dashboard_tasks, doctor_stamp, project_repositories
 from booley.runtime import devcontainer as dc
@@ -163,7 +162,7 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.docker_capacity import DockerCapacityError
-from booley.runtime.docs_links import docs_url
+from booley.runtime.docs_links import docs_url, sandbox_doc_path
 from booley.runtime.git import add_git_excludes, stealth_exclude_names
 from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
 from booley.runtime.image_lifecycle import (
@@ -221,6 +220,7 @@ BOOLEY_TOML_SKELETON = f"""\
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
 # BOOLEY_TEST_RUN_NAME, BOOLEY_TEST_VARIANT, BOOLEY_TEST_SEED,
 # BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...). Reference:
+# {sandbox_doc_path("FLOW-SIM.md")} → "Pre-Sim Commands" (Sandbox), online:
 # {docs_url("FLOW-SIM.md", "pre-sim-commands-flowssimpre_run_commands")}
 #
 # [flows.sim]
