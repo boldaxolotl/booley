@@ -96,7 +96,7 @@ class TestHasBannedContent:
 
 
 class TestStealthEnabled:
-    """[stealth] enabled is opt-out — default True, gates hook + prompt note."""
+    """[stealth] enabled is opt-in — a missing key is off; gates hook + prompt note."""
 
     def _project(self, tmp_path, toml_body: bytes | None):
         bp = tmp_path / ".booley"
@@ -105,16 +105,29 @@ class TestStealthEnabled:
             (bp / "booley.toml").write_bytes(toml_body)
         return tmp_path
 
-    def test_default_true_when_no_config(self, tmp_path):
+    def test_off_when_no_config(self, tmp_path):
         from booley.commit_policy.policy import stealth_enabled
 
         root = self._project(tmp_path, None)  # no booley.toml
-        assert stealth_enabled(root) is True
+        assert stealth_enabled(root) is False
 
-    def test_default_true_when_no_stealth_section(self, tmp_path):
+    def test_off_when_no_stealth_section(self, tmp_path):
         from booley.commit_policy.policy import stealth_enabled
 
         root = self._project(tmp_path, b"[jobs]\nmax_tickets = 2\n")
+        assert stealth_enabled(root) is False
+
+    def test_off_when_stealth_section_omits_enabled(self, tmp_path):
+        from booley.commit_policy.policy import stealth_enabled
+
+        root = self._project(tmp_path, b'[stealth]\nbanned_words = ["foo"]\n')
+        assert stealth_enabled(root) is False
+
+    def test_unparsable_config_fails_closed(self, tmp_path):
+        """An unreadable choice keeps the leak guards on rather than dropping them."""
+        from booley.commit_policy.policy import stealth_enabled
+
+        root = self._project(tmp_path, b"[stealth\nenabled = false\n")
         assert stealth_enabled(root) is True
 
     def test_false_when_disabled(self, tmp_path):
@@ -141,11 +154,11 @@ class TestStealthEnabled:
         assert section.get("banned_words") == ["foo"]
 
     def test_malformed_stealth_section_is_ignored(self, tmp_path):
-        """A non-table [stealth] value must not crash — defaults to enabled."""
+        """A non-table [stealth] value must not crash — it records no choice, so off."""
         from booley.commit_policy.policy import stealth_enabled
 
         root = self._project(tmp_path, b'stealth = "yes"\n')
-        assert stealth_enabled(root) is True
+        assert stealth_enabled(root) is False
 
     def test_source_checkout_is_never_stealth_even_with_stale_config(self, tmp_path):
         from booley.commit_policy.policy import banned_phrases, stealth_enabled
@@ -221,9 +234,9 @@ class TestStealthEnabled:
     def test_invalid_enabled_type_logs_and_uses_default(self, tmp_path, caplog):
         from booley.commit_policy.policy import stealth_enabled
 
-        root = self._project(tmp_path, b'[stealth]\nenabled = "false"\n')
+        root = self._project(tmp_path, b'[stealth]\nenabled = "true"\n')
 
-        assert stealth_enabled(root) is True
+        assert stealth_enabled(root) is False
         assert "[stealth] enabled must be a boolean" in caplog.text
 
 

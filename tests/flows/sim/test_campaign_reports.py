@@ -10,6 +10,7 @@ import pytest
 from booley.flows.sim import campaign_reports
 from booley.flows.sim.campaign import collect_pre_sim_firings
 from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+from booley.flows.sim.coverage_campaign import CoverageRollup
 from booley.flows.sim.flow import (
     SimulateFlow,
     _campaign_report_lines,
@@ -200,7 +201,10 @@ def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
     monkeypatch.setattr(
         flow,
         "_resolved_coverage_campaigns",
-        lambda _outcomes: resolved.append(True) or {"sim": object()},
+        lambda _outcomes: (
+            resolved.append(True)
+            or {"sim": SimpleNamespace(collection={"status": "collector_error"})}
+        ),
     )
     monkeypatch.setattr(flow, "_coverage_report_suffix", lambda _campaign: "coverage")
     monkeypatch.setattr(flow, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"])
@@ -208,7 +212,7 @@ def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
 
     outcome = SimpleNamespace(
         target={"selector": "sim"},
-        manifest_path=Path("/manifest.json"),
+        manifest_path=Path("/target/campaign/manifest.json"),
         aggregate_grade="fail",
         coverage_reference=object(),
         observations=[
@@ -1398,3 +1402,117 @@ def test_simulation_reservation_stops_at_the_invocation_ceiling(tmp_path: Path) 
         pytest.raises(RuntimeError, match="reservation ceiling exceeded"),
     ):
         flow.reserve_invocation_dir()
+
+
+def _rollup(metric: str, covered: int, eligible: int) -> CoverageRollup:
+    """A stored rollup; ``percent`` follows the stored two-decimal rounding."""
+    percent = None if eligible == 0 else round(covered * 100 / eligible, 2)
+    return CoverageRollup(
+        metric=metric,
+        semantics="booley.coverage-semantics/v1",
+        total_points=eligible,
+        eligible_points=eligible,
+        covered_points=covered,
+        waived_points=0,
+        percent=percent,
+    )
+
+
+def _coverage_card(
+    tmp_path: Path,
+    rollups: list[CoverageRollup],
+    thresholds: dict[str, float | None] | None = None,
+    *,
+    status: str = "complete",
+) -> list[str]:
+    """Render one coverage Target's card block from a stub Coverage Campaign."""
+    campaign = SimpleNamespace(
+        collection={"status": status, "diagnostics": ()},
+        evaluation={
+            "status": "not_requested",
+            "diagnostics": (),
+            "metrics": (),
+            "thresholds": thresholds or {},
+        },
+        rollups=tuple(rollups),
+        source_closure={},
+        findings=(),
+    )
+    outcome = SimpleNamespace(
+        target={"selector": "sim_soc"},
+        manifest_path=tmp_path / "targets/sim_soc/campaign/manifest.json",
+        aggregate_grade="pass",
+        coverage_reference=object(),
+        observations=(),
+    )
+    return _campaign_report_lines(
+        (outcome,), {"sim_soc": campaign}, trailing_lines=None, report_path=tmp_path / "r.json"
+    )[0].splitlines()
+
+
+def test_coverage_card_lists_every_collected_metric(tmp_path: Path) -> None:
+    lines = _coverage_card(
+        tmp_path,
+        [_rollup("line", 9239, 10000), _rollup("branch", 81, 100), _rollup("toggle", 642, 1000)],
+    )
+
+    assert lines[-2:] == [
+        "  coverage: line 92.3% · branch 81.0% · toggle 64.2%",
+        f"  coverage campaign: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}",
+    ]
+
+
+def test_coverage_card_shows_threshold_met_and_missed(tmp_path: Path) -> None:
+    lines = _coverage_card(
+        tmp_path,
+        [
+            _rollup("line", 7999, 10000),
+            _rollup("branch", 81, 100),
+            _rollup("expression", 8526, 10000),
+            _rollup("toggle", 8524, 10000),
+        ],
+        {"line": 80, "branch": 80, "expression": 85.25, "toggle": 85.25},
+    )
+
+    assert (
+        "  coverage: "
+        + " · ".join(
+            [
+                "line 79.9% (min 80%, missed)",
+                "branch 81.0% (min 80%, met)",
+                "expression 85.26% (min 85.25%, met)",
+                "toggle 85.24% (min 85.25%, missed)",
+            ]
+        )
+        in lines
+    )
+
+
+def test_coverage_card_long_minimum_never_rounds_up_to_it(tmp_path: Path) -> None:
+    # 1/3 is below the float 100/3; a float division would print it equal to the minimum.
+    lines = _coverage_card(tmp_path, [_rollup("line", 1, 3)], {"line": 100 / 3})
+    assert "  coverage: line 33.333333333333333% (min 33.333333333333336%, missed)" in lines
+
+
+def test_coverage_card_prints_na_without_eligible_points(tmp_path: Path) -> None:
+    lines = _coverage_card(
+        tmp_path,
+        [_rollup("line", 1, 2), _rollup("toggle", 0, 0)],
+        {"toggle": 80},
+    )
+    assert "  coverage: line 50.0% · toggle n/a (min 80%, missed)" in lines
+
+    lines = _coverage_card(tmp_path, [_rollup("toggle", 0, 0)])
+    assert "  coverage: toggle n/a" in lines
+
+
+def test_coverage_card_omits_metrics_unless_collection_complete(tmp_path: Path) -> None:
+    lines = _coverage_card(tmp_path, [_rollup("line", 1, 2)], status="collector_error")
+    assert not any(line.startswith("  coverage: ") for line in lines)
+    assert (
+        f"  coverage campaign: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}" in lines
+    )
+
+    # A complete collection with no points at all has nothing to list either.
+    lines = _coverage_card(tmp_path, [])
+    assert not any(line.startswith("  coverage: ") for line in lines)

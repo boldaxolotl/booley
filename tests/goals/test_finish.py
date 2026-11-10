@@ -21,7 +21,7 @@ from booley.goals.model import GoalState, parse_goal_args
 from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
-from tests.goals.conftest import bind, enter_goals, git
+from tests.goals.conftest import bind, enable_stealth, enter_goals, git
 from tests.goals.test_status import publish
 
 # These multi-step Git/Reviewer cases retain the established Goal lifecycle budget.
@@ -52,6 +52,10 @@ def request(layout: SimpleNamespace, **options) -> LifecycleRequest:
 
 @pytest.fixture
 def complete(layout: SimpleNamespace) -> SimpleNamespace:
+    return _completed(layout)
+
+
+def _completed(layout: SimpleNamespace) -> SimpleNamespace:
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     git(layout.main, "config", "user.name", "Goal Test")
@@ -76,7 +80,8 @@ def publication_layout(layout: SimpleNamespace) -> SimpleNamespace:
     return layout
 
 
-def test_stealth_completion_is_frozen_and_makes_zero_git_writes(complete):
+def test_stealth_completion_is_frozen_and_makes_zero_git_writes(layout):
+    complete = _completed(enable_stealth(layout))
     call = request(complete, explain_html=True)
     before = git(complete.worktree, "rev-parse", "HEAD")
     object_count = git(complete.worktree, "count-objects", "-v")

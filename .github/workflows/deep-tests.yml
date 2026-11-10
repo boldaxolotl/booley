@@ -35,6 +35,11 @@ jobs:
         timeout-minutes: 3
         run: python -m pip cache purge
 
+      # Before the install, so no install byproduct can exist in the checkout yet.
+      - name: Generate mutation sandbox copy list
+        id: also-copy
+        run: python .github/scripts/mutmut_also_copy.py
+
       - name: Install pinned mutation environment
         run: pip install -e ".[test,mutation]" -c .github/ci/constraints.txt
 
@@ -66,7 +71,7 @@ jobs:
           fi
 
       - name: Record mutation results
-        if: always()
+        if: always() && steps.also-copy.outcome == 'success'
         shell: bash
         run: |
           mutmut results --all true | tee mutation-evidence/results.txt

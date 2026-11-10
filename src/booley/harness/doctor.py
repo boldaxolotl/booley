@@ -1635,12 +1635,12 @@ def _check_worktree_core_shadow_guard(
         _warn(
             f".booley/FUSESOC_IGNORE missing and {len(shadow_cores)} "
             "worktree .core copy/copies can shadow the source at the Project Root in "
-            "FuseSoC's --cores-root scan; run `booley init` to add the marker"
+            f"FuseSoC's --cores-root scan; run {runtime_context.booley_init_hint(code=True)} to add the marker"
         )
     else:
         _warn(
             ".booley/FUSESOC_IGNORE missing; a future worktree's "
-            ".core could shadow the source at the Project Root — run `booley init`"
+            f".core could shadow the source at the Project Root — run {runtime_context.booley_init_hint(code=True)}"
         )
 
 
@@ -4094,7 +4094,7 @@ def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> No
     if not gitignore.is_file():
         _warn(
             ".booley/.gitignore missing; transient Booley state may be tracked",
-            "booley init",
+            runtime_context.booley_init_hint(),
         )
         return
     try:
@@ -4106,7 +4106,7 @@ def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> No
     if missing:
         _warn(
             f".booley/.gitignore is missing {len(missing)} pattern(s): {', '.join(missing)}",
-            "booley init",
+            runtime_context.booley_init_hint(),
         )
         return
     _pass("transient Booley state is gitignored")
@@ -4116,13 +4116,20 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
     """Inspect durable inputs in their owning repositories, separately from outer history."""
     from booley.commit_policy import stealth_enabled
     from booley.runtime.project_trackability import (
-        FIX,
+        STEALTH_UNSET,
+        STEALTH_UNSET_FIX,
+        fix,
         history_probe,
         inspect_project_trackability,
+        unrecorded_stealth_exclusions,
     )
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
+    for name in unrecorded_stealth_exclusions(root, booley_dir):
+        _warning_sink(_warn, "stealth.enabled-unset", subject=name)(
+            STEALTH_UNSET.format(name=name), STEALTH_UNSET_FIX
+        )
     inspection = inspect_project_trackability(root, booley_dir)
     probe = history_probe(root)
     for group in inspection.ignored:
@@ -4130,7 +4137,7 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
         if group.history and probe is not None and probe in group.paths:
             continue
         check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
-        _warning_sink(_warn, check_id, subject=group.subject)(group.message, FIX)
+        _warning_sink(_warn, check_id, subject=group.subject)(group.message, fix())
     for error in inspection.errors:
         _warning_sink(_warn, "project.trackability-inspection", subject="inspection-incomplete")(
             error, "repair repository access and rerun booley doctor"

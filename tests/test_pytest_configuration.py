@@ -593,6 +593,8 @@ def test_flake_stress_repeats_changed_modules_on_linux_and_windows() -> None:
     assert '--count="${STRESS_COUNT}"' in command
     assert "-n 4 --dist=load " in command
     assert "--timeout=60" in command
+    # Only exit 5 (every module skipped itself, e.g. Linux-only on Windows) is tolerated.
+    assert '-ne 0 ] && [ "${status}" -ne 5 ]' in command
     assert stress["env"]["HEADROOM"] in shard["run"]  # same Windows headroom gate
     assert _named_step(job, "Publish pytest evidence")["uses"] == (
         "./.github/actions/publish-pytest-evidence"
@@ -611,13 +613,44 @@ def test_pr_compatibility_matrix_is_pairwise() -> None:
     assert workflow["jobs"]["changes"]["outputs"]["test_matrix"] == (
         "${{ steps.classify.outputs.test_matrix }}"
     )
-    assert shard_input["default"] == "10"
+    assert shard_input["default"] == "4"
     assert shard_input["options"] == ["4", "6", "8", "10"]
     assert benchmark_input["default"] is False
     classify_step = next(
         step for step in jobs["changes"]["steps"] if step.get("name") == "Classify changed paths"
     )
     assert "--windows-shard-benchmark" in classify_step["run"]
+    assert "${{ inputs.windows_shard_count || '4' }}" in classify_step["run"]
+
+
+def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
+    """Sandbox-only tests skip on Windows only; no `-m` expression may drop them anywhere."""
+    from tests.sandbox_only import SANDBOX_ONLY_PATHS, is_sandbox_only
+
+    workflows = (REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")
+    mentions = [path.name for path in workflows if "sandbox_only" in path.read_text("utf-8")]
+    assert not mentions, f"workflows must not select on sandbox_only: {mentions}"
+    compatibility = _named_step(
+        _test_workflow()["jobs"]["test"], "Run focused Windows compatibility suite"
+    )
+    paths = [word for word in shlex.split(compatibility["run"]) if word.startswith("tests/")]
+    assert paths
+    # A compatibility leg whose paths are all skipped on Windows would pass while testing nothing.
+    # A test file is judged by the registry (its Windows exceptions included); a directory
+    # overlaps when any registry entry sits inside it or contains it.
+    skipped = [
+        path
+        for path in paths
+        if (
+            is_sandbox_only(path)
+            if path.endswith(".py")
+            else any(
+                path.startswith(entry) or entry.startswith(path.rstrip("/") + "/")
+                for entry in SANDBOX_ONLY_PATHS
+            )
+        )
+    ]
+    assert not skipped, f"Windows compatibility paths overlap the Sandbox-only registry: {skipped}"
 
 
 def test_main_push_tier_keeps_a_nightly_full_run_on_main() -> None:
@@ -655,7 +688,7 @@ def test_windows_shards_are_exactly_verified() -> None:
         if step.get("name") == "Prove every sharded test ran exactly once"
     )
     assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == (
-        "${{ inputs.windows_shard_count || '10' }}"
+        "${{ inputs.windows_shard_count || '4' }}"
     )
 
 
@@ -949,14 +982,26 @@ def test_scheduled_mutation_campaign_runs_mutmut_as_a_module() -> None:
     assert re.search(r"(?<!-m )\bmutmut run\b", run_campaign) is None
 
 
-def _tracked_repository_paths() -> list[str]:
-    result = subprocess.run(
-        ["git", "-C", str(REPOSITORY_ROOT), "ls-files", "-z"],
-        capture_output=True,
-        check=True,
-        timeout=30,
+def test_scheduled_mutation_campaign_generates_its_copy_list_first() -> None:
+    """mutmut's sandbox copy list is generated before anything else runs.
+
+    A hand-kept ``also_copy`` list broke the campaign whenever the tracked
+    layout changed (issue #3114). The generator runs before the install, so no
+    install byproduct exists yet, and before ``mutmut run``.
+    """
+    job = _deep_tests_workflow()["jobs"]["mutation"]
+    names = [step.get("name") for step in job["steps"]]
+    generate = names.index("Generate mutation sandbox copy list")
+
+    assert generate < names.index("Install pinned mutation environment")
+    assert generate < names.index("Run bounded mutation campaign")
+    assert job["steps"][generate]["run"] == "python .github/scripts/mutmut_also_copy.py"
+    assert job["steps"][generate]["id"] == "also-copy"
+    # A generator failure is the only red step; results are not read after it.
+    assert _named_step(job, "Record mutation results")["if"] == (
+        "always() && steps.also-copy.outcome == 'success'"
     )
-    return [path for path in result.stdout.decode("utf-8").split("\0") if path]
+    assert (REPOSITORY_ROOT / ".github/scripts/mutmut_also_copy.py").is_file()
 
 
 def _mutmut_config() -> dict[str, list[str]]:
@@ -978,6 +1023,8 @@ def test_mutmut_configuration_lives_only_in_setup_cfg() -> None:
     project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert "mutmut" not in project.get("tool", {})
+    # The campaign generates also_copy from the tracked layout (issue #3114).
+    assert "also_copy" not in _mutmut_config()
     assert _mutmut_config()["only_mutate"] == ["src/booley/harness/setup/*.py"]
     assert _mutmut_config()["pytest_add_cli_args_test_selection"] == ["tests/harness/"]
 
@@ -1091,60 +1138,6 @@ def test_mutmut_pytest_options_show_failing_test_traceback() -> None:
     assert "-rfE" in options
     assert "--tb=no" not in options
     assert "-x" not in options
-
-
-def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
-    """mutmut's ``mutants/`` copy stays a faithful Booley source checkout.
-
-    The copied pyproject marks ``mutants/`` as a source checkout, so importing
-    Booley there needs ``VERSION``, and harness tests read docs, workflows and
-    Sandbox Image build inputs. A tracked path that mutmut neither mutates nor
-    copies breaks the scheduled campaign before it tests a single mutant.
-    """
-    mutmut = _mutmut_config()
-    # mutmut always copies these alongside the configured source paths.
-    copied = [
-        *mutmut["source_paths"],
-        "tests/",
-        "setup.cfg",
-        "pyproject.toml",
-        *mutmut["also_copy"],
-    ]
-
-    def covered(path: str) -> bool:
-        return any(
-            path.startswith(entry) if entry.endswith("/") else path == entry for entry in copied
-        )
-
-    missing = [path for path in _tracked_repository_paths() if not covered(path)]
-    assert missing == [], (
-        "mutmut would not copy these tracked paths into mutants/; add their "
-        "top-level entry to setup.cfg [mutmut] also_copy"
-    )
-
-
-def test_mutation_sandbox_copy_order_and_build_output_exclusion() -> None:
-    """Every ``also_copy`` entry is copyable in order and skips Cargo outputs."""
-    also_copy = _mutmut_config()["also_copy"]
-    tracked = _tracked_repository_paths()
-
-    for index, entry in enumerate(also_copy):
-        # Each entry names tracked content, never an untracked build tree.
-        if entry.endswith("/"):
-            assert any(path.startswith(entry) for path in tracked), entry
-        else:
-            assert entry in tracked, entry
-        # shutil.copy2 does not create parents; an earlier directory copy must.
-        parent = Path(entry.rstrip("/")).parent.as_posix()
-        if not entry.endswith("/") and parent != ".":
-            assert any(
-                earlier.endswith("/") and earlier.startswith(f"{parent}/")
-                for earlier in also_copy[:index]
-            ), entry
-
-    build_outputs = ("crates/bwave/target/", "crates/bwave/fuzz/target/")
-    for entry in also_copy:
-        assert not any(output.startswith(entry) for output in build_outputs), entry
 
 
 def test_bwave_differential_installs_the_simulators_it_must_not_skip() -> None:
@@ -1731,6 +1724,66 @@ def test_test_verify_proves_each_linux_group_when_sharded() -> None:
     for category in CATEGORIES:
         jobs = required_jobs({category})
         assert ("test" in jobs) == ("test-verify" in jobs)
+
+
+def test_suite_resolves_failed_tmp_path_retention(pytestconfig: pytest.Config) -> None:
+    """The running session keeps `tmp_path` only for failing tests.
+
+    Catches a higher-precedence ini file (`pytest.ini`, `tox.ini`) shadowing the
+    `pyproject.toml` setting, which a TOML-only assertion would miss.
+    """
+    assert pytestconfig.getini("tmp_path_retention_policy") == "failed"
+
+
+def test_explicit_basetemp_keeps_only_failing_tmp_path(tmp_path: Path) -> None:
+    """With an explicit `--basetemp`, a passing test's directory is removed."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "test_inner.py").write_bytes(
+        b"def test_passes(tmp_path):\n"
+        b"    (tmp_path / 'out.txt').write_text('x')\n"
+        b"\n"
+        b"def test_fails(tmp_path):\n"
+        b"    (tmp_path / 'out.txt').write_text('x')\n"
+        b"    assert False\n"
+    )
+    basetemp = tmp_path / "inner-basetemp"
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name != "PYTEST_ADDOPTS" and not name.startswith("PYTEST_XDIST_")
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-c",
+            str(REPOSITORY_ROOT / "pyproject.toml"),
+            "--rootdir",
+            str(project),
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "no:xdist",
+            f"--basetemp={basetemp}",
+            "test_inner.py",
+        ],
+        cwd=project,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "1 failed, 1 passed" in output, output
+    # pytest's `*current` convenience links are platform-dependent; ignore them.
+    kept = sorted(entry.name for entry in basetemp.iterdir() if not entry.is_symlink())
+    assert kept == ["test_fails0"], output
+    assert (basetemp / "test_fails0" / "out.txt").exists()
 
 
 def _scoped_git_value(key: str, cwd: Path) -> str:

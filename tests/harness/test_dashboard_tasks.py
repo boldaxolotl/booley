@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.runtime import dashboard_tasks as tasks
-from booley.runtime import devcontainer, session_issuance
+from booley.runtime import devcontainer, runtime_context, session_issuance
 from booley.runtime.jsonc import Document
 from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
@@ -850,3 +850,29 @@ def test_dominant_newline_legacy_task_update_restores_exact_bytes(project, monke
     tasks.reconcile(project.root, project.data)
     assert project.file.read_bytes() == original
     assert project.exclude.read_bytes() == exclude
+
+
+def test_attach_refusal_names_where_to_run_init(project, monkeypatch):
+    wording = {
+        "HOST": "run booley init",
+        "HAND_WRITTEN_SANDBOX": "run booley init in this Sandbox",
+        "ISSUED_SANDBOX": "run booley init on the host",
+    }
+    tasks.reconcile(project.root, project.data)
+    ownership = project.data / "runtime/dashboard-task.json"
+    owned = ownership.read_bytes()
+    for name, where in wording.items():
+        kind = runtime_context.RuntimeLocation[name]
+        monkeypatch.setattr(runtime_context, "runtime_location", lambda kind=kind: kind)
+
+        ownership.write_text('{"schema": 99}')  # unsupported ownership record
+        with pytest.raises(ValueError, match=where):
+            tasks.attach_blocker(project.root, project.data)
+
+        ownership.unlink()  # a task file nobody owns
+        assert where in tasks.attach_blocker(project.root, project.data)
+
+        ownership.write_bytes(owned)  # an owned task whose definition has moved on
+        with monkeypatch.context() as newer:
+            newer.setattr(tasks, "TASK", {**tasks.TASK, "runOptions": {"runOn": "folderOpen"}})
+            assert where in tasks.attach_blocker(project.root, project.data)

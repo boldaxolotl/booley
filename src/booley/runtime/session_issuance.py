@@ -67,11 +67,11 @@ from booley.runtime.incontainer_git_identity import (
 )
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.private_store import SESSION_STORE_REPAIR
+from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 _IS_WINDOWS = os.name == "nt"
 STAMP_VERSION = 5
-DEVCONTAINER_TARGET = "/work/.devcontainer"
 _ALLOWED_TOP_LEVEL_KEYS = frozenset(
     {
         "name",

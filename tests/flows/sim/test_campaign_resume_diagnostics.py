@@ -366,5 +366,8 @@ def test_cli_resume_announces_validated_origin_before_execution(
     else:
         assert len(witnessed) == 1
         assert f"  manifest: {manifest.resolve()}" in result.outcome.report_text
-        assert f"  report: {(destination / 'sim.json').resolve()}" in result.outcome.report_text
+        assert (
+            f"  report: {(destination / 'sim/1/report.json').resolve()}"
+            in result.outcome.report_text
+        )
         assert result.outcome.report_text.count("  manifest:") == 1

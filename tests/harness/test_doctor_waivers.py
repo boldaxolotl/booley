@@ -174,6 +174,9 @@ def test_reporter_dedupes_one_subject_but_not_another(capsys):
 
 def test_subject_waiver_does_not_hide_sibling_finding(tmp_path, capsys):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    # Stealth requires both entries, so each subject yields its own finding.
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
     _write(
         tmp_path,
         """
@@ -181,7 +184,7 @@ version = 1
 [[waiver]]
 check = "project.git-excludes-missing"
 subject = ".booley"
-reason = "The project uses the approved open footprint."
+reason = "The project hides .booley another way."
 permanent = true
 """,
     )

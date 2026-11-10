@@ -206,6 +206,18 @@ def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> No
     assert len({entry["name"] for entry in entries}) == len(entries)
 
 
+def test_default_windows_matrix_has_four_shards() -> None:
+    """AC5: the default Windows shard count is the smallest supported one."""
+    entries = build_test_matrix(DEFAULT_WINDOWS_SHARD_COUNT)["include"]
+
+    names = [
+        entry["name"]
+        for entry in entries
+        if entry["os"] == "windows-latest" and entry["mode"] == "shard"
+    ]
+    assert names == [f"windows-3.14-shard-{index}-of-4" for index in range(1, 5)]
+
+
 def test_constraints_file_runs_the_full_python_matrix() -> None:
     """AC4: a constraints-only change selects every job, including the Windows test legs."""
     categories = classify([".github/ci/constraints.txt"])

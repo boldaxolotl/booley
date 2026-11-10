@@ -66,7 +66,7 @@ close the window, or use **Dev Containers: Rebuild Container**.
 nothing did. If the Sandbox replacement fails or you interrupt it, Booley
 restores the previous Sandbox. The Sandbox is unavailable while the new
 container starts. Afterwards it re-applies Project Initialization (Git hooks,
-Git settings, guidance links, core projections, exclude entries and the
+Git settings, guidance links, exclude entries and the
 Dashboard task). It never rewrites tracked files: CRLF files and pending
 `.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
 applies them. If that step fails, you keep the new Sandbox and the command
@@ -282,11 +282,17 @@ file:
 - **In the repository** (for example `sim-requirements.txt`): reviewed and
   cloned like any source file. Prefer this when you can add files.
 - **In the Booley Directory** (for example `.booley/sim-requirements.txt`):
-  keeps the tracked tree free of Booley files under
-  stealth mode (host doc, not shipped), but a fresh clone won't have it, so
-  `booley init` there builds without your pins. See
-  what survives a fresh clone (host doc, not shipped).
-  Don't use `.booley/docker/requirements.txt`: Booley generates that file.
+  committed with the rest of your Booley setup. Don't use
+  `.booley/docker/requirements.txt`: Booley generates that file.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+A file in the Booley Directory keeps the tracked tree free of Booley files, but
+a fresh clone won't have it, so `booley init` there builds without your pins.
+See what survives a fresh clone (host doc, not shipped).
+
+</details>
 
 The file is read only when the image is built. After changing it, rebuild
 (see [After changing the image](#after-changing-the-image)). For cocotb 1.x
@@ -455,6 +461,30 @@ registrar module `booley.harness.incontainer_register` with `python -m`.
 [`[agent] default`](CONFIG.md#agent-clis-agent) (or the older `provider`) pins an app, set
 `BOOLEY_AGENT_APP` to that app or remove the pin. `auto` works only inside a
 container.
+
+### Project setup in a hand-written spec (`booley init`)
+
+Run `booley init` in the spec's `onCreateCommand` to set up the Project
+(guidance links, Dashboard task, Git settings, line endings). Project setup
+needs no Booley module import; the registrar above is a separate start step.
+A container counts as a Sandbox when `/.dockerenv` or `/run/.containerenv`
+exists or `BOOLEY_CONTAINER=1` is set; set it in `containerEnv` for an image
+that has neither file.
+
+- In a hand-written Sandbox it does Project Initialization only: no Docker,
+  image, Sandbox Issuance, pin, or inventory work.
+- It is idempotent and exits 0 when nothing changes, so it is safe on every
+  create.
+- It never overwrites a default Agent CLI that `booley.toml` sets. Otherwise
+  it fills one from `BOOLEY_AGENT_APP` (`claude` or `codex`); `auto`, `none`,
+  or unset leave it unset, with a note.
+- `worktree.useRelativePaths` is `true` only when the container's Git is 2.48
+  or newer, else `false`. A host Git sharing the bind-mounted checkout must
+  then be 2.48+ too.
+- `--seed`, `--force`, `--repin-booley-dir`, `--scaffold`, `--provider`, and
+  `--auth` are host-only and refused here, as is a pending Booley Directory
+  migration (run `booley init` on the host).
+- A Booley-issued Sandbox refuses `booley init`; run it on the host.
 
 ---
 

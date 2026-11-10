@@ -25,7 +25,7 @@ Idempotent, Project-independent preparation of the host environment and the curr
 _Avoid_: Project bootstrap, machine setup, installation
 
 **Project Initialization**:
-Idempotent, location-neutral reconciliation of one codebase's Project files (the Booley Directory, Git integration, guidance links, core projections and the Dashboard task), making it a **Project** without interpreting its design. It needs no Docker, host credentials or **Sandbox Issuance**. Host `booley init` runs it with Sandbox Image preparation alongside, then adds Sandbox Issuance, which owns the Dashboard task on that path.
+Idempotent, location-neutral reconciliation of one codebase's Project files (the Booley Directory, Git integration, guidance links, core projections and the Dashboard task), making it a **Project** without interpreting its design. It needs no Docker, host credentials or **Sandbox Issuance**. Host `booley init` runs it with Sandbox Image preparation alongside, then adds Sandbox Issuance, which owns the Dashboard task on that path. `booley init` in a hand-written Sandbox runs it alone; a Booley-issued Sandbox refuses it.
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 
 **Project Setup**:
@@ -282,16 +282,28 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional LLM-powered capability the **Developer Agent** invokes with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [CLI-REFERENCE.md](user/CLI-REFERENCE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered capability the **Developer Agent** invokes with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [CLI-REFERENCE.md](user/CLI-REFERENCE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline. Mutation testing is the **Mutation Flow**, a Booley Flow, not a Specialist.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
-When a **Specialist** reviews or mutates one side of the design, the other side's source is hidden from it. This is a non-negotiable Specialist context boundary that preserves independent readings of the functional spec: a Specialist judging one side of the RTL/testbench divide runs with the opposite side's sources hidden. Reviewers see only their own category's sources; the **Mutation Tester** designs RTL mutations without reading the testbench, so surviving mutants (injected bugs the testbench fails to catch) measure real testbench quality rather than mutations tailored to dodge it. Diagnostic and integration Specialists may read both when their task requires cross-checking RTL/TB agreement. Firmware belongs to neither side: every Reviewer may read it, and none reports findings in it.
+When a **Specialist** reviews one side of the design, the other side's source is hidden from it. This is a non-negotiable Specialist context boundary that preserves independent readings of the functional spec: a Specialist judging one side of the RTL/testbench divide runs with the opposite side's sources hidden. Reviewers see only their own category's sources. Diagnostic and integration Specialists may read both when their task requires cross-checking RTL/TB agreement. Firmware belongs to neither side: every Reviewer may read it, and none reports findings in it.
 _Avoid_: optional blindness, reviewer independence
 
 **Custom Flow**:
 A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence for declared Goals. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
 _Avoid_: Custom Tool, plugin, user tool, project tool
+
+**Mutation Flow**:
+The Booley Flow that measures how well a Target's tests catch injected RTL bugs. It injects **Mutants** into the Target's own RTL with the fixed **Mutation Operators**, runs the Target's tests against each, and reports how many are detected. The same sources and settings always produce the same Mutants, so scores are reproducible and comparable across runs; no LLM is involved.
+_Avoid_: Mutation Tester, mutation Specialist, fault injection
+
+**Mutant**:
+One seeded source change with a stable ID, judged detected or not detected by the Target's tests. Its ID comes from the change itself, so it survives unrelated edits. A Mutant that changes no observable behavior (an equivalent Mutant) can never be detected.
+_Avoid_: mutation (for one change), variant, fault
+
+**Mutation Operator**:
+One rule in Booley's fixed table that turns a source site into Mutants, such as swapping a relational operator or deleting an assignment. Projects cannot add or disable operators.
+_Avoid_: mutator, mutation rule
 
 ### Simulation evidence
 

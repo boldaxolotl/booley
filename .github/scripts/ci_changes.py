@@ -70,8 +70,11 @@ STRESS_JOB = "flake-stress"
 # leave that category to its compatibility inputs, so `full` must not force it.
 RISCV_IMAGE_JOB = "riscv-image"
 ALWAYS_JOBS = ("changes", "release-semantic")
-# A push to main runs only these jobs. Mergify merges the exact tree its queue
-# candidate validated, so re-running the suite there repeats a passed check.
+# A push to main runs only these jobs. Mergify merges a batch's PRs one by one:
+# the merge of the batch's last PR reproduces the tree its queue candidate
+# validated, so re-running the suite there repeats a passed check. The commits
+# before it are untested intermediate trees; the nightly full run covers main's
+# tip.
 # `bwave-smoke` stays because only a main push may write the shared substrate
 # build cache, and it installs the wheel from `package-artifacts`. The nightly
 # scheduled run and manual runs still select every job.
@@ -99,7 +102,7 @@ WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
 # RISC-V tooling stage instead of reusing the published image, so it must build
 # the RISC-V image even when the dispatched commit does not touch its inputs.
 RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
-DEFAULT_WINDOWS_SHARD_COUNT = 10
+DEFAULT_WINDOWS_SHARD_COUNT = 4
 # Ubuntu Python 3.11 legs: two duration-balanced shards, adopted from the
 # controlled comparison in .github/ci/linux-shard-experiment.md. A manual run may
 # still pick 1 (one complete-suite job) or 3. Ubuntu Python 3.14 runs the suite

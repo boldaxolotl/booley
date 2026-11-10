@@ -725,6 +725,33 @@ def _gitignore_probe(booley_dir: Path) -> list[DiagnosticFinding]:
     return reporter.findings
 
 
+def test_init_fix_hints_name_where_to_run_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plain `booley init` fix hints follow the runtime location, in Doctor and readiness."""
+    wording = {
+        "HOST": "booley init",
+        "HAND_WRITTEN_SANDBOX": "booley init in this Sandbox",
+        "ISSUED_SANDBOX": "booley init on the host",
+    }
+    # A Booley Directory without .gitignore, in a repository that lacks the projection exclude.
+    subprocess.run(
+        ["git", "init", str(tmp_path)],
+        capture_output=True,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+    for name, where in wording.items():
+        kind = runtime_context.RuntimeLocation[name]
+        monkeypatch.setattr(runtime_context, "runtime_location", lambda kind=kind: kind)
+        findings = readiness.Findings()
+        readiness._check_projection_exclude(tmp_path, findings)
+
+        assert [finding.fix for finding in _gitignore_probe(tmp_path)] == [where]
+        (fix,) = [finding.fix for finding in findings.report().findings]
+        assert fix.startswith(f"run {where} to add the generated projection pattern")
+
+
 def test_project_gitignore_passes_with_every_init_pattern(tmp_path: Path) -> None:
     (tmp_path / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
 
@@ -2200,7 +2227,7 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
-        if cmd[:2] == ["git", "ls-files"]:
+        if cmd[:4] == ["git", "ls-files", "--", ".interactive_logs"]:
             return subprocess.CompletedProcess(
                 cmd,
                 0,

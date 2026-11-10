@@ -19,9 +19,15 @@ def test_default_generated_footer_is_preserved_verbatim(tmp_path: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _project_hook_has_no_ambient_source_policy():
-    """Unit-test the vendored Project hook, not this source checkout's role."""
-    with patch("validate_commit_msg._current_repo_root", return_value=None):
+def _project_hook_has_no_ambient_source_policy(tmp_path_factory):
+    """Unit-test the vendored Project hook, not this source checkout's role.
+
+    The hook acts only in Stealth Mode, so the default Project enables it explicitly.
+    """
+    project_root = tmp_path_factory.mktemp("stealth-project")
+    (project_root / ".booley").mkdir()
+    (project_root / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    with patch("validate_commit_msg._current_repo_root", return_value=project_root):
         yield
 
 
@@ -334,7 +340,7 @@ class TestMain:
         config = project_root / ".booley" / "booley.toml"
         config.parent.mkdir(parents=True)
         config.write_text(
-            '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
+            '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n',
             encoding="utf-8",
         )
         msg_file = tmp_path / "COMMIT_EDITMSG"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -243,6 +244,81 @@ def test_kill_does_not_claim_a_process_that_exits_during_incident_io(tmp_path: P
     assert killed == []
 
 
+def _record_spawned(monkeypatch) -> list[subprocess.Popen[str]]:
+    """Record every process the supervisor spawns, so a test can inspect or reap the leader."""
+    spawned: list[subprocess.Popen[str]] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args: Any, **kwargs: Any):
+        spawned.append(real_popen(*args, **kwargs))
+        return spawned[-1]
+
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
+    return spawned
+
+
+def _reap(spawned: list[subprocess.Popen[str]]) -> None:
+    """Leave no simulator behind if the fix regresses."""
+    for proc in spawned[:1]:
+        if proc.poll() is None:
+            kill_process_tree(proc)
+        proc.wait(timeout=KILLED_WITHIN_S)
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_streaming_failure_kills_the_simulator_and_reraises(
+    tmp_path: Path, monkeypatch, error_type: type[BaseException]
+):
+    """#3183: a raise out of streaming must not leave a silent sim running untimed."""
+    error = error_type("streaming boom")  # fresh per run: no traceback growth under --count
+    spawned = _record_spawned(monkeypatch)
+
+    def raising_on_line(_line: str) -> None:
+        raise error
+
+    script = "import time; print('x', flush=True); time.sleep(60)"
+    try:
+        with pytest.raises(error_type) as raised:
+            run_supervised(_launch(tmp_path, script, on_line=raising_on_line))
+        assert raised.value is error
+        assert spawned[0].poll() is not None
+    finally:
+        _reap(spawned)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the pid probe below is POSIX-only")
+def test_streaming_failure_kills_the_whole_process_group(tmp_path: Path, monkeypatch):
+    """#3183: the exception-path kill is a tree kill, not a leader-only kill."""
+    spawned = _record_spawned(monkeypatch)
+    script = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "print(child.pid, flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    grandchildren: list[int] = []
+
+    def record_then_raise(line: str) -> None:
+        grandchildren.append(int(line))
+        raise RuntimeError("streaming boom")
+
+    try:
+        with pytest.raises(RuntimeError, match="streaming boom"):
+            run_supervised(_launch(tmp_path, script, on_line=record_then_raise))
+
+        deadline = time.monotonic() + KILLED_WITHIN_S
+        while time.monotonic() < deadline:
+            try:
+                os.kill(grandchildren[0], 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(grandchildren[0], signal.SIGKILL)
+        pytest.fail(f"grandchild {grandchildren[0]} survived the streaming-failure kill")
+    finally:
+        _reap(spawned)
+
+
 def test_disk_runaway_kills_a_silent_simulator(tmp_path: Path, monkeypatch):
     """SETUP-25: the watchdog polls while the stdout loop is blocked."""
     monkeypatch.setattr(
@@ -380,7 +456,7 @@ def test_no_stall_monitor_outlives_the_run(tmp_path: Path, monkeypatch, request,
             assert_monitor_joined()
     finally:
         for _, sim_proc in monitors:
-            # Reaping the simulator after an on_line failure belongs to #3183.
+            # Leave no simulator behind if the #3183 kill regresses.
             if sim_proc.poll() is None:
                 kill_process_tree(sim_proc)
             sim_proc.wait(timeout=KILLED_WITHIN_S)

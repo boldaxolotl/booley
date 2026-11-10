@@ -621,19 +621,17 @@ def _disable_stealth(root: Path) -> None:
     (data / "booley.toml").write_text("[stealth]\nenabled = false\n")
 
 
-def _stealth_repo(root: Path, *, enabled: bool | None = True) -> Path:
+def _stealth_repo(root: Path, *, enabled: bool = True) -> Path:
     _init(root)
     _commit_file(root, ".gitignore", b".booley/\n")
     data = root / ".booley"
     data.mkdir(exist_ok=True)
-    setting = "" if enabled is None else f"enabled = {str(enabled).lower()}\n"
-    (data / "booley.toml").write_text("[stealth]\n" + setting)
+    (data / "booley.toml").write_text(f"[stealth]\nenabled = {str(enabled).lower()}\n")
     return data
 
 
-@pytest.mark.parametrize("enabled", [True, None])
-def test_pinned_stealth_missing_policy_is_repaired_idempotently(tmp_path: Path, enabled):
-    data = _stealth_repo(tmp_path, enabled=enabled)
+def test_pinned_stealth_missing_policy_is_repaired_idempotently(tmp_path: Path):
+    data = _stealth_repo(tmp_path, enabled=True)
     config, index = tmp_path / ".git/config", _index_path(tmp_path)
     before = {path: _snapshot(path) for path in (config, index)}
     report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.INSPECT)
@@ -1690,6 +1688,8 @@ def _local_autocrlf(root: Path) -> str:
 def test_settings_repair_pins_autocrlf_and_attributes_on_a_tree_without_crlf(tmp_path: Path):
     _init(tmp_path, autocrlf="true")
     _commit_file(tmp_path, "a.v", b"module a;\nendmodule\n")
+    (tmp_path / ".booley").mkdir()  # Stealth keeps the attributes default repository-local
+    (tmp_path / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")
 
     report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR_SETTINGS)
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Literal
 
 from booley.commit_policy.policy import stealth_enabled
+from booley.runtime import runtime_context
 from booley.runtime.git_attributes_policy import (
     GITATTRIBUTES_RULE,
     fallback_user_attributes,
@@ -1338,7 +1339,10 @@ def _record_stealth_policy(
         observations.append(
             _observation(
                 LineEndingObservationCode.LOCAL_POLICY_MISSING,
-                detail=f"repository-local line-ending policy missing at {common}; re-run booley init",
+                detail=(
+                    f"repository-local line-ending policy missing at {common}; "
+                    f"re-run {runtime_context.booley_init_hint()}"
+                ),
             )
         )
 
@@ -1454,7 +1458,7 @@ def _normalization_refusal(plan: _RepositoryPlan) -> str | None:
         return (
             "working tree has uncommitted changes — refusing to normalize it "
             "(normalization rewrites the affected tracked files). Commit or stash first, "
-            "then re-run `booley init`."
+            f"then re-run {runtime_context.booley_init_hint(code=True)}."
         )
     return None
 

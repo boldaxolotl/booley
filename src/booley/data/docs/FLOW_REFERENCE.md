@@ -116,10 +116,17 @@ Without `--timeout`, a Flow uses `[flows.<name>].timeout_ms` from
 `synth` and `fpga` also take `--baseline <git-ref>`: they run the Flow a
 second time at that commit and report the difference, so you can see what a
 change cost in area or timing. In Goal Mode the baseline is the commit pinned
-when the Goal started. If your Booley Directory is a Git repository of its own
-(a Versioned Booley Directory, of which each worktree gets a Paired Checkout), the baseline run also uses the Target definitions from
-where your worktree branched off, so both runs build the same design. The
-progress output names the commit it chose.
+when the Goal started.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+Your Booley Directory is a Git repository of its own, so the baseline run also
+uses the Target definitions from where your worktree branched off, and both
+runs build the same design. The progress output names the commit it chose. See
+STEALTH.md (host doc, not shipped).
+
+</details>
 
 ### Live progress and logs
 
