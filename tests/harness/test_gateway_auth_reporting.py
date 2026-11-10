@@ -259,3 +259,172 @@ def test_auth_status_notes_a_gateway_policy_it_ignores(gateway_env, monkeypatch,
         "  \u00b7  BOOLEY_PRIMARY_AUTH=gateway is ignored outside a Sandbox that sets it"
         in captured.out
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-CLI Codex gateway in an issued Sandbox: Claude sessions never see it (#2897)
+# ---------------------------------------------------------------------------
+
+_RECORD = "claude=subscription,codex=gateway"
+_HIDDEN_NOTE = "gateway settings are hidden from Claude sessions"
+_GATEWAY_KEYS = (
+    "BOOLEY_GATEWAY_URL",
+    "BOOLEY_GATEWAY_TOKEN",
+    "BOOLEY_GATEWAY_TOKEN_COMMAND",
+    "BOOLEY_GATEWAY_MODEL",
+    "BOOLEY_GATEWAY_EFFORT",
+)
+
+
+@pytest.fixture
+def claude_session(gateway_env, monkeypatch):
+    """An issued ``codex=gateway`` Sandbox seen from a Claude session: values blank, marker set."""
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", _RECORD)
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+    for key in _GATEWAY_KEYS:
+        monkeypatch.setenv(key, "")
+    monkeypatch.setenv("BOOLEY_HIDDEN_GATEWAY", "1")
+    return gateway_env
+
+
+def _write_toml(root, text):
+    data = root / ".booley"
+    data.mkdir(parents=True, exist_ok=True)
+    (data / "booley.toml").write_bytes(text.encode("utf-8"))
+
+
+def test_doctor_in_claude_session_notes_hidden_gateway(claude_session, monkeypatch):
+    findings = _doctor_findings(claude_session)
+
+    assert [f.severity.value for f in findings] == ["note"]
+    assert _HIDDEN_NOTE in findings[0].message
+
+    # A VS Code terminal whose localEnv was empty has no marker: that Sandbox cannot reach it.
+    monkeypatch.delenv("BOOLEY_HIDDEN_GATEWAY")
+    findings = _doctor_findings(claude_session)
+    assert [(f.severity.value, f.check_id) for f in findings] == [
+        ("fail", "agent.credential-missing")
+    ]
+
+
+def test_auth_status_in_claude_session_notes_hidden_gateway(claude_session, monkeypatch, capsys):
+    code, captured = _auth_status(claude_session, capsys)
+
+    assert code == 0
+    assert _HIDDEN_NOTE in captured.out
+
+    monkeypatch.delenv("BOOLEY_HIDDEN_GATEWAY")
+    code, captured = _auth_status(claude_session, capsys)
+    assert code == 1
+    assert "BOOLEY_GATEWAY_URL" in captured.out + captured.err
+
+
+def _deep_probe_failure(project, monkeypatch):
+    """Run the developer probe with a provider call that fails on the gateway configuration."""
+    from booley.harness import developer_probe
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+
+    def fail(_root):
+        raise developer_probe.ProbeError(
+            "probe agent failed: BOOLEY_GATEWAY_URL is not set", agent_failure=True
+        )
+
+    monkeypatch.setattr(developer_probe, "measure_developer_rss", fail)
+    events: list[tuple[str, str]] = []
+
+    def record(kind):
+        return lambda message, *_fix: events.append((kind, message))
+
+    doctor._run_developer_probe(project, record("pass"), record("skip"), record("fail"))
+    return events
+
+
+def test_doctor_deep_in_claude_session_skips_gateway_developer_probe(claude_session, monkeypatch):
+    _write_toml(claude_session, '[agent]\ndefault = "codex"\nclis = ["claude", "codex"]\n')
+    project = doctor.ProjectAudit(
+        project_root=claude_session,
+        booley_dir=claude_session / ".booley",
+        booley_toml={"agent": {"default": "codex", "clis": ["claude", "codex"]}},
+        configs_toml={},
+        first_target="",
+    )
+
+    events = _deep_probe_failure(project, monkeypatch)
+
+    assert [kind for kind, _ in events] == ["skip"]
+    assert _HIDDEN_NOTE in events[0][1]
+
+    monkeypatch.delenv("BOOLEY_HIDDEN_GATEWAY")
+    events = _deep_probe_failure(project, monkeypatch)
+    assert [kind for kind, _ in events] == ["fail"]
+
+    # The internal model on Claude is not the gateway's: the failure stays a FAIL.
+    monkeypatch.setenv("BOOLEY_HIDDEN_GATEWAY", "1")
+    _write_toml(claude_session, '[agent]\ndefault = "claude"\nclis = ["claude", "codex"]\n')
+    assert [kind for kind, _ in _deep_probe_failure(project, monkeypatch)] == ["fail"]
+
+    # An unreadable Project config is graded by its own check, not hidden behind the note.
+    def unreadable(*_args, **_kwargs):
+        raise agent_config.BackendConfigError("cannot read booley.toml")
+
+    monkeypatch.setattr(agent_config, "load_agent_settings", unreadable)
+    assert [kind for kind, _ in _deep_probe_failure(project, monkeypatch)] == ["fail"]
+
+
+def test_auth_status_for_claude_ignores_codex_gateway(claude_session, monkeypatch, capsys):
+    monkeypatch.delenv("BOOLEY_HIDDEN_GATEWAY")
+    _write_toml(
+        claude_session,
+        '[agent]\ndefault = "claude"\nclis = ["claude", "codex"]\n'
+        '[agent.auth]\nclaude = "subscription"\ncodex = "gateway"\n',
+    )
+
+    _code, captured = _auth_status(claude_session, capsys, app="claude")
+
+    output = captured.out + captured.err
+    assert "auth policy 'subscription'" in output
+    assert "claude:" in output
+    assert "the gateway at" not in output
+
+
+def test_auth_status_on_host_reads_declared_gateway_as_auto(gateway_env, monkeypatch, capsys):
+    monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
+    monkeypatch.delenv("BOOLEY_PRIMARY_AUTH")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-synthetic-host-key")
+    _write_toml(
+        gateway_env,
+        '[agent]\ndefault = "codex"\nclis = ["claude", "codex"]\n[agent.auth]\ncodex = "gateway"\n',
+    )
+
+    code, captured = _auth_status(gateway_env, capsys)
+
+    output = captured.out + captured.err
+    assert code == 0
+    assert "applies inside a Sandbox only; showing 'auto'" in output
+    assert "auth policy 'auto'" in output
+    assert "codex: agents run on" in output
+
+
+def test_claude_sdk_env_blanks_gateway_settings(gateway_env, monkeypatch):
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", _RECORD)
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+    monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", "synthetic-model")
+    monkeypatch.delenv("BOOLEY_GATEWAY_EFFORT", raising=False)
+
+    overrides = _claude_backend._claude_env_overrides("subscription")
+
+    blanked = {key for key, value in overrides.items() if key.startswith("BOOLEY_") and not value}
+    assert blanked == {"BOOLEY_GATEWAY_URL", "BOOLEY_GATEWAY_TOKEN", "BOOLEY_GATEWAY_MODEL"}
+    assert overrides["BOOLEY_HIDDEN_GATEWAY"] == "1"
+
+
+def test_claude_sdk_env_without_gateway_values_sets_no_marker(gateway_env, monkeypatch):
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", _RECORD)
+    for key in _GATEWAY_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    overrides = _claude_backend._claude_env_overrides("subscription")
+
+    assert "BOOLEY_HIDDEN_GATEWAY" not in overrides
