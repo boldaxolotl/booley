@@ -37,10 +37,18 @@ _INPUT_TREES = (
 
 
 def fix() -> str:
-    """Return the repair hint, naming where `booley init` runs at the time of the call."""
+    """Return the repair hint, naming where `booley init` runs at the time of the call.
+
+    Sandbox ``booley init`` never inspects trackability, so a hand-written Sandbox
+    is sent to ``booley doctor`` alone.
+    """
+    if runtime_context.runtime_location() is runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX:
+        rerun = "booley doctor"
+    else:
+        rerun = f"{runtime_context.booley_init_hint()} or booley doctor"
     return (
         "edit the reported exclusion (including excluded ancestors) to allow the named paths, "
-        f"then rerun {runtime_context.booley_init_hint()} or booley doctor"
+        f"then rerun {rerun}"
     )
 
 

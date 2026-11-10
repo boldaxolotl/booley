@@ -59,6 +59,7 @@ import tomlkit
 from booley import __version__
 from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
+from booley.config.agent import AGENT_CLIS
 from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
 from booley.core.boundary import as_dict, as_str, require_dict
@@ -1088,7 +1089,7 @@ def _select_interactive_app(
 ) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
-        from booley.config.agent import AGENT_CLIS, parse_agent_section
+        from booley.config.agent import parse_agent_section
 
         config_path = resolve_toml(
             project_data_source or authorized_project_data_source(project_root)
@@ -2785,7 +2786,7 @@ def _sandbox_agent_selection(config_path: Path) -> AgentSelection | None:
     if provider is not None:
         return AgentSelection(provider, auth or "auto")
     app = (os.environ.get(agent_app.AGENT_APP_ENV) or "").strip()
-    if app in {"claude", "codex"}:
+    if app in AGENT_CLIS:
         return AgentSelection(app, auth or "auto", write_provider=True)
     return None
 

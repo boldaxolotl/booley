@@ -9,6 +9,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley init` now runs inside a hand-written Sandbox (such as a Codespace)
+  and performs Project Initialization only, so a spec can call it from
+  `onCreateCommand` on every create: guidance links, Dashboard task, Git
+  settings, and line endings, with no Docker or image work. It is idempotent
+  and exits 0 when nothing changes. A Booley-issued Sandbox still refuses it
+  and names the host command. The Dashboard attach refusal and Doctor hints
+  now say where to run `booley init`.
 - `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
   limit is gone. Post-run VCD-to-FST conversion now has its own
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)

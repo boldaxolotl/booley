@@ -2,8 +2,9 @@
 
 Booley workflows execute inside the per-project Sandbox.  This module
 depends only on the stdlib, ``booley.core`` and the import-free leaf
-``sandbox_layout``, so it sits at the bottom of the import graph and every entry point can detect that runtime and restore its
-fixed egress proxy environment.
+``sandbox_layout``, so it sits at the bottom of the import graph and every
+entry point can detect that runtime and restore its fixed egress proxy
+environment.
 """
 
 from __future__ import annotations

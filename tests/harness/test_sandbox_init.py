@@ -21,6 +21,9 @@ from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.test_project_initialization import HOST_PRIVATE_ENVIRONMENT, _repository_state
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
+# A Sandbox is always Linux; the fixtures rely on symlink guidance links and POSIX Git checkouts.
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="a Sandbox is always Linux")
+
 CORE_TEXT = "CAPI=2:\nname: example:lib:cpu:1.0\n"
 GIT_IDENTITY = ("-c", "user.name=Publisher", "-c", "user.email=publisher@example.invalid")
 ISSUED_MOUNTINFO = "1 0 0:1 / /work/.devcontainer ro - ext4 /dev/x ro\n"
@@ -77,7 +80,7 @@ def sandbox_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     """A container without issued mounts, no Docker and no host-private state."""
     mountinfo = tmp_path / "mountinfo"
     mountinfo.write_text(PLAIN_MOUNTINFO, encoding="utf-8", newline="\n")
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
+    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
     for variable in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_AGENT_APP"):
@@ -170,7 +173,7 @@ def test_issued_sandbox_refuses_init_without_writing(
         issued.unlink(missing_ok=True)
         if mountinfo is not None:
             issued.write_text(mountinfo, encoding="utf-8", newline="\n")
-        monkeypatch.setattr(runtime_context, "_MOUNTINFO", issued, raising=False)
+        monkeypatch.setattr(runtime_context, "_MOUNTINFO", issued)
         capsys.readouterr()
 
         assert _booley_init(project, monkeypatch) == 2, mountinfo
@@ -361,3 +364,19 @@ def test_sandbox_init_refuses_host_policy_in_project_config(
 
     assert "contains host-only policy" in capsys.readouterr().out
     assert not (project / ".vscode").exists()
+
+
+def test_sandbox_init_applies_the_line_ending_policy(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Line-ending normalization runs as on a first host init, in both checkouts."""
+    for repository in (project, project / ".booley"):
+        _git(repository, "config", "--local", "core.autocrlf", "true")
+
+    assert _booley_init(project, monkeypatch) == 0
+
+    for repository in (project, project / ".booley"):
+        assert _local_config(repository, "core.autocrlf") == "false"
+    assert "* text=auto eol=lf" in (project / ".git" / "info" / "attributes").read_text(
+        encoding="utf-8"
+    )

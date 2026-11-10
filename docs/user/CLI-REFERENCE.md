@@ -98,7 +98,7 @@ booley projects prune-keepers            # preview images left by earlier forget
 booley projects prune-keepers --confirm <digest>   # remove exactly that preview
 ```
 
-Each successful `booley init` remembers its Project Root. `booley projects`
+Each successful host `booley init` remembers its Project Root. `booley projects`
 marks each one `present`, `missing`, or `uninitialized`.
 
 `discover` scans only the directories you name and doesn't follow symlinks.
