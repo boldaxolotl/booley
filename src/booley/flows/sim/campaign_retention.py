@@ -24,7 +24,7 @@ from booley.core.boundary import (
     require_str_value,
     require_uuid4,
 )
-from booley.flows.progress_lifecycle import validate_progress_shape
+from booley.core.progress_shape import validate_progress_shape
 from booley.runtime.file_lock import LockContentionError
 from booley.runtime.filesystem_utils import is_transient_read_error, read_file_bytes
 from booley.runtime.sandbox_layout import canonical_project_alias_path

@@ -112,6 +112,13 @@ DIRECTION_RULES = (
         "Job observation owns process and artifact facts without interpreting Target policy",
     ),
     DirectionRule(
+        "D41",
+        (prefix("booley.runtime"),),
+        (prefix("booley.flows"),),
+        "Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through "
+        "booley.core and never imports a Flow",
+    ),
+    DirectionRule(
         "D38",
         (prefix("booley.flows"), prefix("booley.specialists")),
         (prefix("booley.goals"),),
@@ -428,20 +435,10 @@ COMPOSITION_PERMISSIONS = (
 
 LEGACY_WAIVERS = ()
 
-# Measured after integrating #530 and #531. The production SCC metadata test
-# requires tightening on every split.
-APPROVED_LEGACY_SCCS = (
-    frozenset(
-        f"booley.{name}"
-        for name in (
-            "bwave",
-            "criteria",
-            "flows",
-            "runtime",
-        )
-    ),
-    frozenset(("booley.fusesoc", "booley.targets")),
-)
+# Measured after #3061 removed the Runtime edges into Flows and Harness, which
+# dissolved the last large group once Flows no longer imported Harness. The
+# production SCC metadata test requires tightening on every split.
+APPROVED_LEGACY_SCCS = (frozenset(("booley.fusesoc", "booley.targets")),)
 
 BOOLEY_SOURCE_DEPENDENCY_CONTRACT = ArchitectureContract(
     rules=DIRECTION_RULES,
