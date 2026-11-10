@@ -1027,7 +1027,7 @@ Cyclic top-level package groups:
 
 `booley.flows` no longer imports `booley.harness`. The colour helpers and the
 table renderer moved to `booley.presentation` (`colors`, `terminal_table`), which
-Harness, Dashboard and Flows all import; their API and output are unchanged. The
+Harness (including the Dashboard) and Flows both import; their API and output are unchanged. The
 human Goal-recording advisory for `booley flow` and `booley specialist` is
 supplied by the Harness command composition through `CliInvocation`, so Flow code
 calls it without importing Harness. D39 forbids any `booley.flows` import of
