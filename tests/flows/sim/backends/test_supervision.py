@@ -395,5 +395,5 @@ def test_declared_stream_monitor_stops_with_the_run(tmp_path: Path, request):
     _, _, termination = run_supervised(_launch(tmp_path, SLEEP, streams=streams))
 
     assert termination.kind == "timeout"
-    assert len(session._monitor_threads) == 1
-    assert not session._monitor_threads[0].is_alive()
+    # The default poll interval is 2 s, so an unstopped monitor is still asleep here.
+    assert [t.name for t in threading.enumerate() if "_monitor_stalls" in t.name] == []
