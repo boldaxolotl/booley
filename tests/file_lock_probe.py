@@ -5,19 +5,28 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import BinaryIO
+
+
+def handle_lock_is_held(handle: BinaryIO) -> bool:
+    """Report whether another open file description holds the lock on *handle*'s inode.
+
+    The inode may already be unlinked: ``flock`` works on the open description.
+    """
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return False
 
 
 def lock_is_held(path: Path) -> bool:
     """Report whether another open file description currently holds *path*'s lock."""
-    import fcntl
-
     with path.open("a+b") as probe:
-        try:
-            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True
-        fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
-        return False
+        return handle_lock_is_held(probe)
 
 
 def invocation_lock_paths(root: Path) -> Iterator[Path]:

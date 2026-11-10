@@ -20,13 +20,20 @@ from booley.flows.sim.campaign_reports import campaign_invocation_lock
 marker = Path(__MARKER__)
 reservation = None
 resources = None
+probe = None
+
+def _lock_probe(reservation_dir):
+    # Hold a read handle: the suite's retention policy may delete the lock file.
+    lock = reservation_dir.with_name(f".invocation-{reservation_dir.name}.lock")
+    return open(lock, "rb")
 
 def test_leak(tmp_path):
-    global reservation, resources
+    global reservation, resources, probe
     flow = SimulateFlow()
     resources = flow.publication_resources
     if __LEAK__ == "reservation":
         reservation = flow._next_invocation_dir(tmp_path / "reports")
+        probe = _lock_probe(reservation)
         resources.callback(marker.touch)
     elif __LEAK__ == "callback":
         resources.callback(marker.touch)
@@ -35,12 +42,14 @@ def test_leak(tmp_path):
         reservation = tmp_path / "1"
         campaign_invocation_lock_context = campaign_invocation_lock(reservation)
         campaign_invocation_lock_context.__enter__()
+        probe = _lock_probe(reservation)
         # Retain it outside the Flow so the independent probe is tested.
         resources = campaign_invocation_lock_context
     else:
         with resources:
             if __LEAK__ == "none":
                 reservation = flow._next_invocation_dir(tmp_path / "reports")
+                probe = _lock_probe(reservation)
             resources.callback(marker.touch)
 
 def test_cleanup():
@@ -49,11 +58,13 @@ def test_cleanup():
     else:
         assert marker.exists()
         assert not resources._exit_callbacks
-    if reservation is not None:
-        from tests.file_lock_probe import lock_is_held
+    if probe is not None:
+        from tests.file_lock_probe import handle_lock_is_held
 
-        lock = reservation.with_name(f".invocation-{reservation.name}.lock")
-        assert not lock_is_held(lock)
+        try:
+            assert not handle_lock_is_held(probe)
+        finally:
+            probe.close()
 """
 
 
@@ -98,7 +109,21 @@ def _run_child_pytest(tmp_path: Path, source: str) -> subprocess.CompletedProces
     for name in ("PYTEST_ADDOPTS", "PYTEST_XDIST_WORKER", "PYTEST_XDIST_TESTRUNUID"):
         environment.pop(name, None)
     return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--confcutdir", str(tmp_path), str(tmp_path)],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            # Run under the repository's real pytest configuration (retention
+            # policy, warning filters) while rootdir and cache stay in tmp_path.
+            "-c",
+            str(REPO_ROOT / "pyproject.toml"),
+            "--rootdir",
+            str(tmp_path),
+            "--confcutdir",
+            str(tmp_path),
+            str(tmp_path),
+        ],
         cwd=tmp_path,
         env=environment,
         check=False,
