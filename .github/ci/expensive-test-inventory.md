@@ -182,9 +182,9 @@ it with the Ticket Board (see `git show 1460ad065^:.github/scripts/ci_changes.py
 Today
 `pyproject.toml:261-265` has no such marker, `ci_changes.py` has no such
 category, and `test.yml:299,376` run `-m 'not native_bwave'`, so every Goal
-recovery and authority permutation runs in full on every code PR. The policy
-text is stale; rewriting it is the maintainer's choice, so this record leaves it
-and the summary table carries the rewrite as row P4.
+recovery and authority permutation ran in full on every code PR until #3329,
+which stopped running Goal Mode unit tests in CI (`tests/goals/` is skipped at
+collection). The policy text in `.github/ci/README.md` now states that.
 
 Pattern a tier must follow: representative before/after, repository-role, and
 checkpoint cases run on every code PR; the complete set runs when a
@@ -260,105 +260,19 @@ the cause was not investigated here.
 | C4 | Test-profile prerequisites and fail-fast pytest controller behavior (`tests/ci/test_test_profiles.py`, child pytest runs) and the repository's pytest, marker, and CI-matrix configuration (`tests/test_pytest_configuration.py`, for example `:1234`). | `test-verify` and `coverage` check that the shard union equals the eligible set; `assert_junit.py --min-tests` guards the weekly matrix. Different inputs and failure modes (a run's artifacts against the configuration's source). | 4 | OS: no (asserts Windows path forms and workflow command tokens, for example `ntpath` and `shlex` use). Coverage: `test_test_profiles.py` executes `booley.dev_support.test_profiles`. | Keep. A tier is not proposed: it would gate the tests that protect the gate. |
 | C5 | Published Markdown links resolve (`tests/docs/test_links.py:36-52`), documented commands match the registered CLI trees (`test_documented_commands.py`), current-version package text (`test_current_version_docs.py`), tool names in guidance (`test_guidance_guard.py`, `test_goal_work_dir_guidance.py`). | `docs-check` runs only `git diff --check` (`test.yml:168-181`); no other job validates links or commands. | 4 | Mostly independent; the CLI help checks import `booley` and cover some `src` lines. | Keep. Each module guards a distinct property and the total is 15-26 s per leg. |
 | C6 | No retired host-execution imports or symbols remain in production (`tests/test_no_retired_host_execution.py:57-79`), and no retired Ticket wording remains in production strings (`tests/test_retired_ticket_wording.py:129-131`). | None. Ruff does not search for retired symbols or wording. | 4 | Independent (source text). Coverage: none. | Keep. Both scans re-parse the same tree as C2a; if P3 lands, a shared parsed-source cache could serve them (follow-up of P3, not a separate row). |
-| C7 | Goal Finish: a saved attempt's path, fields, and publication proof are bound to independent authority, and every publication crash boundary recovers exactly once (`tests/goals/test_finish.py`, `test_finish_authority.py`, `test_finish_review_fixes.py`). | None; no tier exists (see "The exhaustive-recovery pattern"). | 4 | OS: no (Git process behavior). Coverage: executes `src/booley/goals/finish*.py` recovery paths; representatives keep every function and two or three cases that span it. | Relocate non-representative cases to a tier (P1). |
-| C8 | Goal Apply/Change: an existing intent must equal the captured entry before recovery (`tests/goals/test_apply_authority.py`). | None. | 4 | As C7. | Relocate to the same tier (P1). |
-| C9 | Other Goal recovery families: waiver effects (`test_goal_waivers.py`), hard process death (`test_r1_lifecycle.py`), Abandon (`test_abandon.py`), recorder transactions (`test_recorder.py`), Entry crash rollback (`test_entry.py`). | None. | 4 | As C7. | Relocate to the same tier (P1). |
+| C7 | Goal Finish: a saved attempt's path, fields, and publication proof are bound to independent authority, and every publication crash boundary recovers exactly once (`tests/goals/test_finish.py`, `test_finish_authority.py`, `test_finish_review_fixes.py`). | None; no tier exists (see "The exhaustive-recovery pattern"). | 4 | OS: no (Git process behavior). Coverage: executes `src/booley/goals/finish*.py` recovery paths; representatives keep every function and two or three cases that span it. | Withdrawn (#3329): Goal Mode unit tests no longer run in CI. |
+| C8 | Goal Apply/Change: an existing intent must equal the captured entry before recovery (`tests/goals/test_apply_authority.py`). | None. | 4 | As C7. | Withdrawn (#3329): Goal Mode unit tests no longer run in CI. |
+| C9 | Other Goal recovery families: waiver effects (`test_goal_waivers.py`), hard process death (`test_r1_lifecycle.py`), Abandon (`test_abandon.py`), recorder transactions (`test_recorder.py`), Entry crash rollback (`test_entry.py`). | None. | 4 | As C7. | Withdrawn (#3329): Goal Mode unit tests no longer run in CI. |
 
 ## Proposed tiers
 
-### T1: Goal recovery and authority permutations
+### T1: Goal recovery and authority permutations (withdrawn)
 
-Representative cases kept on every code PR (25 of 89 cases, two or three per
-function, chosen to span each family, plus one case per path form for the
-tamper family; the follow-up must justify each choice by the fault injection
-in its required proof):
-
-- `tests/goals/test_finish_authority.py::test_saved_attempt_path_tamper_refuses_before_any_effect`: `absolute-normal-finishing`, `different-literal-stealth-attempt-frozen`, `traversal-excluded-attempt-frozen`
-- `tests/goals/test_finish.py::test_every_publication_crash_boundary_recovers_exactly_once`: `attempt-frozen`, `finished`
-- `tests/goals/test_goal_waivers.py::test_each_waiver_effect_recovers_without_revalidating_mutable_inputs`: `intent`, `applied`
-- `tests/goals/test_finish_authority.py::test_all_persisted_attempt_fields_are_bound_to_independent_authority`: `branch`, `package`
-- `tests/goals/test_apply_authority.py::test_existing_intent_must_equal_complete_captured_entry_before_recovery`: `after-intent`, `transaction_ref-applied`
-- `tests/goals/test_r1_lifecycle.py::test_hard_process_death_recovers_only_durably_owned_publication_inodes`: `index-lock-acquired`, `summary-linked`
-- `tests/goals/test_abandon.py::test_abandon_recovers_finishing_through_original_exact_publication`: `finishing-finished`, `finished-finished`
-- `tests/goals/test_finish_review_fixes.py::test_pruned_publication_without_exact_authority_refuses_without_git_writes`: `missing-pack`, `physical-control`
-- `tests/goals/test_finish.py::test_recovery_refuses_substituted_immutable_publication_proof`: `blob`, `package`
-- `tests/goals/test_recorder.py::test_interrupted_goal_transaction_recovers`: `before:acceptance_intent`, `after:acceptance_commit`
-- `tests/goals/test_entry.py::test_a_crash_at_every_boundary_is_rolled_back_by_the_next_entry`: `created`, `state_saved`
-- `tests/goals/test_r1_lifecycle.py::test_abandonment_closure_requires_terminal_authority_and_recovers_crashes`: `intent-write`, `terminal-save`
-
-Relocated to the tier: the other 64 cases of the same twelve functions. The
-cases stay in the files; they are skipped by marker selection, not deleted.
-
-Explicit path dependencies that select the complete set (no filename-pattern
-guesses; each is a path whose change can alter the behavior these cases check):
-
-- `src/booley/goals/` and `tests/goals/` (any file);
-- every first-party module outside `booley.goals` that a file under
-  `src/booley/goals/` or `tests/goals/`, or one of the helper tests below,
-  imports directly, deferred imports included (an AST scan of those files;
-  135 modules). This includes the durability and Git helpers the recovery
-  cases exercise (`runtime/atomic_files.py`, `runtime/git.py`,
-  `runtime/publication_ownership.py`, `runtime/git_environment.py`), which
-  the policy removed in `1460ad065` also named in part (`runtime/git.py`):
-  - `src/booley/commit_policy/`: `__init__`
-  - `src/booley/config/`: `coverage_waiver_inputs`, `project_config`, `protected_inputs`, `tests_toml_rules`
-  - `src/booley/core/`: `__init__`, `booley_dir`, `booley_layout`, `boundary`, `config_paths`, `file_lock`, `layout_lock`, `process_identity`
-  - `src/booley/criteria/`: `__init__`, `categories`, `endpoint_catalog`, `evidence_ledger`, `freshness`, `presentation`, `reference`, `state`, `templates`, `thresholds`
-  - `src/booley/dev_support/`: `test_profiles`
-  - `src/booley/evidence/`: `acceptance`, `fields`, `review_receipt`, `timing`
-  - `src/booley/flows/`: `__init__`, `base`, `baseline_pins`, `baseline_worktree`, `campaign_results`, `criterion_freshness`, `endpoint_diff`, `endpoint_events`, `endpoint_state`, `execution_persistence`, `frozen_test_runs`, `request`, `review_scope`, `source_fingerprint`, `target_test_plan`, `target_test_plan_loading`, `test_runs`
-  - `src/booley/flows/fpga/`: `flow`
-  - `src/booley/flows/lint/`: `flow`
-  - `src/booley/flows/sim/`: `__init__`, `coverage_analysis_input`, `coverage_campaign`, `coverage_campaign_store`, `coverage_flow_context`, `coverage_invocation`, `coverage_policy`, `coverage_reference`, `coverage_transaction`, `coverage_waiver_application`, `coverage_waiver_promotion`, `coverage_waivers`, `flow`, `request`, `unpublished_results`, `waiver_candidates`
-  - `src/booley/flows/sim/campaign/`: `__init__`, `codec`, `planning`, `test_run_report`
-  - `src/booley/flows/sim/execution/`: `__init__`, `engine`
-  - `src/booley/flows/synth/`: `flow`
-  - `src/booley/fusesoc/`: `__init__`, `core_projection`, `fusesoc_registry`
-  - `src/booley/harness/`: `__init__`, `booley`, `doctor`, `init_cmd`
-  - `src/booley/harness/dashboard/`: `app`, `jobs`, `model`
-  - `src/booley/harness/setup/`: `line_endings`, `project_git_hook_bundle`
-  - `src/booley/mcp/`: `__init__`, `application`, `base`, `call_context`, `catalog`, `goal_changes`, `goal_completion`, `goal_flow_runner`, `goal_freshness`, `goal_generated_inputs`, `goal_tools`, `goal_waivers`, `job_results`, `registry`, `server`, `sim_baseline_execution`, `sim_baseline_jobs`, `unbound_recorder`
-  - `src/booley/review/`: `goal_package`, `goal_presentation_v1`
-  - `src/booley/runtime/`: `__init__`, `atomic_files`, `booley_dir`, `booley_dir_migration`, `endpoint_execution`, `filesystem_utils`, `git`, `git_attributes_policy`, `git_environment`, `git_ignore`, `guarded_write`, `history_commit`, `job_records`, `job_wait`, `lifecycle_lock`, `pid`, `pinned_history`, `project_gitignore`, `project_repositories`, `project_worktree_pairing`, `publication_ownership`, `runtime_context`, `session_activity`, `session_paths`, `timefmt`, `worktree_paths`
-  - `src/booley/specialists/`: `coverage_candidate_recording`, `reviewer`
-  - `src/booley/targets/`: `catalog`, `declared_inputs`, `domain`, `goal_diff`, `surface_diff`
-- helper tests: `tests/conftest.py`, `tests/criteria/ledger_support.py`,
-  `tests/golden/conftest.py`, `tests/flows/sim/test_coverage_campaign.py`;
-- `pyproject.toml`, `.github/ci/`, `.github/scripts/`, and
-  `.github/workflows/` (test configuration and CI orchestration; Markdown
-  excluded); any unclassified path selects `full` as today.
-
-The list is one import hop, not a closure. A static import closure was tried
-and rejected: it reaches 481 of 613 source modules because Goal code imports
-the harness and runtime, so a closure rule would select the full set for
-nearly every change. The cost of the one-hop rule is a missed second-hop
-change: a module imported only by one of the 135 listed modules runs the
-representatives on the PR and the complete set after merge.
-
-Pattern: the complete set also runs on `main` pushes and in
-`full-python-matrix.yml`. Caveat: a failure that only the complete set catches
-surfaces after merge: on the next `main` push run, or at the latest in the
-weekly `full-python-matrix.yml` run (up to a week later, non-blocking). This is
-the real cost of the tier; the dependency list is what keeps it small.
-
-Machinery a follow-up must introduce (it was removed in `1460ad065`):
-a registered marker in `pyproject.toml`; a classifier category and output in
-`ci_changes.py` with the path list above; the mark expression in the test and
-coverage jobs of `test.yml` and in `full-python-matrix.yml`; classifier tests in
-`tests/ci/test_change_classifier.py`; and a marker-subset test like the removed
-`test_exhaustive_recovery_marker_retains_a_pr_subset`. The shard-union
-verification in `test-verify` and `coverage` must use the same expression so a
-deselected case is not reported missing.
-
-Share of PRs that run the complete set: applying the dependency list to the
-file lists of the 50 most recent merged PRs (#1951 to #2116, 2026-10-21T09:19Z
-to 2026-10-23T19:18Z, `gh pr list --state merged -L 50 --json number,files`)
-with the repository's change classifier (`ci_changes.classify`): 49 select
-Python tests and 25 of those 49 (51%) match a dependency or select `full`; the
-other 24 (49%) would run representatives only. The 25 are PRs #1954, #1956,
-#1965, #1966, #1967, #1968, #1975, #1977, #1980, #1987, #1989, #1990, #1992,
-#1996, #2004, #2008, #2025, #2027, #2053, #2054, #2058, #2064, #2078, #2112,
-#2116. The one other PR (#2111) changes only Markdown under `docs/`.
+Withdrawn (#3329). Goal Mode unit tests no longer run in CI, so no tier
+is needed: `tests/` collection skips `tests/goals/` and Goal source is
+omitted from coverage. The representative list, dependency rule, and
+machinery notes are dropped; the measurements in this record stay as
+history. See "Goal Mode unit tests" in `.github/ci/README.md`.
 
 ## Summary of proposed dispositions
 
@@ -372,10 +286,10 @@ follow-up's 20-run before/after; none of these figures is that.
 
 | ID | Proposed issue title | Candidate | Disposition | Retained coverage | Required proof from the follow-up | Estimate (per code-PR run) | Measurement rule |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| P1 | CI: run Goal recovery and authority permutations as a path-triggered tier | C7, C8, C9: 64 relocatable cases of 12 functions (89 cases) | Relocate to a tier following the exhaustive-recovery pattern | 25 representative cases on every code PR; complete set on the T1 dependencies, unclassified paths, `main` pushes, and `full-python-matrix.yml` (weekly, post-merge detection) | (1) Historical regression: show the 25 representatives fail on the parent of `276dc774b` or `0cf4262b7` (Goal recovery fixes), or fault-inject `src/booley/goals/finish*.py` and `apply*.py` and show a representative fails. (2) Backstop: a `full-python-matrix.yml` run (or a dispatch) in which the relocated cases execute and a deliberately failing case is reported. (3) Marker-subset and classifier tests, and `test-verify` and `coverage` shard-union checks pass under the new expression. (4) Coverage report before and after; the 80% floor and 90% diff-cover unchanged | Call seconds, estimate: Ubuntu 3.11 about 43 (range 28-48), Ubuntu 3.14 about 41 (28-50), coverage about 62 (51-73), Windows 3.14 about 548 (499-596); about 2.9 runner minutes (1.4% of the 209-minute median). Gate: no Ubuntu leg was the critical job in the three PR-shaped runs, and on `main` pushes the complete set still runs, so no Ubuntu gate effect is shown; about 14 s via a Windows shard (critical in 2 of 3 dispatched PR-shaped runs) | 20 ordinary code-PR runs before and after: required-gate elapsed, Ubuntu complete job times, runner minutes; report the share of PRs that ran the complete set |
+| P1 | CI: run Goal recovery and authority permutations as a path-triggered tier | C7, C8, C9 | Withdrawn (#3329): Goal Mode unit tests no longer run in CI; no tier is proposed. Measurements above stay as history. | Not applicable | Not applicable | No saving to claim | Not applicable |
 | P2 | Tests: delete the five package-direction tests the architecture contract supersedes | C2c: 5 of 6 tests in `tests/test_dependency_direction.py` | Delete as obsolete | Contract rules D1, D3, D4, D5, D6 in `test_production_source_dependencies_obey_approved_contract`; the session-issuance test stays | Fault injection per rule: add one forbidden import (absolute and relative) to a module in each of config/fusesoc/targets, specialists, mcp infrastructure, runtime, and shared runtime, and show the contract test fails for each (done once for D1 and D5 in this audit); the five deleted tests listed with the rule that replaces each | Call seconds, estimate (upper bound: the whole module, which includes the kept `:79` test): Ubuntu 3.11 3.1, Ubuntu 3.14 2.8, coverage 5.6, Windows 3.14 2.7; about 0.06 runner minutes. Gate: between 0 and 3.1 s | 20-run before/after of the Ubuntu complete jobs; expect no visible change, so judge by the call-time medians of the module |
 | P3 | Tests: build the production import graph once for the architecture contract | C2a: 5 tests that call `analyze_imports(_SOURCE_ROOT)` (`:29,:37,:58,:469,:494`) | Consolidate (session or module cache of the immutable analysis result); the two tests that parse every file themselves (`:68`, `:279`) are outside this row unless the follow-up also rewrites them | Every assertion and the contract unchanged | Same fault-injection set as P2 passes; no test mutates the cached result; module call time before and after on 20 runs | Call seconds, estimate: lower bound 4 avoided builds x 1.6 s (local unloaded build) = 6.4 on each leg; the upper bound is unmeasured per test and is capped by the whole module's call time: Ubuntu 3.11 48, Ubuntu 3.14 35, coverage 81, Windows 3.14 45, Windows compat. 3.11/3.13 28 / 26 (JUnit); 0.16-1.1 runner minutes. Gate: between 0 and the Ubuntu figure (a module runs on one `loadscope` worker) | 20-run before/after of `test_source_dependency_contract.py` call medians and Ubuntu job times |
-| P4 | Docs: restore or rewrite the exhaustive-recovery policy text | `.github/ci/README.md` "Exhaustive recovery policy", `docs/internals/CONTRIBUTING.md` "Agent source-development checks" | Correct the text: P1's PR rewrites it if P1 is approved, else a docs-only fix stating every recovery permutation runs on every code PR | The records above | The text matches `ci_changes.py`, `test.yml`, and `pyproject.toml` at the PR's head | No saving | Not applicable |
+| P4 | Docs: restore or rewrite the exhaustive-recovery policy text | `.github/ci/README.md` "Exhaustive recovery policy", `docs/internals/CONTRIBUTING.md` "Agent source-development checks" | Done by #3329: the text states that `tests/goals/` is skipped by complete-suite runs | The records above | The text matches `ci_changes.py`, `test.yml`, and `pyproject.toml` at the PR's head | No saving | Not applicable |
 
 Keep rows (no change proposed): C1, C2b, C3, C4, C5, C6.
 
