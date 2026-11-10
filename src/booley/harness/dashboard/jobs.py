@@ -35,6 +35,7 @@ class JobView(JobObservation):
     eda_tool: str = ""
     handle: str = ""
     owner_handle: str = ""
+    log_path: str = ""
 
     @property
     def recorded_resources(self) -> tuple[float, float] | None:
@@ -191,7 +192,21 @@ def _job_view(
         eda_tool=_configured_tool(job.record, catalogs),
         handle=handle,
         owner_handle=owner_handle,
+        log_path=_job_log(job.root, record.run_id),
     )
+
+
+def _job_log(root: Path, run_id: str) -> str:
+    """Absolute ``job.log`` path when it is a regular file outside any symlink, else ``""``."""
+    path = job_records.job_log_path(run_id, root)
+    if path is None:
+        return ""
+    try:
+        if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+            return ""
+    except OSError:
+        return ""
+    return str(path)
 
 
 def _configured_tool(rec: job_records.JobRecord, catalogs: dict[str, TargetCatalog | None]) -> str:
