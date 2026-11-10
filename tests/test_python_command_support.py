@@ -66,7 +66,7 @@ def test_bare_fusesoc_resolves_from_the_test_environment() -> None:
 
     found = shutil.which("fusesoc")
     assert found is not None
-    assert os.path.samefile(found, expected)
+    assert Path(found).samefile(expected)
 
     result = subprocess.run(
         ["fusesoc", "--version"],
