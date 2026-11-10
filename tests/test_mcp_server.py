@@ -2093,7 +2093,7 @@ def test_registered_poll_observes_blocked_campaign_simulation(tmp_path, monkeypa
     monkeypatch.setenv("BOOLEY_RUN_ID", run_id)
     entered, release = Event(), Event()
 
-    def blocked_launch(_target, _tests):
+    def blocked_launch(_launch):
         entered.set()
         assert release.wait(30), "test failed to release simulator launch"
         return PASS_PROCESS

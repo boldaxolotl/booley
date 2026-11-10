@@ -1,45 +1,30 @@
 """SimulateFlow Cocotb Target tests (ADR 0034 — G3, G4, B2, B3, B4, G6).
 
-Host-runnable: `fusesoc run --setup` is stubbed with a fake ResolvedTarget
-carrying ``cocotb_module`` and the batched execution is fed canned run-half
-output ([COCOTB_RESULTS] + [SIM_SUMMARY] lines built with the real
-formatters). The real icarus/verilator cocotb runs are the Sandbox e2e's job
-(G8-G15).
+Host-runnable: the Cocotb Target is simulated through the real campaign path
+(``SimulateFlow.execute``) with only the process edge faked
+(``campaign_boundary``). The fake process prints canned run-half output
+([COCOTB_RESULTS] + [SIM_SUMMARY] lines built with the real formatters) and the
+production Cocotb adapter's verdict logic turns it into the adapter result. The
+real icarus/verilator cocotb runs are the Sandbox e2e's job (G8-G15).
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.backends import cocotb_results as cr
-from booley.flows.sim.build_session import TargetCompileSurface
 from booley.flows.sim.execution import engine as execution_engine
 from booley.flows.sim.result import format_summary
-from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from tests.flows.sim.campaign_boundary import CampaignSimRun, run_campaign_sim
 from tests.flows.sim.launched_work import launched_work
-from tests.flows.sim.leased_session import canned_build_session
-from tests.flows.sim.test_flow import SimulateFlow, _make_flow
-
-
-@pytest.fixture(autouse=True)
-def _canned_cocotb_build_session(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Canned FuseSoC output here: real leased session, stubbed capture and image gates."""
-    monkeypatch.setattr(
-        execution_engine,
-        "resolve_target_compile_surface",
-        lambda handle: TargetCompileSurface(handle.project_root, (), ()),
-    )
-    with canned_build_session():
-        yield
-
+from tests.flows.sim.test_flow import SimulateFlow
 
 # A .core declaring a Cocotb Target (flow_options.cocotb_module — decision 2).
 _COCOTB_CORE_TEXT = """\
@@ -52,7 +37,7 @@ filesets:
       - rtl/counter.sv: {file_type: systemVerilogSource}
   tb:
     files:
-      - tb/test_counter.py: {file_type: user, copyto: test_counter.py}
+      - tb/test_counter.py: {file_type: user}
     tags: [tb]
 targets:
   ccfg:
@@ -68,48 +53,18 @@ targets:
 _TESTS = {"ccfg": ["test_reset", "test_count", "test_fail_assert"]}
 
 
-def _write_test_registry(
-    tmp_path: Path,
-    target: str,
-    tests: list[str],
-    *,
-    select: str = "",
-) -> None:
-    project = tmp_path / ".booley"
-    project.mkdir(exist_ok=True)
-    rendered = ", ".join(json.dumps(name) for name in tests)
-    select_line = f"select = {json.dumps(select)}\n" if select else ""
-    (project / "tests.toml").write_text(
-        f"[{target}]\ntests = [{rendered}]\n{select_line}",
-        encoding="utf-8",
-    )
-
-
-def _make_cocotb_flow(tmp_path: Path, extra_args: list[str] | None = None):
-    (tmp_path / "ccfg.core").write_text(_COCOTB_CORE_TEXT, encoding="utf-8")
-    _write_test_registry(tmp_path, "ccfg", _TESTS["ccfg"])
-    return _make_flow(
-        tmp_path,
-        config="ccfg",
-        extra_args=extra_args,
-        seed_core=False,
-    )
-
-
-def _fake_resolved(tmp_path: Path, eda_tool: str = "icarus") -> ResolvedTarget:
-    build_root = tmp_path / "build" / "ccfg"
-    build_root.mkdir(parents=True, exist_ok=True)
-    return ResolvedTarget(
-        name="ccfg",
-        vlnv="::ccfg:0",
-        toplevel="counter",
-        eda_tool=eda_tool,
-        files=(),
-        parameters={},
-        build_root=build_root,
-        edam_path=build_root / "ccfg.eda.yml",
-        cocotb_module="test_counter",
-    )
+_TESTS = {"ccfg": ["test_reset", "test_count", "test_fail_assert"]}
+_PASSING = [
+    ("test_reset", "pass", ""),
+    ("test_count", "pass", ""),
+    ("test_fail_assert", "pass", ""),
+]
+# The sources the Cocotb core names; the faked build never reads them.
+_CORE_FILES = {
+    "ccfg.core": _COCOTB_CORE_TEXT,
+    "rtl/counter.sv": "module counter; endmodule\n",
+    "tb/test_counter.py": "",
+}
 
 
 def _cocotb_output(
@@ -144,352 +99,251 @@ def _cocotb_output(
     )
 
 
-def _execute_returning(stdout: str, returncode: int = 0, timed_out: bool = False):
-    def _exec(self, cmd):
-        return SubprocessResult(
-            returncode=returncode,
-            stdout=stdout,
-            stderr="",
-            timed_out=timed_out,
-            duration_s=2.0,
-        )
-
-    return _exec
-
-
 def _run_cocotb(
-    tmp_path,
-    flow,
-    stdout,
-    returncode=0,
-    timed_out=False,
-    resolved_eda_tool="icarus",
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str = "",
     *,
-    authenticate_build=True,
-):
-    token = "abc123"
-    flow._boundary_eda_tool = resolved_eda_tool
-    if authenticate_build and "BOOLEY_BUILD_STAGE" not in stdout:
-        build_failed = any(
-            marker in stdout for marker in ("compilation failed", "elaboration failed")
-        )
-        if build_failed:
-            stdout = f"{stdout}BOOLEY_BUILD_STAGE token={token} rc=1\n"
-        else:
-            stdout = f"BOOLEY_BUILD_STAGE token={token} rc=0\n{stdout}"
-    with (
-        patch(
-            "booley.fusesoc.fusesoc_registry._resolve_target",
-            return_value=_fake_resolved(tmp_path, resolved_eda_tool),
-        ),
-        patch.object(
-            SimulateFlow,
-            "_execute",
-            _execute_returning(stdout, returncode, timed_out),
-        ),
-        patch("booley.flows.sim.flow.new_attempt_token", return_value=token),
-        flow.publication_resources,
-    ):
-        return flow._run()
+    returncode: int = 0,
+    files: dict[str, str] | None = None,
+    build: SubprocessResult | None = None,
+    skip: dict[str, list[str]] | None = None,
+    **request: Any,
+) -> CampaignSimRun:
+    """Run the Cocotb Target ``ccfg`` through the campaign with *stdout* as the run-half output."""
+    process = SubprocessResult(returncode=returncode, stdout=stdout, duration_s=2.0)
+    return run_campaign_sim(
+        tmp_path,
+        monkeypatch,
+        _TESTS,
+        process,
+        files={**_CORE_FILES, **(files or {})},
+        build=build,
+        skip=skip,
+        target="ccfg",
+        **request,
+    )
+
+
+def _projection(tmp_path: Path) -> dict[str, Any]:
+    path = tmp_path / "reports/sim/1/targets/ccfg/simulation.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _grades(tmp_path: Path) -> dict[str, str]:
+    """Each Test's Test Run grade in the projection."""
+    return {row["test"]: row["grade"] for row in _projection(tmp_path)["test_runs"]}
+
+
+def _error_tails(tmp_path: Path) -> dict[str, str]:
+    return {test["name"]: test["error_tail"] for test in _projection(tmp_path)["tests"]}
 
 
 # ---------------------------------------------------------------------------
 # G3 — verdict matrix (the two cocotb traps front and center)
 # ---------------------------------------------------------------------------
 
+_ALL_PASS = {name: "pass" for name, _status, _text in _PASSING}
+_ALL_FAIL = dict.fromkeys(_ALL_PASS, "fail")
+_ALL_INCONCLUSIVE = dict.fromkeys(_ALL_PASS, "inconclusive")
+_SVA_LINE = "ERROR: rtl/counter.sv:18: counter reached error trap\n"
+_ZERO_MATCH_IDS = ["test_reset/ifg=12", "test_reset/ifg=0"]
+_ZERO_MATCH_RESULTS = cr.CocotbResults(
+    state=cr.STATE_OK,
+    tests=tuple(cr.CocotbTest(name, "test_counter", "skipped") for name in _ZERO_MATCH_IDS),
+)
 
-class TestCocotbVerdictMatrix:
-    def test_all_pass_rc0_passes_and_sets_criterion(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path)
-        out = _cocotb_output(
-            [
-                ("test_reset", "pass", ""),
-                ("test_count", "pass", ""),
-                ("test_fail_assert", "pass", ""),
-            ]
-        ) + (
-            "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=1500\n"
-            "BOOLEY_SIM_CPU_SECONDS: user=1.250000 system=0.250000\n"
-        )
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out)
-        assert result.exit_code == EXIT_SUCCESS
-        assert result.criterion_key == "sim_pass_ccfg"
-        assert result.criterion_met is True
-        report = json.loads((tmp_path / "reports/sim/1/targets/ccfg/simulation.json").read_text())
-        telemetry = report["tests"][0]
-        assert report["complete"] is True
-        assert telemetry["phase_timings_s"]["run"] == 1.5
-        assert telemetry["resources"] == {
-            "command_peak_rss_mb": None,
-            "command_oom_kill_delta": 0,
-            "simulation_user_cpu_s": 1.25,
-            "simulation_system_cpu_s": 0.25,
-        }
 
-    def test_named_cycle_records_are_attributed_within_batch(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path)
-        out = (
+@pytest.mark.parametrize(
+    ("stdout", "returncode", "request_args", "exit_code", "grades", "fragments"),
+    [
+        pytest.param(_cocotb_output(_PASSING), 0, {}, EXIT_SUCCESS, _ALL_PASS, (), id="pass"),
+        pytest.param(
+            # Regression (G3): exit code 0 with a failing test in the XML is FAIL;
+            # the siblings stay pass (G9 shape) and the cocotb failure text is surfaced.
             _cocotb_output(
                 [
-                    ("test_reset", "pass", ""),
-                    ("test_count", "pass", ""),
-                    ("test_fail_assert", "pass", ""),
-                ]
-            )
-            + "CYCLES test_count 17\n"
-            + "CYCLES test_reset 3\n"
-        )
-        with (
-            patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)),
-            patch(
-                "booley.flows.sim.execution.engine.resolve_cycle_sentinels",
-                return_value=["CYCLES"],
+                    *_PASSING[:2],
+                    (
+                        "test_fail_assert",
+                        "fail",
+                        "AssertionError: deliberate failure: count should be 0",
+                    ),
+                ],
+                passed=False,
             ),
-        ):
-            result = _run_cocotb(tmp_path, flow, out)
-
-        assert "test_count           PASS         17 cycles" in result.report_text
-        report = json.loads(
-            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text()
-        )
-        by_name = {test["name"]: test for test in report["tests"]}
-        assert by_name["test_reset"]["cycles"] == 3
-        assert by_name["test_count"]["cycles"] == 17
-        assert by_name["test_fail_assert"]["cycles"] is None
-
-    def test_trap_rc0_with_failing_test_in_xml_is_fail(self, tmp_path: Path):
-        """Regression (G3): exit code 0 with a failing test in XML is FAIL."""
-        flow = _make_cocotb_flow(tmp_path)
-        out = _cocotb_output(
-            [
-                ("test_reset", "pass", ""),
-                ("test_count", "pass", ""),
-                (
-                    "test_fail_assert",
-                    "fail",
-                    "AssertionError: deliberate failure: count should be 0",
-                ),
-            ],
-            passed=False,
-        )
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out, returncode=0)
-        assert result.exit_code == EXIT_FAILURE
-        # The cocotb failure text is surfaced; siblings stay pass (G9 shape).
-        assert "deliberate failure" in result.report_text
-        report = json.loads(
-            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
-        )
-        by_name = {t["name"]: t for t in report["tests"]}
-        assert by_name["test_fail_assert"]["verdict"] == "fail"
-        assert by_name["test_reset"]["verdict"] == "pass"
-        assert by_name["test_count"]["verdict"] == "pass"
-
-    def test_trap_rc0_with_no_xml_is_inconclusive(self, tmp_path: Path):
-        """Regression (G3): exit code 0 with no results.xml is INCONCLUSIVE."""
-        flow = _make_cocotb_flow(tmp_path)
-        out = _cocotb_output(
-            [],
-            state=cr.STATE_MISSING,
-            detail="results.xml not found at /b/results.xml",
-            passed=False,
-        )
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out, returncode=0)
-        assert result.exit_code == EXIT_FAILURE
-        assert "INCONCLUSIVE" in result.report_text
-        # Inconclusive skips the criterion write entirely.
-        assert not flow.state.has_criterion("sim_pass_ccfg")
-
-    def test_absent_expected_test_is_inconclusive_with_actionable_message(
-        self,
-        tmp_path: Path,
-    ):
-        flow = _make_cocotb_flow(tmp_path)
-        out = _cocotb_output(
-            [
-                ("test_reset", "pass", ""),
-                ("test_count", "pass", ""),
-            ],
-            passed=False,
-        )  # test_fail_assert absent from the XML
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out)
-        assert result.exit_code == EXIT_FAILURE
-        assert "no matching test ID" in result.report_text
-        assert '"test_reset", "test_count"' in result.report_text
-        report = json.loads(
-            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
-        )
-        by_name = {t["name"]: t for t in report["tests"]}
-        assert by_name["test_fail_assert"]["verdict"] == "inconclusive"
-        assert '"test_reset", "test_count"' in by_name["test_fail_assert"]["error_tail"]
-
-    def test_zero_match_compact_filter_reports_rendered_ids(self, tmp_path):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "test_reset"])
-        names = ["test_reset/ifg=12", "test_reset/ifg=0"]
-        results = cr.CocotbResults(
-            state=cr.STATE_OK,
-            tests=tuple(cr.CocotbTest(name, "test_counter", "skipped") for name in names),
-        )
-        out = (
-            cr.format_results_line(cr.results_payload(cr.compact_results(results, ["test_reset"])))
+            0,
+            {},
+            EXIT_FAILURE,
+            {**_ALL_PASS, "test_fail_assert": "fail"},
+            ("deliberate failure",),
+            id="fail",
+        ),
+        pytest.param(
+            # Regression (G3): exit code 0 with no results.xml is INCONCLUSIVE.
+            _cocotb_output(
+                [],
+                state=cr.STATE_MISSING,
+                detail="results.xml not found at /b/results.xml",
+                passed=False,
+            ),
+            0,
+            {},
+            EXIT_FAILURE,
+            _ALL_INCONCLUSIVE,
+            ("INCONCLUSIVE", "results.xml not found"),
+            id="missing",
+        ),
+        pytest.param(
+            # test_fail_assert is absent from the XML.
+            _cocotb_output(_PASSING[:2], passed=False),
+            0,
+            {},
+            EXIT_FAILURE,
+            {**_ALL_PASS, "test_fail_assert": "inconclusive"},
+            ("no matching test ID", '"test_reset", "test_count"'),
+            id="absent",
+        ),
+        pytest.param(
+            _cocotb_output(
+                [],
+                state=cr.STATE_UNPARSEABLE,
+                detail="results.xml is truncated or malformed: no element found",
+                passed=False,
+            ),
+            0,
+            {},
+            EXIT_FAILURE,
+            _ALL_INCONCLUSIVE,
+            ("INCONCLUSIVE", "truncated or malformed"),
+            id="truncated",
+        ),
+        pytest.param(
+            cr.format_results_line(
+                cr.results_payload(cr.compact_results(_ZERO_MATCH_RESULTS, ["test_reset"]))
+            )
             + "\n"
             + format_summary(False, 0, inconclusive=True)
-            + "\n"
-        )
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out, returncode=1)
-        assert result.exit_code == EXIT_FAILURE
-        assert "INCONCLUSIVE" in result.report_text
-        assert all(name in result.report_text for name in names)
-        report = json.loads((tmp_path / "reports/sim/1/targets/ccfg/simulation.json").read_text())
-        entry = next(t for t in report["tests"] if t["name"] == "test_reset")
-        assert entry["verdict"] == "inconclusive"
-        assert all(name in entry["error_tail"] for name in names)
-
-    def test_extra_unexpected_xml_test_is_logged_not_verdict_bearing(
-        self,
-        tmp_path: Path,
-    ):
-        flow = _make_cocotb_flow(tmp_path)
-        out = _cocotb_output(
-            [
-                ("test_reset", "pass", ""),
-                ("test_count", "pass", ""),
-                ("test_fail_assert", "pass", ""),
-                ("test_surprise", "pass", ""),
-            ]
-        )
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out)
-        assert result.exit_code == EXIT_SUCCESS  # extras don't flip verdicts
-        assert "test_surprise" in result.report_text
-        report = json.loads(
-            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
-        )
-        assert len(report["tests"]) == 3  # selected set only
-
-    def test_xml_truncated_is_inconclusive(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path)
-        out = _cocotb_output(
-            [],
-            state=cr.STATE_UNPARSEABLE,
-            detail="results.xml is truncated or malformed: no element found",
-            passed=False,
-        )
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out)
-        assert result.exit_code == EXIT_FAILURE
-        assert "INCONCLUSIVE" in result.report_text
-
-    def test_sva_errors_fail_an_all_pass_batch(self, tmp_path: Path):
-        """C3: output scanning retained — RTL $fatal under a green XML fails.
-
-        The count arrives via the run-half's [SIM_SUMMARY] (run output only);
-        simulate never recounts over `combined`, whose build half echoes the
-        DUT's $error/$fatal source text in iverilog warnings (e2e regression).
-        """
-        flow = _make_cocotb_flow(tmp_path)
-        out = _cocotb_output(
-            [
-                ("test_reset", "pass", ""),
-                ("test_count", "pass", ""),
-                ("test_fail_assert", "pass", ""),
-            ],
-            sva_lines="ERROR: rtl/counter.sv:18: counter reached error trap\n",
-            sva_errors=1,
-            passed=False,
-        )
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out)
-        assert result.exit_code == EXIT_FAILURE
-        assert ", 1 assertion/fatal error message," in result.report_text
-        assert "sva_errors=" not in result.report_text
-
-    def test_build_warnings_echoing_error_text_do_not_fail_the_batch(
-        self,
-        tmp_path: Path,
-    ):
-        """e2e G8 regression: iverilog's 'System task ($error) cannot be
-        synthesized' build warnings must not count as DUT assertions."""
-        flow = _make_cocotb_flow(tmp_path)
-        out = (
-            "rtl/counter.sv:18: warning: System task ($error) cannot be "
-            "synthesized in an always_ff process.\n"
-            "rtl/counter.sv:19: warning: System task ($fatal) cannot be "
-            "synthesized in an always_ff process.\n"
+            + "\n",
+            1,
+            {"test": ("test_reset",)},
+            EXIT_FAILURE,
+            {"test_reset": "inconclusive"},
+            ("INCONCLUSIVE", *_ZERO_MATCH_IDS),
+            id="zero-match",
+        ),
+        pytest.param(
+            # An extra XML test is logged, never verdict-bearing: selected set only.
+            _cocotb_output([*_PASSING, ("test_surprise", "pass", "")]),
+            0,
+            {},
+            EXIT_SUCCESS,
+            _ALL_PASS,
+            (),
+            id="extra",
+        ),
+        pytest.param(
+            # C3: output scanning retained: RTL $fatal under a green XML fails the batch.
+            _cocotb_output(_PASSING, sva_lines=_SVA_LINE, sva_errors=1, passed=False),
+            0,
+            {},
+            EXIT_FAILURE,
+            _ALL_FAIL,
+            ("1 assertion/fatal error message",),
+            id="sva",
+        ),
+        pytest.param(
+            # G3 matrix: an all-pass XML after a failed-verdict run stays FAIL; the
+            # production adapter turns every passing test into a failure.
+            _cocotb_output(_PASSING, passed=False),
+            1,
+            {},
+            EXIT_FAILURE,
+            _ALL_FAIL,
+            ("simulator process failed outside Cocotb results",),
+            id="nonzero-rc",
+        ),
+        pytest.param(
+            "sim noise\nERROR: cocotb simulation timed out (5s)\n"
             + _cocotb_output(
                 [
                     ("test_reset", "pass", ""),
-                    ("test_count", "pass", ""),
-                    ("test_fail_assert", "pass", ""),
-                ]
-            )
-        )
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out)
-        assert result.exit_code == EXIT_SUCCESS
-        assert result.criterion_met is True
+                    ("test_count", "fail", "SimFailure: Simulator shut down prematurely"),
+                ],
+                passed=False,
+            ),
+            1,
+            {},
+            EXIT_FAILURE,
+            {**_ALL_PASS, "test_count": "fail", "test_fail_assert": "fail"},
+            ("cocotb simulation timed out",),
+            id="timeout",
+        ),
+        pytest.param(
+            # The run died before the run-half's post-processing (e.g. an outer
+            # kill): no [COCOTB_RESULTS], no [SIM_SUMMARY].
+            "bare sim noise, rc 0\n",
+            0,
+            {},
+            EXIT_FAILURE,
+            _ALL_INCONCLUSIVE,
+            ("INCONCLUSIVE",),
+            id="no-results",
+        ),
+    ],
+)
+def test_cocotb_campaign_verdicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    returncode: int,
+    request_args: dict[str, Any],
+    exit_code: int,
+    grades: dict[str, str],
+    fragments: tuple[str, ...],
+) -> None:
+    run = _run_cocotb(tmp_path, monkeypatch, stdout, returncode=returncode, **request_args)
 
-    def test_nonzero_rc_with_all_pass_xml_is_not_pass(self, tmp_path: Path):
-        """G3 matrix: an all-pass XML after a failed-verdict run stays FAIL.
+    text = run.result.outcome.report_text
+    assert run.result.exit_code == exit_code, text
+    assert _grades(tmp_path) == grades
+    for fragment in fragments:
+        assert fragment in text, fragment
+    assert "sva_errors=" not in text  # the raw summary key never leaks into the report
+    assert [test["name"] for test in _projection(tmp_path)["tests"]] == list(grades)
 
-        The run-half folds the sim exit code into its [SIM_SUMMARY] batch
-        verdict (rc!=0 → passed=false even when every XML entry passed —
-        e.g. a $fatal after the last test completed); simulate honors that
-        batch authority while per-test verdicts stay reconciliation-driven.
-        """
-        flow = _make_cocotb_flow(tmp_path)
-        out = _cocotb_output(
-            [
-                ("test_reset", "pass", ""),
-                ("test_count", "pass", ""),
-                ("test_fail_assert", "pass", ""),
-            ],
-            passed=False,
-        )  # the run-half saw rc!=0 and said FAIL
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out, returncode=1)
-        assert result.exit_code == EXIT_FAILURE
-        # Per-test verdicts still come from the reconciled XML.
-        report = json.loads(
-            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
-        )
-        assert all(t["verdict"] == "pass" for t in report["tests"])
 
-    def test_timeout_marks_unfinished_tests_timed_out(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path)
-        out = "sim noise\nERROR: cocotb simulation timed out (5s)\n" + _cocotb_output(
-            [
-                ("test_reset", "pass", ""),
-                ("test_count", "fail", "SimFailure: Simulator shut down prematurely"),
-            ],
-            passed=False,
-        )
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, out, returncode=1)
-        assert result.exit_code == EXIT_FAILURE
-        report = json.loads(
-            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
-        )
-        by_name = {t["name"]: t for t in report["tests"]}
-        # Finished-and-passed stays pass, the active test reads timeout, and a
-        # later selected test is also normalized as batch-timeout evidence.
-        assert by_name["test_reset"]["verdict"] == "pass"
-        assert by_name["test_count"]["verdict"] == "timeout"
-        assert by_name["test_fail_assert"]["verdict"] == "timeout"
-        assert "cocotb simulation timed out" in by_name["test_fail_assert"]["error_tail"]
+def test_cocotb_timeout_marks_unfinished_tests_timed_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdout = "sim noise\nERROR: cocotb simulation timed out (5s)\n" + _cocotb_output(
+        [("test_reset", "pass", "")], passed=False
+    )
+    _run_cocotb(tmp_path, monkeypatch, stdout, returncode=1)
 
-    def test_missing_results_line_is_inconclusive_never_pass(self, tmp_path: Path):
-        # The run died before the run-half's post-processing (e.g. an outer
-        # kill): no [COCOTB_RESULTS], no [SIM_SUMMARY] → inconclusive.
-        flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(tmp_path, flow, "bare sim noise, rc 0\n")
-        assert result.exit_code == EXIT_FAILURE
-        assert "INCONCLUSIVE" in result.report_text
+    # Finished-and-passed stays pass; the active and later selected tests read
+    # timeout, and the timeout reason rides their error tail.
+    executions = {test["name"]: test["execution"] for test in _projection(tmp_path)["tests"]}
+    assert executions == {
+        "test_reset": "completed",
+        "test_count": "timeout",
+        "test_fail_assert": "timeout",
+    }
+    assert "cocotb simulation timed out" in _error_tails(tmp_path)["test_fail_assert"]
+
+
+def test_cocotb_named_cycles_within_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout = _cocotb_output(_PASSING) + "CYCLES test_count 17\nCYCLES test_reset 3\n"
+    run = _run_cocotb(
+        tmp_path,
+        monkeypatch,
+        stdout,
+        files={".booley/booley.toml": '[flows.sim]\ncycle_sentinels = ["CYCLES"]\n'},
+    )
+
+    assert "test_count: cycles=17" in run.result.outcome.report_text
+    cycles = {test["name"]: test["cycles"] for test in _projection(tmp_path)["tests"]}
+    assert cycles == {"test_reset": 3, "test_count": 17, "test_fail_assert": None}
 
 
 # ---------------------------------------------------------------------------
@@ -497,148 +351,58 @@ class TestCocotbVerdictMatrix:
 # ---------------------------------------------------------------------------
 
 
-class TestCocotbBatching:
-    def test_one_execute_for_the_whole_set(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path)
-        calls: list[list[str]] = []
+@pytest.mark.parametrize("verbosity", ["compact", "full"])
+def test_cocotb_batch_launch_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verbosity: str
+) -> None:
+    """One launch for the whole set, its document naming the adapter, module and grace."""
+    request = {} if verbosity == "compact" else {"result_verbosity": "full"}
+    # F-25: the frozen-clock watchdog knob crosses into the sandbox.
+    with patch("booley.flows.sim.execution.engine.resolve_sim_time_grace_s", return_value=42.0):
+        run = _run_cocotb(tmp_path, monkeypatch, _cocotb_output(_PASSING), **request)
 
-        def _capture(self, cmd):
-            calls.append(cmd)
-            return SubprocessResult(
-                returncode=0,
-                stdout=(
-                    "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
-                    + _cocotb_output(
-                        [
-                            ("test_reset", "pass", ""),
-                            ("test_count", "pass", ""),
-                            ("test_fail_assert", "pass", ""),
-                        ]
-                    )
-                ),
-                stderr="",
-                duration_s=1.0,
-            )
+    assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
+    (launch,) = run.launches  # one build + one sim process for 3 tests
+    work = launch.work
+    assert work.adapter == "cocotb"
+    assert work.tests == tuple(_TESTS["ccfg"])
+    assert work.cocotb_module == "test_counter"
+    assert work.result_verbosity == verbosity
+    assert work.adapter_result_path
+    assert work.sim_time_grace_s == 42.0
 
-        with (
-            patch(
-                "booley.fusesoc.fusesoc_registry._resolve_target",
-                return_value=_fake_resolved(tmp_path),
-            ),
-            patch.object(SimulateFlow, "_execute", _capture),
-            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
-            patch(
-                "booley.flows.sim.flow._get_test_names",
-                return_value=dict(_TESTS),
-            ),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        assert len(calls) == 1  # one build + one sim process for 3 tests
-        script = calls[0][-1]
-        work = launched_work(script)
-        assert work.adapter == "cocotb"
-        assert work.tests[0] == "test_reset"
-        assert work.cocotb_module == "test_counter"
-        assert work.result_verbosity == "compact"
-        assert work.adapter_result_path
 
-    def test_full_result_verbosity_reaches_the_run_half(self, tmp_path: Path):
-        flow = _make_cocotb_flow(
-            tmp_path,
-            extra_args=["--dry-run", "--result-verbosity", "full"],
-        )
-        with flow.publication_resources:
-            result = flow._run()
-        command = result.detail["work_units"][0]["commands"][0]["argv"]
-        assert launched_work(command[-1]).result_verbosity == "full"
+def test_cocotb_trace_scope_reaches_the_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _run_cocotb(tmp_path, monkeypatch, _cocotb_output(_PASSING), trace=True)
 
-    def test_trace_scope_reaches_the_run_half(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run", "--trace"])
-        with flow.publication_resources:
-            result = flow._run()
-        command = result.detail["work_units"][0]["commands"][0]["argv"]
-        work = launched_work(command[-1])
-        assert (work.trace, work.trace_scope) == (True, "counter")
+    # The fake process writes no waveform, so the grade is not asserted.
+    (launch,) = run.launches
+    assert (launch.work.trace, launch.work.trace_scope) == (True, "counter")
 
-    def test_exact_filter_prunes_the_selected_set(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "test_count"])
-        calls: list[list[str]] = []
 
-        def _capture(self, cmd):
-            calls.append(cmd)
-            return SubprocessResult(
-                returncode=0,
-                stdout=(
-                    "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
-                    + _cocotb_output([("test_count", "pass", "")])
-                ),
-                stderr="",
-                duration_s=1.0,
-            )
+@pytest.mark.parametrize(
+    ("request_args", "skip", "expected"),
+    [
+        ({"test": ("test_count",)}, None, ("test_count",)),
+        # A configured skip prunes the set (it never empties it).
+        ({}, {"ccfg": ["test_fail_assert"]}, ("test_reset", "test_count")),
+    ],
+    ids=["filter", "skip"],
+)
+def test_cocotb_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request_args: dict[str, Any],
+    skip: dict[str, list[str]] | None,
+    expected: tuple[str, ...],
+) -> None:
+    stdout = _cocotb_output([(name, "pass", "") for name in expected])
+    run = _run_cocotb(tmp_path, monkeypatch, stdout, skip=skip, **request_args)
 
-        with (
-            patch(
-                "booley.fusesoc.fusesoc_registry._resolve_target",
-                return_value=_fake_resolved(tmp_path),
-            ),
-            patch.object(SimulateFlow, "_execute", _capture),
-            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
-            patch(
-                "booley.flows.sim.flow._get_test_names",
-                return_value=dict(_TESTS),
-            ),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        assert launched_work(calls[0][-1]).tests == ("test_count",)
-
-    def test_configured_skip_prunes_but_never_empties(self, tmp_path: Path):
-        """Project-configured skip works unchanged on a Cocotb Target."""
-        flow = _make_cocotb_flow(tmp_path)
-        calls: list[list[str]] = []
-
-        def _capture(self, cmd):
-            calls.append(cmd)
-            return SubprocessResult(
-                returncode=0,
-                stdout=(
-                    "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
-                    + _cocotb_output(
-                        [
-                            ("test_reset", "pass", ""),
-                            ("test_count", "pass", ""),
-                        ]
-                    )
-                ),
-                stderr="",
-                duration_s=1.0,
-            )
-
-        with (
-            patch(
-                "booley.fusesoc.fusesoc_registry._resolve_target",
-                return_value=_fake_resolved(tmp_path),
-            ),
-            patch.object(SimulateFlow, "_execute", _capture),
-            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
-            patch(
-                "booley.flows.sim.flow._get_test_names",
-                return_value=dict(_TESTS),
-            ),
-            patch(
-                "booley.flows.sim.flow._get_test_skips",
-                return_value={"ccfg": ["test_fail_assert"]},
-            ),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        work = launched_work(calls[0][-1])
-        assert "test_fail_assert" not in work.tests
-        assert work.tests[0] == "test_reset"
+    assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
+    assert run.launched == [("ccfg", expected)]
 
 
 # ---------------------------------------------------------------------------
@@ -646,58 +410,69 @@ class TestCocotbBatching:
 # ---------------------------------------------------------------------------
 
 
-class TestCocotbSelectRejection:
-    def test_select_template_on_cocotb_target_is_setup_error(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path)
-        _write_test_registry(
-            tmp_path,
-            "ccfg",
-            _TESTS["ccfg"],
-            select="+test_id={index}",
-        )
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        assert "COCOTB_TEST_FILTER" in result.report_text
-        assert "remove the `select` key" in result.report_text
+def test_select_template_rejected_only_on_cocotb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selecting = '[{target}]\ntests = ["{test}"]\nselect = "+test_id={{index}}"\n'
+    (tmp_path / "cocotb").mkdir()
+    (tmp_path / "native").mkdir()
+    cocotb = _run_cocotb(
+        tmp_path / "cocotb",
+        monkeypatch,
+        files={".booley/tests.toml": selecting.format(target="ccfg", test="test_reset")},
+    )
 
-    def test_select_on_sv_target_still_fine(self, tmp_path: Path):
-        # The rejection keys off cocotb-ness, not the mere presence of select.
-        _write_test_registry(tmp_path, "lite", ["t0"], select="+test_id={index}")
-        flow = _make_flow(tmp_path, config="lite")
-        with (
-            patch.object(
-                SimulateFlow,
-                "_execute",
-                _execute_returning(
-                    '[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n',
-                ),
-            ),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
+    assert cocotb.result.exit_code == EXIT_ERROR
+    assert "COCOTB_TEST_FILTER" in cocotb.result.outcome.report_text
+    assert "remove the `select` key" in cocotb.result.outcome.report_text
+    assert cocotb.launched == []
+
+    # The rejection keys off cocotb-ness, not the mere presence of select.
+    native = run_campaign_sim(
+        tmp_path / "native",
+        monkeypatch,
+        {"lite": ["t0"]},
+        SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n", duration_s=0.1),
+        files={".booley/tests.toml": selecting.format(target="lite", test="t0")},
+        target="lite",
+    )
+    assert native.result.exit_code == EXIT_SUCCESS, native.result.outcome.report_text
 
 
 # ---------------------------------------------------------------------------
-# Public simulator eligibility
+# B4 — build failure: no simulator ever starts
 # ---------------------------------------------------------------------------
 
 
-class TestCocotbSimulatorEligibility:
-    def test_commercial_resolved_eda_tool_fails_fast(self, tmp_path: Path):
-        # A Cocotb Target resolving to xcelium/vcs raises in prepare — the
-        # message names the v1 boundary, never a silent non-cocotb run.
-        flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(
-                tmp_path,
-                flow,
-                "unused",
-                resolved_eda_tool="xcelium",
-            )
-        assert result.exit_code == EXIT_FAILURE
-        assert "select a Verilator or Icarus Target" in result.report_text
+def test_cocotb_build_failure_blocks_every_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the BUILD half breaks, not one selected test runs.
+
+    The campaign records every selected test as blocked by the build and rides
+    the compile error on each (taxi: an icarus Target whose SV interface ports
+    don't parse in iverilog gave 14 phantom FAILs). Nothing is launched, so the
+    build failure can never read as a pass (ADR 0034 dec 6).
+    """
+    build_output = (
+        "[cocotb simulation: test_counter on icarus]\n"
+        "rtl/counter.sv:12: syntax error\n"
+        "rtl/counter.sv:12: error: Invalid module instantiation\n"
+        "ERROR: iverilog compilation failed\n"
+    )
+    run = _run_cocotb(
+        tmp_path, monkeypatch, build=SubprocessResult(returncode=1, stdout=build_output)
+    )
+
+    assert run.result.exit_code == EXIT_FAILURE
+    assert run.launched == []
+    tests = _projection(tmp_path)["tests"]
+    assert [test["name"] for test in tests] == _TESTS["ccfg"]
+    assert {test["execution"] for test in tests} == {"blocked_by_build"}
+    assert all(not test["passed"] for test in tests)
+    for tail in _error_tails(tmp_path).values():
+        assert "iverilog compilation failed" in tail
+        assert "syntax error" in tail
 
 
 # ---------------------------------------------------------------------------
@@ -736,7 +511,10 @@ class TestCocotbDryRun:
         (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n", encoding="utf-8")
         (tmp_path / "tb").mkdir()
         (tmp_path / "tb/test_counter.py").write_text("", encoding="utf-8")
-        _write_test_registry(tmp_path, "ccfg", _TESTS["ccfg"])
+        (tmp_path / ".booley").mkdir()
+        (tmp_path / ".booley/tests.toml").write_text(
+            f"[ccfg]\ntests = {json.dumps(_TESTS['ccfg'])}\n", encoding="utf-8"
+        )
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         reset_cache()
 
@@ -754,125 +532,3 @@ class TestCocotbDryRun:
         (preview,) = result.outcome.detail["campaign_preview"]
         # Naming tests needs the registry, so success shows it was read; two tests, one batch.
         assert preview["work_items"] == 1
-
-
-class TestCocotbBuildFailureShape:
-    """B4: when the BUILD half breaks, no simulator ever starts and not one of
-    the selected tests runs. Fanning the compile error out into N per-test
-    "FAIL 0.0s" rows invented verdicts for tests that never executed and buried
-    the compile error in the first row's tail (taxi: an icarus Target whose SV
-    interface ports don't parse in iverilog gave 14 phantom FAILs)."""
-
-    # An iverilog compile error, exactly as the run-half echoes it — matched by
-    # simulate's _ELAB_FAIL_RE. No [COCOTB_RESULTS] line: the sim never ran.
-    _BUILD_FAIL_OUTPUT = (
-        "[cocotb simulation: test_counter on icarus]\n"
-        "rtl/counter.sv:12: syntax error\n"
-        "rtl/counter.sv:12: error: Invalid module instantiation\n"
-        "ERROR: iverilog compilation failed\n"
-    )
-
-    def _report(self, tmp_path: Path) -> dict:
-        return json.loads(
-            (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
-        )
-
-    def test_build_failure_yields_one_build_entry_not_a_verdict_per_test(
-        self,
-        tmp_path: Path,
-    ):
-        flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(
-                tmp_path,
-                flow,
-                self._BUILD_FAIL_OUTPUT,
-                returncode=1,
-            )
-        assert result.exit_code == EXIT_FAILURE
-        tests = self._report(tmp_path)["tests"]
-        # One entry for the build — not three phantom per-test FAILs.
-        assert len(tests) == 1
-        assert tests[0]["name"] == "ccfg"
-        assert tests[0]["verdict"] == "elab_error"
-        assert tests[0]["passed"] is False
-
-    def test_the_compile_error_rides_the_build_entry(self, tmp_path: Path):
-        flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            _run_cocotb(
-                tmp_path,
-                flow,
-                self._BUILD_FAIL_OUTPUT,
-                returncode=1,
-            )
-        tail = self._report(tmp_path)["tests"][0]["error_tail"]
-        assert "iverilog compilation failed" in tail
-        assert "syntax error" in tail
-
-    def test_a_build_failure_never_reads_as_a_pass(self, tmp_path: Path):
-        # ADR 0034 dec 6 holds regardless of the reshaping: no results.xml, no
-        # pass — even if the build-failed process somehow exits 0.
-        flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            result = _run_cocotb(
-                tmp_path,
-                flow,
-                self._BUILD_FAIL_OUTPUT,
-                returncode=0,
-            )
-        assert result.exit_code == EXIT_FAILURE
-        assert result.criterion_met is False
-
-    def test_a_run_death_without_a_build_error_still_fans_out(self, tmp_path: Path):
-        # The collapse is gated on an actual build failure. A run that dies
-        # AFTER the simulator started (no compile error in the output) keeps the
-        # per-test inconclusive shape — those tests really were dispatched.
-        flow = _make_cocotb_flow(tmp_path)
-        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-            _run_cocotb(tmp_path, flow, "bare sim noise, rc 0\n")
-        tests = self._report(tmp_path)["tests"]
-        assert len(tests) == len(_TESTS["ccfg"])
-        assert all(t["verdict"] == "inconclusive" for t in tests)
-
-
-# ---------------------------------------------------------------------------
-# ravenoc F-25 / F-32 — cocotb batch: watchdog wiring + missing-binary grading
-# ---------------------------------------------------------------------------
-
-
-def test_run_cmd_forwards_the_sim_time_grace(tmp_path: Path):
-    """F-25: the frozen-clock watchdog knob crosses into the sandbox."""
-    flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run"])
-    with (
-        patch(
-            "booley.flows.sim.execution.engine.resolve_sim_time_grace_s",
-            return_value=42.0,
-        ),
-        flow.publication_resources,
-    ):
-        result = flow._run()
-    command = result.detail["work_units"][0]["commands"][0]["argv"]
-    assert launched_work(command[-1]).sim_time_grace_s == 42.0
-
-
-def test_missing_verilator_on_a_cocotb_target_is_exit_2(tmp_path: Path):
-    """F-32: the gauntlet's `run_test_001 FAIL 0.0s` was a missing binary."""
-    flow = _make_cocotb_flow(tmp_path)
-    stdout = "/bin/sh: 1: verilator: not found\nERROR: Verilator elaboration failed (rc=2)\n"
-    with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-        result = _run_cocotb(tmp_path, flow, stdout, returncode=2)
-    assert result.exit_code == EXIT_ERROR
-    assert result.detail["eda_tool_error"] == "missing_executable"
-    assert result.detail["missing_executable"] == "verilator"
-    # None of the three selected tests may appear as a graded row.
-    assert "test_reset" not in result.report_text
-
-
-def test_real_cocotb_build_failure_still_grades_as_exit_1(tmp_path: Path):
-    """A compiler that ran and rejected the design keeps its design verdict."""
-    flow = _make_cocotb_flow(tmp_path)
-    stdout = "tb.sv:12: syntax error\nERROR: iverilog compilation failed (rc=1)\n"
-    with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
-        result = _run_cocotb(tmp_path, flow, stdout, returncode=1)
-    assert result.exit_code == EXIT_FAILURE
