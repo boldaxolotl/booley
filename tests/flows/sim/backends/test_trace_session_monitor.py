@@ -73,6 +73,7 @@ class _AliveStub:
     """A process or stream that stays alive and never grows."""
 
     pid = 4242
+    store_path = None  # read by the stall-window log line
 
     def poll(self) -> None:
         return None
@@ -260,8 +261,9 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
     monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
     conversion = _declared_stream(tmp_path)
     sim_proc = _spawn_sleeper()
+    session = TraceSession(tmp_path / "work")
     try:
-        TraceSession(tmp_path / "work").start_monitor(
+        session.start_monitor(
             conversion,
             sim_proc,
             stall_timeout=0.1,
@@ -275,6 +277,7 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
     finally:
         sim_proc.kill()
         sim_proc.wait(timeout=5)
+        session.stop_monitor()
         conversion.kill()
         conversion.finish(timeout_s=5)
 
@@ -313,6 +316,7 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
     finally:
         sim_proc.kill()
         sim_proc.wait(timeout=5)
+        session.stop_monitor()
         conversion.finish(timeout_s=5)
 
 

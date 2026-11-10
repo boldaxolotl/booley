@@ -337,10 +337,10 @@ def test_no_stall_monitor_outlives_the_run(tmp_path: Path, monkeypatch, request,
     monitors: list[tuple[threading.Thread, subprocess.Popen[str]]] = []
     real_monitor = TraceSession._monitor_stalls
 
-    def recording_monitor(self, bwave_proc, sim_proc, stall_timeout, _poll_interval, kill_after):
+    def recording_monitor(self, bwave_proc, sim_proc, stall_timeout, _poll_interval, *rest):
         monitors.append((threading.current_thread(), sim_proc))
         # A minute-long poll: an unstopped monitor is certainly still asleep when we assert.
-        real_monitor(self, bwave_proc, _FirstPollAlive(sim_proc), stall_timeout, 60.0, kill_after)
+        real_monitor(self, bwave_proc, _FirstPollAlive(sim_proc), stall_timeout, 60.0, *rest)
 
     monkeypatch.setattr(TraceSession, "_monitor_stalls", recording_monitor)
     session = TraceSession(tmp_path / "work")
