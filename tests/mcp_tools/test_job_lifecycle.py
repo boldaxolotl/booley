@@ -339,6 +339,98 @@ async def test_adopted_cancel_keeps_completion_that_wins_race(context, monkeypat
     assert job_records.read_record(run_id, context.jobs_root).status == "done"
 
 
+def _finish_record(context, run_id: str) -> None:
+    """Write the owner's terminal record, as a baseline Job's supervisor does."""
+    done = job_records.read_record(run_id, context.jobs_root)
+    assert done is not None
+    done.status, done.exit_code, done.ended_at = "done", 0, utc_now_rfc3339()
+    job_records.write_record(done, context.jobs_root)
+
+
+def _assert_owner_outcome_kept(context, run_id: str) -> None:
+    final = job_records.read_record(run_id, context.jobs_root)
+    assert final is not None
+    assert (final.status, final.exit_code) == ("done", 0)
+
+
+def test_reconcile_keeps_a_terminal_record_written_after_listing(context, monkeypatch):
+    run_id = "baseline-like"
+    rec = job_records.JobRecord(run_id, "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid())
+    job_records.write_record(rec, context.jobs_root)
+    jobs = JobLifecycle()
+
+    def owner_finishes_then_reads_dead(_pid):
+        _finish_record(context, run_id)
+        return False
+
+    monkeypatch.setattr(jobs, "_is_alive", owner_finishes_then_reads_dead)
+    jobs.reconcile_orphaned()
+    _assert_owner_outcome_kept(context, run_id)
+
+
+def test_reconcile_skips_a_record_deleted_after_listing(context, monkeypatch):
+    run_id = "vanishing"
+    rec = job_records.JobRecord(run_id, "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid())
+    job_records.write_record(rec, context.jobs_root)
+    jobs = JobLifecycle()
+
+    def record_removed_then_dead(_pid):
+        job_records.delete_record(run_id, root=context.jobs_root)
+        return False
+
+    monkeypatch.setattr(jobs, "_is_alive", record_removed_then_dead)
+    jobs.reconcile_orphaned()
+    assert job_records.read_record(run_id, context.jobs_root) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_state", ["dead", "live"])
+async def test_adopted_cancel_keeps_a_terminal_record_written_by_its_owner(
+    context, monkeypatch, owner_state
+):
+    run_id = "baseline-like"
+    rec = job_records.JobRecord(run_id, "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid())
+    job_records.write_record(rec, context.jobs_root)
+    jobs = JobLifecycle()
+    liveness = iter([True])  # ``cancel``'s own status check comes first
+
+    def is_alive(_pid):
+        if next(liveness, None) is not None:
+            return True
+        _finish_record(context, run_id)
+        return False
+
+    async def owner_finishes_during_termination(_pid):
+        _finish_record(context, run_id)
+
+    if owner_state == "dead":
+        monkeypatch.setattr(jobs, "_is_alive", is_alive)
+    else:
+        monkeypatch.setattr(jobs, "_is_alive", lambda _pid: True)
+        monkeypatch.setattr(jobs, "_cancel_process", owner_finishes_during_termination)
+
+    assert await jobs.cancel(run_id) == "finished"
+    _assert_owner_outcome_kept(context, run_id)
+
+
+@pytest.mark.asyncio
+async def test_adopted_cancel_still_cancels_an_owner_that_fails_on_sigterm(context, monkeypatch):
+    run_id = "baseline-like"
+    rec = job_records.JobRecord(run_id, "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid())
+    job_records.write_record(rec, context.jobs_root)
+    jobs = JobLifecycle()
+
+    async def owner_records_failure_on_sigterm(_pid):
+        failed = job_records.read_record(run_id, context.jobs_root)
+        assert failed is not None
+        failed.status, failed.exit_code, failed.ended_at = "failed", 2, utc_now_rfc3339()
+        job_records.write_record(failed, context.jobs_root)
+
+    monkeypatch.setattr(jobs, "_cancel_process", owner_records_failure_on_sigterm)
+    assert await jobs.cancel(run_id) == "running"
+    assert job_records.read_record(run_id, context.jobs_root).status == "cancelled"
+
+
 @pytest.mark.asyncio
 async def test_unknown_job_does_not_borrow_latest_report(context):
     write_report(context, "different", {"exit_code": 0, "passed": True})
