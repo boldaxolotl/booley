@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tomllib
 import zipfile
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ from tests.sidecar_image_helpers import (
     SIDECAR_DOCKER_CLI,
 )
 
-from booley.runtime import dockerfile_syntax
+from booley.runtime import dockerfile_syntax, docs_links
 from booley.runtime.dockerfile_syntax import logical_instructions
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
@@ -1481,3 +1482,46 @@ def test_agent_policy_probe_derives_node_and_npm_from_the_packaged_recipe() -> N
         dockerfile_syntax.argument_default(base, "NODE_VERSION"),
         dockerfile_syntax.argument_default(base, "NPM_VERSION"),
     )
+
+
+def _wheel_install_stages() -> dict[str, tuple]:
+    """Return ``{Dockerfile name: instructions of its stage that pip-installs $WHEEL}``."""
+    stages: dict[str, tuple] = {}
+    for dockerfile in sorted(_DOCKER_DIR.glob("Dockerfile*")):
+        instructions = logical_instructions(dockerfile.read_text(encoding="utf-8"))
+        starts = [n for n, i in enumerate(instructions) if i.keyword == "FROM"] + [
+            len(instructions)
+        ]
+        for begin, end in pairwise(starts):
+            stage = instructions[begin:end]
+            if any(
+                i.keyword == "RUN" and "pip install" in i.value and '"$WHEEL"' in i.value
+                for i in stage
+            ):
+                stages[dockerfile.name] = stage
+    return stages
+
+
+def test_every_wheel_install_stage_links_the_fixed_docs_path() -> None:
+    stages = _wheel_install_stages()
+    assert set(stages) == {"Dockerfile", "Dockerfile.wheel"}
+    for name, stage in stages.items():
+        install = next(n for n, i in enumerate(stage) if '"$WHEEL"' in i.value)
+        links = [
+            n
+            for n, i in enumerate(stage)
+            if n > install
+            and i.keyword == "RUN"
+            and f'ln -sfn "$DOCS_DIR" {docs_links.SANDBOX_DOCS_DIR}' in i.value
+            and "from booley.runtime.paths import user_docs_dir" in i.value
+        ]
+        assert len(links) == 1, name
+        user = [i.value for i in stage[: links[0]] if i.keyword == "USER"][-1]
+        assert user == "root", f"{name}: /booley-docs must be linked as root, not {user}"
+
+
+def test_cheatsheet_names_the_fixed_docs_path_once_in_its_sandbox_section() -> None:
+    cheatsheet = Path("src/booley/data/cheatsheet.md").read_text(encoding="utf-8")
+    section = cheatsheet.split("### Sandbox & Docker", 1)[1].split("\n### ", 1)[0]
+
+    assert section.count(f"{docs_links.SANDBOX_DOCS_DIR}/") == 1
