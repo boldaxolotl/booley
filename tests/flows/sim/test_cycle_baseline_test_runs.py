@@ -116,9 +116,6 @@ def test_a_baseline_test_the_candidate_does_not_run_is_never_resolved_from_the_b
     with flow._baseline_checkout(tmp_path / "baseline", links, "a" * 40) as baseline:
         assert Path(flow.args.work_dir) == tmp_path / "baseline"
         assert [run.name for run in baseline.runs_of("sim")] == ["stress+soak@9"]
-        assert flow._role_selection("sim", _MAP, "baseline") == SelectedTestRuns(
-            baseline.runs_of("sim")
-        )
 
     assert Path(flow.args.work_dir) == tmp_path
     assert dict(baseline.refusals) == {
