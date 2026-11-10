@@ -1587,7 +1587,13 @@ def test_scaffold_after_init_refuses_rtl_and_other_config(repo, monkeypatch):
     assert _run_full_init(repo) == 0
     config = repo / ".booley/booley.toml"
 
-    config.write_text(config.read_text(encoding="utf-8") + '\n[project]\nname = "x"\n')
+    # The generated config holds non-ASCII comments: write it back as UTF-8
+    # (Windows defaults to cp1252) and keep "\n" line endings.
+    config.write_text(
+        config.read_text(encoding="utf-8") + '\n[project]\nname = "x"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
     authored = config.read_bytes()
     assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
     assert config.read_bytes() == authored
