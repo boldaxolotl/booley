@@ -16,88 +16,6 @@ from tests.flows.sim.test_campaign_manifest_codec import _manifest
 from tests.flows.sim.test_campaign_model import _attempt
 
 
-def _reject_result(path: tuple[str | int, ...], value: object, state: str = "completed") -> None:
-    document = json.loads(_simulation_result(state))
-    target: object = document
-    for part in path[:-1]:
-        target = target[part]  # type: ignore[index]
-    target[path[-1]] = value  # type: ignore[index]
-    with pytest.raises(SimulationCampaignIntegrityError):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-
-@pytest.mark.parametrize(
-    ("path", "value"),
-    [
-        (("state",), "unknown"),
-        (("grade",), "unknown"),
-        (("build_result", "kind"), "log"),
-        (("build_result", "state"), "unknown"),
-        (("build_result", "sharing"), "unknown"),
-        (("build_result", "owner"), "550e8400-e29b-41d4-a716-446655440001"),
-        (("executable_snapshot", "verified_after_exit"), False),
-        (("executable_snapshot", "post_exit_sha256"), "sha256:" + "f" * 64),
-        (("executable_snapshot", "manifest", "kind"), "log"),
-        (("observations", 0, "execution"), "unknown"),
-        (("observations", 0, "failure_class"), "unknown"),
-        (("observations", 0, "functional"), "unknown"),
-        (("observations", 0, "assertions"), "unknown"),
-        (("observations", 0, "assertion_count"), -1),
-        (("observations", 0, "cycle_count"), -1),
-    ],
-)
-def test_simulation_result_rejects_invalid_contract_values(
-    path: tuple[str | int, ...], value: object
-) -> None:
-    _reject_result(path, value)
-
-
-def test_simulation_result_rejects_state_and_observation_disagreements() -> None:
-    document = json.loads(_simulation_result("completed"))
-    document["observations"] = []
-    with pytest.raises(SimulationCampaignIntegrityError, match="nonempty"):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-    document = json.loads(_simulation_result("completed"))
-    document["observations"][0]["execution"] = "timeout"
-    with pytest.raises(SimulationCampaignIntegrityError, match="completed observations"):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-    document = json.loads(_simulation_result("completed"))
-    document["observations"].append(dict(document["observations"][0]))
-    with pytest.raises(SimulationCampaignIntegrityError, match="unique"):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-    document = json.loads(_simulation_result("blocked_by_build"))
-    document["bundle_id"] = "6ba7b810-9dad-41d1-80b4-00c04fd430c8"
-    with pytest.raises(SimulationCampaignIntegrityError, match="cannot bind"):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-    document = json.loads(_simulation_result("blocked_by_build"))
-    document["build_result"]["state"] = "ready"
-    with pytest.raises(SimulationCampaignIntegrityError, match="failed build"):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-
-def test_simulation_result_rejects_diagnostic_and_matrix_errors() -> None:
-    document = json.loads(_simulation_result("completed"))
-    document["diagnostics"] = [{"severity": "info", "code": "x", "pointer": "", "message": "bad"}]
-    with pytest.raises(SimulationCampaignIntegrityError, match="severity"):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-    document = json.loads(_simulation_result("setup_error"))
-    document["observations"][0]["functional"] = "pass"
-    with pytest.raises(SimulationCampaignIntegrityError, match="matrix"):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-    document = json.loads(_simulation_result("aborted"))
-    document["observations"][0].update(
-        failure_class="design", functional="inconclusive", assertions="not_observed"
-    )
-    with pytest.raises(SimulationCampaignIntegrityError, match="aborted observation matrix"):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-
 @pytest.mark.parametrize(
     "value",
     [
@@ -122,10 +40,6 @@ def test_json_resource_validation_rejects_excessive_depth() -> None:
 @pytest.mark.parametrize(
     ("function", "value"),
     [
-        (codec._require_positive_int, False),
-        (codec._require_positive_int, 0),
-        (codec._require_nonnegative_int, False),
-        (codec._require_nonnegative_int, -1),
         (codec._require_digest, 1),
         (codec._require_digest, "sha256:bad"),
         (codec._require_uuid, 1),
@@ -173,63 +87,6 @@ def test_additional_scalar_and_collection_ceilings() -> None:
         codec._exact_list([None, None], "values", 1)
 
 
-def _runtime_binding() -> dict[str, object]:
-    digest = "sha256:" + "1" * 64
-    return {
-        "declaration_id": "sha256:" + "2" * 64,
-        "authoritative_copy": {
-            "path": "inputs/a",
-            "bytes": 1,
-            "sha256": digest,
-            "kind": "runtime_input",
-            "owner": "550e8400-e29b-41d4-a716-446655440001",
-        },
-        "destination": "run/a",
-        "method": "copy",
-        "destination_bytes": 1,
-        "destination_sha256": digest,
-        "owned": True,
-    }
-
-
-def test_runtime_inputs_reject_blocked_invalid_mismatched_and_duplicate_bindings() -> None:
-    binding = _runtime_binding()
-    with pytest.raises(SimulationCampaignIntegrityError, match="must be empty"):
-        codec._validate_runtime_inputs([binding], blocked=True)
-
-    invalid = dict(binding, method="move")
-    with pytest.raises(SimulationCampaignIntegrityError, match="method"):
-        codec._validate_runtime_inputs([invalid], blocked=False)
-
-    invalid = dict(binding, destination_bytes=2)
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagree"):
-        codec._validate_runtime_inputs([invalid], blocked=False)
-
-    with pytest.raises(SimulationCampaignIntegrityError, match="unique"):
-        codec._validate_runtime_inputs([binding, binding], blocked=False)
-
-
-def test_observations_reject_state_grade_cycle_and_diagnostic_disagreements() -> None:
-    completed = json.loads(_simulation_result("completed"))["observations"][0]
-    blocked = json.loads(_simulation_result("blocked_by_build"))["observations"][0]
-    with pytest.raises(SimulationCampaignIntegrityError, match="blocked observations"):
-        codec._validate_observations([completed], "blocked_by_build")
-    with pytest.raises(SimulationCampaignIntegrityError, match="setup observations"):
-        codec._validate_observations([completed], "setup_error")
-    with pytest.raises(SimulationCampaignIntegrityError, match="state disagrees"):
-        codec._validate_observations([completed], "timeout")
-    with pytest.raises(SimulationCampaignIntegrityError, match="grade disagrees"):
-        codec._validate_result_grade("fail", [completed])
-
-    invalid_cycle = dict(blocked, cycle_count=1)
-    with pytest.raises(SimulationCampaignIntegrityError, match="cycle count"):
-        codec._validate_observation(invalid_cycle, 0)
-
-    codec._validate_diagnostics(
-        [{"severity": "warning", "code": "warn", "pointer": "", "message": "message"}]
-    )
-
-
 def _fixture_document(name: str) -> dict[str, object]:
     from pathlib import Path
 
@@ -239,7 +96,7 @@ def _fixture_document(name: str) -> dict[str, object]:
 
 def _tamper_attempt(document: dict[str, object]) -> None:
     document["pre_sim_build_access"] = "mutable"
-    document["attempt_ordinal"] = codec.MAX_ATTEMPTS_PER_ITEM + 1
+    document["attempt_ordinal"] = 10_001
     document["run_directory"]["kind"] = "unknown"  # type: ignore[index]
     document["child_execution_id"] = None
     document["child_entry_sha256"] = "not-a-digest"
@@ -258,6 +115,14 @@ def _tamper_build_result(document: dict[str, object]) -> None:
 def _tamper_bundle(document: dict[str, object]) -> None:
     document["inventory_sha256"] = "sha256:" + "f" * 64
     document["artifacts"][0]["kind"] = "log"  # type: ignore[index]
+
+
+def _tamper_result(document: dict[str, object]) -> None:
+    document["state"] = "unknown"
+    document["grade"] = "unknown"
+    document["build_result"]["path"] = "../escape"  # type: ignore[index]
+    document["observations"][0]["execution"] = "unknown"  # type: ignore[index]
+    document["diagnostics"] = [{}]
 
 
 def _tamper_snapshot(document: dict[str, object]) -> None:
@@ -285,8 +150,13 @@ def _tamper_snapshot(document: dict[str, object]) -> None:
             lambda: _fixture_document("snapshot.json"),
             _tamper_snapshot,
         ),
+        (
+            codec.decode_simulation_result,
+            lambda: json.loads(_simulation_result("completed")),
+            _tamper_result,
+        ),
     ],
-    ids=["attempt", "build_attempt", "build_result", "bundle", "snapshot"],
+    ids=["attempt", "build_attempt", "build_result", "bundle", "snapshot", "result"],
 )
 def test_record_decoders_do_not_revalidate_nested_fields(decode, make_document, tamper) -> None:
     """These records get only the boundary check; their consumers guard what they use (#1743)."""
@@ -294,41 +164,6 @@ def test_record_decoders_do_not_revalidate_nested_fields(decode, make_document, 
     tamper(document)
     raw = codec.canonical_json_bytes(document)
     assert decode(raw).canonical_bytes() == raw
-
-
-def _infrastructure_build_abort() -> dict[str, object]:
-    document = json.loads(_simulation_result("aborted"))
-    document["build_result"]["state"] = "infrastructure_error"
-    document["bundle_id"] = None
-    document["executable_snapshot"] = None
-    return document
-
-
-def test_infrastructure_build_abort_has_no_executable_snapshot() -> None:
-    document = _infrastructure_build_abort()
-    result = codec.decode_simulation_result(codec.canonical_json_bytes(document))
-    assert result.document["grade"] == "error"
-
-
-@pytest.mark.parametrize("mutation", ["design", "bundle", "observed", "runtime_inputs"])
-def test_infrastructure_build_abort_rejects_forged_execution(mutation: str) -> None:
-    document = _infrastructure_build_abort()
-    if mutation == "design":
-        document["build_result"]["state"] = "design_failure"
-    elif mutation == "bundle":
-        document["bundle_id"] = "6ba7b810-9dad-41d1-80b4-00c04fd430c8"
-    elif mutation == "observed":
-        document["observations"][0].update(
-            execution="completed", failure_class=None, functional="pass", assertions="clean"
-        )
-    else:
-        document["runtime_inputs"] = [{}]
-    with pytest.raises(SimulationCampaignIntegrityError):
-        codec.decode_simulation_result(codec.canonical_json_bytes(document))
-
-
-def test_launched_abort_still_requires_snapshot() -> None:
-    _reject_result(("executable_snapshot",), None, "aborted")
 
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])

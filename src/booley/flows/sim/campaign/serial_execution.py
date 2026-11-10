@@ -1812,7 +1812,7 @@ def _infrastructure_observations(
 def _settled_state(observations: list[dict[str, object]]) -> str:
     """Return the result state implied by ``observations``, settling them to match.
 
-    The campaign codec accepts only one pairing of result state and observations:
+    Booley writes only one pairing of result state and observations:
     an ``aborted`` result carries no ``timeout`` or ``crash`` observation. So an
     abort dominates: when any observation is ``aborted``, every ``timeout`` or
     ``crash`` observation is rewritten in place to the aborted design matrix

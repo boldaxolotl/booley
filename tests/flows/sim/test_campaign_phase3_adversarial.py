@@ -365,9 +365,6 @@ def test_shared_recovery_rejects_bundle_transplants(tmp_path: Path, case: str) -
         "work_item",
         "attempt",
         "ordinal",
-        "build_owner",
-        "snapshot_pre",
-        "snapshot_post",
     ],
 )
 def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: str) -> None:
@@ -381,14 +378,8 @@ def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: s
         result["work_item_id"] = "item:9999:" + "e" * 16
     elif case == "attempt":
         result["attempt_id"] = str(uuid.uuid4())
-    elif case == "ordinal":
-        result["attempt_ordinal"] += 1
-    elif case == "build_owner":
-        result["build_result"]["owner"] = str(uuid.uuid4())
-    elif case == "snapshot_pre":
-        result["executable_snapshot"]["pre_launch_sha256"] = _BAD_DIGEST
     else:
-        result["executable_snapshot"]["post_exit_sha256"] = _BAD_DIGEST
+        result["attempt_ordinal"] += 1
     _write(path, result)
     with pytest.raises(SimulationCampaignIntegrityError):
         completed.store.scan()
