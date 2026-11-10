@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from booley.runtime import host_base_acquisition as owner
+from booley.runtime import interactive_docker
+from booley.runtime.image_identity import ImageMetadata
 from booley.runtime.image_lifecycle import HostImageScope
 from booley.runtime.image_provenance import LABEL_RUNTIME_BASE_CONTRACT
+
+
+def _image(
+    image_id: str, labels: dict[str, str] | None = None, layers: tuple[str, ...] = ()
+) -> ImageMetadata:
+    """Docker metadata for one image, as the shared strict reader returns it."""
+    return ImageMetadata(f"ref-{image_id}", image_id, labels or {}, {}, layers)
 
 
 @pytest.fixture
@@ -36,11 +45,11 @@ def test_owner_builds_only_missing_stale_or_explicitly_refreshed_base(
         [
             None
             if installed is None
-            else {"Id": "old-id", "Config": {"Labels": {LABEL_RUNTIME_BASE_CONTRACT: installed}}},
-            {"Id": "new-id", "Config": {"Labels": base_owner}},
+            else _image("old-id", {LABEL_RUNTIME_BASE_CONTRACT: installed}),
+            _image("new-id", base_owner),
         ]
     )
-    monkeypatch.setattr(owner, "_inspect", lambda _ref: next(records))
+    monkeypatch.setattr(owner, "inspect_image_metadata", lambda _ref: next(records))
     builds = []
     assert (
         owner.acquire(
@@ -56,7 +65,7 @@ def test_owner_builds_only_missing_stale_or_explicitly_refreshed_base(
 
 def test_owner_reuses_current_labels_without_build_or_mutation(tmp_path, monkeypatch, base_owner):
     monkeypatch.setattr(
-        owner, "_inspect", lambda _ref: {"Id": "same-id", "Config": {"Labels": base_owner}}
+        owner, "inspect_image_metadata", lambda _ref: _image("same-id", base_owner)
     )
     assert (
         owner.acquire(
@@ -70,18 +79,12 @@ def test_owner_reuses_current_labels_without_build_or_mutation(tmp_path, monkeyp
 def test_metadata_upgrade_preserves_layers_and_never_cold_builds(
     tmp_path, monkeypatch, base_owner, layers
 ):
-    installed = {
-        "Id": "old-id",
-        "Config": {"Labels": {LABEL_RUNTIME_BASE_CONTRACT: "current"}},
-        "RootFS": {"Layers": ["base"]},
-    }
-    candidate = {
-        "Id": "upgraded-id",
-        "Config": {"Labels": base_owner},
-        "RootFS": {"Layers": layers},
-    }
+    installed = _image("old-id", {LABEL_RUNTIME_BASE_CONTRACT: "current"}, ("base",))
+    candidate = _image("upgraded-id", base_owner, tuple(layers))
     monkeypatch.setattr(
-        owner, "_inspect", lambda ref: candidate if ref.endswith(":candidate") else installed
+        owner,
+        "inspect_image_metadata",
+        lambda ref: candidate if ref.endswith(":candidate") else installed,
     )
     monkeypatch.setattr(
         owner,
@@ -115,7 +118,7 @@ def test_metadata_upgrade_preserves_layers_and_never_cold_builds(
 
 @pytest.mark.parametrize("result", [False, True])
 def test_owner_refuses_failed_build_or_missing_identity(tmp_path, monkeypatch, base_owner, result):
-    monkeypatch.setattr(owner, "_inspect", lambda _ref: None)
+    monkeypatch.setattr(owner, "inspect_image_metadata", lambda _ref: None)
     if result:
         with pytest.raises(RuntimeError, match="incomplete provenance"):
             owner.acquire(tmp_path, scope=HostImageScope(), build=lambda: result)
@@ -143,76 +146,49 @@ def test_owner_cli_imports_with_only_standard_library():
 
 
 def _inspect_response(monkeypatch, *, returncode=0, stdout="", stderr=""):
-    monkeypatch.setattr(
-        owner.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=returncode, stdout=stdout, stderr=stderr
-        ),
-    )
+    """Answer every ``docker image inspect`` with one canned CLI result."""
+
+    def answer(*_args, **_kwargs):
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(interactive_docker, "_run_docker", answer)
+    monkeypatch.setattr(owner.subprocess, "run", answer)
 
 
-def test_inspect_missing_image_is_absent(monkeypatch):
-    _inspect_response(monkeypatch, returncode=1, stderr="Error: No such image: missing")
-    assert owner._inspect("missing") is None
+def test_acquire_preserves_inspect_failure_before_build(tmp_path, monkeypatch):
+    for detail in ("Cannot connect to Docker daemon", "permission denied", ""):
+        _inspect_response(monkeypatch, returncode=1, stderr=detail)
+        with pytest.raises(RuntimeError, match="cannot inspect Docker image") as caught:
+            owner.acquire(
+                tmp_path,
+                scope=HostImageScope(),
+                build=lambda: pytest.fail("inspection failure built"),
+            )
+        assert owner.REFERENCE in str(caught.value)
+        assert (detail or "Docker exited 1") in str(caught.value)
 
 
-@pytest.mark.parametrize("detail", ["Cannot connect to Docker daemon", "permission denied", ""])
-def test_acquire_preserves_inspect_failure_before_build(tmp_path, monkeypatch, detail):
-    _inspect_response(monkeypatch, returncode=1, stderr=detail)
-    with pytest.raises(RuntimeError, match="cannot inspect Bootstrap image") as caught:
-        owner.acquire(
-            tmp_path, scope=HostImageScope(), build=lambda: pytest.fail("inspection failure built")
-        )
-    assert owner.REFERENCE in str(caught.value)
-    assert (detail or "Docker exited 1") in str(caught.value)
-
-
-@pytest.mark.parametrize(
-    "failure", [OSError("Docker missing"), subprocess.TimeoutExpired("docker", 30)]
-)
-def test_inspect_controls_command_start_and_timeout_errors(monkeypatch, failure):
-    def fail(*_args, **_kwargs):
-        raise failure
-
-    monkeypatch.setattr(owner.subprocess, "run", fail)
-    with pytest.raises(RuntimeError, match="cannot inspect Bootstrap image 'base'") as caught:
-        owner._inspect("base")
-    assert caught.value.__cause__ is failure
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
+def test_acquire_controls_malformed_inspect_metadata_before_build(tmp_path, monkeypatch):
+    bodies = [
         "not JSON",
         "[]",
         "{}",
         "[null]",
         '[{"Id": "base"}, {"Id": "other"}]',
         '[{"Config": {}, "RootFS": {"Layers": []}}]',
-        '[{"Id": "base", "Config": null, "RootFS": {"Layers": []}}]',
         '[{"Id": "base", "Config": {"Labels": []}, "RootFS": {"Layers": []}}]',
         '[{"Id": "base", "Config": {"Labels": {"role": 42}}, "RootFS": {"Layers": []}}]',
         '[{"Id": "base", "Config": {}, "RootFS": null}]',
         '[{"Id": "base", "Config": {}, "RootFS": {"Layers": [42]}}]',
-    ],
-)
-def test_acquire_controls_malformed_inspect_metadata_before_build(tmp_path, monkeypatch, body):
-    _inspect_response(monkeypatch, stdout=body)
-    with pytest.raises(RuntimeError, match="invalid Bootstrap image metadata"):
-        owner.acquire(
-            tmp_path, scope=HostImageScope(), build=lambda: pytest.fail("malformed metadata built")
-        )
-
-
-@pytest.mark.parametrize("labels", [None, {}, {"role": "runtime-base", "parent": ""}])
-def test_inspect_accepts_valid_metadata_and_normalizes_null_labels(monkeypatch, labels):
-    record = {"Id": "sha256:base", "Config": {"Labels": labels}, "RootFS": {"Layers": ["base"]}}
-    _inspect_response(monkeypatch, stdout=json.dumps([record]))
-    observed = owner._inspect("base")
-    assert observed["Id"] == "sha256:base"
-    assert observed["Config"]["Labels"] == (labels or {})
-    assert observed["RootFS"]["Layers"] == ["base"]
+    ]
+    for body in bodies:
+        _inspect_response(monkeypatch, stdout=body)
+        with pytest.raises(RuntimeError, match="cannot inspect Docker image"):
+            owner.acquire(
+                tmp_path,
+                scope=HostImageScope(),
+                build=lambda: pytest.fail("malformed metadata built"),
+            )
 
 
 @pytest.mark.parametrize(
@@ -222,12 +198,8 @@ def test_inspect_accepts_valid_metadata_and_normalizes_null_labels(monkeypatch, 
 def test_upgrade_controls_tag_failure_and_attempts_both_cleanups(
     tmp_path, monkeypatch, base_owner, failure
 ):
-    installed = {
-        "Id": "old-id",
-        "Config": {"Labels": {LABEL_RUNTIME_BASE_CONTRACT: "current"}},
-        "RootFS": {"Layers": ["base"]},
-    }
-    monkeypatch.setattr(owner, "_inspect", lambda _ref: installed)
+    installed = _image("old-id", {LABEL_RUNTIME_BASE_CONTRACT: "current"}, ("base",))
+    monkeypatch.setattr(owner, "inspect_image_metadata", lambda _ref: installed)
     calls = []
 
     def run(command, **_kwargs):
@@ -251,25 +223,21 @@ def test_upgrade_controls_tag_failure_and_attempts_both_cleanups(
 def test_upgrade_pins_parent_uses_thin_plan_and_rechecks_base(
     tmp_path, monkeypatch, base_owner, changed_base, base_in_plan
 ):
-    installed = {"Id": "sha256:old", "Config": {"Labels": {}}, "RootFS": {"Layers": ["base"]}}
-    candidate = {
-        "Id": "sha256:new",
-        "Config": {"Labels": base_owner},
-        "RootFS": {"Layers": ["base"]},
-    }
+    installed = _image("sha256:old", {}, ("base",))
+    candidate = _image("sha256:new", base_owner, ("base",))
     calls = []
     records = {owner.REFERENCE: installed}
 
     def run(command, **_kwargs):
         calls.append(command)
         if command[1] == "tag":
-            records[command[-1]] = installed if command[2] == installed["Id"] else candidate
+            records[command[-1]] = installed if command[2] == installed.image_id else candidate
         return SimpleNamespace(returncode=0, stderr="")
 
     def build(_root, recipe, output, plan):
         parent = recipe.read_text().strip().removeprefix("FROM ")
         assert parent.endswith(":parent")
-        assert records[parent]["Id"] == "sha256:old"
+        assert records[parent].image_id == "sha256:old"
         assert plan.current.estimate_class is owner.BuildEstimateClass.THIN_OVERLAY
         assert plan.current.output_tag == output
         assert plan.requests[1:] == tuple(
@@ -277,11 +245,11 @@ def test_upgrade_pins_parent_uses_thin_plan_and_rechecks_base(
         )
         records[output] = candidate
         if changed_base:
-            records[owner.REFERENCE] = {**installed, "Id": "sha256:foreign"}
+            records[owner.REFERENCE] = replace(installed, image_id="sha256:foreign")
         return True
 
     monkeypatch.setattr(owner.subprocess, "run", run)
-    monkeypatch.setattr(owner, "_inspect", records.get)
+    monkeypatch.setattr(owner, "inspect_image_metadata", records.get)
     monkeypatch.setattr(owner, "_build", build)
     heavyweight = owner.DockerBuildPlan(
         (
@@ -367,15 +335,11 @@ def test_base_build_emits_verified_provenance_and_honors_build_outcome(
 def test_acquire_migration_failure_preserves_base_and_cleans_owned_tags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, base_owner: dict[str, str], failure: str
 ) -> None:
-    installed = {
-        "Id": "old",
-        "Config": {"Labels": {LABEL_RUNTIME_BASE_CONTRACT: "current"}},
-        "RootFS": {"Layers": ["layer"]},
-    }
-    candidate = {"Id": "new", "Config": {"Labels": {}}, "RootFS": {"Layers": ["layer"]}}
+    installed = _image("old", {LABEL_RUNTIME_BASE_CONTRACT: "current"}, ("layer",))
+    candidate = _image("new", {}, ("layer",))
     calls = []
 
-    def inspect(reference: str) -> dict[str, object] | None:
+    def inspect(reference: str) -> ImageMetadata | None:
         if reference == owner.REFERENCE:
             return installed
         if reference.endswith(":parent"):
@@ -388,7 +352,7 @@ def test_acquire_migration_failure_preserves_base_and_cleans_owned_tags(
             returncode=1 if command[1] == "image" else 0, stderr="image is in use"
         )
 
-    monkeypatch.setattr(owner, "_inspect", inspect)
+    monkeypatch.setattr(owner, "inspect_image_metadata", inspect)
     monkeypatch.setattr(owner.subprocess, "run", run)
     monkeypatch.setattr(owner, "_build", lambda *_args: failure != "build")
     message = {
