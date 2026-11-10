@@ -13,7 +13,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.harness.activity_hooks import START_EVENT
 from booley.mcp.session_registry import SessionRegistry
 from booley.runtime import session_activity as activity
 from booley.runtime.booley_dir import reset_cache, resolve_common_booley_dir
@@ -306,12 +305,14 @@ def test_main_reports_a_store_failure_without_failing(tmp_path, monkeypatch, cap
 
 
 def test_script_repeats_the_packages_event_table_states_and_bounds():
+    from booley.harness import activity_hooks  # Absent on the base commit of the regression.
+
     assert hook.EVENT_STATES == activity.EVENT_STATES
     assert hook.END_EVENT == activity.END_EVENT
     assert hook.SCHEMA == activity.SCHEMA
     assert (hook.MAX_SIGNALS, hook.MAX_TOOL_NAME) == (activity.MAX_SIGNALS, activity.MAX_TOOL_NAME)
     assert hook.MAX_THREAD_ID == activity.MAX_THREAD_ID
-    assert hook.START_EVENT == START_EVENT
+    assert hook.START_EVENT == activity_hooks.START_EVENT
     assert hook.WORKTREE_NAME.pattern == WORKTREE_NAME.pattern
     assert (hook.WORKING, hook.WAITING_TOOL, hook.WAITING_USER) == (
         activity.WORKING,
