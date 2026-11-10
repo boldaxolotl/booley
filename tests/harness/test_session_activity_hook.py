@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.harness.activity_hooks import START_EVENT
 from booley.mcp.session_registry import SessionRegistry
 from booley.runtime import session_activity as activity
 from booley.runtime.booley_dir import reset_cache, resolve_common_booley_dir
@@ -21,7 +22,7 @@ from booley.runtime.handles import HandleStore
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import ActivityStore
 from booley.runtime.timefmt import rfc3339_from_epoch
-from booley.runtime.worktree_usage import interactive_worktree_name
+from booley.runtime.worktree_usage import WORKTREE_NAME, interactive_worktree_name
 from tests.booley_checkouts_support import (
     enter_worktree,
     isolate_git,
@@ -310,6 +311,8 @@ def test_script_repeats_the_packages_event_table_states_and_bounds():
     assert hook.SCHEMA == activity.SCHEMA
     assert (hook.MAX_SIGNALS, hook.MAX_TOOL_NAME) == (activity.MAX_SIGNALS, activity.MAX_TOOL_NAME)
     assert hook.MAX_THREAD_ID == activity.MAX_THREAD_ID
+    assert hook.START_EVENT == START_EVENT
+    assert hook.WORKTREE_NAME.pattern == WORKTREE_NAME.pattern
     assert (hook.WORKING, hook.WAITING_TOOL, hook.WAITING_USER) == (
         activity.WORKING,
         activity.WAITING_TOOL,
@@ -659,7 +662,8 @@ def assert_conversation_recorded(tmp_path, variant):
     cwd = add_worktree(project, "s1") / "sub"
     client = variant.split("-")[0]
     env = {}
-    commands = {300: "claude" if client == "claude" else "codex"}
+    # Plain "claude" must resolve through CLAUDE_PID: the nearest `claude` command is another PID.
+    commands = {{"claude": 200, "claude-comm": 300}.get(variant, 300): client}
     proc = proc_tree(tmp_path / "proc", CHAIN, commands)
     if variant == "claude":
         env = {"CLAUDE_PID": "300"}
@@ -687,6 +691,7 @@ def assert_conversation_recorded(tmp_path, variant):
         "handle": label,
         "process_key": key,
         "at": rfc3339_from_epoch(NOW),
+        "git_stamp": (cwd.parent / ".git").stat().st_mtime_ns,
     }
     # s1 exists as a worktree, so the handle allocated for this process is not S1.
     assert label == "S2"
@@ -783,14 +788,13 @@ def test_full_conversation_store_keeps_files_it_cannot_judge(tmp_path, monkeypat
     store.mkdir()
     (store / "junk.json").write_text("not json", encoding="utf-8")
     (store / "other.json").write_text(json.dumps({"worktree": 7}), encoding="utf-8")
-    (store / ".staged.tmp").write_text("{}", encoding="utf-8")
+    # Staging files left by a killed hook do not count towards the bound.
+    for name in (".staged1.tmp", ".staged2.tmp"):
+        (store / name).write_text("{}", encoding="utf-8")
+    assert hook.record("codex", session_start("c1", cwd), project, NOW)
     with pytest.raises(OSError, match="conversation store is full"):
-        hook.record("codex", session_start("c1", cwd), project, NOW)
-    assert sorted(path.name for path in store.iterdir()) == [
-        ".staged.tmp",
-        "junk.json",
-        "other.json",
-    ]
+        hook.record("codex", session_start("c2", cwd), project, NOW)
+    assert {"junk.json", "other.json"} <= {path.name for path in store.iterdir()}
 
 
 def test_a_refused_conversation_record_never_fails_the_turn(tmp_path, monkeypatch, capsys):

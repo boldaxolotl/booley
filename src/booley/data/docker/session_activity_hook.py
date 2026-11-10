@@ -30,13 +30,14 @@ its stdlib-only constraint, and its Main Booley Directory resolution:
           "handle": "S<N>" | null,
           "process_key": ... | null,
           "at": "<UTC RFC 3339>",
+          "git_stamp": <st_mtime_ns of worktrees/<name>/.git>,
       }
 
   A later start of the same conversation replaces the record, or removes it
   when the conversation starts outside a worktree, so a record names the
   worktree last used. A record lives while ``worktrees/<worktree>`` exists. It
   names the worktree by name only: a reader treats a worktree whose ``.git`` file
-  is newer than ``at`` as a different worktree of the same name.
+  has an ``st_mtime_ns`` other than ``git_stamp`` as another worktree of the same name.
 
 It prints nothing to stdout (clients feed hook output back to the model),
 reports a problem on stderr only, and always exits 0, so it can never block or
@@ -100,6 +101,8 @@ CONVERSATIONS_DIR = ".conversations"
 WORKTREE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 MAX_TOOL_NAME = 128
 MAX_THREAD_ID = 1024
+# json escapes a character to at most 6 bytes: bound for a cwd, a thread id and the fixed fields.
+MAX_RECORD_BYTES = 6 * (MAX_CWD + MAX_THREAD_ID) + 1024
 MAX_PARENT_DIRS = 128
 BOOLEY_DIR_NAME = ".booley"
 CODEX_NATIVE_NAMES = frozenset(
@@ -333,7 +336,10 @@ def record(
     proc_root: Path = Path("/proc"),
     pid: int | None = None,
 ) -> bool:
-    """Store the activity one hook event reports. Returns whether the store changed."""
+    """Store the activity one hook event reports, or on SessionStart the conversation record.
+
+    Returns whether a record was written.
+    """
     event = payload.get("hook_event_name")
     if event == START_EVENT:
         return _record_conversation(
@@ -453,7 +459,7 @@ def _record_gone(path: Path, project: Path) -> bool:
         return False
     try:
         with path.open("rb") as stream:
-            record = json.loads(stream.read(MAX_CWD * 2))
+            record = json.loads(stream.read(MAX_RECORD_BYTES))
     except (OSError, ValueError, UnicodeError):
         return False
     worktree = record.get("worktree") if isinstance(record, dict) else None
@@ -465,7 +471,8 @@ def _record_gone(path: Path, project: Path) -> bool:
 def _make_room(root: Path, project: Path) -> None:
     """Ensure one more record fits; at the bound, evict records of gone worktrees first."""
     with os.scandir(root) as scan:
-        paths = [Path(entry.path) for entry in islice(scan, MAX_CONVERSATIONS)]
+        visible = (entry for entry in scan if not entry.name.startswith("."))
+        paths = [Path(entry.path) for entry in islice(visible, MAX_CONVERSATIONS)]
     if len(paths) < MAX_CONVERSATIONS:
         return
     gone = [path for path in paths if _record_gone(path, project)]
@@ -501,6 +508,8 @@ def _conversation_record(
         "handle": _handle_label(project, names),
         "process_key": key,
         "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        # Compared for equality by a reader: identifies this worktree incarnation.
+        "git_stamp": (project / "worktrees" / worktree / ".git").stat().st_mtime_ns,
     }
 
 

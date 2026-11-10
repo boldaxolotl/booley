@@ -2723,7 +2723,7 @@ def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
     error = hooks_error()
     if error:
         _warning_sink(_warn, "sandbox.activity-hooks-unavailable")(
-            f"Dashboard session activity will show as unknown: {error}; "
+            f"Dashboard session activity or worktree conversation records are unavailable: {error}; "
             "rebuild the sandbox image, then rebuild/reopen the Sandbox"
         )
         return

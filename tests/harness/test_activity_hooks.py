@@ -35,7 +35,7 @@ def test_shipped_policies_install_a_hook_for_every_translated_event(tmp_path):
     claude = json.loads((root / CLAUDE_POLICY).read_text(encoding="utf-8"))["hooks"]
     codex = tomllib.loads((root / CODEX_POLICY).read_text(encoding="utf-8"))["hooks"]
     # SessionStart records the conversation; it is not an activity event (#2610).
-    every = {*EVENT_STATES, END_EVENT, "SessionStart"}
+    every = {*EVENT_STATES, END_EVENT, activity_hooks.START_EVENT}
     # Each client is given exactly the events it emits.
     assert set(claude) == every - {"Interrupt"}
     assert set(codex) == every - {"PostToolUseFailure", "Notification"}
@@ -101,6 +101,6 @@ def test_doctor_warns_rather_than_fails_when_hooks_are_missing(monkeypatch):
     monkeypatch.setattr(activity_hooks, "hooks_error", lambda: "Codex activity hooks missing")
     doctor._check_current_runtime_activity_hooks(passed.append, warned.append)
     assert len(passed) == 1
-    assert "activity will show as unknown: Codex activity hooks missing" in warned[0]
+    assert "conversation records are unavailable: Codex activity hooks missing" in warned[0]
     assert "rebuild the sandbox image" in warned[0]
     assert warned[0].check_id == "sandbox.activity-hooks-unavailable"

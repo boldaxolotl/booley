@@ -108,6 +108,7 @@ def _branch_names(repository: Path) -> set[str]:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",  # A branch name need not be UTF-8.
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
         )

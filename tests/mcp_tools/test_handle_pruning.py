@@ -4,6 +4,7 @@ import importlib
 import os
 import re
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -359,3 +360,21 @@ def test_allocation_without_usable_git_skips_only_worktree_directories(
             failure
         )
         assert session_map(booley_dir).entries == {"codex:new": "S2"}, failure
+
+
+def test_allocation_survives_a_branch_name_that_is_not_utf8(tmp_path, monkeypatch):
+    """One undecodable branch name must not stop handle allocation."""
+    real_run = subprocess.run
+    listing = (
+        "import sys; sys.stdout.buffer.write(b'refs/heads/booley/s1\\nrefs/heads/booley/\\xff\\n')"
+    )
+
+    def run_listing(_command, **kwargs):
+        return real_run([sys.executable, "-c", listing], **kwargs)
+
+    checkout = tmp_path / "checkout"
+    booley_dir = checkout / ".booley"
+    booley_dir.mkdir(parents=True)
+    (checkout / ".git").mkdir()
+    monkeypatch.setattr(subprocess, "run", run_listing)
+    assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2"
