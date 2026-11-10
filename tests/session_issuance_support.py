@@ -101,7 +101,7 @@ def damaged(
     prospective = replace(
         prepared.prospective_issuance, spec_sha256=digest, **prospective_overrides
     )
-    assert runtime_spec._spec_project_data_layout(spec) == prospective.project_data_layout, (
+    assert runtime_spec.spec_project_data_layout(spec) == prospective.project_data_layout, (
         "pass the new project_data_layout: revalidation would refuse it before the guard under test"
     )
     run_args: list[str] = []

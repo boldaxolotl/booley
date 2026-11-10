@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,7 +55,7 @@ def _journal_filename(project: Path) -> str:
 def _issuance(project: Path, image_id: str = "sha256:prior") -> Issuance:
     identity = hashlib.sha256(str(project).encode()).hexdigest()
     return Issuance(
-        version=4,
+        version=runtime_spec.STAMP_VERSION,
         project_root=str(project),
         spec_sha256="a" * 64,
         image=image_id,
@@ -499,6 +500,33 @@ def test_version_one_journal_is_rejected_and_kept(tmp_path: Path, monkeypatch) -
     restore_spec.assert_not_called()
     restore_runtime.assert_not_called()
     verify_runtime.assert_not_called()
+
+
+def test_pre_bump_journal_issuance_fails_closed_naming_journal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A journal left by a release before the stamp bump embeds a stale issuance."""
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    journal_path = _write_restore_journal(config, project)
+    document = json.loads(journal_path.read_text(encoding="utf-8"))
+    document["prior_issuance"]["version"] = 4
+    journal_path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    with (
+        patch.object(session_refresh, "restore_session_spec") as restore_spec,
+        pytest.raises(
+            sr.SessionError,
+            match=rf"cannot decode Session refresh journal {re.escape(str(journal_path))}.*"
+            "unsupported version",
+        ),
+    ):
+        session_refresh.recover_project_locked(project)
+
+    assert journal_path.is_file()
+    restore_spec.assert_not_called()
 
 
 def test_host_scan_rejects_journal_filename_identity_mismatch(tmp_path: Path, monkeypatch) -> None:
