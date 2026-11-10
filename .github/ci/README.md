@@ -6,7 +6,7 @@ horizontally:
 - Python 3.14 runs the complete suite on Windows in ten duration-balanced
   shards.
 - Python 3.14 runs the complete suite on Ubuntu under branch coverage, in the
-  three `coverage-shards` jobs. They use coverage.py's `sysmon` core
+  six `coverage-shards` jobs. They use coverage.py's `sysmon` core
   (`COVERAGE_CORE=sysmon`, PEP 669), which keeps tracing cheap enough that one
   instrumented run replaces a plain 3.14 run plus a separate coverage run.
 - Python 3.11 runs the complete suite on Ubuntu in two duration-balanced
@@ -30,8 +30,9 @@ result. `bwave-smoke` stays because only a `main` push may write the shared
 `sandbox-substrate` build cache, and it installs the wheel `package-artifacts`
 builds.
 
-A scheduled run on `main` every night at 01:47 UTC selects every job. It
-catches what the queue cannot: a classifier that skipped a needed job, a
+A scheduled run on `main` every night at 01:47 UTC selects every job except
+`riscv-image`, which stays path-gated on every event (see RISC-V on-demand
+builds). It catches what the queue cannot: a classifier that skipped a needed job, a
 maintainer's manual incident merge, and drift in runners, toolchains, or
 unpinned dependencies. It also refreshes the `main`-scoped pip and Rust caches
 after a dependency change and produces the complete-run artifacts that timing
@@ -60,7 +61,7 @@ always assigned to a shard. The `test` job owns compatibility execution, with
 from the sharded Ubuntu 3.11 group. The
 independent `coverage-shards` job owns coverage execution and the Ubuntu 3.14
 suite, balanced by `linux-test-timings.json`; `coverage` verifies
-its three exact shard selections before combining their raw data and enforcing
+its six exact shard selections before combining their raw data and enforcing
 the global and changed-line thresholds. `ci-required` waits for and validates
 both branches. Each verifier fails if a test is omitted, duplicated, or
 collected differently by two shards.
@@ -224,7 +225,7 @@ Caches, temporary test projects, and build products are not diagnostic outputs.
 
 The `Tests` workflow's `riscv_measurement` dispatch input accepts `cold` and `automatic`.
 `cold` forces the RISC-V lane and builds tooling locally: `gh workflow run test.yml --ref <branch> -f riscv_measurement=cold`.
-`automatic` retains path gating and registry reuse; main and manual runs otherwise select the lane only when the last commit changed its inputs.
+`automatic` retains path gating and registry reuse; nightly and manual runs otherwise select the lane only when the last commit changed its inputs, and a `main` push never selects it (its queue candidate already ran it).
 The input cannot be set on pull requests.
 
 ### RISC-V tooling stage
@@ -260,7 +261,7 @@ Runs serialize per key. The publisher never overwrites a key tag, and no other
 workflow writes one. Check a key with
 `python .github/scripts/riscv_tooling.py published`.
 
-`bwave-smoke` consumes the published image. When `riscv_image` is selected,
+The `riscv-image` job consumes the published image. When `riscv_image` is selected,
 `riscv_tooling.py resolve` computes the key, resolves the key's tag to a
 digest, checks its role and key labels, and writes the **tooling source
 record** `riscv-image-evidence/tooling-source.json`:
@@ -284,9 +285,11 @@ stage from source.
 
 The `bwave-smoke` duration budget times the test phase only: its clock starts
 after the standard candidate image and its wheel overlay are built, so runner
-and cache-network build speed cannot fail it. The RISC-V lane builds its image
-inside the validation group, so that build stays on the clock, and the budget
-follows the recorded source. Registry hits and local builds (including
+and cache-network build speed cannot fail it. The RISC-V lane runs as its own
+`riscv-image` job, so it neither delays `bwave-smoke` nor competes with its
+validations for CPU. That job builds its own standard substrate from the
+trusted cache, then starts its clock. The RISC-V image build stays on the
+clock, and the budget follows the recorded source. Registry hits and local builds (including
 fallbacks) each get their own budget, derived from measured runs of that
 source, so a slow hit cannot hide behind the local-build ceiling. A lane that
 stopped before writing its record is judged against the local budget.
@@ -315,3 +318,19 @@ uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o 
   environment, pip, and uv. Built-wheel installs (`publish.yml`,
   `docker-publish.yml`, `isolated_host_install_smoke.py`) and image Dockerfile
   installs stay unconstrained on purpose: they verify what users get.
+
+## pip cache
+
+Every `actions/setup-python` step with `cache: pip` has `id: setup-python` and is
+followed by a `Drop pip cache restored from an older dependency set` step. On an
+exact key hit (`cache-hit == 'true'`) the step is skipped and nothing is saved.
+On a miss, setup-python restores the newest entry for the same OS and Python
+patch version by key prefix and saves a new entry after the job. pip never
+prunes its cache, so without the purge each new entry carried every older
+wheel forward. Windows Python 3.11 is frozen at 3.11.9, the last 3.11 release
+with a Windows installer, so its prefix never reset: its entries reached 2 GB
+each, against about 180 MB for a fresh install, and pushed other caches out of
+the repository's 50 GB limit. After the purge, a new entry holds only the
+current dependency set. `test_pip_caches_start_empty_after_a_prefix_restore`
+in `tests/ci/test_ci_requirements.py` requires the step after every such cache.
+An existing bloated entry stays until its key changes or it is deleted.

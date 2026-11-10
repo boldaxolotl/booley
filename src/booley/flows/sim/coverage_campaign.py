@@ -12,8 +12,8 @@ import binascii
 import json
 import math
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from types import MappingProxyType
 from typing import Literal, NewType, TypeAlias, cast
@@ -1956,12 +1956,43 @@ def encode_coverage_campaign(campaign: CoverageCampaign) -> dict[str, object]:
     }
 
 
-def derive_coverage_rollups(points: tuple[CoveragePoint, ...]) -> tuple[CoverageRollup, ...]:
-    """Derive canonical summaries for newly collected immutable observations."""
-    return tuple(
-        _decode_rollup(item)
-        for item in _calculate_rollups({"points": [_encode_point(point) for point in points]})
-    )
+def derive_coverage_rollups(points: Iterable[CoveragePoint]) -> tuple[CoverageRollup, ...]:
+    """Derive canonical per-metric summaries: the one rollup function.
+
+    One row per metric that has points, in canonical metric order.
+    """
+    by_metric: dict[str, list[CoveragePoint]] = {}
+    for point in points:
+        by_metric.setdefault(point.identity.metric, []).append(point)
+    rollups: list[CoverageRollup] = []
+    for metric, semantics in _METRIC_SEMANTICS.items():
+        matching = by_metric.get(metric)
+        if not matching:
+            continue
+        eligible = [point for point in matching if point.disposition.get("kind") == "eligible"]
+        waived = [point for point in matching if point.disposition.get("kind") == "waived"]
+        covered = [point for point in eligible if sum(point.hits_by_run.values()) > 0]
+        percent = round(len(covered) * 100 / len(eligible), 2) if eligible else None
+        rollups.append(
+            CoverageRollup(
+                metric, semantics, len(matching), len(eligible), len(covered), len(waived), percent
+            )
+        )
+    return tuple(rollups)
+
+
+def rederive_coverage_points(
+    campaign: CoverageCampaign, points: tuple[CoveragePoint, ...]
+) -> CoverageCampaign:
+    """Return *campaign* with *points* and the rollups those points imply.
+
+    Rollups exist only for complete, compatible collection, so a Campaign with
+    none keeps none and a Campaign with rollups gets exactly the derivation of
+    its new points. Rows are always canonical: one per metric with points, with
+    the canonical semantics text.
+    """
+    rollups = derive_coverage_rollups(points) if campaign.rollups else ()
+    return replace(campaign, points=points, rollups=rollups)
 
 
 def coverage_metric_semantics(metric: str) -> str:
@@ -1970,35 +2001,18 @@ def coverage_metric_semantics(metric: str) -> str:
 
 
 def derive_coverage_source_rollups(
-    points: tuple[CoveragePoint, ...],
+    points: Iterable[CoveragePoint],
 ) -> tuple[CoverageSourceRollup, ...]:
     """Derive canonical source-file summaries without using hierarchy."""
-    points_by_source: dict[str, list[dict[str, object]]] = {}
+    points_by_source: dict[str, list[CoveragePoint]] = {}
     for point in points:
-        document = _encode_point(point)
-        source = str(document["identity"]["location"]["source"])
-        points_by_source.setdefault(source, []).append(document)
+        points_by_source.setdefault(point.identity.source, []).append(point)
     summaries: list[CoverageSourceRollup] = []
     for source in sorted(points_by_source):
-        calculated = {
-            str(item["metric"]): item
-            for item in _calculate_rollups({"points": points_by_source[source]})
-        }
+        derived = {item.metric: item for item in derive_coverage_rollups(points_by_source[source])}
         rollups = tuple(
-            _decode_rollup(
-                calculated.get(
-                    metric,
-                    {
-                        "metric": metric,
-                        "semantics": coverage_metric_semantics(metric),
-                        "total_points": 0,
-                        "eligible_points": 0,
-                        "covered_points": 0,
-                        "waived_points": 0,
-                        "percent": None,
-                    },
-                )
-            )
+            derived.get(metric)
+            or CoverageRollup(metric, _METRIC_SEMANTICS[metric], 0, 0, 0, 0, None)
             for metric in SOURCE_ROLLUP_METRICS
         )
         summaries.append(CoverageSourceRollup(source, rollups))

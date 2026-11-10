@@ -2,36 +2,31 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
-from booley.flows.sim.adapter_contract import PreparedSimulationWork
-from booley.flows.sim.backends.cocotb import prepare_invocation as prepare_cocotb
-from booley.flows.sim.backends.icarus import prepare_invocation as prepare_icarus
-from booley.flows.sim.backends.verilator import prepare_invocation as prepare_verilator
-
-AdapterPreparer = Callable[[PreparedSimulationWork], list[str]]
+from booley.flows.sim.adapter_contract import PreparedSimulationWork, encode_simulation_work
 
 
 class UnsupportedSimulationAdapterError(ValueError):
     """The resolved Target names no supported Simulation adapter."""
 
 
-_PREPARERS: dict[str, AdapterPreparer] = {
-    "cocotb": prepare_cocotb,
-    "icarus": prepare_icarus,
-    "verilator": prepare_verilator,
+_ADAPTER_MODULES: dict[str, str] = {
+    "cocotb": "booley.flows.sim.backends.cocotb",
+    "icarus": "booley.flows.sim.backends.icarus",
+    "verilator": "booley.flows.sim.backends.verilator",
 }
 
 
-def prepare_adapter_invocation(work: PreparedSimulationWork) -> list[str]:
-    """Render *work* through its selected adapter."""
+def prepare_adapter_invocation(
+    work: PreparedSimulationWork, *, python: str = "python3"
+) -> list[str]:
+    """Render the command that launches *work* in its adapter: one document argument."""
     try:
-        prepare = _PREPARERS[work.adapter]
+        module = _ADAPTER_MODULES[work.adapter]
     except KeyError as exc:  # pragma: no cover - Literal protects typed callers
         raise UnsupportedSimulationAdapterError(
             f"unsupported Simulation adapter: {work.adapter!r}"
         ) from exc
-    return prepare(work)
+    return [python, "-m", module, encode_simulation_work(work)]
 
 
 __all__ = ["UnsupportedSimulationAdapterError", "prepare_adapter_invocation"]

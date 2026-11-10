@@ -80,7 +80,7 @@ def test_protocol_record_size_limit_is_enforced(tmp_path: Path, monkeypatch) -> 
     path.write_bytes(b"xx")
     monkeypatch.setattr(child_protocol, "_PROTOCOL_RECORD_LIMIT", 1)
     with pytest.raises(SimulationCampaignIntegrityError, match="size limit"):
-        child_protocol._read_protocol_bytes(path, "record")
+        child_protocol._publish_or_verify(path, b"xx")
 
 
 def _registry(tmp_path: Path) -> child_protocol.ChildExecutionRegistry:
