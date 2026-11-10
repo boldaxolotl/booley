@@ -350,6 +350,37 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
     )
 
 
+@pytest.mark.parametrize(
+    ("coverage", "scans"), [(True, 5), (False, 4)], ids=["coverage", "ordinary"]
+)
+def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: bool, scans: int
+) -> None:
+    """Failure-detail facts reuse the coordinator's scans.
+
+    Run start, summary regeneration, final scan and the outcome collector scan
+    the Campaign (4); a coverage commit adds one (5).
+    """
+    calls: list[None] = []
+    original = CampaignStore.scan
+
+    def counting_scan(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(CampaignStore, "scan", counting_scan)
+    if coverage:
+        _run_coverage_campaign(tmp_path, NativeExecution())
+    else:
+        _run_cocotb(
+            tmp_path,
+            ("reset",),
+            (SimulationTestOutcome(name="reset", verdict="pass", passed=True),),
+        )
+
+    assert len(calls) == scans
+
+
 def test_coverage_campaign_rejects_score_bearing_invalid_nested_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
