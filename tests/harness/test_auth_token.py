@@ -287,7 +287,8 @@ class TestAuthStatusReport:
         assert any("claude" in m and "refreshing" in m for m in sink["warn"])
 
     def test_overridden_source_is_a_hint_under_its_line(self, isolated_home, monkeypatch, capsys):
-        from booley.harness import auth_cmd, colors
+        from booley.harness import auth_cmd
+        from booley.presentation import colors
 
         creds = isolated_home / ".claude" / ".credentials.json"
         creds.parent.mkdir(parents=True)

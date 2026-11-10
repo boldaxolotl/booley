@@ -1,4 +1,4 @@
-"""Tests for the shared terminal table renderer (``booley.harness.terminal_table``)."""
+"""Tests for the shared terminal table renderer (``booley.presentation.terminal_table``)."""
 
 from __future__ import annotations
 
@@ -11,23 +11,25 @@ import sys
 
 import pytest
 
-from booley.harness import colors
-
 
 def _renderer():
     """Import ``render_table`` lazily so the file collects before the module exists."""
-    assert importlib.util.find_spec("booley.harness.terminal_table"), (
+    assert importlib.util.find_spec("booley.presentation.terminal_table"), (
         "shared table renderer missing"
     )
-    return importlib.import_module("booley.harness.terminal_table").render_table
+    return importlib.import_module("booley.presentation.terminal_table").render_table
 
 
 def _plain(lines: list[str]) -> list[str]:
+    from booley.presentation import colors
+
     return [colors.strip_ansi(line) for line in lines]
 
 
 def _styled_rows() -> list[list[str]]:
     """Rows whose cells carry ANSI styling when colors are enabled."""
+    from booley.presentation import colors
+
     return [
         [colors.green("x"), colors.bold("yyyy"), "z"],
         ["longer", "q", colors.dim("w")],
@@ -35,6 +37,8 @@ def _styled_rows() -> list[list[str]]:
 
 
 def test_colored_cells_align_by_visible_width(monkeypatch):
+    from booley.presentation import colors
+
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
     lines = _renderer()(("A", "BB", "C"), _styled_rows())
 
@@ -48,6 +52,8 @@ def test_colored_cells_align_by_visible_width(monkeypatch):
 
 
 def test_capped_cell_is_cut_with_ellipsis(monkeypatch):
+    from booley.presentation import colors
+
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
     rows = [["abcdefghij", "1"], [colors.green("klmnopqrst"), "2"], ["abc", "3"]]
     lines = _renderer()(("H", "N"), rows, max_widths={0: 5})
@@ -57,6 +63,8 @@ def test_capped_cell_is_cut_with_ellipsis(monkeypatch):
 
 
 def test_cap_cut_never_leaves_whitespace_before_the_ellipsis(monkeypatch):
+    from booley.presentation import colors
+
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     lines = _renderer()(("H",), [["ab cdefgh"]], max_widths={0: 4})
 
@@ -70,6 +78,8 @@ def test_cap_below_one_is_refused():
 
 @pytest.mark.parametrize("color", [True, False], ids=["color", "plain"])
 def test_no_line_has_trailing_whitespace(monkeypatch, color):
+    from booley.presentation import colors
+
     monkeypatch.setattr(colors, "COLORS_ENABLED", color)
     rows = [
         ["name", "value", "x"],
@@ -90,6 +100,8 @@ def test_no_line_has_trailing_whitespace(monkeypatch, color):
 
 
 def test_plain_output_when_color_is_off(monkeypatch):
+    from booley.presentation import colors
+
     render_table = _renderer()
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
     colored = render_table(("A", "BB", "C"), _styled_rows())
@@ -108,6 +120,8 @@ def _fitting_renderer():
 
 
 def test_width_caps_only_the_widest_columns(monkeypatch):
+    from booley.presentation import colors
+
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     rows = [["w" * 30, "m" * 10, "abc"], ["short", "m", "x"]]
     lines = _fitting_renderer()(("A", "B", "C"), rows, width=40)
@@ -125,6 +139,8 @@ def test_width_caps_only_the_widest_columns(monkeypatch):
 
 
 def test_columns_and_cuts_count_terminal_cells(monkeypatch):
+    from booley.presentation import colors
+
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     render_table = _renderer()
     rows = [["日本語", "x"], ["ab", "y"]]  # 6 cells, not 3 characters
@@ -141,7 +157,7 @@ def test_columns_and_cuts_count_terminal_cells(monkeypatch):
     ("tty", "columns", "expected"), [(False, 72, None), (True, 72, 72)], ids=["pipe", "tty"]
 )
 def test_width_budget(monkeypatch, tty, columns, expected):
-    module = importlib.import_module("booley.harness.terminal_table")
+    module = importlib.import_module("booley.presentation.terminal_table")
     assert hasattr(module, "width_budget"), "width_budget missing"
     monkeypatch.setenv("COLUMNS", "300")  # misleading: the stubbed size wins
     monkeypatch.setattr(sys.stdout, "isatty", lambda: tty)

@@ -17,7 +17,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from booley.harness import colors
 from booley.harness import terminal_status as ts
 from booley.harness.setup import common
 from booley.harness.setup.common import (
@@ -26,6 +25,7 @@ from booley.harness.setup.common import (
     configure_progress_output,
     guarded_write,
 )
+from booley.presentation import colors
 
 MARKER = "# managed by test"
 

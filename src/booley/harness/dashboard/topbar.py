@@ -10,7 +10,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 
-from booley.harness.colors import PALETTE_DODGER_BLUE
+from booley.presentation.colors import PALETTE_DODGER_BLUE
 
 # (label, window name) for the window tabs. Help is an action, not a window.
 ITEMS: tuple[tuple[str, str], ...] = (
