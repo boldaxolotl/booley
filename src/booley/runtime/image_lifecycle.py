@@ -1090,14 +1090,14 @@ def _planned_reason(
         return Diagnostic("missing", "managed artifact is missing")
     if parent_invalid:
         return Diagnostic("parent-changed", "a selected ancestor must be replaced")
-    provenance = _node_provenance_reason(node, metadata, docker)
+    provenance = _node_provenance_reason(node, metadata)
     if provenance is not None:
         return provenance
     return _node_ancestry_reason(node, metadata, docker)
 
 
 def _node_provenance_reason(  # noqa: PLR0911 -- ordered provenance mismatches
-    node: ImageNode, metadata: ImageMetadata, docker: DockerPort
+    node: ImageNode, metadata: ImageMetadata
 ) -> Diagnostic | None:
     if metadata.label(LABEL_SCHEMA) != PROVENANCE_SCHEMA:
         return Diagnostic("legacy-migration", "artifact uses an older image topology")
@@ -1112,7 +1112,7 @@ def _node_provenance_reason(  # noqa: PLR0911 -- ordered provenance mismatches
     identity_reason = _node_identity_reason(node, metadata)
     if identity_reason is not None:
         return identity_reason
-    if _node_artifact_source(node, metadata, docker) not in node.acquisition_policy.sources:
+    if _node_artifact_source(node, metadata) not in node.acquisition_policy.sources:
         return Diagnostic("wrong-origin", "artifact source violates acquisition policy")
     return None
 
@@ -1676,7 +1676,6 @@ def _node_current(node: ImageNode, metadata: ImageMetadata, docker: DockerPort) 
 def _node_artifact_source(
     node: ImageNode,
     metadata: ImageMetadata,
-    docker: DockerPort,
 ) -> ArtifactSource | None:
     origin = metadata.label(LABEL_BUILD_ORIGIN)
     if origin == "local":
@@ -1701,7 +1700,7 @@ def _metadata_current_from(
     return (
         metadata is not None
         and _node_current(node, metadata, docker)
-        and _node_artifact_source(node, metadata, docker) in sources
+        and _node_artifact_source(node, metadata) in sources
     )
 
 
@@ -1967,7 +1966,8 @@ def _inspect_nodes(
     nodes: tuple[ImageNode, ...],
     docker: DockerPort,
     shipped_sources: tuple[ArtifactSource, ...],
-) -> tuple[tuple[str, ...], tuple[Diagnostic, ...]]:
+) -> tuple[tuple[str, ...], tuple[Diagnostic, ...], str | None]:
+    """Stale references, legacy diagnostics, and the last node's ID, from one read per node."""
     observed = [(node, docker.inspect(node.reference)) for node in nodes]
     stale = tuple(
         node.reference
@@ -1988,13 +1988,14 @@ def _inspect_nodes(
         )
         for reference in legacy
     )
-    return stale, diagnostics
+    last_metadata = observed[-1][1]
+    return stale, diagnostics, last_metadata.image_id if last_metadata else None
 
 
 def _check_result(
     selected: str,
+    selected_id: str | None,
     nodes: tuple[ImageNode, ...],
-    docker: DockerPort,
     stale: tuple[str, ...],
     legacy_diagnostics: tuple[Diagnostic, ...],
     shipped_sources: tuple[ArtifactSource, ...],
@@ -2012,7 +2013,7 @@ def _check_result(
 
     return LifecycleResult(
         selected,
-        docker.image_id(selected),
+        selected_id,
         Status.STALE if stale else Status.CURRENT,
         diagnostics=(
             *(
@@ -2152,12 +2153,12 @@ def _reconcile_host(
         if _release_only(shipped_sources)
         else _with_parent_artifacts((_base_node(payload),), docker)
     )
-    stale, legacy_diagnostics = _inspect_nodes(nodes, docker, shipped_sources)
+    stale, legacy_diagnostics, selected_id = _inspect_nodes(nodes, docker, shipped_sources)
     if intent is Intent.CHECK:
         result = _check_result(
             BASE_IMAGE,
+            selected_id,
             nodes,
-            docker,
             stale,
             legacy_diagnostics,
             shipped_sources,

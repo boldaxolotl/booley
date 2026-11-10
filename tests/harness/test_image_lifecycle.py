@@ -1110,10 +1110,11 @@ def _check_planned_reason(docker: FakeDocker, planned: lifecycle.LifecyclePlan) 
 def _check_inspect_nodes(docker: FakeDocker, planned: lifecycle.LifecyclePlan) -> str:
     # The schema-two substrate node is checked for staleness and for legacy provenance.
     node = planned.nodes[1]
-    stale, legacy = lifecycle._inspect_nodes(
+    stale, legacy, last_id = lifecycle._inspect_nodes(
         (node,), docker, (lifecycle.ArtifactSource.LOCAL_BUILD,)
     )
     assert (stale, legacy) == ((), ())
+    assert last_id == docker.images[node.reference][0]
     return node.reference
 
 
@@ -1167,6 +1168,18 @@ def test_per_image_check_inspects_checked_image_once(
         assert reads == [("inspect", checked)], check.__name__
 
 
+def test_host_check_inspects_base_image_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    docker = FakeDocker({lifecycle.BASE_IMAGE: ("sha256:" + "a" * 64, {})})
+    _wire(monkeypatch, docker)
+    docker.reads.clear()
+
+    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+
+    assert result.selected_id == "sha256:" + "a" * 64
+    reads = [read for read in docker.reads if read[1] == lifecycle.BASE_IMAGE]
+    assert reads == [("inspect", lifecycle.BASE_IMAGE)]
+
+
 def test_descends_from_needs_both_images_and_a_nonempty_layer_prefix() -> None:
     def image(*layers: str) -> ImageMetadata:
         return ImageMetadata("ref", "sha256:id", {}, {}, layers)
@@ -1194,10 +1207,10 @@ def test_runtime_provenance_and_prepared_candidate_validation(tmp_path: Path) ->
             "candidate": ("sha256:" + "a" * 64, labels),
         }
     )
-    assert lifecycle._node_provenance_reason(node, docker.inspect(node.reference), docker) is None
+    assert lifecycle._node_provenance_reason(node, docker.inspect(node.reference)) is None
     docker.images["candidate"][1][lifecycle.LABEL_RECIPE_FINGERPRINT] = "changed"
     assert (
-        lifecycle._node_provenance_reason(node, docker.inspect(node.reference), docker).code
+        lifecycle._node_provenance_reason(node, docker.inspect(node.reference)).code
         == "recipe-changed"
     )
     docker.images["candidate"][1][lifecycle.LABEL_RECIPE_FINGERPRINT] = (
@@ -1205,7 +1218,7 @@ def test_runtime_provenance_and_prepared_candidate_validation(tmp_path: Path) ->
     )
     docker.images["candidate"][1].pop(lifecycle.LABEL_WHEEL_SHA256)
     assert (
-        lifecycle._node_provenance_reason(node, docker.inspect(node.reference), docker).code
+        lifecycle._node_provenance_reason(node, docker.inspect(node.reference)).code
         == "inputs-changed"
     )
     with pytest.raises(lifecycle.ImageLifecycleError, match="no wheel SHA"):
@@ -2905,7 +2918,9 @@ def test_project_recipe_fingerprint_includes_arbitrary_context_files(tmp_path: P
     assert before != after
 
 
-def test_docker_cli_preserves_label_and_mutation_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_docker_cli_preserves_inspect_and_mutation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cli = lifecycle._DockerCli()
 
     monkeypatch.setattr(
@@ -3126,7 +3141,7 @@ def test_runtime_identity_and_ancestry_edge_guards(tmp_path: Path) -> None:
     labels[lifecycle.LABEL_BUILD_ORIGIN] = "registry"
     docker = FakeDocker({node.reference: ("sha256:" + "a" * 64, labels)})
     assert (
-        lifecycle._node_provenance_reason(node, docker.inspect(node.reference), docker).code
+        lifecycle._node_provenance_reason(node, docker.inspect(node.reference)).code
         == "wrong-origin"
     )
     child = replace(node, parent="missing-parent")
@@ -4189,10 +4204,7 @@ def test_manual_overlay_role_transition_is_not_legacy_schema_migration(schema, e
             )
         }
     )
-    assert (
-        lifecycle._node_provenance_reason(node, docker.inspect(node.reference), docker).code
-        == expected
-    )
+    assert lifecycle._node_provenance_reason(node, docker.inspect(node.reference)).code == expected
 
 
 @pytest.mark.parametrize("reassigned", [False, True])
