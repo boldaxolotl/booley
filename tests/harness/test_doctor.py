@@ -46,6 +46,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
+from tests.conftest import add_git_command_config
 from tests.devcontainer_spec_support import build_spec
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
@@ -5298,9 +5299,7 @@ class TestWorktreePortability:
             monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
             monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
         elif source == "environment":
-            monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-            monkeypatch.setenv("GIT_CONFIG_KEY_0", "worktree.useRelativePaths")
-            monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+            add_git_command_config(monkeypatch, "worktree.useRelativePaths", "true")
         elif source == "file":
             monkeypatch.setenv("GIT_CONFIG", str(config))
         elif source == "worktree":
