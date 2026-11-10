@@ -213,11 +213,10 @@ Try:
   with a descendant keeps signal semantics and leaves no descendants; then `up`/`enter` again.
 - `refresh` after a permitted change gives a new immutable identity; an injected replacement
   validation failure restores the old runtime; refreshing a VS Code-owned runtime is refused.
-- Legacy VS Code containers (`fixtures/legacy-client/README.md`,
-  `fixtures/legacy-client/docker_fixture.py`): exactly one authenticated container is
-  replaced; headless, foreign, ambiguous and multiple candidates are refused; a post-stop
-  failure prints the exact `docker start` command, which works with the same volumes once the
-  bind is restored.
+- Legacy VS Code containers (`fixtures/legacy-client/README.md`): a running VS Code container
+  with an outdated Booley Directory layout is refused, never migrated: nothing stops or is
+  removed, and the message names the removal and `booley init --seed` repair. Following that
+  repair reopens cleanly. Headless, foreign, ambiguous and multiple candidates are refused.
 Look for: orphaned processes, the wrong container replaced, rollbacks that leave nothing up.
 
 ### 11. doctor-upgrade — Doctor waivers and upgrade review (~20 min)

@@ -1219,10 +1219,7 @@ def _prepare_unlocked(workspace: Path) -> str:
             "headless Sandbox is running; run `booley session down` before opening VS Code"
         )
     spec = _load_spec(workspace)
-    issuance, quiesced = _authenticate_quiesce_validate(workspace, spec)
-    if quiesced is not None:
-        _remove_quiesced_legacy_container(quiesced)
-        selected = None
+    issuance = _refuse_then_validate(workspace, spec)
     _reconcile_stopped_vscode_containers(
         workspace, issuance, selected_editor_id=selected.container_id if selected else None
     )
@@ -1276,33 +1273,20 @@ def prepare(workspace: Path) -> str:
         return _prepare_unlocked(workspace)
 
 
-@dataclass(frozen=True)
-class _LegacyVscodeContainer:
-    name: str
-    container_id: str
+def _refuse_then_validate(workspace: Path, spec: dict[str, Any]) -> Issuance:
+    """Refuse outdated running VS Code containers, then fully validate the issuance.
 
-
-def _authenticate_quiesce_validate(
-    workspace: Path, spec: dict[str, Any]
-) -> tuple[Issuance, _LegacyVscodeContainer | None]:
-    """Authenticate issuance, quiesce one legacy runtime, then fully validate."""
+    The refusal runs first so that a stale stamp (the usual state of a pre-0.3.0
+    Project) still gets the container repair in one message.
+    """
     from booley.runtime import session_issuance as runtime_spec
 
-    quiesced: _LegacyVscodeContainer | None = None
     try:
-        authenticated = runtime_spec.authenticate(workspace, spec, dc.devcontainer_path(workspace))
-        assert authenticated.project_data_source is not None
-        quiesced = _quiesce_legacy_vscode_container(
-            Path(authenticated.project_root),
-            Path(authenticated.project_data_source),
-            authenticated,
-        )
-        issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
+        _refuse_outdated_vscode_containers(workspace, spec)
+        return runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
-        recovery = _quiesced_validation_recovery(quiesced)
         remedy = _spec_refusal_remedy(workspace, exc, vscode=True)
-        raise SessionError(f"refusing Sandbox preparation: {exc}; {remedy}{recovery}") from exc
-    return issuance, quiesced
+        raise SessionError(f"refusing Sandbox preparation: {exc}; {remedy}") from exc
 
 
 def _spec_refusal_remedy(workspace: Path, exc: Exception, *, vscode: bool) -> str:
@@ -1372,92 +1356,48 @@ def _vscode_config_matches_workspace(labels: Mapping[str, Any], workspace: Path)
     )
 
 
-def _legacy_vscode_identity(state: dict, workspace: Path, expected: dict[str, str]) -> str | None:
-    labels = _vscode_runtime_labels_for_workspace(state, workspace, expected)
-    if labels is None or not _vscode_config_matches_workspace(labels, workspace):
-        return None
-    container_id = state.get("Id")
-    return container_id if isinstance(container_id, str) and container_id else None
+def outdated_vscode_container_remedy(names: list[str]) -> str:
+    """Name the host repair for running VS Code containers with outdated mounts."""
+    joined = " ".join(names)
+    return (
+        f"close VS Code, then on the host run `docker stop {joined}` and `docker rm {joined}`, "
+        "run `booley init --seed`, and reopen the folder in the container "
+        "(Dev Containers: Rebuild Container)"
+    )
 
 
-def _quiesce_legacy_vscode_container(
-    workspace: Path, pending_project_data: Path, issuance: Issuance
-) -> _LegacyVscodeContainer | None:
-    """Stop one authenticated legacy VS Code container before full validation."""
+def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) -> None:
+    """Refuse, never migrate, running containers with an outdated Booley Directory layout.
+
+    Only refuses, so reading the not yet validated spec is safe: a tampered spec
+    still fails `validate` right after.  A spec too malformed to read is left
+    to `validate` as well.
+    """
     from booley.runtime import session_issuance as runtime_spec
 
-    expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
-    candidates: list[_LegacyVscodeContainer] = []
-    ambiguous: list[str] = []
-    for name, raw in _strict_running_interactive_states():
-        if not _inspected_container_serves_workspace(name, raw, workspace):
-            continue
-        if _project_data_mount_root_is_pinned(
-            raw, workspace, pending_project_data, issuance=issuance
-        ):
-            continue
-        state = _decode_container_inspect(raw)
-        assert state is not None
-        container_id = _legacy_vscode_identity(state, workspace, expected)
-        if container_id is None or _inspected_running(state) is not True:
-            ambiguous.append(name)
-        else:
-            candidates.append(_LegacyVscodeContainer(name, container_id))
-    if ambiguous or len(candidates) > 1:
-        names = ", ".join(repr(name) for name in ambiguous + [row.name for row in candidates])
-        raise SessionError(
-            f"cannot safely migrate multiple or ambiguous legacy Sandboxes: {names}; "
-            "close VS Code and stop/remove those containers before retrying"
+    mounts = spec.get("mounts", [])
+    image = spec.get("image")
+    if not isinstance(image, str) or not isinstance(mounts, list):
+        return
+    if not all(isinstance(mount, str) for mount in mounts):
+        return
+    pending = runtime_spec.authorized_project_data_source(workspace)
+    layout = runtime_spec.spec_project_data_layout(spec)
+    outdated = [
+        name
+        for name, raw in _strict_running_interactive_states()
+        if _inspected_container_serves_workspace(name, raw, workspace)
+        and not _project_data_mount_root_is_pinned(
+            raw, workspace, pending, layout=layout, image_id=image
         )
-    if not candidates:
-        return None
-    _stop_legacy_vscode_container(candidates[0])
-    return candidates[0]
-
-
-def _stop_legacy_vscode_container(container: _LegacyVscodeContainer) -> None:
-    result = _run(["docker", "stop", container.container_id])
-    raw = _docker_stdout(["docker", "inspect", container.container_id])
-    if raw is None:
-        return
-    state = _decode_container_inspect(raw)
-    if result.returncode != 0 or state is None or state.get("Id") != container.container_id:
-        detail = result.stderr.strip() or result.stdout.strip() or "container identity changed"
-        raise SessionError(f"cannot stop legacy Sandbox {container.name!r}: {detail}")
-    if _inspected_running(state) is not False:
-        raise SessionError(f"legacy Sandbox {container.name!r} is still running after stop")
-
-
-def _quiesced_validation_recovery(container: _LegacyVscodeContainer | None) -> str:
-    if container is None:
-        return ""
-    raw = _docker_stdout(["docker", "inspect", container.container_id])
-    if raw is None:
-        return f"; legacy container {container.name!r} is no longer present"
-    return f"; legacy container {container.name!r} was stopped and preserved"
-
-
-def _remove_quiesced_legacy_container(container: _LegacyVscodeContainer) -> None:
-    """Remove only the immutable container ID authenticated and stopped above."""
-    raw = _docker_stdout(["docker", "inspect", container.container_id])
-    if raw is None:
-        return
-    state = _decode_container_inspect(raw)
-    if state is None or state.get("Id") != container.container_id:
-        raise SessionError(f"cannot re-inspect legacy Sandbox {container.name!r}")
-    if _inspected_running(state) is not False:
-        raise SessionError(f"legacy Sandbox {container.name!r} restarted during migration")
-    result = _run(["docker", "rm", container.container_id])
-    if (
-        result.returncode == 0
-        or _docker_stdout(["docker", "inspect", container.container_id]) is None
-    ):
-        return
-    detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
-    raise SessionError(
-        f"cannot remove legacy Sandbox {container.name!r}: {detail}; its container-local "
-        "data remains available while the container exists"
-    )
+    ]
+    if outdated:
+        names = ", ".join(repr(name) for name in outdated)
+        raise SessionError(
+            f"refusing Sandbox preparation: running Sandbox(es) {names} mount an outdated "
+            "Booley Directory layout (for example from before Booley 0.3.0) and are not "
+            f"migrated; {outdated_vscode_container_remedy(outdated)}"
+        )
 
 
 def _strict_running_interactive_states() -> list[tuple[str, str]]:
@@ -1521,14 +1461,17 @@ def issued_runtime_drift_fix(
     rebuild = "run `booley session down`, then `booley session up --rebuild`"
     expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     running_vscode: list[str] = []
+    outdated: list[str] = []
     ambiguous: list[str] = []
     canonical = session_container_name(workspace)
+    assert issuance.project_data_source is not None
+    pending = Path(issuance.project_data_source)
     for name in drifted:
         if name == canonical:
             continue
         raw = _docker_stdout(["docker", "inspect", name])
         state = _decode_container_inspect(raw) if raw is not None else None
-        if state is None:
+        if raw is None or state is None:
             ambiguous.append(name)
             continue
         labels = _vscode_runtime_labels_for_workspace(state, workspace, expected)
@@ -1536,6 +1479,14 @@ def issued_runtime_drift_fix(
         running = _inspected_running(state)
         if not is_ours or running is None:
             ambiguous.append(name)
+        elif running and not _project_data_mount_root_is_pinned(
+            raw,
+            workspace,
+            pending,
+            layout=issuance.project_data_layout,
+            image_id=issuance.image_id,
+        ):
+            outdated.append(name)
         elif running:
             running_vscode.append(name)
     actions: list[str] = []
@@ -1545,6 +1496,8 @@ def issued_runtime_drift_fix(
             f"inspect ambiguous Sandbox resource(s) {names}; "
             "Booley will not remove them automatically"
         )
+    if outdated:
+        actions.append(outdated_vscode_container_remedy(outdated))
     if running_vscode:
         names = ", ".join(repr(name) for name in running_vscode)
         actions.append(f"stop VS Code Sandbox(s) {names}, then {rebuild}")
@@ -1775,7 +1728,7 @@ def _inspected_container_serves_workspace(name: str, raw: str, workspace: Path) 
 
 
 def _project_data_mount_root_is_pinned(
-    raw: str, workspace: Path, pending_project_data: Path, *, issuance: Issuance | None = None
+    raw: str, workspace: Path, pending_project_data: Path, *, layout: str, image_id: str
 ) -> bool:
     local_source = workspace.resolve() / ".booley"
     if pending_project_data != local_source:
@@ -1785,9 +1738,9 @@ def _project_data_mount_root_is_pinned(
     if not isinstance(mounts, list) or any(not isinstance(item, dict) for item in mounts):
         return False
     by_target = {item.get("Destination"): item for item in mounts}
-    canonical_alias = issuance is not None and issuance.project_data_layout == "canonical-alias"
+    canonical_alias = layout == "canonical-alias"
     if canonical_alias and (
-        not _project_data_alias_capable(issuance.image_id)
+        not _project_data_alias_capable(image_id)
         or any(
             isinstance(target, str)
             and (target == "/booley-project" or target.startswith("/booley-project/"))

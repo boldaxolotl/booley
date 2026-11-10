@@ -1108,12 +1108,12 @@ def _check_planned_reason(docker: FakeDocker, planned: lifecycle.LifecyclePlan) 
 
 
 def _check_inspect_nodes(docker: FakeDocker, planned: lifecycle.LifecyclePlan) -> str:
-    # The schema-two substrate node is checked for staleness and for legacy provenance.
+    # The schema-two substrate node is checked for staleness.
     node = planned.nodes[1]
-    stale, legacy, last_id = lifecycle._inspect_nodes(
+    stale, last_id = lifecycle._inspect_nodes(
         (node,), docker, (lifecycle.ArtifactSource.LOCAL_BUILD,)
     )
-    assert (stale, legacy) == ((), ())
+    assert stale == ()
     assert last_id == docker.images[node.reference][0]
     return node.reference
 
@@ -1527,7 +1527,6 @@ def _labels(*, payload: str, recipe: str, parent: str | None = None) -> dict[str
     values = {
         lifecycle.LABEL_SCHEMA: lifecycle.PROVENANCE_SCHEMA,
         lifecycle.LABEL_PAYLOAD_FINGERPRINT: payload,
-        lifecycle.LEGACY_FINGERPRINT_LABEL: payload,
         lifecycle.LABEL_RECIPE_FINGERPRINT: recipe,
         lifecycle.LABEL_VERSION: "0.2.6",
         lifecycle.LABEL_BUILD_ORIGIN: "local",
@@ -1557,7 +1556,6 @@ def _registry_labels(
     node: lifecycle.ImageNode,
     parent: str,
     *,
-    legacy: bool = False,
     overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:
     labels = dict(node.expected_labels)
@@ -1569,9 +1567,6 @@ def _registry_labels(
             **(overrides or {}),
         }
     )
-    if legacy:
-        labels[lifecycle.LABEL_SCHEMA] = lifecycle.LEGACY_PROVENANCE_SCHEMA
-        labels.pop(lifecycle.LABEL_PARENT_ARTIFACT_KIND)
     return labels
 
 
@@ -1605,6 +1600,33 @@ def test_host_scope_never_reads_project_configuration(monkeypatch):
 
     assert result.selected_reference == lifecycle.BASE_IMAGE
     assert result.status is lifecycle.Status.STALE
+
+
+@pytest.mark.parametrize("schema", ["1", None], ids=["schema-1", "no-schema"])
+def test_host_base_without_current_provenance_schema_is_stale_and_rebuilt(
+    monkeypatch: pytest.MonkeyPatch, schema: str | None
+) -> None:
+    """Pre-0.3.0 schema one and schema-less base images are no longer migrated."""
+    payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", "payload-new")
+    labels = _local_build_labels(lifecycle._base_node(payload), "sha256:" + "9" * 64)
+    if schema is None:
+        del labels[lifecycle.LABEL_SCHEMA]
+        labels["booley.build-fingerprint"] = "payload-new"
+    else:
+        labels[lifecycle.LABEL_SCHEMA] = schema
+    docker = FakeDocker({lifecycle.BASE_IMAGE: ("sha256:" + "a" * 64, labels)})
+    builder = _wire(monkeypatch, docker)
+
+    checked = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+
+    assert checked.status is lifecycle.Status.STALE
+    assert [item.code for item in checked.diagnostics] == ["stale"]
+    assert lifecycle.BASE_IMAGE in checked.diagnostics[0].message
+    assert not builder.built
+
+    lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+
+    assert builder.built == [lifecycle.BASE_IMAGE]
 
 
 def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
@@ -2289,20 +2311,6 @@ def _extracted_build_recorder(docker: FakeDocker, calls: list[tuple]):
         context.record("docker_image", "ok", "built")
 
     return build_base
-
-
-def _install_current_legacy_base(docker: FakeDocker) -> str:
-    payload = lifecycle.PayloadProvenance(
-        lifecycle.PROVENANCE_SCHEMA,
-        "0.2.6",
-        "payload-new",
-    )
-    node = lifecycle._base_node(payload)
-    parent_id = docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or ""
-    labels = _local_build_labels(node, parent_id)
-    image_id = "sha256:" + "b" * 64
-    docker.images[lifecycle.BASE_IMAGE] = (image_id, labels)
-    return image_id
 
 
 def _local_build_labels(node: lifecycle.ImageNode, parent_id: str) -> dict[str, str]:
@@ -4189,21 +4197,19 @@ def test_cached_candidate_bytes_are_not_new_transaction_ownership(tmp_path, monk
 
 @pytest.mark.parametrize(
     "schema,expected",
-    [(lifecycle.PROVENANCE_SCHEMA, "topology-changed"), ("legacy", "legacy-migration")],
+    [
+        (lifecycle.PROVENANCE_SCHEMA, "topology-changed"),
+        ("legacy", "legacy-migration"),
+        ("1", "legacy-migration"),
+        (None, "legacy-migration"),
+    ],
 )
 def test_manual_overlay_role_transition_is_not_legacy_schema_migration(schema, expected):
     node = SimpleNamespace(reference="project", role=lifecycle.ImageRole.PROJECT_OVERLAY)
-    docker = FakeDocker(
-        {
-            "project": (
-                "sha256:prior",
-                {
-                    lifecycle.LABEL_SCHEMA: schema,
-                    lifecycle.LABEL_ARTIFACT_ROLE: lifecycle.ImageRole.WHEEL_OVERLAY.value,
-                },
-            )
-        }
-    )
+    labels = {lifecycle.LABEL_ARTIFACT_ROLE: lifecycle.ImageRole.WHEEL_OVERLAY.value}
+    if schema is not None:
+        labels[lifecycle.LABEL_SCHEMA] = schema
+    docker = FakeDocker({"project": ("sha256:prior", labels)})
     assert lifecycle._node_provenance_reason(node, docker.inspect(node.reference)).code == expected
 
 

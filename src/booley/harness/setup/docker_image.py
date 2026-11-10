@@ -310,28 +310,6 @@ def source_fingerprint_mismatch(image: str) -> bool | None:
     return bool(expected_version and _image_label(image, LABEL_VERSION) != expected_version)
 
 
-def _stamp_image_fingerprint(image: str, value: str) -> None:
-    """Best-effort compatibility helper for stamping a pulled image."""
-    with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-        subprocess.run(
-            [
-                "docker",
-                "build",
-                "-q",
-                "--label",
-                f"{LABEL_FINGERPRINT}={value}",
-                "-t",
-                image,
-                "-",
-            ],
-            input=f"FROM {image}\n",
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-
-
 def _read_version() -> str:
     try:
         from booley import __version__

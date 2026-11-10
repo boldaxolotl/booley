@@ -54,8 +54,6 @@ from booley.runtime.image_provenance import (
     LABEL_VERSION,
     LABEL_WHEEL_SHA256,
     LABEL_WHEEL_SOURCE_FINGERPRINT,
-    LEGACY_FINGERPRINT_LABEL,
-    LEGACY_PROVENANCE_SCHEMA,
     PARENT_ARTIFACT_LOCAL_IMAGE_ID,
     PARENT_ARTIFACT_REGISTRY_DIGEST,
     PROVENANCE_SCHEMA,
@@ -320,8 +318,6 @@ class ImageNode:
         ]
         if self.payload.fingerprint:
             labels.append((LABEL_PAYLOAD_FINGERPRINT, self.payload.fingerprint))
-            if self.role is None:
-                labels.append((LEGACY_FINGERPRINT_LABEL, self.payload.fingerprint))
         if self.role is not None:
             labels.append((LABEL_ARTIFACT_ROLE, self.role.value))
         if self.role is ImageRole.PROJECT_DATA_LAYOUT:
@@ -1112,7 +1108,7 @@ def _node_provenance_reason(  # noqa: PLR0911 -- ordered provenance mismatches
     identity_reason = _node_identity_reason(node, metadata)
     if identity_reason is not None:
         return identity_reason
-    if _node_artifact_source(node, metadata) not in node.acquisition_policy.sources:
+    if _node_artifact_source(metadata) not in node.acquisition_policy.sources:
         return Diagnostic("wrong-origin", "artifact source violates acquisition policy")
     return None
 
@@ -1658,13 +1654,8 @@ def commit(
 
 
 def _node_current(node: ImageNode, metadata: ImageMetadata, docker: DockerPort) -> bool:
-    schema = metadata.label(LABEL_SCHEMA)
-    if schema == LEGACY_PROVENANCE_SCHEMA:
-        return _schema_one_node_current(node, metadata, docker)
-    if schema is None:
-        return _legacy_node_current(node, metadata)
     return (
-        schema == PROVENANCE_SCHEMA
+        metadata.label(LABEL_SCHEMA) == PROVENANCE_SCHEMA
         and _schema_two_parent_current(node, metadata, docker)
         and all(
             name == LABEL_PARENT_ARTIFACT or metadata.label(name) == expected
@@ -1673,20 +1664,12 @@ def _node_current(node: ImageNode, metadata: ImageMetadata, docker: DockerPort) 
     )
 
 
-def _node_artifact_source(
-    node: ImageNode,
-    metadata: ImageMetadata,
-) -> ArtifactSource | None:
+def _node_artifact_source(metadata: ImageMetadata) -> ArtifactSource | None:
     origin = metadata.label(LABEL_BUILD_ORIGIN)
     if origin == "local":
         return ArtifactSource.LOCAL_BUILD
     if origin == "registry":
         return ArtifactSource.VERIFIED_RELEASE_PULL
-    legacy = metadata.label(LEGACY_FINGERPRINT_LABEL)
-    if legacy and legacy.startswith("pulled:"):
-        return ArtifactSource.VERIFIED_RELEASE_PULL
-    if legacy and node.payload.fingerprint:
-        return ArtifactSource.LOCAL_BUILD
     return None
 
 
@@ -1700,7 +1683,7 @@ def _metadata_current_from(
     return (
         metadata is not None
         and _node_current(node, metadata, docker)
-        and _node_artifact_source(node, metadata) in sources
+        and _node_artifact_source(metadata) in sources
     )
 
 
@@ -1769,52 +1752,6 @@ def _base_parent_current(origin: str, recorded_parent: str, docker: DockerPort) 
         stable is not None
         and stable.label(LABEL_RUNTIME_BASE_CONTRACT) == expected_contract
         and stable.image_id == recorded_parent
-    )
-
-
-def _schema_one_node_current(
-    node: ImageNode,
-    metadata: ImageMetadata,
-    docker: DockerPort,
-) -> bool:
-    """Migrate schema one without weakening its exact local ancestry checks."""
-    origin = metadata.label(LABEL_BUILD_ORIGIN)
-    if origin not in {"local", "registry"}:
-        return False
-    labels_current = all(
-        name in {LABEL_SCHEMA, LABEL_PARENT_ARTIFACT} or metadata.label(name) == expected
-        for name, expected in node.expected_labels
-    )
-    if not labels_current:
-        return False
-    recorded_parent = metadata.label(LABEL_PARENT_ARTIFACT)
-    if node.reference == BASE_IMAGE:
-        return bool(recorded_parent) and (
-            origin == "registry" or _base_parent_current(origin, recorded_parent or "", docker)
-        )
-    return (
-        origin == "local"
-        and node.parent is not None
-        and bool(recorded_parent)
-        and docker.image_id(node.parent) == recorded_parent
-    )
-
-
-def _legacy_node_current(node: ImageNode, metadata: ImageMetadata) -> bool:
-    legacy = metadata.label(LEGACY_FINGERPRINT_LABEL)
-    if node.payload.fingerprint:
-        return legacy == node.payload.fingerprint and node.parent is None
-    version = metadata.label(LABEL_VERSION)
-    if legacy and legacy.startswith("pulled:"):
-        version = legacy.removeprefix("pulled:")
-    return version == node.payload.version and node.parent is None
-
-
-def _uses_accepted_legacy_provenance(node: ImageNode, metadata: ImageMetadata | None) -> bool:
-    return (
-        metadata is not None
-        and metadata.label(LABEL_SCHEMA) is None
-        and _legacy_node_current(node, metadata)
     )
 
 
@@ -1966,8 +1903,8 @@ def _inspect_nodes(
     nodes: tuple[ImageNode, ...],
     docker: DockerPort,
     shipped_sources: tuple[ArtifactSource, ...],
-) -> tuple[tuple[str, ...], tuple[Diagnostic, ...], str | None]:
-    """Stale references, legacy diagnostics, and the last node's ID, from one read per node."""
+) -> tuple[tuple[str, ...], str | None]:
+    """Stale references and the last node's ID, from one read per node."""
     observed = [(node, docker.inspect(node.reference)) for node in nodes]
     stale = tuple(
         node.reference
@@ -1976,20 +1913,8 @@ def _inspect_nodes(
             node, metadata, docker, _sources_for_node(node, shipped_sources)
         )
     )
-    legacy = tuple(
-        node.reference
-        for node, metadata in observed
-        if _uses_accepted_legacy_provenance(node, metadata)
-    )
-    diagnostics = tuple(
-        Diagnostic(
-            "legacy-provenance",
-            f"{reference} uses accepted legacy provenance; its next rebuild will migrate it",
-        )
-        for reference in legacy
-    )
     last_metadata = observed[-1][1]
-    return stale, diagnostics, last_metadata.image_id if last_metadata else None
+    return stale, last_metadata.image_id if last_metadata else None
 
 
 def _check_result(
@@ -1997,7 +1922,6 @@ def _check_result(
     selected_id: str | None,
     nodes: tuple[ImageNode, ...],
     stale: tuple[str, ...],
-    legacy_diagnostics: tuple[Diagnostic, ...],
     shipped_sources: tuple[ArtifactSource, ...],
 ) -> LifecycleResult:
     def pending_action(reference: str) -> str:
@@ -2023,7 +1947,6 @@ def _check_result(
                 )
                 for reference in stale
             ),
-            *legacy_diagnostics,
         ),
         payload_fingerprint=nodes[-1].payload.fingerprint or nodes[-1].wheel_source_fingerprint,
     )
@@ -2153,14 +2076,13 @@ def _reconcile_host(
         if _release_only(shipped_sources)
         else _with_parent_artifacts((_base_node(payload),), docker)
     )
-    stale, legacy_diagnostics, selected_id = _inspect_nodes(nodes, docker, shipped_sources)
+    stale, selected_id = _inspect_nodes(nodes, docker, shipped_sources)
     if intent is Intent.CHECK:
         result = _check_result(
             BASE_IMAGE,
             selected_id,
             nodes,
             stale,
-            legacy_diagnostics,
             shipped_sources,
         )
         cleanup = _reconcile_release_tag_cleanup(BASE_IMAGE, intent, docker)
@@ -2179,7 +2101,6 @@ def _reconcile_host(
         BASE_IMAGE,
         nodes[-1],
         changed,
-        legacy_diagnostics,
         docker,
         shipped_sources,
     )
@@ -2191,7 +2112,6 @@ def _verified_result(
     selected: str,
     selected_node: ImageNode,
     changed: tuple[str, ...],
-    legacy_diagnostics: tuple[Diagnostic, ...],
     docker: DockerPort,
     shipped_sources: tuple[ArtifactSource, ...],
 ) -> LifecycleResult:
@@ -2205,7 +2125,6 @@ def _verified_result(
         selected_metadata.image_id,
         Status.CHANGED if changed else Status.CURRENT,
         changed_images=changed,
-        diagnostics=() if changed else legacy_diagnostics,
         payload_fingerprint=(
             selected_node.payload.fingerprint or selected_node.wheel_source_fingerprint
         ),

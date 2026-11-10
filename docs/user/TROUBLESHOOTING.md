@@ -71,6 +71,9 @@ Mounted folders and named volumes survive; anything written only inside the
 container is lost. If Booley says a headless Sandbox is running, run
 `booley session down` first. If it refuses because the container is still
 running or is ambiguous, stop and remove that container yourself, then reopen.
+A running container whose Booley Directory mounts are outdated, including any
+from before Booley 0.3.0, is refused, not migrated: close VS Code, stop and
+remove that container, run `booley init --seed` on the host, then reopen.
 
 ### `booley` is missing from `/mcp` in Claude Code or Codex
 

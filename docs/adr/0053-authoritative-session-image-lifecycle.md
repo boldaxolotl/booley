@@ -31,3 +31,11 @@ build is operational history and never substitutes for provenance.
 - Making the lifecycle module recreate Session Runtimes was rejected because
   image reconciliation and runtime attachment ownership have different failure
   and rollback semantics.
+
+## Amendment (2026-11-10)
+
+Booley no longer supports migrating images from before 0.3.0. An image whose
+`io.booley.provenance.schema` label is not the current schema, including a
+missing label, is stale and is rebuilt or re-pulled. No compatibility policy
+applies, and the legacy `booley.build-fingerprint` label is not part of
+lifecycle provenance.
