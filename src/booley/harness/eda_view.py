@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from . import colors
-from .terminal_table import render_table
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table
 
 #: Spaces between the longest label and its value in :func:`fields`.
 _LABEL_GAP = 2

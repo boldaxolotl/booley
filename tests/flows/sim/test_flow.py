@@ -61,6 +61,7 @@ from tests.flows.sim.campaign_boundary import (
     INCONCLUSIVE_PROCESS,
     PASS_PROCESS,
     CampaignSimRun,
+    Launch,
     run_campaign_sim,
 )
 from tests.flows.sim.leased_session import canned_build_session, without_build_record
@@ -1160,8 +1161,8 @@ def test_campaign_rejects_target_whose_tests_are_all_skipped(tmp_path: Path, mon
     assert run.launched == []
 
 
-def _lite_passes_full_fails(target: str, _tests: tuple[str, ...]) -> SubprocessResult:
-    return PASS_PROCESS if target == "lite" else FAIL_PROCESS
+def _lite_passes_full_fails(launch: Launch) -> SubprocessResult:
+    return PASS_PROCESS if launch.target == "lite" else FAIL_PROCESS
 
 
 @pytest.mark.parametrize(
@@ -1320,8 +1321,8 @@ def test_campaign_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monke
     """Each HDL launch gets durable evidence before the next one starts."""
     first_bytes: list[bytes] = []
 
-    def process(_target: str, tests: tuple[str, ...]) -> SubprocessResult:
-        if tests == ("stress",):
+    def process(launch: Launch) -> SubprocessResult:
+        if launch.tests == ("stress",):
             first_bytes.append(_run_logs(tmp_path)[0].read_bytes())
             return SubprocessResult(
                 returncode=1, stdout="STRESS_ONLY\n[SIM_RESULT] FAILED\n", duration_s=0.1
@@ -1367,8 +1368,8 @@ def test_consecutive_campaigns_preserve_first_evidence(tmp_path: Path, monkeypat
 
 
 def test_campaign_crash_keeps_completed_target_in_progress(tmp_path: Path, monkeypatch):
-    def process(target: str, _tests: tuple[str, ...]) -> SubprocessResult:
-        if target == "full":
+    def process(launch: Launch) -> SubprocessResult:
+        if launch.target == "full":
             raise RuntimeError("simulated outer interruption")
         return PASS_PROCESS
 

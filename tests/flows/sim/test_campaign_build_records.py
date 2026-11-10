@@ -3,6 +3,7 @@
 The digests below were recorded from the serial executor at base commit
 574e6e524, before shared and private builds were unified behind one record
 builder. They must not change: records are durable campaign evidence.
+It also checks that no builder decodes the record it just built.
 """
 
 from __future__ import annotations
@@ -10,17 +11,22 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from booley.flows.sim.campaign import serial_execution
+from booley.flows.sim.campaign import codec, serial_execution
 from booley.flows.sim.campaign.codec import canonical_json_bytes
+from booley.flows.sim.campaign.model import SimulationResult
 from booley.flows.sim.campaign.planning import finalize_manifest
 from booley.flows.sim.campaign.store import CampaignStore
+from tests.flows.sim.test_campaign_phase3 import _failed_shared_outcome
 from tests.flows.sim.test_campaign_phase3_integrity import (
     _executor,
+    _Group,
     _legacy_disclosures,
     _manifest_for,
     _request,
@@ -47,16 +53,21 @@ def _digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@pytest.mark.parametrize("route", ["shared", "legacy-per-test"])
-def test_build_records_are_byte_identical_to_base(
+def _execute_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
-) -> None:
+) -> tuple[CampaignStore, SimulationResult]:
+    """Run one work item through the serial executor on *route* with frozen ids and clock."""
     sequence = iter(range(1, 100))
     # ``version=4`` sets the version and variant bits the codec requires.
     monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=next(sequence), version=4))
     monkeypatch.setattr(serial_execution, "_now", lambda: "2026-09-21T10:00:00Z")
     monkeypatch.setattr(serial_execution, "time", SimpleNamespace(monotonic=lambda: 0.0))
     monkeypatch.setattr(serial_execution, "_run_hook", lambda *_args, **_kwargs: None)
+    if route == "shared-design-failure":
+        failed = _failed_shared_outcome()
+        failed = replace(failed, tests=(replace(failed.tests[0], name="alpha"),))
+        monkeypatch.setattr(_Group, "finish_build_failure", lambda self: failed, raising=False)
+        monkeypatch.setattr(_Group, "compile", lambda self: SimpleNamespace(passed=False))
     disclosures = _legacy_disclosures() if route == "legacy-per-test" else None
     manifest = _manifest_for(("alpha",), access=route if disclosures else "immutable")
     if disclosures:
@@ -77,6 +88,14 @@ def test_build_records_are_byte_identical_to_base(
     result = _executor(build_root, counters, disclosures=disclosures).execute(
         _request(store, manifest, item, project, invocation=1)
     )
+    return store, result
+
+
+@pytest.mark.parametrize("route", ["shared", "legacy-per-test"])
+def test_build_records_are_byte_identical_to_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    store, result = _execute_route(tmp_path, monkeypatch, route)
 
     (build_result,) = store.root.rglob("build-result.json")
     directory = build_result.parent
@@ -87,3 +106,32 @@ def test_build_records_are_byte_identical_to_base(
         _digest(directory / "evidence" / "bundle.json"),
         _digest(build_result),
     ) == (attempt_digest, bundle_digest, result_digest)
+
+
+@pytest.mark.parametrize(
+    ("route", "build_state"),
+    [
+        ("shared", "ready"),
+        ("legacy-per-test", "ready"),
+        ("shared-design-failure", "design_failure"),
+    ],
+)
+def test_record_builders_decode_no_record_they_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, build_state: str
+) -> None:
+    decoded: list[str] = []
+    real_decode = codec._decode
+
+    def spy(raw: bytes, **kwargs: Any) -> Any:
+        decoded.append(kwargs["value_type"].__name__)
+        return real_decode(raw, **kwargs)
+
+    monkeypatch.setattr(codec, "_decode", spy)
+
+    store, _result = _execute_route(tmp_path, monkeypatch, route)
+
+    # The route reached its build record, so a skipped builder cannot pass unnoticed.
+    (build_result,) = store.root.rglob("build-result.json")
+    assert json.loads(build_result.read_bytes())["state"] == build_state
+    # ``finalize_manifest`` decodes the manifest once as planning's validation boundary.
+    assert [name for name in decoded if name != "SimulationCampaignManifest"] == []
