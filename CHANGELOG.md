@@ -33,6 +33,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   repository and the `/.booley` git exclusion, or refuses (changing nothing)
   when that repository has commits. Plain `booley init` in a repo with no RTL now suggests
   `/booley-setup new`.
+- `booley init --scaffold` now names Targets `<axis>_<ip>` (`sim_<ip>`,
+  `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`) with a matching `tests.toml` section.
+  Doctor notes a Target it runs (or one in a stealth core) named just `sim`,
+  `lint`, `synth`, or `fpga` and suggests `<axis>_<core name>`.
 - A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
   with its points now loads with values recomputed from the points instead of
   failing. A forged pass/fail on a blocked or not-requested evaluation or one

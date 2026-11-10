@@ -795,7 +795,7 @@ def _add_flow_subparser(sub) -> None:
     """Add direct Flow execution."""
     flow_p = sub.add_parser(
         "flow",
-        help="Run a Booley Flow directly (e.g. `booley flow lint --target lint`)",
+        help="Run a Booley Flow directly (e.g. `booley flow lint --target lint_soc`)",
     )
     flow_p.add_argument(
         "endpoint_name",
