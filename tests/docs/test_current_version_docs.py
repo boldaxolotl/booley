@@ -94,12 +94,6 @@ ALLOWLIST += (
         "Current report field that older reports carry.",
         1,
     ),
-    ExceptionRule(
-        "src/booley/data/docs/FLOW_REPORTS.md",
-        "Each legacy/unprepared",
-        "Current report entry shape for runs without a prepared Campaign.",
-        1,
-    ),
 )
 
 

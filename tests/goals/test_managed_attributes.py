@@ -14,7 +14,7 @@ from tests.conftest import symlink_or_skip
 from tests.goals.attribute_support import (
     system_attributes as system_attributes,  # noqa: PLC0414 — pytest fixture
 )
-from tests.goals.conftest import enter_goals, git
+from tests.goals.conftest import enable_stealth, enter_goals, git
 from tests.goals.test_finish import Crash, environment, request
 from tests.goals.test_finish_inputs import paired_complete
 from tests.goals.test_status import publish
@@ -150,6 +150,7 @@ def test_finish_accepts_and_records_managed_policy_for_each_participant(layout, 
 def test_init_preserves_export_only_content_and_finish_replays_it(
     layout, tmp_path, monkeypatch, comment
 ):
+    enable_stealth(layout)  # the repository-local attributes default is Stealth's
     external_policy(layout.worktree, tmp_path, monkeypatch, "default-user", "# no checkout policy")
     info = managed_attributes(layout.worktree)
     exports = b"\n\nrtl.v export-ignore -export-subst\n*.txt -export-ignore export-subst\n"

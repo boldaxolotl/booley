@@ -4116,13 +4116,20 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
     """Inspect durable inputs in their owning repositories, separately from outer history."""
     from booley.commit_policy import stealth_enabled
     from booley.runtime.project_trackability import (
+        STEALTH_UNSET,
+        STEALTH_UNSET_FIX,
         fix,
         history_probe,
         inspect_project_trackability,
+        unrecorded_stealth_exclusions,
     )
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
+    for name in unrecorded_stealth_exclusions(root, booley_dir):
+        _warning_sink(_warn, "stealth.enabled-unset", subject=name)(
+            STEALTH_UNSET.format(name=name), STEALTH_UNSET_FIX
+        )
     inspection = inspect_project_trackability(root, booley_dir)
     probe = history_probe(root)
     for group in inspection.ignored:

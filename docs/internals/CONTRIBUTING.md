@@ -356,6 +356,34 @@ Porting EDA tools is #1, but not the only way to help:
   each test's `timeout_headroom_ratio` property records how much of its
   budget it used.
 
+## Writing user docs
+
+The main text of every page in `docs/user/` describes one baseline setup:
+Stealth Mode off, an HDL testbench, Linux, and the EDA tools in the Sandbox
+Image. A reader on that setup should never have to skip a sentence.
+
+When a variant changes what the reader sees or does, put the difference in a
+collapsed callout right after the baseline text it modifies:
+
+```markdown
+<details markdown>
+<summary>In stealth mode</summary>
+
+Commit `AGENTS.md` in the Booley Directory's own repository instead:
+`git -C .booley commit`.
+
+</details>
+```
+
+- Use one fixed label per variant: `In stealth mode`, `With a cocotb
+  testbench`, `On Windows`, `With host-installed licensed tools`.
+- Say only what differs, and link to the variant's own page (`STEALTH.md`,
+  `WINDOWS.md`, ...) for the full story. Keep the callout at block level, not
+  inside a list item, and leave blank lines around its Markdown body.
+- Leave in the main text: choices every reader makes (port or scaffold, FPGA or
+  ASIC), hard limits (no coverage on Icarus), and reference tables that must
+  list every value.
+
 ## Branch and pull request workflow
 
 Booley uses a mainline workflow; there is no permanent development integration

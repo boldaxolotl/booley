@@ -584,7 +584,7 @@ class Specialist(McpTool):
         to warn the agent up front and avoid burning a full agent run to a
         post-hoc commit-msg rejection (Pattern A4 — see field reports).
         """
-        # Stealth mode is opt-out ([stealth] enabled = false); when off, neither
+        # Stealth mode is opt-in ([stealth] enabled = true); when off, neither
         # the commit-msg hook nor this prompt warning applies.
         phrases = banned_phrases(project_root)
         if not stealth_enabled(project_root) or not phrases:

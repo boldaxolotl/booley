@@ -325,14 +325,14 @@ can never manufacture a pass, and it never crashes the Flow.
 
 Each test resolves to exactly one of five verdicts:
 
-- `pass`: the run's `[SIM_SUMMARY]` sentinel reports `passed` with zero SVA (SystemVerilog Assertion) errors.
+- `pass`: the run's verdict sentinel reports `passed` with zero SVA (SystemVerilog Assertion) errors.
 - `fail`: a failing sentinel, a nonzero exit with fresh evidence, or SVA errors.
 - `inconclusive`: the sim ran cleanly (exit 0, no SVA errors) but produced *no* verdict sentinel, so nothing affirmatively passed; also where a `--trace` run lands if it otherwise passed but could not confirm the trace was written.
 - `elab_error`: build/elaboration/compile failure, or failed Pre-Sim Commands (the sim never ran).
 - `timeout`: the per-test budget was exceeded.
 
-`SimulateFlow` delegates execution through one `SimulationExecution.run` /
-`preview` boundary. The boundary resolves each `TargetHandle` from its own
+`SimulateFlow` delegates execution through one `SimulationExecution`
+`ordinary_group` / `preview` boundary. The boundary resolves each `TargetHandle` from its own
 Project Root, prepares the shared build, fires Pre-Sim Commands, invokes one
 leaf adapter, and returns immutable build, test, workload, log, trace, and
 infrastructure evidence. The Flow retains campaign concerns: Target/test
@@ -412,25 +412,19 @@ manifest across exact resume. The replaceable compatibility report at
 `origin_target` references to the immutable manifest and optional public Coverage
 reference. Legacy producer-absolute strings are compatibility hints only; local
 Simulation Campaign authentication is authoritative. The projection also carries
-the resolved identity (`target`, `tb_top`, `eda_tool`), timing, the target
-`passed` flag, and a `tests`
-list: Simulation Campaign entries contain `name`, `passed`, nullable `cycles`,
-`sva_errors`, `timed_out`, `execution`, `failure_kind`, and `error_tail`.
-Legacy/unprepared entries also carry `verdict`, `cycle_observation`, and a
-workload fingerprint when resolved inputs are available. Full cycle counts are
-also copied to `report.json` (see [FLOW_REPORTS.md](FLOW_REPORTS.md)). For
-native HDL Targets, every entry also carries
-`artifacts.run_log`, a work-directory-relative pointer to an atomic,
-unabridged, attempt-specific copy of that test's simulator output. A grouped
-run preserves this copy before starting the next test, including for failed,
-timed-out, and inconclusive tests that produced output. The Target build
-directory retains its compatibility `run.log` (the latest test's output,
-tail-truncated to 10 MB) and `result.json`; Cocotb adds its `results.xml`.
-
-`sim` adds one stricter invariant: it omits the entire block unless the current
-run's header proves the pointers are fresh. A build that dies before the
-simulator starts must not cite a previous run's `result.json` or trace as current
-evidence.
+the resolved identity (`target`, `target_identity`), the target `passed` and
+`inconclusive` flags, a `test_runs` list, and a `tests` list whose entries
+contain `name`, `passed`, nullable `cycles`, `sva_errors`, `timed_out`,
+`execution`, `failure_kind`, and `error_tail`, plus the observed Test Run's
+`test_run`, `variant`, `seed`, and `fingerprint`. Full cycle counts are also
+copied to `report.json` (see [FLOW_REPORTS.md](FLOW_REPORTS.md)). For native HDL
+Targets, each test's unabridged, attempt-specific simulator output is kept as
+`run.log` evidence in its Campaign work item, not referenced from the
+projection. A grouped run preserves this copy before starting the next test,
+including for failed, timed-out, and inconclusive tests that produced output.
+The Target build directory retains its compatibility `run.log` (the latest
+test's output, tail-truncated to 10 MB) and `result.json`; Cocotb adds its
+`results.xml`.
 
 Trace artifacts stay off the pass/fail path by design: `--trace` builds a
 separate trace-overlay Target (its own build root) so it never clobbers the fast
@@ -1009,9 +1003,8 @@ Execution is sorted and sequential.
 `run_coverage_target(plan, execution, progress)` collects through
 `SimulationExecutionPort`, assembles and validates the canonical Campaign,
 loads approved waivers unless `--no-waivers` is given, evaluates, and publishes in order:
-Campaign, Simulation projection, Criterion evidence, saved Criteria state,
-terminal progress. Source/Target drift is rejected. Ungated evaluation is
-`not_requested`, including incompatible input, unless the Approved Waiver Set
+Campaign, Simulation projection, terminal progress. Source/Target drift is
+rejected. Ungated evaluation is `not_requested`, including incompatible input, unless the Approved Waiver Set
 fails to load or match, which blocks it (exit 2); collection errors still exit 2.
 Simulation failures exit 1. A valid threshold miss exits 0; the Criterion
 records it. Blocking evaluation, collector, infrastructure, or persistence
@@ -1087,8 +1080,9 @@ that carries diagnostics, or that cannot be re-scored is refused before
 point-dependent evidence is accepted. Per-source rollups and scoring are
 writer-derived manifest content that readers do not re-derive. Criteria
 blocks on collection before denominator/metric work. Contract failures expose
-stable `COV_*` error codes. Campaign and Simulation publication precede Criterion evidence. Coverage
-observations use transaction-qualified ledger sequence directories. Their
+stable `COV_*` error codes. Coverage Criterion evidence comes only from
+Simulation Campaign acceptance (`flows/sim/acceptance.py`), after the Campaign
+is published. Coverage observations use transaction-qualified ledger sequence directories. Their
 transaction identity is included in `acceptance_transactions` in the same atomic
 bound evidence-state save as the updated Criteria. Acceptance readers ignore evidence
 from transactions absent from the saved state, including partially written
@@ -1096,8 +1090,8 @@ sequences. Thus an interrupted evidence append or failed state save preserves
 the prior authoritative projection without deleting historical observations.
 Ordinary nontransactional ledger observations retain their existing semantics.
 
-Terminal progress follows the state save. If its normal write fails, the Flow
-retries once with `phase: aborted`; the committed Campaign and Criteria remain
+Terminal progress follows Simulation publication. If its normal write fails,
+the Flow retries once with `phase: aborted`; the committed Campaign remains
 valid and the command returns 2 even when that repair succeeds. Before the nested
 Coverage Campaign commit marker is published, a persistence error retains any
 observed simulation verdict but reports collection as `infrastructure_error` and

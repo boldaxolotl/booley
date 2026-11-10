@@ -69,14 +69,11 @@ def test_test_registry_is_scoped_to_each_checkout(tmp_path: Path) -> None:
     assert launched == {"now": "+test=now", "then": "+case=0"}
 
 
-def test_legacy_two_groups_retain_both_real_hooks_after_second_integrity_failure(
-    tmp_path, monkeypatch
-):
+def test_two_groups_retain_both_real_hooks_after_second_integrity_failure(tmp_path, monkeypatch):
     import json
     import os
 
     from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
-    from booley.flows.sim.flow import SimulateFlow
     from booley.targets.catalog import TargetCatalog
     from tests.flows.sim.test_execution_engine import (
         _subprocess_invoker,
@@ -104,8 +101,6 @@ def test_legacy_two_groups_retain_both_real_hooks_after_second_integrity_failure
     assert [firing.test_names for firing in outcome.pre_sim_runs] == [("a",), ("b",)]
     assert [firing.returncode for firing in outcome.pre_sim_runs] == [0, 0]
     assert all(firing.stdout_tail == "actual-hook\n" for firing in outcome.pre_sim_runs)
-    lines = SimulateFlow._pre_sim_output_lines(outcome)
-    assert "for sim_a/a: rc=0" in lines[0] and "for sim_a/b: rc=0" in lines[1]
 
 
 def test_legacy_scope_stop_reports_execution_failure_with_actual_hook_evidence(tmp_path):

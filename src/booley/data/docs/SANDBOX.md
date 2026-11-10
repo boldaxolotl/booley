@@ -66,7 +66,7 @@ close the window, or use **Dev Containers: Rebuild Container**.
 nothing did. If the Sandbox replacement fails or you interrupt it, Booley
 restores the previous Sandbox. The Sandbox is unavailable while the new
 container starts. Afterwards it re-applies Project Initialization (Git hooks,
-Git settings, guidance links, core projections, exclude entries and the
+Git settings, guidance links, exclude entries and the
 Dashboard task). It never rewrites tracked files: CRLF files and pending
 `.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
 applies them. If that step fails, you keep the new Sandbox and the command
@@ -282,11 +282,17 @@ file:
 - **In the repository** (for example `sim-requirements.txt`): reviewed and
   cloned like any source file. Prefer this when you can add files.
 - **In the Booley Directory** (for example `.booley/sim-requirements.txt`):
-  keeps the tracked tree free of Booley files under
-  stealth mode (host doc, not shipped), but a fresh clone won't have it, so
-  `booley init` there builds without your pins. See
-  what survives a fresh clone (host doc, not shipped).
-  Don't use `.booley/docker/requirements.txt`: Booley generates that file.
+  committed with the rest of your Booley setup. Don't use
+  `.booley/docker/requirements.txt`: Booley generates that file.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+A file in the Booley Directory keeps the tracked tree free of Booley files, but
+a fresh clone won't have it, so `booley init` there builds without your pins.
+See what survives a fresh clone (host doc, not shipped).
+
+</details>
 
 The file is read only when the image is built. After changing it, rebuild
 (see [After changing the image](#after-changing-the-image)). For cocotb 1.x

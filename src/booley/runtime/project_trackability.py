@@ -7,8 +7,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.commit_policy import stealth_choice_unset
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import own_booley_dir_repo_path, resolve_checkout_booley_dir
+from booley.runtime.git import stealth_exclude_names
 from booley.runtime.git_attributes_policy import has_managed_attributes
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.project_gitignore import project_transient_pattern
@@ -50,6 +52,16 @@ def fix() -> str:
         "edit the reported exclusion (including excluded ancestors) to allow the named paths, "
         f"then rerun {rerun}"
     )
+
+
+STEALTH_UNSET = (
+    "git info/exclude hides /{name}, but booley.toml leaves [stealth] enabled unset, "
+    "so Stealth Mode is off (commit messages are not scrubbed)"
+)
+STEALTH_UNSET_FIX = (
+    "keep Stealth Mode: add `[stealth] enabled = true` to booley.toml and rerun booley init; "
+    "or record it off with `enabled = false`"
+)
 
 
 def history_probe(root: Path) -> str | None:
@@ -343,6 +355,24 @@ def _inspect_owner(
     paths, query_errors = _query_paths(owner, tuple(candidates), links)
     errors.extend(query_errors)
     return _matches(owner, paths)
+
+
+def unrecorded_stealth_exclusions(root: Path, booley_dir: Path) -> tuple[str, ...]:
+    """Booley Directory names ``info/exclude`` hides in a Project that never chose Stealth.
+
+    Stealth Mode used to default on, so ``booley init`` hid the Booley Directory
+    without recording ``[stealth] enabled``. A missing key now means off, which
+    silently stops the commit scrub there. Unreadable Git metadata yields no names:
+    the trackability inspection reports repository access problems itself.
+    """
+    if not stealth_choice_unset(root, booley_dir=booley_dir):
+        return ()
+    try:
+        relative = os.fsdecode(_git(root, ["rev-parse", "--git-path", "info/exclude"]))
+        lines = (root / relative.removesuffix("\n")).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return ()
+    return tuple(name for name in stealth_exclude_names(root) if f"/{name}" in lines)
 
 
 def inspect_project_trackability(
