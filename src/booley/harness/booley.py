@@ -6,6 +6,7 @@ Subcommands:
     chat      Open the Project's default (or --cli chosen) Agent CLI
     worktree  Create, list, or remove linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
+    coverage  List uncovered coverage points of a finished coverage run
     doctor    Run environment health checks
     bootstrap Prepare Project-independent host resources
     init      Initialize a Project
@@ -37,6 +38,7 @@ from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
 from booley.harness import (
     cheatsheet,
+    coverage_cli,
     feedback_view,
     projects_view,
     resources_cli,
@@ -92,6 +94,7 @@ COMMAND_LOCATIONS = {
     "chat": CommandLocation.SESSION_RUNTIME,
     "worktree": CommandLocation.SESSION_RUNTIME,
     "cheat": CommandLocation.EITHER,
+    "coverage": CommandLocation.EITHER,
     "doctor": CommandLocation.EITHER,
     "bootstrap": CommandLocation.HOST,
     "init": CommandLocation.HOST,
@@ -132,6 +135,7 @@ COMMAND_PROJECT_BINDINGS = {
     "chat": ProjectBinding.REQUIRED,
     "worktree": ProjectBinding.REQUIRED,
     "cheat": ProjectBinding.OPTIONAL,
+    "coverage": ProjectBinding.INDEPENDENT,
     "doctor": ProjectBinding.REQUIRED,
     "bootstrap": ProjectBinding.INDEPENDENT,
     "init": ProjectBinding.REQUIRED,
@@ -938,6 +942,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_specialist_subparser(sub)
     _add_targets_subparser(sub)
     resources_cli.add_subparser(sub)
+    coverage_cli.add_subparser(sub)
 
     # Skill adapters stay registered; top-level help advertises human commands only.
     feedback_cli.add_subparser(sub)
@@ -1911,6 +1916,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "session": _cmd_session,
     "targets": _cmd_targets,
     "resources": resources_cli.run,
+    "coverage": coverage_cli.run,
     "worktree": run_worktree,
     "goal": _cmd_goal,
     "dashboard": _cmd_dashboard,

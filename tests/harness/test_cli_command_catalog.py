@@ -19,6 +19,7 @@ PUBLIC_COMMANDS: list[str] = [
     "specialist",
     "worktree",
     "cheat",
+    "coverage",
     "doctor",
     "help",
     "resources",
@@ -33,8 +34,8 @@ PUBLIC_COMMANDS: list[str] = [
 
 GROUPS = {
     "Sandbox": PUBLIC_COMMANDS[:5],
-    "Host or Sandbox": PUBLIC_COMMANDS[5:10],
-    "Host": PUBLIC_COMMANDS[10:],
+    "Host or Sandbox": PUBLIC_COMMANDS[5:11],
+    "Host": PUBLIC_COMMANDS[11:],
 }
 
 
@@ -136,8 +137,8 @@ def test_cli_reference_has_the_same_public_inventory() -> None:
     )
     assert [(location, re.findall(r"`(\w+)`", commands)) for location, commands in rows] == [
         ("Sandbox", PUBLIC_COMMANDS[:5]),
-        ("Either", PUBLIC_COMMANDS[5:10]),
-        ("Host-only", PUBLIC_COMMANDS[10:]),
+        ("Either", PUBLIC_COMMANDS[5:11]),
+        ("Host-only", PUBLIC_COMMANDS[11:]),
     ]
 
 
@@ -160,6 +161,7 @@ def test_skill_commands_are_hidden_but_remain_registered(command: str) -> None:
         ("worktree", "Sandbox"),
         ("goal", "Sandbox"),
         ("cheat", "either"),
+        ("coverage", "either"),
         ("doctor", "either"),
         ("help", "either"),
         ("feedback", "either"),
