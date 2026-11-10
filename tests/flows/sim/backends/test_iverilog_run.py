@@ -256,6 +256,9 @@ class _FakeTraceSession:
     def reset_for_run(self, _paths):
         return None
 
+    def stop_monitor(self):
+        return None
+
     def start_conversion_budget(self, _timeout_s):
         return None
 
