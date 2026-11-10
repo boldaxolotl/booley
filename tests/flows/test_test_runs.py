@@ -11,7 +11,7 @@ from hypothesis import strategies as st
 
 from booley.config.tests_toml_rules import TestRunNameError
 from booley.flows.builtin_cli import parse_request
-from booley.flows.sim.campaign.planning import canonical_sha256
+from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.test_runs import (
     DEFAULT_SEED,
@@ -303,9 +303,9 @@ def test_fingerprint_is_stable_and_matches_the_campaign_hash() -> None:
     assert fingerprint == (
         "sha256:8b3ad4350562ee7758fdfd17286ec271131b4915bbd2d076291e34c0181e6e63"
     )
-    assert fingerprint == canonical_sha256({"args": ["+iters=1000"], "env": {"FAULT_MODE": "1"}})
+    assert fingerprint == document_digest({"args": ["+iters=1000"], "env": {"FAULT_MODE": "1"}})
     unicode_inputs = (("+name=é",), {"NAME": "ü"})
-    assert declared_inputs_fingerprint(*unicode_inputs) == canonical_sha256(
+    assert declared_inputs_fingerprint(*unicode_inputs) == document_digest(
         {"args": list(unicode_inputs[0]), "env": unicode_inputs[1]}
     )
 

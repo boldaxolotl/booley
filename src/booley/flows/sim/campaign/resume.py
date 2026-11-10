@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import stat
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,8 +9,8 @@ from typing import cast
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows.baseline_worktree import git_full_sha
+from booley.flows.sim.campaign_files import read_bounded
 from booley.flows.sim.campaign_reports import simulation_booley_dir
-from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -197,35 +195,18 @@ def _origin_invocation(path: Path) -> Path:
 
 
 def _load_node(path: Path, booley_dir: Path | None) -> ValidatedManifestNode:
-    raw = _read_regular(path, booley_dir)
+    raw = read_bounded(
+        path,
+        limit=MANIFEST_MAX_BYTES,
+        error=SimulationCampaignIntegrityError,
+        booley_dir=booley_dir,
+        single_link=True,
+    )
     try:
         manifest = decode_simulation_campaign_manifest(raw)
     except UnsupportedSimulationCampaignFormatError as exc:
         raise exc.located(_origin_invocation(path)) from None
     return ValidatedManifestNode(path, manifest, manifest_digest(manifest))
-
-
-def _read_regular(path: Path, booley_dir: Path | None) -> bytes:
-    try:
-        descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
-    except OSError as exc:
-        raise SimulationCampaignIntegrityError(
-            f"cannot read resume manifest {path}: {exc}"
-        ) from exc
-    try:
-        info = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_nlink != 1
-            or info.st_size > MANIFEST_MAX_BYTES
-        ):
-            raise SimulationCampaignIntegrityError("resume manifest is not a bounded regular file")
-        raw = os.read(descriptor, MANIFEST_MAX_BYTES + 1)
-        if len(raw) != info.st_size:
-            raise SimulationCampaignIntegrityError("resume manifest changed while being read")
-        return raw
-    finally:
-        os.close(descriptor)
 
 
 __all__ = [

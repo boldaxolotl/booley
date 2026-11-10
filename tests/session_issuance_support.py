@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -14,6 +15,11 @@ import pytest
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from tests.devcontainer_spec_support import build_spec
+
+
+def _docker_without_images(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Docker CLI stand-in on which no image (so no keeper) exists."""
+    return subprocess.CompletedProcess(args, 1, "", "Error: No such image")
 
 
 def install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -38,7 +44,7 @@ def stub_keeper(monkeypatch: pytest.MonkeyPatch) -> None:
     guard refuses, so without these stubs a refusal is replaced by a Docker error.
     Patching the test's own ``monkeypatch`` lets a test override a stub later.
     """
-    monkeypatch.setattr("booley.runtime.interactive_docker.image_id_strict", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", _docker_without_images)
     monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", lambda *_args: None)
     monkeypatch.setattr("booley.runtime.interactive_docker.remove_image_tag", lambda _image: None)
 

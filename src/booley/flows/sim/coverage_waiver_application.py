@@ -11,12 +11,15 @@ from typing import Any
 
 from booley.config.coverage_waiver_inputs import CoverageWaiverConfig
 from booley.core.booley_dir_links import is_booley_dir_entry
-from booley.flows.sim.coverage_campaign import CoverageCampaign, DurableTargetIdentity
+from booley.flows.sim.coverage_campaign import (
+    CoverageCampaign,
+    DurableTargetIdentity,
+    rederive_coverage_points,
+)
 from booley.flows.sim.coverage_json import coverage_mapping_document, freeze_coverage_mapping
 from booley.flows.sim.coverage_policy import (
     CoverageCriterion,
     EvaluatedCoverageCampaign,
-    _derive_rollup,
     evaluate_coverage_campaign,
 )
 from booley.flows.sim.coverage_provisional import criterion_from_evaluation
@@ -94,8 +97,7 @@ def _unwaived(campaign: CoverageCampaign) -> CoverageCampaign:
         else point
         for point in campaign.points
     )
-    rollups = tuple(_derive_rollup(rollup, points) for rollup in campaign.rollups)
-    return replace(campaign, points=points, rollups=rollups)
+    return rederive_coverage_points(campaign, points)
 
 
 def strict_reevaluation(

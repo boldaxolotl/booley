@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,21 +19,22 @@ from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
-    AdapterTransportIdentity,
+    work_transport_identity,
     write_adapter_result,
 )
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_campaign_characterization import _AdapterAbortExecution, _plan
 
 
 def _refresh_hook_workload_identity(document):
-    from booley.flows.sim.campaign.planning import canonical_sha256
+    from booley.flows.sim.campaign_files import document_digest
 
     workload = document["workload"]
     variant = document["build_variants"][0]
-    digest = canonical_sha256(
+    digest = document_digest(
         {
             "kind": variant["kind"],
             "source_closure": variant["source_closure"],
@@ -51,7 +51,7 @@ def _refresh_hook_workload_identity(document):
     item["role"] = document["target"]["role"]
     item["revision"] = document["target"]["revision"]
     item["build_variant_id"] = variant["build_variant_id"]
-    digest = canonical_sha256(
+    digest = document_digest(
         {
             key: value
             for key, value in item.items()
@@ -823,17 +823,9 @@ class _CardExecution(_AdapterAbortExecution):
     def _invoke_process(self, command, *, timeout):
         result = super()._invoke_process(command, timeout=timeout)
         if self.passing and "BOOLEY_BUILD_STAGE" not in command[-1]:
-            tokens = shlex.split(command[-1])
-            selected = tuple(
-                token.split("=", 1)[1] for token in tokens if token.startswith("--selected-test=")
-            )
-            identity = AdapterTransportIdentity(
-                "cocotb",
-                tokens[tokens.index("--attempt-token") + 1],
-                tokens[tokens.index("--target-identity") + 1],
-                selected,
-                Path(tokens[tokens.index("--adapter-result") + 1]),
-            )
+            identity = work_transport_identity(launched_work(command))
+            assert identity is not None
+            selected = identity.selected_tests
             write_adapter_result(
                 identity,
                 AdapterResult(
@@ -1852,7 +1844,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
                     log = project / pointer["path"]
                     assert log.is_file()
                     assert "flow=sim" in log.read_text().splitlines()[0]
-                    assert str(log.parent) in command[-1]
+                    assert str(log.parent) in launched_work(command).adapter_result_path
                 observations.append(active["stage"])
         return original(command, timeout=timeout, cwd=cwd)
 
