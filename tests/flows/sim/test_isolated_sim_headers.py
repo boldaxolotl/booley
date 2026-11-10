@@ -39,6 +39,7 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.test_verilator_build_reuse_engine import _edit_keeping_mtime
 from tests.flows.test_isolated_build_headers import real_fusesoc  # noqa: F401  (fixture)
 
 pytest.importorskip("fusesoc")
@@ -374,7 +375,8 @@ def test_isolated_icarus_listed_header_edit_changes_or_declines_the_key(
     _stub_icarus_identity(monkeypatch)
     root = _write_project(tmp_path / "proj")
     first = _icarus_key(_prepare(root, "sim_icarus", name="g1"), root)
-    (root / "rtl" / "inc" / "listed.vh").write_text("// listed v2\n", encoding="utf-8")
+    # Keep the old mtime so only the header bytes can move the key.
+    _edit_keeping_mtime(root / "rtl" / "inc" / "listed.vh", "// listed v2\n")
     second = _icarus_key(_prepare(root, "sim_icarus", name="g2"), root)
     assert first is None or first != second
 

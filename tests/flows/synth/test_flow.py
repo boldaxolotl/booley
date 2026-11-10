@@ -1609,25 +1609,18 @@ class TestDryRun:
         assert main_real.semantic_plan_fingerprint == wt_real.semantic_plan_fingerprint
         unit = main_real.work_units[0]
         configure = unit.commands[0].argv
-        extra_rtl = [configure[i + 1] for i, arg in enumerate(configure) if arg == "--extra-rtl"]
-        if isolation == "isolated":
-            assert unit.sources == (
-                "rtl/include/defs.svh",
-                "rtl/pkg.sv",
-                "rtl/dut.sv",
-                "tb/tb_dut.sv",
-            )
-            assert unit.constraints == ("constraints/dut.sdc",)
-            assert extra_rtl == ["rtl/pkg.sv", "rtl/dut.sv"]
-        else:
-            assert unit.sources == (
-                "src/syn_demo_0/rtl/include/defs.svh",
-                "src/syn_demo_0/rtl/pkg.sv",
-                "src/syn_demo_0/rtl/dut.sv",
-                "src/syn_demo_0/tb/tb_dut.sv",
-            )
-            assert unit.constraints == ("src/syn_demo_0/constraints/dut.sdc",)
-            assert extra_rtl == ["src/syn_demo_0/rtl/pkg.sv", "src/syn_demo_0/rtl/dut.sv"]
+
+        def operands(flag: str) -> list[str]:
+            return [configure[i + 1] for i, arg in enumerate(configure) if arg == flag]
+
+        prefix = "" if isolation == "isolated" else "src/syn_demo_0/"
+        assert unit.sources == tuple(
+            prefix + name
+            for name in ("rtl/include/defs.svh", "rtl/pkg.sv", "rtl/dut.sv", "tb/tb_dut.sv")
+        )
+        assert unit.constraints == (f"{prefix}constraints/dut.sdc",)
+        assert operands("--extra-rtl") == [f"{prefix}rtl/pkg.sv", f"{prefix}rtl/dut.sv"]
+        assert operands("--inc-dir") == [f"{prefix}rtl/include"]
 
 
 # ===========================================================================
