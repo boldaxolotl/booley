@@ -6,7 +6,7 @@ helper that waits on a child process must therefore give up well inside that
 budget, so a hung child fails one test with a message naming the command
 instead of freezing a pytest-xdist worker until the whole job is killed.
 
-``run_bounded_child`` is the one way helpers start such a child: plain
+Shared helpers start such a child through ``run_bounded_child``: plain
 ``subprocess.run(timeout=...)`` kills only the direct child and, on Windows,
 then waits without limit for pipes a surviving descendant holds (issue #3115).
 """
@@ -27,11 +27,16 @@ from booley.runtime.platform_paths import run_captured_bounded
 SUBPROCESS_TIMEOUT_S = 30
 
 
-def _captured(stream: str | None) -> str:
-    """Render one captured stream of a timed-out child for a failure message."""
+def _captured(stream: str | bytes | None) -> str:
+    """Render one captured stream of a timed-out child for a failure message.
+
+    ``run_captured_bounded`` always raises with text, but typeshed types
+    ``TimeoutExpired`` output as bytes, so decode defensively.
+    """
     if stream is None:
         return "(not collected: a descendant still held the pipe after the kill)"
-    return stream or "(none captured)"
+    text = stream if isinstance(stream, str) else stream.decode("utf-8", errors="replace")
+    return text or "(none captured)"
 
 
 def run_bounded_child(

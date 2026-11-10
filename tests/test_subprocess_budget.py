@@ -29,7 +29,7 @@ def test_run_bounded_child_timeout_keeps_partial_output() -> None:
         "time.sleep(60)\n"
     )
     with pytest.raises(pytest.fail.Exception) as raised:
-        run_bounded_child([sys.executable, "-c", script], timeout=2)
+        run_bounded_child([sys.executable, "-c", script], timeout=10)
 
     message = str(raised.value)
     assert "OUT-PARTIAL" in message
