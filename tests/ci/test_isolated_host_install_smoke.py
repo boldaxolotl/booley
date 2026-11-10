@@ -109,7 +109,7 @@ def test_workflow_runs_distro_smoke_after_local_wheel_build_and_is_required():
     package = jobs["package-artifacts"]
     names = [step.get("name") for step in package["steps"]]
     name = "Verify Install guide isolated host install on Ubuntu 26.04"
-    assert names.index(name) > names.index("Build wheel and source distribution")
+    assert names.index(name) > names.index("Download built distributions")
     step = package["steps"][names.index(name)]
     assert ".github/scripts/isolated_host_install_smoke.py" in step["run"]
     assert '--guide docs/user/INSTALL.md --wheel "${wheels[0]}"' in step["run"]
@@ -148,3 +148,33 @@ def test_wheel_verification_rejects_wrong_origin_version_and_payload(tmp_path, m
     module.write_bytes(b"# substituted payload\n")
     with pytest.raises(AssertionError, match=r"booley/__init__\.py"):
         smoke.verify_wheel(wheel)
+
+
+def _steps_text(job):
+    return yaml.safe_dump(job["steps"])
+
+
+def test_build_dist_feeds_every_pr_dist_consumer():
+    """Issue #2867: image jobs wait on the bare build, not on package validations."""
+    jobs = yaml.safe_load(Path(".github/workflows/test.yml").read_text())["jobs"]
+    build = jobs["build-dist"]
+    names = [step.get("name") for step in build["steps"]]
+    # The payload check gates the upload, so no consumer sees a rejected dist.
+    upload = next(
+        index
+        for index, step in enumerate(build["steps"])
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    )
+    assert build["steps"][upload]["with"]["name"] == "pr-dist"
+    assert names.index("Build wheel and source distribution") < upload
+    assert names.index("Reject redistributed native and Nangate payloads") < upload
+    assert "build-dist" in jobs["ci-required"]["needs"]
+
+    for consumer in ("package-artifacts", "bwave-smoke", "riscv-image"):
+        assert jobs[consumer]["needs"] == ["changes", "build-dist"], consumer
+        assert "name: pr-dist" in _steps_text(jobs[consumer]), consumer
+
+    # package-artifacts validates the uploaded bytes; it never rebuilds them.
+    package = _steps_text(jobs["package-artifacts"])
+    assert "python -m build" not in package
+    assert "upload-artifact" not in package
