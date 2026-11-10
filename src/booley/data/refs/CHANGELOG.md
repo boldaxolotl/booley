@@ -17,6 +17,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   timed-out conversion reports a trace incident: a failing simulation stays
   failed, a passing one is reported inconclusive, and neither is `timeout`.
   Icarus no longer reports an unconverted raw VCD as a waveform.
+- `booley init --scaffold` now names Targets `<axis>_<ip>` (`sim_<ip>`,
+  `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`) with a matching `tests.toml` section.
+  Doctor notes a Target it runs (or one in a stealth core) named just `sim`,
+  `lint`, `synth`, or `fpga` and suggests `<axis>_<core name>`.
 - `sim --trace` now converts a declared `trace_files` entry that is a literal
   relative `.vcd` path inside the run directory while the test runs, so the
   waveform is ready at run end and no VCD is left on disk. Other entries still

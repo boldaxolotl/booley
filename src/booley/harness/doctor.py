@@ -181,7 +181,6 @@ from booley.targets.selection import (
     TargetSectionConflictError,
     section_key_names,
     target_section_key,
-    vlnv_key,
 )
 
 if TYPE_CHECKING:
@@ -5763,7 +5762,7 @@ def _check_target_naming(
         return
     for name, ref in offenders:
         # The core name backs a bare axis (``sim`` -> ``sim_<core name>``).
-        core_name = vlnv_key(ref.vlnv).rsplit(":", 1)[-1]
+        core_name = ref.vlnv.split(":")[:3][-1]
         suggestion = target_naming.suggest_name(name, doctor_axes.get(name), subject=core_name)
         fix = (
             f"rename it '{suggestion}'"
