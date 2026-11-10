@@ -1646,7 +1646,7 @@ def _stage_registry_candidate(
     return reference
 
 
-def test_host_scope_never_reads_project_configuration(monkeypatch):
+def test_host_reconcile_never_reads_project_configuration(monkeypatch):
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
     monkeypatch.setattr(
@@ -2273,7 +2273,6 @@ def test_source_reconcile_separates_outer_replacement_from_runtime_base_refresh(
 ) -> None:
     from booley.harness.setup import docker_image as init_docker_image
 
-    _project(tmp_path)
     docker_dir = _set_source_installation(tmp_path, monkeypatch)
     docker, _pulls = _wire_source_docker(docker_dir, monkeypatch)
     _install_stale_outer_base(docker)

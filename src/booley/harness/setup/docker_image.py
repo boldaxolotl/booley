@@ -1079,20 +1079,20 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
     """Run one specified image build, recording infrastructure failures."""
     action = "Rebuilding" if spec.exists else "Building"
     info(f"{action} {spec.image} image — {spec.build_note}.")
-    build_timeout = int(os.environ.get("BOOLEY_IMAGE_BUILD_TIMEOUT", "7200"))
+    timeout_seconds = build_timeout()
     try:
         result = run_docker_build(
             _docker_build_command(spec),
             image=spec.image,
             verbose=ctx.verbose,
-            timeout=build_timeout,
+            timeout=timeout_seconds,
             current_request=spec.capacity_request,
             remaining_plan=spec.capacity_plan,
         )
         _render_build_diagnostics(result)
         if result.timed_out:
             err(
-                f"docker build timed out after {format_duration(build_timeout)} "
+                f"docker build timed out after {format_duration(timeout_seconds)} "
                 "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
             )
             ctx.record(spec.record_key, "err", "build timed out")
@@ -1102,7 +1102,7 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
         raise
     except subprocess.TimeoutExpired:
         err(
-            f"docker build timed out after {format_duration(build_timeout)} "
+            f"docker build timed out after {format_duration(timeout_seconds)} "
             "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
         )
         ctx.record(spec.record_key, "err", "build timed out")

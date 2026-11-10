@@ -219,7 +219,7 @@ def acquire(
             extra_args=_metadata_args(root),
         )
     except DockerCapacityError:
-        raise
+        raise  # a subclass of OSError: keep it distinct from CLI failures below
     except OSError as exc:
         raise RuntimeBaseBuildError(f"docker build failed: {exc}", None) from exc
     if outcome.returncode != 0 or outcome.timed_out:

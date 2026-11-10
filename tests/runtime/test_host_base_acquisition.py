@@ -442,6 +442,7 @@ class FakeDocker:
     def __init__(self) -> None:
         self.images: dict[str, dict[str, str]] = {}
         self.builds: list[list[str]] = []
+        self.build_kwargs: list[dict[str, object]] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch, *build_owners: object) -> None:
         """Route inspection and every named module's ``run_docker_build`` here."""
@@ -459,8 +460,9 @@ class FakeDocker:
         record = {"Id": f"sha256:{args[2]}", "Config": {"Labels": labels}}
         return SimpleNamespace(returncode=0, stdout=json.dumps([record]), stderr="")
 
-    def _run_docker_build(self, command: list[str], **_kwargs: object) -> DockerBuildResult:
+    def _run_docker_build(self, command: list[str], **kwargs: object) -> DockerBuildResult:
         self.builds.append(command)
+        self.build_kwargs.append(kwargs)
         self.images[command[command.index("-t") + 1]] = _flags(command, "--label")
         return DockerBuildResult(returncode=0)
 
@@ -539,3 +541,17 @@ def test_host_maintenance_entry_point_acquires_base_with_fake_docker(
     assert build_args["BOOLEY_BASE_CONTRACT"] == labels[LABEL_RUNTIME_BASE_CONTRACT]
     assert build_args["BOOLEY_BASE_SOURCE_REVISION"]
     assert build_args["BOOLEY_BASE_BUILT_AT"]
+
+
+def test_full_runtime_base_build_honors_capacity_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = Path(__file__).resolve().parents[2]
+    docker = FakeDocker()
+    docker.install(monkeypatch, owner)
+    plan = owner.DockerBuildPlan((owner.DockerBuildRequest(owner.REFERENCE, owner.REFERENCE),))
+
+    owner.acquire(root, rebuild=True, capacity_plan=plan, verbose=False)
+
+    (kwargs,) = docker.build_kwargs
+    assert kwargs["current_request"] == plan.current
+    assert kwargs["remaining_plan"] is plan
+    assert kwargs["verbose"] is False
