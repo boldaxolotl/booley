@@ -131,6 +131,9 @@ def plan_host_egress(mode: str, path: Path | None = None) -> HostEgressChange:
         section["egress"] = mode
         edited["sandbox"] = section
     new_text = tomlkit.dumps(edited)
+    if "\r\n" in text and "\n" not in text.replace("\r\n", ""):
+        # A CRLF-only file stays CRLF-only: tomlkit writes the inserted line with LF.
+        new_text = new_text.replace("\r\n", "\n").replace("\n", "\r\n")
     _parse_document(tomllib.loads(new_text), resolved)
     return HostEgressChange(resolved, str(previous), mode, new_text.encode("utf-8"))
 

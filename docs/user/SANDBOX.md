@@ -104,7 +104,8 @@ Settings that apply to every Project on this machine live in
 `~/.config/booley/config.toml` (or `$XDG_CONFIG_HOME/booley/config.toml`).
 The file is optional, and you own it. Booley edits it only when you run
 `booley bootstrap --egress proxy` or `--egress unproxied`, which creates the
-file if needed and changes only the `[sandbox] egress` value. Without the file
+file if needed and changes only the `[sandbox] egress` value (a symlinked
+file is refused: edit its target by hand). Without the file
 you get these defaults:
 
 ```toml

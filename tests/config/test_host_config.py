@@ -270,6 +270,10 @@ def test_egress_edit_refuses_legacy_interactive_table(tmp_path: Path) -> None:
     assert "rename it to [sandbox] first" in str(raised.value)
 
 
-def test_egress_edit_refuses_unreadable_path(tmp_path: Path) -> None:
-    with pytest.raises(HostConfigError, match="cannot read file"):
-        host_config.plan_host_egress("unproxied", tmp_path)  # a directory
+def test_egress_edit_keeps_crlf_file_crlf_when_adding_key(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_bytes(b"[sandbox]\r\nmax_sessions = 2\r\n")
+
+    change = host_config.plan_host_egress("unproxied", path)
+
+    assert change.content == b'[sandbox]\r\nmax_sessions = 2\r\negress = "unproxied"\r\n'

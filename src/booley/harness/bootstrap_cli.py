@@ -206,6 +206,7 @@ def _report_sandboxes_on_old_mode(mode: str) -> None:
     """Name running Sandboxes still on another egress mode with their recreate remedy."""
     from booley.runtime import session_admission
 
+    sandboxes: tuple[session_admission.Sandbox, ...] = ()
     try:
         sandboxes = session_admission.running_sandboxes()
     except session_admission.AdmissionError as exc:
@@ -216,7 +217,6 @@ def _report_sandboxes_on_old_mode(mode: str) -> None:
                 "run `booley doctor` once Docker is available",
             )
         )
-        return
     for item in sandboxes:
         if item.egress != mode:
             print(

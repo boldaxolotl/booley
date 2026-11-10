@@ -240,9 +240,9 @@ def test_sandbox_inventory_failure_warns_and_keeps_bootstrap_status(
     assert host.run(egress="unproxied") == 0
 
     assert host.config.read_bytes() == _UNPROXIED
-    assert "cannot list running Sandboxes to check the egress change: docker is down" in (
-        capsys.readouterr().out
-    )
+    out = capsys.readouterr().out
+    assert "cannot list running Sandboxes to check the egress change: docker is down" in out
+    assert "Stopped Sandboxes use the new mode on their next start" in out
 
 
 def test_same_egress_mode_makes_no_edit(
