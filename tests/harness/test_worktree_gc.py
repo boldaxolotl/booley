@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import time
@@ -10,7 +11,6 @@ from pathlib import Path
 import pytest
 
 from booley.audit.diagnostic_results import Findings
-from booley.config.worktree import parse_age
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.harness.setup import readiness
@@ -345,6 +345,8 @@ def test_invalid_knob_fails_doctor_validation(tmp_path: Path) -> None:
 
 
 def test_parse_age_grammar() -> None:
+    parse_age = importlib.import_module("booley.config.worktree").parse_age
+
     for text, seconds in (("7d", 7 * DAY), ("1d12h", 129600), ("90m", 5400), ("1h30m15s", 5415)):
         assert parse_age(text) == seconds
     for bad in ("", "7", "0d", "12h1d", "7days", "-1d", "1d1d", "d", " 7d", "1" * 400 + "d"):
