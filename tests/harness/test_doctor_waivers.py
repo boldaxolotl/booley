@@ -190,7 +190,11 @@ permanent = true
     )
     reporter = doctor._Reporter.create(load_doctor_waivers(tmp_path))
 
-    doctor._check_devcontainer_excludes(tmp_path, reporter.pass_, reporter.warn_)
+    reporter.diagnostics(
+        doctor.inspection.inspect_interactive_git(
+            doctor.inspection.InteractiveGitRequest(tmp_path, tmp_path)
+        )
+    )
 
     output = colors.strip_ansi(capsys.readouterr().out)
     assert "  !  git info/exclude missing Booley entry: .devcontainer" in output
