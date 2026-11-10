@@ -554,6 +554,7 @@ async def _run_subprocess(
     env: dict[str, str] | None = None,
     is_queued: Callable[[], bool] | None = None,
     on_first_active: Callable[[], None] | None = None,
+    log_path: Path | None = None,
 ) -> tuple[int, str, str, bool]:
     """Delegate process supervision with adapter-configured diagnostic timings."""
     return await endpoint_process._run_subprocess(
@@ -565,6 +566,7 @@ async def _run_subprocess(
         on_first_active=on_first_active,
         watchdog_tick=endpoint_process._WATCHDOG_TICK_SECONDS,
         cancel_grace=endpoint_process.CANCEL_GRACE_SECONDS,
+        log_path=log_path,
     )
 
 
