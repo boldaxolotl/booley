@@ -1368,8 +1368,25 @@ def test_legacy_init_modes_never_backfill_origin(repo, monkeypatch, capsys):
 
 
 def _git(root: Path, *args: str) -> str:
+    """Run one Git command with a fixed identity and no detached auto-maintenance.
+
+    ``git commit`` may spawn ``maintenance run --auto`` in the background; it
+    creates and removes ``.git/objects/maintenance.lock`` at an arbitrary time,
+    which flakes any test that snapshots the tree around a later call.
+    """
     result = subprocess.run(
-        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
+            *args,
+        ],
         cwd=root,
         capture_output=True,
         text=True,
