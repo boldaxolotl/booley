@@ -33,7 +33,7 @@ Readers accept only the V5 storage schema; any other schema fails with
 One uncompressed point-store ceiling applies on write and read, plus the manifest ceiling. The writer no
 longer caps the point count, so a Campaign over the Analyst session's 1M-point ceiling publishes and is
 refused at analysis. A reader refuses a pass/fail verdict whose
-suite did not match, that carries diagnostics, or that cannot be re-scored, and loads any other with the recomputed values;
+suite did not match, that carries diagnostics, that cannot be re-scored, or whose collection is incomplete, and loads any other with the recomputed values;
 `source_rollups` and `scoring` stay writer-derived content passed through unchanged. Persistence schema belongs
 to the codecs and loaded envelope rather than the in-memory Coverage Campaign domain value. The split does not itself reduce
 the Coverage Analyst model payload. ADR 0063 separately binds analysis to budgeted evidence views

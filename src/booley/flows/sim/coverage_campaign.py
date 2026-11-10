@@ -1175,7 +1175,8 @@ def _validate_evaluation(document: Mapping[str, object]) -> list[CoverageFinding
 
     The verdict itself is recomputed by the store from the points, so this only
     refuses a verdict that could not have been written: an unknown status, an
-    incomplete collection, or a suite that did not match.
+    incomplete collection, a suite that did not match, non-empty diagnostics, or a
+    missing ``required`` list.
     """
     evaluation = document["evaluation"]
     collection = document["collection"]
