@@ -9,6 +9,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley flow sim --mode elab-only-standalone` now probes each module with the
+  simulator of the Targets that use it: Icarus for an Icarus Target, Verilator
+  for a Verilator Target, and both for a module shared by the two (a
+  mixed-simulator project can take up to twice as long). A parse error from the
+  Target's own compiler is now a design failure instead of "ungraded". The
+  `[flows.sim].standalone_frontend` key is retired: every Flow refuses to run
+  while it is set, so delete it.
 - Stealth Mode is now off unless `.booley/booley.toml` sets
   `[stealth] enabled = true`; a missing key means off. A fresh `booley init`
   no longer hides `.booley/` or gives it its own repository before setup

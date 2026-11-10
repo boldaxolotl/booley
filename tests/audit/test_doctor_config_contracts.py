@@ -92,7 +92,7 @@ def test_doctor_rejects_retired_elaboration_tables_with_migration(retired):
     assert any(
         f"[flows.{retired}] is retired" in message
         and "sim --mode elab-only" in message
-        and "[flows.sim].standalone_frontend" in message
+        and "delete standalone_frontend" in message
         for message in fails
     )
 
@@ -297,3 +297,24 @@ class TestValidateAgentTable:
         # container's BOOLEY_AGENT_APP; only a present-and-wrong value fails.
         valid, passes, fails = self._run(section)
         assert valid and not fails and not passes
+
+
+def test_doctor_booley_toml_validation_names_retired_standalone_frontend(tmp_path):
+    """Doctor stops on the retired key with its own migration text, not the EDA fix."""
+    from booley.audit.diagnostic_results import Findings
+    from booley.harness.setup import readiness
+
+    findings = Findings()
+
+    valid = readiness._validate_booley_toml(
+        {"flows": {"sim": {"standalone_frontend": "auto"}}}, tmp_path, findings
+    )
+
+    assert valid is False
+    failures = findings.report().findings
+    assert len(failures) == 1
+    only = failures[0]
+    assert "[flows.sim].standalone_frontend is retired" in only.message
+    assert "each Target's simulator" in only.message
+    assert "booley.toml booley.toml" not in only.message
+    assert "commercial-EDA" not in only.fix
