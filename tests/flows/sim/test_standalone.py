@@ -195,7 +195,7 @@ class TestStandaloneSweep:
             MagicMock(side_effect=AssertionError("standalone sweep must use run timeout")),
         )
         monotonic_values = iter((0.0, 0.0, 1.2))
-        monkeypatch.setattr(standalone_module.time, "monotonic", lambda: next(monotonic_values))
+        monkeypatch.setattr(standalone_module, "monotonic", lambda: next(monotonic_values))
         observed_timeouts: list[int] = []
 
         def execute(_command: list[str], *, timeout: int) -> SubprocessResult:
@@ -223,7 +223,7 @@ class TestStandaloneSweep:
         monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 1_000)
         monotonic_values = iter((0.0, 1.0))
         monkeypatch.setattr(
-            standalone_mod.time,
+            standalone_mod,
             "monotonic",
             lambda: next(monotonic_values),
         )

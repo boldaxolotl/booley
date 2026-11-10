@@ -5,11 +5,11 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
-import time
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
+from time import monotonic
 from typing import TextIO
 
 from booley.runtime.docker_capacity import (
@@ -141,7 +141,7 @@ class _ProgressState:
             self.output, record, verbose=self.verbose, seen=self.seen_progress
         )
         if emitted:
-            self.last_visible = time.monotonic()
+            self.last_visible = monotonic()
 
     def heartbeat(self, now: float) -> None:
         if now - self.last_visible < HEARTBEAT_INTERVAL_S:
@@ -154,7 +154,7 @@ class _ProgressState:
 
 def _pump(process: subprocess.Popen[str], records: Queue[object], state: _ProgressState) -> bool:
     while True:
-        now = time.monotonic()
+        now = monotonic()
         if now >= state.deadline:
             return process.poll() is None
         try:
@@ -169,7 +169,7 @@ def _pump(process: subprocess.Popen[str], records: Queue[object], state: _Progre
             ) from record.error
         if isinstance(record, str):
             state.accept(record)
-        state.heartbeat(time.monotonic())
+        state.heartbeat(monotonic())
 
 
 def _await_exit(process: subprocess.Popen[str], deadline: float, timed_out: bool) -> bool:
@@ -177,7 +177,7 @@ def _await_exit(process: subprocess.Popen[str], deadline: float, timed_out: bool
         _terminate(process)
         return True
     try:
-        process.wait(timeout=max(deadline - time.monotonic(), 0.001))
+        process.wait(timeout=max(deadline - monotonic(), 0.001))
     except subprocess.TimeoutExpired:
         _terminate(process)
         return True
@@ -214,7 +214,7 @@ def _run_captured(
         target=_read_output, args=(process.stdout, records, stop), daemon=True
     )
     reader.start()
-    started = time.monotonic()
+    started = monotonic()
     state = _ProgressState(image, verbose, output, started, started + timeout, started)
     try:
         timed_out = _pump(process, records, state)

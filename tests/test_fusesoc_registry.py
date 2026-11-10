@@ -2653,177 +2653,6 @@ targets:
     } == before
 
 
-@pytest.mark.parametrize("value", ["a\x00b", "\ud800", "MAC"])
-def test_parameter_normalization_errors_have_target_resolution_context(tmp_path, value):
-    from types import SimpleNamespace
-
-    from booley.flows.parameter_transport import normalize_resolved_parameters
-    from booley.fusesoc.fusesoc_registry import TargetResolutionError
-
-    resolved = SimpleNamespace(
-        name="sim",
-        toplevel="top",
-        build_root=tmp_path,
-        configured_eda_tool="verilator",
-        parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": value}},
-    )
-    with pytest.raises(TargetResolutionError, match=r"Target 'sim'.*parameter transport"):
-        normalize_resolved_parameters(resolved)
-
-
-@pytest.mark.parametrize(
-    "datatype,reference,default,replayed",
-    [
-        ("str", "NAME", "", True),
-        ("str", "NAME=", "fallback", True),
-        ("str", "NAME=other", "", False),
-        ("str", "NAME", None, False),
-        ("file", "NAME", "", False),
-    ],
-)
-def test_owned_empty_setup_channel_is_separate_from_make_options(
-    tmp_path, datatype, reference, default, replayed
-):
-    import yaml
-
-    metadata = {"datatype": datatype, "paramtype": "vlogparam"}
-    if default is not None:
-        metadata["default"] = default
-    (tmp_path / "proof.core").write_text(
-        "CAPI=2:\n"
-        + yaml.safe_dump(
-            {
-                "name": "proof:string:owned:1",
-                "parameters": {
-                    "NAME": metadata,
-                    "UNSELECTED": {"datatype": "str", "paramtype": "vlogparam", "default": ""},
-                },
-                "targets": {
-                    "sim": {
-                        "flow": "sim",
-                        "flow_options": {"tool": "verilator"},
-                        "parameters": [reference],
-                        "toplevel": "top",
-                    }
-                },
-            }
-        )
-    )
-    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
-    command = fusesoc_registry.setup_command_for_handle(
-        handle, build_root=tmp_path / "build", backend_arguments=("-j2",)
-    )
-    assert "--UNSELECTED=" not in command
-    assert ("--NAME=" in command) == replayed
-    assert "--make_options=-j2" in command
-    assert command.index("--make_options=-j2") > command.index(handle.vlnv)
-    if replayed:
-        assert command[-1] == "--NAME="
-        with pytest.raises(fusesoc_registry.TargetResolutionError, match="conflicts"):
-            fusesoc_registry.setup_command_for_handle(
-                handle, build_root=tmp_path / "build", backend_arguments=("--NAME=other",)
-            )
-
-
-@pytest.mark.parametrize(
-    "produced",
-    [
-        {},
-        {"datatype": "str", "paramtype": "vlogparam"},
-        {"datatype": "file", "paramtype": "vlogparam", "default": ""},
-        {"datatype": "str", "paramtype": "vlogparam", "default": "fallback"},
-    ],
-)
-def test_owned_empty_setup_rejects_producer_mismatch(tmp_path, monkeypatch, produced):
-    from types import SimpleNamespace
-
-    import yaml
-
-    (tmp_path / "proof.core").write_text(
-        "CAPI=2:\n"
-        + yaml.safe_dump(
-            {
-                "name": "proof:string:mismatch:1",
-                "parameters": {
-                    "NAME": {"datatype": "str", "paramtype": "vlogparam", "default": ""}
-                },
-                "targets": {
-                    "sim": {
-                        "flow": "sim",
-                        "flow_options": {"tool": "verilator"},
-                        "parameters": ["NAME"],
-                        "toplevel": "top",
-                    }
-                },
-            }
-        )
-    )
-    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
-    monkeypatch.setattr(
-        fusesoc_registry,
-        "_run_setup_command",
-        lambda *a, **k: SimpleNamespace(parameters={"NAME": produced}),
-    )
-    with pytest.raises(fusesoc_registry.TargetResolutionError, match="was not preserved"):
-        fusesoc_registry.resolve_target_handle(handle, build_root=tmp_path / "build")
-
-
-@pytest.mark.parametrize("value", [12, ""])
-def test_owned_setup_parameters_do_not_require_toplevel(tmp_path, value):
-    import yaml
-
-    from booley.fusesoc.fusesoc_registry import setup_command_for_handle
-    from booley.targets.catalog import TargetCatalog
-    from booley.targets.domain import MissingTargetToplevelError
-
-    (tmp_path / "proof.core").write_text(
-        "CAPI=2:\n"
-        + yaml.safe_dump(
-            {
-                "name": "proof:string:notop:1",
-                "parameters": {
-                    "NAME": {
-                        "datatype": "str" if value == "" else "int",
-                        "paramtype": "vlogparam",
-                        "default": value,
-                    }
-                },
-                "targets": {"lint": {"default_tool": "verilator", "parameters": ["NAME"]}},
-            }
-        )
-    )
-    catalog = TargetCatalog.build(tmp_path)
-    handle = catalog.select("lint")
-    with pytest.raises(MissingTargetToplevelError):
-        catalog.inspect(handle)
-    command = setup_command_for_handle(handle, build_root=tmp_path / "build")
-    assert ("--NAME=" in command) is (value == "")
-
-
-def test_undeclared_parameter_setup_failure_has_resolution_context(tmp_path):
-    from booley.fusesoc.fusesoc_registry import (
-        FuseSocError,
-        TargetResolutionError,
-        setup_command_for_handle,
-    )
-    from booley.targets.catalog import TargetCatalog
-
-    (tmp_path / "proof.core").write_text("""CAPI=2:
-name: proof:string:badparameter:1
-targets:
-  lint:
-    default_tool: verilator
-    parameters: [TYPO]
-""")
-    handle = TargetCatalog.build(tmp_path).select("lint")
-    with pytest.raises(
-        TargetResolutionError, match=r"badparameter.*Parameter 'TYPO'.*not found"
-    ) as caught:
-        setup_command_for_handle(handle, build_root=tmp_path / "build")
-    assert isinstance(caught.value.__cause__, FuseSocError)
-    assert isinstance(caught.value.__cause__.__cause__, SyntaxError)
-
-
 def test_restore_explicit_tb_tag_when_nonstrict_inventory_skips_core(tmp_path):
     from booley.fusesoc.fusesoc_registry import ResolvedFile, _restore_tb_tags
     from booley.targets.domain import TargetRef
@@ -3178,3 +3007,26 @@ class TestRelocatedBooleyDirectory:
         assert (
             mirror.read_text(encoding="utf-8").splitlines()[1].endswith(" state/cores/design.core")
         )
+
+
+def test_resolving_target_runs_no_extra_core_graph_inspection(tmp_path, monkeypatch):
+    from booley.fusesoc import target_inspection
+
+    (tmp_path / "plain.core").write_text(
+        "CAPI=2:\nname: acme:ip:plain:1.0\nparameters:\n"
+        "  W: {datatype: int, paramtype: vlogparam, default: 8}\n"
+        "targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+        "    parameters: [W]\n    toplevel: top\n"
+    )
+    handle = TargetCatalog.build(tmp_path).select("sim")
+    inspected = []
+    original = target_inspection._TargetSourceInspector._cores
+
+    def spy(self, **kwargs):
+        inspected.append(kwargs["identity"])
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(target_inspection._TargetSourceInspector, "_cores", spy)
+    monkeypatch.setattr(fusesoc_registry, "_run_setup_command", lambda *a, **k: k["source_ref"])
+    fusesoc_registry.resolve_target_handle(handle, build_root=tmp_path / "build")
+    assert inspected == []

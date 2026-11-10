@@ -16,6 +16,13 @@ Packaged release history starts at 0.2.7. For older changes, see
   and exits 0 when nothing changes. A Booley-issued Sandbox still refuses it
   and names the host command. The Dashboard attach refusal and Doctor hints
   now say where to run `booley init`.
+- String parameters now reach Verilator and Icarus through Edalize's own
+  quoting again, narrowing the 0.4.0 note that `str` and `file` vlogparams reach
+  them as strings. Plain values such as `MAC` work; values with quotes,
+  backslashes or whitespace, are not supported there. `default: ""` string
+  parameters are dropped by FuseSoC again in every flow: Yosys (slang) and sv2v
+  use the module's own HDL default for them, and the Vivado refusal does not
+  fire for them. Non-empty Yosys (slang), sv2v and Vivado behavior is unchanged.
 - `booley bootstrap --egress proxy|unproxied` records `[sandbox] egress` in the
   host config, creating the file if needed and changing nothing else in it, then
   bootstraps under that mode. `--check-only` reports the pending change without
