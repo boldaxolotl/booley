@@ -1009,9 +1009,8 @@ Execution is sorted and sequential.
 `run_coverage_target(plan, execution, progress)` collects through
 `SimulationExecutionPort`, assembles and validates the canonical Campaign,
 loads approved waivers unless `--no-waivers` is given, evaluates, and publishes in order:
-Campaign, Simulation projection, Criterion evidence, saved Criteria state,
-terminal progress. Source/Target drift is rejected. Ungated evaluation is
-`not_requested`, including incompatible input, unless the Approved Waiver Set
+Campaign, Simulation projection, terminal progress. Source/Target drift is
+rejected. Ungated evaluation is `not_requested`, including incompatible input, unless the Approved Waiver Set
 fails to load or match, which blocks it (exit 2); collection errors still exit 2.
 Simulation failures exit 1. A valid threshold miss exits 0; the Criterion
 records it. Blocking evaluation, collector, infrastructure, or persistence
@@ -1087,8 +1086,9 @@ that carries diagnostics, or that cannot be re-scored is refused before
 point-dependent evidence is accepted. Per-source rollups and scoring are
 writer-derived manifest content that readers do not re-derive. Criteria
 blocks on collection before denominator/metric work. Contract failures expose
-stable `COV_*` error codes. Campaign and Simulation publication precede Criterion evidence. Coverage
-observations use transaction-qualified ledger sequence directories. Their
+stable `COV_*` error codes. Coverage Criterion evidence comes only from
+Simulation Campaign acceptance (`flows/sim/acceptance.py`), after the Campaign
+is published. Coverage observations use transaction-qualified ledger sequence directories. Their
 transaction identity is included in `acceptance_transactions` in the same atomic
 bound evidence-state save as the updated Criteria. Acceptance readers ignore evidence
 from transactions absent from the saved state, including partially written
@@ -1096,8 +1096,8 @@ sequences. Thus an interrupted evidence append or failed state save preserves
 the prior authoritative projection without deleting historical observations.
 Ordinary nontransactional ledger observations retain their existing semantics.
 
-Terminal progress follows the state save. If its normal write fails, the Flow
-retries once with `phase: aborted`; the committed Campaign and Criteria remain
+Terminal progress follows Simulation publication. If its normal write fails,
+the Flow retries once with `phase: aborted`; the committed Campaign remains
 valid and the command returns 2 even when that repair succeeds. Before the nested
 Coverage Campaign commit marker is published, a persistence error retains any
 observed simulation verdict but reports collection as `infrastructure_error` and
