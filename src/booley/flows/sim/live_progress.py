@@ -11,8 +11,9 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from booley.core.progress_shape import TERMINAL_PHASES
 from booley.flows.job_resources import label_commands
-from booley.flows.progress_lifecycle import TERMINAL_PHASES, write_progress_json
+from booley.flows.progress_lifecycle import write_progress_json
 from booley.flows.run_log import RunLogIdentity, current_run_token
 from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339

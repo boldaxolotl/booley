@@ -293,6 +293,27 @@ def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
         assert span == sum(doc.section == section for doc in SITE_DOCS), section
 
 
+def test_stylesheet_urls_change_when_their_content_changes(tmp_path):
+    """A deploy must not pair new pages with a cached old stylesheet (Pages caches 10 min)."""
+    spec = importlib.util.spec_from_file_location(
+        "site_asset_versions", WEBSITE / "hooks/asset_versions.py"
+    )
+    assert spec and spec.loader
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    sheet = tmp_path / "stylesheets/site.css"
+    sheet.parent.mkdir()
+
+    sheet.write_text(".a { color: var(--ink); }", encoding="utf-8")
+    before = hook.asset_versions(tmp_path, ["stylesheets/site.css"])
+    sheet.write_text(".a { color: var(--mask); }", encoding="utf-8")
+    after = hook.asset_versions(tmp_path, ["stylesheets/site.css"])
+
+    assert before["stylesheets/site.css"] != after["stylesheets/site.css"]
+    base = (WEBSITE / "overrides/base.html").read_text(encoding="utf-8")
+    assert "{{ path | url }}?v={{ asset_versions[path] }}" in base
+
+
 def test_site_workflow_runs_when_a_published_doc_changes():
     """A contributor doc lives outside docs/user/, so pages.yml must name it to redeploy."""
     import yaml

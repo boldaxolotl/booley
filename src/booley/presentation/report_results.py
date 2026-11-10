@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from booley.core.boundary import as_float, as_int
-from booley.runtime.endpoint_execution import (
+from booley.core.exit_codes import (
     EXIT_CANCELLED,
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -19,6 +19,8 @@ from booley.runtime.endpoint_execution import (
 
 _ROW_LIMIT = 24
 _ITEM_LIMIT = 5
+# Endpoints whose reports are Flow reports; any other endpoint is an MCP tool.
+_FLOW_ENDPOINTS = frozenset({"sim", "lint", "synth", "fpga"})
 
 
 @dataclass(frozen=True)
@@ -531,6 +533,21 @@ def _success_result(report: Mapping[str, object]) -> tuple[str, str]:
     if outcome:
         return outcome, "unknown"
     return ("PASSED with warnings", "warn") if _warning(report) else ("PASSED", "pass")
+
+
+def present_job_report(
+    report: Mapping[str, object], *, endpoint: str, exit_code: int | None, argv: Sequence[str]
+) -> ReportPresentation:
+    """Project a Job's report with the Job's own exit code, Flow or tool, and arguments.
+
+    The record's facts override whatever the report carries. The Dashboard and the
+    MCP notice both use it; each supplies the exit code it resolved for the Job.
+    """
+    stamped = dict(report)
+    stamped["exit_code"] = exit_code
+    stamped["argv"] = list(argv)
+    stamped["flow" if endpoint in _FLOW_ENDPOINTS else "mcp_tool"] = endpoint
+    return present_report(stamped)
 
 
 def present_report(report: Mapping[str, object]) -> ReportPresentation:

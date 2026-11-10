@@ -91,7 +91,6 @@ class OwnedPoll:
     """An argument-free poll: the first finished Job, and what else the caller has in flight."""
 
     finished: JobPoll | None
-    unread: tuple[jobrec.JobRecord, ...] = ()
     running: tuple[jobrec.JobRecord, ...] = ()
 
 
@@ -629,30 +628,45 @@ class JobLifecycle:
             ended is not None and ended >= self._started_at
         )
 
+    def _unread_of(
+        self, owned: list[tuple[jobrec.JobRecord, bool]]
+    ) -> tuple[jobrec.JobRecord, ...]:
+        """Finished, unread Jobs among *owned*, earliest-ended first."""
+        return tuple(
+            sorted(
+                (rec for rec, active in owned if not active and self._is_unread(rec)),
+                key=lambda rec: (rec.ended_at or rec.started_at, rec.run_id),
+            )
+        )
+
+    def unread_owned(self, caller: Caller) -> tuple[jobrec.JobRecord, ...]:
+        """The caller's finished Jobs whose result it has not read, earliest-ended first.
+
+        Reads only: it never calls :meth:`mark_read`, so asking changes nothing.
+        """
+        return self._unread_of(self._owned_jobs(caller))
+
     async def poll_owned(
         self, wait_seconds: float, caller: Caller, *, disk_tick: float = _DISK_POLL_TICK_SECONDS
     ) -> OwnedPoll:
         """Wait for the first of the caller's Jobs to finish; never blocks without a running Job.
 
         A finished Job whose result the caller has not read is returned at once,
-        earliest first, with the other unread ones listed. Waiting never cancels a Job.
+        earliest first. Waiting never cancels a Job.
         """
         deadline = time.monotonic() + max(0.0, wait_seconds)
         while True:
             owned = self._owned_jobs(caller)
             running = tuple(rec for rec, active in owned if active)
-            unread = sorted(
-                (rec for rec, active in owned if not active and self._is_unread(rec)),
-                key=lambda rec: (rec.ended_at or rec.started_at, rec.run_id),
-            )
+            unread = self._unread_of(owned)
             if unread:
                 first = unread[0]
                 tracked = first.run_id in self._tasks
                 view = _poll_view(first.run_id, "finished", tracked, self._repository)
-                return OwnedPoll(self._complete_poll(view), tuple(unread[1:]), running)
+                return OwnedPoll(self._complete_poll(view), running)
             remaining = deadline - time.monotonic()
             if not running or remaining <= 0:
-                return OwnedPoll(None, (), running)
+                return OwnedPoll(None, running)
             tasks = {self._tasks[rec.run_id] for rec in running if rec.run_id in self._tasks}
             tick = min(disk_tick, remaining)
             if tasks:
