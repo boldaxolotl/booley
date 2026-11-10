@@ -18,6 +18,18 @@ from booley.criteria.templates import (
     load_project_criteria,
     parse_target_pair,
 )
+from tests.review_verdict_support import register_no_major
+
+
+def test_multi_word_review_verdict_is_not_a_bare_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    register_no_major(monkeypatch)
+    template = CriteriaTemplate.from_yaml(
+        {"mandatory": {"review_rtl_bugs_no_major": "approved", "review_tb_quality": "approved"}}
+    )
+    expanded = template.expand(["lite"])
+    assert "review_rtl_bugs_no_major" in expanded
+    assert "review_rtl_bugs_no_major_clean" not in expanded
+    assert "review_tb_quality_clean" in expanded
 
 
 class TestCriterionSpec:

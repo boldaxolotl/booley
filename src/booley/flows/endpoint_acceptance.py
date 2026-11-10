@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.state import CriterionChange
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY, SOURCE_INVALIDATED_REASON
+from booley.evidence.review_verdicts import is_advisory_review_key
 from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.flows.endpoint_diff import (
     _classify_files,
@@ -118,7 +119,7 @@ def _stamp_source_fingerprint(
     if not categories:
         return detail
     stamped = dict(detail or {})
-    if is_review and key.endswith("_done") and stamped.get("verification_only"):
+    if is_review and is_advisory_review_key(key) and stamped.get("verification_only"):
         return stamped
     try:
         freshness = build_criterion_freshness(

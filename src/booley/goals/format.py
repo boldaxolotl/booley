@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from booley.criteria.presentation import implementation_baseline_comparison
+from booley.evidence.review_verdicts import is_advisory_review_key
 from booley.evidence.timing import worst_fmax_from_json
 from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation, proposal_presentation
 from booley.goals.test_run_resolution import SUITE_SLOT
@@ -153,7 +154,7 @@ def _format_finding_count_metric(  # noqa: PLR0911
             if isinstance(finding, dict)
             and cast("dict[str, Any]", finding).get("status") in {"waived", "impasse_deferred"}
         )
-        if key.endswith("_done"):
+        if is_advisory_review_key(key):
             return f"reviewed, {issues} findings"
         if issues:
             return f"{issues} open"

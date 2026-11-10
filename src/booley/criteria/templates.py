@@ -42,6 +42,7 @@ from booley.core.boundary import (
 )
 from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS, describe_threshold
+from booley.evidence.review_verdicts import review_key, split_review_key
 from booley.targets import target_naming
 
 logger = logging.getLogger(__name__)
@@ -817,15 +818,7 @@ def _is_review_base_key(key: str) -> bool:
     ``_clean``. Authors who intentionally want a terminal advisory review that
     reports findings without fixing them can spell ``_done`` explicitly.
     """
-    return key.startswith("review_") and not key.endswith(("_done", "_clean"))
-
-
-def _review_family(key: str) -> str:
-    """Return a review criterion's family without its verdict suffix."""
-    for suffix in ("_done", "_clean"):
-        if key.endswith(suffix):
-            return key.removesuffix(suffix)
-    return key
+    return key.startswith("review_") and split_review_key(key) is None
 
 
 def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion value form (list/dict/string/compound)
@@ -853,8 +846,8 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
         return _parse_coverage_entries(records, mandatory=mandatory)
     if _is_review_base_key(key):
         if isinstance(value, (dict, list)):
-            raise ValueError(f"{_review_family(key)} is source-scoped and accepts a scalar only")
-        return [CriterionSpec(f"{key}_clean", mandatory=mandatory)]
+            raise ValueError(f"{key} is source-scoped and accepts a scalar only")
+        return [CriterionSpec(review_key(key, "clean"), mandatory=mandatory)]
     if isinstance(value, list):
         return _parse_list_criterion(key, value, mandatory=mandatory)
     if isinstance(value, dict):

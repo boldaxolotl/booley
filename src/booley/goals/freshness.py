@@ -35,6 +35,7 @@ from typing import Any, cast
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.freshness import VerificationFreshness, evaluate_verification_freshness
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.review_verdicts import is_advisory_review_key
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.goals.generated_artifacts import (
     generated_artifact_paths,
@@ -163,7 +164,7 @@ def stamp_goal_detail(
     describes the already validated declaration and avoids another read.
     """
     stamped = copy.deepcopy(dict(detail))
-    if key.endswith("_done") and stamped.get("verification_only"):
+    if is_advisory_review_key(key) and stamped.get("verification_only"):
         return stamped
     if key.startswith("coverage_"):
         try:

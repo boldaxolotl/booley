@@ -6,6 +6,7 @@ from pathlib import Path
 
 from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
 from booley.criteria.templates import load_base_criteria
+from booley.evidence.review_verdicts import review_key
 from booley.goals.capabilities import CRITERION_FOR_FAMILY
 from booley.goals.model import REVIEW_KINDS, GoalFamily, GoalSpec
 from booley.goals.presentation import goal_presentation
@@ -27,7 +28,7 @@ def render_goal_reference(
         lines.append(_row(goal, definition.description, criterion, endpoint_catalog))
     for kind in REVIEW_KINDS:
         criterion = f"review_{kind}"
-        goal = GoalSpec(criterion + "_clean", GoalFamily.REVIEW, None, {}, ("ad-hoc",))
+        goal = GoalSpec(review_key(criterion, "clean"), GoalFamily.REVIEW, None, {}, ("ad-hoc",))
         lines.append(_row(goal, definitions[criterion].description, criterion, endpoint_catalog))
     lines += [
         "",

@@ -53,6 +53,7 @@ from booley.core.boundary import (
 )
 from booley.criteria.templates import FPGA_IMPL_OK_PARAMS, SYNTHESIS_OK_PARAMS
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS
+from booley.evidence.review_verdicts import REVIEW_VERDICTS, ReviewVerdict
 from booley.flows.test_runs import SeedCount, parse_test_selector
 from booley.goals.declared_inputs import DeclaredCapture
 from booley.goals.test_run_resolution import (
@@ -142,9 +143,6 @@ REVIEW_KINDS: tuple[str, ...] = (
 )
 # The one review kind that judges RTL against a spec file the Goal names.
 SPEC_REVIEW_KIND = "rtl_spec"
-
-ReviewVerdict = Literal["clean", "done"]
-REVIEW_VERDICTS: tuple[ReviewVerdict, ...] = ("clean", "done")
 
 MUTATION_PARAMS: frozenset[str] = frozenset({"scope", "min_detected", "total", "auto"})
 
@@ -481,7 +479,8 @@ def _parse_review_goal(raw: Mapping[str, Any], where: str) -> ReviewGoalArg:
         raise GoalArgError(f"{where}.review must be one of {list(REVIEW_KINDS)}, got {review!r}")
     verdict = _required_text(raw, "verdict", where)
     if verdict not in REVIEW_VERDICTS:
-        raise GoalArgError(f"{where}.verdict must be 'clean' or 'done', got {verdict!r}")
+        verdict_names = " or ".join(repr(name) for name in REVIEW_VERDICTS)
+        raise GoalArgError(f"{where}.verdict must be {verdict_names}, got {verdict!r}")
     spec = _spec_path(raw, where) if "spec" in raw else None
     if (review == SPEC_REVIEW_KIND) != (spec is not None):
         raise GoalArgError(
@@ -494,7 +493,7 @@ def _parse_review_goal(raw: Mapping[str, Any], where: str) -> ReviewGoalArg:
     paths = _review_paths(raw, where) if "paths" in raw else ()
     return ReviewGoalArg(
         review,
-        "clean" if verdict == "clean" else "done",
+        verdict,
         spec,
         _origin(raw, where),
         target,

@@ -24,6 +24,12 @@ from typing import Any
 
 from booley.criteria.thresholds import describe_threshold, has_relative_threshold
 from booley.evidence.acceptance import PairedProjectBaseline
+from booley.evidence.review_verdicts import (
+    is_corrective_review_key,
+    review_family,
+    split_review_key,
+    verdict_rank,
+)
 from booley.flows.baseline_worktree import baseline_worktree
 from booley.goals.changes import ChangeKind
 from booley.goals.checkout import GoalCheckout
@@ -73,11 +79,11 @@ def conflict(proposal: Proposal, record: GoalRecord) -> str:
 
 
 def same_slot(left: GoalSpec, right: GoalSpec) -> bool:
-    """Review clean/done share one slot even though their Criterion keys differ."""
+    """Every verdict of one review shares a slot even though their Criterion keys differ."""
     return left.key == right.key or (
         left.family is GoalFamily.REVIEW
         and right.family is GoalFamily.REVIEW
-        and left.key.rsplit("_", 1)[0] == right.key.rsplit("_", 1)[0]
+        and review_family(left.key) == review_family(right.key)
     )
 
 
@@ -133,16 +139,29 @@ def _fixed(goal: GoalSpec) -> dict[str, Any]:
     return fixed
 
 
+def _is_review_relaxation(before_key: str, after_key: str) -> bool:
+    """True when the key moves to a looser, non-corrective verdict of the same review.
+
+    A corrective target is refused: goal derivation judges a relaxed review on
+    completion alone, which is sound only for a verdict that blocks nothing.
+    """
+    before, after = split_review_key(before_key), split_review_key(after_key)
+    return (
+        before is not None
+        and after is not None
+        and before[0] == after[0]
+        and verdict_rank(after[1]) > verdict_rank(before[1])
+        and not is_corrective_review_key(after_key)
+    )
+
+
 def _validate_relax(before: GoalSpec, after: GoalSpec) -> None:
     if before.target != after.target or _fixed(before) != _fixed(after):
         raise ProposalError(
             "relaxation must preserve Target, tests, baseline, recipe, spec and mutation scope"
         )
     if before.family is GoalFamily.REVIEW:
-        if (
-            before.key.endswith("_clean")
-            and after.key == before.key.removesuffix("_clean") + "_done"
-        ):
+        if _is_review_relaxation(before.key, after.key):
             return
         raise ProposalError("review relaxation is only clean -> done for the same review/spec")
     if before.key != after.key:

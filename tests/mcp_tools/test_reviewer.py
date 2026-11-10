@@ -1292,21 +1292,21 @@ class TestSeverityCounting:
 
 
 class TestGateLogic:
-    def test_pass_clean(self):
-        counts = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 0}
-        assert check_gate(counts) is True
+    def test_clean_gate_fails_on_any_open_severity(self):
+        passing = [[]]
+        failing = [
+            [SEVERITY_MINOR],
+            [SEVERITY_MAJOR],
+            [SEVERITY_CRITICAL],
+            [SEVERITY_MINOR, SEVERITY_MAJOR, SEVERITY_CRITICAL],
+            [None],
+        ]
+        assert [check_gate(severities, "clean") for severities in passing] == [True]
+        assert [check_gate(severities, "clean") for severities in failing] == [False] * 5
 
-    def test_pass_minor_only(self):
-        counts = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 3}
-        assert check_gate(counts) is True
-
-    def test_fail_critical(self):
-        counts = {SEVERITY_CRITICAL: 1, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 0}
-        assert check_gate(counts) is False
-
-    def test_fail_major(self):
-        counts = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 0}
-        assert check_gate(counts) is False
+    def test_done_never_gates(self):
+        mixes = [[], [SEVERITY_MINOR], [SEVERITY_CRITICAL], [SEVERITY_MAJOR, None]]
+        assert all(check_gate(severities, "done") for severities in mixes)
 
 
 # ---------------------------------------------------------------------------

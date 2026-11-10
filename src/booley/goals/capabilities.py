@@ -2,7 +2,8 @@
 
 from collections.abc import Mapping
 
-from booley.goals.model import REVIEW_KINDS, REVIEW_VERDICTS, GoalFamily
+from booley.evidence.review_verdicts import REVIEW_VERDICTS
+from booley.goals.model import REVIEW_KINDS, GoalFamily
 
 CRITERION_FOR_FAMILY: Mapping[GoalFamily, str] = {
     GoalFamily.LINT: "lint_clean",

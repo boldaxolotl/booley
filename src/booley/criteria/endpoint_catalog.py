@@ -108,9 +108,7 @@ class CriterionEndpointCatalog:
         matches = [
             binding
             for binding in self._bindings
-            if key == binding.family
-            or key.startswith(f"{binding.family}_")
-            or key in {f"{binding.family}_clean", f"{binding.family}_done"}
+            if key == binding.family or key.startswith(f"{binding.family}_")
         ]
         return max(matches, key=lambda binding: len(binding.family), default=None)
 

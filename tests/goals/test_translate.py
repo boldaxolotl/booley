@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from booley.criteria.templates import CriteriaTemplate, cycle_count_criterion_key
-from booley.goals.model import GoalFamily, parse_goal_args
+from booley.goals.model import GoalFamily, ReviewGoalArg, ReviewVerdict, parse_goal_args
 from booley.goals.translate import (
     GoalConflictError,
     GoalTranslationError,
@@ -15,6 +15,7 @@ from booley.goals.translate import (
     stricter_threshold,
     translate_goals,
 )
+from tests.review_verdict_support import register_no_major
 
 
 def translate(*raw: dict[str, Any]):
@@ -320,6 +321,22 @@ def test_review_clean_wins_over_done_for_the_same_review() -> None:
     ]
     assert result.goals[0].origins == ("feature", "ad-hoc")
     assert "'clean' (from ad-hoc) wins over 'done' (from feature)" in result.warnings[0]
+
+
+def test_review_merge_picks_strictest_by_verdict_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    register_no_major(monkeypatch)
+    paths = ("rtl/mod_a.sv",)
+    result = translate_goals(
+        [
+            ReviewGoalArg("rtl_bugs", "done", origin="a", paths=paths),
+            ReviewGoalArg("rtl_bugs", cast("ReviewVerdict", "no_major"), origin="b", paths=paths),
+            ReviewGoalArg("rtl_bugs", "done", origin="c", paths=paths),
+        ]
+    )
+    assert [goal.key for goal in result.goals] == ["review_rtl_bugs_no_major"]
+    assert result.goals[0].origins == ("a", "b", "c")
+    assert result.warnings
+    assert "'no_major' (from b) wins over 'done' (from a, c)" in result.warnings[0]
 
 
 def test_coverage_floors_merge_per_metric() -> None:

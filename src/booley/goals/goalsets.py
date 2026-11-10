@@ -31,8 +31,9 @@ from typing import Any
 
 from booley.core.config_paths import GOALSETS_DIR
 from booley.criteria.templates import TEMPLATE_REGISTRY, CriterionSpec
+from booley.evidence.review_verdicts import REVIEW_VERDICTS
 from booley.goals.capabilities import CRITERION_FOR_FAMILY
-from booley.goals.model import REVIEW_KINDS, REVIEW_VERDICTS, SPEC_REVIEW_KIND, GoalFamily
+from booley.goals.model import REVIEW_KINDS, SPEC_REVIEW_KIND, GoalFamily
 from booley.runtime.guarded_write import WriteOutcome, guarded_write
 
 # Goalsets ``init`` seeds, in the order it writes them. ``default`` is never

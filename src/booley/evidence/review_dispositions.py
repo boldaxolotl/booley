@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from booley.evidence.review_verdicts import is_advisory_review_key
 from booley.evidence.review_vocabulary import (
     PERSISTED_REVIEWER_DISPOSITIONS,
     REVIEW_DISPOSITIONS,
@@ -154,7 +155,7 @@ def collect_review_dispositions(criteria: Mapping[str, Any]) -> list[dict[str, A
         detail = _entry_detail(entry)
         rows.extend(
             _done_rows(criterion, detail)
-            if criterion.endswith("_done")
+            if is_advisory_review_key(criterion)
             else _clean_rows(criterion, detail)
         )
     return _deduplicate_rows(rows)
@@ -188,11 +189,7 @@ def outstanding_done_findings(criteria: Mapping[str, Any]) -> list[dict[str, Any
 def done_finding_outstanding(row: Mapping[str, Any]) -> bool:
     """Classify normalized rows without changing their vocabulary or raw status."""
     criterion = row.get("criterion")
-    if (
-        not isinstance(criterion, str)
-        or not criterion.startswith("review_")
-        or not criterion.endswith("_done")
-    ):
+    if not isinstance(criterion, str) or not is_advisory_review_key(criterion):
         return False
     disposition = row.get("reviewer_disposition") or row.get("disposition")
     status = row.get("status")

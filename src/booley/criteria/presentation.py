@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from booley.core.boundary import as_dict, as_float, as_int, as_str
 from booley.criteria.thresholds import ThresholdDescriptor, describe_threshold
 from booley.evidence.fields import BASELINE_REF_DETAIL
+from booley.evidence.review_verdicts import is_advisory_review_key, split_review_key
 from booley.evidence.timing import worst_fmax_from_json
 
 if TYPE_CHECKING:
@@ -55,7 +56,8 @@ class _CriterionFamily:
 
     def matches(self, key: str) -> bool:
         if self.exact:
-            return key in {self.prefix, f"{self.prefix}_clean", f"{self.prefix}_done"}
+            split = split_review_key(key)
+            return key == self.prefix or (split is not None and split[0] == self.prefix)
         return key == self.prefix or key.startswith(f"{self.prefix}_")
 
 
@@ -342,7 +344,7 @@ def _format_requirement(key: str, family: _CriterionFamily, params: dict) -> str
     elif family.requirement == "coverage":
         requirement = _format_coverage_requirement(params)
     elif family.requirement == "review":
-        requirement = "review completed" if key.endswith("_done") else "no open findings"
+        requirement = "review completed" if is_advisory_review_key(key) else "no open findings"
     elif family.prefix == "sim_pass" and params.get("from_state") == "fail":
         requirement = "fail → pass transition"
     return requirement

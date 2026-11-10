@@ -16,6 +16,7 @@ import json
 import logging
 import posixpath
 import time
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,18 @@ from booley.evidence.review_receipt import (
     REVIEW_DETAIL_VERSION,
     ReviewInvocation,
     build_review_contract_detail,
+)
+from booley.evidence.review_verdicts import (
+    SEVERITY_CRITICAL,
+    SEVERITY_MAJOR,
+    SEVERITY_MINOR,
+    SEVERITY_RANK,
+    blocking_findings,
+    finding_blocks,
+    is_advisory_review_key,
+    is_corrective_review_key,
+    review_keys,
+    split_review_key,
 )
 from booley.evidence.review_vocabulary import (
     ALL_DISPOSITIONS,
@@ -90,10 +103,7 @@ TB_FOCUS_CATEGORIES = frozenset({"quality"})
 # Spec focus category name
 SPEC_FOCUS = "spec"
 
-# Severity levels (ordered high-to-low)
-SEVERITY_CRITICAL = "CRITICAL"
-SEVERITY_MAJOR = "MAJOR"
-SEVERITY_MINOR = "MINOR"
+# Severity levels (ordered high-to-low); names and rank live in the verdict model
 ALL_SEVERITIES = frozenset({SEVERITY_CRITICAL, SEVERITY_MAJOR, SEVERITY_MINOR})
 _SEVERITY_TAG = {SEVERITY_CRITICAL: "C", SEVERITY_MAJOR: "M", SEVERITY_MINOR: "m"}
 
@@ -627,9 +637,6 @@ def parse_review_output(
 REPORT_FINDINGS_CAPABILITY = "ReportFindings"
 
 
-_SEVERITY_ORDER = {SEVERITY_MINOR: 0, SEVERITY_MAJOR: 1, SEVERITY_CRITICAL: 2}
-
-
 @dataclass(frozen=True)
 class MirrorFinding:
     """One ``ReportFindings`` entry, reduced to what the mirror check compares.
@@ -670,7 +677,7 @@ def report_findings_to_mirror(findings: list[dict[str, Any]]) -> list[MirrorFind
             MirrorFinding(
                 file=posixpath.normpath(str(f["file"]).strip()),
                 line=line,
-                severity=severity if severity in _SEVERITY_ORDER else None,
+                severity=severity if severity in SEVERITY_RANK else None,
             )
         )
     return mirror
@@ -711,12 +718,9 @@ def mirror_findings_missing_from_canonical(
         if not same_place:
             disagreeing.append(finding)
             continue
-        match = max(same_place, key=lambda issue: _SEVERITY_ORDER[issue.severity])
+        match = max(same_place, key=lambda issue: SEVERITY_RANK[issue.severity])
         unclaimed.remove(match)
-        if (
-            finding.severity
-            and _SEVERITY_ORDER[finding.severity] > _SEVERITY_ORDER[match.severity]
-        ):
+        if finding.severity and SEVERITY_RANK[finding.severity] > SEVERITY_RANK[match.severity]:
             disagreeing.append(finding)
     return disagreeing
 
@@ -746,9 +750,17 @@ def count_by_severity(issues: list[ReviewIssue]) -> dict[str, int]:
     return counts
 
 
-def check_gate(counts: dict[str, int]) -> bool:
-    """Gate passes when there are zero critical and zero major issues."""
-    return counts[SEVERITY_CRITICAL] == 0 and counts[SEVERITY_MAJOR] == 0
+def check_gate(severities: Iterable[str | None], verdict: str) -> bool:
+    """Gate passes when no open finding is at or above the verdict's blocking severity."""
+    return not any(finding_blocks(severity, verdict) for severity in severities)
+
+
+def _verdict_of(key: str) -> str:
+    """Return the verdict of a review criterion key; a key without one is a programming error."""
+    split = split_review_key(key)
+    if split is None:
+        raise ValueError(f"{key!r} is not a review criterion key")
+    return split[1]
 
 
 def _format_status_and_counts(
@@ -967,6 +979,12 @@ class ReviewerSpecialist(Specialist):
             and row.get("disposition", "current") == "current"
         ]
 
+    def _blocking_findings(self, detail: dict[str, Any], key: str) -> list[dict[str, Any]]:
+        """Open findings that the review key's verdict requires resolving."""
+        return [
+            dict(row) for row in blocking_findings(self._open_findings(detail), _verdict_of(key))
+        ]
+
     def _prepare_invocation(self) -> McpToolResult | None:
         """Resolve caller intent before validating or changing review state."""
         from booley.flows.execution_persistence import ReviewGoalInputs
@@ -997,9 +1015,8 @@ class ReviewerSpecialist(Specialist):
                 (
                     name
                     for name, entry in self.state.criteria.items()
-                    if name.startswith("review_")
-                    and name.endswith("_clean")
-                    and self._open_findings(entry.detail)
+                    if is_corrective_review_key(name)
+                    and self._blocking_findings(entry.detail, name)
                 ),
                 None,
             )
@@ -1056,7 +1073,7 @@ class ReviewerSpecialist(Specialist):
             )
         key, entry = selected
         prior = deepcopy(entry.detail)
-        findings = self._open_findings(prior)
+        findings = self._blocking_findings(prior, key)
         if not findings:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -1610,35 +1627,31 @@ object, even after calling the capability.
     # --- Mode detection helpers ---
 
     def _criterion_key(self) -> str:
-        """Return the full criterion key (with suffix) from state.
+        """Return the full criterion key (with verdict suffix) from state.
 
-        Checks for ``{base}_clean`` first, then ``{base}_done``.
-        Raises ValueError if both exist (mutual exclusion).
-        Falls back to ``_done`` when state is unavailable.
+        Checks every verdict's key, strictest first. Raises ValueError if more
+        than one exists (mutual exclusion). Falls back to the loosest verdict's
+        key (``_done``) when state is unavailable.
         """
-        base_key = self._criterion_base_key()
-        clean_key = f"{base_key}_clean"
-        done_key = f"{base_key}_done"
+        keys = review_keys(self._criterion_base_key())
+        loosest = keys[-1]
         try:
             state = self.state
         except RuntimeError:
-            return done_key
+            return loosest
         if not state:
-            return done_key
-        has_clean = state.has_criterion(clean_key)
-        has_done = state.has_criterion(done_key)
-        if has_clean and has_done:
+            return loosest
+        present = [key for key in keys if state.has_criterion(key)]
+        if len(present) > 1:
             raise ValueError(
-                f"Mutual exclusion: both {done_key} and {clean_key} exist — "
+                f"Mutual exclusion: both {present[-1]} and {present[0]} exist — "
                 "remove one from the Criteria"
             )
-        if has_clean:
-            return clean_key
-        return done_key
+        return present[0] if present else loosest
 
     def _is_clean_mode(self) -> bool:
-        """True when the active criterion uses the ``_clean`` suffix."""
-        return self._criterion_key().endswith("_clean")
+        """True when the active criterion's verdict requires findings to be resolved."""
+        return is_corrective_review_key(self._criterion_key())
 
     def _check_scope_files_exist(self) -> list[str]:
         """Return list of scope files that don't exist in the work directory.
@@ -1732,7 +1745,7 @@ object, even after calling the capability.
 
     def _record_review_detail(self, crit_key: str, met: bool, detail: dict[str, Any]) -> None:
         criterion_met = met
-        if self._is_verify_pass() and crit_key.endswith("_done"):
+        if self._is_verify_pass() and is_advisory_review_key(crit_key):
             prior_entry = self.state.criteria[crit_key]
             prior = self._verify_prior
             detail["contract"] = {
@@ -1775,7 +1788,7 @@ object, even after calling the capability.
         if (
             result.exit_code == EXIT_ERROR
             and self.state
-            and not (self._is_verify_pass() and crit_key.endswith("_done"))
+            and not (self._is_verify_pass() and is_advisory_review_key(crit_key))
         ):
             self.set_criterion(crit_key, False, detail=result.detail)
         if (
@@ -2263,7 +2276,7 @@ object, even after calling the capability.
         resumed: bool = False,
     ) -> str:
         """List open findings and explicit waiver proposals, with current source context."""
-        issue_list = self._open_findings(prior_detail)
+        issue_list = self._blocking_findings(prior_detail, self._criterion_key())
 
         sections: list[str] = []
 
@@ -2422,7 +2435,7 @@ Schema enforcement (applied upstream by the harness):
         """
         # ``pending`` is the new field; fall back to legacy ``issue_list``
         # so persisted review cycles can resume after a restart.
-        issue_list = self._open_findings(prior_detail)
+        issue_list = self._blocking_findings(prior_detail, self._criterion_key())
 
         diagnostics: list[dict[str, Any]] = []
         issue_count = len(issue_list)
@@ -2849,7 +2862,7 @@ Schema enforcement (applied upstream by the harness):
             output_lines.append(
                 f"INFO: filtered {dropped} proposal(s) outside explicit source scope; preserved in audit evidence"
             )
-        if self._non_corrective_issues and self._criterion_key().endswith("_clean"):
+        if self._non_corrective_issues and self._is_clean_mode():
             output_lines.append(
                 f"INFO: preserved {len(self._non_corrective_issues)} advisory/deferred observation(s) without gating this review"
             )
@@ -2978,7 +2991,7 @@ Schema enforcement (applied upstream by the harness):
     ) -> McpToolResult:
         """Record discovery: every corrective finding starts open."""
         counts = count_by_severity(issues)
-        gate_passed = not issues
+        gate_passed = check_gate((issue.severity for issue in issues), _verdict_of(crit_key))
 
         status, count_str = _format_status_and_counts(counts, gate_passed)
         output_lines.extend(_format_issue_line(issue) for issue in issues)
@@ -3063,9 +3076,18 @@ Schema enforcement (applied upstream by the harness):
 
     def _finish_clean_verify(self, context: _CleanVerifyContext) -> McpToolResult:
         counts = count_by_severity(context.remaining)
-        met = not context.pending
+        met = (
+            check_gate(
+                (row.get("severity") for row in context.pending), _verdict_of(context.crit_key)
+            )
+            if is_corrective_review_key(context.crit_key)
+            else not context.pending
+        )
         status, count_str = _format_status_and_counts(counts, met)
-        checked = {row["finding_id"] for row in self._open_findings(context.existing_detail)}
+        checked = {
+            row["finding_id"]
+            for row in self._blocking_findings(context.existing_detail, context.crit_key)
+        }
         status_lines = [
             f"{row['finding_id']}: {row.get('status', 'still_present').upper()} — {row.get('summary', '')}"
             for row in [*context.pending, *context.resolved]
@@ -3091,7 +3113,7 @@ Schema enforcement (applied upstream by the harness):
             criterion_key=context.crit_key,
             criterion_met=(
                 self.state.criteria[context.crit_key].met
-                if context.crit_key.endswith("_done")
+                if is_advisory_review_key(context.crit_key)
                 else met
             ),
             display_lines=lines,
@@ -3138,7 +3160,7 @@ Schema enforcement (applied upstream by the harness):
                 "scope_hashes": self._review_contract_detail()["scope_hashes"],
             },
         }
-        if context.crit_key.endswith("_done"):
+        if is_advisory_review_key(context.crit_key):
             detail["issue_list"] = [*context.pending, *context.resolved, *context.observations]
         return detail, verify_attempts
 
@@ -3157,7 +3179,7 @@ Schema enforcement (applied upstream by the harness):
         # 1-based remaining_indices from _parse_verify_output. Source list
         # is the prior cycle's open set (``pending``), with fallback to the
         # legacy ``issue_list`` to resume persisted review cycles.
-        prior_pending = self._open_findings(existing_detail)
+        prior_pending = self._blocking_findings(existing_detail, self._criterion_key())
         pending: list[dict[str, Any]] = []
         newly_resolved: list[dict[str, Any]] = []
         for i, iss_dict in enumerate(prior_pending, 1):

@@ -43,6 +43,7 @@ from booley.criteria.templates import (
     has_relative_qor_threshold,
 )
 from booley.criteria.thresholds import describe_threshold
+from booley.evidence.review_verdicts import review_key, verdict_rank
 from booley.flows.test_runs import SeedCount, TestSelector, parse_test_selector
 from booley.goals.capabilities import CRITERION_FOR_FAMILY
 from booley.goals.model import (
@@ -173,7 +174,7 @@ def _authoring_entry(arg: GoalArg) -> tuple[str, Any]:
         return "coverage", [record]
     if isinstance(arg, MutationGoalArg):
         return "mutation_score", [{"target": arg.target, **arg.params}]
-    return f"review_{arg.review}_{arg.verdict}", None
+    return review_key(f"review_{arg.review}", arg.verdict), None
 
 
 def _translate_one(
@@ -401,15 +402,21 @@ def _merge_review(members: Members, _resolver: CanonicalNames | None) -> tuple[G
     _require_equal(members, "spec files", lambda arg: _as(arg, ReviewGoalArg).spec)
     _require_equal(members, "review Targets", lambda arg: _as(arg, ReviewGoalArg).target)
     _require_equal(members, "review paths", lambda arg: _as(arg, ReviewGoalArg).paths)
-    clean = [arg for arg in reviews if arg.verdict == "clean"]
-    done = [arg for arg in reviews if arg.verdict == "done"]
-    if not clean or not done:
+    by_verdict: dict[str, list[ReviewGoalArg]] = {}
+    for arg in reviews:
+        by_verdict.setdefault(arg.verdict, []).append(arg)
+    if len(by_verdict) == 1:
         return reviews[0], []
-    decision = (
-        f"'clean' (from {', '.join(a.origin for a in clean)}) wins over "
-        f"'done' (from {', '.join(a.origin for a in done)})"
+    # The strictest verdict (lowest rank) wins; losers are named in rank order.
+    ranked = sorted(by_verdict, key=verdict_rank)
+    winner, losers = ranked[0], ranked[1:]
+    winner_origins = ", ".join(arg.origin for arg in by_verdict[winner])
+    decision = ", ".join(
+        f"'{winner}' (from {winner_origins}) wins over "
+        f"'{loser}' (from {', '.join(arg.origin for arg in by_verdict[loser])})"
+        for loser in losers
     )
-    return clean[0], [decision]
+    return by_verdict[winner][0], [decision]
 
 
 def _baseline_opinion(arg: GoalArg) -> str | None:
