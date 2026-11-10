@@ -13,7 +13,6 @@ from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, immutable_mapping
 
-from .coverage_acceptance import CoverageAcceptance
 from .coverage_campaign import CoverageFinding, DurableTargetIdentity
 from .coverage_json import FrozenJson, freeze_coverage_mapping
 from .coverage_policy import CoverageCriterion
@@ -91,7 +90,6 @@ class CoverageTargetPlan:
     source_closure: Mapping[str, FrozenJson] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     target_fingerprint: str = ""
-    acceptance: CoverageAcceptance | None = None
     invocation_dir: Path | None = None
     started_at: str = field(default_factory=utc_now_rfc3339)
     waiver_config: CoverageWaiverConfig | None = None

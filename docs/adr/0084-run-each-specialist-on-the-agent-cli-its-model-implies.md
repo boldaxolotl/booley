@@ -64,7 +64,8 @@ Until #2755, host Sandbox Issuance (and every host reader of the Project's
 credential policy) refuses a toml `gateway` policy, pointing to a hand-written
 spec with `BOOLEY_PRIMARY_AUTH=gateway`, and a Booley-issued Sandbox carries
 credentials for the default CLI only: a Specialist pinned to the other CLI
-fails its first call with that CLI's auth error.
+fails its first call with that CLI's auth error. #2897 lifts the `gateway`
+refusal; see ADR 0080's #2897 amendment.
 
 ## Rejected alternatives
 

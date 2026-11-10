@@ -349,27 +349,9 @@ class SessionRegistry:
 
     def chat_attribution(self, facts: Attribution) -> Attribution:
         """All conversations in one explicitly isolated Codex tab share its session."""
-        if facts.kind != "thread":
+        if facts.kind != "thread" or facts.process is None:
             return facts
         try:
-            if facts.process is None:
-                # A completion may retain facts from before peer lookup recovered.
-                # Only a marked tab's established presence can redirect that key.
-                handles = HandleStore(self.booley_dir).load()
-                target = handles.aliases.get("chat:thread:" + facts.key)
-                if target and handles.aliases.get("chat:codex:" + target) == target:
-                    path = self.path(target)
-                    prior = self._read(path).attribution if path.exists() else None
-                    if (
-                        prior is not None
-                        and prior.kind == "process"
-                        and prior.namespace == facts.namespace
-                        and prior.process is not None
-                        and observe_process(prior.process, proc_root=self.proc_root).state
-                        == ProcessState.RUNNING
-                    ):
-                        return replace(facts, key=target, kind="process", process=prior.process)
-                return facts
             owner = codex_chat_owner(self.booley_dir, facts.process, proc_root=self.proc_root)
         except (OSError, ValueError, RuntimeError):
             return facts  # Advisory naming failures never discard thread identity.
@@ -403,16 +385,14 @@ class SessionRegistry:
     ) -> None:
         """Preserve first presence and migrate path fallbacks under the same writer lock.
 
+        Callers pass the resolved attribution; the observer resolves chat ownership.
         A call_id already in the row's history updates that call's entry in place.
         An older call ending after a newer one started keeps the stored attribution,
         which carries the newest start's facts.
         """
         with self._writer():
-            original_key = attribution.key
-            attribution = self.chat_attribution(attribution)
             path = self.path(attribution.key)
             refuse_symlinks(path, booley_dir=self.booley_dir)
-            predecessor_keys = (original_key, *predecessor_keys)
             predecessors = self._predecessors(attribution, predecessor_keys)
             attribution = self.preserve_worktree(attribution, predecessor_keys=predecessor_keys)
             stored = next((row for prior, row in predecessors if prior == path), None)
@@ -451,12 +431,6 @@ class SessionRegistry:
                     *fallback_predecessors(facts.key, facts.work_dir),
                 ),
             )
-            if handles.aliases.get("chat:codex:" + facts.key) == facts.key:
-                for key in predecessors:
-                    if key.startswith("codex:"):
-                        # Keep ownership even when this thread already has a historic
-                        # allocation, which the handle contract never renumbers.
-                        handles.aliases["chat:thread:" + key] = facts.key
             if (handles.entries, handles.aliases) != before:
                 store.save(handles)
         except (OSError, ValueError, RuntimeError) as exc:

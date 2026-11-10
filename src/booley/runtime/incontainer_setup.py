@@ -1277,7 +1277,11 @@ def _gateway_inputs(path: Path) -> tuple[str, str | None] | None:
 def _apply_codex_gateway(home: Path | None = None) -> str:
     """Add and select the ``booley_gateway`` provider in the user's Codex config.
 
-    Only under ``BOOLEY_PRIMARY_AUTH=gateway``. Booley owns the provider table
+    Only when Codex's own policy is ``gateway``: the Sandbox-wide
+    ``BOOLEY_PRIMARY_AUTH=gateway`` of a hand-written spec, or ``codex=gateway`` in the
+    ``BOOLEY_AGENT_CLIS`` record of an issued one, whichever CLI is the default app
+    (not ``gateway_handoff_active()``: the registrar only runs inside a Sandbox, so
+    it needs no container-marker test). Booley owns the provider table
     (a stale URL is replaced); ``model_provider``, ``model`` and
     ``features.fast_mode`` are written only when absent, so the user's keys
     win. Neither the token nor the token command reaches the file: ``auth``
@@ -1287,10 +1291,10 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
     (a TOML layout that cannot take the entries), ``current`` or ``written``.
     """
     from booley.config import agent_app
-    from booley.config.agent import env_auth_handoff
+    from booley.config.agent import sandbox_cli_policy
     from booley.config.gateway import GATEWAY_AUTH
 
-    if env_auth_handoff() != GATEWAY_AUTH:
+    if sandbox_cli_policy("codex") != GATEWAY_AUTH:
         return _drop_codex_gateway(home) if agent_app.auto_choice() else "off"
     path = codex_config_path(home)
     inputs = _gateway_inputs(path)
@@ -1316,6 +1320,38 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
         return "current"
     _publish_codex_config(path, updated)
     return "written"
+
+
+def hide_gateway_from_claude(home: Path | None = None) -> str:
+    """Blank the gateway settings in ``~/.claude/settings.json`` ``env``.
+
+    Only in an issued Sandbox whose ``BOOLEY_AGENT_CLIS`` record puts Codex on the
+    gateway (the gateway routes Codex, never Claude); a hand-written spec keeps today's
+    Claude environment. Claude applies that map to every session, CLI and VS Code
+    extension alike, so an empty value shadows whatever the container environment
+    carries. Every key is blanked whether or not it is set at this start: VS Code may
+    resolve ``localEnv`` again on a later attach without rerunning ``postStart``.
+    ``BOOLEY_HIDDEN_GATEWAY=1`` tells Doctor "hidden" from "never configured".
+
+    Returns ``off`` (not applicable) or ``hidden``. Raises ``ValueError`` for an
+    unreadable settings file: the start must not leave the gateway visible to Claude.
+    """
+    from booley.config.agent import issued_codex_gateway
+    from booley.config.gateway import GATEWAY_ENV_KEYS, HIDDEN_GATEWAY_ENV
+
+    if not issued_codex_gateway():
+        return "off"
+    path = claude_settings_path(home)
+    data = _read_json_object(path, "Claude settings")
+    env_map = data.get("env")
+    if not isinstance(env_map, dict):
+        env_map = {}
+        data["env"] = env_map
+    wanted = {**dict.fromkeys(GATEWAY_ENV_KEYS, ""), HIDDEN_GATEWAY_ENV: "1"}
+    if any(env_map.get(key) != value for key, value in wanted.items()):
+        env_map.update(wanted)
+        _write_private_json(path, data)
+    return "hidden"
 
 
 def _strip_codex_root_key(existing: str, key: str) -> str:

@@ -9,7 +9,7 @@ from typing import Any
 
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import require_dict
-from booley.flows.progress_lifecycle import validate_progress_shape
+from booley.core.progress_shape import validate_progress_shape
 from booley.runtime.filesystem_utils import is_transient_read_error, read_file_bytes
 
 MAX_ARTIFACTS = 4096

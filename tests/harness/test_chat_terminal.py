@@ -199,16 +199,17 @@ from booley.harness import chat_cmd, codex_chat
 booley_dir = Path(os.environ["AGENT_BOOLEY_DIR"])
 chat_cmd.resolve_checkout_booley_dir = lambda root: booley_dir
 chat_cmd.resolve_common_booley_dir = lambda root: booley_dir
+codex_chat.resolve_common_booley_dir = lambda root: booley_dir
 chat_cmd.load_agent_settings = lambda root, *, booley_dir: None
 chat_cmd.get_agent_settings = lambda: SimpleNamespace(default_cli=provider)
 
 real_command = codex_chat._command
 
 
-def command_running_the_fake(executable, handle):
+def command_running_the_fake(executable):
     # Keep the real validation, handle and --no-daemon; only add the fake's program.
-    program, argv = real_command(executable, handle)
-    return program, [argv[0], "-c", os.environ["AGENT_CODEX_PROGRAM"], *argv[1:]]
+    program, before, after = real_command(executable)
+    return program, before, ["-c", os.environ["AGENT_CODEX_PROGRAM"], *after]
 
 
 codex_chat._command = command_running_the_fake

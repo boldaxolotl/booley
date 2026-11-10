@@ -30,6 +30,7 @@ from booley.flows.sim.adapter_transport import (
     AdapterTestResult,
     AdapterTraceResult,
     AdapterTransportIdentity,
+    assess_native_verdict,
     work_transport_identity,
     write_adapter_result,
 )
@@ -39,9 +40,9 @@ from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.build_session import SimulationBuildSession
 from booley.flows.sim.execution import SimulationExecution
-from booley.flows.sim.flow import _TRACE_OK_RE, SimulateFlow, _trace_metadata
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
-from booley.flows.sim.result import count_sva_errors, parse_sim_verdict, parse_summary_line
+from booley.flows.sim.result import count_sva_errors
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.runtime.endpoint_execution import ExecutionResult
@@ -301,50 +302,66 @@ def adapter_result_for_test_process(
     names: tuple[str, ...],
     process: SubprocessResult,
 ) -> AdapterResult:
-    """The result the native adapter publishes for *process* (sentinels and summary)."""
+    """The result the native adapter publishes for *process* (sentinels, SVA, return code).
+
+    Graded by the production ``assess_native_verdict`` so the fake cannot drift
+    from the real native adapter's precedence.
+    """
     output = _process_output(process)
-    try:
-        summary = parse_summary_line(output)
-    except ValueError:
-        summary = None
-    return _native_adapter_result(names, process, output, summary)
-
-
-def _native_adapter_result(names, process, output, summary) -> AdapterResult:
-    sentinel = parse_sim_verdict(output)
-    passed = bool(
-        process.returncode == 0
-        and (summary["passed"] if summary is not None else sentinel is True)
+    termination = (
+        RunTermination("timeout", "simulation timed out", "timeout")
+        if process.timed_out
+        else RunTermination()
     )
-    inconclusive = summary is None and sentinel is None and not process.timed_out
+    assessment = assess_native_verdict(output, process.returncode, termination=termination)
+    inconclusive = assessment.inconclusive
     verdict = (
         "timeout"
         if process.timed_out
         else "pass"
-        if passed
+        if assessment.passed
         else "inconclusive"
         if inconclusive
         else "fail"
     )
     tests = tuple(AdapterTestResult(name, verdict, process.duration_s) for name in names)
-    sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
     return _test_adapter_result(
         names,
         tests,
-        passed,
+        assessment.passed,
         inconclusive,
-        sva_errors,
+        assessment.sva_errors,
         (),
         _test_trace_result(output),
         simulator_returncode=process.returncode,
     )
 
 
+_TRACE_OK_PATTERN = re.compile(r"^TRACE_OK:\s*(\S.*?)\s*$", re.MULTILINE)
+_TRACE_METADATA_PATTERN = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE)
+
+
+def _trace_metadata_fields(output: str) -> tuple[str, int, int]:
+    """``(top_scope, signal_count, total_ticks)`` from the last ``TRACE_METADATA:`` JSON."""
+    matches = _TRACE_METADATA_PATTERN.findall(output)
+    if not matches:
+        return "", 0, 0
+    try:
+        data = json.loads(matches[-1])
+        return (
+            str(data["top_scope"]).strip(),
+            int(data["signal_count"]),
+            int(data["total_ticks"]),
+        )
+    except (ValueError, KeyError, TypeError):
+        return "", 0, 0
+
+
 def _test_trace_result(output: str) -> AdapterTraceResult | None:
-    paths = _TRACE_OK_RE.findall(output)
+    paths = _TRACE_OK_PATTERN.findall(output)
     if not paths:
         return None
-    top_scope, signal_count, total_ticks = _trace_metadata(output)
+    top_scope, signal_count, total_ticks = _trace_metadata_fields(output)
     return AdapterTraceResult(
         "ok",
         path=paths[-1],

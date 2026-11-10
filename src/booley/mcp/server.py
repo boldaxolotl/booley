@@ -23,7 +23,6 @@ import asyncio
 import collections
 import contextlib
 import hashlib
-import itertools
 import json
 import logging
 import os
@@ -101,6 +100,7 @@ from booley.mcp.goal_tools import (
     dispatch_goal_tool,
 )
 from booley.mcp.job_lifecycle import JobLifecycle, JobPoll, JobResult, OwnedPoll, _poll_status
+from booley.mcp.job_notice import UnreadNotice, target_label
 from booley.mcp.job_ownership import Caller
 from booley.mcp.live_catalog import (
     LiveCatalog,
@@ -1152,24 +1152,13 @@ def _render_job_poll(
     return _running_poll_content(state.run_id, caller)
 
 
-def _target_label(argv: list[str]) -> str:
-    """The Targets a Job was started with, for listings; ``default`` when none were named."""
-    targets = [value for flag, value in itertools.pairwise(argv) if flag == "--target"] + [
-        arg.partition("=")[2] for arg in argv if arg.startswith("--target=")
-    ]
-    return ", ".join(targets) or "default"
-
-
 def _job_listing(outcome: OwnedPoll) -> str:
     """Trailing block naming the caller's other Jobs; empty when there are none."""
 
     def line(rec: jobrec.JobRecord, state: str) -> str:
-        return f"- {rec.run_id}: {rec.endpoint}, Target {_target_label(rec.argv)}, {state}"
+        return f"- {rec.run_id}: {rec.endpoint}, Target {target_label(rec.argv)}, {state}"
 
     sections = []
-    if outcome.unread:
-        lines = [line(rec, rec.status) for rec in outcome.unread]
-        sections.append("Also finished, not yet read:\n" + "\n".join(lines))
     if outcome.running:
         lines = [line(rec, job_results._phase_for_record(rec)) for rec in outcome.running]
         sections.append("Still running:\n" + "\n".join(lines))
@@ -1961,12 +1950,21 @@ def _build_mcp_application(
             request_context=context,
         )
 
+    notice = UnreadNotice(jobs)
+
+    def append_unread_notice(
+        payload: McpToolPayload, context: McpRequestContext
+    ) -> McpToolPayload:
+        """End every tool response with the caller's finished-but-unread Jobs."""
+        return notice.append(payload, job_ownership.caller_for(server_identity, context))
+
     application = McpApplication(
         catalog.visible_definitions(_exposure(), mcp_tools),
         dispatch=dispatch,
         canonicalize=canonical,
         on_discovery_error=discovery_errors.append,
         request_dispatch=request_dispatch,
+        finalize=append_unread_notice,
     )
     status_mcp_tool_names.extend(
         tool.name for tool in application.list_tools() if tool.name in mcp_tool_index
@@ -2103,6 +2101,8 @@ async def _call_application_tool(
                     await _record_presence(observer, request.attribution, params.name, "cancelled")
             raise
         payload = await _observe_tool_completion(payload, request, params.name, observer)
+        # Last, so the notice ends the response, after any shared-worktree warning.
+        payload = application.finalize(payload, request)
         return _sdk_tool_result(payload)
     except UnknownMcpToolError as exc:
         if observer is not None:

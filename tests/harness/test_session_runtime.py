@@ -5417,3 +5417,150 @@ def test_docker_run_argv_requires_api_key_only_for_default_cli(workspace, monkey
 def test_docker_run_argv_refuses_malformed_cli_record(workspace):
     with pytest.raises(sr.SessionError, match="Agent CLI record"):
         sr.docker_run_argv(_two_cli_spec(record="claude=auto,bogus=auto"), workspace, "test")
+
+
+_GATEWAY_REFS = {
+    "BOOLEY_GATEWAY_URL": "${localEnv:BOOLEY_GATEWAY_URL}",
+    "BOOLEY_GATEWAY_TOKEN": "${localEnv:BOOLEY_GATEWAY_TOKEN}",
+}
+_GATEWAY_RECORD = "claude=subscription,codex=gateway"
+
+
+def _gateway_spec(**remote_env: str) -> dict:
+    """A Claude-default issued-shape spec with Codex on the gateway (one token ref)."""
+    return _two_cli_spec(record=_GATEWAY_RECORD, **{**_GATEWAY_REFS, **remote_env})
+
+
+def _export_gateway(monkeypatch: pytest.MonkeyPatch, **overrides: str | None) -> None:
+    """Export a valid gateway configuration; ``None`` in *overrides* unsets a variable."""
+    values: dict[str, str | None] = {
+        "BOOLEY_GATEWAY_URL": "https://gateway.example.test/v1",
+        "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_GATEWAY_TOKEN",
+        "BOOLEY_GATEWAY_TOKEN_COMMAND": None,
+        **overrides,
+    }
+    for key, value in values.items():
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+
+
+def test_docker_run_argv_refuses_gateway_spec_without_host_gateway_settings(
+    workspace, monkeypatch
+):
+    _export_gateway(monkeypatch, BOOLEY_GATEWAY_URL=None)
+    with pytest.raises(sr.SessionError, match="BOOLEY_GATEWAY_URL"):
+        sr.docker_run_argv(_gateway_spec(), workspace, "test")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        # Another token source exported than the one the spec issued.
+        (
+            {"BOOLEY_GATEWAY_TOKEN": None, "BOOLEY_GATEWAY_TOKEN_COMMAND": "print-token"},
+            "BOOLEY_GATEWAY_TOKEN is not set",
+        ),
+        # Both token sources exported: the host's gateway validation refuses.
+        ({"BOOLEY_GATEWAY_TOKEN_COMMAND": "print-token"}, "exactly one"),
+        # An invalid URL is refused before a Sandbox starts without a working gateway.
+        ({"BOOLEY_GATEWAY_URL": "http://gateway.example.test"}, "BOOLEY_GATEWAY_URL"),
+    ],
+)
+def test_docker_run_argv_refuses_unusable_gateway_settings(
+    workspace, monkeypatch, overrides, message
+):
+    _export_gateway(monkeypatch, **overrides)
+    with pytest.raises(sr.SessionError, match=message):
+        sr.docker_run_argv(_gateway_spec(), workspace, "test")
+
+
+def test_docker_run_argv_forwards_gateway_token_without_secret_argv(workspace, monkeypatch):
+    _export_gateway(monkeypatch)
+
+    command = sr.docker_run_argv(_gateway_spec(), workspace, "test")
+
+    assert command.environment["BOOLEY_GATEWAY_TOKEN"] == "SYNTHETIC_GATEWAY_TOKEN"
+    assert command.environment["BOOLEY_GATEWAY_URL"] == "https://gateway.example.test/v1"
+    flags = _flag_values(command, "-e")
+    assert "BOOLEY_GATEWAY_TOKEN" in flags
+    assert "BOOLEY_GATEWAY_URL" in flags
+    assert "SYNTHETIC_GATEWAY_TOKEN" not in " ".join(command)
+    assert not any("localEnv" in flag for flag in flags)
+
+
+def test_docker_run_argv_refuses_literal_gateway_value_in_gateway_spec(workspace, monkeypatch):
+    _export_gateway(monkeypatch)
+    spec = _gateway_spec(BOOLEY_GATEWAY_TOKEN="SYNTHETIC_LITERAL")
+    with pytest.raises(sr.SessionError, match="credential environment"):
+        sr.docker_run_argv(spec, workspace, "test")
+
+
+def test_docker_run_argv_keeps_literal_gateway_values_without_gateway_record(
+    workspace, monkeypatch
+):
+    """A hand-written spec (no record) keeps its literal environment and no refusal."""
+    for key in ("BOOLEY_GATEWAY_URL", "BOOLEY_GATEWAY_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    spec = _spec()
+    spec["remoteEnv"].update(
+        BOOLEY_GATEWAY_URL="https://gateway.example.test/v1", BOOLEY_GATEWAY_TOKEN="LITERAL"
+    )
+    command = sr.docker_run_argv(spec, workspace, "test")
+    assert "BOOLEY_GATEWAY_TOKEN=LITERAL" in _flag_values(command, "-e")
+
+
+def test_prepare_refuses_gateway_spec_without_vscode_gateway_settings(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    """VS Code's ``initializeCommand`` refuses without the exports and leaves no claim."""
+    fixture = project_sandbox_resolution
+    fixture.state["Config"]["Labels"]["booley.spec-digest"] = "old"
+    fixture.spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = _GATEWAY_RECORD
+    fixture.spec["remoteEnv"].update(_GATEWAY_REFS)
+    _export_gateway(monkeypatch, BOOLEY_GATEWAY_TOKEN=None)
+    monkeypatch.setattr(sr, "_refuse_then_validate", lambda *_: fixture.issuance)
+    from booley.runtime import session_admission
+
+    claim = Mock()
+    monkeypatch.setattr(session_admission, "claim_vscode_start", claim)
+    with pytest.raises(sr.SessionError, match="BOOLEY_GATEWAY_TOKEN is not set"):
+        sr.prepare(workspace)
+    claim.assert_not_called()
+
+
+def test_enter_running_headless_gateway_sandbox_without_exports_names_variable(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    fixture.spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = _GATEWAY_RECORD
+    fixture.spec["remoteEnv"].update(_GATEWAY_REFS)
+    fixture.state["Config"]["Labels"].pop("devcontainer.local_folder")
+    fixture.state["Name"] = "/" + sr.session_container_name(workspace)
+    _export_gateway(monkeypatch, BOOLEY_GATEWAY_URL=None)
+
+    with pytest.raises(sr.SessionError, match="BOOLEY_GATEWAY_URL") as caught:
+        sr.enter(workspace, ["hostname"], tty=False)
+    assert "does not match" not in str(caught.value)
+
+
+def test_enter_gateway_sandbox_never_overrides_container_gateway_values(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    """``command_env`` drops the forwarded gateway keys: no placeholder ``-e`` override."""
+    from booley.config.gateway import GATEWAY_FORWARDED_ENV  # absent before #2897
+
+    fixture = project_sandbox_resolution
+    fixture.spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = _GATEWAY_RECORD
+    fixture.spec["remoteEnv"].update(_GATEWAY_REFS)
+    fixture.state["Config"]["Labels"].pop("devcontainer.local_folder")
+    fixture.state["Name"] = "/" + sr.session_container_name(workspace)
+    _export_gateway(monkeypatch)
+    monkeypatch.setattr(sr, "container_matches_issuance", lambda *_a, **_k: True)
+
+    container_id, command_env = sr._select_or_start_project_runtime(workspace)
+
+    assert container_id == fixture.state["Id"]
+    assert command_env["BOOLEY_DIR"] == "/booley-project"
+    assert not set(command_env) & set(GATEWAY_FORWARDED_ENV)

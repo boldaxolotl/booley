@@ -1,13 +1,11 @@
 """Shared simulation result parsing and structured summary.
 
 Single source of truth for determining pass/fail from simulator output.
-The sim run-halves (run_iverilog_sim.py, verilator_run.py) and the batch
-developer (run_sim_batch.py) import from here instead of maintaining
-duplicate parsing logic.
+The sim run-halves (run_iverilog_sim.py, verilator_run.py) import from here
+instead of maintaining duplicate parsing logic.
 
-The run-half emits a [SIM_SUMMARY] JSON line; the batch developer
-parses it.  If the line is missing (crash/timeout), the batch falls back
-to raw-output scanning via the same functions.
+The run-half emits a [SIM_SUMMARY] JSON line for log and agent consumption;
+no in-tree parser reads it back.
 """
 
 from __future__ import annotations
@@ -17,14 +15,6 @@ import logging
 import re
 from pathlib import Path
 from typing import NotRequired, TypedDict
-
-from booley.core.boundary import (
-    BoundaryError,
-    as_str_list,
-    require_bool,
-    require_dict,
-    require_int,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -245,41 +235,3 @@ def write_result_json(
     Path(work_dir, "result.json").write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8"
     )
-
-
-def parse_summary_line(output: str) -> SimSummary | None:
-    """Extract and parse the [SIM_SUMMARY] JSON line from captured output.
-
-    Returns the parsed dict on success, None if the line is missing.
-    Raises ValueError if the line is present but malformed — either invalid
-    JSON, a non-object JSON value (list/scalar), or an object missing the
-    mandatory ``passed`` key.  Callers index ``passed`` directly, so the
-    shape is enforced here at the subprocess-output boundary.
-    """
-    for line in reversed(output.splitlines()):
-        if line.startswith(SIM_SUMMARY_PREFIX):
-            try:
-                raw_payload: object = json.loads(line[len(SIM_SUMMARY_PREFIX) :])
-            except (json.JSONDecodeError, ValueError) as e:
-                raise ValueError(f"Malformed SIM_SUMMARY JSON: {line!r}") from e
-            try:
-                payload = require_dict(raw_payload, field="SIM_SUMMARY")
-            except BoundaryError as e:
-                raise ValueError(f"Malformed SIM_SUMMARY shape: {line!r}") from e
-            if "passed" not in payload:
-                raise ValueError(f"Malformed SIM_SUMMARY shape: {line!r}")
-            try:
-                summary: SimSummary = {"passed": require_bool(payload, "passed")}
-                if "sva_errors" in payload:
-                    summary["sva_errors"] = require_int(payload["sva_errors"], field="sva_errors")
-                if "vrfc_warnings" in payload:
-                    warnings = as_str_list(payload["vrfc_warnings"])
-                    if warnings != payload["vrfc_warnings"]:
-                        raise BoundaryError("vrfc_warnings must be a string list")
-                    summary["vrfc_warnings"] = warnings
-                if "inconclusive" in payload:
-                    summary["inconclusive"] = require_bool(payload, "inconclusive")
-            except BoundaryError as e:
-                raise ValueError(f"Malformed SIM_SUMMARY shape: {line!r}") from e
-            return summary
-    return None
