@@ -15,7 +15,7 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.config.host_config import SandboxHostPolicy
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
-from booley.runtime import doctor_stamp, session_admission
+from booley.runtime import doctor_stamp, inspection, session_admission
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.harness.test_doctor import _patch_environment, _write_project
 
@@ -287,7 +287,7 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     trace(readiness, "check_guidance", "guidance")
     trace(doctor, "_check_project_data_destination_branch", "project-data-branch")
     trace(doctor, "_check_worktree_prune_guard", "prune")
-    trace(doctor, "_check_line_endings", "line-endings")
+    trace(readiness, "inspect_line_endings", "line-endings")
     trace(doctor, "_check_worktree_core_shadow_guard", "shadow")
     trace(readiness, "check_stealth_cores", "projections")
     doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path, read_only=read_only)
@@ -305,3 +305,72 @@ def test_project_observations_and_repairs_keep_the_existing_order(
         expected = ["config", "upgrade", "prune", "line-endings"]
     assert events == expected
     assert (tmp_path / "AGENTS.md").exists() is (valid and not read_only)
+
+
+@pytest.mark.parametrize("owner", ["line-endings", "interactive-git"])
+def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
+    """An owner's report is rendered where the old inline check ran, waivers applied."""
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+
+    def marker(label):
+        return DiagnosticReport((DiagnosticFinding(Severity.PASS, label),))
+
+    if owner == "line-endings":
+        check_id, subject = "git.line-endings-unreadable", "project-checkout"
+        stub = lambda *_a, **_k: _owner_report(check_id, subject)  # noqa: E731
+        monkeypatch.setattr(readiness, "inspect_line_endings", stub)
+        monkeypatch.setattr(
+            doctor, "_check_worktree_prune_guard", lambda _root, ok, *_a: ok("before-marker")
+        )
+        monkeypatch.setattr(
+            doctor,
+            "_check_worktree_core_shadow_guard",
+            lambda _dir, ok, *_a, **_k: ok("after-marker"),
+        )
+    else:
+        check_id, subject = "project.git-excludes-missing", ".booley"
+        stub = lambda *_a, **_k: _owner_report(check_id, subject)  # noqa: E731
+        monkeypatch.setattr(inspection, "inspect_interactive_git", stub)
+        monkeypatch.setattr(
+            inspection,
+            "inspect_runtime",
+            lambda _request: SimpleNamespace(report=marker("before-marker")),
+        )
+        monkeypatch.setattr(
+            doctor, "_run_agent_credential_checks", lambda _p, r: r.pass_("after-marker")
+        )
+    (booley_dir / "doctor-waivers.toml").write_text(
+        f'version = 1\n[[waiver]]\ncheck = "{check_id}"\nsubject = "{subject}"\n'
+        'reason = "Accepted for this fixture"\npermanent = true\n'
+    )
+
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+
+    messages = [f.message for f in result.findings]
+    before, owned_pass, owned_warn, after = (
+        messages.index("before-marker"),
+        messages.index("owner pass"),
+        messages.index("owner warn"),
+        messages.index("after-marker"),
+    )
+    assert before < owned_pass < owned_warn < after
+    waived = result.findings[owned_warn]
+    assert (waived.severity, waived.check_id, waived.subject) == (
+        Severity.WAIVED,
+        check_id,
+        subject,
+    )
+    assert result.exit_code == 0
+
+
+def _owner_report(check_id: str, subject: str) -> DiagnosticReport:
+    """A PASS followed by a subject-scoped WARN, as an owner would return them."""
+    return DiagnosticReport(
+        (
+            DiagnosticFinding(Severity.PASS, "owner pass"),
+            DiagnosticFinding(
+                Severity.WARN, "owner warn", "owner fix", check_id=check_id, subject=subject
+            ),
+        )
+    )
