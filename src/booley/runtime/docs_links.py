@@ -2,8 +2,14 @@
 
 ``docs/user/*.md`` is the only authored copy of the user docs; the project
 site publishes each file at ``docs/<slug>/``. Messages Booley prints for
-people link there through :func:`docs_url`. Agent-facing text keeps repo
-paths, because agents read the Markdown files.
+people link there through :func:`docs_url`.
+
+Agent-facing text (skills, the cheatsheet, generated config comments) cannot
+assume a repository checkout. It cites the docs the Sandbox ships at
+``/booley-docs/<FILE>`` (:func:`sandbox_doc_path`; the allowlist and sync live
+in ``booley.dev_support.reference_docs``) and names any other doc only with the
+``(host doc, not shipped)`` marker. ``tests/docs/test_sandbox_doc_citations.py``
+enforces this.
 
 Standard library only: ``website/hooks/user_docs.py`` loads this file by path
 inside the site toolchain, where ``booley`` is not installed, so the site and
@@ -16,6 +22,8 @@ from typing import NamedTuple
 from unicodedata import category
 
 SITE_URL = "https://booley.dev/"
+# Fixed Sandbox path of the packaged user-doc copies (a symlink made by the Dockerfiles).
+SANDBOX_DOCS_DIR = "/booley-docs"
 
 
 class UserDoc(NamedTuple):
@@ -68,6 +76,11 @@ def docs_url(file: str, anchor: str | None = None) -> str:
     """
     url = f"{SITE_URL}docs/{_SLUGS[file]}/"
     return f"{url}#{anchor}" if anchor else url
+
+
+def sandbox_doc_path(file: str) -> str:
+    """Return the Sandbox path of the packaged copy of a shipped doc (``/booley-docs/<file>``)."""
+    return f"{SANDBOX_DOCS_DIR}/{file}"
 
 
 def github_anchor(heading: str) -> str:

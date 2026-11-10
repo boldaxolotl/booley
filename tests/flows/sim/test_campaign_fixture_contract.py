@@ -10,14 +10,14 @@ from booley.flows.test_runs import build_test_run, test_run_document
 
 
 def test_shared_manifest_has_current_test_runs():
-    from tests.flows.sim.test_campaign_manifest_codec import _manifest
-    from tests.flows.sim.test_campaign_phase3 import (
+    from tests.flows.sim.campaign_test_support import (
+        _manifest_for,
         _named_manifest,
         _single_item_selection_manifest,
         _two_item_manifest,
         _unfiltered_cocotb_manifest,
     )
-    from tests.flows.sim.test_campaign_phase3_integrity import _manifest_for
+    from tests.flows.sim.test_campaign_manifest_codec import _manifest
 
     manifests = (
         _manifest(),
