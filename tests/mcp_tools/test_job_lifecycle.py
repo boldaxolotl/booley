@@ -414,6 +414,24 @@ async def test_adopted_cancel_keeps_a_terminal_record_written_by_its_owner(
 
 
 @pytest.mark.asyncio
+async def test_adopted_cancel_still_cancels_an_owner_that_fails_on_sigterm(context, monkeypatch):
+    run_id = "baseline-like"
+    rec = job_records.JobRecord(run_id, "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid())
+    job_records.write_record(rec, context.jobs_root)
+    jobs = JobLifecycle()
+
+    async def owner_records_failure_on_sigterm(_pid):
+        failed = job_records.read_record(run_id, context.jobs_root)
+        assert failed is not None
+        failed.status, failed.exit_code, failed.ended_at = "failed", 2, utc_now_rfc3339()
+        job_records.write_record(failed, context.jobs_root)
+
+    monkeypatch.setattr(jobs, "_cancel_process", owner_records_failure_on_sigterm)
+    assert await jobs.cancel(run_id) == "running"
+    assert job_records.read_record(run_id, context.jobs_root).status == "cancelled"
+
+
+@pytest.mark.asyncio
 async def test_unknown_job_does_not_borrow_latest_report(context):
     write_report(context, "different", {"exit_code": 0, "passed": True})
     jobs = JobLifecycle()

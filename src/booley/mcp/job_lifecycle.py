@@ -447,8 +447,12 @@ class JobLifecycle:
             return
         if rec.pid is not None:
             await self._cancel_process(rec.pid)
-            fresh = self._still_running(rec)
-            if fresh is None or self._adopt_report_outcome(fresh):
+            # A SIGTERMed owner records its own failure; that is still the user's
+            # cancellation. Only a completion that won the race is kept as is.
+            fresh = self._read_run(rec.run_id)
+            if fresh is None or fresh.status == jobrec.STATUS_DONE:
+                return
+            if self._adopt_report_outcome(fresh):
                 return
             rec = fresh
         self._record_user_cancellation(rec)

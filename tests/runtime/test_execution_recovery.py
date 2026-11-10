@@ -275,8 +275,9 @@ def test_recovery_accepts_a_valid_lane_context_despite_a_leftover_project_child_
     assert record is not None and record["tree_terminal"] is True
 
 
+@pytest.mark.parametrize("tree_terminal", [True, False])
 def test_recovery_keeps_a_terminal_record_written_before_supervisor_exit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tree_terminal: bool
 ) -> None:
     """The supervisor's real outcome survives its exit landing between recovery's two reads."""
     booley_dir = tmp_path / ".booley"
@@ -300,7 +301,7 @@ def test_recovery_keeps_a_terminal_record_written_before_supervisor_exit(
     def supervisor_finishes_then_reads_dead(_identity: ProcessIdentity) -> SimpleNamespace:
         atomic_write_json(
             paths.record,
-            running | {"state": "terminal", "exit_code": 0, "tree_terminal": True},
+            running | {"state": "terminal", "exit_code": 0, "tree_terminal": tree_terminal},
         )
         return SimpleNamespace(state=DEAD)
 
@@ -309,7 +310,7 @@ def test_recovery_keeps_a_terminal_record_written_before_supervisor_exit(
         execution_recovery, "_scan_execution", lambda _id: _ExecutionProcesses((), True)
     )
 
-    assert recover_execution(execution_id, booley_dir=booley_dir) is True
+    assert recover_execution(execution_id, booley_dir=booley_dir) is tree_terminal
 
     record = read_json(paths.record)
     assert record is not None

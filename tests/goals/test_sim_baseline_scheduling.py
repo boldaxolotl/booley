@@ -52,12 +52,12 @@ def future_baseline(layout):
     return SimpleNamespace(**vars(layout), record=record)
 
 
-def _finish_on_first_job_read(monkeypatch, path: Path) -> None:
+def _finish_on_first_job_read(monkeypatch, path: Path, final: dict | None = None) -> None:
     """Interleave the supervisor's final writes between a reader's two reads.
 
     The first ``read_record`` call (the reader's Job read, after its request
     read) first runs the supervisor's terminal sequence: the final request,
-    then the terminal Job record.
+    then the terminal Job record. *final* overrides the final request fields.
     """
     real_read = job_records.read_record
     armed = [True]
@@ -66,7 +66,7 @@ def _finish_on_first_job_read(monkeypatch, path: Path) -> None:
         if armed[0]:
             armed[0] = False
             request = read_document(path, None)
-            write_document(path, request | {"status": "complete", "results": []})
+            write_document(path, request | {"status": "complete", "results": []} | (final or {}))
             job = real_read(run_id, root)
             assert job is not None
             job.status, job.exit_code, job.ended_at = (
@@ -90,6 +90,17 @@ def test_reader_returns_a_request_completed_between_its_reads(future_baseline, m
 
     assert report["status"] == "complete"
     assert report["job_id"] == read_document(path, None)["job_id"]
+
+
+def test_reader_validates_the_request_it_re_reads(future_baseline, monkeypatch):
+    scene = future_baseline
+    schedule_sim_baselines(scene.control, scene.record, launch=lambda _p, _r: None)
+    _finish_on_first_job_read(monkeypatch, _request_file(scene), {"identity": "someone-else"})
+
+    report = baseline_observations(scene.control, scene.record, sim_goals(scene.record)[0])
+
+    assert report["status"] == "unavailable"
+    assert "baseline request identity differs" in report["reason"]
 
 
 def test_reconciliation_keeps_a_request_completed_between_its_reads(future_baseline, monkeypatch):
