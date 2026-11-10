@@ -230,8 +230,7 @@ def test_unrelated_test_is_not_derived(tmp_path: Path) -> None:
     )
 
     derived = set(_script().derive(repo))
-    assert "tests/harness/test_uses_goal.py" not in derived
-
     assert "tests/test_unrelated.py" not in derived
     assert "tests/test_words.py" not in derived
     assert "tests/goals/test_goal.py" not in derived
+    assert "tests/harness/test_uses_goal.py" not in derived

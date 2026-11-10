@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+
 REPOSITORY_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
 
@@ -1464,7 +1466,7 @@ def test_goal_mode_unit_tests_run_only_when_named(
         env=environment,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=SUBPROCESS_TIMEOUT_S,
         check=False,
     )
 

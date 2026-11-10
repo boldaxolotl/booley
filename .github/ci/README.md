@@ -169,9 +169,8 @@ documentation. They add `package-artifacts` when `README.md` changed, and
 weekly `full-python-matrix.yml` workflow runs the same mark expression.
 
 Goal and review code select standard and RISC-V image validation. The RISC-V
-prefixes are
-`.github/actions/prepare-picorv32-demo/`, `demo/`, `src/booley/goals/`,
-`src/booley/review/`, `src/booley/evidence/`, and
+prefixes are `.github/actions/prepare-picorv32-demo/`, `demo/`,
+`src/booley/goals/`, `src/booley/review/`, `src/booley/evidence/`, and
 `tests/fixtures/goal_mode_smoke/`.
 
 ### Goal Mode unit tests

@@ -77,3 +77,8 @@ def test_unparsable_test_file_is_an_error_not_a_skip(tmp_path: Path) -> None:
 def test_missing_repository_is_an_error(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         shared_goal_modules(tmp_path / "absent")
+
+
+def test_real_repository_shares_the_goal_conftest() -> None:
+    """The checked-in tree parses, and its main shared Goal helper is detected."""
+    assert "tests.goals.conftest" in shared_goal_modules(_ROOT)
