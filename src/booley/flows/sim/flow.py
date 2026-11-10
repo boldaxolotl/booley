@@ -580,7 +580,9 @@ def _truncated_percent(rollup: CoverageRollup, decimals: int) -> str:
     """
     scale = 10**decimals
     scaled = Fraction(rollup.covered_points * 100 * scale, rollup.eligible_points)
-    return f"{scaled.numerator // scaled.denominator / scale:.{decimals}f}%"
+    whole, fraction = divmod(scaled.numerator // scaled.denominator, scale)
+    # Integer formatting: dividing by *scale* as a float can round a long-decimal value up.
+    return f"{whole}.{fraction:0{decimals}d}%"
 
 
 def _coverage_metric_part(rollup: CoverageRollup, threshold: object, met: object) -> str:
@@ -1429,7 +1431,7 @@ def _coverage_compatibility_targets(
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
-        public = outcome.manifest_path.parents[1] / "coverage.json"
+        public = _coverage_campaign_path(outcome)
         selector = str(outcome.target["selector"])
         campaign = resolved[selector]
         target = {
@@ -4654,6 +4656,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return publish
 
     def _report_destination(self) -> Path | None:
+        """Reserve and name this run's ``report.json``; call it only before ``write_report``."""
         args = self._args
         if args is None or getattr(args, "dry_run", False):
             return None
@@ -4662,7 +4665,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         try:
             # Reserves the directory write_report later fills, so the path is this run's report.
             invocation = self.reserve_invocation_dir()
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             return None
         return None if invocation is None else (invocation / "report.json").resolve()
 

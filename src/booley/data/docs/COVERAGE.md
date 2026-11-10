@@ -117,7 +117,7 @@ of its files.
 ```
 
 `percent` is rounded to two decimals here, so `77.19` is printed as `77.1%` on
-the terminal. `threshold` and `met` are filled in when a Coverage Goal sets a
+the terminal for a metric without a finer minimum. `threshold` and `met` are filled in when a Coverage Goal sets a
 threshold for that metric. A metric the design has no points for, such as
 `cover_property` in a design without `cover property` statements, is left out.
 

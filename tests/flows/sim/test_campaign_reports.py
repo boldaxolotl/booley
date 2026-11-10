@@ -1488,6 +1488,12 @@ def test_coverage_card_shows_threshold_met_and_missed(tmp_path: Path) -> None:
     )
 
 
+def test_coverage_card_long_minimum_never_rounds_up_to_it(tmp_path: Path) -> None:
+    # 1/3 is below the float 100/3; a float division would print it equal to the minimum.
+    lines = _coverage_card(tmp_path, [_rollup("line", 1, 3)], {"line": 100 / 3})
+    assert "  coverage: line 33.333333333333333% (min 33.333333333333336%, missed)" in lines
+
+
 def test_coverage_card_prints_na_without_eligible_points(tmp_path: Path) -> None:
     lines = _coverage_card(
         tmp_path,
