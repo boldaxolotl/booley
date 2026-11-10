@@ -492,14 +492,14 @@ class TestShippedTestsTemplate:
 
     def test_template_loads_as_written(self):
         sections = normalize_tests_toml(tomllib.loads(self._TEMPLATE.read_text(encoding="utf-8")))
-        assert sections["sim"]["tests"] == ["reset", "basic", "stress"]
+        assert sections["sim_dut"]["tests"] == ["reset", "basic", "stress"]
 
     def test_commented_seed_and_variant_examples_load_when_enabled(self):
         text = self._TEMPLATE.read_text(encoding="utf-8")
         for example in (
             '# seed = "+seed={seed}"',
             "# default_seed = 7",
-            "# [sim.variants.stress]",
+            "# [sim_dut.variants.stress]",
             '# default = "short"',
             '# short = ["+iters=1000"]',
             '# soak  = ["+iters=100000"]',
@@ -507,15 +507,15 @@ class TestShippedTestsTemplate:
         ):
             assert text.count(example) == 1, example
             text = text.replace(example, example.removeprefix("# "))
-        # The Variant table must follow the [sim] keys it belongs to.
-        head, variants = text.split("[sim.variants.stress]")
+        # The Variant table must follow the [sim_dut] keys it belongs to.
+        head, variants = text.split("[sim_dut.variants.stress]")
         table, rest = variants.split("[sim_fast]")
         sections = normalize_tests_toml(
-            tomllib.loads(head + "[sim_fast]" + rest + "[sim.variants.stress]" + table)
+            tomllib.loads(head + "[sim_fast]" + rest + "[sim_dut.variants.stress]" + table)
         )
-        assert sections["sim"]["seed"] == "+seed={seed}"
-        assert sections["sim"]["default_seed"] == 7
-        assert sorted(sections["sim"]["variants"]["stress"]) == [
+        assert sections["sim_dut"]["seed"] == "+seed={seed}"
+        assert sections["sim_dut"]["default_seed"] == 7
+        assert sorted(sections["sim_dut"]["variants"]["stress"]) == [
             "default",
             "fault",
             "short",
