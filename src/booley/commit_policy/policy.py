@@ -344,6 +344,21 @@ class StealthPolicy:
         ]
 
 
+def _stealth_choice(project_root: Path | None, booley_dir: Path | None) -> tuple[dict, bool]:
+    """Return the ``[stealth]`` table and the fallback for its ``enabled`` key.
+
+    A readable Project without the key is not in Stealth Mode. A booley.toml that
+    exists but cannot be read or parsed must not silently drop the leak guards,
+    so it keeps Stealth on (fail closed).
+    """
+    try:
+        config = _load_booley_config(project_root, strict=True, booley_dir=booley_dir)
+    except ValueError as exc:
+        logger.warning("%s — keeping Stealth Mode on until it is readable", exc)
+        return {}, True
+    return as_dict(config.get("stealth"), default={}) or {}, False
+
+
 def stealth_policy(
     project_root: Path | None = None, *, booley_dir: Path | None = None
 ) -> StealthPolicy:
@@ -351,7 +366,7 @@ def stealth_policy(
     if source_checkout_policy_owner(project_root):
         return StealthPolicy(False, (), None, False, ())
 
-    section = _stealth_section(project_root, booley_dir=booley_dir)
+    section, enabled_default = _stealth_choice(project_root, booley_dir)
     words, substrings = parse_stealth_vocabulary(section)
     raw_cap = section.get("max_body_lines")
     try:
@@ -379,7 +394,7 @@ def stealth_policy(
         )
         authors = ()
     return StealthPolicy(
-        enabled=_boolean_setting(section, "enabled", True),
+        enabled=_boolean_setting(section, "enabled", enabled_default),
         banned_phrases=words,
         max_body_lines=cap,
         enforce_convention=_boolean_setting(section, "enforce_convention", False),
@@ -389,13 +404,29 @@ def stealth_policy(
 
 
 def stealth_enabled(project_root: Path | None = None, *, booley_dir: Path | None = None) -> bool:
-    """Whether stealth mode is active. On by default; opt out with
-    ``[stealth] enabled = false`` in booley.toml.
+    """Whether stealth mode is active. Off unless booley.toml sets
+    ``[stealth] enabled = true``; a missing key or table means off. A
+    booley.toml that exists but cannot be read or parsed keeps it on.
 
-    Gates both the commit-msg hook install (setup) and the agent-facing
+    Gates the commit-msg and pre-push hooks at runtime, the Booley Directory's
+    hiding and inner repository in ``booley init``, and the agent-facing
     banned-word prompt note (specialists).
     """
     return stealth_policy(project_root, booley_dir=booley_dir).enabled
+
+
+def stealth_choice_unset(
+    project_root: Path | None = None, *, booley_dir: Path | None = None
+) -> bool:
+    """Whether the Project's booley.toml has no ``[stealth] enabled`` key.
+
+    Such a Project is not in Stealth Mode. Before the key became required, a
+    missing key meant on, so older Projects may still carry a hidden Booley
+    Directory; Doctor and init use this to name the explicit choice.
+    """
+    if source_checkout_policy_owner(project_root):
+        return False
+    return "enabled" not in _stealth_section(project_root, booley_dir=booley_dir)
 
 
 def _load_stealth_config(project_root: Path | None = None) -> list[str] | None:
