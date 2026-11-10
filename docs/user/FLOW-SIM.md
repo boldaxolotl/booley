@@ -523,5 +523,5 @@ run whose simulation time is still zero that many seconds after cocotb starts,
 which usually means the cocotb version doesn't match the simulator; see
 [Baking the cocotb stack into the image](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
 Raise it if your testbench spends minutes in Python setup before the first
-clock edge. To recognise the stop and fix it, see
+clock edge. For the stop's message and fix, see
 [Simulation stalls at time zero](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).

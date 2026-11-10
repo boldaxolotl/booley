@@ -404,7 +404,7 @@ remove it.
 A cocotb run builds, loads and logs, but simulation time stays at `0.00 ns`
 and no `results.xml` appears. After `sim_time_grace_s` seconds at exactly
 `0.00 ns` (180 by default), Booley stops the run with an `ERROR` verdict and
-this message:
+this message in the run log:
 
 ```text
 ERROR: simulation killed: simulator time never advanced past 0.00 ns in 180s of wall clock.
@@ -417,8 +417,8 @@ raise `[flows.sim].sim_time_grace_s`; `0` turns the watchdog off, and the
 run then waits for `timeout_ms`.
 
 The usual cause is a cocotb release your project pins that doesn't work with
-the image's Verilator 5, even though cocotb itself installs fine. No Python
-pin fixes it. Compare `cocotb-config --version` with the simulator's
+the image's Verilator 5, even though cocotb itself installs fine. No older
+cocotb pin fixes it. Compare `cocotb-config --version` with the simulator's
 version, then port the testbench to the image's cocotb 2.x (`cocotb.fork`
 becomes `cocotb.start_soon`, plus a few import moves), or build a project
 image with a matching Verilator. Image versions are in
@@ -460,16 +460,18 @@ build. These replace the same variables from your shell and from the
 Target's [`env`](https://booley.dev/docs/tests/#per-target-environment-env);
 for a Target `env` value that differs, Booley logs
 `Target compiler-cache setting <NAME> yields to Booley's value`. When the
-cache is disabled or unavailable, Booley sets only `OBJCACHE`, to empty.
+cache is disabled or its root is unset, Booley sets only `OBJCACHE`, to
+empty. When ccache is missing or its storage can't be created, the other
+values stay set but `OBJCACHE` is emptied, so ccache isn't used.
 
 Only an assignment in the Target's `make_options` beats Booley, because
 Make command-line variables override the environment. Two of them cost you:
 
 - **`USER_CPPFLAGS=...`** replaces the debug-prefix map Booley appends to
   `USER_CPPFLAGS`, so a build with debug info (`-g`) misses the cache each
-  time its build directory changes.
-  Set extra flags in the Target `env`'s `USER_CPPFLAGS`, which Booley keeps,
-  or pass them with Verilator's `-CFLAGS`.
+  time its build directory changes. Set extra flags in the Target `env`'s
+  `USER_CPPFLAGS`, which Booley keeps, or pass them with Verilator's
+  `-CFLAGS`.
 - **Any `OBJCACHE` assignment**, including `OBJCACHE=` to skip ccache, also
   turns off [build reuse](https://booley.dev/docs/flow-sim/#build-reuse), so
   every run rebuilds. To stop using the cache, set `enabled = false` under
