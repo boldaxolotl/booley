@@ -246,7 +246,7 @@ Authoring rules:
   dead one (drop it from a depended-on core and that core silently
   contributes zero filesets).
 - **Per-Target Flow families:** the `fpga` name axis is authoritative:
-  `fpga`/`fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
+  `fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
   FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
   FPGA-axis Target does not also carry sim/lint/synth Criteria. Unprefixed
   vendored Targets retain `tool: vivado` as a compatibility fallback. Other

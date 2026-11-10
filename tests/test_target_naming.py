@@ -33,7 +33,6 @@ class TestAxisOf:
         "name,axis",
         [
             ("sim_soc", "sim"),
-            ("sim", "sim"),  # bare axis: a single-config project has nothing to qualify
             ("synth_matmul_par_b8", "synth"),
             ("fpga_soc", "fpga"),
             ("lint_style", "lint"),
@@ -41,6 +40,13 @@ class TestAxisOf:
     )
     def test_recognized(self, name: str, axis: str):
         assert target_naming.axis_of(name) == axis
+
+    @pytest.mark.parametrize("axis", ["sim", "lint", "synth", "fpga"])
+    def test_bare_axis_keeps_its_axis_but_breaks_the_convention(self, axis: str):
+        """Flow intent and Criteria selection still read the axis off a bare name."""
+        assert target_naming.axis_of(axis) == axis
+        assert target_naming.fpga_intent(axis, "verilator") is (axis == "fpga")
+        assert not target_naming.is_conventional(axis)
 
     @pytest.mark.parametrize("name", ["soc_sim", "simulate_soc", "simsoc", "asic"])
     def test_not_recognized(self, name: str):
@@ -70,6 +76,10 @@ class TestViolation:
     def test_missing_axis_is_named_as_such(self):
         assert "no axis prefix" in (target_naming.violation("soc_sim") or "")
 
+    @pytest.mark.parametrize("axis", ["sim", "lint", "synth", "fpga"])
+    def test_bare_axis_is_named_as_such(self, axis: str):
+        assert target_naming.violation(axis) == "bare axis; add a subject"
+
     @pytest.mark.parametrize("name", ["Sim_SOC", "sim-soc", "sim__soc", "sim_"])
     def test_non_snake_case_is_reported_before_the_axis(self, name: str):
         """A name that is not snake_case fails on shape, whatever prefix it wears."""
@@ -91,8 +101,19 @@ class TestSuggestName:
     def test_legacy_suffix_drives_the_rename(self, legacy: str, expected: str):
         assert target_naming.suggest_name(legacy) == expected
 
-    def test_bare_legacy_word_collapses_to_the_bare_axis(self):
-        assert target_naming.suggest_name("synth") == "synth"
+    def test_bare_legacy_word_needs_a_subject(self):
+        assert target_naming.suggest_name("synth") is None
+
+    @pytest.mark.parametrize("axis", ["sim", "lint", "synth", "fpga"])
+    def test_bare_axis_takes_the_subject(self, axis: str):
+        """A bare axis is renamed after the caller's subject (Doctor: the core name)."""
+        assert target_naming.suggest_name(axis, subject="demo") == f"{axis}_demo"
+        assert target_naming.suggest_name("asic", "synth", subject="demo") == "synth_demo"
+        # The subject is only sanitized, so the suggestion is literally <axis>_<subject>.
+        assert target_naming.suggest_name("fpga", subject="impl_top") == "fpga_impl_top"
+        assert target_naming.suggest_name("lint", subject="Lint-Top") == "lint_lint_top"
+        assert target_naming.suggest_name("sim", subject="-") is None
+        assert target_naming.suggest_name("synth") is None
 
     def test_explicit_axis_overrides_the_suffix(self):
         """Doctor metadata is stronger evidence than a trailing word.
@@ -117,7 +138,10 @@ class TestSuggestName:
         assert target_naming.suggest_name("sim_core", "synth") == "synth_sim_core"
 
     def test_suggestions_are_themselves_conformant(self):
-        for legacy in ("soc_sim", "matmul_par_b8_synth", "style_lint", "synth"):
+        for legacy in ("soc_sim", "matmul_par_b8_synth", "style_lint"):
             suggested = target_naming.suggest_name(legacy)
             assert suggested is not None
             assert target_naming.violation(suggested) is None
+        suggested = target_naming.suggest_name("synth", subject="demo")
+        assert suggested is not None
+        assert target_naming.violation(suggested) is None
