@@ -32,6 +32,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   timed-out conversion reports a trace incident: a failing simulation stays
   failed, a passing one is reported inconclusive, and neither is `timeout`.
   Icarus no longer reports an unconverted raw VCD as a waveform.
+- A new IP now follows the same sequence as a port: `booley init`, then
+  `/booley-setup new` on the host. `/booley-setup new` asks the design choices
+  and writes the starter project with your answers, without prompting again. It
+  now also works after a completed plain `booley init`: it keeps the `[agent]`
+  settings, and unless you choose Stealth it removes the empty inner `.booley`
+  repository and the `/.booley` git exclusion, or refuses (changing nothing)
+  when that repository has commits. Plain `booley init` in a repo with no RTL now suggests
+  `/booley-setup new`.
 - `booley init --scaffold` now names Targets `<axis>_<ip>` (`sim_<ip>`,
   `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`) with a matching `tests.toml` section.
   Doctor notes a Target it runs (or one in a stealth core) named just `sim`,
