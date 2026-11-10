@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.conftest import reset_git_command_config
 from tests.source_checkout_support import copy_source_checkout
 
 from booley.runtime import build_stamp
@@ -31,6 +32,7 @@ def isolated_git(tmp_path, monkeypatch):
         "GIT_CONFIG_PARAMETERS",
     ):
         monkeypatch.delenv(name, raising=False)
+    reset_git_command_config(monkeypatch)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))

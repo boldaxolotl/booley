@@ -21,6 +21,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tests.conftest import add_git_command_config
 
 from booley.dev_support import pre_push_hook
 from booley.dev_support.pre_push_hook import main
@@ -480,9 +481,7 @@ def test_minimum_git_partial_state_preflight(
         included.write_text('[remote "origin"]\n promisor = false\n')
         _git(repo, "config", "include.path", str(included))
     elif state == "environment":
-        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-        monkeypatch.setenv("GIT_CONFIG_KEY_0", "remote.origin.promisor")
-        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+        add_git_command_config(monkeypatch, "remote.origin.promisor", "false")
     else:
         key = {
             "promisor": "remote.origin.promisor",
@@ -768,9 +767,7 @@ def test_merged_protocol_restrictions_are_respected(
         included.write_text("[protocol]\nallow = never\n")
         _git(repo, "config", "include.path", str(included))
     else:
-        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-        monkeypatch.setenv("GIT_CONFIG_KEY_0", "protocol.file.allow")
-        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "never")
+        add_git_command_config(monkeypatch, "protocol.file.allow", "never")
     _forbid_discovery(monkeypatch)
     assert _push(_head(repo)) == 0
 
