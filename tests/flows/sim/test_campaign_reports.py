@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim import campaign_reports
+from booley.flows.sim.campaign import collect_pre_sim_firings
 from booley.mcp.job_results import _read_report_json
 from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
@@ -610,7 +611,7 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
     sidecars = tuple((request.attempt_directory / "pre-sim").glob("*.json"))
     assert len(events) == len(sidecars) == int(stop != "before")
     if sidecars:
-        firings = request.store.read_pre_sim_firings()
+        firings = collect_pre_sim_firings(request.store.manifest_path)
         assert [firing.key for firing in firings] == events
         assert firings[0].document["stdout_tail"] == "observed-hook\n"
 
@@ -690,13 +691,13 @@ def test_published_hook_collection_scans_each_campaign_once(tmp_path, monkeypatc
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
     scans = Counter()
-    inspect = CampaignStore.inspect_pre_sim_firings
+    scan = CampaignStore.scan
 
-    def counted(store, manifest=None):
+    def counted(store, *args, **kwargs):
         scans[store.manifest_path] += 1
-        return inspect(store, manifest)
+        return scan(store, *args, **kwargs)
 
-    monkeypatch.setattr(CampaignStore, "inspect_pre_sim_firings", counted)
+    monkeypatch.setattr(CampaignStore, "scan", counted)
     result = flow._attach_published_pre_sim(
         EndpointOutcome(report_text=""), candidate.manifest_path
     )
@@ -739,13 +740,13 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(evidence["budget"]))
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(evidence["budget"]))
         reads = []
-        reader = campaign.read_invocation_pre_sim_firings
+        reader = campaign.collect_pre_sim_firings
 
-        def read(invocation, *args, **kwargs):
-            reads.append(invocation)
-            return reader(invocation, *args, **kwargs)
+        def read(*paths, **kwargs):
+            reads.append(paths)
+            return reader(*paths, **kwargs)
 
-        monkeypatch.setattr(campaign, "read_invocation_pre_sim_firings", read)
+        monkeypatch.setattr(campaign, "collect_pre_sim_firings", read)
         if corrupt:
             firing = next(
                 f for f in candidate.pre_sim_firings if f.document["role"] == "candidate"
@@ -771,7 +772,9 @@ def test_final_published_baseline_hooks_bound_cycle_text(tmp_path, monkeypatch, 
     assert result.detail["pre_sim_current"] == 2
     assert len(flow._current_published_pre_sim_keys) == 2
     assert len(result.detail["pre_sim_lines"]) == 2
-    assert evidence["reads"] == [flow._reserved_invocation_dir]
+    (paths,) = evidence["reads"]
+    invocation = flow._reserved_invocation_dir
+    assert set(paths) == set((invocation / "targets").glob("*/campaign/manifest.json"))
     assert result.report_text.count("pre_run_commands") == 2
     assert result.report_text.count("Candidate:") == 1
     assert result.report_text.count("Cycle Count baseline:") == 1
@@ -819,7 +822,7 @@ def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, m
     def unexpected_read(*_args, **_kwargs):
         raise AssertionError("endpoint must not scan hook storage")
 
-    monkeypatch.setattr(campaign, "read_invocation_pre_sim_firings", unexpected_read)
+    monkeypatch.setattr(campaign, "collect_pre_sim_firings", unexpected_read)
     result = flow._campaign_endpoint_outcome([outcome])
     assert ("cycles=" in result.report_text) is (count is not None)
     assert "cycle counts omitted" not in result.report_text
@@ -877,7 +880,7 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
 def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     tmp_path, monkeypatch
 ):
-    from booley.flows.sim.campaign import SimulationCampaignIntegrityError, reread_pre_sim_firings
+    from booley.flows.sim.campaign import SimulationCampaignIntegrityError
     from tests.conftest import require_symlinks, symlink_or_skip
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
@@ -900,7 +903,7 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     symlink_or_skip(directory, copy, target_is_directory=True)
     assert firing.path.read_bytes() == sidecar_bytes
     with pytest.raises(SimulationCampaignIntegrityError):
-        reread_pre_sim_firings((firing,))
+        collect_pre_sim_firings(prior=(firing,))
 
 
 @pytest.mark.parametrize("defect", ["root", "descendant", "lock", "target_link"])
@@ -1012,18 +1015,17 @@ def _two_firing_store(tmp_path):
     outcome, store = _run_coverage_campaign(
         tmp_path, Hooks(), pre_sim_commands=("prepare-vectors",)
     )
-    firings = store.read_pre_sim_firings()
+    firings = collect_pre_sim_firings(store.manifest_path)
     assert len(firings) == 2 and outcome.complete
     return firings
 
 
 def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign import reread_pre_sim_firings
     from tests.flows.sim.test_campaign_phase3_integrity import _observe_pre_sim_reads
 
     firings = _two_firing_store(tmp_path)
-    accesses, decodes = _observe_pre_sim_reads(monkeypatch)
-    reread_pre_sim_firings(firings)
+    accesses, decodes, _results = _observe_pre_sim_reads(monkeypatch)
+    collect_pre_sim_firings(prior=firings)
     assert decodes == {(f.key[2], f.key[3]): 1 for f in firings}, (
         "each sidecar must be decoded once"
     )
@@ -1031,22 +1033,16 @@ def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeyp
 
 
 def test_prior_firing_reread_returns_only_prior_firings(tmp_path):
-    from booley.flows.sim.campaign import reread_pre_sim_firings
-
     first, second = _two_firing_store(tmp_path)
     assert first.path.parent == second.path.parent
-    fresh = reread_pre_sim_firings((first,))
+    fresh = collect_pre_sim_firings(prior=(first,))
     assert [(f.key, f.path, f.terminal) for f in fresh] == [(first.key, first.path, False)]
 
 
 def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from booley.flows.sim.campaign import (
-        SimulationCampaignIntegrityError,
-        read_invocation_pre_sim_firings,
-        store,
-    )
+    from booley.flows.sim.campaign import SimulationCampaignIntegrityError, store
     from booley.flows.sim.flow import SimulateFlow
 
     flow = SimulateFlow()
@@ -1055,10 +1051,14 @@ def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_pat
     invocation = candidate.manifest_path.parents[3]
     # Three roots reach one baseline reference: only distinct references count.
     monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 1)
-    assert len(read_invocation_pre_sim_firings(invocation, candidate.manifest_path)) == 2
+    roots = (
+        *sorted((invocation / "targets").glob("*/campaign/manifest.json")),
+        candidate.manifest_path,
+    )
+    assert len(collect_pre_sim_firings(*roots)) == 2
     monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 0)
     with pytest.raises(SimulationCampaignIntegrityError, match="exceeds DAG bound"):
-        read_invocation_pre_sim_firings(invocation, candidate.manifest_path)
+        collect_pre_sim_firings(*roots)
 
 
 def test_campaign_card_renders_each_target_once(monkeypatch):
