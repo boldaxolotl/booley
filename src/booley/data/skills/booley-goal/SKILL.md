@@ -142,9 +142,8 @@ Default Seed.
   start again. When a diagnostic Test Run fails on a real bug, tell the human
   and offer to propose it as a Goal.
 
-For an unmet reason you do not recognize, read "A Goal that names Test Runs
-stays unmet" in the packaged troubleshooting guide:
-`python3 -c "from booley.runtime.paths import troubleshooting_path; print(troubleshooting_path())"`.
+For an unmet reason you do not recognize, read `/booley-docs/TROUBLESHOOTING.md` →
+"A Goal that names Test Runs stays unmet".
 
 ## Work and evidence
 

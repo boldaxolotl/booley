@@ -21,7 +21,6 @@ from types import MappingProxyType
 
 from booley.flows.sim.coverage_campaign import (
     DurableTargetIdentity,
-    decode_coverage_campaign,
     decode_coverage_point_id,
 )
 from booley.flows.sim.coverage_campaign_store import (
@@ -51,6 +50,7 @@ from booley.flows.sim.verilator_coverage import (
     SelectedCoverageRun,
     collect,
 )
+from tests.flows.sim.coverage_campaign_test_support import decode_document
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.flows.sim.test_coverage_policy import _TARGET, _two_metric_campaign
 from tests.flows.sim.test_verilator_coverage_collector import _HEADER, _PresenceExecution
@@ -132,7 +132,7 @@ def _campaign_document() -> dict[str, object]:
 
 
 def _publish(tmp_path: Path):
-    campaign = decode_coverage_campaign(
+    campaign = decode_document(
         _campaign_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
     )
     return publish_coverage_campaign(tmp_path / "campaign", campaign)

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.conftest import reset_git_command_config
+from tests.source_checkout_support import copy_source_checkout
 
 from booley.runtime import build_stamp
 
@@ -238,18 +239,14 @@ def test_validation_precedes_deletion(checkout, tmp_path, invalid):
 
 def test_source_launcher_runs_from_unrelated_cwd(tmp_path):
     root = tmp_path / "checkout"
-    shutil.copytree(
-        ROOT / "src/booley", root / "src/booley", ignore=shutil.ignore_patterns("__pycache__")
+    copy_source_checkout(
+        ROOT,
+        root,
+        "src/booley",
+        "crates/bwave",
+        ".github/scripts",
+        *build_stamp._DEVELOPMENT_CONTEXT_FILES,
     )
-    shutil.copytree(
-        ROOT / "crates/bwave", root / "crates/bwave", ignore=shutil.ignore_patterns("target")
-    )
-    shutil.copytree(ROOT / ".github/scripts", root / ".github/scripts")
-    for name in build_stamp._DEVELOPMENT_CONTEXT_FILES:
-        if (ROOT / name).is_file():
-            target = root / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / name, target)
     copied_owner = root / "src/booley/dev_support/build_development_wheel.py"
     owner_source = copied_owner.read_text()
     owner_source = owner_source.replace(

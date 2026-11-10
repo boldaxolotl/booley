@@ -130,7 +130,7 @@ def test_readme_links_resolve_to_site_sections_and_pages():
 
 
 def test_generated_illustration_is_up_to_date():
-    """docs/stylesheets/ide.css and snippets/ide-figure.html match their sources."""
+    """ide.css, ide-figure.html, and the architecture diagram match their sources."""
     spec = importlib.util.spec_from_file_location(
         "site_illustration", WEBSITE / "illustration/build.py"
     )
@@ -140,6 +140,7 @@ def test_generated_illustration_is_up_to_date():
 
     assert build.FIGURE_OUT.read_text(encoding="utf-8") == build.figure_html()
     assert build.CSS_OUT.read_text(encoding="utf-8") == build.css_text()
+    assert build.ARCHITECTURE_OUT.read_text(encoding="utf-8") == build.architecture_svg()
     assert '--8<-- "ide-figure.html"' in SITE
 
 
@@ -261,12 +262,12 @@ def test_text_meets_wcag_aa_contrast_in_both_themes():
 
 
 def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
-    """The docs landing table is hand-written HTML; keep it in step with USER_DOCS.
+    """The docs landing table is hand-written HTML; keep it in step with SITE_DOCS.
 
     It must list every doc once, in reading order, under its sidebar section,
     with rowspans that cover each section, and mark exactly the child docs.
     """
-    from booley.runtime.docs_links import USER_DOCS
+    from booley.runtime.docs_links import SITE_DOCS
 
     landing = (WEBSITE / "docs/docs/index.md").read_text(encoding="utf-8")
     body = landing.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
@@ -284,12 +285,12 @@ def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
         pages.append((sections[-1][0], link.group(2), link.group(3), bool(link.group(1))))
 
     expected = [
-        (doc.section, f"{doc.slug}/", doc.title, doc.parent is not None) for doc in USER_DOCS
+        (doc.section, f"{doc.slug}/", doc.title, doc.parent is not None) for doc in SITE_DOCS
     ]
     assert pages == expected
     assert sum(span for _, span in sections) == len(rows)
     for section, span in sections:
-        assert span == sum(doc.section == section for doc in USER_DOCS), section
+        assert span == sum(doc.section == section for doc in SITE_DOCS), section
 
 
 def test_demo_page_keeps_the_gateway_bring_your_own_key_anchor():
