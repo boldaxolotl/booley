@@ -96,7 +96,8 @@ def _rm(root: Path, name: str, *flags: str) -> int:
 
 def _registered(repository: Path) -> list[str]:
     listing = git(repository, "worktree", "list", "--porcelain")
-    return [line[9:] for line in listing.splitlines() if line.startswith("worktree ")]
+    # Git prints forward slashes on Windows; Path() normalizes to the native form.
+    return [str(Path(line[9:])) for line in listing.splitlines() if line.startswith("worktree ")]
 
 
 def _branches(repository: Path) -> set[str]:
