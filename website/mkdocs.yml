@@ -34,6 +34,9 @@ plugins:
 # Pagefind search index (ADR 0081).
 hooks:
   - hooks/user_docs.py
+  # Adds a content hash to each stylesheet URL, so a deploy is never paired
+  # with a cached old stylesheet.
+  - hooks/asset_versions.py
 
 # --strict turns these into errors: every link and heading anchor must resolve.
 validation:
