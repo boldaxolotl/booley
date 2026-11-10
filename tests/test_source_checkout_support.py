@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -64,5 +65,21 @@ def test_listing_fails_naming_a_root_that_is_not_a_git_checkout_top(
         empty_path = tmp_path / "empty-path"
         empty_path.mkdir()
         monkeypatch.setenv("PATH", str(empty_path))
-    with pytest.raises(pytest.fail.Exception, match=re.escape(str(root))):
+    # BaseException, so a skip that replaced the failure is caught and rejected below.
+    with pytest.raises(BaseException, match=re.escape(str(root))) as raised:
         copy_source_checkout(root, tmp_path / "destination")
+    assert raised.type is pytest.fail.Exception
+
+
+def test_listing_fails_naming_the_root_when_git_hangs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.source_checkout_support import source_checkout_files
+
+    def hang(*args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd="git", timeout=60)
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(BaseException, match=re.escape(str(tmp_path))) as raised:
+        source_checkout_files(tmp_path)
+    assert raised.type is pytest.fail.Exception

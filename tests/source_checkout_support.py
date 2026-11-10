@@ -40,7 +40,7 @@ def _git(root: Path, *args: str) -> str:
         result = subprocess.run(
             ["git", "-C", str(root), *args], capture_output=True, check=False, timeout=60
         )
-    except OSError as error:  # Git is not installed or cannot start
+    except (OSError, subprocess.TimeoutExpired) as error:  # Git cannot start or hangs
         pytest.fail(f"cannot run Git for source root {root}: {error}")
     if result.returncode != 0:
         pytest.fail(
