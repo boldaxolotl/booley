@@ -35,7 +35,11 @@ from booley.runtime import auth_token, image_identity, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime.filesystem_utils import read_file_bytes
-from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
+from booley.runtime.platform_paths import (
+    docker_mount_path,
+    host_path_from_docker_mount,
+    same_host_path,
+)
 
 if TYPE_CHECKING:
     from booley.eda.provisioning.authority import LicenseProfile
@@ -137,13 +141,13 @@ def _serves_workspace(name: str, workspace: Path) -> bool:
     """True if container *name* is Interactive Mode for *workspace*.
 
     Two shapes to recognise: our own Sandbox is named after the
-    workspace, while VS Code's carries the host folder in a label (with whatever
-    drive-letter case the host used, hence the casefold).
+    workspace, while VS Code's carries the host folder in a label, compared by
+    ``same_host_path`` (case folds only on Windows).
     """
     if name == session_container_name(workspace):
         return True
     folder = _vscode_local_folder(name)
-    return bool(folder) and folder.lower() == str(workspace).lower()
+    return bool(folder) and same_host_path(folder, workspace)
 
 
 def vscode_session_container(workspace: Path) -> str | None:
@@ -572,9 +576,7 @@ def _refresh_candidate_matches(state: dict[str, Any], issuance: Issuance) -> boo
     from booley.runtime import session_issuance as runtime_spec
 
     labels = _refresh_container_labels(state)
-    expected = set(runtime_spec.labels(issuance))
-    actual = {f"{key}={value}" for key, value in labels.items()}
-    return state.get("Image") == issuance.image_id and expected.issubset(actual)
+    return state.get("Image") == issuance.image_id and runtime_spec.labels_cover(issuance, labels)
 
 
 def _refresh_project_id(issuance: Issuance) -> str:
@@ -713,15 +715,12 @@ def plan_session_refresh(workspace: Path, issuance: Issuance) -> ParkedSession |
     labels = _refresh_container_labels(state)
     from booley.runtime import session_issuance as runtime_spec
 
-    expected_labels = set(runtime_spec.labels(issuance))
-    actual_labels = {f"{key}={value}" for key, value in labels.items()}
-    if not expected_labels.issubset(actual_labels):
-        missing_labels = sorted(expected_labels - actual_labels)
+    if missing_labels := runtime_spec.missing_labels(issuance, labels):
         raise SessionError(
             "Sandbox labels differ from the prior host issuance: "
             + format_differences(
                 {"missing_expected_labels": []},
-                {"missing_expected_labels": missing_labels},
+                {"missing_expected_labels": sorted(missing_labels)},
             )
             + "; "
             + sandbox_remedy(workspace, runtime_only=True)
@@ -1325,17 +1324,6 @@ def _spec_refusal_remedy(workspace: Path, exc: Exception, *, vscode: bool) -> st
     return sandbox_remedy(workspace)
 
 
-def _same_host_path(actual: str, expected: Path) -> bool:
-    actual_key = os.path.normpath(actual.replace("\\", "/")).replace("\\", "/")
-    expected_key = os.path.normpath(str(expected).replace("\\", "/")).replace("\\", "/")
-    windows_path = any(len(value) >= 2 and value[1] == ":" for value in (actual_key, expected_key))
-    return (
-        actual_key.casefold() == expected_key.casefold()
-        if windows_path
-        else actual_key == expected_key
-    )
-
-
 def _inspected_running(state: dict) -> bool | None:
     status = state.get("State")
     if not isinstance(status, dict) or not isinstance(status.get("Running"), bool):
@@ -1357,7 +1345,7 @@ def _vscode_runtime_labels_for_workspace(
     if (
         labels.get("booley.project-id") != expected["booley.project-id"]
         or not isinstance(local_folder, str)
-        or not _same_host_path(local_folder, workspace)
+        or not same_host_path(local_folder, workspace)
     ):
         return None
     return labels
@@ -1366,7 +1354,7 @@ def _vscode_runtime_labels_for_workspace(
 def _vscode_config_matches_workspace(labels: Mapping[str, Any], workspace: Path) -> bool:
     """Whether Dev Containers named this Project's current configuration file."""
     config_file = labels.get("devcontainer.config_file")
-    return isinstance(config_file, str) and _same_host_path(
+    return isinstance(config_file, str) and same_host_path(
         config_file,
         dc.devcontainer_path(workspace),
     )
@@ -1587,9 +1575,9 @@ def _stopped_vscode_reconcile_candidates(
         labels = _vscode_runtime_labels_for_workspace(state, workspace, expected)
         if labels is None:
             continue
-        issuance_matches = _vscode_config_matches_workspace(labels, workspace) and all(
-            labels.get(key) == value for key, value in expected.items()
-        )
+        issuance_matches = _vscode_config_matches_workspace(
+            labels, workspace
+        ) and runtime_spec.labels_cover(issuance, labels)
         running = _inspected_running(state)
         if running is None:
             raise SessionError(f"cannot inspect state for Sandbox {name!r}")
@@ -1723,9 +1711,9 @@ def _relay_matches_issuance(
         )
     from booley.runtime import session_issuance as runtime_spec
 
-    expected = set(runtime_spec.labels(issuance))
-    actual = {f"{key}={value}" for key, value in labels.items()}
-    return state.get("Image") == issuance.relay_image_id and expected.issubset(actual)
+    return state.get("Image") == issuance.relay_image_id and runtime_spec.labels_cover(
+        issuance, labels
+    )
 
 
 def _assert_no_other_project_sessions(project_id: str, *, excluding: str = "") -> None:
@@ -1771,7 +1759,7 @@ def _inspected_container_serves_workspace(name: str, raw: str, workspace: Path) 
     config = state.get("Config")
     labels = config.get("Labels") if isinstance(config, dict) else None
     folder = labels.get(_DEVCONTAINER_FOLDER_LABEL) if isinstance(labels, dict) else None
-    return isinstance(folder, str) and _same_host_path(folder, workspace)
+    return isinstance(folder, str) and same_host_path(folder, workspace)
 
 
 def _project_data_mount_root_is_pinned(
@@ -1831,7 +1819,7 @@ def _writable_bind(raw: object) -> bool:
     )
 
 
-def container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-closed inspect ladder
+def container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect ladder
     name: str,
     issuance: Issuance,
     *,
@@ -1849,7 +1837,6 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-closed
 
     from booley.runtime import session_issuance as runtime_spec
 
-    expected = set(runtime_spec.labels(issuance))
     output = _docker_stdout(["docker", "inspect", name, "--format", "{{json .Config.Labels}}"])
     if output is None:
         return False
@@ -1859,7 +1846,7 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-closed
         return False
     if not isinstance(labels, dict):
         return False
-    if not expected.issubset({f"{key}={value}" for key, value in labels.items()}):
+    if not runtime_spec.labels_cover(issuance, labels):
         return False
     raw = _docker_stdout(["docker", "inspect", name])
     if raw is None:
@@ -1903,13 +1890,9 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-closed
     if set(networks) != set(expected_networks):
         return False
     devcontainer_workspace = labels.get("devcontainer.local_folder")
-    try:
-        is_devcontainer = (
-            isinstance(devcontainer_workspace, str)
-            and Path(devcontainer_workspace).resolve() == workspace.resolve()
-        )
-    except OSError:
-        is_devcontainer = False
+    is_devcontainer = isinstance(devcontainer_workspace, str) and same_host_path(
+        devcontainer_workspace, workspace
+    )
     env_sections = (spec.get("containerEnv") or {},)
     if not is_devcontainer:
         env_sections += (spec.get("remoteEnv") or {},)

@@ -86,6 +86,23 @@ def host_path_from_docker_mount(value: str) -> Path | None:
 _MSYS2_CARGO = Path("C:/msys64/mingw64/bin/cargo.exe") if IS_WINDOWS else Path("/nonexistent")
 
 
+def same_host_path(left: str | os.PathLike[str], right: str | os.PathLike[str]) -> bool:
+    """Whether two host paths name the same location.
+
+    Spelling decides first under the host's own rule: ``os.path.normcase`` folds case and
+    separators only on Windows, so on Linux ``/u/Proj`` and ``/u/proj`` are different paths.
+    Otherwise an alias (symlink, 8.3 name, case-insensitive volume) counts only when both
+    paths exist and are the same file, so on a case-insensitive volume such as default macOS
+    APFS the case variants of one directory are one location.
+    """
+    if os.path.normcase(left) == os.path.normcase(right):
+        return True
+    try:
+        return Path(left).samefile(right)
+    except (OSError, ValueError):  # missing path, or a NUL byte in a Docker label
+        return False
+
+
 def venv_python(venv_dir: Path) -> Path:
     """Return the Python interpreter path inside a venv.
 
