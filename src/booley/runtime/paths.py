@@ -35,9 +35,14 @@ def refs_dir() -> Path:
     return package_data_dir() / "refs"
 
 
+def user_docs_dir() -> Path:
+    """Return the directory of packaged user-doc copies (``/booley-docs`` in the Sandbox)."""
+    return package_data_dir() / "docs"
+
+
 def troubleshooting_path() -> Path:
     """Return the packaged troubleshooting guide."""
-    return refs_dir() / "TROUBLESHOOTING.md"
+    return user_docs_dir() / "TROUBLESHOOTING.md"
 
 
 def changelog_path() -> Path:

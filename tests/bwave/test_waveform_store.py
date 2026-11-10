@@ -595,6 +595,40 @@ def test_streaming_start_unavailable_and_popen_failure(tmp_path: Path, monkeypat
     assert not fifo.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="FIFO requires POSIX")
+def test_strict_streaming_start_never_touches_an_existing_path(tmp_path: Path, fake_bwave) -> None:
+    """``replace_existing=False``: a user's file stays and no directory appears."""
+    existing = tmp_path / "user.vcd"
+    existing.write_text("user data", encoding="utf-8")
+    strict = {"stderr_path": tmp_path / "e", "replace_existing": False}
+
+    assert stores.start_streaming_conversion(existing, tmp_path / "s.fst", **strict) is None
+    assert (
+        stores.start_streaming_conversion(tmp_path / "no" / "x.vcd", tmp_path / "s", **strict)
+        is None
+    )
+
+    assert existing.read_text(encoding="utf-8") == "user data"
+    assert not (tmp_path / "no").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="FIFO requires POSIX")
+def test_close_input_keeps_a_path_the_writer_replaced(tmp_path: Path, fake_bwave) -> None:
+    """Only the pipe this conversion created is removed; a replacement file is the user's."""
+    fifo = tmp_path / "pipe.vcd"
+    conversion = stores.start_streaming_conversion(
+        fifo, tmp_path / "s.fst", stderr_path=tmp_path / "e"
+    )
+    assert conversion is not None
+    fifo.unlink()
+    fifo.write_text("replacement", encoding="utf-8")
+
+    result = conversion.finish(timeout_s=10)
+
+    assert fifo.read_text(encoding="utf-8") == "replacement"
+    assert result.success is False
+
+
 def test_streaming_failure_does_not_report_success(tmp_path: Path, monkeypatch) -> None:
     class FailedProcess:
         pid = 456
@@ -622,6 +656,7 @@ def test_streaming_failure_does_not_report_success(tmp_path: Path, monkeypatch) 
         tmp_path / "trace.fst",
         tmp_path / "trace.stderr",
         None,
+        (0, 0),
     )
     monkeypatch.setattr(stores.os, "close", lambda _fd: None)
     result = conversion.finish()
