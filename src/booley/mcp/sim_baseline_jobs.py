@@ -122,19 +122,17 @@ def launch_baseline(path: Path, request: dict[str, Any]) -> None:
 
 
 def _reap_unstarted(process: subprocess.Popen[Any], path: Path) -> None:
-    """Publish startup errors immediately after the child exits, without PID write races."""
+    """Publish startup errors immediately after the child exits, without PID write races.
+
+    The request's final state lands before the Job record turns terminal, the
+    order :func:`booley.goals.sim_baseline_store.settle_request` relies on.
+    """
     code = process.wait()
     try:
         request = read_document(path, None)
         jobs = Path(request["jobs_root"])
         job = job_records.read_record(request["job_id"], jobs)
         if job is not None and job.pid is None and job.status == job_records.STATUS_RUNNING:
-            job.status, job.exit_code, job.ended_at = (
-                job_records.STATUS_FAILED,
-                code,
-                utc_now_rfc3339(),
-            )
-            job_records.write_record(job, jobs)
             write_document(
                 path,
                 request
@@ -143,6 +141,12 @@ def _reap_unstarted(process: subprocess.Popen[Any], path: Path) -> None:
                     "reason": f"baseline worker exited before initialization (exit {code}); see job.log",
                 },
             )
+            job.status, job.exit_code, job.ended_at = (
+                job_records.STATUS_FAILED,
+                code,
+                utc_now_rfc3339(),
+            )
+            job_records.write_record(job, jobs)
     except (OSError, ValueError, KeyError):
         logger.warning("Baseline Job startup result could not be published at %s", path)
 
@@ -240,12 +244,13 @@ def _reconcile_request(path: Path) -> None:
     """An interrupted Job is unavailable; reap only its proven, idle scratch checkout."""
     request = read_document(path, None)
     job = job_records.read_record(request["job_id"], Path(request["jobs_root"]))
-    if job is not None and job_records.is_active(job, is_pid_alive):
-        return
-    if request["status"] == "pending":
+    request, interrupted = sim_baseline_store.settle_request(
+        request, job, lambda: read_document(path, None)
+    )
+    if interrupted:
         request = request | {
             "status": "unavailable",
-            "reason": "baseline Job interrupted or unavailable",
+            "reason": sim_baseline_store.INTERRUPTED_REASON,
         }
         write_document(path, request)
     if job is not None and job.pid is not None and not is_pid_alive(job.pid):
@@ -289,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     job.process_identity = None if identity is None else identity.to_payload()
     job_records.write_record(job, jobs)
     signal.signal(signal.SIGTERM, _cancel)
+    # Terminal order: the request's final state is written first and the Job
+    # record last (in ``finally``). ``settle_request`` readers depend on it.
     try:
         results = run_baseline(path, request)
         if results and all(row["grade"] == "unavailable" for row in results):
