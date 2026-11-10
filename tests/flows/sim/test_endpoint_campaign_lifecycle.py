@@ -471,7 +471,7 @@ def test_all_campaigns_survive_terminal_progress_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = SimulateFlow()
-    flow._args = SimpleNamespace(report_dir=tmp_path)
+    flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
     flow._coverage_prepared = SimpleNamespace(
         targets=[
             SimpleNamespace(handle=SimpleNamespace(selector="first")),

@@ -54,6 +54,9 @@
 .doc-prose blockquote p { margin-bottom: 0.7em; }
 /* wide tables scroll inside their own box (the hook adds the wrapper) */
 .doc-table { overflow-x: auto; margin: 0 0 1.3em; }
+/* the architecture diagram keeps readable text on phones: it scrolls sideways instead of shrinking */
+.doc-prose p:has(> img[src$="/architecture.svg"]) { overflow-x: auto; }
+@media (max-width: 600px) { .doc-prose img[src$="/architecture.svg"] { max-width: none; width: 760px; } }
 .doc-table table { min-width: 32rem; }
 /* code in table cells (Goal names, selectors, flags) stays on one line; the
    table scrolls instead. Overrides article.css's overflow-wrap: anywhere. */

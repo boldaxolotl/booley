@@ -36,6 +36,19 @@ Packaged release history starts at 0.2.7. For older changes, see
   timed-out conversion reports a trace incident: a failing simulation stays
   failed, a passing one is reported inconclusive, and neither is `timeout`.
   Icarus no longer reports an unconverted raw VCD as a waveform.
+- `booley init --scaffold` now names Targets `<axis>_<ip>` (`sim_<ip>`,
+  `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`) with a matching `tests.toml` section.
+  Doctor notes a Target it runs (or one in a stealth core) named just `sim`,
+  `lint`, `synth`, or `fpga` and suggests `<axis>_<core name>`.
+- A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
+  with its points now loads with values recomputed from the points instead of
+  failing. A forged pass/fail on a blocked or not-requested evaluation or one
+  that cannot be re-scored (no thresholds, invalid thresholds or a missing
+  rollup) is still refused (`COV_EVALUATION_MISMATCH`), as is an incomplete
+  collection (`COV_INCOMPLETE_EVALUATED`); an unknown threshold metric or
+  malformed or repeated metric rows are refused with the field codes. The
+  load no longer cross-checks collection state, selected tests against runs,
+  or native-format and unknown-record consistency; those fields load as stored.
 - `sim --trace` now converts a declared `trace_files` entry that is a literal
   relative `.vcd` path inside the run directory while the test runs, so the
   waveform is ready at run end and no VCD is left on disk. Other entries still

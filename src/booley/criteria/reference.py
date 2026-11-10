@@ -239,7 +239,7 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
         "Test Run of the same Target at the Goal base commit.",
         "",
         "```json",
-        '{"family": "CYCLE_COUNT", "target": "sim", "test": "smoke",',
+        '{"family": "CYCLE_COUNT", "target": "sim_smoke", "test": "smoke",',
         ' "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}',
         "```",
         "",
