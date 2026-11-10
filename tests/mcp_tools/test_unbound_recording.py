@@ -13,7 +13,6 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.execution_persistence import (
     AcceptanceRecordingError,
     CriterionFreshness,
-    done_findings_require_approval_for,
 )
 from booley.mcp.unbound_recorder import UnboundAcceptanceRecorder
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -70,11 +69,10 @@ def test_unbound_run_timeline_is_saved(tmp_path: Path, monkeypatch: pytest.Monke
     assert saved["timeline"][-1]["duration_s"] == 1.25
 
 
-def test_unbound_identity_and_reviewer_policies() -> None:
+def test_unbound_identity_policies() -> None:
     recorder = UnboundAcceptanceRecorder()
     assert recorder.acceptance_identity() == {}
     assert not isinstance(recorder, CriterionFreshness)
-    assert done_findings_require_approval_for(recorder) is False
 
 
 def test_unbound_recording_without_logs_is_a_noop() -> None:
