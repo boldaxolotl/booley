@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,21 +19,22 @@ from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
-    AdapterTransportIdentity,
+    work_transport_identity,
     write_adapter_result,
 )
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_campaign_characterization import _AdapterAbortExecution, _plan
 
 
 def _refresh_hook_workload_identity(document):
-    from booley.flows.sim.campaign.planning import canonical_sha256
+    from booley.flows.sim.campaign_files import document_digest
 
     workload = document["workload"]
     variant = document["build_variants"][0]
-    digest = canonical_sha256(
+    digest = document_digest(
         {
             "kind": variant["kind"],
             "source_closure": variant["source_closure"],
@@ -51,7 +51,7 @@ def _refresh_hook_workload_identity(document):
     item["role"] = document["target"]["role"]
     item["revision"] = document["target"]["revision"]
     item["build_variant_id"] = variant["build_variant_id"]
-    digest = canonical_sha256(
+    digest = document_digest(
         {
             key: value
             for key, value in item.items()
@@ -521,31 +521,6 @@ def test_all_campaigns_survive_terminal_progress_failure(
     assert pending == []
 
 
-def test_legacy_result_survives_terminal_progress_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    flow = SimulateFlow()
-    flow._reserved_invocation_dir = tmp_path
-    monkeypatch.setattr(flow, "_prepare_legacy_run", lambda *_args: (["PASS"], True))
-    monkeypatch.setattr(
-        flow,
-        "_legacy_endpoint_outcome",
-        lambda *_args: EndpointOutcome(detail={"targets": {"first": {"simulation": "pass"}}}),
-    )
-    monkeypatch.setattr(
-        flow,
-        "_write_progress_report",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("progress unavailable")),
-    )
-
-    result = flow._run_legacy_selected_mode(["first"], {}, 0.0, 0.0)
-
-    assert result.exit_code == 2
-    assert result.detail["targets"] == {"first": {"simulation": "pass"}}
-    assert result.detail["completion_error"]["operation"] == "publish simulation progress"
-    assert result.detail["completion_error"]["path"] == str(tmp_path / "progress.json")
-
-
 @pytest.mark.parametrize("termination", ["disk_budget", "sim_time_stall"])
 def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     tmp_path: Path, termination: str
@@ -823,17 +798,9 @@ class _CardExecution(_AdapterAbortExecution):
     def _invoke_process(self, command, *, timeout):
         result = super()._invoke_process(command, timeout=timeout)
         if self.passing and "BOOLEY_BUILD_STAGE" not in command[-1]:
-            tokens = shlex.split(command[-1])
-            selected = tuple(
-                token.split("=", 1)[1] for token in tokens if token.startswith("--selected-test=")
-            )
-            identity = AdapterTransportIdentity(
-                "cocotb",
-                tokens[tokens.index("--attempt-token") + 1],
-                tokens[tokens.index("--target-identity") + 1],
-                selected,
-                Path(tokens[tokens.index("--adapter-result") + 1]),
-            )
+            identity = work_transport_identity(launched_work(command))
+            assert identity is not None
+            selected = identity.selected_tests
             write_adapter_result(
                 identity,
                 AdapterResult(
@@ -1623,44 +1590,6 @@ def test_public_nonrunning_modes_create_no_hook_firings(tmp_path, monkeypatch, m
     assert "pre_run_commands (" not in result.outcome.report_text
 
 
-def test_legacy_abort_progress_failure_preserves_collected_firings(tmp_path, monkeypatch):
-    import time
-
-    from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.execution.pre_sim_reporting import pre_sim_document
-
-    flow = SimulateFlow()
-
-    def prepare(*_args):
-        flow._legacy_pre_sim_runs = [
-            (
-                "sim",
-                pre_sim_document(
-                    PreSimEvidence(
-                        ("true",),
-                        ("alpha",),
-                        "passed",
-                        0.1,
-                        returncode=0,
-                        stdout_tail="hook-out",
-                    )
-                ),
-            )
-        ]
-        return EndpointOutcome(exit_code=2, report_text="later build failed")
-
-    monkeypatch.setattr(flow, "_prepare_legacy_run", prepare)
-
-    def failed_progress(*_args, **_kwargs):
-        raise OSError("progress unavailable")
-
-    monkeypatch.setattr(flow, "_write_progress_report", failed_progress)
-    result = flow._run_legacy_selected_mode(["sim"], {}, time.monotonic(), 0.0)
-    assert result.exit_code == 2
-    assert result.detail["pre_sim_runs"][0]["stdout_tail"] == "hook-out"
-    assert len(result.detail["pre_sim_lines"]) == result.report_text.count("pre_run_commands") == 1
-
-
 def _cocotb_hook_plan(document):
     import hashlib
 
@@ -1852,7 +1781,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
                     log = project / pointer["path"]
                     assert log.is_file()
                     assert "flow=sim" in log.read_text().splitlines()[0]
-                    assert str(log.parent) in command[-1]
+                    assert str(log.parent) in launched_work(command).adapter_result_path
                 observations.append(active["stage"])
         return original(command, timeout=timeout, cwd=cwd)
 
@@ -2136,6 +2065,10 @@ def test_simulation_final_acceptance_lifecycle_order(tmp_path, monkeypatch, term
         operation = result.outcome.detail["completion_error"]["operation"]
         assert operation == "publish simulation progress"
         assert terminal_phases[:2] == ["complete", "aborted"]
+        # The Pre-Sim firings collected before the failed write still reach the result.
+        lines = result.outcome.detail["pre_sim_lines"]
+        assert len(lines) == 2
+        assert all(result.outcome.report_text.count(line) == 1 for line in lines)
     else:
         assert result.exit_code == 0, result.outcome.report_text
         assert first["acceptance:True"] < first["mutable"] < first["refresh"]

@@ -3,7 +3,7 @@
 In the pattern of test_iverilog_run.py: pure run-half logic with no real
 simulator — the filter builder's escaping property (G1), golden argv/env for
 icarus and verilator with ``cocotb-config`` stubbed (G5), the explicit
-results-file path, the D3 stale-image error, and the arg round-trip. The real
+results-file path, the D3 stale-image error, and the work-document mapping. The real
 vvp/Vtop runs are exercised end-to-end in the Sandbox e2e.
 """
 
@@ -202,29 +202,6 @@ class TestCocotbSeedEnvironment:
             )
         assert isinstance(prepared, str) and prepared.startswith("cannot seed the Cocotb run")
         assert "[SIM_INFRA_ERROR]" in capsys.readouterr().out
-
-    def test_the_command_line_seed_reaches_the_environment(self):
-        assert (
-            crun._parse_args(
-                [
-                    "--build-dir",
-                    "b",
-                    "--eda-tool",
-                    "icarus",
-                    "--cocotb-module",
-                    "m",
-                    "--seed",
-                    "42",
-                ]
-            ).seed
-            == 42
-        )
-        assert (
-            crun._parse_args(
-                ["--build-dir", "b", "--eda-tool", "icarus", "--cocotb-module", "m"]
-            ).seed
-            is None
-        )
 
 
 class TestBuildCocotbEnv:
@@ -530,118 +507,100 @@ def test_stale_results_xml_removed_before_run(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# CLI arg round-trip
+# Work document -> run_cocotb_sim
 # ---------------------------------------------------------------------------
 
 
-def test_parse_args_round_trip():
-    args = crun._parse_args(
-        [
-            "--build-dir",
-            "build/sim",
-            "--eda-tool",
-            "icarus",
-            "--cocotb-module",
-            "test_counter",
-            "--test",
-            "a",
-            "--test",
-            "b",
-            "--run-cwd",
-            "util/sim",
-            "--work-dir",
-            "out",
-            "--timeout",
-            "120",
-            "--max-rundir-bytes",
-            "1000",
-            "--trace",
-            "--expected-trace-scope",
-            "counter",
-            "--plusarg",
-            "verbose",
-            "--result-verbosity",
-            "full",
-        ]
+def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
+    from booley.flows.sim.adapter_contract import (
+        PreparedSimulationWork,
+        encode_simulation_work,
     )
-    assert args.build_dir == "build/sim"
-    assert args.eda_tool == "icarus"
-    assert args.cocotb_module == "test_counter"
-    assert args.tests == ["a", "b"]
-    assert args.run_cwd == "util/sim"
-    assert args.work_dir == "out"
-    assert args.timeout == 120
-    assert args.max_rundir_bytes == 1000
-    assert args.trace is True
-    assert args.expected_trace_scope == "counter"
-    assert args.plusargs == ["verbose"]
-    assert args.result_verbosity == "full"
 
+    seen: dict[str, object] = {}
 
-def test_parse_args_requires_eda_tool_and_module():
-    with pytest.raises(SystemExit):
-        crun._parse_args(["--build-dir", "b"])
+    def record(**kwargs: object) -> int:
+        seen.update(kwargs)
+        return 0
 
+    monkeypatch.setattr(crun, "run_cocotb_sim", record)
+    result_path = tmp_path / "adapter-result.json"
+    traced = PreparedSimulationWork(
+        adapter="cocotb",
+        build_dir=str(tmp_path / "build"),
+        run_cwd=str(tmp_path / "util"),
+        timeout_s=120,
+        # Never forwarded: the Cocotb adapter derives its own output directory.
+        work_dir=str(tmp_path / "out"),
+        eda_tool="icarus",
+        cocotb_module="test_counter",
+        tests=("b", "a"),
+        cocotb_seed=42,
+        max_rundir_bytes=1000,
+        plusargs=("verbose",),
+        trace=True,
+        trace_scope="counter",
+        trace_convert_timeout_s=90,
+        result_verbosity="full",
+        sim_time_grace_s=2.5,
+        runtime_inputs=("firmware.hex",),
+        adapter_result_path=str(result_path),
+        attempt_token="attempt-1",
+        target_identity="acme:lib:core:1#sim",
+    )
 
-@pytest.mark.parametrize("bad", ["0", "-5"])
-def test_parse_args_rejects_non_positive_timeout(bad: str):
-    with pytest.raises(SystemExit):
-        crun._parse_args(
-            [
-                "--build-dir",
-                "b",
-                "--eda-tool",
-                "icarus",
-                "--cocotb-module",
-                "m",
-                "--timeout",
-                bad,
-            ]
-        )
+    assert crun.main([encode_simulation_work(traced)]) == 0
+
+    assert seen == {
+        "build_dir": tmp_path / "build",
+        "eda_tool": "icarus",
+        "cocotb_module": "test_counter",
+        "tests": ["b", "a"],  # order kept
+        "run_cwd": tmp_path / "util",
+        "vcd": True,
+        "plusargs": ["verbose"],
+        "timeout": 120,
+        "max_rundir_bytes": 1000,
+        "sim_time_grace_s": 2.5,
+        "result_verbosity": "full",
+        "expected_trace_scope": "counter",
+        "runtime_inputs": ("firmware.hex",),
+        "transport": AdapterTransportIdentity(
+            adapter="cocotb",
+            attempt_token="attempt-1",
+            target_identity="acme:lib:core:1#sim",
+            selected_tests=("b", "a"),
+            result_path=result_path,
+        ),
+        "seed": 42,
+        "trace_convert_timeout": 90,
+    }  # fmt: skip
+    assert "work_dir" not in seen
+
+    # An untraced launch expects no trace scope, whatever scope the work names;
+    # an unseeded, untransported one carries neither.
+    seen.clear()
+    untraced = PreparedSimulationWork(
+        adapter="cocotb",
+        build_dir=str(tmp_path / "build"),
+        run_cwd="",
+        timeout_s=120,
+        eda_tool="verilator",
+        cocotb_module="m",
+        trace_scope="counter",
+    )
+    assert crun.main([encode_simulation_work(untraced)]) == 0
+    assert seen["expected_trace_scope"] == ""
+    assert seen["vcd"] is False
+    assert seen["seed"] is None
+    assert seen["transport"] is None
+    assert seen["run_cwd"] is None
+    assert seen["tests"] == []
 
 
 # ---------------------------------------------------------------------------
 # F-25 — frozen simulator clock watchdog wiring
 # ---------------------------------------------------------------------------
-
-
-def test_sim_time_grace_defaults_and_round_trips():
-    from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
-
-    args = crun._parse_args(
-        ["--build-dir", "b", "--eda-tool", "verilator", "--cocotb-module", "m"]
-    )
-    assert args.sim_time_grace_s == DEFAULT_SIM_TIME_GRACE_S
-
-    args = crun._parse_args(
-        [
-            "--build-dir",
-            "b",
-            "--eda-tool",
-            "verilator",
-            "--cocotb-module",
-            "m",
-            "--sim-time-grace",
-            "0",
-        ]
-    )
-    assert args.sim_time_grace_s == 0.0
-
-
-def test_parse_args_rejects_negative_sim_time_grace():
-    with pytest.raises(SystemExit):
-        crun._parse_args(
-            [
-                "--build-dir",
-                "b",
-                "--eda-tool",
-                "verilator",
-                "--cocotb-module",
-                "m",
-                "--sim-time-grace",
-                "-1",
-            ]
-        )
 
 
 def test_stall_diagnosis_replaces_the_useless_missing_xml_detail(tmp_path: Path, capsys):

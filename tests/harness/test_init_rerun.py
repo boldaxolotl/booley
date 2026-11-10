@@ -135,8 +135,9 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
         lambda *_args, **_kwargs: current_image,
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.image_id_strict",
+        "booley.runtime.interactive_docker.image_id",
         lambda _image: None,
     )
     monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")

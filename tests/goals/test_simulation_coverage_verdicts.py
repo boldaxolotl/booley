@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.flows import target_test_plan_loading
 from booley.flows.campaign_results import StartedCampaign
 from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY
 from booley.flows.sim.flow import SimulateFlow
@@ -17,11 +18,13 @@ from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.model import parse_goal_args
 from booley.goals.paths import record_paths
 from booley.goals.recorder import GoalEvidenceRecorder
+from booley.goals.state_store import load_goal_state
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
 from booley.harness.dashboard.model import project_goal
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+from tests.goals import conftest
 from tests.goals.conftest import bind, campaign_facts, entry_environment, git, run_row
 from tests.goals.test_test_run_evidence import _replayed, _state_file, _status
 from tests.goals.test_test_run_goal_changes import _change
@@ -57,6 +60,7 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
     # its checks is the simulation Goal's concern, not the coverage Goal's.
     entry = saved.criteria["coverage_top"]
     assert entry.met is (coverage == "pass")
+    assert "criterion_metric" not in entry.detail
     violation = entry.detail.get("goal_contract_violation", "")
     assert "Test Runs failed" not in violation and "have not passed" not in violation
     # The failing runs stay visible in what the Goal shows of its Test Runs.
@@ -77,13 +81,18 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
     assert replayed.ever_failed is (coverage == "fail")
 
 
-def _enter(layout, monkeypatch, goals):
-    """A coverage-capable ``top`` Target with Tests ``reset`` and ``wrap``, in Goal Mode."""
+def _enter(layout, monkeypatch, goals, *, tools=("verilator",), tests_toml=None):
+    """A coverage-capable ``top`` Target with Tests ``reset`` and ``wrap``, in Goal Mode.
+
+    Further *tools* add Targets ``sim_1``... with the same Tests.
+    """
     root: Path = layout.worktree
-    project(root)
+    project(root, tools)
     core = root / "counter.core"
     core.write_text(core.read_text().replace("sim_0", "top"))
-    (root / ".booley/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
+    others = "".join(f'[sim_{i}]\ntests = ["reset", "wrap"]\n' for i in range(1, len(tools)))
+    default = '[top]\ntests = ["reset", "wrap"]\n'
+    (root / ".booley/tests.toml").write_text((tests_toml or default) + others)
     git(root, "add", "counter.core", "rtl/counter.sv")
     git(root, "commit", "-m", "simulation recipe")
     record = enter_goal_mode(
@@ -92,6 +101,130 @@ def _enter(layout, monkeypatch, goals):
     ).record
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     return root, record
+
+
+_BYSTANDER = {"family": "COVERAGE", "target": "sim_1", "tests": "all", "metrics": {"line": 100}}
+_CORE = "acme:demo:counter:1#"
+
+
+class _MissedBranchExecution(NativeExecution):
+    """Every line point is hit; one branch point never is."""
+
+    def payload(self, hits):
+        missed = "C '\x01f\x02rtl/counter.sv\x01l\x023\x01n\x021\x01h\x02TOP.counter"
+        return super().payload(hits) + missed + "\x01t\x02branch\x01o\x02true' 0\n"
+
+
+def _know_targets_by_identity(monkeypatch):
+    """Let the Goal Mode fakes know ``sim_1`` and every Target by its core identity."""
+    monkeypatch.setattr(conftest, "KNOWN_TARGETS", conftest.KNOWN_TARGETS | {"sim_1"})
+    monkeypatch.setattr(
+        target_test_plan_loading,
+        "checkout_target_identity",
+        lambda root, target: conftest.fake_target_identity(root, target.removeprefix(_CORE)),
+    )
+    monkeypatch.setattr(
+        target_test_plan_loading,
+        "load_checkout_target_test_plan",
+        lambda root, target: conftest.fake_test_plan(root, target.removeprefix(_CORE)),
+    )
+
+
+# One row per case: the Goal's metrics, a factory of what the campaign measured (each run
+# needs a fresh one), the Tests it ran, and the Goal's verdict, evaluation status and
+# suite status.
+def _hit_once():
+    return NativeExecution(hits=1)
+
+
+_COVERAGE_CASES = [
+    pytest.param({"line": 100}, _hit_once, None, True, "pass", "match", id="single_metric"),
+    pytest.param(
+        {"line": 100, "branch": 100},
+        _MissedBranchExecution,
+        None,
+        False,
+        "fail",
+        "match",
+        id="multi_metric",
+    ),
+    pytest.param({"branch": 100}, _hit_once, None, False, "blocked", "match", id="blocked"),
+    pytest.param(
+        {"line": 100},
+        _hit_once,
+        '[top]\ntests = ["reset", "wrap"]\nskip = ["wrap"]\n',
+        False,
+        "blocked",
+        "mismatch",
+        id="suite_mismatch",
+    ),
+]
+
+
+def _judge_coverage_goal(layout, monkeypatch, target, case):
+    """Run one coverage Goal on *target* through the bound flow; return its saved entry.
+
+    Also checks that judging it leaves a coverage Goal of another Target untouched.
+    """
+    metrics, execution, tests_toml = case
+    goals = [
+        {"family": "COVERAGE", "target": target, "tests": "all", "metrics": metrics},
+        _BYSTANDER,
+    ]
+    _know_targets_by_identity(monkeypatch)
+    root, record = _enter(
+        layout, monkeypatch, goals, tools=("verilator", "verilator"), tests_toml=tests_toml
+    )
+    (key,) = [name for name in record.test_run_resolutions if "top" in name]
+    bystander = next(name for name in record.test_run_resolutions if "sim_1" in name)
+    store = GoalStore(layout.control)
+    before = load_goal_state(store, record).criteria[bystander].to_dict()
+
+    adapter = GoalFlowExecution(bind(layout))
+    SimulateFlow(coverage_execution=lambda *_args: execution()).execute(
+        SimRequest(target="top", work_dir=root, coverage=True, report_dir=root / "reports"),
+        adapter=adapter,
+    )
+    saved = DevelopmentState.load(adapter.state_file)
+    assert len(saved.acceptance_transactions) == 1
+    assert load_goal_state(store, record).criteria[bystander].to_dict() == before
+    return key, saved.criteria[key]
+
+
+@pytest.mark.parametrize(
+    ("metrics", "execution", "tests_toml", "met", "status", "suite"), _COVERAGE_CASES
+)
+def test_a_coverage_goal_is_judged_by_its_whole_evaluation_however_its_target_is_written(
+    layout, monkeypatch, metrics, execution, tests_toml, met, status, suite
+):
+    """The Goal's verdict is its evaluation's, whether it names ``top`` or its identity.
+
+    Written by identity the Goal's key is not ``coverage_top``; it is still the one
+    Coverage Criterion of its Target, never an atomic metric projection.
+    """
+    key, entry = _judge_coverage_goal(
+        layout, monkeypatch, f"{_CORE}top", (metrics, execution, tests_toml)
+    )
+    assert key != "coverage_top"
+    assert entry.met is met
+    assert entry.detail["evaluation"]["status"] == status
+    assert entry.detail["evaluation"]["suite"]["status"] == suite
+    assert "criterion_metric" not in entry.detail
+
+
+@pytest.mark.parametrize(
+    ("metrics", "execution", "tests_toml", "met", "status", "suite"), _COVERAGE_CASES
+)
+def test_a_coverage_goal_written_by_name_has_the_same_verdict_and_detail(
+    layout, monkeypatch, metrics, execution, tests_toml, met, status, suite
+):
+    """The plain spelling ``top`` gives the verdict and evaluation of the identity spelling."""
+    key, entry = _judge_coverage_goal(layout, monkeypatch, "top", (metrics, execution, tests_toml))
+    assert key == "coverage_top"
+    assert entry.met is met
+    assert entry.detail["evaluation"]["status"] == status
+    assert entry.detail["evaluation"]["suite"]["status"] == suite
+    assert "criterion_metric" not in entry.detail
 
 
 def _coverage_run(layout, root, run_id, *tests):

@@ -1,4 +1,4 @@
-# Validate up to three cumulative candidates concurrently, with one PR per
+# Validate up to four cumulative candidates concurrently, with one PR per
 # batch and no automatic retries. Before rollout, verify required checks on a
 # draft-PR compatibility canary and disable strict up-to-date branch checks
 # while retaining required checks and Mergify-exclusive merges.
@@ -7,7 +7,7 @@ merge_queue:
   # Keep queue progress in Mergify's dashboard and checks instead of posting
   # status comments that notify every participant on each pull request.
   status_comments: none
-  max_parallel_checks: 3
+  max_parallel_checks: 4
   queued_label: queued
   checking_label: merge-queue-checking
   dequeued_label: dequeued

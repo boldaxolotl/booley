@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.boundary import (
     BoundaryError,
-    require_dict,
     require_int,
     require_sha256_digest,
     require_str_value,
     require_uuid4,
 )
+from booley.flows.sim.campaign_files import read_json_object
 from booley.flows.sim.campaign_reports import is_report_link, write_campaign_json
+from booley.runtime.booley_dir import crossed_booley_dir_entry
+
+from .codec import MANIFEST_MAX_BYTES
 
 DEPENDENCY_SCHEMA = "booley.simulation-campaign-dependency/v1"
 DEPENDENCY_MAX_BYTES = 16 * 1024
@@ -71,7 +73,16 @@ def register_campaign_dependency(
         "dependent_invocation": str(dependent),
         "dependent_invocation_id": dependent_id,
     }
-    if path.exists() and _read_document(path) != document:
+    if (
+        path.exists()
+        and read_json_object(
+            path,
+            limit=DEPENDENCY_MAX_BYTES,
+            error=ValueError,
+            booley_dir=crossed_booley_dir_entry(path),
+        )
+        != document
+    ):
         raise ValueError("Simulation Campaign dependency receipt disagrees")
     write_campaign_json(path, document)
     return path
@@ -88,7 +99,8 @@ def read_campaign_dependencies(origin_manifest: Path) -> tuple[CampaignDependenc
     paths = tuple(sorted(directory.iterdir()))
     if len(paths) > 1_000:
         raise ValueError("Simulation Campaign dependency registry is too large")
-    receipts = tuple(_decode_receipt(path, manifest) for path in paths)
+    booley_dir = crossed_booley_dir_entry(directory)
+    receipts = tuple(_decode_receipt(path, manifest, booley_dir) for path in paths)
     return tuple(sorted(receipts, key=lambda item: str(item.dependent_invocation)))
 
 
@@ -97,8 +109,12 @@ def dependency_receipt_files(origin_manifest: Path) -> set[Path]:
     return {item.path.absolute() for item in read_campaign_dependencies(origin_manifest)}
 
 
-def _decode_receipt(path: Path, manifest: Path) -> CampaignDependencyReceipt:
-    document = _read_document(path)
+def _decode_receipt(
+    path: Path, manifest: Path, booley_dir: Path | None
+) -> CampaignDependencyReceipt:
+    document = read_json_object(
+        path, limit=DEPENDENCY_MAX_BYTES, error=ValueError, booley_dir=booley_dir
+    )
     if set(document) != _FIELDS or document.get("$schema") != DEPENDENCY_SCHEMA:
         raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}")
     try:
@@ -120,11 +136,9 @@ def _decode_receipt(path: Path, manifest: Path) -> CampaignDependencyReceipt:
     current_invocation = manifest.parents[3].absolute()
     authoritative = origin_target == current_target and origin_invocation == current_invocation
     if authoritative:
-        raw = manifest.read_bytes()
-        try:
-            manifest_document = require_dict(json.loads(raw), field="Simulation Campaign manifest")
-        except (BoundaryError, json.JSONDecodeError) as exc:
-            raise ValueError("Simulation Campaign dependency origin is invalid") from exc
+        manifest_document = read_json_object(
+            manifest, limit=MANIFEST_MAX_BYTES, error=ValueError, booley_dir=booley_dir
+        )
         if manifest_document.get("campaign_id") != campaign_id:
             raise ValueError("Simulation Campaign dependency origin identity disagrees")
     return CampaignDependencyReceipt(
@@ -137,24 +151,6 @@ def _decode_receipt(path: Path, manifest: Path) -> CampaignDependencyReceipt:
         path,
         authoritative,
     )
-
-
-def _read_document(path: Path) -> dict[str, object]:
-    info = path.lstat()
-    if (
-        is_report_link(path)
-        or not stat.S_ISREG(info.st_mode)
-        or info.st_size > DEPENDENCY_MAX_BYTES
-    ):
-        raise ValueError(f"Unsafe Simulation Campaign dependency receipt: {path}")
-    try:
-        document = require_dict(
-            json.loads(path.read_text(encoding="utf-8")),
-            field="Simulation Campaign dependency receipt",
-        )
-    except BoundaryError as exc:
-        raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}") from exc
-    return document
 
 
 def _regular_manifest(path: Path) -> Path:

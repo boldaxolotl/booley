@@ -9,10 +9,13 @@ Sandbox at :data:`CONTAINER_ROOT`.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
+import ssl
 import stat
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -30,6 +33,12 @@ LICENSE_FILENAME = "Nangate-OCL-1.0.txt"
 SOURCE_MANIFEST = "SOURCE.json"
 _BASE_URL = f"https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD/{REVISION}"
 _USER_AGENT = "Booley-Nangate-Setup/0.2"
+# raw.githubusercontent.com occasionally times out or answers 5xx; the files are
+# pinned by checksum, so repeating a download is safe. Waits double each retry.
+_DOWNLOAD_ATTEMPTS = 3
+_RETRY_BASE_DELAY_SECONDS = 2.0
+# Client errors that mean "try again later" rather than "this request is wrong".
+_RETRYABLE_CLIENT_STATUSES = frozenset({408, 429})
 
 
 class NangatePdkError(RuntimeError):
@@ -73,6 +82,7 @@ FILES = (
 )
 
 OpenUrl = Callable[[urllib.request.Request, float], BinaryIO]
+Sleep = Callable[[float], None]
 
 
 def cache_root() -> Path:
@@ -203,18 +213,58 @@ def _open_url(request: urllib.request.Request, timeout: float) -> BinaryIO:
     return urllib.request.urlopen(request, timeout=timeout)
 
 
-def _download(item: PinnedFile, target: Path, opener: OpenUrl) -> None:
+def _download_once(item: PinnedFile, target: Path, opener: OpenUrl) -> str:
+    """Write one complete response body to *target* and return its SHA-256."""
     request = urllib.request.Request(item.url, headers={"User-Agent": _USER_AGENT})
     digest = hashlib.sha256()
-    try:
-        with opener(request, 60.0) as response, target.open("wb") as output:
-            while chunk := response.read(1024 * 1024):
-                digest.update(chunk)
-                output.write(chunk)
-    except (OSError, urllib.error.URLError) as exc:
-        raise NangatePdkError(f"could not download {item.url}: {exc}") from exc
-    if digest.hexdigest() != item.sha256:
-        raise NangatePdkError(f"downloaded checksum mismatch for {item.source}")
+    with opener(request, 60.0) as response, target.open("wb") as output:
+        while chunk := response.read(1024 * 1024):
+            digest.update(chunk)
+            output.write(chunk)
+    return digest.hexdigest()
+
+
+def _is_transient(exc: OSError | http.client.HTTPException) -> bool:
+    """Whether a failed download may succeed when repeated.
+
+    Network failures may. A 4xx refusal, an untrusted certificate, and a local
+    write error (a full disk, a denied path) will not, so they fail at once.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500 or exc.code in _RETRYABLE_CLIENT_STATUSES
+    cause = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(cause, ssl.SSLCertVerificationError):
+        return False
+    transient = (
+        urllib.error.URLError,
+        TimeoutError,
+        ConnectionError,
+        ssl.SSLError,
+        http.client.HTTPException,
+    )
+    return isinstance(exc, transient)
+
+
+def _download(item: PinnedFile, target: Path, opener: OpenUrl, sleep: Sleep) -> None:
+    """Download and verify *item*, retrying transient failures with exponential backoff."""
+    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+        try:
+            digest = _download_once(item, target, opener)
+        # URLError and socket timeouts are OSErrors; a truncated body is an HTTPException.
+        except (OSError, http.client.HTTPException) as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                exc.close()  # an HTTP error response holds its body and connection open
+            if attempt == _DOWNLOAD_ATTEMPTS or not _is_transient(exc):
+                raise NangatePdkError(
+                    f"could not download {item.url} (attempt {attempt} of "
+                    f"{_DOWNLOAD_ATTEMPTS}): {exc}"
+                ) from exc
+            sleep(_RETRY_BASE_DELAY_SECONDS * 2 ** (attempt - 1))
+            continue
+        # The content is pinned, so a mismatch is not transient: never retry it.
+        if digest != item.sha256:
+            raise NangatePdkError(f"downloaded checksum mismatch for {item.source}")
+        return
 
 
 def _manifest_bytes() -> bytes:
@@ -234,8 +284,13 @@ def _manifest_bytes() -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
 
 
-def fetch(root: Path | None = None, *, opener: OpenUrl = _open_url) -> Path:
-    """Download, verify, then atomically replace each pinned file in *root*."""
+def fetch(
+    root: Path | None = None, *, opener: OpenUrl = _open_url, sleep: Sleep = time.sleep
+) -> Path:
+    """Download, verify, then atomically replace each pinned file in *root*.
+
+    A download that fails transiently is retried with backoff (see ``_download``).
+    """
     root = root or cache_root()
     secure_config_dir_for_cache(root)
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -245,7 +300,7 @@ def fetch(root: Path | None = None, *, opener: OpenUrl = _open_url) -> Path:
             for item in FILES:
                 target = stage / item.destination
                 target.parent.mkdir(parents=True, exist_ok=True)
-                _download(item, target, opener)
+                _download(item, target, opener, sleep)
             (stage / LICENSE_FILENAME).write_bytes(_license_bytes())
             (stage / SOURCE_MANIFEST).write_bytes(_manifest_bytes())
 

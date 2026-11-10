@@ -6,7 +6,10 @@ import hashlib
 import io
 import json
 import os
+import ssl
 import stat
+import urllib.error
+from email.message import Message
 from pathlib import Path
 
 import pytest
@@ -94,10 +97,100 @@ def test_checksum_failure_never_installs_download(tmp_path: Path, monkeypatch) -
         (nangate_pdk.PinnedFile("bad.lib", "cell/lib/bad.lib", "0" * 64),),
     )
 
+    opener, calls = _flaky_opener([], b"wrong")
+    delays: list[float] = []
+
     with pytest.raises(nangate_pdk.NangatePdkError, match="checksum mismatch"):
-        nangate_pdk.fetch(tmp_path / "cache", opener=lambda *_: io.BytesIO(b"wrong"))
+        nangate_pdk.fetch(tmp_path / "cache", opener=opener, sleep=delays.append)
 
     assert not (tmp_path / "cache" / "cell/lib/bad.lib").exists()
+    # Pinned content cannot change between attempts, so a mismatch is never retried.
+    assert len(calls) == 1
+    assert delays == []
+
+
+class _BodyThatTimesOut(io.BytesIO):
+    """A response body that delivers *head*, then times out like a stalled socket read."""
+
+    def read(self, size: int | None = -1) -> bytes:
+        chunk = super().read(size)
+        if not chunk:
+            raise TimeoutError("The read operation timed out")
+        return chunk
+
+
+def _flaky_opener(failures: list[Exception | io.BytesIO], payload: bytes):
+    """Return an opener that replays *failures* (raised, or returned as a body), then *payload*."""
+    calls: list[str] = []
+
+    def opener(request, _timeout):
+        calls.append(request.full_url)
+        if not failures:
+            return io.BytesIO(payload)
+        failure = failures.pop(0)
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    return opener, calls
+
+
+def test_fetch_retries_a_timed_out_download_then_installs(tmp_path: Path, monkeypatch) -> None:
+    item = _item("upstream/a.lib", "cell/lib/a.lib", b"liberty\n")
+    monkeypatch.setattr(nangate_pdk, "FILES", (item,))
+    # The first attempt writes part of the file before timing out; it must not survive.
+    opener, calls = _flaky_opener([_BodyThatTimesOut(b"libe")], b"liberty\n")
+    delays: list[float] = []
+
+    root = nangate_pdk.fetch(tmp_path / "cache", opener=opener, sleep=delays.append)
+
+    assert (root / item.destination).read_bytes() == b"liberty\n"
+    assert nangate_pdk.is_ready(root)
+    assert calls == [item.url, item.url]
+    assert delays == [2.0]
+
+
+def test_fetch_fails_after_every_attempt_times_out(tmp_path: Path, monkeypatch) -> None:
+    item = _item("upstream/a.lib", "cell/lib/a.lib", b"liberty\n")
+    monkeypatch.setattr(nangate_pdk, "FILES", (item,))
+    failures: list[Exception | io.BytesIO] = [
+        urllib.error.URLError(TimeoutError("timed out")),
+        urllib.error.HTTPError(item.url, 504, "Gateway Timeout", Message(), None),
+        TimeoutError("The read operation timed out"),
+    ]
+    opener, calls = _flaky_opener(failures, b"liberty\n")
+    delays: list[float] = []
+
+    with pytest.raises(nangate_pdk.NangatePdkError, match=r"attempt 3 of 3\): The read"):
+        nangate_pdk.fetch(tmp_path / "cache", opener=opener, sleep=delays.append)
+
+    assert len(calls) == 3
+    assert delays == [2.0, 4.0]
+    assert not (tmp_path / "cache" / item.destination).exists()
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (urllib.error.HTTPError("u", 404, "Not Found", Message(), None), "404"),
+        (urllib.error.URLError(ssl.SSLCertVerificationError("bad cert")), "bad cert"),
+        (PermissionError(13, "Permission denied"), "Permission denied"),
+    ],
+    ids=["client-error", "untrusted-certificate", "local-write-error"],
+)
+def test_fetch_does_not_retry_a_permanent_failure(
+    tmp_path: Path, monkeypatch, failure: Exception, message: str
+) -> None:
+    item = _item("upstream/a.lib", "cell/lib/a.lib", b"liberty\n")
+    monkeypatch.setattr(nangate_pdk, "FILES", (item,))
+    opener, calls = _flaky_opener([failure], b"liberty\n")
+    delays: list[float] = []
+
+    with pytest.raises(nangate_pdk.NangatePdkError, match=rf"attempt 1 of 3\).*{message}"):
+        nangate_pdk.fetch(tmp_path / "cache", opener=opener, sleep=delays.append)
+
+    assert len(calls) == 1
+    assert delays == []
 
 
 def test_validation_reports_missing_and_changed_members(tmp_path: Path, monkeypatch) -> None:

@@ -388,7 +388,7 @@ def test_public_campaign_inspection_rejects_malformed_summary_but_reports_mismat
         inspect_retained_campaign(completed.store.manifest_path)
 
     completed.store.summary_path.write_bytes(canonical_json_bytes([]))
-    with pytest.raises(SimulationCampaignIntegrityError, match="not an object"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="not a JSON object"):
         inspect_retained_campaign(completed.store.manifest_path)
 
     summary["complete"] = True
@@ -430,6 +430,10 @@ def test_public_work_item_authentication_rejects_file_changed_during_read(
         raw = original_read(descriptor, count)
         if not swapped:
             swapped = True
+            if os.name == "nt":  # Windows refuses to rename an open file: extend it instead.
+                with manifest.open("ab") as stream:
+                    stream.write(b"\n")
+                return raw
             replacement = manifest.with_name("original-manifest.json")
             manifest.rename(replacement)
             manifest.write_bytes(replacement.read_bytes())
@@ -437,10 +441,7 @@ def test_public_work_item_authentication_rejects_file_changed_during_read(
 
     monkeypatch.setattr(os, "read", swap_after_read)
 
-    with pytest.raises(
-        SimulationCampaignIntegrityError,
-        match=r"changed during read|cannot read authoritative file",
-    ):
+    with pytest.raises(SimulationCampaignIntegrityError, match="changed during read"):
         authenticate_work_item(manifest, completed.item_id)
 
 

@@ -56,6 +56,7 @@ booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
 booley dashboard                  # sessions and Jobs; see Usage
 booley worktree new <name>        # a linked worktree for parallel work; see below
+booley worktree list              # each worktree's branch, changes, and use
 ```
 
 The Dashboard opens by itself when you attach to the container; see
@@ -136,15 +137,18 @@ booley worktree new <name>
 ```
 
 This creates `.booley/worktrees/<name>`, prints its path, and starts it at the
-current commit on a detached HEAD. A name of the form `<branch>--<description>`
-checks out the existing branch `<branch>` instead. An existing destination is
-refused and left untouched. Git submodules are filled in from the main
+current commit on a new branch `booley/<name>`. An existing `booley/<name>`
+branch or destination is refused and left untouched, and so is a name Git
+cannot use in a branch name (such as `x.lock` or `a..b`). A name of the form
+`<branch>--<description>` checks out the existing branch `<branch>` instead and
+creates no branch. Git submodules are filled in from the main
 checkout, without network access. Then the Project's `post-setup` hook
 (`.booley/hooks/post-setup.sh`, `.py`, or no suffix), if it has one, runs in the
 new worktree. Its output is shown and saved to
 `.booley/worktrees/.logs/<name>.log` in the main Booley Directory. If the
 submodule step or the hook fails, Booley removes the worktree and its
-`booley-worktree/<name>` branch and exits nonzero.
+`booley/<name>` and `booley-worktree/<name>` branches and exits nonzero. A
+branch that already gained commits is kept.
 
 The worktree gets its own Booley Directory (the `.booley/` folder):
 
@@ -160,12 +164,30 @@ The worktree gets its own Booley Directory (the `.booley/` folder):
   and evidence stay in the main Booley Directory. A path Booley does not
   classify is not copied, and the command names it.
 
+**Listing worktrees.** `booley worktree list` shows one row per worktree
+under `.booley/worktrees/`, from the main checkout or from any worktree:
+
+| Column | Meaning |
+|---|---|
+| `NAME` | The worktree name |
+| `BRANCH` | Its branch, or `detached` on a detached HEAD |
+| `BOOLEY DIR` | `Paired Checkout` or `Snapshot` |
+| `UNCOMMITTED` | Changed and untracked entries (an untracked folder counts once), not counting untracked files in the worktree's own `.booley/`. A Paired Checkout reads `N, paired M`, `M` being the same count in its inner checkout |
+| `UNMERGED` | Commits not yet in the main checkout's branch. Commits whose change is already there count as merged, including a branch merged by squash. A Paired Checkout reads `N, paired M` |
+| `SESSION` | Handles of live sessions in the worktree |
+| `GOAL` | Its active Goal, if any |
+| `LAST USED` | When the worktree was created or a Booley tool call last ran there; `never` for a worktree that predates the record |
+
+A worktree whose directory is gone is not listed; a warning names it.
+
 **Removing a worktree** deletes everything in it, ignored files included, and
 Booley has no command for it. First save what you need:
 
-1. Put the commits you want on a branch you keep. The worktree starts on a
-   detached HEAD, so its commits may be on no branch at all. For a Paired
-   Checkout, the same goes for its `booley-worktree/<name>` branch.
+1. Put the commits you want on a branch you keep. Commits made in the worktree
+   are on `booley/<name>`; an older worktree, or one named
+   `<branch>--<description>`, may be on a detached HEAD, so its commits may be
+   on no branch at all. For a Paired Checkout, the same goes for its
+   `booley-worktree/<name>` branch.
 2. Copy needed untracked and ignored files into a new folder outside the
    worktree, overwriting nothing. Look through the whole worktree, including
    its `.booley/`: `reviewer-evidence/`, `handoffs/`, the Findings Log
@@ -181,7 +203,9 @@ Then, in the same Sandbox and from outside the worktree:
    `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley`.
 3. Remove the worktree with
    `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
-4. Optional, Paired Checkout only: to reuse the name, delete its branch with
+4. Optional: to reuse the name, delete its branch with
+   `git -C <absolute-project-root> branch -D booley/<name>`, and for a Paired
+   Checkout also
    `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
 
 Git refuses to remove a worktree that holds populated submodules; once your

@@ -6,7 +6,8 @@ description: Remove preinstalled toolchains the image-building jobs never use an
 # build preflight refuses to start without roughly 40 GiB free on the Docker
 # storage filesystem. /opt/hostedtoolcache itself stays: setup-python resolves
 # Python from it, so only CodeQL goes. The removal list lives here, once, for
-# `bwave-smoke` (Tests workflow) and `worktree-mounts` (Deep tests workflow).
+# `bwave-smoke` and `riscv-image` (Tests workflow) and `worktree-mounts` (Deep
+# tests workflow).
 runs:
   using: composite
   steps:

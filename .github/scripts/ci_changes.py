@@ -56,6 +56,7 @@ CONDITIONAL_JOBS = (
     "package-artifacts",
     "sidecar-smoke",
     "bwave-smoke",
+    "riscv-image",
     "scanner-smoke",
     "renovate-config",
     "flake-stress",
@@ -63,6 +64,9 @@ CONDITIONAL_JOBS = (
 # Selected by the pull request's changed test modules (ci_flake_stress.py),
 # never by path categories, so a workflow or full-CI change does not force it.
 STRESS_JOB = "flake-stress"
+# Selected exactly when the `riscv_image` category is: main and manual runs
+# leave that category to its compatibility inputs, so `full` must not force it.
+RISCV_IMAGE_JOB = "riscv-image"
 ALWAYS_JOBS = ("changes", "release-semantic")
 # A push to main runs only these jobs. Mergify merges the exact tree its queue
 # candidate validated, so re-running the suite there repeats a passed check.
@@ -97,7 +101,7 @@ DEFAULT_WINDOWS_SHARD_COUNT = 10
 # Ubuntu Python 3.11 legs: two duration-balanced shards, adopted from the
 # controlled comparison in .github/ci/linux-shard-experiment.md. A manual run may
 # still pick 1 (one complete-suite job) or 3. Ubuntu Python 3.14 runs the suite
-# under coverage in the fixed three-shard `coverage-shards` job instead.
+# under coverage in the fixed six-shard `coverage-shards` job instead.
 LINUX_SHARD_COUNTS = (1, 2, 3)
 DEFAULT_LINUX_SHARD_COUNT = 2
 LINUX_SCHEDULERS = ("loadscope", "worksteal")
@@ -390,8 +394,16 @@ def _documentation_jobs(categories: set[str]) -> set[str]:
 
 
 def _category_jobs(categories: set[str]) -> set[str]:
+    jobs = _path_category_jobs(categories)
+    if "riscv_image" in categories:
+        jobs.add(RISCV_IMAGE_JOB)
+    return jobs
+
+
+def _path_category_jobs(categories: set[str]) -> set[str]:
+    """Return the jobs the path categories select, apart from the self-gated ones."""
     if categories & {"full", "workflow", "packaging", "release"}:
-        return set(ALL_JOBS) - {STRESS_JOB}
+        return set(ALL_JOBS) - {STRESS_JOB, RISCV_IMAGE_JOB}
     jobs = set(ALWAYS_JOBS) | _documentation_jobs(categories)
     if categories & {"python_source", "python_tests"}:
         jobs.update({"lint", "test", "test-verify", "coverage-shards", "coverage"})
