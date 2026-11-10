@@ -155,16 +155,23 @@ def test_invalid_reference_diagnostics_aggregate_paths_and_categories():
     assert foreign_id not in message
 
 
+_NOT_AN_RTL_POINT = "Candidate must identify an exact RTL Coverage Point"
+_NOT_APPROVABLE = "Point is not eligible or reason is not an allowed approval reason"
+_NEEDS_EVIDENCE = "Verified sources and supporting evidence are required for human review"
+
+
 @pytest.mark.parametrize(
-    "point,reason,evidence,proof,expected",
+    "point,reason,evidence,proof,expected,expected_reason",
     [
-        ("known", "excluded", "Unused hardware", "", "investigate"),
-        ("unknown", "excluded", "Unused hardware", "", "forbidden"),
-        ("known", "constant", "", "", "forbidden"),
-        ("known", "unreachable", "Hypothesis", "", "investigate"),
+        ("known", "excluded", "Unused hardware", "", "investigate", _NEEDS_EVIDENCE),
+        ("unknown", "excluded", "Unused hardware", "", "forbidden", _NOT_AN_RTL_POINT),
+        ("known", "constant", "", "", "forbidden", _NOT_APPROVABLE),
+        ("known", "unreachable", "Hypothesis", "", "investigate", _NEEDS_EVIDENCE),
     ],
 )
-def test_candidates_are_screened_and_never_approved(point, reason, evidence, proof, expected):
+def test_candidates_are_screened_and_never_approved(
+    point, reason, evidence, proof, expected, expected_reason
+):
     document = _valid_document()
     point_id = document["points"][0]["id"] if point == "known" else "unknown"
     campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
@@ -182,6 +189,7 @@ def test_candidates_are_screened_and_never_approved(point, reason, evidence, pro
     )
     screened = report["waiver_candidates"][0]
     assert screened["screening"] == expected
+    assert screened["screening_reason"] == expected_reason
     assert screened["approval"] == "not_approved"
     assert report["observed_evidence"]["points"][0]["disposition"] == {"kind": "eligible"}
 
@@ -217,6 +225,7 @@ def test_duplicate_exact_point_candidates_are_forbidden():
     )
     duplicate = report.to_dict()["waiver_candidates"][1]
     assert duplicate["screening"] == "forbidden"
+    assert duplicate["screening_reason"] == "Duplicate candidate for the same exact point"
     assert duplicate["approval"] == "not_approved"
 
 
@@ -302,8 +311,10 @@ def test_closure_recommendations_use_persisted_policy_not_simulation(status, rec
     assert report["observed_evidence"]["tests"]["runs"][0]["simulation_verdict"] == "fail"
 
 
-@pytest.mark.parametrize("kind", ["testbench", "fsm"])
-def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind):
+@pytest.mark.parametrize(
+    ("kind", "expected_reason"), [("testbench", _NOT_AN_RTL_POINT), ("fsm", _NOT_APPROVABLE)]
+)
+def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, expected_reason):
     from dataclasses import replace
 
     from booley.flows.sim.coverage_campaign import derive_coverage_rollups
@@ -365,12 +376,23 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind):
         .to_dict()
     )
     assert report["waiver_candidates"][0]["screening"] == "forbidden"
+    assert report["waiver_candidates"][0]["screening_reason"] == expected_reason
 
 
 @pytest.mark.parametrize(
-    ("hits", "expected"), [({}, "ready_for_human_review"), ({"run:smoke": 3}, "investigate")]
+    ("hits", "expected", "expected_reason"),
+    [
+        (
+            {},
+            "ready_for_human_review",
+            "A human must accept or reject this candidate through a Goal Change Proposal",
+        ),
+        ({"run:smoke": 3}, "investigate", "Unreachability is contradicted by observed hits"),
+    ],
 )
-def test_unreachable_needs_zero_hits_but_no_model_proof_reference(hits, expected) -> None:
+def test_unreachable_needs_zero_hits_but_no_model_proof_reference(
+    hits, expected, expected_reason
+) -> None:
     """ADR 0066: the review proof is written at approval; observed hits still contradict."""
     from dataclasses import replace
     from types import MappingProxyType
@@ -385,7 +407,7 @@ def test_unreachable_needs_zero_hits_but_no_model_proof_reference(hits, expected
 
     screening, reason = _candidate_screen(item, point, rtl, object())
     assert screening == expected
-    assert ("Goal Change Proposal" in reason) == (expected == "ready_for_human_review")
+    assert reason == expected_reason
 
 
 def test_analysis_input_carries_recomputed_rollups_and_evaluation(tmp_path):

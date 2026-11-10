@@ -30,6 +30,7 @@ from booley.flows.sim.coverage_json import (
     coverage_mapping_document,
     freeze_coverage_mapping,
 )
+from booley.flows.sim.coverage_waivers import waivable_point_problem
 
 
 @dataclass(frozen=True)
@@ -480,12 +481,10 @@ def _screen_candidates(
 
 
 def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
-    if point is None or point.identity.source not in rtl:
+    problem = waivable_point_problem([] if point is None else [point], rtl)
+    if problem is not None and problem != "ineligible":
         return "forbidden", "Candidate must identify an exact RTL Coverage Point"
-    if point.disposition["kind"] != "eligible" or item["reason"] not in {
-        "excluded",
-        "unreachable",
-    }:
+    if problem == "ineligible" or item["reason"] not in {"excluded", "unreachable"}:
         return "forbidden", "Point is not eligible or reason is not an allowed approval reason"
     if sources is None or not item["evidence"].strip():
         return (

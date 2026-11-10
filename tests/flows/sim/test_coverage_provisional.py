@@ -11,6 +11,7 @@ import pytest
 from booley.criteria.state import CriterionEntry
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
+    CoverageCapability,
     CoveragePoint,
     CoveragePointIdentity,
     derive_coverage_rollups,
@@ -38,15 +39,17 @@ _CAMPAIGN_ID = "campaign:sim_counter:12"
 _NO_WAIVERS = ApprovedWaiverSet(MappingProxyType({"enabled": False}), "sha256:none", ())
 
 
-def _point(point_id: str, *, hits: int, source: str = _SOURCE) -> CoveragePoint:
+def _point(
+    point_id: str, *, hits: int, source: str = _SOURCE, metric: str = "line"
+) -> CoveragePoint:
     return CoveragePoint(
         id=point_id,
         identity=CoveragePointIdentity(
-            metric="line",
+            metric=metric,
             location=MappingProxyType({"source": source}),
             hierarchy="TOP.counter",
             subject=MappingProxyType({"id": point_id}),
-            collector=MappingProxyType({"record_type": "v_line"}),
+            collector=MappingProxyType({"record_type": f"v_{metric}"}),
         ),
         hits_by_run=MappingProxyType({"run:smoke": hits} if hits else {}),
         disposition=MappingProxyType({"kind": "eligible"}),
@@ -108,27 +111,133 @@ def test_candidates_rescue_a_strict_failure_and_each_is_needed() -> None:
     assert campaign.evaluation["status"] == "fail"
 
 
+def test_a_candidate_rescuing_one_metric_is_needed_while_another_fails() -> None:
+    """ "Needed" is judged per metric: an unrelated failing metric does not hide it."""
+    points = (
+        *(_point(f"c{index}", hits=1) for index in range(3)),
+        _point("u1", hits=0),
+        _point("bc0", hits=1, metric="branch"),
+        _point("bu1", hits=0, metric="branch"),
+    )
+    scored = MappingProxyType({"collection": "supported", "scoring": "scored_v1"})
+    base = _campaign()
+    campaign = replace(
+        base,
+        points=points,
+        collector=replace(
+            base.collector,
+            capabilities=tuple(
+                CoverageCapability(record_class=metric, status="reported", attributes=scored)
+                for metric in ("line", "branch")
+            ),
+        ),
+        source_closure=MappingProxyType(
+            {"rtl": (MappingProxyType({"path": _SOURCE, "sha256": _SHA}),)}
+        ),
+        rollups=derive_coverage_rollups(points),
+    )
+    criterion = CoverageCriterion(
+        _TARGET,
+        (CoverageThreshold("line", Fraction(100)), CoverageThreshold("branch", Fraction(100))),
+        None,
+    )
+    strict = evaluate_coverage_campaign(campaign, criterion, _NO_WAIVERS)
+    assert strict.evaluation["status"] == "fail"
+
+    verdict = evaluate_provisional_coverage(strict, criterion, [_candidate("u1")])
+
+    assert verdict.status == "fail"
+    assert {row["metric"]: row["verdict"] for row in verdict.evaluation["metrics"]} == {
+        "line": "pass",
+        "branch": "fail",
+    }
+    assert _screens(verdict) == {"wc-u1": ("offered", True)}
+
+
+def _duplicate_u1(points: tuple[CoveragePoint, ...]) -> tuple[CoveragePoint, ...]:
+    return (*points, *(point for point in points if point.id == "u1"))
+
+
+def _unscored_u1(points: tuple[CoveragePoint, ...]) -> tuple[CoveragePoint, ...]:
+    return tuple(
+        replace(point, disposition=MappingProxyType({"kind": "unscored"}))
+        if point.id == "u1"
+        else point
+        for point in points
+    )
+
+
+def _other_source_u1(points: tuple[CoveragePoint, ...]) -> tuple[CoveragePoint, ...]:
+    return tuple(
+        _point("u1", hits=0, source="rtl/other.sv") if point.id == "u1" else point
+        for point in points
+    )
+
+
 @pytest.mark.parametrize(
-    ("changes", "status"),
+    ("changes", "edit_points", "status", "reason"),
     [
-        ({"campaign_id": "campaign:other"}, "stale"),
-        ({"target_identity": "acme:demo:other:1.0#sim"}, "invalid"),
-        ({"point_id": "missing"}, "invalid"),
-        ({"point_id": "c0"}, "invalid"),
-        ({"source": "rtl/other.sv"}, "invalid"),
-        ({"source_sha256": _OTHER_SHA}, "invalid"),
+        (
+            {"campaign_id": "campaign:other"},
+            None,
+            "stale",
+            "Candidate belongs to a different Coverage Campaign.",
+        ),
+        (
+            {"target_identity": "acme:demo:other:1.0#sim"},
+            None,
+            "invalid",
+            "Candidate Target differs from the Campaign Target.",
+        ),
+        (
+            {"point_id": "missing"},
+            None,
+            "invalid",
+            "Candidate does not name exactly one Coverage Point.",
+        ),
+        (
+            {"point_id": "c0"},
+            None,
+            "invalid",
+            "Point has observed hits; it is not waivable as uncovered.",
+        ),
+        (
+            {"source": "rtl/other.sv"},
+            None,
+            "invalid",
+            "Candidate source digest differs from the Campaign's.",
+        ),
+        (
+            {"source_sha256": _OTHER_SHA},
+            None,
+            "invalid",
+            "Candidate source digest differs from the Campaign's.",
+        ),
+        ({}, _duplicate_u1, "invalid", "Candidate does not name exactly one Coverage Point."),
+        ({}, _unscored_u1, "invalid", "Point is not an eligible scored point."),
+        (
+            {},
+            _other_source_u1,
+            "invalid",
+            "Candidate source differs from the point's RTL source.",
+        ),
     ],
 )
-def test_candidates_are_rederived_from_the_campaign(changes: dict[str, str], status: str) -> None:
+def test_candidates_are_rederived_from_the_campaign(
+    changes: dict[str, str], edit_points, status: str, reason: str
+) -> None:
     """D1: a record is checked, not trusted — forged or stale bindings are not offered."""
     campaign, criterion = _evaluated(100)
+    if edit_points is not None:
+        campaign = replace(campaign, points=edit_points(campaign.points))
     candidate = _candidate("u1", **changes)
 
     verdict = evaluate_provisional_coverage(campaign, criterion, [candidate])
 
     assert verdict.status == "fail"
     assert verdict.offered_ids == ()
-    assert _screens(verdict)[candidate.candidate_id][0] == status
+    (screen,) = verdict.screens
+    assert (screen.status, screen.reason) == (status, reason)
 
 
 def test_changed_source_at_ticket_head_makes_a_candidate_stale() -> None:

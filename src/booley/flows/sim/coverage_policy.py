@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     CoverageRollup,
     DurableTargetIdentity,
-    rederive_coverage_points,
+    apply_point_dispositions,
 )
 from booley.flows.sim.coverage_json import (
     CRITERION_FINGERPRINT_JSON,
     content_digest,
+    coverage_mapping_document,
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_waivers import ApprovedWaiver, ApprovedWaiverSet
@@ -29,7 +31,9 @@ __all__ = [
     "coverage_metrics",
     "coverage_threshold",
     "evaluate_coverage_campaign",
+    "evaluation_json",
     "score_thresholds",
+    "strict_reevaluation",
 ]
 
 _CRITERION_SCHEMA = "booley.coverage-criterion/v1"
@@ -194,33 +198,6 @@ def _metric_available(campaign: CoverageCampaign, metric: str) -> bool:
     )
 
 
-def _apply_waivers(campaign: CoverageCampaign, approved: ApprovedWaiverSet) -> CoverageCampaign:
-    by_point = {
-        waiver.point_id: waiver
-        for waiver in approved.waivers
-        if str(waiver.target) == campaign.target.identity
-    }
-    points = tuple(
-        replace(
-            point,
-            disposition=freeze_coverage_mapping(
-                {
-                    "kind": "waived",
-                    "reason": by_point[point.id].reason,
-                    "waiver_id": by_point[point.id].waiver_id,
-                    "waiver_file": by_point[point.id].waiver_file,
-                    "waiver_fingerprint": by_point[point.id].waiver_fingerprint,
-                    "provenance": by_point[point.id].provenance,
-                }
-            ),
-        )
-        if point.id in by_point and point.disposition.get("kind") == "eligible"
-        else point
-        for point in campaign.points
-    )
-    return rederive_coverage_points(campaign, points)
-
-
 def _blocked_campaign(
     campaign: CoverageCampaign,
     criterion: CoverageCriterion,
@@ -364,8 +341,20 @@ def evaluate_coverage_campaign(
 ) -> EvaluatedCoverageCampaign:
     """Return a new immutable Campaign with deterministic policy evidence."""
     waiver_match = approved_waivers.match(campaign)
-    matched_set = replace(approved_waivers, waivers=waiver_match.waivers)
-    campaign = _apply_waivers(campaign, matched_set)
+    campaign = apply_point_dispositions(
+        campaign,
+        {
+            waiver.point_id: {
+                "kind": "waived",
+                "reason": waiver.reason,
+                "waiver_id": waiver.waiver_id,
+                "waiver_file": waiver.waiver_file,
+                "waiver_fingerprint": waiver.waiver_fingerprint,
+                "provenance": waiver.provenance,
+            }
+            for waiver in waiver_match.waivers
+        },
+    )
     diagnostics = [
         _diagnostic(item.code, item.pointer, item.message) for item in waiver_match.findings
     ]
@@ -395,3 +384,27 @@ def evaluate_coverage_campaign(
             diagnostics,
         )
     return _scored_campaign(campaign, criterion, approved_waivers, required_tests, score)
+
+
+def _without_approved_waivers(campaign: CoverageCampaign) -> CoverageCampaign:
+    """The Campaign before any Approved Waiver was applied to its points."""
+    return apply_point_dispositions(
+        campaign,
+        {
+            point.id: {"kind": "eligible"}
+            for point in campaign.points
+            if point.disposition.get("kind") == "waived" and "waiver_id" in point.disposition
+        },
+    )
+
+
+def strict_reevaluation(
+    campaign: CoverageCampaign, waivers: ApprovedWaiverSet, *, criterion: CoverageCriterion
+) -> EvaluatedCoverageCampaign:
+    """Evaluate a persisted Campaign strictly against a new Approved Waiver Set."""
+    return evaluate_coverage_campaign(_without_approved_waivers(campaign), criterion, waivers)
+
+
+def evaluation_json(campaign: EvaluatedCoverageCampaign) -> Mapping[str, Any]:
+    """Plain JSON of an evaluation, as Criterion details store it."""
+    return coverage_mapping_document(campaign.evaluation)
