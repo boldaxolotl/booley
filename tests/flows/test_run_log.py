@@ -70,7 +70,7 @@ class TestWriteRunLog:
 
 
 # ---------------------------------------------------------------------------
-# begin_run_log / run_log_is_current — the F-26 staleness guard
+# begin_run_log — the F-26 staleness guard
 # ---------------------------------------------------------------------------
 
 
@@ -86,16 +86,12 @@ class TestRunLogHeader:
         assert "run=run-2 flow=sim target=sim_fifo started=" in content
         assert run_log.RUN_LOG_PENDING in content
 
-    def test_header_fields_parse_back(self, tmp_path):
+    def test_header_line_names_run_flow_target_and_start(self, tmp_path):
         run_log.begin_run_log(tmp_path, flow="lint", target="lint_top", run="lint-7")
-        header = run_log.read_run_log_header(tmp_path)
-        assert header == {
-            "run": "lint-7",
-            "flow": "lint",
-            "target": "lint_top",
-            "started": header["started"],
-        }
-        assert header["started"].endswith("Z")
+        first_line = (tmp_path / "run.log").read_text(encoding="utf-8").splitlines()[0]
+        assert first_line.startswith(f"{run_log.RUN_LOG_HEADER_PREFIX} ")
+        assert "run=lint-7 flow=lint target=lint_top started=" in first_line
+        assert first_line.endswith("Z")
 
     def test_write_preserves_the_header(self, tmp_path):
         run_log.begin_run_log(tmp_path, flow="sim", target="sim_fifo", run="run-2")
@@ -104,7 +100,7 @@ class TestRunLogHeader:
         assert content.splitlines()[0].startswith(run_log.RUN_LOG_HEADER_PREFIX)
         assert run_log.RUN_LOG_PENDING not in content
         assert content.endswith("[SIM_RESULT] PASSED\n")
-        assert run_log.read_run_log_header(tmp_path)["run"] == "run-2"
+        assert "run=run-2 flow=sim target=sim_fifo" in content.splitlines()[0]
 
     def test_cap_accounts_for_the_preserved_header(self, tmp_path):
         run_log.begin_run_log(tmp_path, flow="sim", target="sim_fifo", run="run-2")
@@ -118,23 +114,6 @@ class TestRunLogHeader:
         # Paths that never call begin_run_log keep the historical shape.
         run_log.write_run_log(tmp_path, "raw output\n")
         assert (tmp_path / "run.log").read_text(encoding="utf-8") == "raw output\n"
-        assert run_log.read_run_log_header(tmp_path) is None
-
-    def test_is_current_only_after_the_output_lands(self, tmp_path):
-        assert run_log.run_log_is_current(tmp_path, "run-2") is False  # no log at all
-        run_log.begin_run_log(tmp_path, flow="sim", target="sim_fifo", run="run-2")
-        assert run_log.run_log_is_current(tmp_path, "run-2") is False  # still pending
-        run_log.write_run_log(tmp_path, "[SIM_RESULT] FAILED\n")
-        assert run_log.run_log_is_current(tmp_path, "run-2") is True
-
-    def test_is_current_rejects_another_run(self, tmp_path):
-        run_log.begin_run_log(tmp_path, flow="sim", target="sim_fifo", run="run-1")
-        run_log.write_run_log(tmp_path, "[SIM_RESULT] PASSED\n")
-        assert run_log.run_log_is_current(tmp_path, "run-2") is False
-
-    def test_is_current_rejects_a_headerless_log(self, tmp_path):
-        run_log.write_run_log(tmp_path, "TEST PASSED\n")
-        assert run_log.run_log_is_current(tmp_path, "run-2") is False
 
     def test_run_token_prefers_the_job_run_id(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_RUN_ID", "simulate-20260726T120000-1")
@@ -164,9 +143,11 @@ class TestRunLogProgress:
         # The whole point of the marker prefix: a live tail is not a verdict.
         run_log.begin_run_log(tmp_path, flow="sim", target="sim_float", run="run-9")
         run_log.write_run_log_progress(tmp_path, "TEST SUCCEEDED\n", elapsed_s=5.0, line_count=1)
-        assert run_log.run_log_is_current(tmp_path, "run-9") is False
+        in_progress = (tmp_path / "run.log").read_text(encoding="utf-8")
+        assert run_log.RUN_LOG_IN_PROGRESS_PREFIX in in_progress
         run_log.write_run_log(tmp_path, "TEST SUCCEEDED\n[SIM_RESULT] PASSED\n")
-        assert run_log.run_log_is_current(tmp_path, "run-9") is True
+        finished = (tmp_path / "run.log").read_text(encoding="utf-8")
+        assert run_log.RUN_LOG_IN_PROGRESS_PREFIX not in finished
 
     def test_progress_keeps_the_tail_when_capped(self, tmp_path):
         run_log.begin_run_log(tmp_path, flow="sim", target="sim_float", run="run-9")
@@ -310,24 +291,11 @@ def test_run_log_write_retries_before_raising_lasting_sharing_error(tmp_path, mo
     assert attempts[log] > 1
 
 
-def test_run_log_header_read_survives_transient_sharing_error(tmp_path, monkeypatch):
-    from tests.sharing_error_support import hold_opens
-
-    work, log = _started_log(tmp_path)
-    attempts = hold_opens(monkeypatch, {log: 1})
-    header = run_log.read_run_log_header(work)
-    assert header is not None
-    assert header["flow"] == "lint"
-    assert attempts[log] == 2
-
-
-def test_run_log_header_read_raises_lasting_sharing_error(tmp_path, monkeypatch):
+def test_run_log_write_raises_lasting_header_read_sharing_error(tmp_path, monkeypatch):
     from tests.sharing_error_support import hold_opens
 
     work, log = _started_log(tmp_path)
     hold_opens(monkeypatch, {log: 100})
-    with pytest.raises(PermissionError):
-        run_log.read_run_log_header(work)
     # The writer must not silently drop the ownership header either.
     with pytest.raises(PermissionError):
         run_log.write_run_log(work, "output\n")
@@ -345,7 +313,7 @@ def test_run_log_head_keeps_posix_permission_error_as_empty(tmp_path, monkeypatc
         raise PermissionError(errno.EACCES, "Permission denied")
 
     monkeypatch.setattr(Path, "open", deny)
-    assert run_log.read_run_log_header(work) is None
+    assert run_log._read_run_log_head(work / "run.log") == (b"", b"")
 
 
 def test_run_log_pointer_survives_transient_sharing_error(tmp_path, monkeypatch):
