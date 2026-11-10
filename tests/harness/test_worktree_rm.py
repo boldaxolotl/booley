@@ -749,6 +749,7 @@ def test_a_lock_timeout_before_the_paired_removal_changes_nothing_for_good(
 def test_an_interrupted_paired_removal_completes_on_rerun(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _module()
     from booley.runtime import project_worktree_pairing as pairing
 
     real_removal = pairing.remove_worktree_registration
