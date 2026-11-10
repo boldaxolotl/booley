@@ -33,7 +33,7 @@ import tempfile
 import threading
 import tomllib
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
@@ -60,6 +60,12 @@ _ASCII_REGEX_FOLD = str.maketrans({"\u0130": "i", "\u0131": "i"})
 _PREFILTER_CHUNK_CHARS = 1024 * 1024
 _IDENT_RE = re.compile(r"^(?P<name>.*) <(?P<email>[^<>]*)> \d+ [+-]\d{4}$")
 _OID_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+# GitHub login form: alphanumerics and inner hyphens, never surrounding whitespace.
+_OWNER_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?")
+# First line of the merge commit GitHub writes for a merged pull request.
+_PR_MERGE_SUBJECT_RE = re.compile(
+    r"Merge pull request #[1-9][0-9]* from (?P<owner>[A-Za-z0-9-]+)/\S+"
+)
 # The only `gh` output a PR write may echo: the URL of what it created.
 _PR_WRITE_URL_RE = re.compile(
     r"https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+"
@@ -92,6 +98,26 @@ class Finding:
     kind: str
     location: str
     term_id: str | None = None
+    # Advisory findings come from attributed outside work: reported, never blocking.
+    advisory: bool = False
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Where commits and tree entries came from, so scans can attribute them.
+
+    ``outside`` holds commits merged from another owner's pull request;
+    ``attributing_merges`` the merges that attribute them (their messages are
+    outside-authored); ``trusted_entries`` the exact ``(path, blob oid)`` pairs
+    already accepted on the base tip.
+    """
+
+    outside: frozenset[str] = frozenset()
+    attributing_merges: frozenset[str] = frozenset()
+    trusted_entries: frozenset[tuple[str, str]] = frozenset()
+
+
+NO_PROVENANCE = Provenance()
 
 
 @dataclass(frozen=True)
@@ -518,19 +544,27 @@ def _commit_facts(repo: Path, sha: str) -> tuple[str, str, str, str, str]:
 
 
 def _parse_changed_tree_entry(metadata_raw: bytes, path_raw: bytes) -> _TreeEntry | None:
+    """Parse one raw record; a merge (combined diff) carries one extra mode and oid per parent.
+
+    The record is ``:`` repeated once per parent, one mode and one oid for each
+    parent plus the result, and one status token. The result's mode and oid win.
+    """
     metadata = metadata_raw.decode("ascii", errors="replace").split()
-    if len(metadata) != 5 or not metadata[0].startswith(":"):
+    if not metadata or not metadata[0].startswith(":"):
         raise GuardError("a changed tree record could not be parsed")
-    old_mode = metadata[0][1:]
-    new_mode, old_oid, new_oid, status = metadata[1:]
+    parents = len(metadata[0]) - len(metadata[0].lstrip(":"))
+    if len(metadata) != 2 * (parents + 1) + 1:
+        raise GuardError("a changed tree record could not be parsed")
+    modes = [metadata[0][parents:], *metadata[1 : parents + 1]]
+    oids = metadata[parents + 1 : 2 * parents + 2]
+    status = metadata[-1]
     if (
-        re.fullmatch(r"[0-7]{6}", old_mode) is None
-        or re.fullmatch(r"[0-7]{6}", new_mode) is None
-        or _OID_RE.fullmatch(old_oid) is None
-        or _OID_RE.fullmatch(new_oid) is None
+        any(re.fullmatch(r"[0-7]{6}", mode) is None for mode in modes)
+        or any(_OID_RE.fullmatch(oid) is None for oid in oids)
         or re.fullmatch(r"[ACDMRTUXB]+", status) is None
     ):
         raise GuardError("a changed tree record could not be parsed")
+    new_mode, new_oid = modes[-1], oids[-1]
     if new_mode == "000000":
         return None
     path = path_raw.decode("utf-8", errors="surrogateescape")
@@ -545,7 +579,9 @@ def _changed_tree_entries(repo: Path, sha: str) -> list[_TreeEntry]:
     args = [
         "diff-tree",
         "--root",
-        "-m",
+        # Combined diff: a merge lists only paths whose result differs from every
+        # parent, so content inherited from one parent is not attributed to the merge.
+        "-c",
         "-r",
         "--no-commit-id",
         "--no-abbrev",
@@ -623,39 +659,89 @@ def _iter_blob_data(repo: Path, object_ids: list[str]) -> Iterable[tuple[str, by
 
 
 def _add_limited(target: list[Finding], additions: Iterable[Finding]) -> None:
-    remaining = _MAX_FINDINGS - len(target)
-    if remaining > 0:
-        target.extend(list(additions)[:remaining])
+    """Append findings, capping enforced and advisory findings separately."""
+    pending = list(additions)
+    for advisory in (False, True):
+        remaining = _MAX_FINDINGS - sum(finding.advisory is advisory for finding in target)
+        if remaining > 0:
+            target.extend([f for f in pending if f.advisory is advisory][:remaining])
 
 
-def inspect_commits(repo: Path, commits: Iterable[str], config: GuardConfig) -> list[Finding]:
+def _as_advisory(findings: Iterable[Finding]) -> list[Finding]:
+    return [replace(finding, advisory=True) for finding in findings]
+
+
+def _commit_fact_findings(
+    repo: Path, sha: str, config: GuardConfig, provenance: Provenance
+) -> tuple[list[Finding], bool]:
+    """Return a commit's message and identity findings, and whether it is exempt.
+
+    A commit is exempt when it is attributed outside work and its author is not
+    allowlisted: all of its findings are advisory. An attributing merge keeps its
+    identities enforced but its message (GitHub copies the branch name and PR
+    title into it) is advisory.
+    """
+    author_name, author_email, committer_name, committer_email, message = _commit_facts(repo, sha)
+    exempt = sha in provenance.outside and not _identity_allowed(
+        author_name, author_email, config.allowed_authors
+    )
+    message_findings = _scan_text(message, f"commit {sha[:12]} message", config)
+    identity_findings: list[Finding] = []
+    for role, name, email in (
+        ("author", author_name, author_email),
+        ("committer", committer_name, committer_email),
+    ):
+        identity_findings.extend(
+            _identity_findings(name, email, role, f"commit {sha[:12]}", config)
+        )
+    if exempt:
+        return _as_advisory(message_findings + identity_findings), True
+    if sha in provenance.attributing_merges:
+        message_findings = _as_advisory(message_findings)
+    return message_findings + identity_findings, False
+
+
+def _commit_entries(
+    repo: Path, sha: str, config: GuardConfig, trusted: frozenset[tuple[str, str]]
+) -> tuple[list[Finding], list[tuple[str, str]]]:
+    """Return path findings and (blob oid, path) pairs for entries not trusted on the base."""
+    path_findings: list[Finding] = []
+    blobs: list[tuple[str, str]] = []
+    for entry in _changed_tree_entries(repo, sha):
+        path = entry.path
+        if _path_ignored(path, config):
+            continue
+        if entry.object_id is not None and (path, entry.object_id) in trusted:
+            continue
+        path_findings.extend(_scan_text(path, f"commit {sha[:12]} {path} path", config))
+        if entry.object_id is not None:
+            blobs.append((entry.object_id, path))
+    return path_findings, blobs
+
+
+def inspect_commits(
+    repo: Path,
+    commits: Iterable[str],
+    config: GuardConfig,
+    provenance: Provenance = NO_PROVENANCE,
+) -> list[Finding]:
     """Inspect every commit fact and changed tree entry, de-duplicating blobs."""
     findings: list[Finding] = []
-    blob_context: dict[str, tuple[str, str]] = {}
+    # blob oid -> (commit, path, advisory); an enforced context replaces an advisory one.
+    blob_context: dict[str, tuple[str, str, bool]] = {}
     for sha in dict.fromkeys(commits):
-        author_name, author_email, committer_name, committer_email, message = _commit_facts(
-            repo, sha
-        )
-        _add_limited(findings, _scan_text(message, f"commit {sha[:12]} message", config))
-        for role, name, email in (
-            ("author", author_name, author_email),
-            ("committer", committer_name, committer_email),
-        ):
-            _add_limited(
-                findings, _identity_findings(name, email, role, f"commit {sha[:12]}", config)
-            )
-        for entry in _changed_tree_entries(repo, sha):
-            path = entry.path
-            if not _path_ignored(path, config):
-                _add_limited(
-                    findings,
-                    _scan_text(path, f"commit {sha[:12]} {path} path", config),
-                )
-                if entry.object_id is not None:
-                    blob_context.setdefault(entry.object_id, (sha, path))
+        fact_findings, exempt = _commit_fact_findings(repo, sha, config, provenance)
+        _add_limited(findings, fact_findings)
+        path_findings, blobs = _commit_entries(repo, sha, config, provenance.trusted_entries)
+        _add_limited(findings, _as_advisory(path_findings) if exempt else path_findings)
+        for object_id, path in blobs:
+            known = blob_context.get(object_id)
+            if known is None or (known[2] and not exempt):
+                blob_context[object_id] = (sha, path, exempt)
     for object_id, data in _iter_blob_data(repo, list(blob_context)):
-        sha, path = blob_context[object_id]
-        _add_limited(findings, _scan_blob(data, path, f"commit {sha[:12]} {path}", config))
+        sha, path, advisory = blob_context[object_id]
+        blob_findings = _scan_blob(data, path, f"commit {sha[:12]} {path}", config)
+        _add_limited(findings, _as_advisory(blob_findings) if advisory else blob_findings)
     return findings
 
 
@@ -668,6 +754,60 @@ def _rev_list(repo: Path, args: list[str]) -> list[str]:
     if any(_OID_RE.fullmatch(sha) is None for sha in commits):
         raise GuardError("git rev-list returned an invalid object name")
     return commits
+
+
+def _trusted_provenance(repo: Path, trusted_base: str | None) -> Provenance:
+    """Trust the exact (path, blob oid) entries of ``trusted_base``; absent trusts nothing."""
+    if trusted_base is None:
+        return NO_PROVENANCE
+    if _OID_RE.fullmatch(trusted_base) is None:
+        raise GuardError("the trusted base revision is invalid")
+    resolved = _run_git(
+        repo, ["rev-parse", "--verify", "--end-of-options", f"{trusted_base}^{{commit}}"]
+    )
+    if resolved.decode("ascii", errors="replace").strip().casefold() != trusted_base.casefold():
+        raise GuardError("the trusted base revision is not a commit")
+    entries: set[tuple[str, str]] = set()
+    for record in _run_git(repo, ["ls-tree", "-r", "-z", "--full-tree", trusted_base]).split(
+        b"\0"
+    ):
+        if not record:
+            continue
+        # "<mode> <type> <oid>\t<path>"
+        metadata, separator, path = record.partition(b"\t")
+        fields = metadata.decode("ascii", errors="replace").split()
+        if not separator or len(fields) != 3 or _OID_RE.fullmatch(fields[2]) is None:
+            raise GuardError("a trusted base tree record could not be parsed")
+        if fields[1] == "blob":
+            entries.add((path.decode("utf-8", errors="surrogateescape"), fields[2]))
+    return Provenance(trusted_entries=frozenset(entries))
+
+
+def _outside_attribution(repo: Path, revision: str, owner: str) -> Provenance:
+    """Attribute commits merged from another owner's pull request on first-parent history.
+
+    A first-parent two-parent commit whose message first line is GitHub's merge
+    title for a branch of another owner attributes the commits its second parent
+    brought in. Nothing else attributes a commit, so unattributable commits stay
+    enforced.
+    """
+    raw = _run_git(
+        repo,
+        ["log", "--first-parent", "-z", "--format=%H %P%n%B", "--end-of-options", revision],
+    )
+    outside: set[str] = set()
+    attributing: set[str] = set()
+    for record in raw.decode("utf-8", errors="replace").split("\0"):
+        header, _, body = record.strip("\n").partition("\n")
+        oids = header.split()
+        if any(_OID_RE.fullmatch(oid) is None for oid in oids):
+            raise GuardError("git log returned an invalid object name")
+        match = _PR_MERGE_SUBJECT_RE.fullmatch(body.split("\n", 1)[0])
+        if len(oids) != 3 or match is None or match["owner"].casefold() == owner.casefold():
+            continue
+        attributing.add(oids[0])
+        outside.update(_rev_list(repo, [oids[2], "--not", oids[1]]))
+    return Provenance(frozenset(outside), frozenset(attributing))
 
 
 def _advertised_destination_oids(repo: Path, remote_location: str) -> list[str] | None:
@@ -694,6 +834,10 @@ def _advertised_destination_oids(repo: Path, remote_location: str) -> list[str] 
         object_id = fields[0]
         if _OID_RE.fullmatch(object_id) is None:
             return None
+        # GitHub advertises unmerged fork heads under refs/pull/*; they are
+        # outside content, not accepted destination history.
+        if fields[1].startswith("refs/pull/"):
+            continue
         advertised.append(object_id)
     return list(dict.fromkeys(advertised))
 
@@ -745,13 +889,26 @@ def _is_zero_sha(value: str) -> bool:
 
 
 def _print_findings(findings: list[Finding], config: GuardConfig, stream: TextIO) -> None:
-    print("ERROR: confidential-content leak guard blocked this operation.", file=stream)
-    for finding in findings:
-        location = _redact_location(finding.location, config)
-        suffix = f" (term id {finding.term_id})" if finding.term_id else ""
-        print(f"  - {finding.kind}: {location}{suffix}", file=stream)
-    if len(findings) >= _MAX_FINDINGS:
-        print(f"  - output limited to {_MAX_FINDINGS} findings", file=stream)
+    """Print enforced findings under ERROR and advisory ones under WARNING, redacted."""
+    for advisory, header in (
+        (False, "ERROR: confidential-content leak guard blocked this operation."),
+        (True, "WARNING: advisory findings in attributed outside work (not blocking):"),
+    ):
+        selected = [finding for finding in findings if finding.advisory is advisory]
+        if not selected:
+            continue
+        print(header, file=stream)
+        for finding in selected:
+            location = _redact_location(finding.location, config)
+            suffix = f" (term id {finding.term_id})" if finding.term_id else ""
+            print(f"  - {finding.kind}: {location}{suffix}", file=stream)
+        if len(selected) >= _MAX_FINDINGS:
+            label = "advisory" if advisory else "enforced"
+            print(f"  - output limited to {_MAX_FINDINGS} {label} findings", file=stream)
+
+
+def _has_enforced(findings: list[Finding]) -> bool:
+    return any(not finding.advisory for finding in findings)
 
 
 def _guard_failure(exc: GuardError, stream: TextIO) -> int:
@@ -783,12 +940,14 @@ def pre_push_hook_main(
     stdin: TextIO = sys.stdin,
     remote_name: str | None = None,
     remote_location: str | None = None,
+    trusted_base: str | None = None,
 ) -> int:
     root = Path(repo or Path.cwd()).resolve()
     try:
         if (remote_name is None) != (remote_location is None):
             raise GuardError("the pre-push destination is incomplete")
         config = load_config(root)
+        provenance = _trusted_provenance(root, trusted_base)
         updates = [RefUpdate.parse(line) for line in stdin]
         has_non_deletion = any(not _is_zero_sha(update.local_sha) for update in updates)
         destination_tips = (
@@ -808,7 +967,7 @@ def pre_push_hook_main(
                     destination_tips=destination_tips,
                 )
             )
-        findings = inspect_commits(root, commits, config)
+        findings = inspect_commits(root, commits, config, provenance)
     except GuardError as exc:
         return _guard_failure(exc, sys.stderr)
     if findings:
@@ -1048,7 +1207,13 @@ def restore_draft_main(repo: Path | str) -> int:
     return 0
 
 
-def verify_candidate_main(repo: Path | str, revision: str, base: str, event_path: Path) -> int:
+def verify_candidate_main(
+    repo: Path | str,
+    revision: str,
+    base: str,
+    event_path: Path,
+    trusted_base: str | None = None,
+) -> int:
     """Validate and scan a proposed vocabulary using the trusted current key."""
     root = Path(repo).resolve()
     try:
@@ -1067,7 +1232,8 @@ def verify_candidate_main(repo: Path | str, revision: str, base: str, event_path
             raise GuardError("the proposed encrypted vocabulary uses a different key")
         candidate_config = _parse_config(unseal_vocabulary(proposed, key), root)
         commits = outgoing_commits(root, revision, base)
-        findings = inspect_commits(root, commits, candidate_config)
+        provenance = _trusted_provenance(root, trusted_base)
+        findings = inspect_commits(root, commits, candidate_config, provenance)
         event = json.loads(event_path.read_text(encoding="utf-8"))
         _add_limited(findings, inspect_pull_request_event(event, candidate_config))
     except (ValueError, OSError, json.JSONDecodeError, SealedVocabularyError, GuardError) as exc:
@@ -1114,20 +1280,35 @@ def sync_ci_key_main(repo: Path | str) -> int:
     return 0
 
 
-def audit_main(repo: Path | str, revisions: list[str], *, include_worktree: bool = False) -> int:
+def audit_main(
+    repo: Path | str,
+    revisions: list[str],
+    *,
+    include_worktree: bool = False,
+    repository_owner: str | None = None,
+) -> int:
+    """Audit full ancestry; with an owner, attributed outside PR work is advisory."""
     root = Path(repo).resolve()
     try:
         config = load_config(root)
+        provenance = NO_PROVENANCE
+        if repository_owner is not None:
+            if _OWNER_RE.fullmatch(repository_owner) is None:
+                raise GuardError("the repository owner is not a valid login")
+            if len(revisions) != 1:
+                raise GuardError("attribution needs exactly one revision")
+            provenance = _outside_attribution(root, revisions[0], repository_owner)
         commits: list[str] = []
         for revision in revisions:
             commits.extend(_rev_list(root, [revision]))
-        findings = inspect_commits(root, commits, config)
+        findings = inspect_commits(root, commits, config, provenance)
         if include_worktree:
             _add_limited(findings, inspect_worktree(root, config))
     except GuardError as exc:
         return _guard_failure(exc, sys.stderr)
     if findings:
         _print_findings(findings, config, sys.stderr)
+    if _has_enforced(findings):
         return 1
     print("Confidential-content leak guard: clean.")
     return 0
@@ -1208,6 +1389,9 @@ def _parser() -> argparse.ArgumentParser:
     pre_push_parser.add_argument(
         "remote_location", nargs="?", help="Git's destination URL or path"
     )
+    pre_push_parser.add_argument(
+        "--trusted-base", help="commit whose exact path and blob entries are already accepted"
+    )
     pull_request_parser = subparsers.add_parser(
         "pull-request", help="inspect GitHub pull-request metadata"
     )
@@ -1229,6 +1413,9 @@ def _parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--rev", required=True)
     verify_parser.add_argument("--base", required=True)
     verify_parser.add_argument("--event", required=True, type=Path)
+    verify_parser.add_argument(
+        "--trusted-base", help="commit whose exact path and blob entries are already accepted"
+    )
     subparsers.add_parser("sync-ci-key", help="publish the decryption key to Actions")
     subparsers.add_parser(
         "self-test", help="check the encryption dependency without a key or repository"
@@ -1237,6 +1424,10 @@ def _parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--rev", action="append", default=[], help="revision to inspect")
     audit_parser.add_argument(
         "--worktree", action="store_true", help="also inspect tracked and untracked checkout files"
+    )
+    audit_parser.add_argument(
+        "--repository-owner",
+        help="exempt commits merged from pull requests of any other owner (one --rev)",
     )
     return parser
 
@@ -1257,7 +1448,9 @@ def _vocabulary_command_main(parsed: argparse.Namespace) -> int:
     if parsed.command == "restore-draft":
         return restore_draft_main(parsed.repo)
     if parsed.command == "verify-candidate":
-        return verify_candidate_main(parsed.repo, parsed.rev, parsed.base, parsed.event)
+        return verify_candidate_main(
+            parsed.repo, parsed.rev, parsed.base, parsed.event, parsed.trusted_base
+        )
     return sync_ci_key_main(parsed.repo)
 
 
@@ -1270,6 +1463,7 @@ def main(argv: list[str] | None = None) -> int:
             parsed.repo,
             remote_name=parsed.remote_name,
             remote_location=parsed.remote_location,
+            trusted_base=parsed.trusted_base,
         )
     if parsed.command == "self-test":
         return self_test_main()
@@ -1284,7 +1478,12 @@ def main(argv: list[str] | None = None) -> int:
     }:
         return _vocabulary_command_main(parsed)
     revisions = parsed.rev or ["HEAD"]
-    return audit_main(parsed.repo, revisions, include_worktree=parsed.worktree)
+    return audit_main(
+        parsed.repo,
+        revisions,
+        include_worktree=parsed.worktree,
+        repository_owner=parsed.repository_owner,
+    )
 
 
 if __name__ == "__main__":

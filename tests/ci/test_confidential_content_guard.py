@@ -151,11 +151,13 @@ def _scan_records(
     *,
     config: str | None,
     destination: tuple[str, Path] | None = None,
+    extra_args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     env = _sealed_fixture(repo, config) if config is not None else os.environ.copy()
     command = [sys.executable, str(SCANNER), "--repo", str(repo), "pre-push"]
     if destination is not None:
         command.extend((destination[0], str(destination[1])))
+    command.extend(extra_args)
     return subprocess.run(
         command,
         input=records,
@@ -1494,3 +1496,531 @@ def test_self_test_fails_when_the_dependency_is_broken(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert result.stderr.strip()
     assert "Traceback" not in result.stderr
+
+
+# --- Provenance-aware scanning (issue #3330) ---------------------------------
+
+OUTSIDER = ("Outside Contributor", "outsider@example.test")
+SAFE = ("Safe User", "safe@example.test")
+OLD_DATE = "2020-01-01T00:00:00+0000"
+NEW_DATE = "2021-01-01T00:00:00+0000"
+REPOSITORY_OWNER = "boldaxolotl"
+TERM_TEXT = f"contains {SENTINEL}\n"
+
+
+def _audit(
+    repo: Path, revs: tuple[str, ...] = ("HEAD",), *, owner: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run `audit` over `revs`, optionally with --repository-owner."""
+    command = [sys.executable, str(SCANNER), "--repo", str(repo), "audit"]
+    for rev in revs:
+        command.extend(("--rev", rev))
+    if owner is not None:
+        command.extend(("--repository-owner", owner))
+    return subprocess.run(
+        command,
+        capture_output=True,
+        check=False,
+        env=_sealed_fixture(repo, _encoded_config()),
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def _branch_commits(
+    repo: Path,
+    branch: str,
+    commits: list[tuple[tuple[str, str], dict[str, str]]],
+    *,
+    start: str = "main",
+    date: str | None = None,
+) -> str:
+    """Create `branch` at `start` with one commit per (identity, files), then return to main."""
+    _git(repo, "checkout", "-b", branch, start)
+    for index, (identity, files) in enumerate(commits):
+        for name, text in files.items():
+            (repo / name).write_bytes(text.encode())
+        _git(repo, "add", ".")
+        env = _identity_env(*identity)
+        if date is not None:
+            env |= {"GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
+        _git(repo, "commit", "-m", f"change {index}", env=env)
+    tip = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "main")
+    return tip
+
+
+def _merge_pull_request(
+    repo: Path,
+    branch: str,
+    *,
+    owner: str,
+    number: int,
+    title: str,
+    extra_file: tuple[str, str] | None = None,
+    committer: tuple[str, str] | None = None,
+    suffix: str = "",
+) -> str:
+    """Merge `branch` into the current branch with GitHub's merge-commit message."""
+    _git(repo, "merge", "--no-ff", "--no-commit", branch, env=_identity_env())
+    if extra_file is not None:
+        (repo / extra_file[0]).write_bytes(extra_file[1].encode())
+    _git(repo, "add", ".")
+    env = _identity_env()
+    if committer is not None:
+        env |= {"GIT_COMMITTER_NAME": committer[0], "GIT_COMMITTER_EMAIL": committer[1]}
+    message = f"Merge pull request #{number} from {owner}/{branch}{suffix}\n\n{title}"
+    _git(repo, "commit", "-m", message, env=env)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _outside_pull_request_history(repo: Path) -> None:
+    """A fork PR carrying a term in identity, message, path, blob, branch and title."""
+    branch = f"outsider-{SENTINEL}"
+    _branch_commits(
+        repo,
+        branch,
+        [
+            (
+                (f"Outsider {SENTINEL}", "outsider@example.test"),
+                {f"{SENTINEL}.txt": TERM_TEXT},
+            )
+        ],
+    )
+    _merge_pull_request(repo, branch, owner="outsider", number=1, title=f"fix {SENTINEL}")
+    (repo / "after.txt").write_bytes(b"clean maintainer follow-up\n")
+    _commit(repo, "maintainer follow-up")
+
+
+def test_audit_exempts_commits_merged_from_outside_pull_request(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    _outside_pull_request_history(repo)
+
+    result = _audit(repo, owner=REPOSITORY_OWNER)
+
+    assert result.returncode == 0, result.stderr
+    assert "advisory" in result.stderr.lower()
+    assert "ERROR" not in result.stderr + result.stdout
+    assert SENTINEL not in result.stderr + result.stdout
+
+
+def _case_unlisted_identity(repo: Path) -> tuple[str | None, str]:
+    (repo / "a.txt").write_bytes(b"clean\n")
+    _commit(repo, "change", name="Unexpected User", email="unexpected@example.test")
+    return REPOSITORY_OWNER, "identity not allowed"
+
+
+def _case_term_in_first_parent_commit(repo: Path) -> tuple[str | None, str]:
+    (repo / "a.txt").write_bytes(TERM_TEXT.encode())
+    _commit(repo, "change")
+    return REPOSITORY_OWNER, "confidential term"
+
+
+def _case_inexact_merge_message(repo: Path) -> tuple[str | None, str]:
+    _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"o.txt": "clean\n"})])
+    _merge_pull_request(
+        repo, "outsider-fix", owner="outsider", number=2, title="fix", suffix=" (edited)"
+    )
+    return REPOSITORY_OWNER, "identity not allowed"
+
+
+def _case_octopus_merge_only_file(repo: Path) -> tuple[str | None, str]:
+    _branch_commits(repo, "side-a", [(SAFE, {"a.txt": "a\n"})])
+    _branch_commits(repo, "side-b", [(SAFE, {"b.txt": "b\n"})])
+    _git(repo, "merge", "--no-commit", "side-a", "side-b", env=_identity_env())
+    (repo / "octopus-only.txt").write_bytes(TERM_TEXT.encode())
+    _commit(repo, "octopus merge")
+    return REPOSITORY_OWNER, "octopus-only.txt"
+
+
+def _case_allowlisted_author_in_outside_range(repo: Path) -> tuple[str | None, str]:
+    _branch_commits(
+        repo,
+        "outsider-fix",
+        [(OUTSIDER, {"o.txt": "clean\n"}), (SAFE, {"s.txt": TERM_TEXT})],
+    )
+    _merge_pull_request(repo, "outsider-fix", owner="outsider", number=3, title="fix")
+    return REPOSITORY_OWNER, "confidential term"
+
+
+def _case_attributing_merge_adds_term(repo: Path) -> tuple[str | None, str]:
+    _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"o.txt": "clean\n"})])
+    _merge_pull_request(
+        repo,
+        "outsider-fix",
+        owner="outsider",
+        number=4,
+        title="fix",
+        extra_file=("merge-only.txt", TERM_TEXT),
+    )
+    return REPOSITORY_OWNER, "merge-only.txt"
+
+
+def _case_attributing_merge_unlisted_committer(repo: Path) -> tuple[str | None, str]:
+    _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"o.txt": "clean\n"})])
+    _merge_pull_request(
+        repo, "outsider-fix", owner="outsider", number=5, title="fix", committer=OUTSIDER
+    )
+    return REPOSITORY_OWNER, "committer identity"
+
+
+def _case_owner_with_trailing_space(repo: Path) -> tuple[str | None, str]:
+    _outside_pull_request_history(repo)
+    return f"{REPOSITORY_OWNER} ", "could not complete"
+
+
+def _case_forged_merge_on_second_parent_side(repo: Path) -> tuple[str | None, str]:
+    _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"o.txt": "clean\n"})])
+    _git(repo, "checkout", "-b", "feature", "main")
+    _merge_pull_request(repo, "outsider-fix", owner="outsider", number=6, title="forged")
+    _git(repo, "checkout", "main")
+    _merge_pull_request(repo, "feature", owner=REPOSITORY_OWNER, number=7, title="feature")
+    return REPOSITORY_OWNER, "identity not allowed"
+
+
+_ENFORCED_CASES = {
+    "unlisted-identity": _case_unlisted_identity,
+    "term-in-first-parent-commit": _case_term_in_first_parent_commit,
+    "inexact-merge-message": _case_inexact_merge_message,
+    "octopus-merge-only-file": _case_octopus_merge_only_file,
+    "allowlisted-author-in-outside-range": _case_allowlisted_author_in_outside_range,
+    "attributing-merge-adds-term": _case_attributing_merge_adds_term,
+    "attributing-merge-unlisted-committer": _case_attributing_merge_unlisted_committer,
+    "owner-with-trailing-space": _case_owner_with_trailing_space,
+    "forged-merge-on-second-parent-side": _case_forged_merge_on_second_parent_side,
+}
+
+
+@pytest.mark.parametrize("case", sorted(_ENFORCED_CASES))
+def test_audit_enforces_unattributed_or_maintainer_work(tmp_path: Path, case: str) -> None:
+    repo, _base = _repository(tmp_path)
+    owner, fragment = _ENFORCED_CASES[case](repo)
+
+    result = _audit(repo, owner=owner)
+
+    assert result.returncode == 1, result.stderr
+    assert fragment in result.stderr
+    assert SENTINEL not in result.stderr + result.stdout
+
+
+def test_audit_without_owner_exempts_nothing(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    _outside_pull_request_history(repo)
+
+    result = _audit(repo)
+
+    assert result.returncode == 1
+    assert "identity not allowed" in result.stderr
+
+
+def test_audit_with_owner_refuses_multiple_revisions(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    (repo / "a.txt").write_bytes(b"clean\n")
+    head = _commit(repo, "change")
+
+    result = _audit(repo, (head, base), owner=REPOSITORY_OWNER)
+
+    assert result.returncode == 1
+    assert "could not complete" in result.stderr
+
+
+def test_pre_push_merge_of_main_skips_inherited_outside_content(tmp_path: Path) -> None:
+    repo, initial = _repository(tmp_path)
+    (repo / "outside.txt").write_bytes(TERM_TEXT.encode())
+    main_tip = _commit(repo, "outside work", name=OUTSIDER[0], email=OUTSIDER[1])
+    _git(repo, "checkout", "-b", "topic", initial)
+    (repo / "topic.txt").write_bytes(b"clean topic\n")
+    _commit(repo, "topic work")
+    _git(repo, "merge", "--no-ff", "main", "-m", "merge main", env=_identity_env())
+    head = _git(repo, "rev-parse", "HEAD")
+
+    result = _scan(repo, main_tip, head, config=_encoded_config())
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_pre_push_merge_still_reports_content_only_the_merge_introduces(tmp_path: Path) -> None:
+    repo, initial = _repository(tmp_path)
+    _branch_commits(repo, "side", [(SAFE, {"side.txt": "clean side\n"})])
+    main_tip = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-b", "topic", initial)
+    (repo / "topic.txt").write_bytes(b"clean topic\n")
+    _commit(repo, "topic work")
+    _git(repo, "merge", "--no-ff", "--no-commit", "side", env=_identity_env())
+    (repo / "merge-only.txt").write_bytes(TERM_TEXT.encode())
+    head = _commit(repo, "evil merge")
+
+    result = _scan(repo, main_tip, head, config=_encoded_config())
+
+    assert result.returncode == 1
+    assert "merge-only.txt" in result.stderr
+
+
+def _trusted_tip_repository(tmp_path: Path) -> tuple[Path, str]:
+    """main's tip holds outside content; `topic` branches from before it."""
+    repo, _initial = _repository(tmp_path)
+    _sealed_fixture(repo, _encoded_config())
+    vocabulary = _commit(repo, "add vocabulary")
+    _git(repo, "branch", "topic", vocabulary)
+    (repo / "outside.txt").write_bytes(TERM_TEXT.encode())
+    (repo / f"{SENTINEL}-tip.txt").write_bytes(b"tip clean\n")
+    tip = _commit(repo, "outside work", name=OUTSIDER[0], email=OUTSIDER[1])
+    _git(repo, "checkout", "topic")
+    return repo, tip
+
+
+def _pr_scan(
+    repo: Path, command: str, *, head: str, base: str, trusted_base: str | None
+) -> subprocess.CompletedProcess[str]:
+    """Run the CI PR scan for one command; verify-candidate also needs an event file."""
+    env = _sealed_fixture(repo, _encoded_config())
+    trusted = ["--trusted-base", trusted_base] if trusted_base is not None else []
+    base_command = [sys.executable, str(SCANNER), "--repo", str(repo)]
+    if command == "pre-push":
+        return subprocess.run(
+            [*base_command, "pre-push", *trusted],
+            input=f"refs/heads/topic {head} refs/heads/main {base}\n",
+            capture_output=True,
+            check=False,
+            env=env,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    event = repo.parent / "event.json"
+    event.write_text(
+        json.dumps({"pull_request": {"title": "public", "body": "", "head": {"ref": "topic"}}}),
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [
+            *base_command,
+            "verify-candidate",
+            "--rev",
+            head,
+            "--base",
+            base,
+            "--event",
+            str(event),
+            *trusted,
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+@pytest.mark.parametrize("command", ["pre-push", "verify-candidate"])
+@pytest.mark.parametrize(
+    ("case", "files", "blocked"),
+    [
+        ("identical-entry-restored", {"outside.txt": TERM_TEXT}, False),
+        ("same-blob-at-new-path", {"copy.txt": TERM_TEXT}, True),
+        ("edited-outside-file-keeps-term", {"outside.txt": TERM_TEXT + "more\n"}, True),
+        ("term-named-tip-path-changed-content", {f"{SENTINEL}-tip.txt": "changed\n"}, True),
+    ],
+)
+def test_trusted_base_skips_only_identical_entries(
+    tmp_path: Path, command: str, case: str, files: dict[str, str], blocked: bool
+) -> None:
+    repo, tip = _trusted_tip_repository(tmp_path)
+    for name, text in files.items():
+        (repo / name).write_bytes(text.encode())
+    head = _commit(repo, f"maintainer {case}")
+
+    result = _pr_scan(repo, command, head=head, base=tip, trusted_base=tip)
+
+    assert result.returncode == (1 if blocked else 0), result.stderr
+    assert SENTINEL not in result.stderr
+
+
+def test_identical_entry_is_scanned_without_trusted_base(tmp_path: Path) -> None:
+    repo, tip = _trusted_tip_repository(tmp_path)
+    (repo / "outside.txt").write_bytes(TERM_TEXT.encode())
+    head = _commit(repo, "maintainer restores outside entry")
+
+    result = _pr_scan(repo, "pre-push", head=head, base=tip, trusted_base=None)
+
+    assert result.returncode == 1
+    assert "confidential term" in result.stderr
+
+
+@pytest.mark.parametrize("bad", ["not-an-oid", "tree", "missing"])
+def test_trusted_base_refuses_a_value_that_is_not_a_commit_oid(tmp_path: Path, bad: str) -> None:
+    repo, tip = _trusted_tip_repository(tmp_path)
+    head = _git(repo, "rev-parse", "HEAD")
+    value = {
+        "not-an-oid": "not-an-oid",
+        "tree": _git(repo, "rev-parse", f"{tip}^{{tree}}"),
+        "missing": "1" * 40,
+    }[bad]
+
+    result = _pr_scan(repo, "pre-push", head=head, base=tip, trusted_base=value)
+
+    assert result.returncode == 1
+    assert "could not complete" in result.stderr
+
+
+def test_audit_maintainer_merge_of_main_skips_attributed_outside_content(tmp_path: Path) -> None:
+    repo, initial = _repository(tmp_path)
+    _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"outside.txt": TERM_TEXT})])
+    _merge_pull_request(repo, "outsider-fix", owner="outsider", number=1, title="fix")
+    _branch_commits(repo, "topic", [(SAFE, {"topic.txt": "clean topic\n"})], start=initial)
+    _git(repo, "checkout", "topic")
+    _git(repo, "merge", "--no-ff", "main", "-m", "merge main", env=_identity_env())
+    _git(repo, "checkout", "main")
+    _merge_pull_request(repo, "topic", owner=REPOSITORY_OWNER, number=2, title="topic")
+
+    result = _audit(repo, owner=REPOSITORY_OWNER)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_audit_maintainer_edit_of_merged_outside_file_is_enforced(tmp_path: Path) -> None:
+    repo, _initial = _repository(tmp_path)
+    _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"outside.txt": "clean\n"})])
+    _merge_pull_request(repo, "outsider-fix", owner="outsider", number=1, title="fix")
+    (repo / "outside.txt").write_bytes(TERM_TEXT.encode())
+    _commit(repo, "maintainer edit keeping a term")
+
+    result = _audit(repo, owner=REPOSITORY_OWNER)
+
+    assert result.returncode == 1
+    assert "outside.txt" in result.stderr
+
+
+@pytest.mark.parametrize("with_maintainer_commit", [True, False])
+def test_audit_enforces_blob_introduced_by_maintainer_and_outside_commit(
+    tmp_path: Path, with_maintainer_commit: bool
+) -> None:
+    repo, initial = _repository(tmp_path)
+    maintainer = None
+    if with_maintainer_commit:
+        (repo / "maintainer.txt").write_bytes(TERM_TEXT.encode())
+        _git(repo, "add", ".")
+        env = _identity_env() | {"GIT_AUTHOR_DATE": OLD_DATE, "GIT_COMMITTER_DATE": OLD_DATE}
+        _git(repo, "commit", "-m", "maintainer adds blob", env=env)
+        maintainer = _git(repo, "rev-parse", "HEAD")
+    # The outside commit is newer, so rev-list visits it before the maintainer commit.
+    _branch_commits(
+        repo, "outsider-fix", [(OUTSIDER, {"copy.txt": TERM_TEXT})], start=initial, date=NEW_DATE
+    )
+    _merge_pull_request(repo, "outsider-fix", owner="outsider", number=1, title="fix")
+
+    result = _audit(repo, owner=REPOSITORY_OWNER)
+
+    if maintainer is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1
+        assert maintainer[:12] in result.stderr
+        assert "confidential term" in result.stderr
+
+
+def _same_repository_topic(repo: Path, case: str) -> None:
+    """Create `topic` (left checked out on main) holding the maintainer-owned violation."""
+    if case == "evil-merge":
+        _branch_commits(repo, "side", [(SAFE, {"side.txt": "clean side\n"})])
+        _branch_commits(repo, "topic", [(SAFE, {"topic.txt": "clean topic\n"})])
+        _git(repo, "checkout", "topic")
+        _git(repo, "merge", "--no-ff", "--no-commit", "side", env=_identity_env())
+        (repo / "merge-only.txt").write_bytes(TERM_TEXT.encode())
+        _commit(repo, "evil merge")
+        _git(repo, "checkout", "main")
+        return
+    identity, files = {
+        "identity": (("Unexpected User", "unexpected@example.test"), {"a.txt": "clean\n"}),
+        "term": (SAFE, {"a.txt": TERM_TEXT}),
+    }[case]
+    _branch_commits(repo, "topic", [(identity, files)])
+
+
+_SAME_REPOSITORY_CASES = {
+    "identity": "identity not allowed",
+    "term": "confidential term",
+    "evil-merge": "merge-only.txt",
+}
+
+
+@pytest.mark.parametrize("mode", ["pre-push", "audit"])
+@pytest.mark.parametrize("case", sorted(_SAME_REPOSITORY_CASES))
+def test_same_repository_range_stays_enforced(tmp_path: Path, mode: str, case: str) -> None:
+    repo, base = _repository(tmp_path)
+    _same_repository_topic(repo, case)
+    if mode == "pre-push":
+        head = _git(repo, "rev-parse", "topic")
+        result = _scan_records(
+            repo,
+            f"refs/heads/topic {head} refs/heads/main {base}\n",
+            config=_encoded_config(),
+            extra_args=("--trusted-base", base),
+        )
+    else:
+        # A same-repository PR merge: the owner differs from the branch's only by case.
+        _merge_pull_request(repo, "topic", owner="BoldAxolotl", number=9, title="topic")
+        result = _audit(repo, owner=REPOSITORY_OWNER)
+
+    assert result.returncode == 1, result.stderr
+    assert _SAME_REPOSITORY_CASES[case] in result.stderr
+
+
+def test_pre_push_scans_fork_head_advertised_under_refs_pull(tmp_path: Path) -> None:
+    repo, initial = _repository(tmp_path)
+    origin = _bare_remote(tmp_path)
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "origin", f"{initial}:refs/heads/main")
+    fork_head = _branch_commits(repo, "fork", [(OUTSIDER, {"fork.txt": TERM_TEXT})])
+    _git(repo, "push", "origin", f"{fork_head}:refs/pull/5/head")
+    _git(repo, "checkout", "-b", "topic", fork_head)
+    (repo / "topic.txt").write_bytes(b"clean topic\n")
+    head = _commit(repo, "topic work")
+
+    result = _scan(repo, "0" * 40, head, config=_encoded_config(), destination=("origin", origin))
+
+    assert result.returncode == 1
+    assert "confidential term" in result.stderr
+
+
+def test_advisory_findings_do_not_displace_enforced_finding(tmp_path: Path) -> None:
+    repo, initial = _repository(tmp_path)
+    (repo / "maintainer.txt").write_bytes(TERM_TEXT.encode())
+    _commit(repo, "maintainer adds a term blob")
+    # 101 advisory path findings arise in the commit loop; the one enforced
+    # finding is a blob finding, added only in the later blob pass.
+    outside_files = {f"{SENTINEL}-{index}.txt": "clean\n" for index in range(101)}
+    _branch_commits(repo, "outsider-fix", [(OUTSIDER, outside_files)], start=initial)
+    _merge_pull_request(repo, "outsider-fix", owner="outsider", number=1, title="fix")
+
+    result = _audit(repo, owner=REPOSITORY_OWNER)
+
+    assert result.returncode == 1
+    assert "maintainer.txt" in result.stderr
+    assert "output limited to 100 advisory findings" in result.stderr
+    assert SENTINEL not in result.stderr + result.stdout
+
+
+def test_workflow_main_audit_passes_repository_owner() -> None:
+    workflow = (SCANNER.parent.parent / "workflows/confidential-content.yml").read_text(
+        encoding="utf-8"
+    )
+    main_scan = workflow.split("- name: Scan complete main history", 1)[1].split(
+        "- name: Publish scan status", 1
+    )[0]
+
+    assert "REPOSITORY_OWNER: ${{ github.repository_owner }}" in main_scan
+    assert '--repository-owner "${REPOSITORY_OWNER}"' in main_scan
+
+
+def test_workflow_pr_scan_trusts_base_tip_only_for_main() -> None:
+    workflow = (SCANNER.parent.parent / "workflows/confidential-content.yml").read_text(
+        encoding="utf-8"
+    )
+    pr_scan = workflow.split("- name: Scan pull-request commits", 1)[1].split(
+        "- name: Scan complete main history", 1
+    )[0]
+
+    assert "BASE_REF: ${{ github.event.pull_request.base.ref }}" in pr_scan
+    assert '"${BASE_REF}" = main' in pr_scan
+    assert '--trusted-base "${BASE_SHA}"' in pr_scan
+    assert pr_scan.count('"${trusted_base[@]}"') == 2
