@@ -180,7 +180,7 @@ def corrective_done_findings(criteria: Mapping[str, Any]) -> list[dict[str, Any]
     """Return unresolved current `done` findings of every severity.
 
     Includes optional Criteria and legacy rows without a status. An explicitly
-    noncurrent disposition or status excludes a row, never rediscovery.
+    noncurrent disposition or status excludes a row; rediscovering the finding does not.
     """
     return [
         row for row in collect_review_dispositions(criteria) if is_corrective_done_finding(row)

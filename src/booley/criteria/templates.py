@@ -104,11 +104,11 @@ def has_relative_qor_threshold(params: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 # Criterion keys removed or renamed by past migrations, each mapped to a
-# specific, actionable hint. This is the single source of truth consulted by
-# the Coverage Flow retired-key check so a Goal authored before a rename
-# fails fast with the exact fix. An unrecognized key is otherwise silently
-# created as *optional*, downgrading a mandatory Criterion to a no-op; hence
-# a hard error, not a warning.
+# specific, actionable hint. This is the single source of truth for the
+# retired-key lookup; the Coverage Flow rejects a retired ``coverage_`` key
+# with it. An unrecognized key is otherwise silently created as *optional*,
+# downgrading a mandatory Criterion to a no-op; hence a hard error, not a
+# warning.
 _COVERAGE_MIGRATION_HINT = f"replace it with {COVERAGE_MIGRATION_SKELETON!r}"
 RETIRED_CRITERIA: dict[str, str] = {
     "plan_done": "remove it; the planner specialists were pruned",
@@ -697,27 +697,26 @@ class CriteriaTemplate:
 
     @classmethod
     def for_ticket_type(cls, ticket_type: str) -> CriteriaTemplate:
-        """Load default template for a ticket type."""
+        """Load the default template for a built-in Goalset key."""
         specs = TEMPLATE_REGISTRY.get(ticket_type, _BUGFIX_CRITERIA)
         return cls(specs=list(specs))
 
     @classmethod
     def from_yaml(cls, criteria_section: dict[str, Any]) -> CriteriaTemplate:
-        """Parse Goal criteria entries from a ``criteria:`` section.
+        """Parse Goal criteria entries from a mapping with ``mandatory``/``optional`` keys.
 
-        Expected format::
+        Each section maps a Criterion key to its authored value::
 
-            criteria:
-              mandatory:
-                lint_clean: [lite, full, combo]
-                sim_pass:
-                  - alu_tb@lite@all
-              optional:
-                mutation_score:
-                  - target: sim_alu
-                    scope: [rtl/alu.sv]
-                    min_detected: 8
-                    total: 10
+            mandatory:
+              lint_clean: [lite, full, combo]
+              sim_pass:
+                - alu_tb@lite@all
+            optional:
+              mutation_score:
+                - target: sim_alu
+                  scope: [rtl/alu.sv]
+                  min_detected: 8
+                  total: 10
         """
         specs: list[CriterionSpec] = []
         cycle_bindings: set[tuple[str, str]] = set()
