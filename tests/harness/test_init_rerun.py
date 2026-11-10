@@ -178,9 +178,11 @@ def _current_nonstealth_init(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 @pytest.mark.timeout(120)
 def test_every_path_init_creates_is_classified(repo):
-    """Every file and empty directory of a full (default, Stealth) init has a Booley State part."""
+    """Every file and empty directory of a full Stealth init has a Booley State part."""
     from booley.core.booley_dir_parts import booley_dir_part
 
+    (repo / ".booley").mkdir()
+    (repo / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")  # adds inner .git
     assert _run_full_init(repo) == 0
     booley = repo / ".booley"
     created = [
@@ -191,6 +193,52 @@ def test_every_path_init_creates_is_classified(repo):
     assert created, "init created nothing under the Booley Directory"
     for path in created:
         booley_dir_part(path.relative_to(booley))
+
+
+def _info_exclude(repo: Path) -> list[str]:
+    return (repo / ".git/info/exclude").read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.timeout(120)
+def test_fresh_init_without_stealth_choice_keeps_booley_dir_trackable(repo):
+    """The init skeleton has no ``[stealth] enabled``, so init must not hide `.booley`."""
+    assert _run_full_init(repo) == 0
+
+    assert not (repo / ".booley/.git").exists()
+    assert "/.booley" not in _info_exclude(repo)
+
+
+@pytest.mark.timeout(120)
+def test_hidden_setup_choice_hides_booley_dir_on_init_rerun(repo):
+    """Setup's hidden answer writes ``enabled = true``; the next init applies it.
+
+    The fresh non-Stealth init published an untracked root `.gitattributes`; the
+    booley-setup skill removes it before rerunning init, as mirrored here.
+    """
+    assert _run_full_init(repo) == 0
+    config = repo / ".booley/booley.toml"
+    config.write_text(config.read_text(encoding="utf-8") + "\n[stealth]\nenabled = true\n")
+    (repo / ".gitattributes").unlink()
+
+    assert _run_full_init(repo) == 0
+
+    assert (repo / ".booley/.git").is_dir()
+    assert "/.booley" in _info_exclude(repo)
+
+
+@pytest.mark.timeout(120)
+def test_init_names_unrecorded_stealth_choice_of_hidden_booley_dir(repo, capsys):
+    """A Project hidden while Stealth defaulted on, with no `enabled` key, gets the fix."""
+    (repo / ".booley").mkdir()
+    (repo / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")
+    assert _run_full_init(repo) == 0
+    (repo / ".booley/booley.toml").write_text("# key predates the explicit choice\n")
+    capsys.readouterr()
+
+    assert _run_full_init(repo) == 0
+
+    output = capsys.readouterr().out
+    assert "hides /.booley" in output and "[stealth] enabled = true" in output
 
 
 @pytest.mark.timeout(120)
@@ -954,7 +1002,6 @@ def _assert_backfill_report(output: str, missing: list[str]) -> None:
         in output
     )
     assert "would add FUSESOC_IGNORE" in output
-    assert "would `git init -b" in output
 
 
 def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> None:
@@ -970,22 +1017,13 @@ def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> N
     assert set(ignore.splitlines()) - set("# custom ignore\ntmp/\n".splitlines()) == set(
         missing
     ) | {"", "# Added by booley init — transient Booley state."}
+    # The skeleton records no Stealth choice, so no inner repository is created.
     assert {p.name for p in target.iterdir()} == {
-        ".git",
         ".gitignore",
         "booley.toml",
         "tests.toml",
         "FUSESOC_IGNORE",
     }
-    outer = subprocess.check_output(
-        ["git", "-C", str(repo), "symbolic-ref", "HEAD"], timeout=SUBPROCESS_TIMEOUT_S
-    )
-    assert (
-        subprocess.check_output(
-            ["git", "-C", str(target), "symbolic-ref", "HEAD"], timeout=SUBPROCESS_TIMEOUT_S
-        )
-        == outer
-    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
@@ -1148,6 +1186,8 @@ def test_managed_bundle_publication_leaves_versioned_project_clean(repo, topolog
 
 
 def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
+    (repo / ".booley").mkdir()
+    (repo / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")  # inner repo
     assert _run_full_init(repo) == 0
     data = repo / ".booley"
     ignore = data / ".gitignore"
@@ -1309,6 +1349,7 @@ def test_check_only_early_failures_end_with_matching_verdict(repo, monkeypatch, 
 def test_check_only_unavailable_inner_git_branch_is_unresolved(repo, monkeypatch, capsys):
     target = repo / ".booley"
     target.mkdir(mode=0o700)
+    (target / "booley.toml").write_text("[stealth]\nenabled = true\n")
     monkeypatch.setattr(
         init_cmd.project_repositories,
         "inspect_symbolic_branch",
@@ -1565,6 +1606,8 @@ def test_full_init_output_order_is_unchanged(repo, monkeypatch, capsys):
     _current_auth_and_image(monkeypatch)
     (repo / ".booley").mkdir()
     (repo / ".booley" / "AGENTS.md").write_text("# Project guide\n", encoding="utf-8")
+    # The captured sequences are a Stealth Project's (no Project trackability step).
+    (repo / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
 
     fresh = _init_banners_and_results(repo, monkeypatch, capsys)
     rerun = _init_banners_and_results(repo, monkeypatch, capsys)

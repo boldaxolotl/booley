@@ -17,7 +17,11 @@ from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import doctor_stamp, session_admission
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
-from tests.harness.test_doctor import _patch_environment, _write_project
+from tests.harness.test_doctor import (
+    _disable_line_ending_stealth,
+    _patch_environment,
+    _write_project,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -210,6 +214,7 @@ def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
     waived, tmp_path, monkeypatch
 ):
     booley_dir = _write_project(tmp_path)
+    _disable_line_ending_stealth(tmp_path)
     bootstrap = host_diagnostics.bootstrap
     _use_real_host_checks(
         monkeypatch,

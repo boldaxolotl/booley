@@ -266,8 +266,9 @@ $ git checkout -- .booley/booley.toml
 error: pathspec '.booley/booley.toml' did not match any file(s) known to git
 ```
 
-This happens only in [Stealth Mode](https://booley.dev/docs/stealth/): your RTL
-repository ignores `.booley/`, so its Git commands can't see `booley.toml`,
+This happens in [Stealth Mode](https://booley.dev/docs/stealth/), or in a
+Project set up while Stealth was the default (Doctor then warns
+`stealth.enabled-unset`): your RTL repository ignores `.booley/`, so its Git commands can't see `booley.toml`,
 `tests.toml`, Goalsets or `.core` files there. If `.booley/` is its own Git
 repository, run Git there:
 

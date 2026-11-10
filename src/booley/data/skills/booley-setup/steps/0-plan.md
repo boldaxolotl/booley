@@ -156,15 +156,17 @@ leaves all of this on a blank slate:
 - `.booley/.gitignore`, a `FUSESOC_IGNORE` marker, a managed
   `.managed/project-git-hooks.pyz` bundle, Project-authored `hooks/`, and four create-only
   `goalsets/{feature,bugfix,refactor,verification}.md` files;
-- an **inner git repo** at `.booley/.git`, with no commit in it — but
-  only when `[stealth] enabled` is on (the runtime fallback before setup makes
-  its explicit choice); with the scrub explicitly off, init skips it and the
-  dir is versioned nowhere;
-- `.git/hooks/commit-msg` + `pre-push` delegators, and
-  `.devcontainer/devcontainer.json`;
+- **no inner git repo** and no `/.booley` exclusion: the skeleton records no
+  `[stealth] enabled`, and a missing key means Stealth Mode is off, so
+  `.booley/` shows as untracked in the RTL repo until row 16 is executed;
+- the non-Stealth line-ending rule `* text=auto eol=lf` as the first line of
+  the root `.gitattributes` (a new untracked file when the repo had none),
+  unless the repo already sets a whole-tree line-ending policy;
+- `.git/hooks/commit-msg` + `pre-push` delegators (inactive until Stealth is
+  enabled), and `.devcontainer/devcontainer.json`;
 - one generated block in `.git/info/exclude` under the header
   `# Booley (generated; local, uncommitted)`: `/.devcontainer`,
-  `/.booley`, `/.claude`, and `/.booley-projected-*.core`. Init consolidates repeated headers.
+  `/.claude`, and `/.booley-projected-*.core`. Init consolidates repeated headers.
 
 Tell-tales of a **prior setup** are therefore only things init never writes:
 any actual key in `booley.toml`/`tests.toml` (a `[sandbox].image`, `[stealth]`,
@@ -745,8 +747,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     - **No (open):** `.booley/` is **committed** to the RTL repo like
       other project config, builds use tracked native cores, and row 20 =
       `enabled = false`. Both rows are `user-confirmed` from this answer.
-    Recommend Yes/hidden for a port (matching `booley init`'s footprint), and
-    No/open for greenfield. Step 4 executes whichever footprint this row says.
+    Recommend Yes/hidden for a port, and No/open for greenfield. Step 4 executes whichever footprint this row says.
     **Existing hand-set `[stealth]` wins:** keep row 20 `pre-set` verbatim,
     explain its effects alongside the footprint answer, and reopen it only if
     the proposed core layout directly contradicts it.
@@ -768,7 +769,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     cannot express the selected Flow Targets; otherwise recommend no. Explain
     that the switch affects Booley resolution, not raw
     `fusesoc --cores-root <repo>` commands.
-    **Unattended:** keep row 16 `hidden` (init's default), starred `review`;
+    **Unattended:** set row 16 `hidden`, starred `review`;
     row 20 follows its unattended rule below, also starred `review` unless
     pre-set. Hidden alone supplies no consent to rewriting commit messages.
 17. **Specialists** — a **defaults block** row: default = none disabled.

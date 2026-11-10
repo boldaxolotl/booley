@@ -886,9 +886,9 @@ def _stealth_toml_lines(c: ScaffoldChoices) -> list[str]:
     return [
         "# Off for a scaffolded project: this repo exists to exercise Booley, so the",
         "# commit-message policy (which redacts protected names and rejects",
-        "# machine-attribution footers) would only mangle honest history. Delete this",
-        "# section (stealth defaults to on) if the repo grows into IP whose commit",
-        "# log must not reveal agent involvement.",
+        "# machine-attribution footers) would only mangle honest history. Set this",
+        "# to true if the repo grows into IP whose commit log must not reveal agent",
+        "# involvement (a missing key also means off).",
         "enabled = false",
     ]
 

@@ -465,6 +465,8 @@ def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, cap
 
 def test_git_exclude_warnings_are_scoped_per_missing_entry(tmp_path):
     _git_init(tmp_path)
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
     (tmp_path / ".git" / "info" / "exclude").write_text("/.devcontainer\n", encoding="utf-8")
     findings: list[doctor.DoctorWarning] = []
 
@@ -2211,7 +2213,7 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
-        if cmd[:2] == ["git", "ls-files"]:
+        if cmd[:4] == ["git", "ls-files", "--", ".interactive_logs"]:
             return subprocess.CompletedProcess(
                 cmd,
                 0,

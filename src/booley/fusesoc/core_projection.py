@@ -44,10 +44,8 @@ class ProjectionResult:
 def projection_enabled(project_root: Path | str) -> bool:
     """Whether explicit stealth mode enables root-level core projections.
 
-    The old missing-key fallback remains valid for commit-message sanitation,
-    but a filesystem projection requires the project's explicit consent.
-    New setups always persist ``enabled``, so this also provides a safe legacy
-    boundary for projects using ADR 0036 resolution symlinks.
+    Like every Stealth consumer, a filesystem projection requires
+    ``[stealth] enabled = true``; a missing key means off.
     """
     stealth = _stealth_config(project_root)
     return stealth.get("enabled") is True

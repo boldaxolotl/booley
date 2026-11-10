@@ -52,7 +52,7 @@ def test_source_checkout_exemption_overrides_config() -> None:
 def test_default_validation_preserves_ordinary_engineering_prose(tmp_path: Path) -> None:
     message = "fix(core): generated docker verification agent\n\nauto-review automated fix suggested fix\n"
     assert validate_message(message, project_root=tmp_path) == []
-    _configured_project(tmp_path, 'banned_words = ["generated"]\n')
+    _configured_project(tmp_path, 'enabled = true\nbanned_words = ["generated"]\n')
     assert any(
         "Banned phrase" in error for error in validate_message(message, project_root=tmp_path)
     )
@@ -60,7 +60,8 @@ def test_default_validation_preserves_ordinary_engineering_prose(tmp_path: Path)
 
 def test_identifier_message_validation_uses_both_tiers(tmp_path):
     root = _configured_project(
-        tmp_path, 'banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]\n'
+        tmp_path,
+        'enabled = true\nbanned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]\n',
     )
     assert validate_message("fix: booley_config BooleyRunner myquokkafile\n", project_root=root)
     assert validate_message("fix: reagent precursor\n", project_root=root) == []

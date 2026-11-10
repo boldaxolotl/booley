@@ -9,6 +9,16 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Stealth Mode is now off unless `.booley/booley.toml` sets
+  `[stealth] enabled = true`; a missing key means off. A fresh `booley init`
+  no longer hides `.booley/` or gives it its own repository before setup
+  records your choice; the booley-setup skill's hidden answer does both. A
+  Project set up earlier whose `booley.toml` has no `enabled` key has left
+  Stealth: commit messages are no longer cleaned and pushes are no longer
+  checked. `booley init` and Doctor warn `stealth.enabled-unset` while
+  `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
+  `enabled = false` to confirm it is off. A `booley.toml` that can't be read
+  keeps Stealth on.
 - `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
   limit is gone. Post-run VCD-to-FST conversion now has its own
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)

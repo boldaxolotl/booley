@@ -30,6 +30,12 @@ Stealth off stops the hooks at once, but `.booley/` stays hidden and
 stays its own repository. Booley doesn't undo that; `booley init` warns about
 the hidden files instead.
 
+Before this release a missing key meant on, so an older Project may have a
+hidden `.booley/` and no `enabled` key. That Project is now out of Stealth:
+commit messages aren't cleaned and pushes aren't checked. `booley init` and
+Doctor warn `stealth.enabled-unset`; add `enabled = true` to keep Stealth, or
+`enabled = false` to confirm it's off.
+
 ## What changes
 
 - **Booley's files stay untracked.** `.booley/` goes into `.git/info/exclude`,

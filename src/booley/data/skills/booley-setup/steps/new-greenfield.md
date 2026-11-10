@@ -59,8 +59,11 @@ only):
   confirmed Yes/hidden in the grill (it writes `enabled = true` and puts the
   scaffold cores under `.booley/cores/`); unattended setup omits it, since
   row 20 keeps `enabled = false` there. Omit `--synth-mode` when
-  ASIC is disabled: an explicit mode with `--no-asic` is rejected. After a
-  `--stealth` scaffold, commit `.booley/` in its own repository before the
+  ASIC is disabled: an explicit mode with `--no-asic` is rejected. Before a
+  `--stealth` scaffold over an earlier plain init, undo that init's
+  non-Stealth line-ending edit as `SKILL.md`'s Stealth footprint step
+  describes; the scaffold's init then hides `.booley/` and creates its
+  repository. After a `--stealth` scaffold, commit `.booley/` in its own repository before the
   Doctor gate, or `project.core-file-untracked` blocks it.
 - **Already scaffolded** (populated `.booley/` and a `.core`): don't
   re-ask what the scaffold already fixed — read the choices from the config,
