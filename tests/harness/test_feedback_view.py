@@ -8,7 +8,8 @@ import pytest
 
 from booley.feedback import cli as feedback_cli
 from booley.feedback.findings import Finding, append, read_log
-from booley.harness import booley, colors
+from booley.harness import booley
+from booley.presentation import colors
 from booley.runtime import booley_dir as booley_dir_mod
 
 _CREATED = "2026-01-01T00:00:00Z"

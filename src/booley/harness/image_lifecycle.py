@@ -257,7 +257,8 @@ class _IncrementalBuildAdapter:
         return candidate_reference
 
     def _verify_manual_ancestry(self, candidate: str, parent_id: str | None) -> None:
-        if not runtime_lifecycle.descends_from(self.docker, parent_id, candidate):
+        parent = self.docker.inspect(parent_id) if parent_id else None
+        if not runtime_lifecycle.descends_from(parent, self.docker.inspect(candidate)):
             raise ImageLifecycleError(
                 "manual Project recipe final image does not descend from the verified selected parent"
             )
@@ -460,9 +461,10 @@ class _IncrementalBuildAdapter:
 
     def _inherited_wheel_sha(self, node, parent_id) -> str:
         if node.role is ImageRole.PROJECT_OVERLAY and parent_id is not None:
-            sha = self.docker.label(parent_id, runtime_lifecycle.LABEL_WHEEL_SHA256)
-            fingerprint = self.docker.label(
-                parent_id, runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT
+            parent = self.docker.inspect(parent_id)
+            sha = parent.label(runtime_lifecycle.LABEL_WHEEL_SHA256) if parent else None
+            fingerprint = (
+                parent.label(runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT) if parent else None
             )
             if not sha or fingerprint != node.wheel_source_fingerprint:
                 raise ImageLifecycleError("Project overlay parent has no matching wheel identity")

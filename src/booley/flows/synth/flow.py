@@ -25,7 +25,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
 from booley.core.booley_dir_links import lexical_booley_path
@@ -75,7 +75,7 @@ from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
 from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
-from booley.harness.terminal_table import render_table
+from booley.presentation.terminal_table import render_table
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -1113,6 +1113,17 @@ def _work_path(path: Path, work_dir: Path) -> Path:
 def _work_relpath(path: Path, work_dir: Path) -> str:
     """The POSIX path of *path* relative to the physical *work_dir* (see :func:`_work_path`)."""
     return posix_relpath(_work_path(path, work_dir), work_dir.resolve())
+
+
+def _plan_source_name(project_root: Path, item: fusesoc_registry.ResolvedFile) -> str:
+    """The POSIX name a plan records for a resolved source file.
+
+    Isolated Projects resolve through a private source mirror that exports
+    ``src/<core>/<Project-relative path>``; like simulation reports, the plan
+    hides the mirror and names the file by its Project-relative path, so the
+    identity is the same in every checkout. Other Projects keep FuseSoC's name.
+    """
+    return fusesoc_registry.mirrored_source_path(project_root, item) or Path(item.name).as_posix()
 
 
 class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
@@ -2215,11 +2226,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         resolved = planned.resolved
         root = Path(self.args.work_dir)
         sources = tuple(
-            Path(item.name).as_posix()
+            _plan_source_name(root, item)
             for item in resolved.files
             if item.file_type.lower() != "sdc"
         )
-        constraints = tuple(Path(item.name).as_posix() for item in resolved.sdc_files)
+        constraints = tuple(_plan_source_name(root, item) for item in resolved.sdc_files)
         snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
         plan_recipe = dict(snapshot)
         recipe_args = snapshot.get("recipe_args", [])
@@ -2275,15 +2286,15 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     ) -> tuple[str, ...]:
         """Replace disposable staged paths with their Target-owned names."""
         replacements = {
-            _work_relpath(item.absolute(planned.resolved.build_root), root): Path(
-                item.name
-            ).as_posix()
+            _work_relpath(item.absolute(planned.resolved.build_root), root): _plan_source_name(
+                root, item
+            )
             for item in planned.resolved.files
         }
         replacements.update(
             {
                 _work_relpath(item.absolute(planned.resolved.build_root).parent, root): (
-                    Path(item.name).parent.as_posix()
+                    PurePosixPath(_plan_source_name(root, item)).parent.as_posix()
                 )
                 for item in planned.resolved.files
                 if item.is_include

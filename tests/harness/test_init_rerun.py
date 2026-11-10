@@ -1463,3 +1463,111 @@ def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path,
     assert "/.booley" in exclude
     assert "/tools/booley" in exclude
     reset_cache()
+
+
+EXPECTED_FRESH_INIT = (
+    [
+        "Host Bootstrap",
+        "Booley Directory",
+        "agent provider and authentication policy",
+        "stealth core projections",
+        "Goalsets",
+        "Sandbox Image lifecycle",
+        "project Git-hook bundle",
+        "worktree prune guard",
+        "worktree link policy",
+        "line endings",
+        "guidance links",
+        "Interactive Mode (Reopen in Container)",
+        "Project Inventory",
+        "post-setup advisories",
+    ],
+    [
+        ("booley_dir", "current"),
+        ("agent_config", "ok"),
+        ("core_projections", "ok"),
+        ("goalsets", "ok"),
+        ("auth", "skip"),
+        ("docker_image", "current"),
+        ("git_hooks", "skip"),
+        ("project_git_hooks", "ok"),
+        ("worktree_prune_guard", "ok"),
+        ("worktree_link_policy", "warn"),
+        ("line_endings", "ok"),
+        ("guidance_links", "ok"),
+        ("interactive", "ok"),
+        ("project_inventory", "ok"),
+        ("advisories", "ok"),
+    ],
+)
+
+EXPECTED_RERUN_INIT = (
+    [
+        "Host Bootstrap",
+        "Booley Directory",
+        "agent provider and authentication policy",
+        "stealth core projections",
+        "Goalsets",
+        "Sandbox Image lifecycle",
+        "project Git-hook bundle",
+        "worktree prune guard",
+        "worktree link policy",
+        "line endings",
+        "guidance links",
+        "Interactive Mode (Reopen in Container)",
+        "Project Inventory",
+        "post-setup advisories",
+    ],
+    [
+        ("booley_dir", "current"),
+        ("agent_config", "skip"),
+        ("core_projections", "ok"),
+        ("goalsets", "current"),
+        ("auth", "skip"),
+        ("docker_image", "current"),
+        ("git_hooks", "skip"),
+        ("project_git_hooks", "current"),
+        ("worktree_prune_guard", "current"),
+        ("worktree_link_policy", "current"),
+        ("line_endings", "ok"),
+        ("guidance_links", "ok"),
+        ("interactive", "current"),
+        ("project_inventory", "ok"),
+        ("advisories", "ok"),
+    ],
+)
+
+
+def _init_banners_and_results(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Run full init once; return its step banner titles and ``(record, status)`` pairs."""
+    summaries: list[InitContext] = []
+    real_summary = init_cmd._print_summary
+
+    def capture_summary(ctx: InitContext) -> int:
+        summaries.append(ctx)
+        return real_summary(ctx)
+
+    monkeypatch.setattr(init_cmd, "_print_summary", capture_summary)
+    assert _run_full_init(repo) == 0
+    banners = re.findall(r"^Step \d+ — (.*)$", capsys.readouterr().out, re.MULTILINE)
+    (ctx,) = summaries
+    return banners, [(result.name, result.status) for result in ctx.results]
+
+
+def test_full_init_output_order_is_unchanged(repo, monkeypatch, capsys):
+    """Host init keeps its public step order and summary records (ADR 0085 refactor guard).
+
+    The literal sequences were captured from ``main`` before Project Initialization was
+    extracted; a step that is dropped, duplicated or reordered changes them.
+    """
+    _current_auth_and_image(monkeypatch)
+    (repo / ".booley").mkdir()
+    (repo / ".booley" / "AGENTS.md").write_text("# Project guide\n", encoding="utf-8")
+
+    fresh = _init_banners_and_results(repo, monkeypatch, capsys)
+    rerun = _init_banners_and_results(repo, monkeypatch, capsys)
+
+    assert fresh == EXPECTED_FRESH_INIT
+    assert rerun == EXPECTED_RERUN_INIT

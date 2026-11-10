@@ -1681,3 +1681,48 @@ def test_local_publication_preserves_post_stage_changes(tmp_path, monkeypatch, r
     assert report.status is LineEndingStatus.UNSAFE
     assert attrs.read_bytes() == intervening
     assert not list(attrs.parent.glob(".booley-eol-*"))
+
+
+def _local_autocrlf(root: Path) -> str:
+    return os.fsdecode(_git(root, "config", "--local", "--get", "core.autocrlf").stdout).strip()
+
+
+def test_settings_repair_pins_autocrlf_and_attributes_on_a_tree_without_crlf(tmp_path: Path):
+    _init(tmp_path, autocrlf="true")
+    _commit_file(tmp_path, "a.v", b"module a;\nendmodule\n")
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR_SETTINGS)
+
+    completed = {
+        action.kind
+        for repository in report.repositories
+        for action in repository.actions
+        if action.state is LineEndingActionState.COMPLETED
+    }
+    assert completed == {
+        LineEndingActionKind.PIN_AUTOCRLF,
+        LineEndingActionKind.PUBLISH_ATTRIBUTES,
+    }
+    assert _local_autocrlf(tmp_path) == "false"
+    assert GITATTRIBUTES_RULE in (tmp_path / ".git" / "info" / "attributes").read_text(
+        encoding="utf-8"
+    )
+    assert not (tmp_path / ".gitattributes").exists()
+
+
+def test_settings_repair_leaves_crlf_checkouts_and_their_settings_alone(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    before = (tmp_path / "a.v").read_bytes()
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR_SETTINGS)
+
+    (repository,) = report.repositories
+    assert {(action.kind, action.state) for action in repository.actions} == {
+        (LineEndingActionKind.PIN_AUTOCRLF, LineEndingActionState.PLANNED),
+        (LineEndingActionKind.NORMALIZE_FILES, LineEndingActionState.PLANNED),
+        (LineEndingActionKind.PUBLISH_ATTRIBUTES, LineEndingActionState.PLANNED),
+    }
+    assert report.status is LineEndingStatus.UNSAFE
+    assert (tmp_path / "a.v").read_bytes() == before
+    assert _local_autocrlf(tmp_path) == "true"
+    assert not (tmp_path / ".git" / "info" / "attributes").exists()

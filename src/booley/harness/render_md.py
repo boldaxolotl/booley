@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from .colors import (
+from booley.presentation.colors import (
     accent,
     active_style,
     bold,
@@ -19,7 +19,7 @@ from .colors import (
     dim,
     len_visible,
 )
-from .terminal_table import render_table
+from booley.presentation.terminal_table import render_table
 
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _ITALIC_RE = re.compile(r"\*([^*]+)\*")

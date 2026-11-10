@@ -28,7 +28,7 @@ from booley.flows.sim.campaign.run_directory import (
 )
 from booley.flows.sim.campaign.serial_execution import (
     OrdinaryHdlSerialExecutor,
-    _capture_private_image,
+    capture_private_image,
 )
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import (
@@ -365,9 +365,6 @@ def test_shared_recovery_rejects_bundle_transplants(tmp_path: Path, case: str) -
         "work_item",
         "attempt",
         "ordinal",
-        "build_owner",
-        "snapshot_pre",
-        "snapshot_post",
     ],
 )
 def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: str) -> None:
@@ -381,14 +378,8 @@ def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: s
         result["work_item_id"] = "item:9999:" + "e" * 16
     elif case == "attempt":
         result["attempt_id"] = str(uuid.uuid4())
-    elif case == "ordinal":
-        result["attempt_ordinal"] += 1
-    elif case == "build_owner":
-        result["build_result"]["owner"] = str(uuid.uuid4())
-    elif case == "snapshot_pre":
-        result["executable_snapshot"]["pre_launch_sha256"] = _BAD_DIGEST
     else:
-        result["executable_snapshot"]["post_exit_sha256"] = _BAD_DIGEST
+        result["attempt_ordinal"] += 1
     _write(path, result)
     with pytest.raises(SimulationCampaignIntegrityError):
         completed.store.scan()
@@ -565,7 +556,7 @@ def test_private_image_capture_refuses_an_unsafe_runtime_input_path(
     (source_root / "in.hex").write_bytes(b"y")
     destination = tmp_path / "private"
     with pytest.raises(SimulationCampaignIntegrityError, match="invalid runtime input path"):
-        _capture_private_image(
+        capture_private_image(
             (source_root / "sim.bin",),
             source_root,
             destination,

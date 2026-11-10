@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from booley.harness import init_cmd
 from booley.runtime import session_issuance as issuance
 from booley.runtime import session_refresh as runtime_refresh
 from booley.runtime.image_lifecycle import PlanAction, PreparedConvergence
+from booley.runtime.lifecycle_lock import LifecycleLockError, host_lifecycle_lock
 from booley.runtime.session_runtime import SessionError
 
 
@@ -127,10 +129,34 @@ class _RuntimeImages:
         )
 
 
+def _initialize_refreshed_project(
+    project_root: Path, result: runtime_refresh.RefreshResult
+) -> None:
+    """Re-apply Project Initialization after the Sandbox replacement has settled.
+
+    It runs after the runtime refresh, not inside its journaled finalization: a failure
+    there would leave a committed-forward journal that reruns recovery on every host
+    command. Tracked files are never rewritten; a failure keeps the new Sandbox and
+    fails the command with the container outcome in the message.
+    """
+    prefix = f"Sandbox refreshed ({result.message}), but Project Initialization failed"
+    try:
+        facts = init_cmd.ProjectFacts(init_cmd._sandbox_git_version(result.image.selected_id))
+        with host_lifecycle_lock("session refresh"):
+            outcomes = init_cmd.reinitialize_project(project_root, facts)
+    except (OSError, subprocess.SubprocessError, ValueError, LifecycleLockError) as exc:
+        raise SessionError(f"{prefix}: {exc}; run `booley init` on the host") from exc
+    failed = [f"{step.name}: {step.detail}" for step in outcomes if step.status == "err"]
+    if failed:
+        raise SessionError(f"{prefix}: {'; '.join(failed)}; run `booley init` on the host")
+
+
 def refresh(
     project_root: Path,
     *,
     verbose: bool = False,
 ) -> runtime_refresh.RefreshResult:
-    """Refresh the selected image and replace its Sandbox atomically."""
-    return runtime_refresh.refresh(project_root, _RuntimeImages(), verbose=verbose)
+    """Refresh the selected image and replace its Sandbox, then re-apply Project files."""
+    result = runtime_refresh.refresh(project_root, _RuntimeImages(), verbose=verbose)
+    _initialize_refreshed_project(project_root, result)
+    return result

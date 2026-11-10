@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 from collections.abc import Sequence
@@ -14,13 +13,14 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from booley.core.differences import format_differences
-from booley.core.private_store import PrivateStore
+from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.filesystem_utils import unlink_file
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
+from booley.runtime.private_store import SESSION_STORE_REPAIR
 from booley.runtime.session_spec import (
     SessionSpecSnapshot,
     capture_session_spec,
@@ -138,14 +138,11 @@ class _RefreshJournal:
     replacement_issuance: runtime_spec.Issuance | None
 
 
-def _journal_store() -> PrivateStore:
+def journal_store() -> ProjectStore:
+    """The per-Project refresh journals; Doctor scans it read-only."""
     root = config_dir() / _JOURNAL_DIR
-    return PrivateStore(root, config_dir(), "Session refresh journal", sr.SessionError)
-
-
-def _journal_name(project_root: Path) -> str:
-    identity = hashlib.sha256(str(project_root).encode()).hexdigest()
-    return f"{identity}.json"
+    private = PrivateStore(root, config_dir(), "Session refresh journal", sr.SessionError)
+    return ProjectStore(private, SESSION_STORE_REPAIR)
 
 
 def _decode_issuance(raw: object, label: str) -> runtime_spec.Issuance:
@@ -234,26 +231,18 @@ def _decode_journal(raw: object, expected_root: Path, path: Path) -> _RefreshJou
 
 
 def _load_journal(project_root: Path) -> _RefreshJournal | None:
-    store = _journal_store()
-    if not store.validate_existing_directory():
+    store = journal_store()
+    raw = store.read(str(project_root))
+    if raw is None:
         return None
-    name = _journal_name(project_root)
-    path = store.root / name
-    if not path.exists() and not path.is_symlink():
-        return None
-    try:
-        raw = store.read_json(name)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise sr.SessionError(f"cannot read Session refresh journal {path}: {exc}") from exc
-    return _decode_journal(raw, project_root, path)
+    return _decode_journal(raw, project_root, store.path(str(project_root)))
 
 
 def _delete_journal(project_root: Path) -> None:
-    store = _journal_store()
-    path = store.root / _journal_name(project_root)
-    unlink_file(path, missing_ok=True)
+    store = journal_store()
+    unlink_file(store.path(str(project_root)), missing_ok=True)
     if os.name != "nt":
-        descriptor = os.open(store.root, os.O_RDONLY)
+        descriptor = os.open(store.private.root, os.O_RDONLY)
         try:
             os.fsync(descriptor)
         finally:
@@ -293,10 +282,8 @@ def _journal_document(journal: _RefreshJournal) -> dict[str, object]:
 
 
 def _write_journal(journal: _RefreshJournal) -> None:
-    store = _journal_store()
-    store.ensure_directory()
     content = json.dumps(_journal_document(journal), indent=2, sort_keys=True) + "\n"
-    store.atomic_write_text(_journal_name(journal.project_root), content)
+    journal_store().write(str(journal.project_root), content)
 
 
 def _new_journal(
@@ -472,10 +459,7 @@ def recover_project_locked(project_root: Path) -> RecoveryResult:
     return _restore_journal(journal)
 
 
-def _scanned_project_root(filename: str, raw: object) -> Path:
-    persisted = raw.get("project_root") if isinstance(raw, dict) else None
-    if not isinstance(persisted, str) or not persisted:
-        raise sr.SessionError("Session refresh journal Project identity is invalid")
+def _scanned_project_root(persisted: str) -> Path:
     candidate = Path(persisted)
     if not candidate.is_absolute() or str(candidate) != persisted:
         raise sr.SessionError("Session refresh journal Project identity is not canonical")
@@ -485,30 +469,16 @@ def _scanned_project_root(filename: str, raw: object) -> Path:
         raise sr.SessionError(
             f"Session refresh journal Project is unavailable: {persisted}: {exc}"
         ) from exc
-    if str(project) != persisted or _journal_name(project) != filename:
+    if str(project) != persisted:
         raise sr.SessionError(
-            "Session refresh journal filename does not match its canonical Project identity"
+            "Session refresh journal Project Root does not resolve to its canonical identity"
         )
     return project
 
 
 def pending_refresh_projects() -> tuple[Path, ...]:
     """Return validated Projects with unfinished refresh journals without mutation."""
-    store = _journal_store()
-    if not store.validate_existing_directory():
-        return ()
-    projects = []
-    for path in sorted(store.root.iterdir()):
-        if path.name.startswith("."):
-            continue
-        if path.is_symlink() or not path.is_file() or not path.name.endswith(".json"):
-            raise sr.SessionError(f"unexpected Session refresh journal entry: {path}")
-        try:
-            raw = store.read_json(path.name)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise sr.SessionError(f"cannot read Session refresh journal {path}: {exc}") from exc
-        projects.append(_scanned_project_root(path.name, raw))
-    return tuple(projects)
+    return tuple(_scanned_project_root(entry.project_root) for entry in journal_store().scan())
 
 
 def has_pending_refresh(project_root: Path) -> bool:
