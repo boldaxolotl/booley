@@ -75,3 +75,14 @@ the only gate the user could not pre-answer in a Codespace.
   instead of silently losing the file.
 - The Codex edit uses the existing in-place TOML editor; its rewrite is
   tracked in [#1666](https://github.com/boldaxolotl/booley/issues/1666).
+
+## Amendments (2026-11-09)
+
+Recorded while implementing
+[#2757](https://github.com/boldaxolotl/booley/issues/2757).
+
+- **Auto-mode nudge, always.** Claude `hasSeenAutoDefaultNudge` is set in the
+  agent-home `.claude.json`, credential or not, set-if-absent. The registrar
+  pins `bypassPermissions` as the default mode, so Claude Code would otherwise
+  show its auto-mode default nudge on the first chat; the nudge is unrelated
+  to login, so it is not gated like onboarding.

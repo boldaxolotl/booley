@@ -33,6 +33,7 @@ from booley.flows.sim.verilator_coverage import (
     SimulationRunRequest,
     SimulationRunResult,
 )
+from booley.runtime.timefmt import utc_now_rfc3339
 
 from .codec import SimulationCampaignIntegrityError, encode_executable_snapshot
 from .coordinator import (
@@ -49,19 +50,19 @@ from .model import (
 )
 from .run_directory import RunDirectory, claimed_run_directory
 from .serial_execution import (
-    _attempt,
-    _blocked_result,
-    _build_attempt,
-    _capture_private_image,
-    _create_snapshot,
-    _now,
-    _observation,
-    _publish_failed_build_result,
-    _publish_ready_build_result,
-    _record_ref,
-    _result,
-    _runtime_documents,
-    _settled_state,
+    BuildScope,
+    blocked_result,
+    bundle_build_attempt,
+    capture_private_image,
+    create_snapshot,
+    observation_document,
+    publish_failed_build_result,
+    publish_ready_build_result,
+    record_reference,
+    runtime_input_documents,
+    settled_state,
+    simulation_attempt,
+    simulation_result,
 )
 
 
@@ -214,7 +215,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
 
     def prepare_attempt(self, request: WorkExecutionRequest) -> None:
         """Publish the exact coverage attempt before child admission."""
-        attempt, _run_directory = _attempt(request)
+        attempt, _run_directory = simulation_attempt(request)
         self._publication_checkpoint("before:simulation_attempt")
         request.store.publish_attempt(request.attempt_directory, attempt)
         self._publication_checkpoint("after:simulation_attempt")
@@ -244,7 +245,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         build_directory = request.attempt_directory / "private-build"
         durable_directory(build_directory)
         build_directory.chmod(0o700)
-        build_attempt = _build_attempt(request)
+        build_attempt = bundle_build_attempt(request, BuildScope.private(request))
         request.store.publish_build_attempt(build_directory, build_attempt)
         execution = self._execution(request)
         identity = _attempt_identity(request)
@@ -314,7 +315,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             plan,
             invocation_dir=origin_invocation,
             acceptance=None,
-            started_at=_now(),
+            started_at=utc_now_rfc3339(),
         )
         try:
             return run_coverage_target(
@@ -369,14 +370,14 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         source_root, paths = execution.authenticated_image()
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         declarations = cast(tuple[Mapping[str, str], ...], workload["runtime_inputs"])
-        artifacts = _capture_private_image(paths, source_root, directory, declarations)
-        result, bundle = _publish_ready_build_result(
+        artifacts = capture_private_image(paths, source_root, directory, declarations)
+        result, bundle = publish_ready_build_result(
             request, directory, attempt, artifacts, None, elapsed
         )
         snapshot_root = request.attempt_directory / "snapshot"
-        snapshot = _create_snapshot(request, directory, result, bundle, snapshot_root)
+        snapshot = create_snapshot(request, directory, result, bundle, snapshot_root)
         raw = encode_executable_snapshot(snapshot)
-        reference = _record_ref(
+        reference = record_reference(
             snapshot_root / "snapshot.json",
             request.attempt_directory,
             raw,
@@ -432,11 +433,11 @@ def _completed_result(
     post_exit = authenticate_executable_snapshot(captured.snapshot, captured.snapshot_root)
     bundle = cast(Mapping[str, object], captured.result.document["bundle"])
     observations = [_coverage_observation(item) for item in _coverage_tests(outcome)]
-    return _result(
+    return simulation_result(
         request,
         captured.directory,
         captured.result,
-        state=_settled_state(observations),
+        state=settled_state(observations),
         bundle_id=captured.bundle.document["bundle_id"],
         snapshot={
             "manifest": captured.snapshot_reference,
@@ -448,7 +449,7 @@ def _completed_result(
         observations=observations,
         elapsed=time.monotonic() - started,
         evidence=_coverage_evidence(request, outcome),
-        runtime_inputs=_runtime_documents(request, bindings),
+        runtime_inputs=runtime_input_documents(request, bindings),
     )
 
 
@@ -495,7 +496,7 @@ def _publish_coverage_build_failure(
             else None
         ),
     )
-    result = _publish_failed_build_result(
+    result = publish_failed_build_result(
         request,
         directory,
         attempt,
@@ -504,7 +505,7 @@ def _publish_coverage_build_failure(
         infrastructure=infrastructure,
         checkpoint=checkpoint,
     )
-    return _blocked_result(
+    return blocked_result(
         request,
         directory,
         result,
@@ -526,7 +527,7 @@ def _coverage_tests(outcome: CoverageTargetOutcome) -> tuple[Mapping[str, object
 
 def _coverage_observation(item: Mapping[str, object]) -> dict[str, object]:
     execution = item.get("execution")
-    return _observation(
+    return observation_document(
         _coverage_test_outcome(item),
         execution="not_run" if execution == "not_run" else None,
     )
@@ -571,7 +572,7 @@ def _coverage_evidence(
     for path in paths:
         raw = path.read_bytes()
         references.append(
-            _record_ref(
+            record_reference(
                 path,
                 request.attempt_directory,
                 raw,

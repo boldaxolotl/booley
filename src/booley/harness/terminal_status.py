@@ -6,7 +6,7 @@ Doctor, init, bootstrap and auth print their rows with these helpers. A status r
 
 The glyph sits in a fixed column, the message always starts at the same column,
 the optional check ID is dimmed and right-aligned, and a fix hint hangs under
-the message. All styling goes through :mod:`booley.harness.colors`, which
+the message. All styling goes through :mod:`booley.presentation.colors`, which
 returns plain text when color is off (pipes, ``NO_COLOR``, ``TERM=dumb``), so
 the plain layout equals the ANSI-stripped colored layout.
 """
@@ -18,7 +18,16 @@ import sys
 from collections.abc import Callable
 from enum import Enum
 
-from .colors import accent, amber, bold_accent, dim, green, len_visible, lilac, red
+from booley.presentation.colors import (
+    accent,
+    amber,
+    bold_accent,
+    dim,
+    green,
+    len_visible,
+    lilac,
+    red,
+)
 
 #: Widest line a status row is padded to; a wider terminal does not widen rows.
 MAX_WIDTH = 100

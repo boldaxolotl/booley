@@ -12,21 +12,33 @@ import pytest
 from booley.config.jobs import SlotCaps
 from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
-from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, CampaignSchedulingError
+from booley.flows.sim.campaign.scheduler import (
+    BoundedCampaignScheduler,
+    CampaignSchedulingError,
+)
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.runtime.execution_records import ExecutionId, execution_paths, read_json
+from booley.runtime.execution_records import (
+    ExecutionId,
+    execution_paths,
+    read_json,
+)
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
     QUEUED,
     ROLE_INTERACTIVE,
+    ClaimAbortedError,
     SlotRecovery,
     SlotStore,
 )
-from booley.runtime.supervised_execution import current_supervised_execution
-from tests.flows.sim.test_campaign_phase3 import _named_manifest
-from tests.flows.sim.test_campaign_phase4 import (
+from booley.runtime.supervised_execution import (
+    current_supervised_execution,
+)
+from tests.flows.sim.campaign_test_support import (
     _PARALLEL_SYNC_TIMEOUT_S,
+    _capacity,
+    _lane_registry,
     _managed,
+    _named_manifest,
     _scheduled_attempt,
     _wait_until,
 )
@@ -435,3 +447,49 @@ def _campaign_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
         for thread in threading.enumerate()
         if thread not in earlier_threads and thread.name.startswith("booley-campaign-")
     }
+
+
+@pytest.mark.parametrize(
+    ("when", "error", "match", "cause"),
+    [
+        ("before_slot", ClaimAbortedError, "shutdown requested", "campaign_error"),
+        ("in_work", HeavyCapacityError, "plain capacity failure", "orphan_recovered"),
+        ("after_work", ClaimAbortedError, "cancellation requested", "completed"),
+    ],
+)
+def test_child_permit_retires_the_lane_on_every_exit(
+    tmp_path: Path, when: str, error: type[Exception], match: str, cause: str
+) -> None:
+    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
+    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    cancelled = threading.Event()
+    admission = replace(_managed(store, outer), cancellation=cancelled.is_set)
+    capacity = _capacity(admission, tmp_path)
+    lanes: list[ExecutionId] = []
+
+    def publish(child_id: ExecutionId) -> None:
+        lanes.append(child_id)
+        if when == "before_slot":
+            cancelled.set()
+
+    try:
+        with (
+            capacity.outer_permit(),
+            pytest.raises(error, match=match),
+            capacity.child_permit(
+                "item",
+                attempt_id="attempt",
+                attempt_ordinal=1,
+                attempt_directory=Path("attempt"),
+                publish=publish,
+            ),
+        ):
+            if when == "in_work":
+                raise HeavyCapacityError("plain capacity failure")
+            cancelled.set()
+    finally:
+        store.release(outer)
+    record = read_json(
+        execution_paths(lanes[0], booley_dir=_lane_registry(tmp_path).project_data).record
+    )
+    assert (record["state"], record["terminal_cause"]) == ("terminal", cause)

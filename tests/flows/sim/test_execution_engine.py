@@ -70,6 +70,10 @@ from booley.targets.domain import TargetHandle
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.leased_session import canned_build_session, split_invoker
 from tests.flows.sim.prepared_group import run_prepared_group
+from tests.flows.sim.test_verilator_build_reuse_engine import (
+    _edit_keeping_mtime,
+    _isolate_native_cores,
+)
 
 
 def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus") -> TargetHandle:
@@ -1789,6 +1793,55 @@ def test_matching_closed_icarus_inputs_reuse_verified_image(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
+def test_isolated_icarus_identical_build_reuses_and_source_edit_rebuilds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In an ``ignore_native_cores`` Project an identical build reuses; an edited source rebuilds."""
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, source = _write_stale_compiler_fixture(tmp_path)
+    _isolate_native_cores(project, core="multi.core")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(
+        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+    )
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    commands: list[list[str]] = []
+    launched: list[str] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        commands.append(command)
+        result = base_invoke(command, timeout=timeout)
+        if "booley.flows.sim.backends.icarus" in command[-1]:
+            launched.append(result.stdout)
+        return result
+
+    def build_stages() -> int:
+        return sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    first = run_prepared_group(execution, handle, ("first",))
+    second = run_prepared_group(execution, handle, ("second",))
+    assert first.passed, first.infrastructure_failure
+    assert second.passed, (second.builds, second.tests, second.infrastructure_failure)
+    assert first.builds[0].ran is True
+    assert second.builds[0].ran is False
+    assert second.builds[0].cache_decision.startswith("hit;")
+    assert build_stages() == 1
+
+    # The fake compiler writes the source's marker into the image, so NEW in the
+    # launched output proves the stale image never ran.
+    _edit_keeping_mtime(source, "module tb; // NEW\nendmodule\n")
+    third = run_prepared_group(execution, handle, ("third",))
+    assert third.passed, (third.builds, third.tests, third.infrastructure_failure)
+    assert third.builds[0].ran is True
+    assert third.builds[0].cache_decision.startswith("changed source, recipe, or tool;")
+    assert build_stages() == 2
+    assert "NEW" in launched[-1] and "OLD" not in launched[-1]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
 @pytest.mark.parametrize(
     ("destination", "builds"),
     [("$BOOLEY_RUN_CWD/firmware.hex", 1), ("$BOOLEY_BUILD_ROOT/firmware.hex", 2)],
@@ -2125,15 +2178,7 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
     if queryable and native_bwave is None:
         pytest.skip("native B-Wave binary is required to verify a queryable Trace Artifact")
     project, _ = _write_stale_compiler_fixture(tmp_path)
-    state = project / ".booley"
-    cores = state / "cores"
-    cores.mkdir()
-    (project / "multi.core").rename(cores / "multi.core")
-    (state / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
-    )
-    (state / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    _isolate_native_cores(project, core="multi.core")
     _write_fake_trace_tools(tmp_path)
     if not queryable:
         monkeypatch.setenv("BOOLEY_BWAVE_BIN", str(_write_failing_trace_converter(tmp_path)))

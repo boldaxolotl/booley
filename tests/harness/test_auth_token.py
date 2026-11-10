@@ -287,7 +287,8 @@ class TestAuthStatusReport:
         assert any("claude" in m and "refreshing" in m for m in sink["warn"])
 
     def test_overridden_source_is_a_hint_under_its_line(self, isolated_home, monkeypatch, capsys):
-        from booley.harness import auth_cmd, colors
+        from booley.harness import auth_cmd
+        from booley.presentation import colors
 
         creds = isolated_home / ".claude" / ".credentials.json"
         creds.parent.mkdir(parents=True)
@@ -1273,6 +1274,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
     monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk)
     monkeypatch.setattr(session_issuance, "_resolve_image_id", lambda _: "sha256:" + "a" * 64)
+    monkeypatch.setattr(session_issuance, "_keeper_image_id", lambda _: "sha256:" + "a" * 64)
     monkeypatch.setattr(session_issuance, "_project_data_alias_capable", lambda *a: False)
     monkeypatch.setattr(session_issuance, "_pin_initialize_command", lambda *a: None)
     monkeypatch.setattr(session_issuance, "_seal_with_requirements", lambda *a: "synthetic-digest")

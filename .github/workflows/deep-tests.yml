@@ -21,12 +21,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup-python
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
             pyproject.toml
             .github/ci/constraints.txt
+
+      # A prefix-restored pip cache never shrinks; see .github/ci/README.md#pip-cache.
+      - name: Drop pip cache restored from an older dependency set
+        if: steps.setup-python.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        run: python -m pip cache purge
 
       - name: Install pinned mutation environment
         run: pip install -e ".[test,mutation]" -c .github/ci/constraints.txt
@@ -89,12 +96,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup-python
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: |
             pyproject.toml
             .github/ci/constraints.txt
+
+      # A prefix-restored pip cache never shrinks; see .github/ci/README.md#pip-cache.
+      - name: Drop pip cache restored from an older dependency set
+        if: steps.setup-python.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        run: python -m pip cache purge
 
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
@@ -198,6 +212,7 @@ jobs:
       - name: Free unused runner disk
         uses: ./.github/actions/free-runner-disk
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup-python
         with:
           python-version: "3.13"
           cache: pip
@@ -205,6 +220,12 @@ jobs:
             pyproject.toml
             .github/ci/constraints.txt
             .github/ci/requirements-build.txt
+
+      # A prefix-restored pip cache never shrinks; see .github/ci/README.md#pip-cache.
+      - name: Drop pip cache restored from an older dependency set
+        if: steps.setup-python.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        run: python -m pip cache purge
       - name: Install worktree test environment
         run: pip install -e ".[test]" -c .github/ci/constraints.txt -r .github/ci/requirements-build.txt
       - name: Build canonical Sandbox Image

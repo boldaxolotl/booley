@@ -19,8 +19,8 @@ from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_in
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.targets.catalog import TargetCatalog
+from tests.flows.sim.campaign_test_support import _retained_invocation
 from tests.flows.sim.test_campaign_manifest_codec import _linked_campaign_stores, _manifest
-from tests.flows.sim.test_campaign_phase6 import _retained_invocation
 from tests.flows.sim.test_campaign_resume_diagnostics import _interrupted_campaign
 from tests.flows.sim.test_campaign_retention import _run_retention_cli
 

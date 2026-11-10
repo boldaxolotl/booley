@@ -10,6 +10,7 @@ from hypothesis import strategies as st
 from booley.flows.sim.campaign import codec
 from booley.flows.sim.campaign.codec import (
     MANIFEST_MAX_BYTES,
+    RECORD_MAX_BYTES,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -18,18 +19,25 @@ from booley.flows.sim.campaign.codec import (
     decode_simulation_campaign_manifest,
     decode_simulator_bundle,
     encode_bundle_build_attempt,
+    encode_bundle_build_result,
     encode_executable_snapshot,
     encode_simulation_attempt,
     encode_simulation_campaign_manifest,
+    encode_simulation_result,
     encode_simulator_bundle,
     validate_relative_path,
 )
 from booley.flows.sim.campaign.model import (
     AssertionObservation,
+    BundleBuildAttempt,
+    BundleBuildResult,
+    ExecutableSnapshot,
     ExecutionObservation,
     FailureClass,
     FunctionalObservation,
     SimulationAttempt,
+    SimulationResult,
+    SimulatorBundle,
     create_simulation_campaign_plan,
     grade_observations,
     simulation_status_from_observations,
@@ -111,6 +119,33 @@ def test_document_encoders_round_trip_validated_values(name, decoder, encoder) -
     value = decoder(raw)
     assert encoder(value) == raw
     assert value.canonical_bytes() == raw
+
+
+@pytest.mark.parametrize(
+    ("value_type", "encoder", "ceiling"),
+    [
+        pytest.param(SimulationAttempt, encode_simulation_attempt, RECORD_MAX_BYTES, id="attempt"),
+        pytest.param(
+            BundleBuildAttempt, encode_bundle_build_attempt, RECORD_MAX_BYTES, id="build-attempt"
+        ),
+        pytest.param(
+            BundleBuildResult, encode_bundle_build_result, RECORD_MAX_BYTES, id="build-result"
+        ),
+        pytest.param(SimulationResult, encode_simulation_result, RECORD_MAX_BYTES, id="result"),
+        pytest.param(SimulatorBundle, encode_simulator_bundle, MANIFEST_MAX_BYTES, id="bundle"),
+        pytest.param(
+            ExecutableSnapshot, encode_executable_snapshot, MANIFEST_MAX_BYTES, id="snapshot"
+        ),
+    ],
+)
+def test_encoders_refuse_documents_over_their_size_ceiling(value_type, encoder, ceiling) -> None:
+    """Publication encodes without decoding, so the encoder enforces the readers' ceiling."""
+    overhead = len(canonical_json_bytes({"pad": ""}))
+    at_ceiling = value_type({"pad": "x" * (ceiling - overhead)})
+    assert len(encoder(at_ceiling)) == ceiling
+    over_ceiling = value_type({"pad": "x" * (ceiling - overhead + 1)})
+    with pytest.raises(SimulationCampaignIntegrityError, match="size ceiling"):
+        encoder(over_ceiling)
 
 
 def test_codec_rejects_noncanonical_or_oversized_json() -> None:
@@ -203,7 +238,7 @@ def test_simulation_status_uses_codec_execution_strength(executions, expected) -
 
 def test_store_rejects_manifest_and_result_republication(tmp_path):
     from booley.flows.sim.campaign.codec import decode_simulation_result
-    from tests.flows.sim.test_campaign_phase3_adversarial import _completed
+    from tests.flows.sim.campaign_test_support import _completed
 
     completed = _completed(tmp_path)
     store = completed.store

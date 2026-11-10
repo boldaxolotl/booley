@@ -35,6 +35,7 @@ skills and stay out of that list.
 booley bootstrap                  # prepare this machine once for every Project
 booley bootstrap --update         # rerun after every Booley upgrade
 booley bootstrap --check-only     # report pending work; change nothing
+booley bootstrap --egress unproxied  # record the Sandbox egress mode, then bootstrap
 booley init                       # set up the Project in the current directory
 booley init --scaffold my_ip      # start a new IP from scratch in a fresh repo
 booley auth                       # save a long-lived Claude login for unattended runs
@@ -278,7 +279,7 @@ LLM-powered Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`.
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`. A CLI run is also a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|

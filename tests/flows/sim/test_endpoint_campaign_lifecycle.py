@@ -22,6 +22,7 @@ from booley.flows.sim.adapter_transport import (
     work_transport_identity,
     write_adapter_result,
 )
+from booley.flows.sim.campaign import collect_pre_sim_firings
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
@@ -30,11 +31,11 @@ from tests.flows.sim.test_campaign_characterization import _AdapterAbortExecutio
 
 
 def _refresh_hook_workload_identity(document):
-    from booley.flows.sim.campaign.planning import canonical_sha256
+    from booley.flows.sim.campaign_files import document_digest
 
     workload = document["workload"]
     variant = document["build_variants"][0]
-    digest = canonical_sha256(
+    digest = document_digest(
         {
             "kind": variant["kind"],
             "source_closure": variant["source_closure"],
@@ -51,7 +52,7 @@ def _refresh_hook_workload_identity(document):
     item["role"] = document["target"]["role"]
     item["revision"] = document["target"]["revision"]
     item["build_variant_id"] = variant["build_variant_id"]
-    digest = canonical_sha256(
+    digest = document_digest(
         {
             key: value
             for key, value in item.items()
@@ -67,7 +68,7 @@ def _pre_sim_manifest(access, commands, transform):
 
     from booley.flows.sim.campaign.codec import canonical_json_bytes
     from booley.flows.sim.campaign.planning import finalize_manifest
-    from tests.flows.sim.test_campaign_phase3_integrity import _legacy_disclosures, _manifest_for
+    from tests.flows.sim.campaign_test_support import _legacy_disclosures, _manifest_for
 
     document = json.loads(canonical_json_bytes(_manifest_for(("alpha",), access=access).document))
     document.pop("fingerprints")
@@ -104,7 +105,7 @@ def _hook_project(tmp_path, commands, live_commands):
 
 
 def _hook_executor(build, disclosures, mutate_snapshot, checkpoint):
-    from tests.flows.sim.test_campaign_phase3_integrity import _executor
+    from tests.flows.sim.campaign_test_support import _executor
 
     return _executor(
         build,
@@ -131,9 +132,7 @@ def _successful_pre_sim_campaign(
     from booley.flows.sim.campaign.coordinator import (
         SimulationCampaign,
     )
-    from tests.flows.sim.test_campaign_phase3_integrity import (
-        _handle,
-    )
+    from tests.flows.sim.campaign_test_support import _handle
 
     project = _hook_project(tmp_path, commands, live_commands)
     plan, disclosures = _pre_sim_plan(access, commands, transform)
@@ -158,7 +157,7 @@ def _successful_pre_sim_campaign(
 
 def _observed_campaign_request(plan, project, invocation, observer):
     from booley.flows.sim.campaign.coordinator import CampaignPolicy, NewCampaignRunRequest
-    from tests.flows.sim.test_campaign_phase3_integrity import _admission
+    from tests.flows.sim.campaign_test_support import _admission
 
     return NewCampaignRunRequest(
         plan,
@@ -521,31 +520,6 @@ def test_all_campaigns_survive_terminal_progress_failure(
     assert pending == []
 
 
-def test_legacy_result_survives_terminal_progress_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    flow = SimulateFlow()
-    flow._reserved_invocation_dir = tmp_path
-    monkeypatch.setattr(flow, "_prepare_legacy_run", lambda *_args: (["PASS"], True))
-    monkeypatch.setattr(
-        flow,
-        "_legacy_endpoint_outcome",
-        lambda *_args: EndpointOutcome(detail={"targets": {"first": {"simulation": "pass"}}}),
-    )
-    monkeypatch.setattr(
-        flow,
-        "_write_progress_report",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("progress unavailable")),
-    )
-
-    result = flow._run_legacy_selected_mode(["first"], {}, 0.0, 0.0)
-
-    assert result.exit_code == 2
-    assert result.detail["targets"] == {"first": {"simulation": "pass"}}
-    assert result.detail["completion_error"]["operation"] == "publish simulation progress"
-    assert result.detail["completion_error"]["path"] == str(tmp_path / "progress.json")
-
-
 @pytest.mark.parametrize("termination", ["disk_budget", "sim_time_stall"])
 def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     tmp_path: Path, termination: str
@@ -563,8 +537,8 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
     from tests.flows.sim.test_campaign_characterization import (
         _AdapterAbortExecution,
+        _admission,
         _plan,
-        _unmanaged,
     )
 
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
@@ -584,7 +558,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
             invocation.parent,
             CampaignPolicy(),
             invocation,
-            _unmanaged(),
+            _admission(),
         )
     )
     flow = SimulateFlow()
@@ -1051,7 +1025,7 @@ def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) 
 def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
     from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
     from tests.flows.report_headline import final_report_omits_headline
-    from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
+    from tests.flows.sim.campaign_test_support import _observation, _simulation_outcome
     from tests.mcp_tools.test_base import unbound_specialist
 
     tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
@@ -1088,7 +1062,7 @@ def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_pa
 
     from booley.flows.sim.acceptance import _record_standalone_campaign
     from tests.flows.report_headline import final_report_omits_headline
-    from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
+    from tests.flows.sim.campaign_test_support import _observation, _simulation_outcome
     from tests.mcp_tools.test_base import unbound_specialist
 
     tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
@@ -1113,7 +1087,7 @@ def _public_cycle_campaign(tmp_path, monkeypatch):
         SimulationCampaign,
     )
     from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-    from tests.flows.sim.test_campaign_phase3 import _admission, _named_manifest, _shared_executor
+    from tests.flows.sim.campaign_test_support import _admission, _named_manifest, _shared_executor
 
     project = tmp_path / "project"
     project.mkdir()
@@ -1399,7 +1373,7 @@ def test_authenticated_nullable_counts_round_trip(tmp_path, monkeypatch, unnamed
     from dataclasses import replace
 
     from booley.flows.sim.request import SimRequest
-    from tests.flows.sim import test_campaign_phase3 as fixtures
+    from tests.flows.sim import campaign_test_support as fixtures
 
     if unnamed:
         campaign = _unnamed_cycle_campaign(tmp_path, monkeypatch)
@@ -1427,7 +1401,7 @@ def _unnamed_cycle_campaign(tmp_path, monkeypatch):
         SimulationCampaign,
     )
     from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-    from tests.flows.sim import test_campaign_phase3 as fixtures
+    from tests.flows.sim import campaign_test_support as fixtures
 
     project = tmp_path / "project"
     project.mkdir()
@@ -1592,9 +1566,8 @@ def test_public_ordinary_prepared_endpoint_reports_each_shared_build_launch(tmp_
         tmp_path / "reports/sim.json"
     ).read_bytes()
     manifest = tmp_path / "reports/sim/1/targets/sim_a/campaign/manifest.json"
-    from booley.flows.sim.campaign import read_pre_sim_firings
 
-    firings = read_pre_sim_firings(manifest)
+    firings = collect_pre_sim_firings(manifest)
     assert len(firings) == 2
     campaign_root = manifest.parent
     assert len(list(campaign_root.glob("build-variants/*/attempts/*/build-result.json"))) == 1
@@ -1613,44 +1586,6 @@ def test_public_nonrunning_modes_create_no_hook_firings(tmp_path, monkeypatch, m
     assert result.exit_code == 0, result.outcome.report_text
     assert not list((tmp_path / "reports").glob("**/pre-sim/*.json"))
     assert "pre_run_commands (" not in result.outcome.report_text
-
-
-def test_legacy_abort_progress_failure_preserves_collected_firings(tmp_path, monkeypatch):
-    import time
-
-    from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.execution.pre_sim_reporting import pre_sim_document
-
-    flow = SimulateFlow()
-
-    def prepare(*_args):
-        flow._legacy_pre_sim_runs = [
-            (
-                "sim",
-                pre_sim_document(
-                    PreSimEvidence(
-                        ("true",),
-                        ("alpha",),
-                        "passed",
-                        0.1,
-                        returncode=0,
-                        stdout_tail="hook-out",
-                    )
-                ),
-            )
-        ]
-        return EndpointOutcome(exit_code=2, report_text="later build failed")
-
-    monkeypatch.setattr(flow, "_prepare_legacy_run", prepare)
-
-    def failed_progress(*_args, **_kwargs):
-        raise OSError("progress unavailable")
-
-    monkeypatch.setattr(flow, "_write_progress_report", failed_progress)
-    result = flow._run_legacy_selected_mode(["sim"], {}, time.monotonic(), 0.0)
-    assert result.exit_code == 2
-    assert result.detail["pre_sim_runs"][0]["stdout_tail"] == "hook-out"
-    assert len(result.detail["pre_sim_lines"]) == result.report_text.count("pre_run_commands") == 1
 
 
 def _cocotb_hook_plan(document):
@@ -1676,12 +1611,11 @@ def _cocotb_hook_plan(document):
 def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch):
     from dataclasses import replace
 
-    from booley.flows.sim.campaign import read_pre_sim_firings
     from booley.flows.sim.execution.contract import (
         SimulationArtifactEvidence,
         SimulationTestOutcome,
     )
-    from tests.flows.sim.test_campaign_phase3_integrity import _Group
+    from tests.flows.sim.campaign_test_support import _Group
 
     original = _Group.launch_snapshot
 
@@ -1716,7 +1650,7 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
         tmp_path, monkeypatch, "immutable", transform=_cocotb_hook_plan
     )
     assert outcome.aggregate_grade == "pass"
-    firings = read_pre_sim_firings(invocation / "targets/sim/campaign/manifest.json")
+    firings = collect_pre_sim_firings(invocation / "targets/sim/campaign/manifest.json")
     assert len(firings) == 1
     assert firings[0].document["test_names"] == ("alpha", "beta")
     assert firings[0].document["stdout_tail"] == "hook-out\n"
@@ -1917,7 +1851,7 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
 
 
 def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
-    from tests.flows.sim.test_campaign_phase3_integrity import _Group
+    from tests.flows.sim.campaign_test_support import _Group
 
     def fail_build(group):
         sidecars = list(
@@ -1928,7 +1862,7 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
 
     from dataclasses import replace
 
-    from tests.flows.sim.test_campaign_phase3 import _failed_shared_outcome
+    from tests.flows.sim.campaign_test_support import _failed_shared_outcome
 
     failed = _failed_shared_outcome()
     failed = replace(failed, tests=(replace(failed.tests[0], name="alpha"),))
@@ -2034,7 +1968,7 @@ def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path
     store = CampaignStore(invocation / "targets/sim/campaign")
 
     with pytest.raises(SimulationCampaignIntegrityError, match="result references disagree"):
-        store.read_pre_sim_firings()
+        collect_pre_sim_firings(store.manifest_path)
 
 
 def _strict_sim_a_ticket(tmp_path, monkeypatch):
@@ -2128,6 +2062,10 @@ def test_simulation_final_acceptance_lifecycle_order(tmp_path, monkeypatch, term
         operation = result.outcome.detail["completion_error"]["operation"]
         assert operation == "publish simulation progress"
         assert terminal_phases[:2] == ["complete", "aborted"]
+        # The Pre-Sim firings collected before the failed write still reach the result.
+        lines = result.outcome.detail["pre_sim_lines"]
+        assert len(lines) == 2
+        assert all(result.outcome.report_text.count(line) == 1 for line in lines)
     else:
         assert result.exit_code == 0, result.outcome.report_text
         assert first["acceptance:True"] < first["mutable"] < first["refresh"]

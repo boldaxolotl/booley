@@ -114,6 +114,9 @@ class JobRecord:
     # that owner first read the final result; None for records that predate them.
     owner: str | None = None
     read_at: str | None = None
+    # Directory holding this Job's ``flow-reports/`` and ``mcp-tool-reports/`` when it is
+    # not the records root's parent (a Standalone Job's records live elsewhere).
+    report_root: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -137,7 +140,7 @@ def _validate_envelope(data: dict[str, Any]) -> None:
     schema = data.get("schema", 1)
     if require_int(schema, field="Job schema") <= 0:
         raise BoundaryError("Job schema must be positive")
-    for key in ("work_dir", "session_key"):
+    for key in ("work_dir", "session_key", "report_root"):
         if data.get(key) is not None:
             require_str(data, key)
     if data.get("binding") is not None:
@@ -160,6 +163,15 @@ def make_run_id(endpoint: str, started_compact: str, counter: int) -> str:
 
 def _record_path(run_id: str, root: Path | None) -> Path | None:
     return (root / f"{run_id}.json") if root is not None else None
+
+
+def job_log_path(run_id: str, root: Path | None) -> Path | None:
+    """Location of a Job's combined-output ``job.log``, beside its flat record.
+
+    ``<root>/<run_id>/job.log``: a per-Job directory that every ``*.json``
+    reader of the jobs root ignores. ``None`` without a root, like a record.
+    """
+    return (root / run_id / "job.log") if root is not None else None
 
 
 def write_record_strict(rec: JobRecord, root: Path | None) -> None:
