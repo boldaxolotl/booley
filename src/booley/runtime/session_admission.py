@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -31,17 +30,17 @@ from booley.core.boundary import (
     require_str_value,
 )
 from booley.core.egress_modes import declared_egress
-from booley.core.private_store import PrivateStore
+from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime.filesystem_utils import unlink_file
 from booley.runtime.platform_paths import host_path_from_docker_mount
+from booley.runtime.private_store import SESSION_STORE_REPAIR
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
 _SCHEMA_VERSION = 2
-_CLAIM_SUFFIX = ".json"
 _FOLDER_LABEL = "devcontainer.local_folder"
 _PROJECT_LABEL = "booley.project-id"
 _PROJECT_LISTING_FORMAT = (
@@ -140,21 +139,20 @@ def claim_vscode_start(
         rfc3339_from_datetime(instant, microseconds=True),
         baseline,
     )
-    store = _store()
-    store.ensure_directory()
-    store.atomic_write_text(_claim_filename(root), json.dumps(asdict(claim), sort_keys=True))
+    claim_store().write(root, json.dumps(asdict(claim), sort_keys=True))
     return True
 
 
 def clear_vscode_claim(project_root: Path) -> bool:
     """Remove this Project's unconsumed VS Code capacity claim."""
     root = _canonical_root(project_root)
-    path = _store().root / _claim_filename(root)
-    existed = path.exists()
-    if existed:
-        _load_claim(path)
-        unlink_file(path)
-    return existed
+    store = claim_store()
+    raw = store.read(root)
+    if raw is None:
+        return False
+    _decode_claim(raw, store.path(root))
+    unlink_file(store.path(root))
+    return True
 
 
 def has_pending_claim(project_root: Path, *, run: Run = _run) -> bool:
@@ -541,7 +539,7 @@ def _reconcile_claims(
         else:
             remaining.append(claim)
     for claim in consumed:
-        unlink_file(_store().root / _claim_filename(claim.project_root))
+        unlink_file(claim_store().path(claim.project_root))
     return tuple(remaining), tuple(diagnostics)
 
 
@@ -595,25 +593,11 @@ def _started_token(item: Sandbox) -> str | None:
 
 
 def _claims() -> tuple[PendingStartClaim, ...]:
-    store = _store()
-    if not store.validate_existing_directory():
-        return ()
-    claims = []
-    for path in sorted(store.root.iterdir()):
-        if path.name.startswith("."):
-            continue
-        if path.is_symlink() or not path.is_file() or not path.name.endswith(_CLAIM_SUFFIX):
-            raise AdmissionError(f"unexpected Sandbox admission claim entry: {path}")
-        claim = _load_claim(path)
-        if path.name != _claim_filename(claim.project_root):
-            raise AdmissionError(f"Sandbox admission claim identity mismatch: {path}")
-        claims.append(claim)
-    return tuple(claims)
+    return tuple(_decode_claim(entry.document, entry.path) for entry in claim_store().scan())
 
 
-def _load_claim(path: Path) -> PendingStartClaim:
+def _decode_claim(raw: object, path: Path) -> PendingStartClaim:
     try:
-        raw = _store().read_json(path.name)
         values = require_dict(raw, field="Sandbox admission claim")
         if set(values) != {"schema_version", "project_root", "claimed_at", "baseline"}:
             raise AdmissionError("Sandbox admission claim has an invalid shape")
@@ -630,24 +614,22 @@ def _load_claim(path: Path) -> PendingStartClaim:
                 started_at = require_str_value(raw_started_at, field=f"baseline[{key}]")
                 parse_timestamp(started_at)
             baseline[key] = started_at
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, BoundaryError, ValueError) as exc:
+    except (BoundaryError, ValueError) as exc:
         raise AdmissionError(f"cannot read Sandbox admission claim {path}: {exc}") from exc
     if version != _SCHEMA_VERSION or project_root != _canonical_text(project_root):
         raise AdmissionError(f"Sandbox admission claim is invalid: {path}")
     return PendingStartClaim(_SCHEMA_VERSION, project_root, claimed_at, baseline)
 
 
-def _store() -> PrivateStore:
-    return PrivateStore(
+def claim_store() -> ProjectStore:
+    """The per-Project pending-start claims; Doctor scans it read-only."""
+    private = PrivateStore(
         config_dir() / "runtime" / "session-start-claims",
         config_dir().parent,
         "Sandbox admission claim",
         AdmissionError,
     )
-
-
-def _claim_filename(project_root: str) -> str:
-    return hashlib.sha256(os.path.normcase(project_root).encode()).hexdigest() + _CLAIM_SUFFIX
+    return ProjectStore(private, SESSION_STORE_REPAIR)
 
 
 def _canonical_root(project_root: Path) -> str:
