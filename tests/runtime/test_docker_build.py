@@ -914,7 +914,7 @@ _PARALLEL_PROGRESS_RECORDS = (
 
 @pytest.mark.parametrize("tty", [False, True])
 def test_progress_state_deduplicates_parallel_stage_announcements(monkeypatch, tty) -> None:
-    monkeypatch.setattr(docker_build.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(docker_build, "monotonic", lambda: 0.0)
     output = _RecordingOutput(tty=tty)
     state = docker_build._ProgressState("image", False, output, 0.0, 1000.0, 0.0)
     records = (
@@ -942,7 +942,7 @@ def test_progress_state_deduplicates_parallel_stage_announcements(monkeypatch, t
 
 @pytest.mark.parametrize("tty", [False, True])
 def test_progress_state_seen_announcements_are_isolated_per_build(monkeypatch, tty) -> None:
-    monkeypatch.setattr(docker_build.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(docker_build, "monotonic", lambda: 0.0)
     for _ in range(2):
         output = _RecordingOutput(tty=tty)
         state = docker_build._ProgressState("image", False, output, 0.0, 1000.0, 0.0)
@@ -956,7 +956,7 @@ def test_progress_state_seen_announcements_are_isolated_per_build(monkeypatch, t
 
 @pytest.mark.parametrize("tty", [False, True])
 def test_progress_state_verbose_preserves_all_parallel_records(monkeypatch, tty) -> None:
-    monkeypatch.setattr(docker_build.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(docker_build, "monotonic", lambda: 0.0)
     output = _RecordingOutput(tty=tty)
     state = docker_build._ProgressState("image", True, output, 0.0, 1000.0, 0.0)
     records = (*_PARALLEL_PROGRESS_RECORDS, "hidden chatter\n", *_PARALLEL_PROGRESS_RECORDS)
@@ -968,7 +968,7 @@ def test_progress_state_verbose_preserves_all_parallel_records(monkeypatch, tty)
 @pytest.mark.parametrize("tty", [False, True])
 def test_progress_state_duplicates_do_not_postpone_heartbeat(monkeypatch, tty) -> None:
     now = 0.0
-    monkeypatch.setattr(docker_build.time, "monotonic", lambda: now)
+    monkeypatch.setattr(docker_build, "monotonic", lambda: now)
     output = _RecordingOutput(tty=tty)
     state = docker_build._ProgressState("image", False, output, 0.0, 1000.0, 0.0)
     for record in _PARALLEL_PROGRESS_RECORDS:
@@ -1001,7 +1001,7 @@ class _CountingBrokenOutput(_BrokenOutput):
 
 
 def test_progress_state_failed_announcement_is_attempted_once(monkeypatch) -> None:
-    monkeypatch.setattr(docker_build.time, "monotonic", lambda: 30.0)
+    monkeypatch.setattr(docker_build, "monotonic", lambda: 30.0)
     output = _CountingBrokenOutput()
     state = docker_build._ProgressState("image", False, output, 0.0, 1000.0, 0.0)
     for _ in range(3):

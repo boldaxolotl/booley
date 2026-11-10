@@ -17,10 +17,10 @@ import struct
 import subprocess
 import tempfile
 import threading
-import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from time import monotonic
 from typing import IO
 
 from booley.bwave.contract import BWaveListMetadata, decode_list_metadata
@@ -261,7 +261,7 @@ def _build_timeout_s(deadline: float | None) -> float:
     """Seconds the next build may run: what is left of the budget, else the fixed limit."""
     if deadline is None:
         return _BWAVE_BUILD_TIMEOUT_SECONDS
-    return deadline - time.monotonic()
+    return deadline - monotonic()
 
 
 def _conversion_scopes(scope: str | None, allow_fallback: bool) -> list[str | None]:

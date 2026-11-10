@@ -21,12 +21,12 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from time import time as wall_clock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -3693,7 +3693,7 @@ def _check_subscription_creds_health(
     if policy == "api_key":
         return
 
-    now = time.time()
+    now = wall_clock()
     creds_path = auth_token.subscription_creds_path(app)
     expiry = _claude_creds_expiry(creds_path)
     if expiry is not None and expiry <= now:

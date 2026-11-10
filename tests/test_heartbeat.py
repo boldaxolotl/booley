@@ -144,7 +144,7 @@ class TestTouchReaperHeartbeat:
     def test_publication_never_exposes_truncated_payload(self, tmp_path, monkeypatch):
         hb = tmp_path / "hb"
         hb.write_text("100\n", encoding="ascii")
-        monkeypatch.setattr(time, "time", lambda: 200.0)
+        monkeypatch.setattr("booley.runtime.heartbeat.wall_clock", lambda: 200.0)
         ready = threading.Event()
         release = threading.Event()
         real_open = Path.open
@@ -217,7 +217,7 @@ class TestTouchReaperHeartbeat:
             assert allow_older.wait(timeout=1)
             return 100.0
 
-        monkeypatch.setattr(time, "time", delayed_time)
+        monkeypatch.setattr("booley.runtime.heartbeat.wall_clock", delayed_time)
         errors = []
 
         def publish():
@@ -257,7 +257,7 @@ def test_timer_uses_shared_adaptive_duration(monkeypatch):
     rendered = []
     timer = Heartbeat("build", interval=0, render=lambda *row: rendered.append(row))
     timer._start = 1000000
-    monkeypatch.setattr(heartbeat.time, "monotonic", lambda: 1003661)
+    monkeypatch.setattr(heartbeat, "monotonic", lambda: 1003661)
     monkeypatch.setattr(heartbeat, "touch_reaper_heartbeat", lambda: None)
     waits = iter((False, True))
     monkeypatch.setattr(timer._stop_event, "wait", lambda _interval: next(waits))
