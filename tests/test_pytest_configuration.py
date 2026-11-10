@@ -18,8 +18,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.conftest import _disable_git_auto_maintenance_for_children, add_git_command_config
-
 REPOSITORY_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
 
@@ -1702,6 +1700,8 @@ def test_isolated_git_attributes_keeps_auto_maintenance_off(
 def test_isolated_git_excludes_keeps_auto_maintenance_off_and_strips_other_command_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
+    from tests.conftest import add_git_command_config
+
     add_git_command_config(monkeypatch, "core.abbrev", "12")
     monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.bigfilethreshold'='1m'")
     request.getfixturevalue("isolated_git_excludes")
@@ -1722,6 +1722,8 @@ def test_own_empty_global_config_keeps_auto_maintenance_off(
 def test_added_command_config_overrides_and_keeps_session_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from tests.conftest import add_git_command_config
+
     add_git_command_config(monkeypatch, "core.abbrev", "12")
     add_git_command_config(monkeypatch, "gc.auto", "5")
     assert _scoped_git_value("core.abbrev", tmp_path) == "command\t12"
@@ -1732,6 +1734,8 @@ def test_added_command_config_overrides_and_keeps_session_entries(
 def test_session_git_config_is_idempotent_and_keeps_inherited_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from tests.conftest import _disable_git_auto_maintenance_for_children
+
     # The function writes os.environ directly: register every slot with
     # monkeypatch first so teardown restores what the session had.
     for index in range(3):
