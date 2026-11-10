@@ -6,7 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Generator, Iterator, MutableMapping
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -54,21 +54,26 @@ def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -
 # - Git itself drops ``GIT_CONFIG_COUNT``/``GIT_CONFIG_PARAMETERS`` for the receiving
 #   process on local-path transports (``local_repo_env``), so ``receive-pack`` /
 #   ``upload-pack`` of a push or fetch to a local path runs without these settings.
-# - Test helpers that build a child environment from scratch (for example
-#   ``tests/dev_support/test_pre_push_hook.py::_git``) and ``sandbox_git`` in
-#   ``tests/harness/test_doctor_sandbox_git_identity.py``, which needs exact
-#   command-scope contents.
+# - An inherited ``GIT_CONFIG_PARAMETERS`` (what ``git -c`` exports) is read after the
+#   numbered entries, so one that sets these keys overrides them.
+# - Test helpers build a child environment from scratch instead of inheriting it, for
+#   example ``tests/dev_support/test_pre_push_hook.py::_git``,
+#   ``tests/qa/test_uart_evaluator.py`` and
+#   ``tests/runtime/test_incontainer_git_identity.py``. ``sandbox_git`` in
+#   ``tests/harness/test_doctor_sandbox_git_identity.py`` clears command scope because
+#   it needs exact contents.
 _SESSION_GIT_COMMAND_CONFIG: tuple[tuple[str, str], ...] = (
     ("maintenance.auto", "false"),
     ("gc.auto", "0"),
 )
 
 
-def _git_command_entries(environ: MutableMapping[str, str]) -> list[tuple[str, str]]:
+def _git_command_entries(environ: Mapping[str, str]) -> list[tuple[str, str]]:
     """Return the ``(key, value)`` command-scope pairs Git reads from ``environ``.
 
-    Git reads an empty ``GIT_CONFIG_COUNT`` as 0; a non-numeric one raises
-    ``ValueError`` here just as Git rejects it.
+    Git reads an empty ``GIT_CONFIG_COUNT`` as 0. A non-numeric count raises
+    ``ValueError`` and a count above the entries present raises ``KeyError``, just
+    as Git rejects both.
     """
     count = int(environ.get("GIT_CONFIG_COUNT") or "0")
     return [
@@ -363,6 +368,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
     Runs for every session mutmut starts (it calls ``pytest.main`` repeatedly in
     one process), so the stats marker is hidden before any test starts a child.
+
+    Also exports the session's Git auto-maintenance settings to every child.
     """
     hide_mutmut_stats_mode_from_children()
     _disable_git_auto_maintenance_for_children()
