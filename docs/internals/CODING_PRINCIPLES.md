@@ -223,6 +223,14 @@ Tests that touch time, processes, sockets, or the filesystem also:
   only the files it needs, such as the tracked files `git ls-files` lists. It
   never snapshots the working directory, where other processes create and
   delete caches and coverage files.
+- **Fake a process identity fully.** A fake PID in the real range (such as
+  `4242`) can belong to a live host process, so a test that stubs
+  `is_pid_alive` but leaves `/proc/<pid>` reads real sees a foreign process.
+  Use a PID above the kernel limit (`4_194_305`) or fake every check.
+- **Ready means ready to observe.** A child that prints "ready" and then blocks
+  in `read()` can lose a signal sent in between: Python runs its handler only
+  between bytecodes, so the read blocks anyway. Wait with `select` on
+  `signal.set_wakeup_fd`, or with a timeout.
 - Exercise new process, signal, or cancellation code with a repeated run of
   its test modules (`pytest <module> --count=10 -n 4 --dist=load`) before
   review. The `flake-stress` CI job repeats only the test modules a pull
