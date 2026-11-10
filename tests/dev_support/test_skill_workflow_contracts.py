@@ -159,7 +159,8 @@ def test_setup_greenfield_scaffolds_on_host_after_plain_init():
         assert flag in greenfield
     assert "Keep Booley out of your git history?" in greenfield
     assert "Do not pass `--provider` or `--auth`" in greenfield
-    assert "removes the empty inner `.booley` repository" in greenfield
+    assert "removes an empty inner `.booley` repository" in greenfield
+    assert "undo that init's non-Stealth line-ending" in greenfield
     # The container comes after the scaffold, and the Doctor gate is unchanged.
     scaffolded = greenfield.index("record `scaffold: applied`")
     assert scaffolded < greenfield.index("**Reopen in Container**")
@@ -814,7 +815,9 @@ def test_setup_hidden_footprint_enables_stealth():
     assert "only if the user volunteers" in hidden
     assert "Existing hand-set `[stealth]` wins" in hidden
     assert "Unattended: write `enabled = false`" in sections["20"].replace("*", "")
-    assert "hidden config alone never enables the scrub" in sections["20"]
+    assert "unattended setup never enables the scrub" in sections["20"]
+    # Unattended setup takes Booley's default open footprint, never hidden.
+    assert "Unattended: set row 16 `open`" in hidden.replace("*", "")
     for path in (skills_dir() / "booley-setup").rglob("*"):
         if path.is_file():
             text = " ".join(path.read_text(encoding="utf-8").split())

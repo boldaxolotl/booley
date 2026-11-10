@@ -181,7 +181,7 @@ def _notify_if_redacted(
         # Names the knob but not the config file: the file is <booley-directory>/booley.toml, and spelling that out would print a banned word —
         # the exact thing these notices promise not to echo back.
         print(
-            "commit-msg: stealth mode did this — opt out with [stealth] "
+            "commit-msg: stealth mode did this — turn it off with [stealth] "
             "enabled = false in the project config TOML to keep messages verbatim",
             file=sys.stderr,
         )
@@ -225,7 +225,7 @@ def main() -> int:
 
     project_root = _current_repo_root()
 
-    # Stealth mode is opt-out ([stealth] enabled = false). When off, this hook —
+    # Stealth mode is opt-in ([stealth] enabled = true). When off, this hook —
     # sanitizer and convention validator both — is a no-op, even if a prior
     # setup left it installed. Ticket worktrees are set up fresh so the install
     # is already gated; this makes the flag authoritative at runtime too.
