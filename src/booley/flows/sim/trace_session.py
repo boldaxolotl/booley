@@ -11,6 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 
 from booley.bwave.waveform_store import (
     ConversionResult,
@@ -548,9 +549,9 @@ class TraceSession:
                 last_size, stall_start, stall_count = size, None, 0
                 continue
             if stall_start is None:
-                stall_start = time.monotonic()
+                stall_start = monotonic()
                 continue
-            if time.monotonic() - stall_start < stall_timeout:
+            if monotonic() - stall_start < stall_timeout:
                 continue
             stall_count += 1
             stalled_for = stall_timeout * stall_count
@@ -643,12 +644,12 @@ class TraceSession:
 
     def start_conversion_budget(self, timeout_s: float) -> None:
         """Fix the one deadline that bounds every post-run conversion of this attempt."""
-        self._conversion_deadline = time.monotonic() + timeout_s
+        self._conversion_deadline = monotonic() + timeout_s
 
     def budget_remaining_s(self) -> float:
         """Seconds left of the conversion budget (0 once spent or never started)."""
         deadline = self._conversion_deadline
-        return 0.0 if deadline is None else max(0.0, deadline - time.monotonic())
+        return 0.0 if deadline is None else max(0.0, deadline - monotonic())
 
     def postprocess(self, vcd_path: Path) -> None:
         """Windows/fallback: convert VCD file → .fst after sim completes."""
@@ -687,7 +688,7 @@ class TraceSession:
     def _budget_spent(self) -> bool:
         """True once the attempt's conversion deadline has passed."""
         deadline = self._conversion_deadline
-        return deadline is not None and time.monotonic() >= deadline
+        return deadline is not None and monotonic() >= deadline
 
     def _settle_postprocess_artifacts(self, vcd_path: Path, *, success: bool) -> None:
         """Keep raw fallback artifacts inside the managed simulation directory."""

@@ -10,10 +10,11 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
-import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
+from time import monotonic
+from time import time as wall_clock
 
 from booley.core.boundary import as_float
 from booley.core.file_lock import nonblocking_file_lock
@@ -48,7 +49,7 @@ def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
         lock_path = heartbeat.with_name(f".{heartbeat.name}.lock")
         with lock_path.open("a+", encoding="ascii") as lock, nonblocking_file_lock(lock):
             previous = _read_valid_epoch(heartbeat)
-            candidate = time.time()
+            candidate = wall_clock()
             if previous is not None:
                 candidate = max(candidate, previous)
             fd, temporary = tempfile.mkstemp(
@@ -107,7 +108,7 @@ class Heartbeat:
         if os.environ.get("BOOLEY_NO_HEARTBEAT"):
             return
         touch_reaper_heartbeat()
-        self._start = time.monotonic()
+        self._start = monotonic()
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -120,7 +121,7 @@ class Heartbeat:
     def _run(self) -> None:
         while not self._stop_event.wait(self._interval):
             touch_reaper_heartbeat()
-            elapsed = time.monotonic() - self._start
+            elapsed = monotonic() - self._start
             extra = ""
             if self._status_fn:
                 try:
