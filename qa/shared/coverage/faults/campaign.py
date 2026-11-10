@@ -116,12 +116,12 @@ def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None
             stream.write(points.read_bytes())
         points.unlink()
         points.symlink_to(outside)
-    elif mode == "wrong-rollup":
-        document["rollups"][0]["covered_points"] += 1
     elif mode == "wrong-evaluation":
-        document["evaluation"]["status"] = (
-            "pass" if document["evaluation"]["status"] != "pass" else "fail"
-        )
+        # Booley rescores a stored pass/fail, so only a forged pass on an evaluation
+        # that was never scored (blocked, not requested) is still refused on load.
+        if document["evaluation"]["status"] in {"pass", "fail"}:
+            raise ValueError("wrong-evaluation needs a blocked or not-requested evaluation")
+        document["evaluation"]["status"] = "pass"
     else:
         raise ValueError(f"unknown Campaign fault: {mode}")
 
