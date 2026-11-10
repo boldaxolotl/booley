@@ -18,7 +18,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   checked. `booley init` and Doctor warn `stealth.enabled-unset` while
   `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
   `enabled = false` to confirm it is off. A `booley.toml` that can't be read
-  keeps Stealth on.
+  keeps Stealth on. Unattended setup now keeps `.booley/` in your repository
+  instead of hiding it.
 - `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
   limit is gone. Post-run VCD-to-FST conversion now has its own
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)

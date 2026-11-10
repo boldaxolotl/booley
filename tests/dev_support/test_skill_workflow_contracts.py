@@ -748,7 +748,9 @@ def test_setup_hidden_footprint_enables_stealth():
     assert "only if the user volunteers" in hidden
     assert "Existing hand-set `[stealth]` wins" in hidden
     assert "Unattended: write `enabled = false`" in sections["20"].replace("*", "")
-    assert "hidden config alone never enables the scrub" in sections["20"]
+    assert "unattended setup never enables the scrub" in sections["20"]
+    # Unattended setup takes Booley's default open footprint, never hidden.
+    assert "Unattended: set row 16 `open`" in hidden.replace("*", "")
     for path in (skills_dir() / "booley-setup").rglob("*"):
         if path.is_file():
             text = " ".join(path.read_text(encoding="utf-8").split())

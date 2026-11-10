@@ -769,9 +769,10 @@ separate columns (see "How a row resolves"). The standard checklist:
     cannot express the selected Flow Targets; otherwise recommend no. Explain
     that the switch affects Booley resolution, not raw
     `fusesoc --cores-root <repo>` commands.
-    **Unattended:** set row 16 `hidden`, starred `review`;
-    row 20 follows its unattended rule below, also starred `review` unless
-    pre-set. Hidden alone supplies no consent to rewriting commit messages.
+    **Unattended:** set row 16 `open`, starred `review`: it is Booley's
+    default footprint, and hiding `.booley/` without consent to the scrub
+    would leave it versioned nowhere. Row 20 follows its unattended rule
+    below, also starred `review` unless pre-set.
 17. **Specialists** — a **defaults block** row: default = none disabled.
     Every installed Specialist is discovered automatically; Step 2 writes
     `[specialists.<name>].enabled = false` only for an intentional opt-out.
@@ -810,10 +811,9 @@ separate columns (see "How a row resolves"). The standard checklist:
     the body (`max_body_lines`) or allowlist author identities
     (`allowed_authors`). Authored hidden cores remain self-contained under
     `.booley/cores/` and are projected into ignored RTL-root copies.
-    **Unattended: write `enabled = false`** unless a hidden core is authored,
-    which requires `enabled = true`; star the choice `review` unless pre-set.
-    Nobody consented to a commit-message rewrite, so hidden config alone never
-    enables the scrub in unattended setup.
+    **Unattended: write `enabled = false`**, matching row 16's unattended
+    `open`; star the choice `review` unless pre-set. Nobody consented to a
+    commit-message rewrite, so unattended setup never enables the scrub.
     `booley init` creates `.booley/`'s own inner git repo *only* while
     `[stealth] enabled` is on. With the scrub off, a hidden-footprint Booley Directory is versioned nowhere until someone `git init`s it — flag that for
     Step 4's footprint work rather than letting the combination pass silently.
