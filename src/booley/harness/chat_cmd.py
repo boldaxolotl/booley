@@ -9,8 +9,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from booley.config.agent import AgentSettings
-from booley.config.gateway import GatewayConfigError
+from booley.config.agent import AgentSettings, issued_codex_gateway
+from booley.config.gateway import GATEWAY_ENV_KEYS, HIDDEN_GATEWAY_ENV, GatewayConfigError
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.harness import codex_chat
 from booley.runtime.booley_dir import resolve_checkout_booley_dir, resolve_common_booley_dir
@@ -71,6 +71,20 @@ def _selected_cli(requested: str | None, settings: AgentSettings) -> str | None:
     return None
 
 
+def _hide_gateway_from_claude() -> None:
+    """Drop the gateway settings from this process before it becomes Claude.
+
+    The gateway routes Codex only. Applies in an issued Sandbox with Codex on the
+    gateway; a hand-written spec keeps its environment. The marker tells Doctor the
+    settings were hidden, not missing.
+    """
+    if not issued_codex_gateway():
+        return
+    for key in GATEWAY_ENV_KEYS:
+        os.environ.pop(key, None)
+    os.environ[HIDDEN_GATEWAY_ENV] = "1"
+
+
 def _launch(provider: str, project_root: Path, agent_args: list[str]) -> int:
     """Exec the agent CLI; runs in the forked child, so identities are the agent's own.
 
@@ -85,6 +99,7 @@ def _launch(provider: str, project_root: Path, agent_args: list[str]) -> int:
                 print(f"NOTE: Codex tab handle is unavailable: {exc}", file=sys.stderr)
         elif provider == "claude":
             argv = _claude_argv(project_root, agent_args)
+            _hide_gateway_from_claude()
         # Last statement before the process is replaced: the CLI exists and the
         # launch arguments are settled, so the notice only precedes a real start.
         print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
