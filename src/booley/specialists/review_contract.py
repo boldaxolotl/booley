@@ -95,7 +95,7 @@ def resolve_review_scope(
                 if category == "tb"
                 else ""
             )
-            + "; see docs/user/CLI-REFERENCE.md. Goal Mode also accepts explicitly scoped support files."
+            + "; see CLI-REFERENCE.md (host doc, not shipped). Goal Mode also accepts explicitly scoped support files."
         )
     return ReviewScopeContract(
         frozenset(cocotb), frozenset(hdl), frozenset(support | set(unsupported))

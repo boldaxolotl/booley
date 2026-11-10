@@ -39,11 +39,9 @@ from booley.runtime.image_lifecycle import (
     ArtifactSource,
     BuildPort,
     DockerPort,
-    HostImageScope,
     ImageLifecycleError,
     ImageNode,
     ImageRole,
-    ImageScope,
     Intent,
     LifecyclePlan,
     LifecycleResult,
@@ -644,26 +642,21 @@ def _uses_managed_project_overlay(project_root: Path) -> bool:
 
 
 def reconcile(
-    scope: ImageScope,
     intent: Intent,
     *,
     verbose: bool = False,
     capacity_plan: DockerBuildPlan | None = None,
 ) -> LifecycleResult:
-    """Reconcile an image graph with Project Initialization build adapters."""
+    """Reconcile the host base image with Project Initialization build adapters.
+
+    Project images converge through ``reconcile_planned``.
+    """
     docker = _docker_adapter()
     import booley
 
     if booley.version_attribution.origin is VersionOrigin.DISTRIBUTION:
         runtime_lifecycle._expected_image_build_contracts()
-    if isinstance(scope, HostImageScope):
-        root = booley.version_attribution.source_root or Path.cwd().resolve()
-    elif isinstance(scope, ProjectImageScope):
-        root = scope.project_root.resolve()
-    else:
-        raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    if isinstance(scope, ProjectImageScope):
-        return reconcile_planned(scope, intent, verbose=verbose)
+    root = booley.version_attribution.source_root or Path.cwd().resolve()
     builder = (
         None
         if intent is Intent.CHECK
@@ -671,17 +664,16 @@ def reconcile(
             root,
             docker,
             verbose=verbose,
-            refresh_runtime_base=(intent is Intent.REFRESH and isinstance(scope, HostImageScope)),
+            refresh_runtime_base=intent is Intent.REFRESH,
             capacity_plan=capacity_plan,
         )
     )
     return runtime_lifecycle.reconcile(
-        scope,
         intent,
         verbose=verbose,
         docker=docker,
         builder=builder,
-        artifact_policy=_artifact_policy(root if isinstance(scope, ProjectImageScope) else None),
+        artifact_policy=_artifact_policy(),
     )
 
 
@@ -703,7 +695,6 @@ def host_capacity_requests(intent: Intent) -> tuple[DockerBuildRequest, ...]:
     if policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
         return ()
     checked = runtime_lifecycle.reconcile(
-        HostImageScope(),
         Intent.CHECK,
         docker=docker,
         artifact_policy=policy,

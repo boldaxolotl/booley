@@ -152,6 +152,11 @@ def test_documented_command_paths_are_registered_and_allowed() -> None:
     for doc in source_checkout_files(ROOT, "src/booley/data", "docs/user"):
         if doc == ROOT / "src/booley/data/refs/CHANGELOG.md":
             continue
+        if (
+            doc.parent == ROOT / "src/booley/data/docs"
+            and (ROOT / "docs/user" / doc.name).is_file()
+        ):
+            continue  # generated copy of a docs/user page scanned at its source
         try:
             text = doc.read_text(encoding="utf-8")
         except UnicodeDecodeError:

@@ -183,12 +183,16 @@ def _project_job(
     proc_root: Path,
     cache: JobArtifactCache,
 ) -> JobObservation:
-    artifact = cache.find(root, rec.endpoint, rec.run_id, "report")
+    reports_parent = None if rec.report_root is None else Path(rec.report_root)
+    artifact = cache.find(root, rec.endpoint, rec.run_id, "report", reports_parent=reports_parent)
     report, report_path = (None, None) if artifact is None else artifact
-    progress = cache.find(root, rec.endpoint, rec.run_id, "progress")
+    progress = cache.find(
+        root, rec.endpoint, rec.run_id, "progress", reports_parent=reports_parent
+    )
     stage = _reported_stage(None if progress is None else progress[0])
     artifacts = available_paths(
-        report or {}, (root.parent, Path(rec.work_dir) if rec.work_dir else root)
+        report or {},
+        (reports_parent or root.parent, Path(rec.work_dir) if rec.work_dir else root),
     )
     return JobObservation(
         root,
