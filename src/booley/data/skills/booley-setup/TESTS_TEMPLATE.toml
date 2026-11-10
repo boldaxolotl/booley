@@ -8,14 +8,14 @@ smoke = ["reset", "basic"]
 # name is ambiguous, use the VLNV-qualified selector printed by `booley targets`,
 # quoted because of the colons:
 #
-#   ["mylib:myip:port#sim"]
+#   ["mylib:myip:port#sim_port"]
 #   tests = ["reset", "basic"]
 #
 # A qualified key names its core's Target and wins over the bare key; a bare key
 # serves every Target of that name with no qualified key. Doctor fails a key
 # that names no declared Target and two keys that name one Target.
 
-[sim]                        # keyed by .core Target name
+[sim_dut]                    # keyed by .core Target name
 tests = ["reset", "basic", "stress"]
 select = "+test_id={index}"  # exactly one plusarg; {index} (0-based) or {name}
 
@@ -42,7 +42,7 @@ select = "+test_id={index}"  # exactly one plusarg; {index} (0-based) or {name}
 # other variables Booley and the simulator integration own. On a Cocotb
 # Target a Variant carries `env` only.
 #
-# [sim.variants.stress]
+# [sim_dut.variants.stress]
 # default = "short"
 # short = ["+iters=1000"]
 # soak  = ["+iters=100000"]
