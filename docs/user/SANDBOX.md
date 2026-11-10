@@ -135,7 +135,9 @@ Code cannot use it. For the gateway variables and token contract, see
   and runs it starts. This is not isolation: other processes of the same user,
   Claude's shell tool included, can read the token from `/proc`. A `booley`
   command run from Claude's shell cannot reach the gateway, and Doctor run there
-  notes that the gateway is hidden. Prefer a short-lived token through
+  notes that the gateway is hidden. On the first creation of a Sandbox, a Claude
+  panel opened before the start hook has written the blanks runs with the
+  values once; later starts are covered. Prefer a short-lived token through
   `BOOLEY_GATEWAY_TOKEN_COMMAND`.
 
 ## Host configuration (`config.toml`)

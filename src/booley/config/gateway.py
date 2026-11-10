@@ -93,13 +93,12 @@ def gateway_settings_from_env(environ: Mapping[str, str] = os.environ) -> Gatewa
     url = (environ.get(GATEWAY_URL_ENV) or "").strip()
     if not url:
         raise GatewayConfigError(
-            f"{GATEWAY_AUTH!r} auth (BOOLEY_PRIMARY_AUTH=gateway) needs {GATEWAY_URL_ENV} "
-            "(the gateway's https:// base URL)"
+            f"{GATEWAY_AUTH!r} auth needs {GATEWAY_URL_ENV} (the gateway's https:// base URL)"
         )
     url = _validated_url(url)
     token = (environ.get(GATEWAY_TOKEN_ENV) or "").strip()
     command = (environ.get(GATEWAY_TOKEN_COMMAND_ENV) or "").strip()
-    prefix = f"{GATEWAY_AUTH!r} auth (BOOLEY_PRIMARY_AUTH=gateway)"
+    prefix = f"{GATEWAY_AUTH!r} auth"
     if token and command:
         raise GatewayConfigError(
             f"{prefix}: set exactly one of {GATEWAY_TOKEN_ENV} and {GATEWAY_TOKEN_COMMAND_ENV}"
