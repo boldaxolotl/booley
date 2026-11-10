@@ -14,7 +14,7 @@ from mcp.types import TextContent
 from booley.goals.paths import record_paths
 from booley.mcp.application import McpDispatchResult
 from booley.mcp.goal_tools import dispatch_goal_tool
-from tests.goals.conftest import enter_goals, git
+from tests.goals.conftest import enable_stealth, enter_goals, git
 from tests.goals.test_finish import publication_layout
 from tests.goals.test_status import publish
 
@@ -83,6 +83,7 @@ def test_published_finish_reply_is_concise_over_several_target_changes(layout):
 
 
 def test_stealth_finish_reply_without_target_changes_and_post_finish_status(layout):
+    enable_stealth(layout)
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
 

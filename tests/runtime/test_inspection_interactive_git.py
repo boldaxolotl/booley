@@ -67,6 +67,10 @@ def _seed_logs(booley_dir: Path) -> None:
 def test_missing_exclude_entries_warn_once_per_entry(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write_exclude(tmp_path, "/.devcontainer")
+    # Only an explicit Stealth Project must hide `.booley/`.
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
 
     findings = _inspect(tmp_path, tmp_path / ".booley")
 

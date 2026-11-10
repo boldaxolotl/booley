@@ -1,4 +1,4 @@
-"""Booley Directory Git initialization follows the outer Project branch."""
+"""Stealth Booley Directory Git initialization follows the outer Project branch."""
 
 from __future__ import annotations
 
@@ -12,12 +12,15 @@ from booley.harness.setup.common import InitContext
 from tests.harness.git_support import git_stdout as _git
 
 
-def _outer_project(tmp_path: Path, branch: str) -> tuple[Path, Path]:
+def _outer_project(
+    tmp_path: Path, branch: str, config: str = "[stealth]\nenabled = true\n"
+) -> tuple[Path, Path]:
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", branch)
     booley_dir = root / ".booley"
     booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text(config, encoding="utf-8")
     return root, booley_dir
 
 
@@ -46,6 +49,15 @@ def test_project_data_git_inherits_outer_branch(
 
     assert _git(booley_dir, "symbolic-ref", "HEAD") == f"refs/heads/{branch}"
     assert branch in capsys.readouterr().out
+
+
+def test_project_without_stealth_choice_gets_no_inner_repository(tmp_path: Path) -> None:
+    """A missing ``[stealth] enabled`` is off: the Booley Directory stays RTL-trackable."""
+    root, booley_dir = _outer_project(tmp_path, "main", "# comment-only init skeleton\n")
+
+    init_cmd._init_project_git_repo(booley_dir, InitContext(project_root=root))
+
+    assert not (booley_dir / ".git").exists()
 
 
 def test_check_only_names_branch_without_creating_repository(

@@ -171,6 +171,14 @@ def write_project_files(booley_dir: Path) -> None:
     (booley_dir / "mcp_tools" / "tool.py").write_text("# custom tool\n", encoding="utf-8")
 
 
+def enable_stealth(layout: SimpleNamespace) -> SimpleNamespace:
+    """Record the Stealth choice the excluded layout implies; a missing key means off."""
+    for booley_dir in (layout.control, layout.worktree / ".booley"):
+        with (booley_dir / "booley.toml").open("a", encoding="utf-8") as config:
+            config.write("\n[stealth]\nenabled = true\n")
+    return layout
+
+
 def install_paired_project(layout: SimpleNamespace, tmp_path: Path) -> Path:
     """Replace the worktree's snapshot with a Paired Checkout.
 

@@ -78,10 +78,13 @@ only):
   ASIC is disabled: an explicit mode with `--no-asic` is rejected. Do not pass
   `--provider` or `--auth`: plain `booley init` already recorded `[agent]`, and
   the scaffold keeps it without asking again. Without `--stealth`, the scaffold
-  also removes the empty inner `.booley` repository and the `/.booley` git
-  exclusion plain init set up; if it refuses because that inner repository has
-  commits, show the user its message (rerun with `--stealth`, or move the
-  history away) and change nothing yourself. After a
+  also removes an empty inner `.booley` repository and `/.booley` git exclusion
+  that an older plain init may have set up; if it refuses because that inner
+  repository has commits, show the user its message (rerun with `--stealth`, or
+  move the history away) and change nothing yourself. Before a `--stealth`
+  scaffold over an earlier plain init, undo that init's non-Stealth line-ending
+  edit as `SKILL.md`'s Stealth footprint step describes; the scaffold's init
+  then hides `.booley/` and creates its repository. After a
   `--stealth` scaffold, commit `.booley/` in its own repository before the
   Doctor gate, or `project.core-file-untracked` blocks it.
 
