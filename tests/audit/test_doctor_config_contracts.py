@@ -149,7 +149,9 @@ def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, 
         warned=lambda msg, fix="": warns.append(msg),
         failed=lambda msg, fix="": fails.append(msg),
     )
-    assert any(f"[flows.{non_reader}].{knob}" in m and "has no effect" in m for m in warns)
+    # The retired sim output_dir is reported as retired, not as an ignored knob.
+    non_reader_message = "is retired" if knob == "output_dir" else "ignores it"
+    assert any(f"[flows.{non_reader}].{knob}" in m and non_reader_message in m for m in warns)
 
     warns.clear()
     _record_audit(
@@ -157,7 +159,7 @@ def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, 
         warned=lambda msg, fix="": warns.append(msg),
         failed=lambda msg, fix="": fails.append(msg),
     )
-    assert not any(knob in m and "has no effect" in m for m in warns)
+    assert not any(knob in m and ("ignores it" in m or "is retired" in m) for m in warns)
 
 
 def test_sim_output_dir_is_retired_without_failing_doctor():
@@ -262,7 +264,7 @@ def test_validate_one_flow_table_pre_run_commands_shape():
         failed=lambda msg, fix="": fails.append(msg),
     )
     assert ok is True
-    assert any("[flows.lint].pre_run_commands" in m and "has no effect" in m for m in warns)
+    assert any("[flows.lint].pre_run_commands" in m and "ignores it" in m for m in warns)
 
 
 def test_windows_rejects_host_provisioning_during_config_audit(tmp_path, monkeypatch):

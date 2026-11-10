@@ -515,7 +515,7 @@ def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(repo / "custom-runtime"))
     reset_cache()
     (data / config_name).write_text(
-        '[project]\nname="fixture"\n[flows.synth]\noutput_dir="custom-output"\n'
+        '[project]\nname="fixture"\n[flows.synth]\noutput_dir="custom-output"\n[flows.sim]\noutput_dir="retired-sim-output"\n'
     )
     roots = [
         data / "selftest/sim/bad-overlay",
@@ -527,7 +527,8 @@ def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
         repo / "custom-output",
         repo / "current-report",
     ]
-    for root in roots:
+    retired_sim_output = repo / "retired-sim-output"  # [flows.sim].output_dir: not hidden
+    for root in (*roots, retired_sim_output):
         root.mkdir(parents=True)
         (root / "copied.sv").write_text("module private_copy; endmodule\n")
         (root / "result.md").write_text("embedded private source\n")
@@ -547,6 +548,9 @@ def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
                 relative = source.relative_to(repo)
                 assert not (root / relative).exists()
                 assert (relative / "result.md").as_posix() in caplog.text
+        # A retired key hides nothing; its directory is still source-sanitized like any tree.
+        assert not (root / "retired-sim-output/copied.sv").exists()
+        assert (root / "retired-sim-output/result.md").is_file()
     for source in roots:
         assert (source / "copied.sv").is_file()
     reset_cache()
