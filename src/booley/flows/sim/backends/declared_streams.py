@@ -128,6 +128,10 @@ class DeclaredTraceStreams:
         for stream in self._streams:
             self._session.start_monitor(stream.conversion, sim_proc, spare_simulator=True)
 
+    def stop_watch(self) -> None:
+        """End the stall monitors :meth:`watch` started and wait for their threads."""
+        self._session.stop_monitor()
+
     def close_inputs(self) -> None:
         """Give every converter EOF and remove the pipes and sidecars Booley created."""
         for stream in self._streams:
