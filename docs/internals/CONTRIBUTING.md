@@ -102,11 +102,11 @@ base with `main`, reading the coverage report that a passing `pytest.broad`
 run wrote for the same tree outside the checkout; it refuses a missing or
 stale report. Develop readiness defaults to the `python` test profile: its
 broad command runs `tests/ --test-profile python`, excluding every
-`native_bwave` test. It includes every Goal recovery and authority
-permutation, as every complete-suite CI run does.
+`native_bwave` test. `tests/` collection skips `tests/goals/` (temporary, until
+Goal Mode removal #3276); run those with unprofiled `pytest tests/goals`.
 
 Use `python3 .github/scripts/agent_readiness.py --test-profile full` before a
-full test run. `full` covers all of `tests/`, including native integration; it
+full test run. `full` covers `tests/` (minus `tests/goals/`), including native integration; it
 does not include Rust tests or `crates/bwave/tests/`. Native source tests all
 use the active checkout's `crates/bwave/target/debug/bwave` (`bwave.exe` on
 Windows), ignoring release builds and runtime binary overrides. This test-only

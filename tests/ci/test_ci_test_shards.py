@@ -23,6 +23,15 @@ from ci_test_shards import (
 )
 
 
+@pytest.mark.parametrize("model", ["linux-test-timings.json", "windows-test-timings.json"])
+def test_timing_models_list_no_goal_mode_tests(model: str) -> None:
+    """CI never runs Goal Mode unit tests (#3329), so the shard models carry no entry for them."""
+    timings = load_timings(_ROOT / ".github/ci" / model)
+
+    assert timings.tests
+    assert [name for name in timings.tests if name.startswith("tests/goals/")] == []
+
+
 def test_longest_processing_time_balances_known_slow_tests() -> None:
     nodeids = ("test::slow", "test::medium", "test::fast-a", "test::fast-b")
     timings = TimingModel(
