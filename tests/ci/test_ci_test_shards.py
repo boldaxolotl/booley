@@ -45,6 +45,18 @@ def test_unknown_tests_are_included_deterministically() -> None:
     assert {nodeid for shard in first for nodeid in shard} == set(nodeids)
 
 
+def test_skipped_nodes_add_no_shard_load() -> None:
+    """A skipped node does no work, so its recorded duration must not push real work aside."""
+    nodeids = ("t::slow", "t::fast", "t::skip-a", "t::skip-b")
+    timings = TimingModel(
+        default_seconds=1.0, tests={"t::slow": 9.0, "t::skip-a": 50.0, "t::skip-b": 40.0}
+    )
+
+    shards = assign_shards(nodeids, 2, timings, skipped={"t::skip-a", "t::skip-b"})
+
+    assert shards == (("t::skip-a", "t::slow"), ("t::fast", "t::skip-b"))
+
+
 def test_duplicate_collected_nodeids_fail_loudly() -> None:
     with pytest.raises(ShardError, match="must be unique"):
         assign_shards(("test::same", "test::same"), 2, TimingModel(1.0, {}))

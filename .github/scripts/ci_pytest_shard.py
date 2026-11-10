@@ -89,8 +89,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if not 0 <= shard_index < shard_count:
         raise pytest.UsageError("--ci-shard-index must be within the shard count")
     nodeids = [item.nodeid for item in items]
+    # An unconditional skip (for example `sandbox_only` on Windows) costs no test time.
+    skipped = [item.nodeid for item in items if item.get_closest_marker("skip") is not None]
     shards = assign_shards(
-        nodeids, shard_count, load_timings(config.getoption("--ci-timing-model"))
+        nodeids, shard_count, load_timings(config.getoption("--ci-timing-model")), skipped
     )
     selected_ids = set(shards[shard_index])
     selected = [item for item in items if item.nodeid in selected_ids]
