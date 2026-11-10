@@ -68,6 +68,8 @@ def _manifest_for(names: tuple[str, ...], *, access: str = "immutable"):
     }
     target = document["target"]
     variant = document["build_variants"][0]  # type: ignore[index]
+    # Planning writes this flag as ``pre_sim_build_access == "immutable"``.
+    variant["sharing_eligible"] = access == "immutable"
     items = []
     for ordinal, name in enumerate(names):
         identity = {
@@ -850,7 +852,7 @@ def _aggregate_result_bound_fixture(tmp_path):
     document["evidence"] = store.pre_sim_references(request.attempt_directory)
     document["observations"] = [
         {
-            **serial_execution._observation(
+            **serial_execution.observation_document(
                 SimulationTestOutcome(name=name, verdict="pass", passed=True)
             ),
             "test_run": name,
@@ -1071,14 +1073,13 @@ def _project_relative_hook_campaign(tmp_path: Path, route: str, configured: str)
             "kind": "templated" if templated else "literal",
             "collision_template": "runs/test/attempt" if templated else configured,
         }
-        document["build_variants"][0]["sharing_eligible"] = route == "shared"
 
     access = "legacy-per-test" if route == "legacy-per-test" else "immutable"
     plan, disclosures = _pre_sim_plan(access, (command,), configure)
     return project, plan, disclosures
 
 
-@pytest.mark.parametrize("route", ["shared", "private", "legacy-per-test"])
+@pytest.mark.parametrize("route", ["shared", "legacy-per-test"])
 @pytest.mark.parametrize("configured", ["runs/literal", "runs/{test}/{attempt}"])
 def test_campaign_pre_sim_project_relative_hook_uses_project_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, configured: str
