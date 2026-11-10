@@ -410,6 +410,8 @@ The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clie
 | `booley` / `booley chat` | Launch the default `claude` or `codex` command inside the Sandbox; `--cli <name>` picks another allowed one |
 | `docker pull ghcr.io/boldaxolotl/booley-sandbox:<ver>` | Manual pull of pre-built image |
 
+Offline copies of the user docs that skills cite (config, Flows, troubleshooting, Sandbox) are in `/booley-docs/<FILE>.md`.
+
 To extend the image, create `.booley/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley/booley.toml`.
 
 Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected Developer Agent command:
