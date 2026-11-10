@@ -103,7 +103,8 @@ Goal Mode (host doc, not shipped).
 A synthesis Target reads its timing constraints from SDC files in a
 `file_type: SDC` fileset. At least one file must create a clock; Booley adds
 no constraints of its own, so the clock periods and I/O delays you write are
-what the timing numbers mean.
+what the timing numbers mean. To declare the fileset, see the
+[Synthesis Target recipe](TARGETS.md#synthesis-target).
 
 ```tcl
 # constraints/core.sdc
@@ -245,33 +246,19 @@ endpoints, worst first; a design with fewer paths lists those it has. Worst slac
 still come from the single worst path.
 
 Everything about how the design is built lives on the Target in the `.core`
-file, not in `booley.toml`. A synthesis Target needs `tool: yosys`; the other
-`flow_options` are optional and shown with their defaults:
+file, not in `booley.toml`; the full Target, with its SDC fileset, is the
+[Synthesis Target recipe](TARGETS.md#synthesis-target). The `flow_options`
+this Flow reads:
 
-```yaml
-# <design>.core
-filesets:
-  timing_constraints:
-    files:
-      - constraints/core.sdc: {file_type: SDC}
-targets:
-  synth_core:
-    flow_options:
-      tool: yosys
-      synth_mode: physical       # physical | logical
-      ppa_profile: balanced      # compact | balanced | max_frequency
-      flatten: true
-      frontend: sv2v             # sv2v | slang
-      # slang_options: [--single-unit]
-      # advanced_settings_yosys: {abc_recipe: balanced}
-      # advanced_settings_openroad: {utilization_pct: 50, placement_density: 0.80}
-    filesets: [rtl, timing_constraints]
-    toplevel: core
-```
-
-`slang_options` passes options to the `slang` frontend unchanged. Add
-`--single-unit` when the RTL relies on macros from a header included only once
-at the top of the file list. `advanced_settings_yosys` and
-`advanced_settings_openroad` hold the expert options above; setting
-`advanced_settings_openroad` on a logical Target is an error, since it would
-have no effect. For naming and file types, see [Targets](TARGETS.md).
+- `synth_mode`: `physical` (default) or `logical`; see
+  [Fast logical estimates](#fast-logical-estimates).
+- `ppa_profile`: `compact`, `balanced` (default) or `max_frequency`; see
+  [Optimization profiles](#optimization-profiles).
+- `flatten`: `true` (default) or `false`.
+- `frontend`: `sv2v` (default) or `slang`. `slang_options` passes options to
+  the `slang` frontend unchanged. Add `--single-unit` when the RTL relies on
+  macros from a header included only once at the top of the file list.
+- `advanced_settings_yosys` and `advanced_settings_openroad`: the expert
+  options of [Optimization profiles](#optimization-profiles). Setting
+  `advanced_settings_openroad` on a logical Target is an error, since it would
+  have no effect.

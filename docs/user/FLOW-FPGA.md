@@ -23,7 +23,8 @@ what all Flows share (choosing Targets, options, logs, exit codes), see
    and at least one XDC constraints file that defines your clocks
    (`create_clock`) and, for a full build, pin locations. Name the Target
    `fpga_<subject>`. The Developer Agent can write it for you if you tell it
-   the part and the clocks; see [Configuration](#configuration-flowsfpga).
+   the part and the clocks; see the
+   [FPGA Target recipe](TARGETS.md#fpga-target).
 3. **Ask the agent**, naming the Target:
 
     > *"Run the FPGA build for `fpga_soc` and tell me LUTs and Fmax."*
@@ -141,27 +142,15 @@ timeout_ms = 7200000
 ```
 
 Everything about how the design is built lives on the Target in the `.core`
-file, not in `booley.toml`:
+file, not in `booley.toml`; the full Target, with its required XDC fileset, is
+the [FPGA Target recipe](TARGETS.md#fpga-target). The `flow_options` this Flow
+reads:
 
-```yaml
-# <design>.core
-filesets:
-  fpga_constraints:
-    files:
-      - constraints/top.xdc: {file_type: xdc}
-targets:
-  fpga_soc:
-    flow_options:
-      tool: vivado
-      part: xc7a100tcsg324-1   # required
-      ppa_profile: balanced    # compact | balanced | max_frequency
-      out_of_context: false    # default false
-    filesets: [rtl, fpga_constraints]
-    toplevel: top
-```
+- `part`: the FPGA part; required.
+- `ppa_profile`: `compact`, `balanced` (default) or `max_frequency`; see
+  [Optimization profiles](#optimization-profiles).
+- `out_of_context`: `false` (default) or `true`; see
+  [Out-of-context builds](#out-of-context-builds).
 
-The `file_type: xdc` fileset is required and is the only source of
-constraints. Keep `tool: vivado`. Other `flow_options`, such as `synth` or
-`pnr`, do not change the build. A vendored Target whose name has no `fpga`
-prefix can still be built if its `tool` is `vivado`. How the Flow picks RTL
-files: [Fileset file types](TARGETS.md#fileset-file-types).
+How the Flow picks RTL and constraint files:
+[Fileset file types](TARGETS.md#fileset-file-types).

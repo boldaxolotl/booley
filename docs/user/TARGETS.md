@@ -105,8 +105,8 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 | `cSource`, `cppSource` | C/C++ sources of a Verilator simulation harness. |
 | `veribleLintRules` | Verible rules file; at most one per Target. |
 | `veribleLintWaiver` | Verible waiver files; see the [Verible recipe](#verible-lint-target). |
-| `SDC` | ASIC timing constraints (uppercase); see [ASIC synthesis](FLOW-SYNTH.md#configuration-flowssynth). |
-| `xdc` | Vivado constraints, named `*.xdc`; see [FPGA implementation](FLOW-FPGA.md#configuration-flowsfpga). |
+| `SDC` | ASIC timing constraints (uppercase); see the [Synthesis recipe](#synthesis-target). |
+| `xdc` | Vivado constraints, named `*.xdc`; see the [FPGA recipe](#fpga-target). |
 | `user` | Firmware, vectors, cocotb Python modules; `copyto:` sets where they land. |
 
 - Give headers (`.vh`, `.svh`) the same type as their sources and mark them
@@ -114,8 +114,9 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 - Keep `SDC` and `xdc` files out of `tags: [tb]` filesets.
 - Use the unversioned `verilogSource` and `systemVerilogSource`. Coverage and
   build reuse don't recognize version-suffixed names.
-- The fpga Flow ignores declared types and goes by filename: give FPGA RTL a
-  lowercase `.v` or `.sv` suffix, and constraints an `.xdc` suffix.
+- The fpga Flow picks RTL by filename, not declared type: give FPGA RTL a
+  lowercase `.v` or `.sv` suffix. Its constraints come only from
+  `file_type: xdc` files.
 - SystemC, UHDM, VHDL, and Tcl filesets have no supported path through the
   built-in Flows; see the [EDA-tool matrix](SUPPORTED-EDA-TOOLS.md).
 
@@ -146,6 +147,8 @@ doesn't list it as a Target you can run.
 A lint Target needs `flow: lint` and `flow_options.tool` set to `verilator` or
 `verible` (`veriblelint` also works). Other tools don't show up in `booley targets --for lint`.
 For Python testbenches, see [Cocotb Targets](#cocotb-targets-python-testbenches).
+A synth Target sets `flow: generic` and `tool: yosys`, an fpga Target
+`flow: generic` and `tool: vivado`; see the recipes below.
 
 #### Verilator lint Target
 
@@ -214,6 +217,85 @@ targets:
 
 Use at most one rules file; waiver files are optional. For what lint reports,
 see [Lint](FLOW-LINT.md).
+
+#### Synthesis Target
+
+A synthesis Target selects the RTL plus an SDC timing-constraints fileset. The
+`flow_options` after `arch` are optional and shown with their defaults:
+
+```yaml
+CAPI=2:
+name: acme:ip:core:1.0
+filesets:
+  rtl:
+    files: [rtl/core.sv]
+    file_type: systemVerilogSource
+  timing_constraints:
+    files:
+      - constraints/core.sdc: {file_type: SDC}
+targets:
+  synth_core:
+    flow: generic
+    flow_options:
+      tool: yosys
+      arch: xilinx               # required by Edalize; Booley ignores it
+      synth_mode: physical       # physical (default) | logical
+      ppa_profile: balanced      # compact | balanced (default) | max_frequency
+      flatten: true              # default true
+      frontend: sv2v             # sv2v (default) | slang
+      # slang_options: [--single-unit]   # raw options for the slang frontend
+    filesets: [rtl, timing_constraints]
+    toplevel: core
+```
+
+- The SDC fileset (`file_type: SDC`, uppercase) must create a clock and is
+  required in physical mode; a `synth_mode: logical` Target needs none. See
+  [Timing constraints](FLOW-SYNTH.md#timing-constraints) and
+  [Fast logical estimates](FLOW-SYNTH.md#fast-logical-estimates).
+- `slang_options` is a non-empty list passed to the `slang` frontend
+  unchanged.
+- Expert `advanced_settings_yosys` and `advanced_settings_openroad` settings
+  are described under
+  [Optimization profiles](FLOW-SYNTH.md#optimization-profiles).
+- To keep a large RAM from distorting results, swap in a Memory Timing
+  Surrogate with a define and a synthesis-only fileset, not a Target option;
+  see [Large memories](FLOW-SYNTH.md#large-memories).
+
+#### FPGA Target
+
+An FPGA Target selects the RTL plus an XDC constraints fileset for one part:
+
+```yaml
+CAPI=2:
+name: acme:soc:top:1.0
+filesets:
+  rtl:
+    files: [rtl/top.sv]
+    file_type: systemVerilogSource
+  fpga_constraints:
+    files:
+      - constraints/top.xdc: {file_type: xdc}
+targets:
+  fpga_soc:
+    flow: generic
+    flow_options:
+      tool: vivado
+      part: xc7a100tcsg324-1     # required
+      ppa_profile: balanced      # compact | balanced (default) | max_frequency
+      out_of_context: false      # default false
+    filesets: [rtl, fpga_constraints]
+    toplevel: top
+```
+
+- The `xdc` fileset is required and is the only constraint source. The XDC
+  must `create_clock`; without one the run ends in `ERROR`
+  ([Reading results](FLOW-FPGA.md#reading-results)).
+- `part` is required. `out_of_context: true` builds a block without I/O
+  buffers ([Out-of-context builds](FLOW-FPGA.md#out-of-context-builds)). For
+  `ppa_profile`, see [Optimization profiles](FLOW-FPGA.md#optimization-profiles).
+- Keep `tool: vivado`; other `flow_options`, such as `synth` or `pnr`, do not
+  change the build. An unprefixed vendored Target still counts as fpga when
+  its tool is `vivado`.
 
 ## Cocotb Targets (Python testbenches)
 
