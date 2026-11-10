@@ -57,6 +57,7 @@ from booley.config.gateway import (
     GATEWAY_AUTH,
     GATEWAY_EFFORT_ENV,
     GATEWAY_MODEL_ENV,
+    HIDDEN_GATEWAY_ENV,
     GatewayConfigError,
     gateway_model_pin_from_env,
     gateway_settings_from_env,
@@ -1906,6 +1907,36 @@ def _check_image_bakes_runtime_marker(
         _warn(f"{sandbox_image} does not bake BOOLEY_CONTAINER=1 — {_RUNTIME_MARKER_FIX}")
 
 
+# Shown wherever a Claude session cannot grade the gateway it was deliberately kept from.
+_HIDDEN_GATEWAY_NOTE = (
+    "Codex gateway settings are hidden from Claude sessions; "
+    "run `booley doctor` from a VS Code terminal to check them"
+)
+
+
+def _gateway_hidden_here() -> bool:
+    """Whether this process is a Claude session with the gateway settings scrubbed."""
+    return os.environ.get(HIDDEN_GATEWAY_ENV) == "1"
+
+
+def _probe_runs_on_hidden_gateway(project: ProjectAudit) -> bool:
+    """Whether the internal model's Agent CLI is Codex on the gateway, hidden from this session."""
+    from booley.config.agent import BackendConfigError, load_agent_settings
+
+    if not _gateway_hidden_here():
+        return False
+    try:
+        settings = load_agent_settings(project.project_root, booley_dir=project.booley_dir)
+        cli = settings.cli_for_model_id(settings.internal_model())
+    except (
+        ValueError,
+        OSError,
+        BackendConfigError,
+    ):  # an unreadable config is graded by its own check
+        return False
+    return cli == auth_token.APP_CODEX and settings.auth_for(cli) == GATEWAY_AUTH
+
+
 def _run_developer_probe(
     project: ProjectAudit,
     _pass: Check,
@@ -1953,12 +1984,15 @@ def _run_developer_probe(
             _fail(str(record.error), _MODEL_REFUSAL_FIX)
             return record
         if getattr(exc, "agent_failure", False):
-            _fail(
-                f"Specialist provider probe could not complete a trivial call — every "
-                f"Specialist using this provider will fail the same way at launch: {exc}",
-                "check agent auth at THIS Sandbox location (booley auth, or claude login + "
-                "container recreate); see the harness log for the provider's error",
-            )
+            if _probe_runs_on_hidden_gateway(project):
+                _skip(_HIDDEN_GATEWAY_NOTE)  # this session cannot reach the gateway by design
+            else:
+                _fail(
+                    f"Specialist provider probe could not complete a trivial call — every "
+                    f"Specialist using this provider will fail the same way at launch: {exc}",
+                    "check agent auth at THIS Sandbox location (booley auth, or claude login + "
+                    "container recreate); see the harness log for the provider's error",
+                )
             return record
         _skip(
             f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
@@ -2868,6 +2902,10 @@ def _check_cli_credentials(
     """
     required = is_default or runs_specialist
     auth_policy = _configured_auth_policy(project, cli)
+    if auth_policy == GATEWAY_AUTH and _gateway_hidden_here():
+        # A Claude session has no gateway values by design; only a shell that kept them can grade it.
+        reporter.note_(_HIDDEN_GATEWAY_NOTE)
+        return
     if auth_policy == GATEWAY_AUTH:
         # Under BOOLEY_AGENT_APP=auto the policy comes from the start's choice record.
         _check_gateway_auth(cli, reporter, chosen_by_auto=auto_choice is not None or not required)
@@ -2974,7 +3012,8 @@ def _warn_ignored_gateway_handoff(reporter: _Reporter) -> None:
             warning(
                 "agent.credential-policy",
                 "BOOLEY_PRIMARY_AUTH=gateway is honored only inside a Sandbox that sets it "
-                "(for example a Codespace); Booley-issued Sandboxes use booley.toml",
+                "(for example a Codespace); a Booley-issued Sandbox forwards the gateway "
+                'for [agent.auth] codex = "gateway" instead',
             )
         )
 
@@ -4078,12 +4117,19 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
     from booley.commit_policy import stealth_enabled
     from booley.runtime.project_trackability import (
         FIX,
+        STEALTH_UNSET,
+        STEALTH_UNSET_FIX,
         history_probe,
         inspect_project_trackability,
+        unrecorded_stealth_exclusions,
     )
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
+    for name in unrecorded_stealth_exclusions(root, booley_dir):
+        _warning_sink(_warn, "stealth.enabled-unset", subject=name)(
+            STEALTH_UNSET.format(name=name), STEALTH_UNSET_FIX
+        )
     inspection = inspect_project_trackability(root, booley_dir)
     probe = history_probe(root)
     for group in inspection.ignored:

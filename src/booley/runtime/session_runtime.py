@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.config import gateway
 from booley.core.differences import format_differences
 from booley.core.project_identity import project_label_id
 from booley.runtime import auth_token, image_identity, project_image
@@ -244,19 +245,81 @@ class DockerRunArgv(list[str]):
         self.environment = environment
 
 
-def _allowed_credential_keys(spec: dict) -> frozenset[str]:
-    """Credential env keys the spec may forward: those of every CLI in its record."""
+def _spec_record(spec: dict) -> dict[str, str]:
+    """The spec's Agent CLI record, or a ``SessionError`` when it is malformed."""
     try:
-        record = dc.spec_cli_policies(spec)
+        return dc.spec_cli_policies(spec)
     except ValueError as exc:
         raise SessionError(
             f"Sandbox Agent CLI record is malformed ({exc}); refresh the Sandbox"
         ) from exc
+
+
+def _allowed_credential_keys(spec: dict) -> frozenset[str]:
+    """Credential env keys the spec may forward: those of every CLI in its record."""
     # Issuance (``_validate_credential_policy``) requires the record to list the CLI app,
     # so an app absent from it earns no key.
     return frozenset().union(
-        *(auth_token.allowed_credential_keys(c, p) for c, p in record.items())
+        *(auth_token.allowed_credential_keys(c, p) for c, p in _spec_record(spec).items())
     )
+
+
+def _forwarded_gateway_keys(spec: dict) -> tuple[str, ...]:
+    """Gateway variables the spec forwards from the host: empty unless Codex is on the gateway.
+
+    A hand-written spec (no ``BOOLEY_AGENT_CLIS`` record, or no ``codex=gateway`` in it)
+    keeps its literal environment.
+    """
+    recorded = dc.AGENT_CLIS_ENV in (spec.get("remoteEnv") or {})
+    if not recorded or _spec_record(spec).get("codex") != gateway.GATEWAY_AUTH:
+        return ()
+    named = {*(spec.get("containerEnv") or {}), *(spec.get("remoteEnv") or {})}
+    return tuple(key for key in gateway.GATEWAY_FORWARDED_ENV if key in named)
+
+
+def _require_forwarded_gateway(spec: dict) -> None:
+    """Refuse a ``codex=gateway`` spec whose gateway settings this process cannot supply.
+
+    The host's gateway variables are resolved from *this* process's environment, which
+    is VS Code's own for ``initializeCommand``. An empty forwarded variable (including a
+    token source other than the one issued) or an invalid gateway configuration would
+    start a Sandbox whose registrar and MCP server lack the gateway, so name it instead.
+    """
+    keys = _forwarded_gateway_keys(spec)
+    for key in keys:
+        if not os.environ.get(key, "").strip():
+            raise SessionError(
+                f"the Sandbox routes Codex through the gateway but {key} is not set in this "
+                "environment; export it (VS Code: reopen it from a shell that exports it)"
+            )
+    if keys:
+        try:
+            gateway.gateway_forwarded_keys(os.environ)
+        except gateway.GatewayConfigError as exc:
+            raise SessionError(str(exc)) from exc
+
+
+def _append_environment(
+    argv: DockerRunArgv, spec: dict, workspace: Path, forwarded: frozenset[str]
+) -> None:
+    """Add ``-e`` for ``containerEnv`` and ``remoteEnv``; secrets ride the child env only.
+
+    A credential or forwarded-gateway key must be its own ``${localEnv:KEY}`` reference:
+    the resolved value goes into ``argv.environment`` and the argv carries a bare ``-e KEY``.
+    """
+    credential_keys = auth_token.CREDENTIAL_ENV_KEYS | forwarded
+    allowed = _allowed_credential_keys(spec) | forwarded
+    remote = spec.get("remoteEnv") or {}
+    for section in (spec.get("containerEnv") or {}, remote):
+        for key, value in section.items():
+            resolved = substitute(str(value), workspace)
+            if key in credential_keys:
+                if key not in allowed or str(value) != f"${{localEnv:{key}}}":
+                    raise SessionError("credential environment violates Sandbox policy")
+                argv.environment[key] = resolved
+                argv += ["-e", key]
+            else:
+                argv += ["-e", f"{key}={resolved}"]
 
 
 def docker_run_argv(
@@ -281,22 +344,13 @@ def docker_run_argv(
     argv = DockerRunArgv(["docker", "run", "-d", "--name", name], dict(os.environ))
     remote = spec.get("remoteEnv") or {}
     policy = remote.get("BOOLEY_PRIMARY_AUTH", "auto")
-    allowed = _allowed_credential_keys(spec)
+    _require_forwarded_gateway(spec)
 
     for mount in [spec.get("workspaceMount"), *(spec.get("mounts") or [])]:
         if mount:
             argv += ["--mount", substitute(str(mount), workspace)]
 
-    for section in (spec.get("containerEnv") or {}, remote):
-        for key, value in section.items():
-            resolved = substitute(str(value), workspace)
-            if key in auth_token.CREDENTIAL_ENV_KEYS:
-                if key not in allowed or str(value) != f"${{localEnv:{key}}}":
-                    raise SessionError("credential environment violates Sandbox policy")
-                argv.environment[key] = resolved
-                argv += ["-e", key]
-            else:
-                argv += ["-e", f"{key}={resolved}"]
+    _append_environment(argv, spec, workspace, frozenset(_forwarded_gateway_keys(spec)))
     if policy == "api_key":
         key = auth_token.API_KEY_ENV.get(remote.get("BOOLEY_AGENT_APP"))
         if key and (
@@ -1220,6 +1274,8 @@ def _prepare_unlocked(workspace: Path) -> str:
         )
     spec = _load_spec(workspace)
     issuance = _refuse_then_validate(workspace, spec)
+    # VS Code's own environment resolves the gateway refs: refuse before any start claim.
+    _require_forwarded_gateway(spec)
     _reconcile_stopped_vscode_containers(
         workspace, issuance, selected_editor_id=selected.container_id if selected else None
     )
@@ -2249,6 +2305,10 @@ def resolve_running_sandbox(workspace: Path) -> Sandbox | None:
 
 
 def _validate_selected_runtime(workspace: Path, request: _UpRequest, selected: Sandbox) -> None:
+    if not selected.vscode:
+        # Name a missing gateway export instead of the generic "does not match" below;
+        # a VS Code-owned Sandbox is matched without reading ``localEnv``.
+        _require_forwarded_gateway(request.spec)
     if not container_matches_issuance(
         selected.container_id,
         request.issuance,
@@ -2279,7 +2339,8 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
     command_env = {
         name: value
         for name, value in remote_env.items()
-        if name not in auth_token.CREDENTIAL_ENV_KEYS
+        # The container already holds these; the spec's value is a ``${localEnv:}`` placeholder.
+        if name not in auth_token.CREDENTIAL_ENV_KEYS and name not in gateway.GATEWAY_FORWARDED_ENV
     }
     if selected is not None:
         _validate_selected_runtime(workspace, request, selected)

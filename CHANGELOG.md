@@ -9,6 +9,17 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Stealth Mode is now off unless `.booley/booley.toml` sets
+  `[stealth] enabled = true`; a missing key means off. A fresh `booley init`
+  no longer hides `.booley/` or gives it its own repository before setup
+  records your choice; the booley-setup skill's hidden answer does both. A
+  Project set up earlier whose `booley.toml` has no `enabled` key has left
+  Stealth: commit messages are no longer cleaned and pushes are no longer
+  checked. `booley init` and Doctor warn `stealth.enabled-unset` while
+  `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
+  `enabled = false` to confirm it is off. A `booley.toml` that can't be read
+  keeps Stealth on. Unattended setup now keeps `.booley/` in your repository
+  instead of hiding it.
 - String parameters now reach Verilator and Icarus through Edalize's own
   quoting again, narrowing the 0.4.0 note that `str` and `file` vlogparams reach
   them as strings. Plain values such as `MAC` work; values with quotes,
@@ -36,9 +47,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   `/booley-setup new` on the host. `/booley-setup new` asks the design choices
   and writes the starter project with your answers, without prompting again. It
   now also works after a completed plain `booley init`: it keeps the `[agent]`
-  settings, and unless you choose Stealth it removes the empty inner `.booley`
-  repository and the `/.booley` git exclusion, or refuses (changing nothing)
-  when that repository has commits. Plain `booley init` in a repo with no RTL now suggests
+  settings, and unless you choose Stealth it removes an empty inner `.booley`
+  repository and `/.booley` git exclusion left by an older `booley init`, or
+  refuses (changing nothing) when that repository has commits. Plain `booley init` in a repo with no RTL now suggests
   `/booley-setup new`.
 - `booley init --scaffold` now names Targets `<axis>_<ip>` (`sim_<ip>`,
   `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`) with a matching `tests.toml` section.
@@ -66,6 +77,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   removed, naming the file. Remove it, then run
   `booley init --seed --project <root>` on the host to reissue the Sandbox
   spec. Linux and macOS file names do not change.
+- A Sandbox that Booley issues now accepts `[agent.auth] codex = "gateway"`. It
+  forwards the gateway settings from your shell for Codex only, and hides them
+  from Claude sessions. Start VS Code from a shell that exports them (see
+  "Codex through a model gateway" in `docs/user/SANDBOX.md`).
 - Booley no longer migrates Sandbox state from releases before 0.3.0. The
   host-issued Sandbox spec stamp format version is bumped, so every spec issued
   by an earlier release is rejected as stale. Stamps at the old

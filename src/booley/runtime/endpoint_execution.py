@@ -15,10 +15,13 @@ from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeVar
 
-EXIT_SUCCESS = 0
-EXIT_FAILURE = 1
-EXIT_ERROR = 2
-EXIT_CANCELLED = 130
+# Re-exported: callers import the verdict codes from here.
+from booley.core.exit_codes import (  # noqa: F401
+    EXIT_CANCELLED,
+    EXIT_ERROR,
+    EXIT_FAILURE,
+    EXIT_SUCCESS,
+)
 
 logger = logging.getLogger(__name__)
 _MAX_COMPLETION_MESSAGE_CHARS = 500

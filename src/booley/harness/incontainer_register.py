@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from booley.config import agent_app
@@ -154,6 +155,32 @@ def _invalidate_health() -> str:
     return ""
 
 
+def _guarded_step(label: str, step: Callable[[], str]) -> str:
+    """Run one registrar step: its ``label:status`` token, or ``refused`` on ``ValueError``."""
+    try:
+        return f"{label}:{step()}"
+    except ValueError as exc:
+        # An unreadable user config is refused untouched, like a refused registration.
+        print(f"error: registration refused: {exc}", file=sys.stderr)
+        return "refused"
+
+
+def _apply_issued_gateway(app: str, status: str) -> str:
+    """Per-CLI gateway steps of an issued Sandbox, appended to *status*.
+
+    Codex's gateway provider is written whichever app is the default; Claude's
+    settings get the gateway blanked. Each step is guarded on its own, so a refused
+    Claude registration still hides the gateway.
+    """
+    from booley.config.agent import issued_codex_gateway
+
+    tokens = [status]
+    if app != "codex" and issued_codex_gateway():
+        tokens.append(_guarded_step("gateway", incontainer_setup._apply_codex_gateway))
+    tokens.append(_guarded_step("claude-gateway", incontainer_setup.hide_gateway_from_claude))
+    return " ".join(tokens)
+
+
 def main() -> None:
     """Start mechanisms, apply registration, and launch advisory Harness policy."""
     try:
@@ -176,6 +203,7 @@ def main() -> None:
         # (upgrade note, auto-doctor) must still run to help diagnose it.
         print(f"error: registration refused: {exc}", file=sys.stderr)
         status = "refused"
+    status = _apply_issued_gateway(app, status)
     upgrade = observe_upgrade()
     doctor_launch = launch_auto_doctor()
     chosen = f" app:{choice.app} (BOOLEY_AGENT_APP=auto: {choice.reason})" if choice else ""
@@ -184,7 +212,7 @@ def main() -> None:
         f"{status}{chosen}{invalidation}",
         file=sys.stderr,
     )
-    if status == "refused":
+    if "refused" in status.split():
         sys.exit(1)
 
 

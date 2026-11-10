@@ -291,15 +291,21 @@ How it differs from an SV Target:
   every affected path. Put a `FUSESOC_IGNORE` in the directory holding the
   link. It hides all cores below it, so don't place it where wanted cores
   live. Commit the marker if you can: an uncommitted one in a subdirectory
-  doesn't reach Goal or baseline worktrees. To
-  leave a vendored repository untouched, use
-  [Stealth Mode](STEALTH.md) with `ignore_native_cores = true`
-  and keep your own cores in `.booley/cores/`.
+  doesn't reach Goal or baseline worktrees.
 - **Many cores in one repo** (ibex ships 208) need no extra configuration. Many
   cores may each have a Target called `lint` or `sim`; Booley asks you to
   pick only when a bare name is ambiguous, and you then name it as
   `vendor:library:name:version#target`.
 - **Git submodules** work, with one setup step; see [Submodules](#submodules).
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+To leave a vendored repository untouched, set `ignore_native_cores = true` and
+keep your own cores in `.booley/cores/`: Booley then ignores every other
+`.core` file. See [STEALTH.md](STEALTH.md#what-changes).
+
+</details>
 
 ### Submodules
 
@@ -312,9 +318,18 @@ Run this once on the host:
 
 ```bash
 git submodule update --init --recursive
-# If .booley is its own Git repository:
+```
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+`.booley` is its own Git repository, so initialize its submodules too:
+
+```bash
 git -C .booley submodule update --init --recursive
 ```
+
+</details>
 
 Each submodule must be present, clean, and have its full history (not a
 shallow clone) before a Goal or baseline run starts. Otherwise the run stops
@@ -339,9 +354,15 @@ paths = ["deps/bus_pkg", "deps/axi_verif"]
 
 Without `paths`, every top-level submodule is copied; `paths = []` copies
 none. Unlisted submodules appear as empty directories in the worktree.
-Submodules nested inside a listed one are always copied. The list applies to
-the outer repository only: when `.booley` is its own Git repository, all of
-its submodules are always copied.
+Submodules nested inside a listed one are always copied.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The list applies to the RTL repository only: every submodule of the `.booley`
+repository is always copied.
+
+</details>
 
 ---
 

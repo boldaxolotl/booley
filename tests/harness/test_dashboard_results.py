@@ -20,7 +20,7 @@ from booley.harness.dashboard.app import (
 from booley.harness.dashboard.jobs import JobView
 from booley.harness.dashboard.links import linked_text
 from booley.harness.dashboard.model import GoalDetail
-from booley.harness.dashboard.results import present_report, project_facts
+from booley.presentation.report_results import present_report, project_facts
 from booley.review.goal_package import proposal_facts
 from booley.runtime.job_records import JobRecord
 

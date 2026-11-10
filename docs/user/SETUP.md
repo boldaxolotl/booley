@@ -84,7 +84,7 @@ booley init
 For a new IP, start from an empty repo (`mkdir my_ip && cd my_ip && git init`).
 When init finds no RTL, its closing advice points you at `/booley-setup new`.
 
-Init asks which agent provider (`claude` or `codex`) and auth policy
+Init asks which default Agent CLI (`claude` or `codex`) and auth policy
 (`subscription`, `api-key`, or `auto`) this project uses; see
 [Sign-in and billing](#sign-in-and-billing) before you answer. Press Enter to
 accept the `claude` and `auto` defaults, or pass them as flags:
@@ -93,9 +93,10 @@ accept the `claude` and `auto` defaults, or pass them as flags:
 booley init --provider codex --auth subscription
 ```
 
-The choice is recorded in the `[agent]` table of `.booley/booley.toml`.
-Re-running init keeps it; to change it later, edit that table (see
-[CONFIG.md](CONFIG.md)).
+The choice is recorded in the `[agent]` table of `.booley/booley.toml`, as
+`provider` (the older name for `default`) and `auth`. The flag spells the
+policy `api-key`; the file spells it `api_key`. Re-running init keeps it; to
+change it later, edit that table (see [CONFIG.md](CONFIG.md)).
 
 `booley init` is safe to re-run. It never overwrites a hand-edited
 `.booley/docker/{Dockerfile,requirements.txt}` (one missing its
@@ -198,23 +199,26 @@ What lands, wired together and ready to run:
 - `tb/tb_my_ip.sv` (or `tb/test_my_ip.py` for cocotb): a self-checking
   testbench with two tests, following the shipped TB style guides
 - `my_ip.core`: one Target per enabled flow (`sim_my_ip`, `lint_my_ip`, and
-  optionally `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC);
-  with Stealth on it lives at `.booley/cores/my_ip.core`
+  optionally `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC)
 - `.booley/booley.toml` and [`tests.toml`](TESTS.md), populated rather than
-  skeletons. The scaffolded config turns
-  [stealth mode](STEALTH.md#stealth-mode) off, since this repo exists to
-  exercise Booley and commit messages should stay verbatim. Choosing Stealth
-  writes `[stealth] enabled = true` instead and puts the design and Doctor
-  selftest cores under `.booley/cores/`
+  skeletons
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+Choosing Stealth writes `[stealth] enabled = true` and puts the design and
+Doctor selftest cores under `.booley/cores/`, so the design core lives at
+`.booley/cores/my_ip.core`. See [STEALTH.md](STEALTH.md).
+
+</details>
 
 The starter follows a completed plain `booley init`. It keeps the `[agent]`
-table init wrote and doesn't ask for the provider or auth again. Without
-Stealth it also removes the empty inner `.booley` git repository and the
-`/.booley` git exclusion that plain init set up (see
-[Stealth](STEALTH.md#turning-it-on)), so you can commit `.booley/`
-normally. If that inner repository already has commits, `/booley-setup new`
-stops and changes nothing; choose Stealth to keep the hidden layout, or move
-the inner repository's history away first.
+table init wrote and doesn't ask for the provider or auth again. If an older
+Booley's init left an empty inner `.booley` git repository and a `/.booley` git
+exclusion, the starter removes them so you can commit `.booley/` normally. If
+that inner repository already has commits, `/booley-setup new` stops and changes
+nothing; choose Stealth to keep the hidden layout, or move the inner
+repository's history away first.
 
 The scaffold refuses to run in a repo that already contains `.core` or RTL
 files, or any configuration beyond what plain init wrote. That's a porting
@@ -246,9 +250,8 @@ Agent's chat to finish.
 
 **Setup asks whether to keep Booley out of your git history.** Yes turns on
 [Stealth Mode](STEALTH.md#stealth-mode), which keeps Booley's files out of
-your repository and cleans AI attribution out of commit messages. The commit
-hook doesn't force `type(scope):` subjects unless you set
-[`enforce_convention`](STEALTH.md#enforcing-the-subject-convention-enforce_convention).
+your repository and cleans AI attribution out of commit messages. No, the
+default, leaves Booley's setup in your repository for colleagues to share.
 
 ### Porting an existing project: plan, then execute
 

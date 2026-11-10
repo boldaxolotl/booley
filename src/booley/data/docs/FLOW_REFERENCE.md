@@ -62,7 +62,10 @@ several Jobs running, call `booley_poll` with no `run_id`: it returns the
 result of whichever Job you started finishes first and says which others are
 still running, or that there is nothing to wait for. Pass a `run_id` to wait for
 one specific Job. Jobs started by another agent session or by a nested
-Specialist are not included.
+Specialist are not included. Every Booley MCP tool response ends with one line
+for each finished Job you started but have not polled yet (up to ten, then a
+count of the rest; input prompts carry none), and the Dashboard's
+Job details show how long each result waited before it was read.
 
 ### Resource use
 
@@ -113,10 +116,17 @@ Without `--timeout`, a Flow uses `[flows.<name>].timeout_ms` from
 `synth` and `fpga` also take `--baseline <git-ref>`: they run the Flow a
 second time at that commit and report the difference, so you can see what a
 change cost in area or timing. In Goal Mode the baseline is the commit pinned
-when the Goal started. If your Booley Directory is a Git repository of its own
-(a Versioned Booley Directory, of which each worktree gets a Paired Checkout), the baseline run also uses the Target definitions from
-where your worktree branched off, so both runs build the same design. The
-progress output names the commit it chose.
+when the Goal started.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+Your Booley Directory is a Git repository of its own, so the baseline run also
+uses the Target definitions from where your worktree branched off, and both
+runs build the same design. The progress output names the commit it chose. See
+STEALTH.md (host doc, not shipped).
+
+</details>
 
 ### Live progress and logs
 
