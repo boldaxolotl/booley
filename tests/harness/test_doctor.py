@@ -6946,7 +6946,7 @@ targets:
 
 
 class TestCheckTargetNaming:
-    """The <axis>_<subject> convention — WARN, and only on cores the project owns."""
+    """The <axis>_<subject> convention: a note, and only on cores the project owns."""
 
     _CORE = """\
 CAPI=2:
@@ -7049,29 +7049,29 @@ sim_ok:
         assert "Target 'soc'" in warns[0]
         assert "rename it 'sim_soc'" in warns[0]
 
-    def test_bare_axis_target_notes_core_name_rename(self, tmp_path):
-        """A bare axis says nothing about the design; the note suggests <axis>_<core name>."""
-        cases = [
+    @pytest.mark.parametrize(
+        ("axis", "flow", "tool"),
+        [
             ("sim", "sim", "verilator"),
             ("lint", "lint", "verilator"),
             ("synth", "generic", "yosys"),
             ("fpga", "generic", "vivado"),
-        ]
-        for axis, flow, tool in cases:
-            root = tmp_path / axis
-            root.mkdir()
-            block = f"""\
+        ],
+    )
+    def test_bare_axis_target_notes_core_name_rename(self, tmp_path, axis, flow, tool):
+        """A bare axis says nothing about the design; the note suggests <axis>_<core name>."""
+        block = f"""\
 {axis}:
     filesets: [rtl]
     flow: {flow}
     flow_options: {{tool: {tool}, booley: {{doctor: [{axis}]}}}}
     toplevel: dut
 """
-            passes, warns = self._run(root, block, {"flows": {axis: {}}})
-            assert not passes
-            assert len(warns) == 1
-            assert "bare axis; add a subject" in warns[0]
-            assert f"rename it '{axis}_demo'" in warns[0]
+        passes, warns = self._run(tmp_path, block, {"flows": {axis: {}}})
+        assert not passes
+        assert len(warns) == 1
+        assert "bare axis; add a subject" in warns[0]
+        assert f"rename it '{axis}_demo'" in warns[0]
 
     def test_bare_axis_note_skips_vendored_core(self, tmp_path):
         """Only the selected, owned core's bare Target is noted; an unselected one stays exempt."""

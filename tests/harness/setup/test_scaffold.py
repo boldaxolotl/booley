@@ -8,7 +8,6 @@ actual writes in a tmp repo.
 from __future__ import annotations
 
 import argparse
-import itertools
 import re
 import subprocess
 import tomllib
@@ -396,31 +395,32 @@ def test_fpga_part_emits_fpga_target_and_xdc() -> None:
     assert cfg["flows"]["fpga"] == {}
 
 
-def test_every_combo_parses_with_booleys_own_readers(tmp_path: Path, monkeypatch) -> None:
-    for sim_eda_tool, tb_style in itertools.product(("verilator", "icarus"), ("sv", "cocotb")):
-        root = tmp_path / f"{sim_eda_tool}-{tb_style}"
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        reset_cache()
-        files = scaffold_files(
-            _choices(sim_eda_tool=sim_eda_tool, tb_style=tb_style, fpga_part="xc7a35tcpg236-1")
-        )
-        for rel, content in files.items():
-            target = root / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+@pytest.mark.parametrize("tb_style", ["sv", "cocotb"])
+@pytest.mark.parametrize("sim_eda_tool", ["verilator", "icarus"])
+def test_every_combo_parses_with_booleys_own_readers(
+    tmp_path: Path, monkeypatch, sim_eda_tool: str, tb_style: str
+) -> None:
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    files = scaffold_files(
+        _choices(sim_eda_tool=sim_eda_tool, tb_style=tb_style, fpga_part="xc7a35tcpg236-1")
+    )
+    for rel, content in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
 
-        core = read_core(root / "my_ip.core")  # raises on unparseable YAML
-        assert core["CAPI=2"] is None  # marker line parsed as expected
+    core = read_core(tmp_path / "my_ip.core")  # raises on unparseable YAML
+    assert core["CAPI=2"] is None  # marker line parsed as expected
 
-        targets = {handle.name for handle in TargetCatalog.build(root).list()}
-        expected = {"sim_my_ip", "lint_my_ip", "synth_my_ip", "fpga_my_ip"}
-        assert expected <= targets
-        assert "lint_selftest_bad" not in targets
-        with monkeypatch.context() as inner:
-            inner.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-            doctor_targets = {handle.name for handle in TargetCatalog.build(root).list()}
-        assert "lint_selftest_bad" in doctor_targets
-        reset_cache()
+    targets = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
+    expected = {"sim_my_ip", "lint_my_ip", "synth_my_ip", "fpga_my_ip"}
+    assert expected <= targets
+    assert "lint_selftest_bad" not in targets
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    doctor_targets = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
+    assert "lint_selftest_bad" in doctor_targets
+    reset_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +702,14 @@ def _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga
     assert sources.rtl_source_files == ("rtl/my_ip.sv",)
 
 
-def _check_scaffold_variant(tmp_path, monkeypatch, simulator, tb_style, linter, asic, fpga):
+@pytest.mark.usefixtures("isolated_git_attributes")
+@pytest.mark.parametrize("simulator", ["verilator", "icarus"])
+@pytest.mark.parametrize("tb_style", ["sv", "cocotb"])
+@pytest.mark.parametrize("linter", ["verilator", "verible"])
+@pytest.mark.parametrize("asic,fpga", [(False, False), (True, False), (False, True), (True, True)])
+def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(
+    tmp_path, monkeypatch, simulator, tb_style, linter, asic, fpga
+):
     args = _args(
         sim_eda_tool=simulator,
         tb_style=tb_style,
@@ -736,22 +743,6 @@ def _check_scaffold_variant(tmp_path, monkeypatch, simulator, tb_style, linter, 
     _assert_target_names_conform(findings)
     _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga)
     _healthy_host_doctor(tmp_path, monkeypatch)
-
-
-@pytest.mark.usefixtures("isolated_git_attributes")
-def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(tmp_path, monkeypatch):
-    """Every simulator x TB style x linter x flow-set combination audits clean."""
-    combos = itertools.product(
-        ("verilator", "icarus"),
-        ("sv", "cocotb"),
-        ("verilator", "verible"),
-        ((False, False), (True, False), (False, True), (True, True)),
-    )
-    for index, (simulator, tb_style, linter, (asic, fpga)) in enumerate(combos):
-        root = tmp_path / f"variant{index}"
-        root.mkdir()
-        with monkeypatch.context() as scoped:
-            _check_scaffold_variant(root, scoped, simulator, tb_style, linter, asic, fpga)
 
 
 @pytest.mark.parametrize("category", ["rtl", "tb"])
