@@ -5,7 +5,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol, cast
 
-from booley.flows.execution_persistence import AcceptanceRecordingError
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .campaign_reports import target_report_directory, write_campaign_json
@@ -150,7 +149,7 @@ def run_coverage_target(
     embedded_root: Path | None = None,
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> CoverageTargetOutcome:
-    """Publish Campaign, Simulation, acceptance and state, then checkpoint progress."""
+    """Publish the Campaign and Simulation projection, then checkpoint progress."""
     assert plan.invocation_dir is not None and plan.collection_request is not None
     root = embedded_root or target_report_directory(plan.invocation_dir, plan.handle.selector)
     outcome = _execute_coverage_transaction(
@@ -174,6 +173,8 @@ def _execute_coverage_transaction(
     result = None
     campaign = None
     campaign_published = False
+    request = plan.collection_request
+    assert request is not None
 
     def record_campaign_publication() -> None:
         nonlocal campaign_published
@@ -182,7 +183,7 @@ def _execute_coverage_transaction(
     try:
         validate_coverage_sources(plan)
         _start_target(root)
-        result = collect(replace(plan.collection_request, artifact_root=root), execution)
+        result = collect(replace(request, artifact_root=root), execution)
         validate_coverage_sources(plan)
         campaign = _evaluate(plan, _campaign(plan, result))
         outcome = _publish(
@@ -194,7 +195,7 @@ def _execute_coverage_transaction(
             publication_checkpoint=publication_checkpoint,
             campaign_published=record_campaign_publication,
         )
-    except (OSError, ValueError, AcceptanceRecordingError) as exc:
+    except (OSError, ValueError) as exc:
         return _transaction_error(
             plan, root, result, exc, campaign, campaign_published=campaign_published
         )
@@ -262,8 +263,6 @@ def _publish(
         freeze_coverage_mapping(detail),
         abort_remaining=result.infrastructure_error,
     )
-    if plan.acceptance is not None and not embedded:
-        plan.acceptance.publish(plan, campaign, campaign_path)
     return outcome
 
 
