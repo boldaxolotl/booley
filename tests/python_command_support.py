@@ -38,12 +38,12 @@ def python_path_entry(directory: Path) -> str:
     return str(directory)
 
 
-def test_interpreter_path(shim_directory: Path, base_path: str) -> str:
+def interpreter_first_path(python_entry: str, base_path: str) -> str:
     """Return ``base_path`` with the test interpreter's commands ahead of it.
 
-    The interpreter shims come first, then the interpreter's scripts directory
-    (so a bare ``fusesoc`` is the test environment's console script), then
-    ``base_path``. Empty parts are dropped.
+    ``python_entry`` (from ``python_path_entry``) comes first, then the
+    interpreter's scripts directory (so a bare ``fusesoc`` is the test
+    environment's console script), then ``base_path``. Empty parts are dropped.
     """
-    parts = (python_path_entry(shim_directory), sysconfig.get_path("scripts"), base_path)
+    parts = (python_entry, sysconfig.get_path("scripts"), base_path)
     return os.pathsep.join(filter(None, parts))

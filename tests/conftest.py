@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from tests.python_command_support import test_interpreter_path
+from tests.python_command_support import interpreter_first_path, python_path_entry
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,14 +33,17 @@ def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.fixture(scope="session")
-def _python_shim_directory(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Hold the bare ``python``/``python3`` shims, written once per session (xdist worker)."""
-    return tmp_path_factory.mktemp("python-shim")
+def _python_shim_entry(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Write the bare ``python``/``python3`` shims once per session (xdist worker).
+
+    Returns the PATH entry on which both names run the test interpreter.
+    """
+    return python_path_entry(tmp_path_factory.mktemp("python-shim"))
 
 
 @pytest.fixture(autouse=True)
 def subprocesses_run_the_test_interpreter(
-    monkeypatch: pytest.MonkeyPatch, _python_shim_directory: Path
+    monkeypatch: pytest.MonkeyPatch, _python_shim_entry: str
 ) -> None:
     """A launched bare ``python3``, ``python`` or ``fusesoc`` must come from the test interpreter.
 
@@ -53,7 +56,7 @@ def subprocesses_run_the_test_interpreter(
     fixtures, import-time ``PATH`` captures, or a test's own ``monkeypatch.undo()``.
     """
     monkeypatch.setenv(
-        "PATH", test_interpreter_path(_python_shim_directory, os.environ.get("PATH", os.defpath))
+        "PATH", interpreter_first_path(_python_shim_entry, os.environ.get("PATH", os.defpath))
     )
 
 

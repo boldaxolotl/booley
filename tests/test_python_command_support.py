@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from tests.python_command_support import python_path_entry
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 _CHECKOUT_BOOLEY = Path(__file__).resolve().parents[1] / "src" / "booley"
 _IS_WINDOWS = os.name == "nt"
@@ -28,7 +29,7 @@ def test_bare_python_runs_the_running_interpreter(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=True,
-        timeout=60,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.stdout.splitlines() == [sys.executable, sys.prefix]
@@ -50,7 +51,7 @@ def test_bare_python_child_runs_the_test_interpreter_and_checkout(name: str) -> 
         capture_output=True,
         text=True,
         check=True,
-        timeout=60,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     executable, booley_file = result.stdout.splitlines()
@@ -74,7 +75,7 @@ def test_bare_fusesoc_resolves_from_the_test_environment() -> None:
         capture_output=True,
         text=True,
         check=True,
-        timeout=60,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     assert importlib.metadata.version("fusesoc") in result.stdout + result.stderr
 
@@ -93,7 +94,8 @@ def test_suite_path_starts_with_the_test_interpreter_entries() -> None:
 @pytest.mark.skipif(_IS_WINDOWS, reason="CreateProcess cannot run script decoys")
 def test_interpreter_path_outranks_decoys_on_the_base_path(tmp_path: Path) -> None:
     """Decoys first on the base PATH lose to the test interpreter and its console scripts."""
-    from tests.python_command_support import test_interpreter_path
+    # Imported here so the other guards still collect and fail on a base without the helper.
+    from tests.python_command_support import interpreter_first_path
 
     decoys = tmp_path / "decoys"
     decoys.mkdir()
@@ -101,7 +103,9 @@ def test_interpreter_path_outranks_decoys_on_the_base_path(tmp_path: Path) -> No
         decoy = decoys / name
         decoy.write_bytes(b"#!/bin/sh\necho decoy\n")
         decoy.chmod(0o755)
-    path = test_interpreter_path(tmp_path / "shim", os.pathsep.join([str(decoys), os.defpath]))
+    path = interpreter_first_path(
+        python_path_entry(tmp_path / "shim"), os.pathsep.join([str(decoys), os.defpath])
+    )
 
     result = subprocess.run(
         ["python3", "-c", "import sys; print(sys.executable)"],
@@ -109,9 +113,12 @@ def test_interpreter_path_outranks_decoys_on_the_base_path(tmp_path: Path) -> No
         capture_output=True,
         text=True,
         check=True,
-        timeout=60,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.stdout.strip() == sys.executable
-    found = shutil.which("fusesoc", path=path)
-    assert found is None or Path(found).parent != decoys
+    expected_fusesoc = Path(sysconfig.get_path("scripts")) / "fusesoc"
+    if expected_fusesoc.exists():
+        found = shutil.which("fusesoc", path=path)
+        assert found is not None
+        assert Path(found).samefile(expected_fusesoc)
