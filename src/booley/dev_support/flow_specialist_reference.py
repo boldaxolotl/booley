@@ -344,7 +344,10 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "
         "CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's "
-        "Goal-bound MCP calls with `work_dir`.",
+        "Goal-bound MCP calls with `work_dir`. A CLI run is also a Standalone Job: it shows in "
+        "the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` "
+        "in the Project's common Booley Directory (the main checkout's `.booley` from a linked "
+        "worktree).",
         "",
         "| Specialist | Purpose | Sets | Modifies code |",
         "|------------|---------|------|:-------------:|",

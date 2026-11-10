@@ -240,6 +240,9 @@ The Dashboard has three windows; press `←` or `→` to switch:
   **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
 - **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
   session.
+  A `booley flow` or `booley specialist` run typed in a container terminal
+  also appears here as a Standalone Job with no session. Its output is copied
+  to `job.log`, shown as a link.
 - **Targets:** the Targets of one worktree, with their core and the Flows that
   can drive them. Press `Enter` on a Target for its filesets, tests, Test
   Variants, and constraints. The **Worktree** item in the top bar picks the

@@ -39,6 +39,8 @@ def _deep_tests_workflow() -> dict:
 
 _RUNNER_OS_CHOICE = re.compile(r"\$\{\{ runner\.os == '(\w+)' && (.+?) \|\| (.+?) \}\}")
 _LINUX_SCHEDULER_OUTPUT = "needs.changes.outputs.linux_scheduler"
+# Six coverage shards keep a shard plus the combine step off the queue's critical path.
+COVERAGE_SHARD_COUNT = 6
 
 
 def _render_expressions(run: str, runner_os: str, scheduler: str) -> str:
@@ -155,6 +157,8 @@ def test_sidecar_proofs_have_cancellation_cleanup() -> None:
 _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_waveform_store_streaming.py::test_streaming_conversion_produces_queryable_store",
     "tests/bwave/test_waveform_store_streaming.py::test_trace_session_streams_into_its_own_cache_destination",
+    "tests/bwave/test_waveform_store_streaming.py::test_declared_stream_builds_queryable_store",
+    "tests/bwave/test_waveform_store_streaming.py::test_reopened_stream_fails_instead_of_merging",
     "tests/bwave/test_cli.py::test_issue_1108_real_json_cap_preserves_native_warnings[limit0]",
     "tests/bwave/test_cli.py::test_issue_1108_real_json_cap_preserves_native_warnings[limit1]",
     "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra0]",
@@ -656,13 +660,13 @@ def test_coverage_shards_have_dedicated_matrix() -> None:
 
     assert coverage_entries == [
         {
-            "name": f"ubuntu-3.14-coverage-{index + 1}-of-3",
+            "name": f"ubuntu-3.14-coverage-{index + 1}-of-{COVERAGE_SHARD_COUNT}",
             "python": "3.14",
             "group": "coverage",
             "shard_index": index,
-            "shard_count": 3,
+            "shard_count": COVERAGE_SHARD_COUNT,
         }
-        for index in range(3)
+        for index in range(COVERAGE_SHARD_COUNT)
     ]
     assert coverage_shards["needs"] == "changes"
     assert coverage_shards["runs-on"] == "ubuntu-latest"
@@ -682,8 +686,12 @@ def test_coverage_shards_bound_setup_and_pytest_steps() -> None:
 
     assert _setup_step_limits(job) == [5, 5, 6]
     assert pytest_limit == 15
-    # 35 = setup 5 + 5 + 6 + pytest 15, plus margin for the always-run publish/upload steps.
-    assert job["timeout-minutes"] == 35
+    purge_limit = _named_step(job, "Drop pip cache restored from an older dependency set").get(
+        "timeout-minutes"
+    )
+    assert purge_limit == 3
+    # 38 = setup 5 + 5 + 3 + 6 + pytest 15, plus margin for the always-run publish/upload steps.
+    assert job["timeout-minutes"] == 38
 
 
 def test_coverage_job_exactly_verifies_before_combining() -> None:
@@ -717,7 +725,10 @@ def test_coverage_job_exactly_verifies_before_combining() -> None:
     assert "test-verify" not in coverage["needs"]
     assert manifest_download["with"]["path"] == "${{ runner.temp }}/shards"
     assert manifest_download["with"].get("merge-multiple", False) is False
-    assert "--group coverage --shard-count 3" in coverage_verifier["run"].replace("\n", " ")
+    # The verifier proves exactly the selections the coverage-shards matrix produced.
+    assert f"--group coverage --shard-count {COVERAGE_SHARD_COUNT}" in coverage_verifier[
+        "run"
+    ].replace("\n", " ")
     assert raw_download["with"]["path"] == "${{ runner.temp }}/coverage"
     assert raw_download["with"]["merge-multiple"] is True
     assert coverage_steps.index(manifest_download) < coverage_steps.index(coverage_verifier)
@@ -828,6 +839,19 @@ def test_lint_job_uses_quality_only_dependencies() -> None:
     )
 
     assert install_step["run"] == 'pip install -e ".[quality]" -c .github/ci/constraints.txt'
+
+
+def test_actionlint_download_retries_and_still_verifies_its_checksum() -> None:
+    """A 504 from the release CDN is retried; the retried archive is still checksum-verified."""
+    lint_steps = _test_workflow()["jobs"]["lint"]["steps"]
+    install = next(
+        step for step in lint_steps if str(step.get("name", "")).startswith("Install actionlint")
+    )
+    script = " ".join(install["run"].replace("\\\n", " ").split())
+
+    assert "--retry 5 --retry-all-errors --retry-delay 5" in script
+    assert "sha256sum --check --strict" in script
+    assert script.index("curl ") < script.index("sha256sum") < script.index("tar ")
 
 
 def _assert_worktree_mounts_disk_and_failure_gating(job: dict) -> None:

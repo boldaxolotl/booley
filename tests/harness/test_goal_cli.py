@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.harness import colors
 from booley.harness.booley import _cmd_goal
+from booley.presentation import colors
 from tests.goals.conftest import (  # noqa: F401 — fixtures shared with Goal integration tests
     goal_mode,
     layout,

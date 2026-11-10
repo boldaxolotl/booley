@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
+import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import session_admission, session_issuance
+from booley.runtime import platform_paths, session_admission, session_issuance
 from booley.runtime.session_runtime import session_container_name
 
 
@@ -412,10 +414,10 @@ def test_corrupt_claim_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     assert session_admission.claim_vscode_start(project, run=_Docker({}))
-    claim_path = next(session_admission._store().root.glob("*.json"))
+    claim_path = next(session_admission.claim_store().private.root.glob("*.json"))
     claim_path.write_text("{}", encoding="utf-8")
 
-    with pytest.raises(session_admission.AdmissionError, match="invalid shape"):
+    with pytest.raises(session_admission.AdmissionError, match="does not name a Project Root"):
         session_admission.admit_start(project, target_name="headless", run=_Docker({}))
 
 
@@ -430,7 +432,7 @@ def test_unreadable_claim_json_fails_closed(
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     assert session_admission.claim_vscode_start(project, run=_Docker({}))
-    claim_path = next(session_admission._store().root.glob("*.json"))
+    claim_path = next(session_admission.claim_store().private.root.glob("*.json"))
     claim_path.write_text("not json", encoding="utf-8")
 
     with pytest.raises(session_admission.AdmissionError, match="cannot read"):
@@ -609,9 +611,7 @@ def test_foreign_mismatch_retains_reservation_and_reports_recovery(
     assert session_admission._command(["docker", "stop", "editor-id"]) in caplog.text
     assert session_admission._command(["docker", "rm", "editor-id"]) in caplog.text
     assert session_admission._command(["booley", "session", "down", "--project"]) in caplog.text
-    assert (
-        session_admission._store().root / session_admission._claim_filename(str(project))
-    ).exists()
+    assert (session_admission.claim_store().path(str(project))).exists()
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -637,9 +637,7 @@ def test_matching_container_cannot_hide_own_mismatch(tmp_path, monkeypatch, reve
     docker.documents = dict(reversed(pairs) if reverse else pairs)
     with pytest.raises(session_admission.AdmissionError, match="identity disagrees"):
         session_admission.admit_start(project, target_name="headless", run=docker)
-    assert (
-        session_admission._store().root / session_admission._claim_filename(str(project))
-    ).exists()
+    assert (session_admission.claim_store().path(str(project))).exists()
 
 
 def test_deleted_root_observed_spelling_is_verified_before_label_acceptance(tmp_path, monkeypatch):
@@ -705,25 +703,23 @@ def test_project_root_identity_preserves_posix_case_and_symlinks(tmp_path):
     lower.mkdir(exist_ok=True)
     if upper.samefile(lower):
         pytest.skip("case-insensitive filesystem")
-    assert not session_admission._same_project_root(str(upper), str(lower))
+    assert not platform_paths.same_host_path(str(upper), str(lower))
     alias = tmp_path / "alias"
     alias.symlink_to(upper, target_is_directory=True)
     assert session_admission._canonical_root(alias) == str(upper)
-    assert session_admission._same_project_root(str(alias), str(upper))
+    assert platform_paths.same_host_path(str(alias), str(upper))
 
 
 def test_same_file_identity_can_prove_case_alias(monkeypatch):
     monkeypatch.setattr(
         Path, "samefile", lambda self, other: {str(self), str(other)} == {"/Project", "/project"}
     )
-    assert session_admission._same_project_root("/Project", "/project")
+    assert platform_paths.same_host_path("/Project", "/project")
 
 
 def test_windows_root_identity_normalizes_drive_case(monkeypatch):
-    import ntpath
-
-    monkeypatch.setattr(session_admission.os.path, "normcase", ntpath.normcase)
-    assert session_admission._same_project_root("C:/Users/Project", "c:/users/project")
+    monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+    assert platform_paths.same_host_path("C:/Users/Project", "c:/users/project")
 
 
 def _listing_only_docker(rows: list[str]):
@@ -788,7 +784,7 @@ def _pending_claim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Pat
     )
     assert session_admission.claim_vscode_start(project, run=lambda *_a, **_kw: _completed())
     root = session_admission._canonical_root(project)
-    return project, session_admission._store().root / session_admission._claim_filename(root)
+    return project, session_admission.claim_store().path(root)
 
 
 def test_claim_clear_survives_transient_unlink_sharing_error(
@@ -813,3 +809,133 @@ def test_claim_clear_retries_before_raising_lasting_sharing_error(
     with pytest.raises(PermissionError):
         session_admission.clear_vscode_claim(project)
     assert attempts[claim] > 1
+
+
+def _relay_hinted_row(project: Path) -> str:
+    """A listing row hinted `license-relay` under a name other than the local Sandbox's."""
+    return f"hinted-id\thinted\t{project}\t{dc.canonical_project_id(project)}\tlicense-relay"
+
+
+def _hinted_document(project: Path, *, workspace_bind: bool) -> dict:
+    """Inspect document for the hinted row: a relay without `/work`, or an interactive Sandbox."""
+    labels = {
+        "booley.role": "interactive" if workspace_bind else "license-relay",
+        "booley.project-id": dc.canonical_project_id(project) if workspace_bind else "relay",
+    }
+    mounts = [{"Type": "bind", "Source": str(project), "Destination": "/work"}]
+    return {
+        "Id": "hinted-id",
+        "Name": "/hinted",
+        "Created": "2026-09-27T08:00:00Z",
+        "Config": {"Labels": labels},
+        "State": {"Running": True, "StartedAt": "2026-09-27T08:00:00Z"},
+        "Mounts": mounts if workspace_bind else [],
+    }
+
+
+def _counting_docker(rows: list[str], document: dict):
+    """Docker stub serving one listing and one inspect document, recording each inspect."""
+    inspected: list[str] = []
+
+    def run(argv: list[str], **_kwargs):
+        if argv[1] == "ps":
+            return _completed(stdout="\n".join(rows) + "\n")
+        inspected.append(argv[3])
+        return _completed(stdout=json.dumps(document))
+
+    return run, inspected
+
+
+def test_project_inventory_inspects_relay_hinted_sandbox_once_before_recheck(
+    tmp_path: Path,
+) -> None:
+    """A relay-hinted row that is an interactive Sandbox costs one inspect plus the re-check."""
+    project = tmp_path / "project"
+    project.mkdir()
+    run, inspected = _counting_docker(
+        [_relay_hinted_row(project)], _hinted_document(project, workspace_bind=True)
+    )
+
+    sandboxes = session_admission.running_project_sandboxes(project, run=run)
+
+    assert [item.container_id for item in sandboxes] == ["hinted-id"]
+    assert inspected == ["hinted-id", "hinted-id"]
+
+
+def test_project_inventory_classifies_unproven_relay_from_one_inspect(tmp_path: Path) -> None:
+    """A relay-hinted row with a `/work` bind is classified from its single inspect."""
+    project = tmp_path / "project"
+    project.mkdir()
+    document = _hinted_document(project, workspace_bind=True)
+    document["Config"]["Labels"]["booley.role"] = "license-relay"
+    run, inspected = _counting_docker([_relay_hinted_row(project)], document)
+
+    with pytest.raises(session_admission.AdmissionError):
+        session_admission.running_project_sandboxes(project, run=run)
+    assert inspected == ["hinted-id"]
+
+
+def test_project_inventory_refuses_relay_hinted_row_with_malformed_mounts(
+    tmp_path: Path,
+) -> None:
+    """A relay-hinted row whose `Mounts` is malformed is refused, never skipped."""
+    project = tmp_path / "project"
+    project.mkdir()
+    document = _hinted_document(project, workspace_bind=False)
+    document["Mounts"] = "not-a-list"
+    run, inspected = _counting_docker([_relay_hinted_row(project)], document)
+
+    with pytest.raises(session_admission.AdmissionError, match="cannot inspect possible Sandbox"):
+        session_admission.running_project_sandboxes(project, run=run)
+    assert inspected == ["hinted-id"]
+
+
+def test_project_inventory_skips_proven_relay_after_one_inspect(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    run, inspected = _counting_docker(
+        [_relay_hinted_row(project)], _hinted_document(project, workspace_bind=False)
+    )
+
+    assert session_admission.running_project_sandboxes(project, run=run) == ()
+    assert inspected == ["hinted-id"]
+
+
+def test_claim_inspects_live_editor_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The admission snapshot reuses the inventory's inspection of a running editor."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=4),
+    )
+    docker = _Docker(
+        {"editor-id": _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")}
+    )
+    inspected: list[str] = []
+
+    def run(argv: list[str], **kwargs):
+        if argv[1] == "container":
+            inspected.append(argv[3])
+        return docker(argv, **kwargs)
+
+    assert session_admission.claim_vscode_start(project, run=run) is False
+    assert inspected == ["editor-id"]
+
+
+def test_vscode_inventory_inspects_a_renamed_known_container_again(tmp_path: Path) -> None:
+    """Reuse needs ID and name to match: a name mismatch is inspected afresh."""
+    project = tmp_path / "project"
+    project.mkdir()
+    document = _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")
+    docker = _Docker({"editor-id": document})
+    root = session_admission._canonical_root(project)
+    stale = session_admission.Sandbox(
+        "editor-id", "other-name", root, None, datetime.now(UTC), datetime.now(UTC), True, True
+    )
+
+    (fresh,) = session_admission._vscode_inventory({root}, docker, known=(stale,))
+
+    assert fresh is not stale
+    assert fresh.name == "editor"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -334,6 +335,28 @@ def test_retained_resources_separate_current_project_from_other_project_keepers(
     assert report.details[0].after_finding == len(report.findings)
 
 
+def test_keeper_listing_failure_is_a_doctor_finding(tmp_path, monkeypatch):
+    """A Docker failure while listing keepers is a FAIL, never "no retained keepers"."""
+    from booley.runtime import interactive_docker
+
+    monkeypatch.setattr(
+        interactive_docker,
+        "_run_docker",
+        lambda args, **_kwargs: subprocess.CompletedProcess(
+            args, 1, "", "Cannot connect to the Docker daemon"
+        ),
+    )
+
+    report = inspection.inspect_retained_resources(tmp_path, "docker")
+
+    failures = _fail_findings(report)
+    assert len(failures) == 1
+    assert "could not list issued Sandbox Image keepers" in failures[0].message
+    assert "Cannot connect to the Docker daemon" in failures[0].message
+    assert "booley doctor" in failures[0].fix
+    assert not any("no retained Sandbox Image keepers" in f.message for f in report.findings)
+
+
 def test_host_inspection_reports_unknown_project_inventory(
     workspace, project_sandbox_resolution, monkeypatch
 ):
@@ -394,6 +417,23 @@ def _booley_dir_spelling(project_root: Path, spelling: str) -> str:
     else:
         raise AssertionError(f"unknown spelling {spelling}")
     return str(entry)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_runtime_accepts_booley_dir_under_symlinked_project_root(
+    mounted_runtime, monkeypatch, tmp_path
+):
+    """A ``.booley`` entry under a symlink alias of the Project Root is the same location."""
+    request, _, _ = mounted_runtime
+    real_root = tmp_path / "workspace"
+    (real_root / ".booley").mkdir(parents=True)
+    alias_root = tmp_path / "alias"
+    alias_root.symlink_to(real_root, target_is_directory=True)
+    monkeypatch.setenv("BOOLEY_DIR", str(real_root / ".booley"))
+    _hide_image_alias(monkeypatch)
+    monkeypatch.delenv("CODESPACES", raising=False)
+    report = inspection.inspect_runtime(replace(request, project_root=alias_root)).issuance
+    assert any("Booley Directory identity verified" in f.message for f in report.findings)
 
 
 @pytest.mark.parametrize("spelling", ["fixed-alias", "project-directory", "project-symlink"])

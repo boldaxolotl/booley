@@ -13,7 +13,8 @@ from pathlib import Path
 import pytest
 
 from booley.harness import booley as tlr
-from booley.harness import cheatsheet, colors
+from booley.harness import cheatsheet
+from booley.presentation import colors
 from booley.runtime.paths import cheatsheet_path, skills_dir
 
 SAMPLE = """## Booley: Quick Reference

@@ -15,7 +15,7 @@ from booley.runtime import dashboard_tasks, interactive_docker, session_issuance
 from booley.runtime.git import add_git_excludes, git_excludes_pending, stealth_exclude_names
 
 
-def _exclude_names(root: Path) -> tuple[str, ...]:
+def exclude_names(root: Path) -> tuple[str, ...]:
     """Fresh non-Stealth Projects keep durable Project content trackable."""
     names = (".devcontainer", ".claude")
     return (*names, *stealth_exclude_names(root)) if stealth_enabled(root) else names
@@ -108,7 +108,7 @@ def inspect(request: InteractiveInitRequest) -> InteractiveInitPlan:
         issuance=issuance,
         issuance_problem=issuance_problem,
         exclusions_pending=git_excludes_pending(
-            request.project_root, _exclude_names(request.project_root)
+            request.project_root, exclude_names(request.project_root)
         ),
         relay_cleanup_pending=relay_pending,
         runtime_cleanup_pending=runtime_pending,
@@ -147,7 +147,7 @@ def apply(plan: InteractiveInitPlan, *, force: bool = False) -> InteractiveInitC
         plan.request.project_root, issuance
     )
     exclusions_changed = add_git_excludes(
-        plan.request.project_root, _exclude_names(plan.request.project_root)
+        plan.request.project_root, exclude_names(plan.request.project_root)
     )
     return InteractiveInitChanges(
         issuance=issuance,

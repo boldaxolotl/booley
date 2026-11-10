@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness.setup.common import InitContext, current, err, hint, info, ok, skip, warn
+from booley.runtime import interactive_docker as idk
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
     iter_payload_files,
@@ -42,8 +43,9 @@ from booley.runtime.docker_capacity import (
     DockerCacheEvidence,
     DockerCapacityError,
 )
+from booley.runtime.host_base_acquisition import RuntimeBaseBuildError, acquire, build_timeout
 from booley.runtime.image_build_contracts import source_image_build_contracts
-from booley.runtime.image_lifecycle import HostImageScope
+from booley.runtime.image_lifecycle import ImageLifecycleError
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
@@ -125,44 +127,11 @@ def _image_build_metadata_args(booley_root: Path) -> list[str]:
     ]
 
 
-def _runtime_base_build_metadata_args(booley_root: Path, runtime_base_contract: str) -> list[str]:
-    """Docker build args for explicit stable-base provenance and compatibility."""
-    is_checkout = (booley_root / ".git").exists()
-    values = {
-        "BOOLEY_BASE_SOURCE_REVISION": (
-            resolve_build_commit(booley_root) if is_checkout else "unknown"
-        ),
-        "BOOLEY_BASE_CONTRACT": runtime_base_contract,
-        "BOOLEY_BASE_BUILT_AT": utc_now_rfc3339(),
-    }
-    return [
-        item
-        for name, value in values.items()
-        for item in ("--build-arg", f"{name}={value or 'unknown'}")
-    ]
-
-
 def _docker_image_exists(image: str = DOCKER_IMAGE) -> bool:
     """Compatibility entry point for the shared, observation-only image probe."""
     from booley.runtime.interactive_docker import image_exists
 
     return image_exists(image)
-
-
-def _docker_image_id(image: str) -> str | None:
-    """Return *image*'s immutable Docker ID, or ``None`` when unavailable."""
-    try:
-        result = subprocess.run(
-            ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    value = result.stdout.strip()
-    return value if result.returncode == 0 and value else None
 
 
 # --- Image staleness guard (build-fingerprint label) -----------------------
@@ -280,7 +249,7 @@ def _image_is_stale(
     if image not in FLAVOR_IMAGES:
         return False
     stamped_base = _image_label(image, LABEL_BASE_IMAGE_ID)
-    current_base = _docker_image_id(DOCKER_IMAGE)
+    current_base = idk.image_id(DOCKER_IMAGE)
     return not stamped_base or not current_base or stamped_base != current_base
 
 
@@ -679,13 +648,15 @@ def _docker_local_build(
         err(f"stable runtime-base contract failed: {error}")
         ctx.record("docker_image", "err", "runtime-base contract failed")
         return
+    except ImageLifecycleError as error:
+        err(f"Sandbox Image capacity check failed: {error}")
+        ctx.record("docker_image", "err", f"Sandbox Image capacity check failed: {error}")
+        return
     runtime_base_id = _acquire_runtime_base(
         ctx,
-        base_dockerfile,
         booley_root,
         rebuild=rebuild_runtime_base,
         capacity_plan=capacity_plan,
-        scope=HostImageScope(),
     )
     if runtime_base_id is None:
         return
@@ -773,7 +744,13 @@ def _build_local_sandbox_candidate(
     runtime_base_id: str,
     capacity_plan: DockerBuildPlan | None = None,
 ) -> int | None:
-    if _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE) != runtime_base_id:
+    try:
+        base_before = idk.image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    except idk.ImageInspectError as exc:
+        err(f"cannot verify the stable runtime-base tag before the Sandbox Image build: {exc}")
+        ctx.record("docker_image", "err", str(exc))
+        return None
+    if base_before != runtime_base_id:
         err("stable runtime-base tag changed before the Sandbox Image build")
         ctx.record("docker_image", "err", "runtime-base identity changed")
         return None
@@ -789,7 +766,15 @@ def _build_local_sandbox_candidate(
         capacity_plan=capacity_plan,
     )
     returncode = _docker_build_image(ctx, build)
-    if returncode == 0 and _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE) != runtime_base_id:
+    if returncode != 0:
+        return returncode
+    try:
+        base_after = idk.image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    except idk.ImageInspectError as exc:
+        err(f"cannot verify the stable runtime-base tag after the Sandbox Image build: {exc}")
+        ctx.record("docker_image", "err", str(exc))
+        return None
+    if base_after != runtime_base_id:
         err("stable runtime-base tag changed during the Sandbox Image build")
         ctx.record("docker_image", "err", "runtime-base identity changed")
         return None
@@ -802,67 +787,43 @@ def _short_contract(contract: str) -> str:
 
 def _acquire_runtime_base(
     ctx: InitContext,
-    dockerfile: Path,
     booley_root: Path,
     *,
     rebuild: bool,
-    scope: HostImageScope,
     capacity_plan: DockerBuildPlan | None = None,
 ) -> str | None:
     """Return one compatible immutable runtime-base ID, building when required."""
-    from booley.runtime.host_base_acquisition import acquire
-
     try:
-        contract = source_image_build_contracts(booley_root).runtime_base
         return acquire(
-            booley_root,
-            scope=scope,
-            rebuild=rebuild,
-            capacity_plan=capacity_plan,
-            build=lambda: _docker_build_runtime_base(
-                ctx, dockerfile, booley_root, contract, capacity_plan=capacity_plan
-            ),
+            booley_root, rebuild=rebuild, capacity_plan=capacity_plan, verbose=ctx.verbose
         )
+    except RuntimeBaseBuildError as exc:
+        _report_runtime_base_build_failure(ctx, exc)
+        return None
     except (OSError, ValueError, RuntimeError) as exc:
         err(f"runtime-base acquisition failed: {exc}")
         ctx.record("runtime_base", "err", str(exc))
         return None
 
 
-def _docker_build_runtime_base(
-    ctx: InitContext,
-    dockerfile: Path,
-    booley_root: Path,
-    contract: str,
-    *,
-    capacity_plan: DockerBuildPlan | None = None,
-) -> bool:
-    """Build the local named base consumed by the thin candidate Dockerfile."""
-    from booley.runtime import image_lifecycle
-
-    node, _ = image_lifecycle._source_graph_base(
-        source_image_build_contracts(booley_root), dockerfile.parent
-    )
-    labels = image_lifecycle._prepared_provenance(node, None)
-    build_args = _runtime_base_build_metadata_args(booley_root, contract)
-    build = _DockerBuildSpec(
-        dockerfile=dockerfile,
-        context=booley_root,
-        exists=_docker_image_exists(LOCAL_RUNTIME_BASE_IMAGE),
-        image=LOCAL_RUNTIME_BASE_IMAGE,
-        build_note="reusing layers when runtime-base Dockerfile inputs are unchanged",
-        labels=tuple(labels.items()),
-        build_args=tuple(build_args),
-        capacity_request=capacity_plan.current if capacity_plan is not None else None,
-        capacity_plan=capacity_plan,
-    )
-    returncode = _docker_build_image(ctx, build)
-    if returncode == 0:
-        return True
-    if returncode is not None:
-        err("stable runtime-base build failed — re-run with -v for full output")
-        ctx.record("docker_image", "err", "runtime-base build failed")
-    return False
+def _report_runtime_base_build_failure(ctx: InitContext, failure: RuntimeBaseBuildError) -> None:
+    """Report a failed runtime-base build the way every Docker image build reports it."""
+    result = failure.result
+    if result is None:
+        cause = failure.__cause__
+        err(f"docker build failed: {cause}")
+        ctx.record("docker_image", "err", str(cause))
+        return
+    _render_build_diagnostics(result)
+    if result.timed_out:
+        err(
+            f"docker build timed out after {format_duration(build_timeout())} "
+            "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
+        )
+        ctx.record("docker_image", "err", "build timed out")
+        return
+    err("stable runtime-base build failed — re-run with -v for full output")
+    ctx.record("docker_image", "err", "runtime-base build failed")
 
 
 def _local_build_capacity_requests(
@@ -875,7 +836,10 @@ def _local_build_capacity_requests(
 ) -> tuple[DockerBuildRequest, ...]:
     """Resolve the exact legacy local-build sequence before Docker mutation."""
     contract = source_image_build_contracts(booley_root).runtime_base
-    runtime_id = _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    try:
+        runtime_id = idk.image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    except idk.ImageInspectError as exc:
+        raise ImageLifecycleError(str(exc)) from exc
     runtime_current = (
         runtime_id is not None
         and _image_label(runtime_id, LABEL_RUNTIME_BASE_CONTRACT) == contract
@@ -1089,7 +1053,7 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     for name, value in spec.labels:
         build_cmd += ["--label", f"{name}={value}"]
     if spec.image in FLAVOR_IMAGES:
-        base_image_id = spec.parent_artifact or _docker_image_id(DOCKER_IMAGE)
+        base_image_id = spec.parent_artifact or idk.image_id(DOCKER_IMAGE)
         if base_image_id:
             build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
             if spec.parent_artifact is None:
@@ -1115,20 +1079,20 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
     """Run one specified image build, recording infrastructure failures."""
     action = "Rebuilding" if spec.exists else "Building"
     info(f"{action} {spec.image} image — {spec.build_note}.")
-    build_timeout = int(os.environ.get("BOOLEY_IMAGE_BUILD_TIMEOUT", "7200"))
+    timeout_seconds = build_timeout()
     try:
         result = run_docker_build(
             _docker_build_command(spec),
             image=spec.image,
             verbose=ctx.verbose,
-            timeout=build_timeout,
+            timeout=timeout_seconds,
             current_request=spec.capacity_request,
             remaining_plan=spec.capacity_plan,
         )
         _render_build_diagnostics(result)
         if result.timed_out:
             err(
-                f"docker build timed out after {format_duration(build_timeout)} "
+                f"docker build timed out after {format_duration(timeout_seconds)} "
                 "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
             )
             ctx.record(spec.record_key, "err", "build timed out")
@@ -1138,7 +1102,7 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
         raise
     except subprocess.TimeoutExpired:
         err(
-            f"docker build timed out after {format_duration(build_timeout)} "
+            f"docker build timed out after {format_duration(timeout_seconds)} "
             "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
         )
         ctx.record(spec.record_key, "err", "build timed out")
@@ -1162,7 +1126,7 @@ def _flavor_build(
     fingerprint: str | None,
 ) -> bool:
     """``docker build`` a flavor from its shipped Dockerfile; True once it exists."""
-    parent_image_id = _docker_image_id(DOCKER_IMAGE)
+    parent_image_id = idk.image_id(DOCKER_IMAGE)
     if parent_image_id is None:
         err(f"verified standard parent {DOCKER_IMAGE} could not be resolved")
         ctx.record("project_image", "err", "verified standard parent could not be resolved")
@@ -1291,15 +1255,12 @@ def ensure_flavor_image(
     ctx: InitContext,
     image: str,
     *,
-    scope: HostImageScope,
     ensure_base: Callable[[], None] | None = None,
     allow_pull: bool = True,
 ) -> bool:
     """Pull, build, or refresh the selected Booley-shipped sandbox flavor.
     Return whether this run changed the image.
     """
-    if not isinstance(scope, HostImageScope):
-        raise TypeError("shared flavor maintenance requires HostImageScope")
     dockerfile, exists, fingerprint, expected_version = _flavor_inputs(image)
     prepared = _prepare_flavor_without_build(
         ctx,

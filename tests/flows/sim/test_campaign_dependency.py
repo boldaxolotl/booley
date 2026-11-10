@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 from types import SimpleNamespace
 
@@ -21,7 +22,7 @@ def _origin(tmp_path):
 def _add_observed_cycles(monkeypatch):
     from dataclasses import replace
 
-    from tests.flows.sim.test_campaign_phase3_integrity import _Group
+    from tests.flows.sim.campaign_test_support import _Group
 
     original = _Group.launch_snapshot
 
@@ -209,15 +210,22 @@ def test_dependency_receipt_rejects_changed_oversized_and_linked_files(tmp_path)
         read_campaign_dependencies(origin)
 
     receipt.write_bytes(b"x" * (DEPENDENCY_MAX_BYTES + 1))
-    with pytest.raises(ValueError, match="Unsafe"):
+    with pytest.raises(ValueError, match="size limit"):
         read_campaign_dependencies(origin)
 
     receipt.unlink()
     target = tmp_path / "receipt.json"
     target.write_text("{}", encoding="utf-8")
     receipt.symlink_to(target)
-    with pytest.raises(ValueError, match="Unsafe"):
+    with pytest.raises(ValueError, match="not a regular file"):
         read_campaign_dependencies(origin)
+
+    if os.name != "nt":
+        # A FIFO is refused before it is opened, so the read cannot block.
+        receipt.unlink()
+        os.mkfifo(receipt)
+        with pytest.raises(ValueError, match="not a regular file"):
+            read_campaign_dependencies(origin)
 
 
 def test_detached_dependency_receipt_is_inventory_but_not_deletion_authority(tmp_path):
@@ -355,7 +363,7 @@ def test_dependency_receipt_reauthenticates_origin_manifest(tmp_path, manifest_d
     )
     origin.write_text(json.dumps(manifest_document), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="origin"):
+    with pytest.raises(ValueError, match=r"JSON object|identity disagrees"):
         read_campaign_dependencies(origin)
 
 
@@ -388,8 +396,8 @@ def _cycle_baseline_manifest(names):
     """A Cycle Count baseline campaign with one work item per Test in *names*."""
     from booley.flows.sim.campaign.codec import canonical_json_bytes
     from booley.flows.sim.campaign.planning import finalize_manifest
+    from tests.flows.sim.campaign_test_support import _manifest_for
     from tests.flows.sim.test_campaign_manifest_codec import _sha
-    from tests.flows.sim.test_campaign_phase3_integrity import _manifest_for
 
     document = json.loads(canonical_json_bytes(_manifest_for(names).document))
     document.pop("fingerprints")
@@ -411,7 +419,7 @@ def _candidate_manifest(names, prerequisites):
     """A candidate campaign over *names* that depends on *prerequisites*."""
     from booley.flows.sim.campaign.codec import canonical_json_bytes
     from booley.flows.sim.campaign.planning import finalize_manifest
-    from tests.flows.sim.test_campaign_phase3_integrity import _manifest_for
+    from tests.flows.sim.campaign_test_support import _manifest_for
 
     document = json.loads(canonical_json_bytes(_manifest_for(names).document))
     document.pop("fingerprints")
@@ -428,7 +436,7 @@ def _run_campaign(tmp_path, monkeypatch, manifest, invocation):
         SimulationCampaign,
     )
     from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-    from tests.flows.sim.test_campaign_phase3_integrity import _admission, _executor, _handle
+    from tests.flows.sim.campaign_test_support import _admission, _executor, _handle
 
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
@@ -515,7 +523,7 @@ def test_resume_authenticates_a_shared_baseline_campaign_once(tmp_path, monkeypa
     from types import SimpleNamespace
 
     from booley.flows.sim.campaign import resume
-    from tests.flows.sim.test_campaign_phase3_integrity import _handle
+    from tests.flows.sim.campaign_test_support import _handle
 
     baseline, candidate = _shared_baseline_candidate(tmp_path, monkeypatch)
     project = tmp_path / "project"
@@ -534,7 +542,7 @@ def test_resume_authenticates_a_shared_baseline_campaign_once(tmp_path, monkeypa
 def test_a_campaign_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monkeypatch):
     """Sharing a prerequisite campaign is allowed; depending on oneself is not."""
     from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
-    from tests.flows.sim.test_campaign_phase3_integrity import _manifest_for
+    from tests.flows.sim.campaign_test_support import _manifest_for
 
     own = _manifest_for(("alpha",)).document
     baseline = _cycle_baseline_manifest(("alpha",))

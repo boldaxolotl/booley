@@ -45,6 +45,12 @@ def _replace_fixture_markers(value: object, replacements: dict[str, str]) -> obj
     return value
 
 
+def _journal_filename(project: Path) -> str:
+    """Name a refresh journal as the store does: hash of the platform-case-folded root."""
+    folded = os.path.normcase(str(project))
+    return hashlib.sha256(folded.encode()).hexdigest() + ".json"
+
+
 def _issuance(project: Path, image_id: str = "sha256:prior") -> Issuance:
     identity = hashlib.sha256(str(project).encode()).hexdigest()
     return Issuance(
@@ -77,7 +83,7 @@ def _write_restore_journal(
         for directory in (config / "booley", config / "booley" / "eda", root):
             directory.chmod(0o700)
     identity = hashlib.sha256(str(project).encode()).hexdigest()
-    path = root / f"{identity}.json"
+    path = root / _journal_filename(project)
     content = (_FIXTURES / fixture).read_text(encoding="utf-8")
     replacements = {
         "${PROJECT_ROOT}": str(project),
@@ -212,6 +218,7 @@ def test_fresh_recovery_restores_interrupted_park(tmp_path: Path, monkeypatch) -
         patch.object(sr, "restore_refresh_session") as restore_runtime,
         patch.object(sr, "verify_restored_refresh_session") as verify_runtime,
         patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:prior"),
+        patch.object(runtime_spec, "_keeper_image_id", return_value="sha256:prior"),
         patch(
             "booley.runtime.session_spec.subprocess.run",
             return_value=SimpleNamespace(returncode=0, stderr=""),
@@ -260,6 +267,7 @@ def test_checked_in_committed_fixture_resumes_forward(
         lambda: {validator.parent.resolve(): validator.parent.parent.resolve()},
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:fresh")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:fresh")
     prepared, spec_path, replacement = issue_built(
         project,
         lambda _inputs: build_spec(
@@ -326,8 +334,7 @@ def test_refresh_persists_recovery_identity_before_parking(tmp_path: Path, monke
     )
 
     def fail_after_journal(*_args) -> None:
-        identity = hashlib.sha256(str(project).encode()).hexdigest()
-        journal = config / "booley" / "eda" / "session-refresh" / f"{identity}.json"
+        journal = config / "booley" / "eda" / "session-refresh" / _journal_filename(project)
         assert journal.is_file()
         raise RuntimeError("parking failed")
 
@@ -503,7 +510,7 @@ def test_host_scan_rejects_journal_filename_identity_mismatch(tmp_path: Path, mo
     path.rename(wrong)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
 
-    with pytest.raises(sr.SessionError, match=r"filename.*Project identity"):
+    with pytest.raises(sr.SessionError, match="identity mismatch"):
         session_refresh.recover_all_locked()
 
     assert wrong.is_file()
@@ -583,6 +590,7 @@ def test_recovery_tolerates_egress_network_identity_change(tmp_path: Path, monke
         patch.object(sr, "restore_refresh_session", side_effect=restore_with_recovery_only),
         patch.object(sr, "verify_restored_refresh_session", side_effect=verify_with_recovery_only),
         patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:prior"),
+        patch.object(runtime_spec, "_keeper_image_id", return_value="sha256:prior"),
         patch(
             "booley.runtime.session_spec.subprocess.run",
             return_value=SimpleNamespace(returncode=0, stderr=""),
@@ -624,8 +632,7 @@ def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
     )
 
     def fail_during_image_refresh(*_args, **_kwargs):
-        identity = hashlib.sha256(str(project).encode()).hexdigest()
-        journal = config / "booley" / "eda" / "session-refresh" / f"{identity}.json"
+        journal = config / "booley" / "eda" / "session-refresh" / _journal_filename(project)
         assert journal.is_file()
         raise RuntimeError("Docker unreachable")
 
@@ -653,8 +660,7 @@ def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
             images,
         )
 
-    identity = hashlib.sha256(str(project).encode()).hexdigest()
-    journal = config / "booley" / "eda" / "session-refresh" / f"{identity}.json"
+    journal = config / "booley" / "eda" / "session-refresh" / _journal_filename(project)
     assert journal.is_file()
 
 
@@ -733,6 +739,7 @@ def test_recovery_snapshot_rejects_keeper_on_different_image(tmp_path: Path) -> 
         patch.object(runtime_spec, "_file_sha256", return_value=issuance.file_sha256),
         patch.object(runtime_spec, "_spec_digest", return_value=issuance.spec_sha256),
         patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:different"),
+        patch.object(runtime_spec, "_keeper_image_id", return_value="sha256:different"),
         pytest.raises(runtime_spec.RuntimeSpecError, match=r"keeper.*different"),
     ):
         runtime_spec.load_recovery_snapshot(project, spec, spec_path)

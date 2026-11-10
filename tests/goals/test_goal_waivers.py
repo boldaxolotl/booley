@@ -20,7 +20,6 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.sim import coverage_waiver_application as application
 from booley.flows.sim.coverage_campaign import (
     DurableTargetIdentity,
-    decode_coverage_campaign,
     encode_coverage_point_id,
 )
 from booley.flows.sim.coverage_campaign_store import (
@@ -60,6 +59,7 @@ from booley.goals.store import GoalStore
 from booley.mcp import goal_waivers as service
 from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 from booley.mcp.goal_waivers import GoalWaiverService
+from tests.flows.sim.coverage_campaign_test_support import decode_document
 from tests.flows.sim.test_coverage_campaign import _POINT_ID, _valid_document
 from tests.goals.conftest import enter_goals, git, run_row
 from tests.goals.test_proposals import Crash, approve, interrupted_transaction
@@ -193,7 +193,7 @@ def fixture_campaign(source, service, *, covered=1, total=2):
     )
     source_sha = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
     document["source_closure"]["rtl"][0]["sha256"] = source_sha
-    campaign = decode_coverage_campaign(document, IDENTITY)
+    campaign = decode_document(document, IDENTITY)
     campaign = evaluate_coverage_campaign(
         campaign,
         CoverageCriterion(IDENTITY, (CoverageThreshold("line", Fraction(100)),), None),
