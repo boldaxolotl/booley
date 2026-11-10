@@ -734,6 +734,16 @@ def _verification_commands(
             "typecheck",
             "handoff",
         ),
+        # Fails in seconds when a packaged doc copy or the packaged CHANGELOG
+        # mirror is stale. The launcher imports this checkout's src/, which the
+        # shared environment never installs; -B keeps bytecode out of the checkout.
+        Command(
+            "packaged-copies.check",
+            (str(python), "-B", str(root / ".github/scripts/sync_packaged_copies.py"), "--check"),
+            str(root),
+            "lint",
+            "before-commit",
+        ),
     )
     if not native_ready:
         return lint
