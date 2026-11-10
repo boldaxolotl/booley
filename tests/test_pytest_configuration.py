@@ -21,7 +21,11 @@ import yaml
 REPOSITORY_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
 
-from ci_changes import CATEGORIES, build_test_matrix, required_jobs
+from ci_changes import (  # pyright: ignore[reportMissingImports]
+    CATEGORIES,
+    build_test_matrix,
+    required_jobs,
+)
 
 
 def _workflow(filename: str) -> dict:
@@ -427,7 +431,7 @@ def test_bwave_smoke_budget_times_tests_not_image_builds(
     build_seconds: int, validation_seconds: int, *, passed: bool
 ) -> None:
     """Runner build variance cannot fail the budget; a test-time regression does."""
-    from ci_duration_budget import evaluate
+    from ci_duration_budget import evaluate  # pyright: ignore[reportMissingImports]
 
     budget_step = next(
         step
@@ -877,7 +881,7 @@ def _assert_worktree_mounts_disk_and_failure_gating(job: dict) -> None:
 
 def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     workflow = _deep_tests_workflow()
-    assert set(workflow.get("on", workflow.get(True))) == {"schedule", "workflow_dispatch"}
+    assert set(workflow[True]) == {"schedule", "workflow_dispatch"}
     job = workflow["jobs"]["worktree-mounts"]
     assert job["runs-on"] == "ubuntu-latest"
     assert job["timeout-minutes"] == 180
@@ -1659,3 +1663,107 @@ def test_test_verify_proves_each_linux_group_when_sharded() -> None:
     for category in CATEGORIES:
         jobs = required_jobs({category})
         assert ("test" in jobs) == ("test-verify" in jobs)
+
+
+def _scoped_git_value(key: str, cwd: Path) -> str:
+    """Return ``<scope>\\t<value>`` Git reports for ``key`` (empty when unset).
+
+    Inherits the test's environment. The literal scope prefix lets callers
+    tell a command-scope value from the same value in a host global config.
+    """
+    result = subprocess.run(
+        ["git", "config", "--show-scope", "--get", key],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.stdout.strip()
+
+
+def _assert_auto_maintenance_off(cwd: Path) -> None:
+    assert _scoped_git_value("maintenance.auto", cwd) == "command\tfalse"
+    assert _scoped_git_value("gc.auto", cwd) == "command\t0"
+
+
+def test_session_git_children_run_without_auto_maintenance(tmp_path: Path) -> None:
+    _assert_auto_maintenance_off(tmp_path)
+
+
+def test_isolated_git_attributes_keeps_auto_maintenance_off(
+    tmp_path: Path, isolated_git_attributes: None
+) -> None:
+    _assert_auto_maintenance_off(tmp_path)
+
+
+def test_isolated_git_excludes_keeps_auto_maintenance_off_and_strips_other_command_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    from tests.conftest import add_git_command_config
+
+    add_git_command_config(monkeypatch, "core.abbrev", "12")
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.bigfilethreshold'='1m'")
+    request.getfixturevalue("isolated_git_excludes")
+    _assert_auto_maintenance_off(tmp_path)
+    assert _scoped_git_value("core.abbrev", tmp_path) == ""
+    assert _scoped_git_value("core.bigfilethreshold", tmp_path) == ""
+
+
+def test_own_empty_global_config_keeps_auto_maintenance_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    own_config = tmp_path / "own-global.config"
+    own_config.write_bytes(b"")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(own_config))
+    _assert_auto_maintenance_off(tmp_path)
+
+
+def test_added_command_config_overrides_and_keeps_session_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.conftest import add_git_command_config
+
+    add_git_command_config(monkeypatch, "core.abbrev", "12")
+    add_git_command_config(monkeypatch, "gc.auto", "5")
+    assert _scoped_git_value("core.abbrev", tmp_path) == "command\t12"
+    assert _scoped_git_value("gc.auto", tmp_path) == "command\t5"
+    assert _scoped_git_value("maintenance.auto", tmp_path) == "command\tfalse"
+
+
+def test_session_git_config_is_idempotent_and_keeps_inherited_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.conftest import _disable_git_auto_maintenance_for_children
+
+    # The function writes os.environ directly: register every slot with
+    # monkeypatch first so teardown restores what the session had.
+    for index in range(3):
+        monkeypatch.setenv(f"GIT_CONFIG_KEY_{index}", "")
+        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{index}", "")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Inherited")
+    _disable_git_auto_maintenance_for_children()
+    _disable_git_auto_maintenance_for_children()
+    assert os.environ["GIT_CONFIG_COUNT"] == "3"
+    assert os.environ["GIT_CONFIG_KEY_0"] == "user.name"
+    assert os.environ["GIT_CONFIG_VALUE_0"] == "Inherited"
+    assert (os.environ["GIT_CONFIG_KEY_1"], os.environ["GIT_CONFIG_VALUE_1"]) == (
+        "maintenance.auto",
+        "false",
+    )
+    assert (os.environ["GIT_CONFIG_KEY_2"], os.environ["GIT_CONFIG_VALUE_2"]) == ("gc.auto", "0")
+
+    # An inherited entry that already has the wanted effective value is not re-added.
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "GC.Auto")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "0")
+    _disable_git_auto_maintenance_for_children()
+    assert os.environ["GIT_CONFIG_COUNT"] == "2"
+    assert os.environ["GIT_CONFIG_KEY_1"] == "maintenance.auto"
+
+    # Git reads an empty count as zero.
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "")
+    _disable_git_auto_maintenance_for_children()
+    assert os.environ["GIT_CONFIG_COUNT"] == "2"
