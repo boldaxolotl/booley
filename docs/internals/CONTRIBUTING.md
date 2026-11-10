@@ -49,9 +49,9 @@ editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
 with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
 without writing. The same command mirrors `CHANGELOG.md` byte for byte to
 `src/booley/data/refs/CHANGELOG.md`, so run it after editing `CHANGELOG.md` too.
-`python .github/scripts/sync_packaged_copies.py [--check]` runs it without
-installing Booley. Never edit a copy or the mirror by hand. The sync turns links to other
-shipped docs into sibling links and links to unshipped docs
+`python3 .github/scripts/sync_packaged_copies.py [--check]` runs it without
+installing Booley. Never edit a copy or the mirror by hand. The sync turns
+links to other shipped docs into sibling links and links to unshipped docs
 (`PLAIN_TEXT_TARGETS`) into plain text marked `(host doc, not shipped)`. A new
 link to a doc in neither set fails the sync with the file, the link and the fix.
 The regenerated copy lives under `src/booley/**`, so such an edit also runs the

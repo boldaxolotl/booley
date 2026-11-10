@@ -7,7 +7,7 @@ docs listed in :data:`SHIPPED_DOCS` are copied, flat, to ``src/booley/data/docs/
 
     python -m booley.dev_support.reference_docs          # regenerate the copies
     python -m booley.dev_support.reference_docs --check  # fail on stale copies
-    python .github/scripts/sync_packaged_copies.py [--check]  # same, without installing Booley
+    python3 .github/scripts/sync_packaged_copies.py [--check]  # same, without installing Booley
 
 after editing any allowlisted doc or ``CHANGELOG.md``. The copies are generated;
 never edit them. ``CHANGELOG.md`` is mirrored byte for byte (no link rewriting)

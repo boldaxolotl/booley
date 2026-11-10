@@ -16,7 +16,7 @@ def main() -> int:
     from booley.dev_support import reference_docs
 
     return reference_docs.main(
-        sys.argv[1:], sync_command="python .github/scripts/sync_packaged_copies.py"
+        sys.argv[1:], sync_command="python3 .github/scripts/sync_packaged_copies.py"
     )
 
 

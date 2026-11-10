@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import runpy
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,35 @@ def test_check_reports_stale_changelog_mirror(
     capsys.readouterr()
     assert reference_docs.main(["--check"], root=root) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_check_prints_the_entry_points_own_fix_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fake_repo(tmp_path)
+    reference_docs.sync_packaged_docs(root)
+    (root / CHANGELOG_MIRROR).write_bytes(b"hand edit\n")
+
+    assert reference_docs.main(["--check"], root=root, sync_command="the-fix") == 1
+
+    assert "packaged docs are out of date; run the-fix" in capsys.readouterr().out
+
+
+def test_launcher_names_itself_as_the_fix_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    launcher = Path(__file__).resolve().parents[2] / ".github/scripts/sync_packaged_copies.py"
+    seen: dict[str, str] = {}
+
+    def fake_main(argv: list[str] | None = None, *, sync_command: str) -> int:
+        seen["sync_command"] = sync_command
+        return 0
+
+    monkeypatch.setattr(reference_docs, "main", fake_main)
+    monkeypatch.setattr("sys.dont_write_bytecode", True)
+
+    namespace = runpy.run_path(str(launcher))
+    assert namespace["main"]() == 0
+
+    assert seen["sync_command"] == "python3 .github/scripts/sync_packaged_copies.py"
 
 
 def test_second_sync_is_a_no_op(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
