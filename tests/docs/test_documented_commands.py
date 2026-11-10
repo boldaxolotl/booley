@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
+from tests.source_checkout_support import source_checkout_files
 
 from booley.flows.sim import campaign_retention
 from booley.harness.booley import _build_parser
@@ -148,19 +149,18 @@ def _command_error(tokens: list[str]) -> str | None:
 def test_documented_command_paths_are_registered_and_allowed() -> None:
     failures = []
     count = 0
-    for directory in (ROOT / "src/booley/data", ROOT / "docs/user"):
-        for doc in sorted(directory.rglob("*")):
-            if not doc.is_file() or doc == ROOT / "src/booley/data/refs/CHANGELOG.md":
-                continue
-            try:
-                text = doc.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue  # Binary packaged assets cannot contain shell examples.
-            for line, tokens in _commands(text):
-                count += 1
-                error = _command_error(tokens)
-                if error:
-                    failures.append(f"{doc.relative_to(ROOT)}:{line}: {error}")
+    for doc in source_checkout_files(ROOT, "src/booley/data", "docs/user"):
+        if doc == ROOT / "src/booley/data/refs/CHANGELOG.md":
+            continue
+        try:
+            text = doc.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue  # Binary packaged assets cannot contain shell examples.
+        for line, tokens in _commands(text):
+            count += 1
+            error = _command_error(tokens)
+            if error:
+                failures.append(f"{doc.relative_to(ROOT)}:{line}: {error}")
     assert count > 100, "Command extraction must exercise the documentation corpus"
     assert not failures, "\n".join(failures)
 
