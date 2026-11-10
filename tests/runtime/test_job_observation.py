@@ -10,7 +10,7 @@ from tests.runtime.test_job_artifacts import progress, spy
 
 from booley.runtime import job_records, job_slots
 from booley.runtime.job_observation import JobObserver, _artifacts, _observer
-from booley.runtime.pid import ProcessIdentity
+from booley.runtime.pid import ProcessIdentity, ProcessObservation, ProcessState
 
 
 def write_job(root: Path, run_id: str, **kwargs) -> Path:
@@ -35,6 +35,58 @@ def test_only_explicit_roots_are_observed_and_repeated_roots_keep_one_identity(t
     assert [job.key for job in snapshot.jobs] == [(str(selected), "one")]
     assert snapshot.jobs[0].report == {"run_id": "one", "passed": True}
     assert snapshot.diagnostics == ()
+
+
+def test_record_finished_after_listing_is_not_orphaned(tmp_path, monkeypatch):
+    root = tmp_path / "jobs"
+    identity = ProcessIdentity(4242, "boot", 1)
+    running = job_records.JobRecord(
+        "one",
+        "sim",
+        "2026-10-08T10:00:00Z",
+        60,
+        pid=identity.pid,
+        process_identity=identity.to_payload(),
+    )
+    job_records.write_record(running, root)
+
+    def owner_finishes_then_reads_dead(_identity, *, proc_root):
+        done = job_records.read_record("one", root)
+        assert done is not None
+        done.status, done.exit_code, done.ended_at = "done", 0, "2026-10-08T10:00:05Z"
+        job_records.write_record(done, root)
+        return ProcessObservation(ProcessState.DEAD)
+
+    monkeypatch.setattr(_observer, "observe_process", owner_finishes_then_reads_dead)
+
+    snapshot = JobObserver(tmp_path).read((root,))
+
+    assert [(job.record.status, job.state) for job in snapshot.jobs] == [("done", "completed")]
+
+
+def test_record_still_running_after_a_dead_observation_stays_orphaned(tmp_path, monkeypatch):
+    root = tmp_path / "jobs"
+    identity = ProcessIdentity(4242, "boot", 1)
+    job_records.write_record(
+        job_records.JobRecord(
+            "one",
+            "sim",
+            "2026-10-08T10:00:00Z",
+            60,
+            pid=identity.pid,
+            process_identity=identity.to_payload(),
+        ),
+        root,
+    )
+    monkeypatch.setattr(
+        _observer,
+        "observe_process",
+        lambda _identity, *, proc_root: ProcessObservation(ProcessState.DEAD),
+    )
+
+    snapshot = JobObserver(tmp_path).read((root,))
+
+    assert [job.state for job in snapshot.jobs] == ["orphaned"]
 
 
 def test_observer_does_not_interpret_caller_owned_binding_schema(tmp_path):

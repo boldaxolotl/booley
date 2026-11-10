@@ -396,6 +396,30 @@ def validate_results(
         raise ValueError("completed baseline report is missing Test Runs")
 
 
+INTERRUPTED_REASON = "baseline Job interrupted or unavailable"
+
+
+def settle_request(
+    request: dict[str, Any],
+    job: job_records.JobRecord | None,
+    reread: Callable[[], dict[str, Any]],
+) -> tuple[dict[str, Any], bool]:
+    """The request to act on, and whether its Job was interrupted.
+
+    *job* was read after *request*. The baseline supervisor and its startup
+    reaper write the request's final state before the Job record turns
+    terminal, so once the Job reads missing or inactive a re-read shows any
+    final state they wrote; only a request still ``pending`` then belongs to
+    an interrupted Job.
+    """
+    if request.get("status") != "pending" or (
+        job is not None and job_records.is_active(job, is_pid_alive)
+    ):
+        return request, False
+    current = reread()
+    return current, current.get("status") == "pending"
+
+
 def baseline_observations(
     project: Path,
     record: GoalRecord,
@@ -409,17 +433,21 @@ def baseline_observations(
         path = request_path(project, identity, family)
         if not path.exists():
             return {"status": "pending", "reason": "baseline has not been scheduled yet"}
-        raw = read_document(path, family)
-        if raw.get("identity") != identity:
-            raise ValueError("baseline request identity differs")
-        validate_results(project, raw, family)
-        if raw.get("status") == "pending":
-            job = job_records.read_record(raw["job_id"], Path(raw["jobs_root"]))
-            if job is None or not job_records.is_active(job, is_pid_alive):
-                return {
-                    "status": "unavailable",
-                    "reason": "baseline Job interrupted or unavailable",
-                }
-        return raw
+
+        def read() -> dict[str, Any]:
+            raw = read_document(path, family)
+            if raw.get("identity") != identity:
+                raise ValueError("baseline request identity differs")
+            validate_results(project, raw, family)
+            return raw
+
+        raw = read()
+        if raw.get("status") != "pending":
+            return raw
+        job = job_records.read_record(raw["job_id"], Path(raw["jobs_root"]))
+        settled, interrupted = settle_request(raw, job, read)
+        if interrupted:
+            return {"status": "unavailable", "reason": INTERRUPTED_REASON}
+        return settled
     except (OSError, ValueError, KeyError, TypeError) as exc:
         return {"status": "unavailable", "reason": f"baseline evidence cannot be read: {exc}"}
