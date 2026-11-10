@@ -19,7 +19,7 @@ inputs and returns a complete typed report:
 | `harness.setup.readiness` | `load_project(root)`; `check_guidance(project, mode=...)`; `check_stealth_cores(project, mode=...)`; `inspect_worktree_portability(WorktreePortabilityRequest)`; `inspect_line_endings(LineEndingInspectionRequest)` | Checkout-local Project resolution, schema composition, parsed EDA inputs, valid continuation data, guidance and core-projection grading and bounded reconciliation; worktree portability policy; line-ending observation precedence (CRLF, autocrlf risk, attributes policy, stale index, migration) and its check IDs and subjects. |
 | `audit.host_environment` | `inspect_agent_installation(provider)` | The shared configuration-directory-or-executable installation heuristic. |
 | `runtime.interactive_docker` | `image_exists(name, executable=..., timeout=...)` | The image observation shared by Doctor and Project Initialization. |
-| `audit.diagnostic_results` | `DiagnosticFinding`, `DiagnosticReport`, `HealthAssessment` | Ordered severity/message/remediation/ID/subject/deduplication values, uncounted verbose details, and the active FAIL/WARN interpretation. |
+| `audit.diagnostic_results` | `DiagnosticFinding`, `DiagnosticReport`, `HealthAssessment` | Ordered severity/message/remediation/ID/subject/deduplication values, uncounted details (verbose-only unless an owner marks one always shown), and the active FAIL/WARN interpretation. |
 
 `RuntimeInspectionResult` separates configuration currency from issuance
 validity: a stale convenience setting never suppresses the authority
@@ -28,7 +28,7 @@ authority; startup validates independently through the same issuance owner.
 
 Every WARN and WAIVED finding requires a stable check ID at construction.
 Doctor's single report adapter preserves fields, applies waivers and
-deduplication, and interleaves verbose details without changing counts.
+deduplication, and interleaves details (verbose-only unless marked) without changing counts.
 
 ## Permitted effects
 
