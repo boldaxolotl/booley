@@ -1001,7 +1001,7 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# First-run state — no onboarding, login or folder-trust prompt in the Sandbox
+# First-run state — no onboarding, login, folder-trust or auto-mode nudge prompt in the Sandbox
 # ---------------------------------------------------------------------------
 #
 # A Sandbox without a seeded host config (a Codespace, or any host with no
@@ -1088,9 +1088,7 @@ def _apply_claude_first_run(home: Path | None, trust: Sequence[str], *, onboard:
         _trust_claude_projects(config, trust)
     except ValueError as exc:
         raise ValueError(_invalid_json_message("Claude config", config_path, exc)) from exc
-    # The permission-mode writer pins ``bypassPermissions``, which makes Claude
-    # Code show its auto-mode default nudge on a fresh home. The nudge is
-    # independent of login, so it is not credential-gated.
+    # Independent of login (unlike onboarding), so not credential-gated.
     config.setdefault("hasSeenAutoDefaultNudge", True)
     if onboard:
         config.setdefault("hasCompletedOnboarding", True)

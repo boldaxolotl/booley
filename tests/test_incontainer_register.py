@@ -1500,7 +1500,6 @@ def test_claude_without_credential_keeps_login_and_writes_trust(first_run):
 
     config = _claude_config(first_run.home)
     _assert_claude_trusted(config, first_run)
-    # The nudge is unrelated to login, so it is set even without a credential.
     assert config["hasSeenAutoDefaultNudge"] is True
     assert "hasCompletedOnboarding" not in config
     assert "theme" not in _claude_settings(first_run.home)
