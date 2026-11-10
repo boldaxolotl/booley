@@ -29,8 +29,9 @@ from booley.audit import (
 )
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
-from booley.harness import colors, developer_probe, doctor, host_diagnostics
+from booley.harness import developer_probe, doctor, host_diagnostics
 from booley.harness.setup import readiness
+from booley.presentation import colors
 from booley.runtime import (
     auth_token,
     doctor_stamp,
@@ -346,6 +347,9 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{os.getuid()}\n", stderr="")
         if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["git", "--version"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
+        if cmd[1:3] == ["image", "ls"]:
+            # No issued Sandbox Image keepers; the strict listing rejects stray output.
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[1:3] == ["image", "inspect"] and "{{json .Config.Env}}" in cmd:
             # Healthy default: the sandbox image bakes the ADR 0028 runtime marker.
             return subprocess.CompletedProcess(

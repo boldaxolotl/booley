@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.core.boundary import BoundaryError
 from booley.runtime.devcontainer import EGRESS_NETWORK, UNPROXIED_NETWORK
 from booley.runtime.platform_paths import run_captured_bounded
 
@@ -35,6 +36,7 @@ REFRESH_BACKUP_SUFFIX = "-pre-refresh"
 DOCKER_SOCK = "/var/run/docker.sock"
 
 _DOCKER_TIMEOUT = 30
+_METADATA_TIMEOUT = 15
 
 # ``--internal`` removes external routing but, by itself, Docker still assigns
 # the host a bridge-gateway address reachable from attached containers.  The
@@ -122,31 +124,64 @@ def image_exists(name: str, *, executable: str = "docker", timeout: int = 15) ->
         return False
 
 
-def image_id(name: str) -> str | None:
-    """Return an image's immutable Docker ID, or ``None`` on inspect failure."""
-    try:
-        result = _run_docker(["image", "inspect", name, "--format", "{{.Id}}"], timeout=15)
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    value = result.stdout.strip()
-    return value if result.returncode == 0 and value else None
+class ImageInspectError(RuntimeError):
+    """Docker could not say whether an image exists (as opposed to it being absent)."""
 
 
-def image_id_strict(name: str) -> str | None:
-    """Return an exact image ID while distinguishing absence from inspection failure."""
-    try:
-        result = _run_docker(["image", "inspect", name, "--format", "{{.Id}}"], timeout=15)
-    except (subprocess.SubprocessError, FileNotFoundError) as exc:
-        raise RuntimeError(f"cannot inspect issued Sandbox Image keeper: {exc}") from exc
-    value = result.stdout.strip()
-    if result.returncode == 0 and value:
-        return value
+def _absent_or_inspect_error(
+    reference: str, result: subprocess.CompletedProcess
+) -> ImageInspectError | None:
+    """Classify a non-zero ``docker image inspect``: ``None`` means no such image."""
     detail = result.stderr.strip() or result.stdout.strip()
     if re.search(r"\bno such (?:image|object)\b", detail, re.IGNORECASE):
         return None
-    raise RuntimeError(
-        "cannot inspect issued Sandbox Image keeper: "
-        + (detail or "docker image inspect returned no image ID")
+    return ImageInspectError(
+        f"cannot inspect Docker image {reference!r}: "
+        + (detail or f"Docker exited {result.returncode}")
+    )
+
+
+def _inspect_image(
+    reference: str, extra: list[str], *, timeout: int, executable: str = "docker"
+) -> subprocess.CompletedProcess | None:
+    """Run ``docker image inspect``; ``None`` when the image does not exist.
+
+    Only Docker's own "no such image" answer means absent; a missing or
+    non-executable CLI, an unreachable daemon, a timeout, and any other
+    non-zero exit raise :class:`ImageInspectError` naming *reference*.
+    """
+    try:
+        result = _run_docker(
+            ["image", "inspect", reference, *extra],
+            timeout=timeout,
+            executable=executable,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ImageInspectError(f"cannot inspect Docker image {reference!r}: {exc}") from exc
+    if result.returncode == 0:
+        return result
+    error = _absent_or_inspect_error(reference, result)
+    if error is not None:
+        raise error
+    return None
+
+
+def image_id(reference: str) -> str | None:
+    """Return an image's immutable Docker ID, or ``None`` when the image does not exist.
+
+    The one image-ID lookup for Booley's runtime and harness. Only Docker's own
+    "no such image" answer means absent; a missing or non-executable CLI, an
+    unreachable daemon, a timeout, any other non-zero exit, and an empty answer
+    raise :class:`ImageInspectError` naming *reference* and the cause.
+    """
+    result = _inspect_image(reference, ["--format", "{{.Id}}"], timeout=_DOCKER_TIMEOUT)
+    if result is None:
+        return None
+    value = result.stdout.strip()
+    if value:
+        return value
+    raise ImageInspectError(
+        f"cannot inspect Docker image {reference!r}: Docker returned no image ID"
     )
 
 
@@ -155,20 +190,22 @@ def inspect_image_metadata(
     *,
     executable: str = "docker",
 ) -> ImageMetadata | None:
-    """Return labels/environment for exactly *reference*, or ``None``."""
+    """Return the full metadata of exactly *reference*, or ``None`` when it does not exist.
+
+    Same contract as :func:`image_id`: only "no such image" is absent. Failures
+    to run Docker and malformed output raise :class:`ImageInspectError`.
+    """
     from booley.runtime.image_identity import decode_image_metadata
 
-    try:
-        result = _run_docker(["image", "inspect", reference], timeout=15, executable=executable)
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    if result.returncode != 0:
+    result = _inspect_image(reference, [], timeout=_METADATA_TIMEOUT, executable=executable)
+    if result is None:
         return None
     try:
-        document = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-    return decode_image_metadata(reference, document)
+        return decode_image_metadata(reference, json.loads(result.stdout))
+    except (json.JSONDecodeError, BoundaryError) as exc:
+        raise ImageInspectError(
+            f"cannot inspect Docker image {reference!r}: invalid metadata: {exc}"
+        ) from exc
 
 
 def compare_issued_build(image: str, *, executable: str = "docker") -> Comparison:
@@ -182,7 +219,10 @@ def compare_issued_build(image: str, *, executable: str = "docker") -> Compariso
     )
 
     expected = current_host_build_identity()
-    observed = inspect_image_metadata(image, executable=executable)
+    try:
+        observed = inspect_image_metadata(image, executable=executable)
+    except ImageInspectError as exc:
+        return Comparison(Status.UNKNOWN, str(exc))
     if expected is None or observed is None:
         return Comparison(Status.UNKNOWN)
     return compare_build_identity(expected, build_identity(observed))
@@ -213,18 +253,21 @@ def compare_issued_selection(
     project_root: Path | None = None,
 ) -> Comparison:
     """Inspect and compare issued/configured selection without mutation."""
-    from booley.runtime.image_identity import compare_logical_selection
+    from booley.runtime.image_identity import Comparison, Status, compare_logical_selection
 
     def inspect(reference: str) -> ImageMetadata | None:
         return inspect_image_metadata(reference, executable=executable)
 
-    return compare_logical_selection(
-        issued_reference,
-        configured_reference,
-        inspect,
-        project_root=project_root,
-        executable=executable,
-    )
+    try:
+        return compare_logical_selection(
+            issued_reference,
+            configured_reference,
+            inspect,
+            project_root=project_root,
+            executable=executable,
+        )
+    except ImageInspectError as exc:
+        return Comparison(Status.UNKNOWN, str(exc))
 
 
 def compare_issued_reference(
@@ -236,8 +279,11 @@ def compare_issued_reference(
     """Compare exact IDs when no trusted logical provenance contract exists."""
     from booley.runtime.image_identity import Comparison, Status
 
-    issued = inspect_image_metadata(issued_reference, executable=executable)
-    configured = inspect_image_metadata(configured_reference, executable=executable)
+    try:
+        issued = inspect_image_metadata(issued_reference, executable=executable)
+        configured = inspect_image_metadata(configured_reference, executable=executable)
+    except ImageInspectError as exc:
+        return Comparison(Status.UNKNOWN, str(exc))
     if issued is None or configured is None:
         return Comparison(Status.UNKNOWN)
     status = Status.MATCH if issued.image_id == configured.image_id else Status.MISMATCH
@@ -277,23 +323,6 @@ def remove_image_tag(target: str) -> None:
     )
 
 
-def issued_image_tags() -> list[str]:
-    """Return Booley issuance-keeper tags visible to the local Docker daemon."""
-    try:
-        result = _run_docker(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"], timeout=30)
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return []
-    if result.returncode != 0:
-        return []
-    return sorted(
-        {
-            line.strip()
-            for line in result.stdout.splitlines()
-            if _ISSUED_IMAGE_RE.fullmatch(line.strip())
-        }
-    )
-
-
 def strict_docker(
     args: list[str],
     *,
@@ -320,7 +349,7 @@ def validated_image_id(value: str) -> str:
     return value
 
 
-def issued_image_tags_strict() -> tuple[str, ...]:
+def issued_image_tags() -> tuple[str, ...]:
     """List exact keeper tags, raising when the daemon observation is incomplete."""
     output = strict_docker(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
     tags = set()

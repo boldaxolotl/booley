@@ -17,7 +17,7 @@ each entry's _Avoid_ terms as rejected synonyms rather than loose alternatives.
 ### Lifecycle
 
 How a host and codebase become ready for Booley work. **Host Bootstrap** prepares
-reusable host capabilities, **Project Initialization** creates one **Project**,
+reusable host capabilities, **Project Initialization** reconciles one **Project**'s files,
 and **Project Setup** adapts that Project to its design.
 
 **Host Bootstrap**:
@@ -25,7 +25,7 @@ Idempotent, Project-independent preparation of the host environment and the curr
 _Avoid_: Project bootstrap, machine setup, installation
 
 **Project Initialization**:
-Idempotent mechanical creation and reconciliation of Booley state and Sandbox infrastructure for one codebase, making it a **Project** without interpreting its design.
+Idempotent, location-neutral reconciliation of one codebase's Project files (the Booley Directory, Git integration, guidance links, core projections and the Dashboard task), making it a **Project** without interpreting its design. It needs no Docker, host credentials or **Sandbox Issuance**. Host `booley init` runs it with Sandbox Image preparation alongside, then adds Sandbox Issuance, which owns the Dashboard task on that path.
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 
 **Project Setup**:
@@ -151,8 +151,12 @@ The exact FlexNet server identifier advertised by the license manager and mapped
 _Avoid_: server hostname, DNS name, upstream address
 
 **Job**:
-A background run of a Booley Flow or Specialist, tracked by a `run_id` through the submit → poll contract from submission to a terminal result. A Job that starts immediately and finishes quickly completes inline, reading like a synchronous call; one that waits for a slot surfaces a QUEUED state first and can be withdrawn by `run_id` while it waits.
+A run of a Booley Flow or Specialist, tracked by a Job record and its `run_id` from submission to a terminal result. A Developer Agent's Job goes through the submit → poll contract: one that starts immediately and finishes quickly completes inline, reading like a synchronous call; one that waits for a slot surfaces a QUEUED state first and can be withdrawn by `run_id` while it waits. A human's Job runs in the foreground of a Sandbox shell or detached from the Booley Dashboard.
 _Avoid_: task, process, async call
+
+**Standalone Job**:
+A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It takes Job slots like any other Job, writes `job.log`, and never records, satisfies, or invalidates Goal evidence.
+_Avoid_: human run, dashboard job, manual job
 
 **Job Class**:
 The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of other requester roles; unknown persisted roles retain a fallback priority.
@@ -163,7 +167,7 @@ _Avoid_: tier, weight, pool, semaphore
 The design-description primitives Booley references but does not own. **Target** is the load-bearing one: almost every other entry binds to a Target by name.
 
 **Project**:
-A codebase initialized with `booley init`, with a **Booley Directory** for its configuration and state.
+A codebase on which Project Initialization has run, with a **Booley Directory** for its configuration and state.
 _Avoid_: repo, workspace
 
 **Booley Directory**:
@@ -314,7 +318,7 @@ _Avoid_: regex, marker, exit-code-only verdict
 ### Presentation
 
 **Booley Dashboard**:
-The read-only terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, and health signals in that Sandbox.
+The terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, Targets, and health signals in that Sandbox, from which a human can also launch Booley Flows and built-in Specialists as Standalone Jobs.
 _Avoid_: control room, console, monitor
 
 **Session activity**:

@@ -73,6 +73,7 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_grade,
     test_run_row,
 )
+from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
@@ -121,8 +122,8 @@ from booley.flows.test_runs import (
     test_run_from_document,
 )
 from booley.fusesoc import fusesoc_registry
-from booley.harness import colors
-from booley.harness.terminal_table import render_table
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EXIT_CANCELLED,
@@ -215,7 +216,6 @@ from .campaign.flow_planning import (
 from .campaign.model import simulation_status_from_observations
 from .campaign.planning import (
     SimulationCampaignWorkloadMismatchError,
-    canonical_sha256,
     manifest_digest,
     verify_workload,
 )
@@ -870,7 +870,7 @@ def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object
         target=dict(document["target"]),
         test_count=len(document["test_names"]),
         test_names=list(document["test_names"][:8]),
-        test_names_sha256=canonical_sha256(list(document["test_names"])),
+        test_names_sha256=document_digest(list(document["test_names"])),
         terminal=firing.terminal,
         reference=_report_artifact_reference(
             firing.path,
@@ -2906,16 +2906,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, result: EndpointOutcome, origin_manifest: Path | None = None
     ) -> EndpointOutcome:
         """Attach authentic hook evidence even when no terminal Campaign outcome exists."""
-        from .campaign import read_invocation_pre_sim_firings
+        from .campaign import collect_pre_sim_firings
         from .campaign_retention import invocation_booley_dir
 
         invocation = self._reserved_invocation_dir
         if invocation is None:
             return result
         try:
-            firings = read_invocation_pre_sim_firings(
-                invocation, origin_manifest, booley_dir=invocation_booley_dir(invocation)
-            )
+            paths = sorted((invocation / "targets").glob("*/campaign/manifest.json"))
+            if len(paths) > 4000:
+                raise SimulationCampaignIntegrityError("invocation Campaign count exceeds bound")
+            if origin_manifest is not None:
+                paths.append(origin_manifest)
+            firings = collect_pre_sim_firings(*paths, booley_dir=invocation_booley_dir(invocation))
         except (OSError, ValueError) as exc:
             return self._retain_pre_sim_after_scan_error(result, exc)
         return self._project_published_pre_sim(result, firings, invocation)
@@ -2935,7 +2938,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
-        from .campaign import reread_pre_sim_firings
+        from .campaign import collect_pre_sim_firings
         from .campaign_retention import invocation_booley_dir
 
         firings = tuple(
@@ -2949,8 +2952,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             try:
                 result = self._project_published_pre_sim(
                     result,
-                    reread_pre_sim_firings(
-                        firings,
+                    collect_pre_sim_firings(
+                        prior=firings,
                         booley_dir=None
                         if invocation is None
                         else invocation_booley_dir(invocation),

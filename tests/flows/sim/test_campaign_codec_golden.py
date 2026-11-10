@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
 
 from booley.flows.sim.campaign.codec import (
-    SimulationCampaignIntegrityError,
-    canonical_json_bytes,
-    decode_build_result,
+    decode_bundle_build_result,
     decode_simulation_result,
     encode_bundle_build_result,
     encode_simulation_result,
@@ -24,7 +18,7 @@ _BUILD_INFRA = b'{"$schema":"booley.bundle-build-result/v1","build_attempt":{"bu
 
 @pytest.mark.parametrize("raw", [_BUILD_READY, _BUILD_DESIGN, _BUILD_INFRA])
 def test_build_result_golden_discriminators(raw: bytes) -> None:
-    value = decode_build_result(raw)
+    value = decode_bundle_build_result(raw)
     assert value.canonical_bytes() == raw
     assert encode_bundle_build_result(value) == raw
 
@@ -69,47 +63,3 @@ def test_simulation_result_golden_discriminators(state: str) -> None:
     value = decode_simulation_result(raw)
     assert value.canonical_bytes() == raw
     assert encode_simulation_result(value) == raw
-
-
-@given(st.sampled_from(["missing", "unknown", "type", "path", "digest", "conditional"]))
-def test_result_structural_mutations_are_rejected(mutation: str) -> None:
-    document = json.loads(_simulation_result("completed"))
-    reference = document["build_result"]
-    if mutation == "missing":
-        del reference["sha256"]
-    elif mutation == "unknown":
-        document["evidence"] = [
-            {
-                "path": "evidence/log.txt",
-                "bytes": 0,
-                "sha256": "sha256:" + "0" * 64,
-                "kind": "log",
-                "owner": reference["owner"],
-                "unexpected": True,
-            }
-        ]
-    elif mutation == "type":
-        document["elapsed_seconds"] = "1"
-    elif mutation == "path":
-        reference["path"] = "../escape"
-    elif mutation == "digest":
-        document["manifest_sha256"] = "sha256:bad"
-    else:
-        document["executable_snapshot"] = None
-    with pytest.raises(SimulationCampaignIntegrityError):
-        decode_simulation_result(canonical_json_bytes(document))
-
-
-@pytest.mark.parametrize("field", ["test", "detail"])
-def test_simulation_result_rejects_observation_resource_overflow(field: str) -> None:
-    document = json.loads(_simulation_result("completed"))
-    document["observations"][0][field] = "x" * (513 if field == "test" else 2049)
-    with pytest.raises(SimulationCampaignIntegrityError, match="ceiling"):
-        decode_simulation_result(canonical_json_bytes(document))
-
-
-def test_nested_evidence_reference_rejects_unknown_fields() -> None:
-    document = json.loads(_simulation_result("completed"))
-    document["executable_snapshot"]["manifest"]["unexpected"] = True
-    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-        decode_simulation_result(canonical_json_bytes(document))

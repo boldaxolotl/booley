@@ -97,7 +97,7 @@ def _refuse_registered(source: Path, nested: Path) -> None:
             raise ProjectPairingError(
                 f"the Booley Directory's repository already registers a checkout at {nested}; "
                 "in the same Sandbox, preserve needed work and evidence first "
-                "(see docs/user/CLI-REFERENCE.md), then remove it with "
+                "as described in CLI-REFERENCE.md (host doc, not shipped), then remove it with "
                 f"`git -C {shlex.quote(str(source.resolve()))} worktree remove "
                 f"{shlex.quote(str(target))}`; inspect locks before unlocking or forcing removal"
             )
@@ -307,7 +307,7 @@ def worktree_removal_instructions(
         f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
         "These are Sandbox paths; do not paste them into a host terminal.",
         "First preserve needed evidence and other ignored/untracked files outside "
-        "this worktree (see docs/user/CLI-REFERENCE.md).",
+        "this worktree, as described in CLI-REFERENCE.md (host doc, not shipped).",
         "Then clean dirty/untracked files, including a Snapshot's copied files; "
         "inspect locks before unlocking or forcing removal.",
         "Git refuses to remove a worktree that holds populated submodules without "

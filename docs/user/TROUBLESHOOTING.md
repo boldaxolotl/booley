@@ -286,6 +286,28 @@ A stopped Sandbox refuses to start after the switch; run
 on purpose, waive `host.sandbox-egress-mismatch` with `subject` set to its
 Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waivers-doctor-waiverstoml).
 
+### Doctor reports a Session store file named for another Project Root
+
+Doctor fails with `Session store check: ... identity mismatch: <file> is not
+named for the Project Root it holds (<root>)`, and `booley session` commands
+refuse with the same message. Booley keeps one private file per Project for
+Sandbox issuance, pending editor starts, pending refreshes, and pending
+invalidations, and it names each file after its Project Root. A file with the
+wrong name is never trusted. Remove the file the message names, then reissue
+the Sandbox spec on the host:
+
+```bash
+booley init --seed --project <root>
+```
+
+After upgrading on Windows, Booley names a Project Root without regard to case.
+Files written by earlier releases are not migrated, so each Project needs this
+once. Doctor names one file per store, so rerun it until it passes. Removing a
+pending refresh file drops its rollback snapshot and its parked prior Sandbox;
+removing a pending invalidation file skips its cleanup of the Project's FlexNet
+relay containers and networks, which then need removing by hand in Docker.
+`init --seed` regenerates the spec.
+
 ### Doctor reports that devcontainer.json differs
 
 Doctor rebuilds the `.devcontainer/devcontainer.json` that `booley init` would
@@ -387,6 +409,19 @@ testbench to the image's cocotb 2.x (`cocotb.fork` becomes
 `cocotb.start_soon`, plus a few import moves), or build a project image with a
 matching Verilator. Image versions are in
 [Supported EDA tools](https://booley.dev/docs/supported-eda-tools/#versions-in-the-sandbox-image).
+
+### A streamed `--trace` dump produces a trace incident
+
+A `sim --trace` run converts a declared `.vcd` while the test runs, so the
+testbench must not seek in, read back, or reopen that dump. If it does, the
+trace incident names B-Wave's error. Write the dump once, front to back, or
+dump FST instead.
+
+### A run without `--trace` hangs after Booley was killed during a traced run
+
+If Booley was killed hard during a `--trace` run, a leftover file at the
+declared trace path can make the next run without `--trace` hang while it
+writes there. The next `--trace` run removes the file, or delete it yourself.
 
 ### Verilator reports timing or enum errors
 

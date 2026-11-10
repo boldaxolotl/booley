@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import zipfile
@@ -15,6 +14,7 @@ import pytest
 from booley.runtime import image_build_contracts as contracts
 from booley.runtime.build_stamp import BuildProfile, write_build_stamp
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+from tests.source_checkout_support import copy_source_checkout
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -154,13 +154,7 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     tmp_path: Path,
 ) -> None:
     checkout = tmp_path / "checkout"
-    shutil.copytree(
-        SOURCE_ROOT,
-        checkout,
-        ignore=shutil.ignore_patterns(
-            ".git", ".worktrees", ".runtime", ".venv", "target", "build", "dist"
-        ),
-    )
+    copy_source_checkout(SOURCE_ROOT, checkout)
     expected = contracts.source_image_build_contracts(checkout)
     write_build_stamp(checkout, profile=BuildProfile.OFFICIAL_RELEASE)
     wheel_dir = tmp_path / "wheel"
@@ -245,17 +239,21 @@ import booley
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.image_build_contracts import expected_image_build_contracts
+from booley.runtime.image_identity import ImageMetadata
 
 class Docker:
     def __init__(self): self.images = {}
     def image_id(self, ref): return self.images.get(ref, (None, {}))[0]
     def image_ids(self): return frozenset(row[0] for row in self.images.values())
-    def label(self, ref, name): return self.images.get(ref, (None, {}))[1].get(name)
-    def image_layers(self, ref):
+    def inspect(self, ref):
+        record = self.images.get(ref) or next((row for row in self.images.values() if row[0] == ref), None)
+        if record is None: return None
+        return ImageMetadata(ref, record[0], dict(record[1]), {}, self._layers(ref))
+    def _layers(self, ref):
         record = self.images.get(ref) or next((row for row in self.images.values() if row[0] == ref), None)
         if record is None: return ()
         parent = record[1].get(lifecycle.LABEL_PARENT_ARTIFACT)
-        return (*self.image_layers(parent), record[0]) if parent and parent.startswith("sha256:") else (record[0],)
+        return (*self._layers(parent), record[0]) if parent and parent.startswith("sha256:") else (record[0],)
     def repo_digests(self, ref): return ()
     def image_references(self): return ()
     def container_image_ids(self): return frozenset()
@@ -278,7 +276,7 @@ class Builder:
                 lifecycle.LABEL_BUILD_ORIGIN: "local",
                 lifecycle.LABEL_PARENT_ARTIFACT_KIND: lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID,
                 lifecycle.LABEL_PARENT_ARTIFACT: self.docker.image_id(parent_reference),
-                lifecycle.LABEL_WHEEL_SHA256: self.docker.label(parent_reference, lifecycle.LABEL_WHEEL_SHA256),
+                lifecycle.LABEL_WHEEL_SHA256: self.docker.images[parent_reference][1].get(lifecycle.LABEL_WHEEL_SHA256),
             })
         self.docker.images[candidate_reference] = (
             "sha256:" + f"{len(self.docker.images) + 1:064x}", labels

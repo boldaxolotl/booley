@@ -117,6 +117,10 @@ class InitContext:
     fix_line_endings: bool = False
     interactive: bool = field(default_factory=sys.stdin.isatty)
     show_step_banners: bool = True
+    #: Never rewrite an existing tracked file: steps that would only inspect and
+    #: report (``warn``) what ``booley init`` applies. Creating missing files, Git
+    #: configuration, ``.git/`` content and untracked projections stay applied.
+    preserve_tracked_content: bool = False
     #: Display number of the last step banner printed by :meth:`step_banner`.
     #: A step's *identity* is its ``record`` key, never this number.
     _step_no: int = 0

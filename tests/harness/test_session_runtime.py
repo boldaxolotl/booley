@@ -8,8 +8,10 @@ rather than a hand-written dict.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
@@ -21,7 +23,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import health, issuance_invalidation, session_spec
+from booley.runtime import health, issuance_invalidation, platform_paths, session_spec
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.session_admission import (
@@ -913,8 +915,11 @@ class TestPrepareMigration:
 
         run.assert_not_called()
 
-    def test_windows_host_paths_normalize_slashes_and_drive_case(self) -> None:
-        assert sr._same_host_path(
+    def test_windows_host_paths_normalize_slashes_and_drive_case(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+        assert platform_paths.same_host_path(
             "c:/workplace/picorv32/.devcontainer/devcontainer.json",
             Path(r"C:\workplace\picorv32\.devcontainer\devcontainer.json"),
         )
@@ -1043,6 +1048,7 @@ class TestIssuedRuntimeDriftFix:
         labels["devcontainer.config_file"] = (
             "c:/workplace/picorv32/.devcontainer/devcontainer.json"
         )
+        monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
         monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
         monkeypatch.setattr(sr, "session_container_name", lambda _workspace: "canonical")
 
@@ -1098,6 +1104,8 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
         patch.object(sr.idk, "image_exists", return_value=True),
         # No image metadata, as when the inspect finds nothing (no Docker CLI call).
         patch.object(sr.idk, "inspect_image_metadata", return_value=None),
+        # The stale-container probe resolves the image ID through the Docker helper.
+        patch.object(sr.idk, "image_id", return_value=None),
         lifecycle_reconcile,
         patch(
             "booley.runtime.session_issuance.validate",
@@ -2864,6 +2872,7 @@ class TestImageDriftWarning:
                     "io.booley.sandbox.selection-fingerprint": fingerprint,
                 },
                 {},
+                (),
             )
 
         monkeypatch.setattr(sr.idk, "inspect_image_metadata", inspect)
@@ -2955,6 +2964,7 @@ class TestStaleBooleyBakeWarning:
                 "io.booley.wheel.source-fingerprint": "stale",
             },
             {},
+            (),
         )
         monkeypatch.setattr(sr.image_identity, "current_host_build_identity", lambda: expected)
         monkeypatch.setattr(sr.idk, "inspect_image_metadata", lambda *_args, **_kwargs: observed)
@@ -3169,8 +3179,9 @@ class TestDownAndStatus:
 class TestSessionsOnStaleImage:
     """F-9: `booley init` rebuilds the tag, but a container born from the old
     image keeps serving it — and the tag being unchanged is what hides that. The
-    probe therefore compares resolved image IDs, and must stay silent (never
-    raise) on any Docker hiccup."""
+    probe therefore compares resolved image IDs. It only gates an advisory
+    warning, so it never raises: a missing image is silent, and a Docker failure
+    resolving the image logs a warning and reports no stale sessions."""
 
     NEW_ID = "sha256:aaa"
     OLD_ID = "sha256:bbb"
@@ -3203,6 +3214,7 @@ class TestSessionsOnStaleImage:
             return subprocess.CompletedProcess([], 1, "", "")
 
         monkeypatch.setattr(sr, "_run", fake_run)
+        monkeypatch.setattr(sr.idk, "image_id", lambda _image: image_id)
 
     def test_our_session_on_the_old_image_is_reported(self, workspace: Path, monkeypatch):
         ours = sr.session_container_name(workspace)
@@ -3215,6 +3227,33 @@ class TestSessionsOnStaleImage:
             names="goofy_ellis\n",
             container_ids={"goofy_ellis": self.OLD_ID},
             folders={"goofy_ellis": str(workspace)},
+        )
+        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == ["goofy_ellis"]
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="needs a case-sensitive filesystem")
+    def test_vscode_container_for_case_variant_folder_is_ignored(
+        self, workspace: Path, monkeypatch
+    ):
+        # `<tmp>/I2C` differs from the workspace `<tmp>/i2c` only in case: on Linux
+        # that is another directory, so its editor container is not this workspace's.
+        self._patch_docker(
+            monkeypatch,
+            names="goofy_ellis\n",
+            container_ids={"goofy_ellis": self.OLD_ID},
+            folders={"goofy_ellis": str(workspace.parent / "I2C")},
+        )
+        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_vscode_container_for_symlinked_folder_is_reported(self, workspace: Path, monkeypatch):
+        # A label naming the workspace through a symlink is the same directory.
+        alias = workspace.parent / "alias"
+        alias.symlink_to(workspace, target_is_directory=True)
+        self._patch_docker(
+            monkeypatch,
+            names="goofy_ellis\n",
+            container_ids={"goofy_ellis": self.OLD_ID},
+            folders={"goofy_ellis": str(alias)},
         )
         assert sr.sessions_on_stale_image(workspace, self.IMAGE) == ["goofy_ellis"]
 
@@ -3245,12 +3284,23 @@ class TestSessionsOnStaleImage:
         )
         assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
 
-    def test_missing_docker_is_silent(self, workspace: Path, monkeypatch):
+    def test_docker_failure_warns_and_reports_no_stale_sessions(
+        self, workspace: Path, monkeypatch, caplog
+    ):
+        # Every Docker seam (sr._run, the image-ID helper's _run_docker) sees a
+        # missing Docker: the probe stays advisory, but says why it is blind.
         def no_docker(*_a, **_k):
             raise FileNotFoundError("docker")
 
         monkeypatch.setattr(sr, "_run", no_docker)
-        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
+        monkeypatch.setattr(sr.idk, "_run_docker", no_docker)
+        with caplog.at_level("WARNING", logger=sr.logger.name):
+            assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert self.IMAGE in warnings[0]
+        assert "cannot check running Sandboxes" in warnings[0]
+        assert "docker" in warnings[0]
 
     def test_failed_container_inspect_is_silent(self, workspace: Path, monkeypatch):
         # Container vanished between `docker ps` and the inspect: no ID to
@@ -4681,7 +4731,7 @@ def test_project_sandbox_resolution_consumed_claim_status(
     fixture = project_sandbox_resolution
     state = fixture.documents.pop(fixture.state["Id"])
     assert real_claim_vscode_start(workspace, run=fixture.run)
-    claim = session_admission._store().root / session_admission._claim_filename(str(workspace))
+    claim = session_admission.claim_store().path(str(workspace))
     assert claim.exists()
     fixture.documents[state["Id"]] = state
     monkeypatch.setattr(
@@ -4699,7 +4749,7 @@ def test_project_sandbox_resolution_never_touches_claim_store(
     from booley.runtime import session_admission
 
     store = Mock(side_effect=AssertionError("structural selection must be read-only"))
-    monkeypatch.setattr(session_admission, "_store", store)
+    monkeypatch.setattr(session_admission, "claim_store", store)
     assert sr.resolve_running_sandbox(workspace).name == "editor"
     store.assert_not_called()
 

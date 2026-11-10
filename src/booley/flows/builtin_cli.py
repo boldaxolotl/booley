@@ -109,10 +109,12 @@ def execute_cli(
     invocation = CliInvocation.of(flow)
     request, quiet = _parse_cli(flow, argv, invocation)
     flow._start_invocation(adapter or StandaloneFlowExecution(), request)
-    if not invocation.transport and not flow._acceptance_recorder.acceptance_identity():
-        from booley.harness.cli_goal_notice import warn_cli_goal_recording
-
-        warn_cli_goal_recording(request.work_dir)
+    if (
+        not invocation.transport
+        and not flow._acceptance_recorder.acceptance_identity()
+        and invocation.goal_recording_advisory is not None
+    ):
+        invocation.goal_recording_advisory(request.work_dir)
     flow._raw_argv = argv if argv is not None else sys.argv[1:]
     flow._console_publication_requested = True
     if (

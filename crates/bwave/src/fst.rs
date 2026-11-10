@@ -1473,6 +1473,11 @@ impl<'a> ChunkParser<'a> {
                 self.local_dump_enabled = Some(true);
                 self.ir.final_dump_enabled = Some(true);
             }
+            b'$' if line.starts_with(b"$enddefinitions") => {
+                return Err(VcdParseError::SecondHeader {
+                    offset: input_offset,
+                });
+            }
             _ => {}
         }
         Ok(())
@@ -2343,6 +2348,10 @@ impl FstBuildHandler {
                     self.state.in_dumpoff = true;
                 } else if end >= 7 && &line[..7] == b"$dumpon" {
                     self.state.in_dumpoff = false;
+                } else if line.starts_with(b"$enddefinitions") {
+                    return Err(VcdParseError::SecondHeader {
+                        offset: line_offset,
+                    });
                 }
             }
             _ => {}
@@ -3004,6 +3013,42 @@ mod build_tests {
         assert_timestamp_error(b"#", TimestampError::MissingDigits);
         assert_timestamp_error(b"#18446744073709551616", TimestampError::Overflow);
         assert_timestamp_error(b"#12junk", TimestampError::TrailingCharacters);
+    }
+
+    #[test]
+    fn second_header_in_body_is_rejected() {
+        let text = b"$scope module tb $end\n\
+$var wire 1 ! sig $end\n\
+$upscope $end\n\
+$enddefinitions $end\n\
+#0\n1!\n#5\n0!\n\
+$scope module tb $end\n\
+$var wire 1 ! sig $end\n\
+$upscope $end\n\
+$enddefinitions $end\n\
+#0\n1!\n";
+        let mut header_reader = Cursor::new(&text[..]);
+        let header = parse_header(&mut header_reader);
+        let message = "input holds a second VCD header; was the dump reopened?";
+        for parallel in [false, true] {
+            let test_number = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let output = std::env::temp_dir().join(format!(
+                "bwave_second_header_{}_{}.fst",
+                std::process::id(),
+                test_number
+            ));
+            let mut handler = FstBuildHandler::new(&header, None, &output).unwrap();
+            let mut body = Cursor::new(&text[header.body_offset as usize..]);
+            let result = if parallel {
+                handler.parse_bytes_parallel(&mut body, None, 2, 2, 2, 16, 1 << 20, None)
+            } else {
+                handler.parse_bytes(&mut body, None)
+            };
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains(message), "parallel={parallel}: {error}");
+            drop(handler);
+            let _ = std::fs::remove_file(output);
+        }
     }
 
     #[test]
