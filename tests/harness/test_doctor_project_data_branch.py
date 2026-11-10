@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.harness import doctor
+from booley.runtime.worktree_evidence import tracked_booley_paths
 from tests.harness.git_support import git_stdout as _git
 
 
@@ -345,7 +347,7 @@ def test_common_state_check_skips_a_worktree_it_cannot_scan(
     def fail(_worktree: Path, _booley_dir: Path) -> list[str]:
         raise error
 
-    monkeypatch.setattr(doctor, "_untracked_common_paths", fail)
+    monkeypatch.setattr(doctor, "untracked_common_paths", fail)
 
     findings = _common_state_findings(tmp_path / "project")
 
@@ -362,14 +364,14 @@ def test_common_state_check_skips_a_worktree_removed_while_scanning(
     def vanish(_worktree: Path, _booley_dir: Path) -> list[str]:
         raise FileNotFoundError
 
-    monkeypatch.setattr(doctor, "_untracked_common_paths", vanish)
+    monkeypatch.setattr(doctor, "untracked_common_paths", vanish)
 
     assert [f.severity for f in _common_state_findings(tmp_path / "project")] == ["pass"]
 
 
 def test_tracked_paths_lookup_raises_with_git_stderr_on_failure(tmp_path: Path) -> None:
-    with pytest.raises(doctor.subprocess.CalledProcessError) as raised:
-        doctor._tracked_booley_paths(tmp_path, tmp_path / ".booley")
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        tracked_booley_paths(tmp_path, tmp_path / ".booley")
 
     assert raised.value.stderr
 
@@ -379,7 +381,7 @@ def test_common_state_warning_counts_paths_beyond_the_shown_limit(
 ) -> None:
     _linked_worktree(tmp_path, versioned=False, paired=False)
     paths = [f"common{index}" for index in range(7)]
-    monkeypatch.setattr(doctor, "_untracked_common_paths", lambda _worktree, _dir: paths)
+    monkeypatch.setattr(doctor, "untracked_common_paths", lambda _worktree, _dir: paths)
 
     warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
 
