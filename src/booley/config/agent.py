@@ -49,8 +49,9 @@ _DEFAULT_PROVIDER = "claude"
 #                  agents silently fall back to (and bill) the subscription.
 #
 # ``gateway`` routes Codex only. It is honored inside a Sandbox: set by the
-# ``BOOLEY_PRIMARY_AUTH=gateway`` hand-off (plus BOOLEY_GATEWAY_URL / BOOLEY_GATEWAY_TOKEN)
-# or, for Codex, in ``[agent.auth]``.
+# ``BOOLEY_PRIMARY_AUTH=gateway`` hand-off of a hand-written spec (plus BOOLEY_GATEWAY_URL /
+# BOOLEY_GATEWAY_TOKEN) or, for Codex, in ``[agent.auth]`` (a Booley-issued Sandbox
+# forwards the gateway settings and records the policy in ``BOOLEY_AGENT_CLIS``).
 _VALID_AUTH_MODES = ("auto", "subscription", "api_key")
 _ENV_AUTH_MODES = (*_VALID_AUTH_MODES, GATEWAY_AUTH)
 _DEFAULT_AUTH = "auto"
@@ -69,13 +70,14 @@ def decode_cli_policies(raw: str) -> dict[str, str]:
     """Parse a ``BOOLEY_AGENT_CLIS`` value strictly; empty text is the empty record.
 
     Raises ``ValueError`` for an unknown CLI, a duplicate, a malformed pair or a policy
-    other than ``auto|subscription|api_key`` (``gateway`` is refused so the record
-    cannot switch Codex to the gateway; the Sandbox hand-off alone does that).
+    other than ``auto|subscription|api_key``; ``gateway`` is accepted for ``codex`` only
+    (the gateway routes Codex, never Claude).
     """
     policies: dict[str, str] = {}
     for pair in filter(None, (part.strip() for part in raw.split(","))):
         cli, sep, policy = pair.partition("=")
-        if not sep or cli not in AGENT_CLIS or policy not in _VALID_AUTH_MODES:
+        gateway_codex = cli == "codex" and policy == GATEWAY_AUTH
+        if not sep or cli not in AGENT_CLIS or not (policy in _VALID_AUTH_MODES or gateway_codex):
             raise ValueError(f"malformed Agent CLI record entry {pair!r}")
         if cli in policies:
             raise ValueError(f"duplicate Agent CLI {cli!r} in the record")
@@ -389,15 +391,15 @@ def _auth_policies(
 ) -> dict[str, str]:
     """One policy per listed CLI: the declared one, then the environment hand-off."""
     policies = _declared_policies(declared, clis)
-    if not _inside_container():  # the gateway is honored in a Sandbox only
-        policies = {cli: _DEFAULT_AUTH if p == GATEWAY_AUTH else p for cli, p in policies.items()}
-    if gateway_handoff_active():
+    if lazy and (recorded := _recorded_cli_policies()):  # an issued spec: the record rules
+        policies.update({cli: p for cli, p in recorded.items() if cli in policies})
+    elif gateway_handoff_active():
         if "codex" in policies:
             policies["codex"] = GATEWAY_AUTH
-    elif lazy and (recorded := _recorded_cli_policies()):
-        policies.update({cli: p for cli, p in recorded.items() if cli in policies})
     elif lazy and env_auth_handoff() is not None:
         policies[default_cli] = _env_auth()  # a hand-written spec without the CLI record
+    if not _inside_container():  # the gateway is honored in a Sandbox only
+        policies = {cli: _DEFAULT_AUTH if p == GATEWAY_AUTH else p for cli, p in policies.items()}
     return policies
 
 
@@ -680,14 +682,36 @@ def env_auth_handoff() -> str | None:
     return (raw or "").strip().lower() or None
 
 
-def gateway_handoff_active() -> bool:
-    """Whether ``BOOLEY_PRIMARY_AUTH=gateway`` is in force.
+def sandbox_cli_policy(cli: str) -> str | None:
+    """The policy in force for *cli* in this Sandbox, ``None`` when it is not listed.
 
-    Honored only inside a container: a Booley-issued Sandbox always takes its
-    policy from ``booley.toml`` and never receives BOOLEY_GATEWAY_*, so an
-    export on the host must not silently change what a host-side run bills.
+    A Booley-issued spec carries the ``BOOLEY_AGENT_CLIS`` record, which is then
+    authoritative per CLI. Without a (decodable) record, a hand-written spec, the
+    Sandbox-wide ``BOOLEY_PRIMARY_AUTH`` hand-off applies to every CLI.
     """
-    return env_auth_handoff() == GATEWAY_AUTH and _inside_container()
+    if recorded := _recorded_cli_policies():
+        return recorded.get(cli)
+    return env_auth_handoff()
+
+
+def gateway_handoff_active() -> bool:
+    """Whether Codex is routed through the gateway in this Sandbox.
+
+    Honored only inside a container: an export on the host must not silently change
+    what a host-side run bills. A hand-written spec turns it on with the Sandbox-wide
+    ``BOOLEY_PRIMARY_AUTH=gateway``; a Booley-issued spec only when its per-CLI record
+    puts ``codex`` on the gateway, whichever CLI is the default.
+    """
+    return sandbox_cli_policy("codex") == GATEWAY_AUTH and _inside_container()
+
+
+def issued_codex_gateway() -> bool:
+    """Whether this is a Booley-issued Sandbox whose record puts Codex on the gateway.
+
+    The condition under which every Claude process Booley starts or configures has the
+    gateway settings scrubbed; a hand-written spec (no record) keeps its environment.
+    """
+    return _inside_container() and _recorded_cli_policies().get("codex") == GATEWAY_AUTH
 
 
 def _env_auth() -> str:
@@ -750,13 +774,7 @@ def project_credential_policies(
     clis = declared.clis or (default,)
     if default not in clis:
         raise BackendConfigError(f"booley.toml [agent] default {default!r} is not in [agent] clis")
-    policies = _declared_policies(declared, clis)
-    if GATEWAY_AUTH in policies.values():  # whichever listed CLI asks for it
-        raise BackendConfigError(
-            "a Booley-issued Sandbox cannot route Codex through the gateway yet; "
-            "use a hand-written Sandbox spec with BOOLEY_PRIMARY_AUTH=gateway"
-        )
-    return ProjectCredentialPolicies(clis, default, policies)
+    return ProjectCredentialPolicies(clis, default, _declared_policies(declared, clis))
 
 
 def project_credential_policy(

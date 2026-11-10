@@ -538,3 +538,70 @@ def test_no_cli_flag_launches_default_cli(tmp_path, monkeypatch):
 
     assert executed == [("codex", ["codex", "--last"])] * 2
     assert booley_cli._parse_cli().cli is None
+
+
+_GATEWAY_VALUES = {
+    "BOOLEY_GATEWAY_URL": "https://gw.example/v1",
+    "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_GATEWAY_TOKEN",
+    "BOOLEY_GATEWAY_TOKEN_COMMAND": "print-token",
+    "BOOLEY_GATEWAY_MODEL": "gpt-5.1",
+    "BOOLEY_GATEWAY_EFFORT": "high",
+}
+
+
+def _gateway_sandbox(monkeypatch, *, record):
+    """A container process with the gateway settings set; *record* is ``BOOLEY_AGENT_CLIS``."""
+    from booley.config import agent as agent_config
+
+    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    for name, value in _GATEWAY_VALUES.items():
+        monkeypatch.setenv(name, value)
+    # Register the marker for restoration: the launch writes it straight into os.environ.
+    monkeypatch.setenv("BOOLEY_HIDDEN_GATEWAY", "unset-me")
+    monkeypatch.delenv("BOOLEY_HIDDEN_GATEWAY")
+    if record is None:
+        monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+    else:
+        monkeypatch.setenv("BOOLEY_AGENT_CLIS", record)
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+
+
+def _exec_environment(tmp_path, monkeypatch) -> dict[str, str]:
+    """``booley chat --cli claude`` and the environment it would exec with."""
+    import os
+
+    _configure_settings(monkeypatch, default_cli="claude", clis=("claude", "codex"))
+    seen: dict[str, str] = {}
+
+    def execute(_executable, _argv):
+        seen.update(os.environ)
+        raise _ExecCalledError
+
+    monkeypatch.setattr(chat_cmd.os, "execvp", execute)
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(agent_args=[], cli="claude"), tmp_path)
+    return seen
+
+
+def test_claude_chat_launch_drops_gateway_settings(tmp_path, monkeypatch):
+    _gateway_sandbox(monkeypatch, record="claude=subscription,codex=gateway")
+
+    seen = _exec_environment(tmp_path, monkeypatch)
+
+    assert not [name for name in _GATEWAY_VALUES if name in seen]
+    assert seen["BOOLEY_HIDDEN_GATEWAY"] == "1"
+
+
+def test_handwritten_gateway_claude_chat_keeps_gateway_settings(tmp_path, monkeypatch):
+    """Guard: a hand-written spec (no record) keeps today's Claude environment."""
+    from booley.runtime import _claude_backend
+
+    _gateway_sandbox(monkeypatch, record=None)
+
+    seen = _exec_environment(tmp_path, monkeypatch)
+
+    assert {name: seen[name] for name in _GATEWAY_VALUES} == _GATEWAY_VALUES
+    assert "BOOLEY_HIDDEN_GATEWAY" not in seen
+    overrides = _claude_backend._claude_env_overrides("subscription")
+    assert not [name for name in _GATEWAY_VALUES if name in overrides]
