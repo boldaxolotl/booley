@@ -15,11 +15,9 @@ human ``argv`` stored here is for display and never matched against a process.
 from __future__ import annotations
 
 import contextlib
-import io
 import os
 import signal
 import sys
-import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
@@ -27,7 +25,7 @@ from typing import BinaryIO, TextIO
 
 from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
-from booley.presentation.colors import strip_ansi
+from booley.presentation.job_log_stream import JobLogStream
 from booley.runtime import job_records
 from booley.runtime.handles import register_job
 from booley.runtime.pid import (
@@ -63,58 +61,6 @@ def standalone_jobs_dir(booley_dir: Path) -> Path:
 def standalone_log_path(booley_dir: Path, run_id: str) -> Path:
     """Where the output of one Standalone Job is copied."""
     return standalone_log_root(booley_dir) / run_id / JOB_LOG_NAME
-
-
-class JobLogStream(io.TextIOBase):
-    """A text stream that shows everything on *original* and copies it to ``job.log``.
-
-    The terminal sees the exact same writes. The log gets the text without ANSI
-    styling. Terminal identity (``isatty``, ``fileno``, encoding) is the original's,
-    so progress rendering and color decisions do not change.
-    """
-
-    def __init__(self, original: TextIO, log: BinaryIO) -> None:
-        super().__init__()
-        self._original = original
-        self._log: BinaryIO | None = log
-        self._lock = threading.Lock()
-
-    @property
-    def encoding(self) -> str:  # type: ignore[override]  # read-only view of the terminal's
-        return self._original.encoding
-
-    @property
-    def errors(self) -> str | None:  # type: ignore[override]  # read-only view of the terminal's
-        return self._original.errors
-
-    def write(self, text: str, /) -> int:
-        written = self._original.write(text)
-        self.log_only(text)
-        return written
-
-    def log_only(self, text: str) -> None:
-        """Append *text* to ``job.log`` without touching the terminal."""
-        with self._lock:
-            if self._log is None:
-                return
-            try:
-                self._log.write(strip_ansi(text).encode("utf-8", errors="replace"))
-            except OSError:
-                self._log = None  # a full disk must not fail the run
-
-    def flush(self) -> None:
-        # Finalization flushes too, by which time the terminal may be closed.
-        with contextlib.suppress(ValueError):
-            self._original.flush()
-
-    def isatty(self) -> bool:
-        return self._original.isatty()
-
-    def fileno(self) -> int:
-        return self._original.fileno()
-
-    def writable(self) -> bool:
-        return True
 
 
 def _exit_code(code: object) -> int:
