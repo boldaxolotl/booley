@@ -169,7 +169,6 @@ figcaption b { color: var(--ink); font-weight: 650; }
 .dep .note { font-size: 14px; fill: var(--ink-2); font-style: italic; }
 .dep .wip { font-size: 13px; fill: var(--ink-2); }
 .dep .mark { font-size: 13px; font-weight: 780; letter-spacing: 0.08em; }  /* chip marking */
-.dep .pn { font-size: 10px; fill: var(--ink-2); }                         /* pin number */
 .dep .mach { fill: var(--paper); stroke: var(--ink); stroke-width: 1.6; }
 .dep .bx { fill: var(--paper); stroke: var(--ink); stroke-width: 1.2; }
 .dep .chip { fill: var(--paper); stroke: var(--ink); stroke-width: 2; }
