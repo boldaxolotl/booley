@@ -4,7 +4,7 @@
 ADR 0019/0022: FuseSoC+Edalize own the *build* (``fusesoc run --setup`` →
 ``make`` produces ``V<top>``); Booley owns the *run* — it executes that binary,
 optionally under a live B-Wave trace, and re-emits the ``[SIM_SUMMARY]``
-verdict sentinel the criteria layer scrapes.
+summary line for log and agent consumption.
 
 This module is the edalize successor to the retired legacy Verilator
 run-half. It is deliberately a **self-contained subprocess entry-point**

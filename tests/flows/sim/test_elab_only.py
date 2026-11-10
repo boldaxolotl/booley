@@ -21,8 +21,7 @@ from booley.flows.sim.build import (
     build_stage_script,
     classify_build_outcome,
 )
-from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow, TargetResult
-from booley.flows.sim.flow import TestResult as SimTestResult
+from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
@@ -175,17 +174,30 @@ def test_elab_only_rejects_run_stage_arguments(
     assert "use --mode simulate" in result.report_text
 
 
-def test_standalone_requires_elab_only(tmp_path: Path) -> None:
-    flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--standalone"])
+def test_standalone_requires_elab_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    (tmp_path / "sim.core").write_text(
+        "CAPI=2:\nname: ::sim:0\ntargets:\n  sim_dut:\n    flow: sim\n"
+        "    flow_options: {tool: verilator}\n    toplevel: tb_demo\n",
+        encoding="utf-8",
+    )
 
-    with flow.publication_resources:
-        result = flow._run()
+    result = SimulateFlow().execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--target",
+            "sim_dut",
+            "--standalone",
+        ]
+    )
 
-    assert result is not None
     assert result.exit_code == EXIT_ERROR
-    assert result.detail["mode"] == "simulate"
-    assert "--mode elab-only-standalone" in result.report_text
+    assert result.outcome.detail["mode"] == "simulate"
+    assert "--standalone alone is invalid" in result.outcome.report_text
+    assert "--mode elab-only-standalone" in result.outcome.report_text
 
 
 def test_coverage_requires_simulation_mode(
@@ -771,9 +783,8 @@ def test_elab_only_branch_skips_test_and_cocotb_discovery(
         ),
     )
     monkeypatch.setattr(
-        flow,
-        "_resolve_run_targets",
-        lambda: pytest.fail("test discovery ran in elab-only mode"),
+        "booley.flows.sim.flow._get_test_names",
+        lambda *_args, **_kwargs: pytest.fail("test discovery ran in elab-only mode"),
     )
     monkeypatch.setattr(
         flow,
@@ -785,45 +796,6 @@ def test_elab_only_branch_skips_test_and_cocotb_discovery(
         result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
-
-
-@pytest.mark.parametrize(
-    ("outcomes", "prior", "expected"),
-    [
-        ([BuildOutcome(True, "pass", None)], False, True),
-        ([BuildOutcome(True, "fail", "design")], True, False),
-        (
-            [
-                BuildOutcome(False, None, "infrastructure"),
-                BuildOutcome(True, "fail", "design"),
-            ],
-            True,
-            False,
-        ),
-        ([BuildOutcome(False, None, "infrastructure")], True, True),
-        ([], True, True),
-    ],
-)
-def test_full_sim_records_only_authenticated_build_verdicts(
-    tmp_path: Path,
-    outcomes: list[BuildOutcome],
-    prior: bool,
-    expected: bool,
-) -> None:
-    flow = _flow_with_state(tmp_path, ["sim_dut"])
-    flow.state.criteria["elab_pass_sim_dut"].met = prior
-    tests = [
-        SimTestResult(
-            name=f"attempt-{index}",
-            passed=False,
-            build_outcome=outcome,
-        )
-        for index, outcome in enumerate(outcomes)
-    ]
-
-    flow._record_elab_criterion(TargetResult(target="sim_dut", tests=tests))
-
-    assert flow.state.criteria["elab_pass_sim_dut"].met is expected
 
 
 @pytest.mark.parametrize("mode", ["elab-only", "elab-only-standalone"])

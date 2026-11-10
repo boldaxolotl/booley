@@ -51,8 +51,8 @@ from booley.core.boundary import (
 )
 
 # Verdict vocabulary for a reconciled test — a strict subset of simulate's
-# per-test verdict enum (``_test_verdict``): "pass" / "fail" map directly,
-# "inconclusive" sets the TestResult inconclusive flag.
+# per-test verdict enum: "pass" / "fail" map directly, "inconclusive" marks
+# the Test Run inconclusive.
 VERDICT_PASS = "pass"
 VERDICT_FAIL = "fail"
 VERDICT_INCONCLUSIVE = "inconclusive"

@@ -43,7 +43,6 @@ def test_planning_reports_the_unresolvable_target_by_name(tmp_path, monkeypatch)
     )
 
     assert (units, errors) == ([], ["sim: no core declares Target 'sim'"])
-    assert flow._test_runs.planned_groups == {}
 
 
 def test_a_work_unit_whose_target_plan_fails_is_a_planning_error(tmp_path, monkeypatch):
