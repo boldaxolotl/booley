@@ -22,6 +22,13 @@ sys.path.insert(0, str(_SOURCE_ROOT / "src"))
 
 pytest_plugins = ["tests.timeout_evidence", "tests.timeout_headroom"]
 
+# Temporary (#3329): a bare ``pytest tests/`` skips the Goal Mode unit tests, and CI
+# omits ``src/booley/goals`` from coverage (pyproject.toml) and never selects these
+# modules (.github/scripts/ci_goal_tests.py). Remove all three when Goal Mode is
+# removed (#3276), or when metrics-driven development fully replaces it. Naming the
+# path still collects them: ``pytest tests/goals``.
+collect_ignore = ["goals"]
+
 
 @pytest.fixture(autouse=True)
 def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -> None:

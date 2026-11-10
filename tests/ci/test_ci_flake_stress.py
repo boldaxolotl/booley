@@ -26,7 +26,7 @@ def test_selects_surviving_test_modules_and_marks_added_ones(tmp_path: Path) -> 
         ("D", ("tests/runtime/test_gone.py",)),
         ("R087", ("tests/old/test_moved.py", "tests/new/test_moved.py")),
         ("C100", ("tests/a/test_src.py", "tests/a/test_copy.py")),
-        ("A", ("tests/goals/finish_test.py",)),
+        ("A", ("tests/goals/finish_test.py",)),  # CI never runs Goal Mode unit tests
         ("M", ("tests/conftest.py",)),
         ("A", ("tests/fixtures/cocotb_counter/test_counter.py",)),
         ("M", ("src/booley/test_like_name.py",)),
@@ -55,7 +55,6 @@ def test_selects_surviving_test_modules_and_marks_added_ones(tmp_path: Path) -> 
         "tests/runtime/test_pid.py": False,
         "tests/new/test_moved.py": False,
         "tests/a/test_copy.py": True,
-        "tests/goals/finish_test.py": True,
         "tests/bwave/test_broken.py": True,
     }
 

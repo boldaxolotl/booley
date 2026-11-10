@@ -152,11 +152,9 @@ using the same exact-union check as the Windows shards.
 No pytest marker or change-classifier category selects recovery tests.
 `pyproject.toml` registers only the `string_parameter_eda`, `native_bwave`, and
 `slow` markers, and every complete-suite run uses `-m "not native_bwave"`.
-Whenever a pull request runs the `test` job, its Ubuntu 3.11 shards and the
-Ubuntu 3.14 `coverage-shards` jobs each run every Goal recovery and authority
-permutation, and its Windows 3.14 shards together run the same set except
-POSIX-only cases; all of them use the same mark expression. The Windows 3.11
-and 3.13 compatibility legs run a fixed focused subset. The change classifier
+Whenever a pull request runs the `test` job, its complete-suite legs use the
+same mark expression and skip `tests/goals/` (see "Goal Mode unit tests"). The
+Windows 3.11 and 3.13 compatibility legs run a fixed focused subset. The change classifier
 (`required_jobs` in `.github/scripts/ci_changes.py`) selects the `test` job for any path classified
 `python_source`, `python_tests`, `workflow`, `packaging`, `release`, or
 `ci_tooling`, and for unclassified paths. `ci_tooling` is
@@ -170,11 +168,22 @@ documentation. They add `package-artifacts` when `README.md` changed, and
 `main` selects every job (a `main` push runs only its narrow tier), and the
 weekly `full-python-matrix.yml` workflow runs the same mark expression.
 
-Goal and review code select standard and RISC-V image validation. Goal tests
-(`tests/goals/`) select standard image validation only. The RISC-V prefixes are
+Goal and review code select standard and RISC-V image validation. The RISC-V
+prefixes are
 `.github/actions/prepare-picorv32-demo/`, `demo/`, `src/booley/goals/`,
 `src/booley/review/`, `src/booley/evidence/`, and
 `tests/fixtures/goal_mode_smoke/`.
+
+### Goal Mode unit tests
+
+Temporary, until Goal Mode removal (#3276). `tests/` collection skips
+`tests/goals/` (`collect_ignore` in `tests/conftest.py`); run them by naming the
+path, for example `pytest tests/goals`. Goal source (`src/booley/goals/`) is
+omitted from coverage. `docs-check` and `flake-stress` never select those
+modules. A `tests/goals/` change selects only `lint`, unless a test outside
+`tests/goals/` imports that file; then it is an ordinary test change. The
+goal-mode image smoke no longer runs: `tests/smoke/test_goal_mode_image_smoke.py`
+is opt-in only, via `BOOLEY_GOAL_MODE_SMOKE=1`.
 
 ## Expensive test inventory
 

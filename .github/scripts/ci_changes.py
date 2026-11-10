@@ -18,6 +18,7 @@ from ci_flake_stress import (
     plan_stress,
     stress_enabled,
 )
+from ci_goal_tests import GOAL_TESTS_PREFIX, is_shared_goal_path, shared_goal_modules
 from docker_base_contract import PROJECT_METADATA, contract_contents, stable_base_inputs
 from picorv32_ci_inputs import RISCV_IMAGE_FILES, RISCV_IMAGE_PREFIXES
 
@@ -27,6 +28,7 @@ CATEGORIES = (
     "site",
     "python_source",
     "python_tests",
+    "goal_tests",
     "image_tests",
     "release_sensitive",
     "standard_image",
@@ -145,7 +147,6 @@ _RELEASE_SENSITIVE_PREFIXES = (
     "src/booley/mcp/",
     "src/booley/runtime/",
     "src/booley/goals/",
-    "tests/goals/",
     "src/booley/review/",
     "src/booley/criteria/unbound_ledger.py",
     "src/booley/mcp/unbound_recorder.py",
@@ -296,9 +297,17 @@ def _release_categories(path: str) -> set[str]:
     return set()
 
 
-def _path_categories(path: str, *, contract_neutral: bool = False) -> set[str]:
+def _path_categories(
+    path: str,
+    *,
+    contract_neutral: bool = False,
+    shared_goal_modules: frozenset[str] | None = None,
+) -> set[str]:
     if path in _RENOVATE_FILES:
         return {"renovate"}
+    if path.startswith(GOAL_TESTS_PREFIX) and not _is_shared_goal_test(path, shared_goal_modules):
+        # CI never runs Goal Mode unit tests (#3329); Ruff in `lint` still checks them.
+        return {"goal_tests"}
     categories = _documentation_categories(path)
     if path in _PACKAGING_FILES:
         categories.add("packaging")
@@ -337,17 +346,36 @@ def _path_categories(path: str, *, contract_neutral: bool = False) -> set[str]:
     return categories
 
 
+def _is_shared_goal_test(path: str, shared_goal_modules: frozenset[str] | None) -> bool:
+    """Return whether a test outside ``tests/goals/`` depends on this Goal test path.
+
+    ``None`` means the caller has no import facts, so every Goal path counts as shared
+    and keeps selecting the test lane (fail safe).
+    """
+    return shared_goal_modules is None or is_shared_goal_path(path, shared_goal_modules)
+
+
 def classify(
     paths: Iterable[str],
     *,
     force_all: bool = False,
     riscv_measurement: str = "automatic",
     contract_neutral: frozenset[str] = frozenset(),
+    shared_goal_modules: frozenset[str] | None = None,
 ) -> set[str]:
-    """Classify changed paths; ``contract_neutral`` paths never select the stable base."""
+    """Classify changed paths.
+
+    ``contract_neutral`` paths never select the stable base. ``shared_goal_modules`` names
+    the ``tests.goals`` modules that tests outside ``tests/goals/`` import: only those
+    Goal test paths select the test lane (``None``: all of them do).
+    """
     categories: set[str] = set()
     for path in paths:
-        path_categories = _path_categories(path, contract_neutral=path in contract_neutral)
+        path_categories = _path_categories(
+            path,
+            contract_neutral=path in contract_neutral,
+            shared_goal_modules=shared_goal_modules,
+        )
         if not path_categories:
             categories.add("full")
         categories.update(path_categories)
@@ -407,6 +435,8 @@ def _path_category_jobs(categories: set[str]) -> set[str]:
     jobs = set(ALWAYS_JOBS) | _documentation_jobs(categories)
     if categories & {"python_source", "python_tests"}:
         jobs.update({"lint", "test", "test-verify", "coverage-shards", "coverage"})
+    if "goal_tests" in categories:
+        jobs.add("lint")
     if "rust" in categories:
         jobs.update({"rust-test", "bwave-integration", "package-artifacts", "bwave-smoke"})
     if "native_bwave" in categories:
@@ -686,6 +716,13 @@ def _stress_plan(
     return plan
 
 
+def _shared_goal_modules(repo: Path, paths: Iterable[str]) -> frozenset[str]:
+    """Return the Goal test modules outside tests import, computed only for Goal test diffs."""
+    if any(path.startswith(GOAL_TESTS_PREFIX) for path in paths):
+        return shared_goal_modules(repo)
+    return frozenset()
+
+
 def main() -> int:
     args = _parse_args()
     try:
@@ -703,6 +740,7 @@ def main() -> int:
                 force_all=args.force_all,
                 riscv_measurement=args.riscv_measurement,
                 contract_neutral=_contract_neutral_paths(args.repo, base, args.head, entries),
+                shared_goal_modules=_shared_goal_modules(args.repo, paths),
             )
         _write_outputs(
             args.github_output,
