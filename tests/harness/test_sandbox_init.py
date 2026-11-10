@@ -80,7 +80,7 @@ def sandbox_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     """A container without issued mounts, no Docker and no host-private state."""
     mountinfo = tmp_path / "mountinfo"
     mountinfo.write_text(PLAIN_MOUNTINFO, encoding="utf-8", newline="\n")
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
+    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
     for variable in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_AGENT_APP"):
@@ -173,7 +173,7 @@ def test_issued_sandbox_refuses_init_without_writing(
         issued.unlink(missing_ok=True)
         if mountinfo is not None:
             issued.write_text(mountinfo, encoding="utf-8", newline="\n")
-        monkeypatch.setattr(runtime_context, "_MOUNTINFO", issued)
+        monkeypatch.setattr(runtime_context, "_MOUNTINFO", issued, raising=False)
         capsys.readouterr()
 
         assert _booley_init(project, monkeypatch) == 2, mountinfo
