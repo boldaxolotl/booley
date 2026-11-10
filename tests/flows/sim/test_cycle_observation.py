@@ -8,7 +8,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
-from booley.flows.plan import FlowPlan, WorkUnitPlan, WorkUnitRole
+from booley.flows.plan import WorkUnitPlan, WorkUnitRole
 from booley.flows.sim.execution import SelectedTestRuns
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
@@ -305,9 +305,8 @@ def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeyp
     monkeypatch.setattr(flow, "_planned_baseline_request", request)
     with flow.publication_resources:
         authorized = flow._campaign_authorization_baselines(revision, ["sim_core"])
-        units, errors = flow._plan_cycle_count_baseline_units(["sim_core"], tests)
+        _, errors = flow._plan_cycle_count_baseline_units(["sim_core"], tests)
         assert errors == []
-        flow._flow_plan = FlowPlan("sim", "simulate", tuple(units))
         requests, _ = flow._plan_campaign_baselines(tmp_path / "inv", None, ["sim_core"], tests)
         assert len(requests) == 1
         assert [item.identity for item in authorized] == [handle.identity]

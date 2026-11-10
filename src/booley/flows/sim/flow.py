@@ -4152,7 +4152,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return format_flow_display_label(self._requested_targets(), tests=cast(list[str], tests))
 
     def _validate_mode_args(self) -> EndpointOutcome | None:
-        """Reject run-stage arguments that have no meaning in elab-only mode."""
+        """Refuse bare ``--standalone`` and run-stage arguments meaningless in elab-only mode."""
         if self.args._legacy_standalone_without_elab:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,

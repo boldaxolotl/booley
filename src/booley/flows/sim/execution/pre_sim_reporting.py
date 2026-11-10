@@ -22,7 +22,7 @@ def pre_sim_document(evidence: PreSimEvidence) -> dict[str, object]:
 
 
 def pre_sim_report_line(selector: str, evidence: Mapping[str, object]) -> str:
-    """Render the same line for durable, legacy, and coverage execution."""
+    """Render the same line for durable and coverage execution."""
     names = evidence["test_names"]
     label = ",".join(names) if names else "default"
     rc = evidence.get("returncode")

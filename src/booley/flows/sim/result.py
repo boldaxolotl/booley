@@ -1,13 +1,11 @@
 """Shared simulation result parsing and structured summary.
 
 Single source of truth for determining pass/fail from simulator output.
-The sim run-halves (run_iverilog_sim.py, verilator_run.py) and the batch
-developer (run_sim_batch.py) import from here instead of maintaining
-duplicate parsing logic.
+The sim run-halves (run_iverilog_sim.py, verilator_run.py) import from here
+instead of maintaining duplicate parsing logic.
 
-The run-half emits a [SIM_SUMMARY] JSON line; the batch developer
-parses it.  If the line is missing (crash/timeout), the batch falls back
-to raw-output scanning via the same functions.
+The run-half emits a [SIM_SUMMARY] JSON line for log and agent consumption;
+no in-tree parser reads it back.
 """
 
 from __future__ import annotations

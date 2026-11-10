@@ -325,14 +325,14 @@ can never manufacture a pass, and it never crashes the Flow.
 
 Each test resolves to exactly one of five verdicts:
 
-- `pass`: the run's `[SIM_SUMMARY]` sentinel reports `passed` with zero SVA (SystemVerilog Assertion) errors.
+- `pass`: the run's verdict sentinel reports `passed` with zero SVA (SystemVerilog Assertion) errors.
 - `fail`: a failing sentinel, a nonzero exit with fresh evidence, or SVA errors.
 - `inconclusive`: the sim ran cleanly (exit 0, no SVA errors) but produced *no* verdict sentinel, so nothing affirmatively passed; also where a `--trace` run lands if it otherwise passed but could not confirm the trace was written.
 - `elab_error`: build/elaboration/compile failure, or failed Pre-Sim Commands (the sim never ran).
 - `timeout`: the per-test budget was exceeded.
 
-`SimulateFlow` delegates execution through one `SimulationExecution.run` /
-`preview` boundary. The boundary resolves each `TargetHandle` from its own
+`SimulateFlow` delegates execution through one `SimulationExecution`
+`ordinary_group` / `preview` boundary. The boundary resolves each `TargetHandle` from its own
 Project Root, prepares the shared build, fires Pre-Sim Commands, invokes one
 leaf adapter, and returns immutable build, test, workload, log, trace, and
 infrastructure evidence. The Flow retains campaign concerns: Target/test

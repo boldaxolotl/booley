@@ -297,9 +297,8 @@ def _make_flow(
 
 
 class TestBuildTimeAttribution:
-    """After an RTL edit the first test absorbs the whole model rebuild; the
-    report must say so ("reset PASS 5.0s" with a 0.1s sim misleads timing
-    triage)."""
+    """Build-time telemetry parsers: the first test of a run pays the whole model
+    rebuild, so the build seconds are split out of the reported run time."""
 
     def test_parse_build_seconds_extracts_marker(self):
         output = "make stuff\nBOOLEY_BUILD_MILLISECONDS: 5000\n[SIM_RESULT] PASSED"

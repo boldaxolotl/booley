@@ -70,7 +70,7 @@ def test_the_one_grade_table(passed, infrastructure, inconclusive, grade):
 
 
 def test_coverage_runs_are_graded_by_the_campaign_table():
-    """An infrastructure failure is an error on every path, even when inconclusive."""
+    """An infrastructure failure is an error on the coverage path, even when inconclusive."""
     from booley.flows.sim.coverage_acceptance import coverage_run_grade
 
     coverage = SimpleNamespace(
