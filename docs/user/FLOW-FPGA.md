@@ -143,8 +143,8 @@ timeout_ms = 7200000
 
 Everything about how the design is built lives on the Target in the `.core`
 file, not in `booley.toml`; the full Target, with its required XDC fileset, is
-the [FPGA Target recipe](TARGETS.md#fpga-target). The `flow_options` this Flow
-reads:
+the [FPGA Target recipe](TARGETS.md#fpga-target). Besides `tool`, the
+`flow_options` this Flow reads:
 
 - `part`: the FPGA part; required.
 - `ppa_profile`: `compact`, `balanced` (default) or `max_frequency`; see

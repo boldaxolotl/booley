@@ -106,7 +106,7 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 | `veribleLintRules` | Verible rules file; at most one per Target. |
 | `veribleLintWaiver` | Verible waiver files; see the [Verible recipe](#verible-lint-target). |
 | `SDC` | ASIC timing constraints (uppercase); see the [Synthesis recipe](#synthesis-target). |
-| `xdc` | Vivado constraints, named `*.xdc`; see the [FPGA recipe](#fpga-target). |
+| `xdc` | Vivado constraints; see the [FPGA recipe](#fpga-target). |
 | `user` | Firmware, vectors, cocotb Python modules; `copyto:` sets where they land. |
 
 - Give headers (`.vh`, `.svh`) the same type as their sources and mark them
@@ -244,6 +244,8 @@ targets:
       flatten: true              # default true
       frontend: sv2v             # sv2v (default) | slang
       # slang_options: [--single-unit]   # raw options for the slang frontend
+      # advanced_settings_yosys: {abc_recipe: balanced}   # expert settings nest here
+      # advanced_settings_openroad: {utilization_pct: 50}  # physical mode only
     filesets: [rtl, timing_constraints]
     toplevel: core
 ```

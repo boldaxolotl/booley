@@ -247,8 +247,8 @@ still come from the single worst path.
 
 Everything about how the design is built lives on the Target in the `.core`
 file, not in `booley.toml`; the full Target, with its SDC fileset, is the
-[Synthesis Target recipe](TARGETS.md#synthesis-target). The `flow_options`
-this Flow reads:
+[Synthesis Target recipe](TARGETS.md#synthesis-target). Besides `tool`, the
+`flow_options` this Flow reads:
 
 - `synth_mode`: `physical` (default) or `logical`; see
   [Fast logical estimates](#fast-logical-estimates).
