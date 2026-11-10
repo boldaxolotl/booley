@@ -14,9 +14,9 @@ inputs and returns a complete typed report:
 
 | Owner | Public operations | Knowledge hidden from Doctor |
 | --- | --- | --- |
-| `runtime.inspection` | `inspect_runtime(RuntimeInspectionRequest)`; `inspect_retained_resources(project_root, docker_exe)` | Spec parsing and drift order, authority validation, host/runtime distinction, mounted Vivado policy, Docker inventories, exact issuance matching, relay topology, retained-resource classification. |
+| `runtime.inspection` | `inspect_runtime(RuntimeInspectionRequest)`; `inspect_retained_resources(project_root, docker_exe)`; `inspect_interactive_git(InteractiveGitRequest)` | Spec parsing and drift order, authority validation, host/runtime distinction, mounted Vivado policy, Docker inventories, exact issuance matching, relay topology, retained-resource classification; Git `info/exclude` entry requirements (including Stealth names) and tracked `.interactive_logs` scratch. |
 | `harness.host_diagnostics` | `inspect_host()` | Python/package/legacy-distribution checks, Bootstrap CHECK interpretation, Docker readiness, host clock and runtime gating, read-only Session store identity scan. |
-| `harness.setup.readiness` | `load_project(root)`; `check_guidance(project, mode=...)`; `check_stealth_cores(project, mode=...)` | Checkout-local Project resolution, schema composition, parsed EDA inputs, valid continuation data, guidance and core-projection grading and bounded reconciliation. |
+| `harness.setup.readiness` | `load_project(root)`; `check_guidance(project, mode=...)`; `check_stealth_cores(project, mode=...)`; `inspect_worktree_portability(WorktreePortabilityRequest)`; `inspect_line_endings(LineEndingInspectionRequest)` | Checkout-local Project resolution, schema composition, parsed EDA inputs, valid continuation data, guidance and core-projection grading and bounded reconciliation; worktree portability policy; line-ending observation precedence (CRLF, autocrlf risk, attributes policy, stale index, migration) and its check IDs and subjects. |
 | `audit.host_environment` | `inspect_agent_installation(provider)` | The shared configuration-directory-or-executable installation heuristic. |
 | `runtime.interactive_docker` | `image_exists(name, executable=..., timeout=...)` | The image observation shared by Doctor and Project Initialization. |
 | `audit.diagnostic_results` | `DiagnosticFinding`, `DiagnosticReport`, `HealthAssessment` | Ordered severity/message/remediation/ID/subject/deduplication values, uncounted verbose details, and the active FAIL/WARN interpretation. |
@@ -40,11 +40,38 @@ deduplication, and interleaves verbose details without changing counts.
 | Retained-resource inspection | Lists state volumes and image keepers; does not delete them. |
 | Host inspection | Uses Bootstrap `Intent.CHECK` and bounded environment probes; installs and repairs nothing. Host preparation/clock probes are skipped inside the Sandbox. |
 | Project loading / INSPECT | Reads and audits; does not repair guidance or projections. |
+| Line-ending inspection | Runs INSPECT-mode line-ending reconciliation with its bounded read-only Git probes; repairs nothing. |
+| Interactive Git inspection | Runs bounded `git rev-parse --git-common-dir` (with its filesystem fallback) and `git ls-files` (10-second timeout), and reads `info/exclude`; writes nothing. |
 | Project RECONCILE | Uses the guidance-link and core-projection owners to repair generated artifacts. It does not run Init or issue a Runtime. |
 
 Automatic (read-only) Doctor uses INSPECT; manual Doctor keeps its bounded
 repairs. Invalid configuration retains the resolved Booley Directory for later
 checks while skipping operations that require validated Project configuration.
+
+## Adding a diagnostic owner
+
+Remaining Doctor checks move to owners by one convention:
+
+- The owner takes a typed, frozen request and returns a `DiagnosticReport` built
+  with `audit.diagnostic_results.Findings`. Every WARN carries a `check_id`, plus
+  `subject` and `dedupe` where the check had them. The owner accepts no Doctor
+  callbacks.
+- The owner imports no Doctor, CLI orchestration or rendering module, and its
+  module is listed in D26 of the executable contract
+  (`tests/architecture/booley_contract.py`) and the
+  [source-dependency contract](SOURCE-DEPENDENCY-CONTRACT.md). D26 applies to
+  owners that take a request and return a report; the shared single-fact helpers
+  in the table (`audit.host_environment`, `runtime.interactive_docker`) and the
+  value module `audit.diagnostic_results` stay outside it.
+- Doctor builds the request, calls the owner, and renders the report with
+  `_Reporter.diagnostics` at the check's existing position, so message, fix text,
+  severity, check ID, waiver behavior, order and exit code are unchanged by the
+  move.
+- Tests assert on the returned report and patch no private Doctor name. Only
+  tests about waivers, deduplication, `finish()` or the persisted Doctor record
+  render the report through `_Reporter.diagnostics`.
+- The probe inventory in `tests/harness/test_doctor_probe_inventory.py` names the
+  owner call that replaced the private check.
 
 ## Shared health
 
