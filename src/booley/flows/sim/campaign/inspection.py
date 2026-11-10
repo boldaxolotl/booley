@@ -15,7 +15,11 @@ from booley.flows.campaign_results import (
     StartedCampaign,
 )
 
-from .codec import SimulationCampaignIntegrityError, reads_campaign_records
+from .codec import (
+    SimulationCampaignIntegrityError,
+    reads_campaign_records,
+    validate_relative_path,
+)
 from .coordinator import collected_result_facts
 from .model import SimulationCampaignManifest, SimulationResult
 from .planning import manifest_digest
@@ -200,6 +204,7 @@ def _retention_inventory(
     return tuple(sorted(retention_files)), tuple(sorted(coverage_directories))
 
 
+@reads_campaign_records
 def _result_named_files(root: Path, attempt: Path, result: Mapping[str, object]) -> set[Path]:
     """Files a terminal result names, plus the Booley-written build trees it used, unhashed."""
     references = list(cast(tuple[Mapping[str, object], ...], result["evidence"]))
@@ -208,11 +213,14 @@ def _result_named_files(root: Path, attempt: Path, result: Mapping[str, object])
         references.append(cast(Mapping[str, object], snapshot["manifest"]))
     for binding in cast(tuple[Mapping[str, object], ...], result["runtime_inputs"]):
         references.append(cast(Mapping[str, object], binding["authoritative_copy"]))
-    named = {(attempt / cast(str, reference["path"])).absolute() for reference in references}
+    named = {
+        (attempt / validate_relative_path(reference["path"])).absolute()
+        for reference in references
+    }
     trees = [attempt / "private-build", attempt / "snapshot"]
     build = cast(Mapping[str, object], result["build_result"])
     if build["sharing"] == "shared_variant":
-        trees.append((root / cast(str, build["path"])).parent)
+        trees.append((root / validate_relative_path(build["path"])).parent)
     for tree in trees:
         named.update(path.absolute() for path in tree.rglob("*") if path.is_file())
     return named

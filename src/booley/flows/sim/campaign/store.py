@@ -74,6 +74,7 @@ from .model import (
     SimulationCampaignManifest,
     SimulationResult,
     SimulatorBundle,
+    StrictGrade,
 )
 from .planning import manifest_digest
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder, _reference
@@ -760,6 +761,9 @@ class CampaignStore:
             for item in recovery.items
             if item.result is not None
         )
+        valid_grades = {grade.value for grade in StrictGrade}
+        if not all(isinstance(grade, str) and grade in valid_grades for grade in grades):
+            raise SimulationCampaignIntegrityError("Simulation Result grade is invalid")
         aggregate = _aggregate_grade(
             grades, complete=not recovery.pending and not recovery.interrupted
         )
