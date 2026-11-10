@@ -3351,3 +3351,149 @@ def test_coverage_summary_failure_acceptance(
         if handled
         else set()
     )
+
+
+class _CampaignRegisteringAdapter(_AcceptanceAdapter):
+    """Acceptance adapter that records every campaign it is told to register."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.registered: list[object] = []
+
+    def register_campaign(self, campaign) -> None:
+        self.registered.append(campaign)
+
+
+def _tree_snapshot(root: Path) -> dict[str, bytes | None]:
+    """Map every path under *root* to its bytes (None for a directory)."""
+    return {
+        str(path.relative_to(root)): path.read_bytes() if path.is_file() else None
+        for path in sorted(root.rglob("*"))
+    }
+
+
+def test_coverage_dry_run_previews_each_target_without_admission_or_mutation(
+    tmp_path, monkeypatch, capsys
+):
+    """AC1-AC3: a coverage dry run previews per Target and changes nothing."""
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path, ("verilator", "verilator"))
+    data = tmp_path / ".booley"
+    data.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
+    (data / "tests.toml").write_text('[sim_0]\ntests=["reset"]\n[sim_1]\ntests=["reset"]\n')
+    factory_calls: list[tuple[object, ...]] = []
+    boundary_calls: list[tuple[object, ...]] = []
+
+    def execution_factory(*args):
+        factory_calls.append(args)
+        return NativeExecution()
+
+    def record_boundary(*args, **_kwargs):
+        boundary_calls.append(args)
+        raise AssertionError("a dry run must launch nothing")
+
+    monkeypatch.setattr(SimulateFlow, "_execute_boundary", record_boundary)
+    adapter = _CampaignRegisteringAdapter(log_dir=tmp_path / "logs")
+    before = _tree_snapshot(tmp_path)
+
+    result = SimulateFlow(coverage_execution=execution_factory).execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--target",
+            "sim_0,sim_1",
+            "--coverage",
+            "--dry-run",
+        ],
+        adapter=adapter,
+    )
+
+    lines = ["sim_0: 1 pending work item(s)", "sim_1: 1 pending work item(s)"]
+    assert result.exit_code == 0, result.outcome.report_text
+    assert result.outcome.report_text.splitlines() == lines
+    printed = capsys.readouterr().out
+    assert all(line in printed for line in lines)
+    detail = result.outcome.detail
+    assert [entry["target"]["selector"] for entry in detail["campaign_preview"]] == [
+        "sim_0",
+        "sim_1",
+    ]
+    assert all(entry["work_items"] == 1 for entry in detail["campaign_preview"])
+    assert all(entry["build_variants"] >= 1 for entry in detail["campaign_preview"])
+    assert detail["mutated"] is False
+    assert detail["coverage"] is True
+    assert adapter.registered == []
+    assert factory_calls == []
+    assert boundary_calls == []
+    assert _tree_snapshot(tmp_path) == before
+
+
+def _tool_refusal_project(root: Path) -> None:
+    project(root, ("verilator", "icarus"))
+
+
+def _table_refusal_project(root: Path) -> None:
+    project(root)
+    (root / ".booley").mkdir()
+    (root / ".booley/booley.toml").write_text("[flows]\nsim = 1")
+
+
+@pytest.mark.parametrize(
+    ("configure", "target", "expected"),
+    [
+        (_tool_refusal_project, "sim_1", None),
+        (_table_refusal_project, "sim_0", "Coverage Preflight"),
+    ],
+    ids=["unsupported-tool", "invalid-table"],
+)
+def test_coverage_preflight_refusal_is_unchanged_under_dry_run(
+    tmp_path, monkeypatch, configure, target, expected
+):
+    """AC4: preflight refusals keep exit 2 and message under --dry-run."""
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    configure(tmp_path)
+    if (tmp_path / ".booley").is_dir():
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    before = _tree_snapshot(tmp_path)
+
+    def run(dry_run: bool):
+        return SimulateFlow().execute(
+            SimRequest(target=target, work_dir=tmp_path, coverage=True, dry_run=dry_run)
+        )
+
+    normal, dry = run(False), run(True)
+
+    assert normal.exit_code == dry.exit_code == 2
+    assert normal.outcome.report_text == dry.outcome.report_text
+    if expected is None:
+        assert _finding_codes(normal.outcome) == _finding_codes(dry.outcome) != []
+    else:
+        assert expected in dry.outcome.report_text
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_coverage_dry_run_reports_plan_failure_as_error(tmp_path, monkeypatch):
+    """A plan that cannot be built after preflight fails the preview with an error."""
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path, ("verilator", "verilator"))
+    data = tmp_path / ".booley"
+    data.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
+    (data / "tests.toml").write_text('[sim_0]\ntests=["reset"]\n')
+
+    def fail_plan(*_args, **_kwargs):
+        raise ValueError("plan went stale")
+
+    monkeypatch.setattr(SimulateFlow, "_coverage_campaign_plan", fail_plan)
+
+    result = SimulateFlow().execute(
+        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, dry_run=True)
+    )
+
+    assert result.exit_code == 2
+    assert result.outcome.report_text == (
+        "Simulation Campaign coverage preview failed: plan went stale"
+    )

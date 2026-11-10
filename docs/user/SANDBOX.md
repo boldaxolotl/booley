@@ -108,8 +108,11 @@ before you refresh.
 
 Settings that apply to every Project on this machine live in
 `~/.config/booley/config.toml` (or `$XDG_CONFIG_HOME/booley/config.toml`).
-The file is optional; Booley never creates or rewrites it. Without it you get
-these defaults:
+The file is optional, and you own it. Booley edits it only when you run
+`booley bootstrap --egress proxy` or `--egress unproxied`, which creates the
+file if needed and changes only the `[sandbox] egress` value (a symlinked
+file is refused: edit its target by hand). Without the file
+you get these defaults:
 
 ```toml
 [sandbox]
@@ -144,9 +147,16 @@ on an unknown key or invalid value. These keys belong here only:
 The policy is shared: every allowlisted hostname is reachable from every
 Project's Sandbox, in both Goal Mode and Interactive Mode.
 
-**After editing the file**, run `booley bootstrap` again. After switching
-`egress`, also run `booley init --seed` in each Project and recreate its
-Sandbox (**Dev Containers: Rebuild Container** in VS Code; `session down`,
+**After editing the file**, run `booley bootstrap` again. To switch `egress` in
+one step, run `booley bootstrap --egress unproxied` (or `proxy`): it records
+the mode, bootstraps under it, and names each running Sandbox still on the
+previous mode with the steps to recreate it. It refuses a result the file can't
+hold (for example `unproxied` next to a non-empty `egress_allowlist`) and a
+file that still uses the `[interactive]` table, and changes nothing in
+either case. `booley bootstrap --check-only --egress unproxied` reports the
+pending change without writing it. After switching `egress` by any route, also
+run `booley init --seed` in each Project and recreate its Sandbox (**Dev
+Containers: Rebuild Container** in VS Code; `session down`,
 then `session up` headless). Until then the running Sandbox keeps its previous
 mode, and host-side Doctor warns about it; see
 [TROUBLESHOOTING](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).

@@ -185,6 +185,7 @@ from .campaign import (
     CampaignOutcome,
     CampaignPolicy,
     CampaignRecoveryStatus,
+    NewCampaignPreview,
     NewCampaignPreviewRequest,
     NewCampaignRunRequest,
     ResumeCampaignPreview,
@@ -1239,6 +1240,29 @@ def _baseline_refusal_line(refusal: BaselineRefusal) -> str:
     return (
         f"Cycle Count comparison inconclusive for {link.candidate} Test {link.test}{run}: "
         f"{refusal.reason}"
+    )
+
+
+def _campaign_preview_entry(preview: NewCampaignPreview) -> dict[str, object]:
+    """Summarize one new-campaign preview for the dry-run report and detail."""
+    return {
+        "target": dict(preview.target),
+        "work_items": len(preview.work_items),
+        "build_variants": len(preview.build_variants),
+        "prerequisites": len(preview.prerequisites),
+    }
+
+
+def _campaign_preview_outcome(previews: Sequence[dict[str, object]]) -> EndpointOutcome:
+    """Build the successful, non-mutating dry-run outcome for *previews*."""
+    return EndpointOutcome(
+        exit_code=EXIT_SUCCESS,
+        detail={"campaign_preview": list(previews), "mutated": False},
+        report_text="\n".join(
+            f"{cast(Mapping[str, object], item['target'])['selector']}: "
+            f"{item['work_items']} pending work item(s)"
+            for item in previews
+        ),
     )
 
 
@@ -4175,7 +4199,43 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return resolved
 
     def _run_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
+        # A dry run borrows no admission, so it must be answered before the
+        # admission check in ``_execute_coverage_campaigns`` (as resume does).
+        if self.args.dry_run:
+            return self._preview_coverage_campaigns()
         return self._with_live_progress(lambda: self._execute_coverage_campaigns(admission))
+
+    def _preview_coverage_campaigns(self) -> EndpointOutcome:
+        """Preview one coverage Campaign per prepared Target.
+
+        Reserves no invocation directory, publishes no manifest, registers no
+        campaign with the execution adapter, and builds or simulates nothing.
+        """
+        campaign = SimulationCampaign()
+        try:
+            previews = [
+                _campaign_preview_entry(
+                    campaign.preview(
+                        NewCampaignPreviewRequest(
+                            # Placeholder ids: a preview reserves no invocation and
+                            # starts no execution, so neither is ever read.
+                            self._coverage_campaign_plan(plan, invocation_id=1, execution_id=""),
+                            Path(self.args.work_dir),
+                            self.args.report_dir,
+                            self._campaign_policy(),
+                        )
+                    )
+                )
+                for plan in self._coverage_prepared.targets
+            ]
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign coverage preview failed: {exc}",
+            )
+        outcome = _campaign_preview_outcome(previews)
+        outcome.detail["coverage"] = True
+        return outcome
 
     def _execute_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
         """Run each native coverage selection as one durable aggregate item."""
@@ -5044,27 +5104,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         self._campaign_policy(),
                     )
                 )
-                previews.append(
-                    {
-                        "target": dict(preview.target),
-                        "work_items": len(preview.work_items),
-                        "build_variants": len(preview.build_variants),
-                        "prerequisites": len(preview.prerequisites),
-                    }
-                )
+                previews.append(_campaign_preview_entry(preview))
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign preview failed: {exc}",
             )
-        return EndpointOutcome(
-            exit_code=EXIT_SUCCESS,
-            detail={"campaign_preview": previews, "mutated": False},
-            report_text="\n".join(
-                f"{item['target']['selector']}: {item['work_items']} pending work item(s)"
-                for item in previews
-            ),
-        )
+        return _campaign_preview_outcome(previews)
 
     def _preview_campaign_baselines(
         self,

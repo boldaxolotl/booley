@@ -1,6 +1,6 @@
 # Publish the user docs on the project site
 
-Status: accepted (amended 2026-10-26: site domain; 2026-11-10: agent-facing text, see Amendments)
+Status: accepted (amended 2026-10-26: site domain; 2026-11-10: agent-facing text and contributor docs, see Amendments)
 
 ## Context
 
@@ -81,3 +81,12 @@ generates the copies from an allowlist into `src/booley/data/docs/`, rewriting
 links between docs so each copy resolves in the flat directory; people still
 get site URLs through `docs_url()`. `tests/docs/test_sandbox_doc_citations.py`
 fails on a citation that is neither.
+
+The site also publishes a short list of contributor docs, starting with
+`docs/internals/ARCHITECTURE.md` at `/docs/architecture/`, in an "Internals"
+sidebar group after the user docs. Like the user docs, they are published, not
+moved: each stays in `docs/internals/`, where contributors and agents read it.
+`booley.runtime.docs_links.CONTRIBUTOR_DOCS` lists them, and `SITE_DOCS` gives
+the sidebar order. `docs_url()` still covers user docs only, because Booley
+prints no links to contributor docs. A contributor doc's relative links to
+published files stay on the site; its other links go to GitHub.
