@@ -5,7 +5,7 @@ ADR 0019/0022: FuseSoC+Edalize own the *build* (``fusesoc run --setup`` →
 ``make`` runs ``iverilog`` and produces the vvp image named ``<edam-name>`` with
 a sibling ``<name>.scr``); Booley owns the *run* — it executes that image with
 ``vvp``, optionally postprocesses a VCD into a queryable B-Wave, and re-emits the
-``[SIM_SUMMARY]`` verdict sentinel the criteria layer scrapes.
+``[SIM_SUMMARY]`` summary line for log and agent consumption.
 
 This is the Icarus counterpart of :mod:`booley.flows.sim.backends.verilator` and the
 edalize successor to the legacy ``run_iverilog_sim`` / ``run_sim_batch`` Icarus

@@ -69,16 +69,10 @@ def test_the_one_grade_table(passed, infrastructure, inconclusive, grade):
     assert grade in TEST_RUN_GRADES
 
 
-def test_direct_results_and_coverage_runs_are_graded_by_the_campaign_table():
-    """An infrastructure failure is an error on every path, even when inconclusive."""
+def test_coverage_runs_are_graded_by_the_campaign_table():
+    """An infrastructure failure is an error on the coverage path, even when inconclusive."""
     from booley.flows.sim.coverage_acceptance import coverage_run_grade
-    from booley.flows.sim.flow import TestResult, _test_run_rows
 
-    run = build_test_run("reset", seed=1)
-    result = TestResult(
-        name="reset", passed=False, inconclusive=True, failure_kind="infrastructure", test_run=run
-    )
-    assert _test_run_rows([result]) == [test_run_row(run, "error")]
     coverage = SimpleNamespace(
         simulation_verdict="inconclusive", attributes={"failure_kind": "infrastructure"}
     )

@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import shlex
 import sys
 from collections import Counter
@@ -23,12 +22,10 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, ClassVar, cast
 
-from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import (
     load_test_configuration_field,
     lookup_target_section,
 )
-from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
 from booley.core.build_paths import work_root_for
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
@@ -65,13 +62,11 @@ from booley.flows.progress_lifecycle import (
     supersede_progress,
 )
 from booley.flows.request import FlowRequest
-from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
+from booley.flows.run_log import RUN_LOG_NAME, write_run_log
 from booley.flows.sim.campaign.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
 from booley.flows.sim.campaign.test_run_report import (
     campaign_test_run_rows,
     informative_test_run_lines,
-    test_run_grade,
-    test_run_row,
 )
 from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
@@ -79,7 +74,6 @@ from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
     resolve_pre_sim_commands,
-    resolve_run_cwd,
     resolve_sim_build_timeout_ms,
     resolve_sim_trace_convert_timeout_ms,
 )
@@ -98,8 +92,6 @@ from booley.flows.sim.live_progress import (
     publish_checkpoint,
 )
 from booley.flows.sim.request import SimRequest
-from booley.flows.sim.result import describe_error_message_count, parse_summary_line
-from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import (
     TargetTestPlan,
@@ -111,7 +103,6 @@ from booley.flows.target_test_suite import (
     require_runnable_target_test_suite,
     resolve_target_test_suite,
 )
-from booley.flows.terminal_progress import ProgressText
 from booley.flows.test_runs import (
     DEFAULT_SEED,
     SeedCount,
@@ -122,8 +113,6 @@ from booley.flows.test_runs import (
     test_run_from_document,
 )
 from booley.fusesoc import fusesoc_registry
-from booley.presentation import colors
-from booley.presentation.terminal_table import render_table
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EXIT_CANCELLED,
@@ -136,17 +125,16 @@ from booley.runtime.endpoint_execution import (
 from booley.runtime.file_lock import LockContentionError
 from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.platform_paths import posix_relpath
-from booley.runtime.timefmt import format_duration, utc_now_rfc3339
+from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import (
     TargetHandle,
     criterion_matches_target,
 )
-from booley.targets.flow_names import config_section
 from booley.targets.selection import TargetSectionConflictError
 
-from .. import artifacts, output_budget
 from .. import edam as edam_layer
+from .. import output_budget
 from ..base import BuiltinFlow, SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
@@ -154,19 +142,12 @@ from ..baseline_worktree import (
     git_full_sha,
 )
 from ..eda_parsers import extract_error_gist
-from ..flow_config import (
-    _load_flow_config,
-    tb_top_for_target,
-)
-from ..human_display import cap_target_items
 from ..invocation import default_timeout_ms, resolve_timeout_ms
 from .build import (
     BuildOutcome,
     PreparedSimulationBuild,
     SimulationBuildInfrastructureError,
     SimulationBuildPreparationError,
-    build_output_tail,
-    build_stage_script,
     classify_build_outcome,
     prepare_simulation_build,
     setup_failure_outcome,
@@ -231,12 +212,10 @@ from .execution import (
     DefaultSelection,
     NamedTests,
     SelectedTestRuns,
-    SimulationArtifactEvidence,
     SimulationExecution,
     SimulationOptions,
     SimulationPreview,
     SimulationSelection,
-    SimulationTargetOutcome,
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
 from .execution.engine import TRACE_CLEANUP_MARGIN_S, simulation_adapter_kind, target_test_plan
@@ -247,7 +226,6 @@ from .test_run_invocation import (
     BaselineRefusal,
     BaselineRuns,
     TestRunInvocation,
-    baseline_refusal_key,
     decide_baseline_runs,
 )
 
@@ -260,23 +238,6 @@ def _target_is_cocotb(work_dir: Path, target: str) -> bool:
         return bool(TargetCatalog.build(work_dir).select(target).cocotb_module)
     except Exception:  # noqa: BLE001 — watchdog sizing degrades to native-HDL counting
         return False
-
-
-# Patterns that indicate elaboration/compilation failure (before sim ran).
-# The `ERROR: <eda_tool> …` markers are Booley-echoed on build breakage (sandbox
-# script).
-_ELAB_FAIL_RE = re.compile(
-    r"ERROR:\s*(Verilator elaboration failed|Verilator executable not found"
-    r"|Verilator elaboration timed out"
-    r"|iverilog compilation failed|iverilog compilation timed out)",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-# Pre-Sim Commands failure marker (ADR 0039). The boundary wrapper makefile
-# echoes it when [flows.sim].pre_run_commands exit nonzero (the
-# BOOLEY_STAGE marker precedent), so _interpret_sim_result attributes the
-# failure to the pre-run step instead of blaming the sim/build.
-_PRERUN_FAIL_RE = re.compile(r"\[BOOLEY_PRERUN_FAIL rc=(-?\d+)\]")
 
 
 class MissingExecutableError(RuntimeError):
@@ -329,139 +290,7 @@ class CandidateWorkload:
     eligible: frozenset[str]
 
 
-def _raise_if_missing_executable(text: str) -> None:
-    """Escalate an absent-binary report in *text* to :class:`MissingExecutableError`.
-
-    Called only where the run reached no verdict — a setup exception or a
-    broken build half. A sim that actually ran and happened to echo
-    "foo: command not found" from its own ``$system`` call is never inspected.
-    """
-    binary = find_missing_executable(text)
-    if binary:
-        raise MissingExecutableError(binary, context=text)
-
-
 _DEFAULT_TIMEOUT_MS = default_timeout_ms("sim")
-# Per-run disk budget for the sim run directory (SETUP-25) — on how much the dir
-# GROWS during one run, not on its total size (F-23: run_cwd is routinely shared
-# with the TB's staged input vectors, and charging those to the output budget
-# killed every run after the first traced one). Chosen well above a normal traced
-# run (an Ibex ibex_tracer wrote 272MB/run) yet below the 27GB runaway that once
-# filled the disk; override via [flows.sim].max_rundir_bytes.
-_DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3  # 5 GiB
-
-# Max error lines shown per test in the display box
-_MAX_DISPLAY_ERRORS = 3
-
-# Longest test name the terminal summary shows; longer ones end in an ellipsis.
-# Fixed, not terminal-width based, so the output never depends on the host.
-_TEST_NAME_CAP = 40
-
-# Lines of simulator output kept in a TestResult's error_tail. The report shows
-# a further-trimmed excerpt of it; the full output lives in run.log.
-_ERROR_TAIL_LINES = 50
-
-# The two reasons a run can end up INCONCLUSIVE, spelled out for the RESULT
-# line. Reporting the first when the second happened is what made a fully
-# passing traced run print "no pass/fail sentinel detected" while its own
-# result.json recorded passed:true and 96 sentinel hits (fpu F-22).
-_INCONCLUSIVE_NO_SENTINEL = (
-    "no pass/fail sentinel detected, simulation exited cleanly. "
-    "Read the full simulator output at the report's artifacts.log, and re-run "
-    "with --trace to inspect the waveform with bwave. If the testbench prints "
-    "its verdict in wording Booley does not recognize, declare it in "
-    "[flows.sim].pass_sentinels / fail_sentinels."
-)
-
-# The run-halves' "a queryable waveform actually landed" marker, carrying the
-# store's path. simulate used to scrape it only for *presence* — leaving the
-# artifact five directory levels deep under .runtime/edalize/simulate/ and
-# findable only by someone who already knew the convention (F-35).
-_TRACE_OK_RE = re.compile(r"^TRACE_OK:\s*(\S.*?)\s*$", re.MULTILINE)
-_TRACE_METADATA_RE = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE)
-
-# Max failure-excerpt lines per test inside report_text. The MCP server
-# tail-truncates the whole EDA-tool stdout to ~12KB (keeping the END), so one
-# chatty failing target must not monopolize the surviving window — anything
-# beyond this tail is pointed at the persisted run.log instead. This is the
-# 12KB-budget default; the effective cap scales with a raised
-# BOOLEY_MCP_MAX_STDOUT_BYTES (see output_budget.scaled).
-_MAX_EXCERPT_LINES = 30
-
-
-@dataclass
-class TestResult:
-    """Result of a single test execution."""
-
-    name: str
-    passed: bool
-    elapsed_s: float = 0.0
-    # Seconds of elapsed_s spent (re)building the sim model. The first test of
-    # a run pays the whole edalize make after an RTL edit; reporting that
-    # share keeps a "reset PASS 5.0s" from misleading timing-based triage when
-    # the simulation itself took 0.1s.
-    build_s: float = 0.0
-    cycles: int | None = None
-    # Typed status of the named Cycle Count record. ``cycles`` remains the
-    # observational compatibility value; acceptance requires ``observed``.
-    cycle_status: str = "missing"
-    sva_errors: int = 0
-    error_tail: str = ""
-    timed_out: bool = False
-    inconclusive: bool = False
-    # WHY the run is inconclusive, in one clause. There are two very different
-    # reasons and the report used to print only the first: "no pass/fail
-    # sentinel detected" was stated verbatim on a run that scored 96 of them and
-    # whose result.json said passed:true, because a *missing waveform* had
-    # downgraded the verdict (fpu F-22). Empty when not inconclusive.
-    inconclusive_reason: str = ""
-    termination: str = "completed"
-    failure_kind: str = ""
-    elab_failed: bool = False
-    test_validated: bool = True
-    # Waveform this run produced (--trace only): project-relative path and
-    # on-disk size, so the artifact is reported rather than merely asserted to
-    # exist (F-35). Empty on a non-traced run. A cocotb batch shares one
-    # waveform, so it rides the first entry.
-    trace_path: str = ""
-    trace_bytes: int = 0
-    trace_top_scope: str = ""
-    trace_signal_count: int = 0
-    trace_total_ticks: int = 0
-    # Work-dir-relative immutable copy of this test's complete simulator
-    # output. Empty only when no simulator output was available or no report
-    # directory was requested.
-    run_log_path: str = ""
-    workload_snapshot: dict[str, Any] | None = None
-    # Authenticated result of the build half for this execution attempt.
-    # ``None`` means setup or Pre-Sim Commands failed before make ran.
-    build_outcome: BuildOutcome | None = None
-    phase_timings_s: dict[str, float] = field(default_factory=dict)
-    resources: dict[str, float | int | None] = field(default_factory=dict)
-    # The Test Run this result observed (ADR 0072). ``None`` only when setup
-    # failed before the Target's Test Runs were known.
-    test_run: TestRun | None = None
-
-
-@dataclass
-class TargetResult:
-    """Aggregate result for one config."""
-
-    target: str
-    tb_top: str = ""
-    # Raw resolved EDA tool (normally "verilator"/"icarus"), not the
-    # normalize_eda_tool run-half family — observability, not parser dispatch.
-    eda_tool: str = ""
-    passed: bool = False
-    elapsed_s: float = 0.0
-    tests: list[TestResult] = field(default_factory=list)
-    inconclusive: bool = False
-    elab_failed: bool = False
-    phase_timings_s: dict[str, float] = field(default_factory=dict)
-    target_identity: str = ""
-    diagnostics: tuple[str, ...] = ()
-    artifacts: tuple[SimulationArtifactEvidence, ...] = ()
-    infrastructure_error: bool = False
 
 
 @dataclass
@@ -478,37 +307,6 @@ class ElabOnlyTargetResult:
         default_factory=lambda: BuildOutcome(False, None, "infrastructure")
     )
     log_path: str = ""
-
-
-def _admissible_cycle_evidence(
-    test: TestResult | None,
-    revision: str,
-) -> tuple[bool, str]:
-    """Return whether one revision has passing, unambiguous named evidence."""
-    if test is None:
-        return False, f"{revision} named test result is missing"
-    if not test.passed:
-        return False, f"{revision} test did not pass"
-    if test.cycle_status != "observed" or test.cycles is None:
-        return False, f"{revision} Cycle Count observation is {test.cycle_status}"
-    return True, ""
-
-
-def _target_progress_detail(result: TargetResult) -> dict[str, Any]:
-    """Compact durable checkpoint entry for one completed Target."""
-    detail = {
-        "target_identity": result.target_identity,
-        "passed": result.passed,
-        "inconclusive": result.inconclusive,
-        "elapsed_s": result.elapsed_s,
-        "tests": len(result.tests),
-        "tests_passed": sum(1 for test in result.tests if test.passed),
-        "phase_timings_s": dict(result.phase_timings_s),
-    }
-    build_stage = [_build_outcome_entry(test.build_outcome) for test in result.tests]
-    if any(entry is not None for entry in build_stage):
-        detail["build_stage"] = [entry for entry in build_stage if entry is not None]
-    return detail
 
 
 def _campaign_observation_counts(
@@ -1649,81 +1447,6 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     replace_file(tmp, path)
 
 
-def _build_run_script(
-    build_cmd: list[str],
-    marker: str,
-    run_line: str,
-    sim_env: dict[str, str] | None = None,
-    *,
-    attempt_token: str | None = None,
-) -> str:
-    """Compose the one-subprocess build+run shell script for a sandbox sim.
-
-    On build failure, echo the canonical marker the legacy runner printed (raw
-    verilator/iverilog errors don't carry it) so _ELAB_FAIL_RE still tags
-    elaboration failures; ``exit 1`` keeps the run from firing after a broken
-    build. shlex.join quotes every element (e.g. Icarus's
-    ``EXTRA_OPTIONS="+a +b"``), so the only shell metacharacters are ours.
-
-    The make and run halves are bracketed with GNU ``date`` nanosecond stamps
-    and POSIX-shell arithmetic so the per-test report can split "model
-    (re)build" from simulator wall time. The first test after an RTL edit
-    otherwise absorbs the whole rebuild and misleads timing triage.
-
-    *sim_env* (tests.toml ``env``, F-5) is exported ahead of both halves: this
-    single shell IS the sim's parent process on every sandbox path
-    (verilator/icarus/cocotb), so exporting here is the one place that reaches
-    the simulator without a per-run-half flag. Values are ``shlex.quote``d.
-    """
-    del marker  # retained in the private signature while callers/tests migrate
-    return build_stage_script(
-        build_cmd,
-        attempt_token or new_attempt_token(),
-        run_line=run_line,
-        environment=sim_env,
-    )
-
-
-def parse_sva_errors(output: str) -> int:
-    """Count SVA assertion errors in sim output."""
-    try:
-        from booley.flows.sim.result import count_sva_errors
-
-        return count_sva_errors(output)
-    except ImportError:
-        # Fallback: count lines with common SVA error markers
-        count = 0
-        for line in output.splitlines():
-            if "Assertion" in line and ("FAILED" in line or "ERROR" in line):
-                count += 1
-        return count
-
-
-def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
-    """Per-run disk budget for the sim run directory, from booley.toml.
-
-    ``[flows.sim].max_rundir_bytes`` caps how much the run directory may
-    grow *during one run* before it is killed (SETUP-25: a default-on testbench
-    tracer / ``$dumpfile`` / ``$fwrite`` sink once left 27GB and filled the disk,
-    killing an in-flight synth). Growth, not total size — see
-    :class:`booley.flows.sim.run_guard.DiskBudgetGuard` for why (F-23). ``0`` disables
-    the guard. Forwarded to the builtin
-    run-halves in the prepared work document; mirrors the other ``_resolve_*`` knob
-    readers. Defaults to :data:`_DEFAULT_MAX_RUNDIR_BYTES` when unset.
-    """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-        if cfg:
-            val = config_section(cfg.get("flows", {}), "sim").get("max_rundir_bytes")
-            configured = as_int(val, _DEFAULT_MAX_RUNDIR_BYTES)
-            return configured if configured is not None else _DEFAULT_MAX_RUNDIR_BYTES
-    except ImportError:
-        pass
-    return _DEFAULT_MAX_RUNDIR_BYTES
-
-
 def _resolve_sim_timeout_ms(work_dir: Path | None = None) -> int:
     """Per-test simulation timeout in ms, from booley.toml ``[flows.sim]``.
 
@@ -1737,104 +1460,30 @@ def _resolve_sim_timeout_ms(work_dir: Path | None = None) -> int:
     return resolve_timeout_ms("sim", work_dir, None)
 
 
-def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
-    """Frozen-simulator-clock watchdog grace, from booley.toml (F-25).
-
-    ``[flows.sim].sim_time_grace_s`` bounds how long a cocotb run may sit
-    at *exactly* 0.00 ns of simulation time before Booley aborts it with the
-    run-loop-mismatch diagnosis instead of burning the whole ``timeout_ms``
-    budget (ravenoc: cocotb 1.5.1's VPI loaded fine under an older Verilator, then
-    no timed callback ever fired — 600 s of wall clock, zero sim time). ``0``
-    disables the watchdog; anything else is a wall-clock second count.
-    Defaults to :data:`run_guard.DEFAULT_SIM_TIME_GRACE_S`.
-    """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-        if cfg:
-            val = config_section(cfg.get("flows", {}), "sim").get("sim_time_grace_s")
-            configured = as_float(val, DEFAULT_SIM_TIME_GRACE_S)
-            return max(
-                0.0,
-                configured if configured is not None else DEFAULT_SIM_TIME_GRACE_S,
-            )
-    except ImportError:
-        pass
-    return DEFAULT_SIM_TIME_GRACE_S
+def _get_test_names(work_dir: Path | str) -> dict[str, list[str]]:
+    """Load the per-target test names (tests.toml ``tests``)."""
+    return load_test_configuration_field(work_dir, "tests")
 
 
-def _resolve_cycle_sentinels(work_dir: Path | None = None) -> list[str]:
-    """Cycle-count prefixes from ``booley.toml [flows.sim]``.
-
-    Each configured literal must be followed by a test name and a decimal
-    integer as the line's final field. An empty list means the parser uses the
-    built-in ``[SIM_CYCLES]`` prefix.
-    """
-    root = work_dir if work_dir is not None else Path.cwd()
-    raw = _load_flow_config("sim", root).get("cycle_sentinels")
-    return [sentinel for sentinel in as_str_list(raw) if sentinel]
+def _get_test_skips(work_dir: Path | str) -> dict[str, list[str]]:
+    """Load per-target known-hang skip lists (tests.toml ``skip``)."""
+    return load_test_configuration_field(work_dir, "skip")
 
 
-def _get_test_names(work_dir: Path | str | None = None) -> dict[str, list[str]]:
-    """Load test names from project config. Empty dict on failure."""
-    try:
-        if work_dir is not None:
-            return load_test_configuration_field(work_dir, "tests")
-        from booley.config.project_config import TEST_NAMES
-
-        return TEST_NAMES
-    except ImportError:
-        return {}
+def _get_test_envs(work_dir: Path | str) -> dict[str, dict[str, str]]:
+    """Load per-Target simulator environment (tests.toml ``env``)."""
+    return load_test_configuration_field(work_dir, "env")
 
 
-def _get_test_skips(work_dir: Path | str | None = None) -> dict[str, list[str]]:
-    """Load per-target known-hang skip lists (tests.toml ``skip``).
-
-    Empty dict on failure — a project that declares no skips runs every test.
-    """
-    try:
-        if work_dir is not None:
-            return load_test_configuration_field(work_dir, "skip")
-        from booley.config.project_config import TEST_SKIP
-
-        return TEST_SKIP
-    except ImportError:
-        return {}
-
-
-def _get_test_envs(work_dir: Path | str | None = None) -> dict[str, dict[str, str]]:
-    """Per-Target simulator environment (tests.toml ``env``, F-5).
-
-    Empty dict on failure — a Target that declares no ``env`` runs with the
-    inherited environment, exactly as before the knob existed.
-    """
-    try:
-        if work_dir is not None:
-            return load_test_configuration_field(work_dir, "env")
-        from booley.config.project_config import TEST_ENV
-
-        return TEST_ENV
-    except ImportError:
-        return {}
-
-
-def _get_test_selects(work_dir: Path | str | None = None) -> dict[str, str]:
-    """Per-target explicit ``select`` templates (tests.toml ``select``).
+def _get_test_selects(work_dir: Path | str) -> dict[str, str]:
+    """Load per-target explicit ``select`` templates (tests.toml ``select``).
 
     Only *explicitly declared* templates appear here (the rendering default,
     ``DEFAULT_TEST_SELECT``, does not) — exactly the set A2 must reject on a
     Cocotb Target, where selection is the ``COCOTB_TEST_FILTER`` env var and a
-    plusarg template is a config contradiction. Empty dict on failure.
+    plusarg template is a config contradiction.
     """
-    try:
-        if work_dir is not None:
-            return load_test_configuration_field(work_dir, "select")
-        from booley.config.project_config import TEST_SELECT
-
-        return TEST_SELECT
-    except ImportError:
-        return {}
+    return load_test_configuration_field(work_dir, "select")
 
 
 def _filter_tests(tests: list[str], exact_names: str | Sequence[str]) -> list[str]:
@@ -2010,511 +1659,11 @@ def _resolve_sim_campaign_work_units(
     return max(1, units)
 
 
-def _format_bytes(size: int) -> str:
-    """Compact human size for a trace artifact (F-35)."""
-    value = float(size)
-    for unit in ("B", "KB", "MB"):
-        if value < 1024:
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} GB"
-
-
-def _trace_artifact(combined: str, work_dir: Path | str) -> tuple[str, int]:
-    """``(display path, bytes)`` of the waveform this run produced (F-35).
-
-    Reads the run-half's ``TRACE_OK:`` marker — the same line the trace
-    enforcement already scrapes for presence — and turns it into something the
-    reader can open. The path is rendered project-relative when it lives under
-    the work dir; the size is best-effort (a boundary run's store may sit on a
-    path this process cannot stat) and reported as 0 when unknown.
-    """
-    matches = _TRACE_OK_RE.findall(combined)
-    if not matches:
-        return "", 0
-    path = Path(matches[-1])
-    try:
-        size = path.stat().st_size
-    except OSError:
-        size = 0
-    display = str(path)
-    try:
-        relative = posix_relpath(path, work_dir)
-    except (ValueError, OSError):  # different drive on Windows / unreadable cwd
-        relative = ".."
-    if not relative.startswith(".."):  # outside the project: absolute is clearer
-        display = relative
-    return display, size
-
-
-def _trace_metadata(combined: str) -> tuple[str, int, int]:
-    """Return ``(top_scope, signal_count, total_ticks)`` from the run-half."""
-    matches = _TRACE_METADATA_RE.findall(combined)
-    if not matches:
-        return "", 0, 0
-    try:
-        metadata = decode_trace_metadata(matches[-1])
-        return metadata.display_scope, metadata.signal_count, metadata.total_ticks
-    except (BoundaryError, json.JSONDecodeError):
-        return "", 0, 0
-
-
-def _trace_line(test: TestResult) -> str | None:
-    """The ``trace:`` report line for *test*, or None when it produced none."""
-    if not test.trace_path:
-        return None
-    details = []
-    if test.trace_bytes:
-        details.append(_format_bytes(test.trace_bytes))
-    if test.trace_signal_count:
-        details.append(f"{test.trace_signal_count} signals")
-    if test.trace_top_scope:
-        details.append(f"scope {test.trace_top_scope}")
-    if test.trace_total_ticks:
-        details.append(f"{test.trace_total_ticks} ticks")
-    suffix = f" ({', '.join(details)})" if details else ""
-    return f"  trace: {test.trace_path}{suffix}"
-
-
-def _build_display_lines(
-    results: list[TargetResult],
-    total_elapsed: float,
-) -> list[str]:
-    """Build rich display lines for the terminal Flow box."""
-    if len(results) == 1 and results[0].passed:
-        tests = results[0].tests
-        if len(tests) == 1:
-            return [f"✓ PASS  {format_duration(total_elapsed)}"]
-
-    targets_passed = sum(1 for r in results if r.passed)
-    lines: list[str] = [
-        f"{targets_passed}/{len(results)} targets passed, {format_duration(total_elapsed)}",
-    ]
-
-    visible_results, omitted_line = cap_target_items(results)
-    for cr in visible_results:
-        lines.extend(_target_display_lines(cr))
-
-    if omitted_line:
-        lines.append(omitted_line)
-
-    return lines
-
-
-def _completed_display_label(
-    targets: list[str],
-    results: list[TargetResult],
-) -> str | None:
-    """Describe the test scope observed by a completed Simulation Flow."""
-    tests = [test.name for result in results for test in result.tests]
-    return format_flow_display_label(targets, tests=tests if tests else None)
-
-
 def _prepared_coverage_display_label(plans: Sequence[CoverageTargetPlan]) -> str | None:
     """Describe the exact Target/test scope selected during coverage preflight."""
     targets = [plan.handle.selector for plan in plans]
     tests = [test for plan in plans for test in plan.selected_tests]
     return format_flow_display_label(targets, tests=tests if tests else None)
-
-
-def _target_display_lines(result: TargetResult) -> list[str]:
-    """Build the final display block for one completed Target."""
-    icon = "?" if result.inconclusive else ("✓" if result.passed else "✗")
-    tests_passed = sum(1 for test in result.tests if test.passed)
-    tests_str = f"{tests_passed}/{len(result.tests)} tests" if len(result.tests) > 1 else ""
-    elapsed = format_duration(result.elapsed_s)
-    suffix = f" ({tests_str})  {elapsed}" if tests_str else f"  {elapsed}"
-    lines = [f"{icon} {result.target}{suffix}"]
-    if not result.passed:
-        _append_test_failure_lines(result.tests, lines)
-    return lines
-
-
-def _append_test_failure_lines(tests: list[TestResult], lines: list[str]) -> None:
-    """Append per-test failure detail lines to the display output."""
-    for tr in tests:
-        if tr.passed:
-            continue
-        messages = f"  {describe_error_message_count(tr.sva_errors)}" if tr.sva_errors else ""
-        cycles = f"  {tr.cycles:,} cyc" if tr.cycles is not None else ""
-        build = f"  (incl. {format_duration(tr.build_s)} build)" if tr.build_s >= 1 else ""
-        lines.append(
-            f"  FAIL {tr.name:<20s} {format_duration(tr.elapsed_s)}{build}{cycles}{messages}"
-        )
-
-        if tr.error_tail:
-            _append_error_excerpt(tr.error_tail, lines)
-
-
-def _test_report_entry(test: TestResult) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "name": test.name,
-        "passed": test.passed,
-        "verdict": _test_verdict(test),
-        "timed_out": test.timed_out,
-        "termination": test.termination,
-        "failure_kind": test.failure_kind,
-        # F-39: 3 decimals — a 12ms cocotb test rounded to 0.0 at 1 decimal,
-        # which erased every sub-second duration from the structured report.
-        "elapsed_s": round(test.elapsed_s, 3),
-        "build_s": round(test.build_s, 3),
-        "cycles": test.cycles,
-        "cycle_observation": test.cycle_status,
-        "sva_errors": test.sva_errors,
-        "error_tail": test.error_tail,
-        "test_validated": test.test_validated,
-        "phase_timings_s": dict(test.phase_timings_s),
-        "resources": dict(test.resources),
-    }
-    if test.test_run is not None:
-        # The keys the coverage and campaign reports use for the same facts.
-        entry["test_run"] = test.test_run.name
-        entry["variant"] = test.test_run.variant
-        entry["seed"] = test.test_run.seed
-        entry["fingerprint"] = test.test_run.fingerprint
-    if test.trace_path:
-        entry["trace_path"] = test.trace_path
-        entry["trace_bytes"] = test.trace_bytes
-        entry["trace_top_scope"] = test.trace_top_scope
-        entry["trace_signal_count"] = test.trace_signal_count
-        entry["trace_total_ticks"] = test.trace_total_ticks
-    if test.run_log_path:
-        entry["artifacts"] = {"run_log": test.run_log_path}
-    if test.workload_snapshot:
-        entry["workload_fingerprint"] = test.workload_snapshot.get("fingerprint")
-    if not test.test_validated:
-        entry["validation_note"] = "test name was not validated against configs.toml"
-    return entry
-
-
-def _test_run_rows(
-    tests: Sequence[TestResult], *, functional_metadata: bool = False
-) -> list[dict[str, object]]:
-    """One row per exact Test Run, retaining functional-failure proof for reports."""
-    rows = []
-    for test in tests:
-        if test.test_run is None:
-            continue
-        grade = test_run_grade(
-            passed=test.passed,
-            infrastructure=test.failure_kind == "infrastructure",
-            inconclusive=test.inconclusive,
-        )
-        row = test_run_row(test.test_run, grade)
-        if functional_metadata and grade == "fail":
-            row["functional_failure"] = (
-                not test.timed_out
-                and not test.inconclusive
-                and test.failure_kind != "infrastructure"
-            )
-        rows.append(row)
-    return rows
-
-
-def _test_verdict(test: TestResult) -> str:
-    """Return a stable machine-readable per-test verdict."""
-    if test.passed:
-        return "pass"
-    if test.timed_out:
-        return "timeout"
-    if test.termination != "completed":
-        return "fail"
-    if test.inconclusive:
-        return "inconclusive"
-    if test.elab_failed:
-        return "elab_error"
-    return "fail"
-
-
-def _cycle_detail(result: TargetResult, test: TestResult) -> dict[str, object]:
-    return {
-        "target": result.target,
-        "target_identity": result.target_identity,
-        "test": test.name,
-        "verdict": _test_verdict(test),
-        "cycles": test.cycles,
-        "observation": test.cycle_status,
-    }
-
-
-_ERROR_MARKERS = (
-    "%Error",
-    "FATAL",
-    "Assertion",
-    "TIMEOUT",
-    "Timeout",
-    "ERROR",
-    "FAIL",
-    "$fatal",
-    "MISMATCH",
-    "mismatch",
-)
-# Noise patterns that obscure real errors in fallback output
-_NOISE_RE = re.compile(r"warning:|^VCD info:|^FST info:", re.IGNORECASE)
-
-
-#: Lines kept after the last salient one in a failure excerpt. A testbench
-#: prints its diagnosis *around* the marker line — fpu's mutation run read
-#: ``f32_le / TEST FAILED / REFERENCE=1 CALCULATED=0``, and only the middle line
-#: carries a marker — so the excerpt must not stop at the match.
-_EXCERPT_CONTEXT_AFTER = 5
-
-#: Lines of the run's TRUE tail an excerpt always keeps, however far above them
-#: the last marker sits. The markers are case-sensitive and coarse, so the line
-#: that actually states the verdict often carries none of them: a TB printing
-#: ``ERROR: unable to open coverage db`` at t=1 and ``Result: 12 tests failed``
-#: 5,000 lines later would otherwise render six lines about the coverage db and
-#: amputate the failure summary — strictly worse than the blind tail it replaced.
-_EXCERPT_TAIL_LINES = 10
-
-
-def select_error_lines(text: str, limit: int) -> list[str]:
-    """The most relevant ``<= limit`` lines of *text* for a failure excerpt.
-
-    A blind tail is right only when the failure happens to be at the end. On a
-    run whose testbench keeps printing after the error — or one that never
-    failed at all — the tail is pure noise: fpu F-28 rendered 30 lines of
-    ``TEST SUCCEEDED`` as the "error output" of an INCONCLUSIVE run. So anchor
-    the window on the LAST line carrying an :data:`_ERROR_MARKERS` marker and
-    keep :data:`_EXCERPT_CONTEXT_AFTER` lines past it for the surrounding
-    diagnosis — but never at the cost of the end of the log: the last
-    :data:`_EXCERPT_TAIL_LINES` lines are always kept too, with an explicit
-    elision between the two when they do not meet. Falls back to the
-    noise-filtered tail when nothing is salient (the inconclusive case, where
-    "what did it actually print" IS the answer).
-    """
-    lines = text.strip().splitlines()
-    if not lines:
-        return []
-    salient = [i for i, ln in enumerate(lines) if any(m in ln for m in _ERROR_MARKERS)]
-    if not salient:
-        non_noise = [ln for ln in lines if ln.strip() and not _NOISE_RE.search(ln)]
-        return (non_noise or lines)[-limit:]
-
-    end = min(len(lines), salient[-1] + 1 + _EXCERPT_CONTEXT_AFTER)
-    if end >= len(lines):
-        return lines[max(0, end - limit) : end]  # window already reaches the end
-    if limit <= _EXCERPT_TAIL_LINES + 1:
-        # Too small a budget to carry both halves and announce the gap; the end
-        # of the log is the half we must not lose.
-        return lines[-limit:]
-    tail_n = min(_EXCERPT_TAIL_LINES, len(lines) - end)
-    head = lines[max(0, end - (limit - tail_n - 1)) : end]
-    omitted = len(lines) - end - tail_n
-    if omitted <= 0:  # the two halves touch — no gap to announce
-        return lines[max(0, len(lines) - limit) :]
-    selected = [*head, f"... ({omitted} lines omitted) ...", *lines[-tail_n:]]
-    first = lines[salient[0]]
-    if first not in selected:
-        selected = [first, *selected]
-    return selected[:limit]
-
-
-def _append_error_excerpt(error_tail: str, lines: list[str]) -> None:
-    """Append a salient excerpt of error output to display lines."""
-    err_lines = [ln.strip() for ln in error_tail.splitlines() if ln.strip()]
-    salient = [ln for ln in err_lines if any(m in ln for m in _ERROR_MARKERS)]
-    if salient:
-        to_show = salient[:_MAX_DISPLAY_ERRORS]
-    else:
-        # Filter out compiler/EDA-tool noise before falling back to tail
-        non_noise = [ln for ln in err_lines if not _NOISE_RE.search(ln)]
-        to_show = (non_noise or err_lines)[-_MAX_DISPLAY_ERRORS:]
-    for el in to_show:
-        display = el[:97] + "..." if len(el) > 100 else el
-        lines.append(f"    {display}")
-    remaining = len(salient) - _MAX_DISPLAY_ERRORS if salient else 0
-    if remaining > 0:
-        lines.append(f"    ... {remaining} more error(s)")
-
-
-def _determine_pass_fail(
-    combined: str,
-    proc: SubprocessResult,
-) -> tuple[bool, bool]:
-    """Determine pass/fail from sim output and process result.
-
-    Returns (passed, inconclusive).
-    """
-    # count_sva_errors already excludes harness trace-incident lines so a
-    # missing waveform is not miscounted as a DUT SVA failure (QA_REPORT B5.1).
-    sva_errors = parse_sva_errors(combined)
-
-    try:
-        summary = parse_summary_line(combined)
-    except ValueError:
-        summary = None
-
-    if summary is not None:
-        passed = summary["passed"]
-        inconclusive = summary.get("inconclusive", False)
-    elif proc.returncode == 0 and sva_errors == 0:
-        # No summary, clean exit — inconclusive
-        passed, inconclusive = False, True
-    else:
-        passed, inconclusive = False, False
-
-    if proc.timed_out:
-        passed, inconclusive = False, False
-
-    return passed, inconclusive
-
-
-def _report_elapsed(elapsed_s: float) -> str:
-    """Record duration: milliseconds below 1s, so 10-20ms cocotb tests stay distinct (F-39)."""
-    seconds = max(0.0, elapsed_s)
-    return f"{seconds * 1000:.0f}ms" if seconds < 1.0 else f"{seconds:.1f}s"
-
-
-def _human_elapsed(elapsed_s: float) -> str:
-    """Terminal duration: ``1m 01s`` from one second up, milliseconds below it (F-39)."""
-    return format_duration(elapsed_s) if elapsed_s >= 1.0 else _report_elapsed(elapsed_s)
-
-
-def _verdict_word(*, inconclusive: bool, passed: bool) -> str:
-    """The verdict as shown in reports: PASS, FAIL, or INCONCLUSIVE."""
-    if inconclusive:
-        return "INCONCLUSIVE"
-    return "PASS" if passed else "FAIL"
-
-
-def _paint_verdict(word: str) -> str:
-    """Color a verdict word for the terminal: green, red, or amber."""
-    paint = {"PASS": colors.green, "FAIL": colors.red}.get(word, colors.amber)
-    return paint(word)
-
-
-def _test_table_lines(tests: Sequence[TestResult], *, human: bool) -> list[str]:
-    """The Test/Result/Cycles/Time/Build table for one Target's tests.
-
-    The record keeps full names and record durations; the human form colors
-    verdicts, caps long names, and reads durations like ``1m 01s``.
-    """
-    duration = _human_elapsed if human else _report_elapsed
-    rows = []
-    for test in tests:
-        word = _verdict_word(inconclusive=test.inconclusive, passed=test.passed)
-        rows.append(
-            (
-                test.name,
-                _paint_verdict(word) if human else word,
-                f"{test.cycles:,}" if test.cycles is not None else "",
-                duration(test.elapsed_s),
-                (format_duration(test.build_s) if human else f"{test.build_s:.0f}s")
-                if test.build_s >= 1
-                else "",
-            )
-        )
-    return render_table(
-        ("Test", "Result", "Cycles", "Time", "Build"),
-        rows,
-        max_widths={0: _TEST_NAME_CAP} if human else None,
-    )
-
-
-def _test_status_line(tr: TestResult) -> str:
-    """One-line test status (name, PASS/FAIL/INCONCLUSIVE, cycle count, elapsed).
-
-    The streamed per-target detail line; the end-of-report summary renders the
-    same facts as a table (:func:`_test_table_lines`).
-    """
-    status = _verdict_word(inconclusive=tr.inconclusive, passed=tr.passed)
-    cycles_str = f"{tr.cycles:>8,} cycles" if tr.cycles is not None else "             "
-    # Keep the compact display silent for sub-second warm-cache builds; the
-    # millisecond value remains available in structured phase telemetry.
-    build_str = f"  (incl. {tr.build_s:.0f}s build)" if tr.build_s >= 1 else ""
-    elapsed_str = _report_elapsed(tr.elapsed_s)
-    return f"  {tr.name:<20s} {status}   {cycles_str}  {elapsed_str:>7s}{build_str}"
-
-
-def _cocotb_verdict_names(
-    selected: list[str],
-    results: Any,
-    target: str,
-) -> list[str]:
-    """The names a cocotb batch must produce a verdict for.
-
-    The selected set when there is one; otherwise whatever results.xml reported
-    (an unfiltered run), falling back to the Target itself so a batch that
-    produced nothing at all still has exactly one entry to hang a verdict on.
-    """
-    if selected:
-        return list(selected)
-    if results is not None and results.tests:
-        return [t.name for t in results.tests]
-    return [target]
-
-
-def _append_test_output_line(
-    tr: TestResult,
-    output_lines: list[str],
-    run_log_fresh: bool = False,
-) -> None:
-    """Append a formatted output line (and error tail) for a single test result.
-
-    *run_log_fresh* — the caller vouches that THIS invocation wrote the
-    target's run.log. Only then does the omission marker say "see run.log";
-    a benchmark sweep found stale pointers sending agents to a leftover log
-    from an earlier build that read "TEST PASSED" while the EDA tool reported a
-    failure.
-    """
-    output_lines.append(_test_status_line(tr))
-    trace = _trace_line(tr)
-    if trace:
-        output_lines.append(trace)
-    if tr.error_tail:
-        # Bound the excerpt so one verbose failure can't eat the whole MCP
-        # stdout window; the full output survives in the persisted run.log.
-        # The cap scales with a raised BOOLEY_MCP_MAX_STDOUT_BYTES budget.
-        max_lines = output_budget.scaled(_MAX_EXCERPT_LINES)
-        tail_lines = tr.error_tail.splitlines()
-        shown = tail_lines[-max_lines:]
-        omitted = len(tail_lines) - len(shown)
-        # An INCONCLUSIVE run did not fail — it produced no verdict at all, and
-        # its output is very often 30 lines of the testbench happily succeeding.
-        # Labelling that "error output" presents noise as a diagnosis (F-28).
-        if tr.inconclusive:
-            head = f"  --- output tail (no pass/fail sentinel found, last {len(shown)} lines) ---"
-            foot = "  --- end output tail ---"
-        else:
-            head = f"  --- error output (last {len(shown)} lines) ---"
-            foot = "  --- end error output ---"
-        output_lines.append(head)
-        if omitted > 0:
-            pointer = ", see run.log" if run_log_fresh else ""
-            output_lines.append(f"  ... ({omitted} lines omitted{pointer})")
-        output_lines.append("\n".join(shown))
-        output_lines.append(foot)
-
-
-def _append_batch_output_lines(
-    test_results: list[TestResult],
-    output_lines: list[str],
-    run_log_fresh: bool = False,
-) -> None:
-    """Per-test status lines, with a *shared* error tail printed only once.
-
-    A cocotb batch runs every selected test in one simulator process, so a
-    failure of the process itself — an import error, a segfault, no results.xml
-    — hands all of them the very same run-level error. Echoing it once per test
-    drowned the summary in nine copies of one message and made a batch-level
-    failure read like nine independent ones (F-6). Print it once, and say how
-    many tests it accounts for.
-    """
-    shared = Counter(tr.error_tail for tr in test_results if tr.error_tail)
-    printed: set[str] = set()
-    for tr in test_results:
-        if tr.error_tail in printed:
-            output_lines.append(_test_status_line(tr))  # status only; error already shown
-            continue
-        if tr.error_tail:
-            printed.add(tr.error_tail)
-        _append_test_output_line(tr, output_lines, run_log_fresh)
-        count = shared.get(tr.error_tail, 0)
-        if count > 1:
-            output_lines.append(
-                f"  (same error for all {count} selected tests — the batch failed as a whole)"
-            )
 
 
 class SimulateFlow(StandaloneMixin, BuiltinFlow):
@@ -2545,7 +1694,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def begin_invocation(self) -> None:
         """Start this invocation's Test Run decisions afresh.
 
-        Resolved Test Runs (drawn seeds included), planned groups, baseline
+        Resolved Test Runs (drawn seeds included), baseline
         runs and the Goals' frozen Test Runs belong to one request. A reused Flow
         object must resolve the next request itself, never reuse these.
         """
@@ -3228,37 +2377,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         return None
 
-    def _resolve_run_targets(
-        self,
-    ) -> EndpointOutcome | tuple[list[str], dict[str, list[str]]]:
-        """Resolve the execution selection and requested Targets for this run.
-
-        Returns a terminal ``EndpointOutcome`` on the first validation error;
-        otherwise ``(targets, test_names_map)`` for the caller to continue with.
-        """
-        # The Target owns its top and trace hierarchy; validate selection here.
-        if not self._flow_enabled():
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text="sim is disabled ([flows.sim].enabled = false).",
-            )
-        targets_or_error = self._resolve_requested_targets()
-        if isinstance(targets_or_error, EndpointOutcome):
-            return targets_or_error
-        targets = targets_or_error
-        err = self._validate_interactive_args(targets)
-        if err is not None:
-            return err
-        return targets, _get_test_names(self.args.work_dir)
-
     def _maybe_dispatch_special_run(  # noqa: PLR0911 -- ordered endpoint gates
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
-        *,
-        campaign_prepared: bool = False,
     ) -> EndpointOutcome | None:
-        """Handle validation + the dry-run path; ``None`` means "continue".
+        """Handle validation + the dry-run preview; ``None`` means "continue".
 
         Validates ``--test`` the way ``--target`` is already validated
         (``resolve_target_selection`` raises ``UnknownTargetError``) — an
@@ -3281,7 +2405,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return runnable_error
 
         plan = self._plan_simulation(targets, test_names_map)
-        self._flow_plan = plan
         if plan.aggregate_errors:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -3289,9 +2412,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 detail={"mode": self._mode.value, "plan": plan.as_dict()},
             )
         if self.args.dry_run:
-            if campaign_prepared:
-                return self._preview_ordinary_campaigns(targets, test_names_map)
-            return self._handle_dry_run(targets, test_names_map)
+            return self._preview_ordinary_campaigns(targets, test_names_map)
 
         return None
 
@@ -3337,7 +2458,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         units: list[WorkUnitPlan] = []
         errors: list[str] = []
         execution = self._simulation_execution()
-        planned = self._test_runs.planned_groups
         for target in targets:
             try:
                 preview = execution.preview(
@@ -3362,7 +2482,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             ) as exc:
                 errors.append(f"{target}: {exc}")
                 continue
-            planned[(role, target)] = preview.run_groups
             units.extend(target_units)
         return units, errors
 
@@ -3556,13 +2675,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return result
 
     def _run(self) -> EndpointOutcome:
-        """Run the selected shape and stamp its canonical mode on every result."""
+        """Run an elaboration-only mode; simulate mode always runs a prepared Campaign."""
         # prepare_endpoint_invocation sends every simulate-mode coverage run to
         # run_prepared_simulation; only elaboration-only modes reach this path.
         result = (
             EndpointOutcome(exit_code=2, report_text="Coverage requires simulation mode")
             if getattr(self.args, "coverage", False)
-            else self._run_selected_mode()
+            else self._validate_mode_args() or self._run_elab_only()
         )
         result.detail["mode"] = self._mode.value
         return self._with_baseline_refusal_note(self._with_diagnostic_test_run_note(result))
@@ -4402,37 +3521,22 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _run_selected_mode(
         self,
         *,
-        prepared: PreparedSimulationEndpoint | None = None,
-        admission: object | None = None,
+        prepared: PreparedSimulationEndpoint,
+        admission: object | None,
     ) -> EndpointOutcome:
-        """Execute simulation across configs and tests."""
+        """Run the prepared simulate-mode Campaign."""
         mode_error = self._validate_mode_args()
         if mode_error is not None:
             return mode_error
-        if self._mode.elaborates_only:
-            return self._run_elab_only()
-        total_start = monotonic()
-        resolution_started = total_start
-        if prepared is None:
-            resolved = self._resolve_run_targets()
-            if isinstance(resolved, EndpointOutcome):
-                return resolved
-            targets, test_names_map = resolved
-        else:
-            targets = list(prepared.selected_targets)
-            test_names_map = prepared.test_names_map
-        resolution_s = monotonic() - resolution_started
+        targets = list(prepared.selected_targets)
+        test_names_map = prepared.test_names_map
 
-        special_result = self._maybe_dispatch_special_run(
-            targets, test_names_map, campaign_prepared=prepared is not None
-        )
+        special_result = self._maybe_dispatch_special_run(targets, test_names_map)
         if special_result is not None:
             return special_result
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
 
-        if prepared is not None:
-            return self._run_ordinary_campaigns(targets, test_names_map, admission)
-        return self._run_legacy_selected_mode(targets, test_names_map, total_start, resolution_s)
+        return self._run_ordinary_campaigns(targets, test_names_map, admission)
 
     def _with_live_progress(self, run: Callable[[], EndpointOutcome]) -> EndpointOutcome:
         """Bind execution observations to the original destination invocation."""
@@ -4454,164 +3558,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if sink.error is not None:
             result.detail["observation_error"] = sink.error
         return result
-
-    def _run_legacy_selected_mode(self, targets, test_names_map, total_start, resolution_s):
-        return self._with_live_progress(
-            lambda: self._execute_legacy_selected_mode(
-                targets, test_names_map, total_start, resolution_s
-            )
-        )
-
-    def _execute_legacy_selected_mode(
-        self, targets, test_names_map, total_start, resolution_s
-    ) -> EndpointOutcome:
-        self._legacy_pre_sim_runs = []
-        results: list[TargetResult] = []
-        result: EndpointOutcome | None = None
-        lifecycle = ProgressLifecycle(
-            lambda phase: self._write_progress_report(targets, results, phase=phase, complete=True)
-        )
-        try:
-            with lifecycle:
-                prepared = self._prepare_legacy_run(targets, test_names_map, results)
-                if isinstance(prepared, EndpointOutcome):
-                    result = self._attach_legacy_pre_sim(prepared)
-                    return result
-                lines, passed = prepared
-                result = self._legacy_endpoint_outcome(
-                    targets,
-                    results,
-                    lines,
-                    passed,
-                    monotonic() - total_start,
-                    resolution_s,
-                )
-                lifecycle.complete()
-                return self._attach_legacy_pre_sim(result)
-        except ProgressPublicationError as exc:
-            if result is not None:
-                failure = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
-                return normalize_completion_error(
-                    result,
-                    failure,
-                    "publish simulation progress",
-                    path=self._reserved_invocation_dir / "progress.json"
-                    if self._reserved_invocation_dir is not None
-                    else None,
-                )
-            return self._attach_legacy_pre_sim(
-                EndpointOutcome(
-                    exit_code=EXIT_ERROR,
-                    detail={"progress_error": str(exc)},
-                    report_text=f"sim: progress publication failed: {exc}",
-                )
-            )
-
-    def _prepare_legacy_run(self, targets, test_names_map, results):
-        lines: list[str] = []
-        self._test_names_map = test_names_map
-        self._evidence_work_dir = Path(self.args.work_dir)
-        self.reserve_invocation_dir()
-        self._write_progress_report(targets, results, phase="starting")
-        baseline = self._run_cycle_count_baselines(targets, test_names_map)
-        if isinstance(baseline, EndpointOutcome):
-            return baseline
-        self._baseline_results = baseline
-        for target in targets:
-            try:
-                with attempt_scope(target, tests=tuple(test_names_map.get(target, ()))):
-                    result = self._run_resolved_target(target, test_names_map, lines)
-            except MissingExecutableError as exc:
-                return self._missing_executable_result(exc, target)
-            except SimulationBuildInfrastructureError as exc:
-                return self._build_infrastructure_result(
-                    exc, report_path=self._report_destination()
-                )
-            self._record_legacy_target(targets, results, result)
-        return lines, all(result.passed for result in results)
-
-    def _attach_legacy_pre_sim(self, result: EndpointOutcome) -> EndpointOutcome:
-        from .execution.pre_sim_reporting import pre_sim_report_line
-
-        runs = getattr(self, "_legacy_pre_sim_runs", [])
-        lines = [pre_sim_report_line(target, record) for target, record in runs]
-        result.detail.update(pre_sim_runs=[record for _, record in runs], pre_sim_lines=lines)
-        return _append_missing_report_lines(result, lines)
-
-    def _record_legacy_target(self, targets, results, result) -> None:
-        self._attach_workload_snapshots(result)
-        self._persist_target_outcome(result)
-        results.append(result)
-        self._write_progress_report(targets, results, phase="running")
-        if len(targets) > 1:
-            for line in _target_display_lines(result):
-                self.emit_completion(line, repeats_at_end=True)
-
-    def _legacy_endpoint_outcome(
-        self, targets, results, lines, passed, elapsed, resolution_s
-    ) -> EndpointOutcome:
-        report_text = self._format_summary(results, lines, passed)
-        for result in results:
-            self._record_eda_tool(result.target, result.eda_tool)
-        detail = self._legacy_result_detail(results, elapsed, resolution_s)
-        self._attach_legacy_artifacts(detail, results)
-        return EndpointOutcome(
-            exit_code=(
-                EXIT_ERROR
-                if any(result.infrastructure_error for result in results)
-                else EXIT_SUCCESS
-                if passed
-                else EXIT_FAILURE
-            ),
-            criterion_key=f"sim_pass_{targets[0]}" if len(targets) == 1 else "",
-            criterion_met=passed,
-            display_lines=_build_display_lines(results, elapsed),
-            display_label=_completed_display_label(targets, results),
-            detail=detail,
-            report_text=report_text,
-        )
-
-    def _legacy_result_detail(self, results, elapsed, resolution_s) -> dict[str, Any]:
-        detail: dict[str, Any] = {
-            "mode": self._mode.value,
-            "targets": len(results),
-            "targets_passed": sum(1 for result in results if result.passed),
-            "elapsed_s": round(elapsed, 1),
-            "resolution_s": round(resolution_s, 3),
-            "phase_timings_s": {result.target: dict(result.phase_timings_s) for result in results},
-            "elaboration": {
-                result.target: [
-                    entry
-                    for test in result.tests
-                    if (entry := _build_outcome_entry(test.build_outcome)) is not None
-                ]
-                for result in results
-            },
-            "cycle_counts": [
-                _cycle_detail(result, test) for result in results for test in result.tests
-            ],
-        }
-        if any(result.elab_failed for result in results):
-            detail["elab_failed"] = True
-        runs = getattr(self, "_legacy_pre_sim_runs", [])
-        detail["pre_sim_runs"] = [record for _, record in runs]
-        from .execution.pre_sim_reporting import pre_sim_report_line
-
-        detail["pre_sim_lines"] = [pre_sim_report_line(target, record) for target, record in runs]
-        return detail
-
-    def _attach_legacy_artifacts(self, detail, results) -> None:
-        for result in results:
-            block = self._artifacts_for(result)
-            if block and self.args.report_dir is not None:
-                invocation = self.reserve_invocation_dir()
-                assert invocation is not None
-                block["report"] = posix_relpath(
-                    target_report_directory(invocation, result.target) / "simulation.json",
-                    self.args.work_dir,
-                )
-            if block:
-                detail.setdefault("artifacts", {})[result.target] = block
 
     def _manifest_publisher(self, published: list[Path]) -> Callable[[Path], None]:
         """Retain committed paths even when console publication is unavailable."""
@@ -5252,7 +4198,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return format_flow_display_label(self._requested_targets(), tests=cast(list[str], tests))
 
     def _validate_mode_args(self) -> EndpointOutcome | None:
-        """Reject run-stage arguments that have no meaning in elab-only mode."""
+        """Refuse bare ``--standalone`` and run-stage arguments meaningless in elab-only mode."""
         if self.args._legacy_standalone_without_elab:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -5668,8 +4614,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         prepared: PreparedSimulationBuild,
     ) -> None:
         """Register prepared Target state used by reports and optional sweeps."""
-        self._remember_resolved_target(target, prepared.resolved)
-        self._record_run_log_dir(target, prepared.build_root)
+        self._open_run_log(target, Path(prepared.build_root))
         self._record_eda_tool(target, prepared.eda_tool)
 
     def _execute_elab_only_build(
@@ -5918,109 +4863,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     tests.append(test)
         return result
 
-    def _run_cycle_count_baselines(
-        self,
-        targets: list[str],
-        test_names_map: dict[str, list[str]],
-    ) -> dict[str, TargetResult] | EndpointOutcome:
-        """Run each relative Cycle Count Target once in the baseline checkout."""
-        del targets  # Selection is frozen in the FlowPlan before execution.
-        baseline_ref, baseline_targets, error = self._planned_cycle_baseline_selection()
-        if error is not None:
-            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=error)
-        if baseline_ref is None:
-            return {}
-        project_root = Path(self.args.work_dir)
-        baseline_tests = self._cycle_baseline_test_names(test_names_map)
-        expected_identities = {
-            target: self._target_handle(target).identity for target in baseline_targets
-        }
-        results: dict[str, TargetResult] = {}
-        try:
-            worktree = self._shared_baseline_worktree(baseline_ref)
-            self.args.work_dir = worktree
-            try:
-                for target in baseline_targets:
-                    baseline_handle = self._target_handle(target)
-                    expected_identity = expected_identities[target]
-                    if baseline_handle.identity != expected_identity:
-                        raise BaselineWorktreeError(
-                            f"Cycle Count baseline selector {target!r} resolves to "
-                            f"{baseline_handle.identity!r}, expected {expected_identity!r}"
-                        )
-                    with attempt_scope(
-                        target,
-                        identity=baseline_handle.identity,
-                        role="baseline",
-                        revision=baseline_ref,
-                        ephemeral_root=worktree,
-                        tests=tuple(baseline_tests.get(target, ())),
-                    ):
-                        result = self._run_target(
-                            target,
-                            self._tb_top_for_target(target),
-                            baseline_tests,
-                            [],
-                            plan_role="baseline",
-                        )
-                    result.target_identity = baseline_handle.identity
-                    results[result.target_identity] = result
-                    self._attach_workload_snapshots(result)
-            finally:
-                self.args.work_dir = project_root
-        except (
-            MissingExecutableError,
-            SimulationBuildInfrastructureError,
-            BaselineWorktreeError,
-            fusesoc_registry.FuseSocError,
-        ) as exc:
-            self.args.work_dir = project_root
-            return self._cycle_baseline_failure(exc, baseline_targets)
-        return results
-
-    def _planned_cycle_baseline_selection(
-        self,
-    ) -> tuple[str | None, list[str], str | None]:
-        """Read the baseline revision and Target order from the frozen plan."""
-        baseline_units = tuple(
-            unit for unit in self._flow_plan.work_units if unit.role == "baseline"
-        )
-        if not baseline_units:
-            return None, [], None
-        revisions = {unit.revision for unit in baseline_units}
-        if len(revisions) != 1 or None in revisions:
-            return (
-                None,
-                [],
-                "sim: planned Cycle Count baseline has no unique revision",
-            )
-        baseline_ref = next(iter(revisions))
-        assert baseline_ref is not None
-        baseline_targets = list(dict.fromkeys(unit.selector for unit in baseline_units))
-        return baseline_ref, baseline_targets, None
-
-    def _cycle_baseline_failure(
-        self,
-        exc: (
-            MissingExecutableError
-            | SimulationBuildInfrastructureError
-            | BaselineWorktreeError
-            | fusesoc_registry.FuseSocError
-        ),
-        targets: list[str],
-    ) -> EndpointOutcome:
-        """Translate baseline setup and execution failures into Flow results."""
-        if isinstance(exc, MissingExecutableError):
-            return self._missing_executable_result(exc, targets[0])
-        if isinstance(exc, SimulationBuildInfrastructureError):
-            return self._build_infrastructure_result(exc, report_path=self._report_destination())
-        if isinstance(exc, BaselineWorktreeError):
-            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
-        return EndpointOutcome(
-            exit_code=EXIT_ERROR,
-            report_text=f"sim: Cycle Count baseline Target selection failed: {exc}",
-        )
-
     def _missing_executable_result(
         self,
         exc: MissingExecutableError,
@@ -6061,31 +4903,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             report_text=report_text,
         )
 
-    @staticmethod
-    def _build_infrastructure_result(
-        exc: SimulationBuildInfrastructureError,
-        *,
-        report_path: Path | None = None,
-    ) -> EndpointOutcome:
-        """Report a no-verdict build outcome without changing Criteria."""
-        outcome = exc.outcome
-        message = (
-            f"sim: build infrastructure failed for Target {exc.target!r}: "
-            f"{outcome.reason}. No simulation ran, so there is no pass/fail "
-            "verdict about the design. Inspect the build log and re-run."
-        )
-        tail = build_output_tail(outcome.output)
-        report_text = f"{message}\n\n--- output tail ---\n{tail}" if tail else message
-        if report_path is not None:
-            report_text += f"\n  report: {report_path.resolve()}"
-        print(report_text)
-        return EndpointOutcome(
-            exit_code=EXIT_ERROR,
-            display_lines=[f"Flow error: {exc.target} build infrastructure failed"],
-            detail=_build_infrastructure_detail(exc),
-            report_text=report_text,
-        )
-
     def _resolve_requested_targets(self) -> list[str] | EndpointOutcome:
         handles = self._selected_target_handles()
         self._target_handles = {handle.selector: handle for handle in handles}
@@ -6116,298 +4933,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return selected
         return TargetCatalog.build(root).select(target, for_flow="sim")
 
-    def _tb_top_for_target(self, target: str, resolved: Any = None) -> str:
-        if resolved is None:
-            catalog = TargetCatalog.build(self.args.work_dir)
-            return catalog.inspect(self._target_handle(target)).toplevel
-        return tb_top_for_target(
-            target,
-            self.args.work_dir,
-            resolved=resolved,
-        )
-
-    def _record_sim_criterion(self, target_result: TargetResult) -> None:
-        """Evaluate the actual selected workload, including memory-only runs."""
-        if target_result.inconclusive:
-            return
-        crit_key = f"sim_pass_{target_result.target}"
-        selected = [test.name for test in target_result.tests]
-        declared = list(
-            lookup_target_section(
-                getattr(self, "_test_names_map", None) or _get_test_names(self.args.work_dir),
-                self._target_identity(target_result.target),
-            )
-            or []
-        )
-        complete_suite = not self.args.test and (not declared or set(selected) == set(declared))
-        passed_tests = [test.name for test in target_result.tests if test.passed]
-        failed_tests = [
-            test.name for test in target_result.tests if not test.passed and not test.inconclusive
-        ]
-        skipped_tests = self._skipped_tests(
-            target_result.target,
-            getattr(self, "_test_names_map", None) or _get_test_names(self.args.work_dir),
-        )
-        self.set_criterion(
-            crit_key,
-            target_result.passed,
-            source_target=target_result.target,
-            detail={
-                "mode": self._mode.value,
-                "tests_passed": sum(1 for t in target_result.tests if t.passed),
-                "tests_total": len(target_result.tests),
-                "test_selector": self.args.test or ("all" if complete_suite else "partial"),
-                "registry_tests": declared,
-                "selected_tests": selected,
-                "passed_tests": passed_tests,
-                "failed_tests": failed_tests,
-                "skipped_tests": skipped_tests,
-                "test_runs": _test_run_rows(target_result.tests, functional_metadata=True),
-            },
-        )
-
-    def _record_test_goal_criteria(self, target_result: TargetResult) -> None:
-        """Record this Target's Test Runs for the Goals that name Test Runs (ADR 0072).
-
-        The Target Goal is recorded under ``sim_pass_<target>`` by
-        :meth:`_record_sim_criterion`, and a Cycle Count Goal whose frozen run
-        ran by :meth:`_record_cycle_count_criteria`. Every other Goal with a
-        graded matching run gets that run's outcome here: a Goal that names
-        a selector as its verdict, a coverage Goal as outcomes only (this
-        path measures no coverage). Without a matching run this invocation
-        is diagnostic for the Goal.
-        """
-        frozen = self._frozen_test_runs()
-        if frozen is None or target_result.inconclusive:
-            return
-        rows = _test_run_rows(target_result.tests, functional_metadata=True)
-        for goal in frozen.of_target(self._target_names(target_result.target)):
-            matched = goal.matching(rows)
-            graded = any(row["grade"] in {"pass", "fail"} for row in matched)
-            if goal.kind == "cycle_count" or (goal.suite and goal.kind == "simulation"):
-                continue
-            if not graded:
-                continue
-            passed = sum(row["grade"] == "pass" for row in matched)
-            self.set_criterion(
-                goal.key,
-                goal.own_verdict(matched),
-                source_target=target_result.target,
-                detail={
-                    "mode": self._mode.value,
-                    "tests_passed": passed,
-                    "tests_total": len(matched),
-                    **goal.outcomes_detail(matched),
-                },
-            )
-
-    def _record_cycle_count_criteria(self, target_result: TargetResult) -> None:
-        """Grade every declared Criterion bound to this Target and named test."""
-        if self.args.state_file is None:
-            return
-        for key, entry in self.state.criteria.items():
-            params = entry.params or {}
-            if not key.startswith("cycle_count_") or not criterion_matches_target(
-                params,
-                identity=target_result.target_identity,
-                selector=target_result.target,
-            ):
-                continue
-            test_name = params.get("test")
-            judged, current = self._cycle_observation(key, test_name, target_result)
-            if judged:
-                self._record_cycle_count_criterion(key, params, target_result, current)
-
-    def _cycle_observation(
-        self, key: str, test_name: object, target_result: TargetResult
-    ) -> tuple[bool, TestResult | None]:
-        """Whether Cycle Count Criterion *key* is graded on this Target, and from which result.
-
-        Outside Goal Mode a Criterion names a Test and is always graded: from
-        that Test's result, or as missing when the Test did not run. Inside
-        Goal Mode a Goal requires one frozen Test Run (ADR 0072): only the
-        result of that run, by resolved name and fingerprint, is its
-        observation. Another Test Run of the same Test is evidence of
-        nothing for the Goal, which then is not graded at all.
-        """
-        frozen = self._frozen_test_runs()
-        if frozen is None:
-            named = [test for test in target_result.tests if test.name == test_name]
-            return True, (named[-1] if named else None)
-        goal = next((item for item in frozen.goals if item.key == key), None)
-        for test in target_result.tests if goal is not None else ():
-            run = test.test_run
-            if run is not None and goal is not None and goal.requires(run.name, run.fingerprint):
-                return True, test
-        return False, None
-
-    def _record_cycle_count_criterion(
-        self,
-        key: str,
-        params: dict[str, Any],
-        target_result: TargetResult,
-        current: TestResult | None,
-    ) -> None:
-        """Grade Cycle Count Criterion *key* from *current* and its baseline observation."""
-        test_name = params.get("test")
-        relative = has_relative_threshold(params)
-        baseline = self._baseline_cycle_test(target_result, params, current) if relative else None
-        met, reason = _admissible_cycle_evidence(current, "current")
-        if met and relative:
-            met, reason = _admissible_cycle_evidence(baseline, "baseline")
-        detail = self._direct_cycle_detail(target_result, test_name, current, baseline)
-        if baseline is None and not relative:
-            detail["baseline_observation"] = "not_required"
-        refusal = self._baseline_refusal_for(target_result, test_name, current)
-        if relative and baseline is None and refusal is not None:
-            # The comparison could not be made at all: say why, by name.
-            detail["baseline_observation"] = "inapplicable"
-            met, reason = False, (reason if reason.startswith("current") else refusal)
-        if reason:
-            detail["reason"] = reason
-        self.set_criterion(key, met, source_target=target_result.target, detail=detail)
-
-    def _direct_cycle_detail(
-        self,
-        result: TargetResult,
-        test_name: object,
-        current: TestResult | None,
-        baseline: TestResult | None,
-    ) -> dict[str, Any]:
-        """What one Cycle Count Criterion observed on the candidate and its baseline."""
-        return {
-            "mode": self._mode.value,
-            "target": result.target,
-            "target_identity": result.target_identity,
-            "test": test_name,
-            "cycles": current.cycles if current is not None else None,
-            "baseline_cycles": baseline.cycles if baseline is not None else None,
-            "cycle_observation": current.cycle_status if current is not None else "missing",
-            "baseline_observation": baseline.cycle_status if baseline is not None else "missing",
-            "workload_snapshot": current.workload_snapshot if current is not None else None,
-            "baseline_workload_snapshot": (
-                baseline.workload_snapshot if baseline is not None else None
-            ),
-            "test_runs": _test_run_rows(
-                [current] if current is not None else [], functional_metadata=True
-            ),
-        }
-
-    def _baseline_refusal_for(
-        self, result: TargetResult, test: object, current: TestResult | None
-    ) -> str | None:
-        """Why the baseline of the Test Run *current* observed could not run, if it could not."""
-        run = current.test_run if current is not None else None
-        key = baseline_refusal_key(str(test), run)
-        return self._test_runs.baseline.refusals.get((result.target, key))
-
-    def _baseline_cycle_test(
-        self, result: TargetResult, params: Mapping[str, Any], current: TestResult | None
-    ) -> TestResult | None:
-        """The baseline observation of the Test Run *current* observed, if any.
-
-        Both revisions must have run the same Test Run: a baseline result of
-        the same Test with another Test Variant or seed is not comparable.
-        """
-        key = params.get(BASELINE_TARGET_PARAM) or result.target_identity or result.target
-        baseline = getattr(self, "_baseline_results", {}).get(key)
-        if current is None or not isinstance(baseline, TargetResult):
-            return None
-        return next(
-            (
-                test
-                for test in baseline.tests
-                if test.name == current.name and test.test_run == current.test_run
-            ),
-            None,
-        )
-
-    def _remember_resolved_target(self, target: str, resolved: Any) -> None:
-        """Keep the resolved EDAM projection long enough to snapshot its inputs."""
-        if not hasattr(self, "_resolved_targets"):
-            self._resolved_targets: dict[str, Any] = {}
-        self._resolved_targets[target] = resolved
-
-    def _attach_workload_snapshots(self, result: TargetResult) -> None:
-        """Attach a stable declared-input snapshot to each named test result."""
-        from booley.flows.sim.workload import build_workload_snapshot
-
-        resolved = getattr(self, "_resolved_targets", {}).get(result.target)
-        if resolved is None:
-            return
-        work_dir = Path(self.args.work_dir).resolve()
-        run_cwd = resolve_run_cwd(work_dir)
-        resolved_run_cwd = (work_dir / run_cwd).resolve()
-        try:
-            normalized_run_cwd = resolved_run_cwd.relative_to(work_dir).as_posix()
-        except ValueError:
-            normalized_run_cwd = "<outside-worktree>"
-        controls = {
-            "cycle_sentinels": _resolve_cycle_sentinels(self.args.work_dir),
-            "pre_run_commands": resolve_pre_sim_commands(self.args.work_dir),
-            "run_cwd": normalized_run_cwd,
-            "environment": self._target_sim_env(result.target),
-            "select": lookup_target_section(
-                _get_test_selects(self.args.work_dir), self._target_identity(result.target)
-            ),
-            "skip": list(
-                lookup_target_section(
-                    _get_test_skips(self.args.work_dir), self._target_identity(result.target)
-                )
-                or []
-            ),
-        }
-        for test in result.tests:
-            test.workload_snapshot = build_workload_snapshot(
-                work_dir,
-                result.target,
-                test.name,
-                resolved,
-                controls=controls,
-            )
-
-    def _record_run_log_dir(self, target: str, build_root: Path | str) -> None:
-        """Take ownership of *target*'s ``run.log`` for this invocation.
-
-        The run-half and Flow-side result paths both write it into the resolved
-        Edalize build directory next to result.json. Called at prepare time —
-        the only moment the resolved build dir is known — where it both
-        remembers the dir (read back by
-        :meth:`_headline_lines`) and opens the log FRESH: until
-        :func:`write_run_log` lands at the end of the run, the file otherwise
-        still holds the previous run's bytes, and anyone tailing it during
-        the wait reads that old verdict as live progress (F-26).
-
-        The open itself is :meth:`BooleyFlow._open_run_log`'s job.
-        """
-        if not hasattr(self, "_run_log_dirs"):
-            self._run_log_dirs: dict[str, Path] = {}
-        log_dir = Path(build_root)
-        self._run_log_dirs[target] = log_dir
-        self._open_run_log(target, log_dir)
-
-    def _run_log_is_fresh(self, target: str) -> bool:
-        """True when *target*'s run.log holds THIS invocation's output.
-
-        Guards the ``log:`` pointer and the "see run.log" excerpt marker: a
-        build that broke before the run-half started leaves the log at the
-        header :meth:`_record_run_log_dir` opened it with, and pointing at it
-        sends the reader nowhere useful — while before F-26 it sent them to a
-        stale "TEST PASSED" (benchmark finding, ≥6/57 failure cases). The
-        verdict comes from the log's own run header, so it holds for every
-        writer: Booley-side on the boundary path, the run-halves' own child
-        process in the sandbox.
-        """
-        log_dir = getattr(self, "_run_log_dirs", {}).get(target)
-        if log_dir is None:
-            return False
-        try:
-            return run_log_is_current(log_dir)
-        except OSError as exc:
-            # A held log is not worth losing a finished verdict: no pointer.
-            logger.warning("Cannot read run log for target %s: %s", target, exc)
-            return False
-
     @property
     def _target_eda_tools(self) -> dict[str, str | None]:
         """Standalone probes share the invocation's resolved tool metadata."""
@@ -6417,375 +4942,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Remember *target*'s raw resolved EDA tool (e.g. ``"verilator"``).
 
         Raw — not the ``normalize_eda_tool`` run-half family — because this
-        feeds report observability (TargetResult.eda_tool → per-target report
-        + the run-level ``eda_tool`` key), not parser dispatch. Recorded at
-        prepare time, like :meth:`_record_run_log_dir`.
+        feeds report observability (the per-target tool and the run-level
+        ``eda_tool`` key), not parser dispatch. Recorded at prepare time.
         """
         self.record_eda_tool(target, eda_tool)
 
-    def _run_log_pointer(self, target: str) -> str | None:
-        """Project-relative ``run.log`` path for *target*, or None if unknown.
-
-        Unknown for targets whose Edalize resolution never ran (setup
-        failure before the prepare half recorded the build dir) — and None
-        when the log on disk is NOT from this invocation
-        (:meth:`_run_log_is_fresh`): a stale pointer is worse than none.
-        """
-        log_dir = getattr(self, "_run_log_dirs", {}).get(target)
-        if log_dir is None or not self._run_log_is_fresh(target):
-            return None
-        return posix_relpath(log_dir / RUN_LOG_NAME, self.args.work_dir)
-
-    def _artifacts_for(self, result: TargetResult) -> dict[str, object]:
-        """Project execution-validated artifact evidence into report paths."""
-        report_keys = {"live_run_log": "log", "run_log": "log", "trace": "trace"}
-        block: dict[str, object] = {}
-        evidence_work_dir = getattr(self, "_evidence_work_dir", self.args.work_dir)
-        for item in result.artifacts:
-            key = report_keys.get(item.kind, item.kind)
-            if item.kind == "live_run_log":
-                continue
-            if key in block:
-                names = "_".join(item.test_names) or "batch"
-                base = f"{key}_{_artifact_path_component(names)}"
-                key = base
-                suffix = 2
-                while key in block:
-                    key = f"{base}_{suffix}"
-                    suffix += 1
-            block[key] = posix_relpath(item.path, evidence_work_dir)
-        return block
-
-    def _baseline_evidence_for_report(self) -> dict[str, object]:
-        """Serialize baseline provenance and invocation-owned artifact references."""
-        evidence: dict[str, object] = {}
-        for identity, result in sorted(getattr(self, "_baseline_results", {}).items()):
-            if not isinstance(result, TargetResult):
-                continue
-            artifact_block = self._artifacts_for(result)
-            if not artifact_block:
-                continue
-            evidence[identity] = {
-                "target": result.target,
-                "target_identity": result.target_identity,
-                "artifacts": artifact_block,
-            }
-        return evidence
-
-    def _headline_lines(
-        self, all_results: list[TargetResult], *, human: bool = False
-    ) -> list[str]:
-        """Compact per-target verdict block, emitted at the END of report_text.
-
-        The MCP server tail-truncates the EDA tool's stdout (keeping the end), so
-        everything that must always survive — each target's verdict, per-test
-        cycle counts, assertion/fatal error message count, timeout flag, and
-        (on failure) the run.log pointer plus the build-context lines — is repeated here in
-        compact form after all verbose detail. A passing target stays clean:
-        the pointer/build lines exist to be acted on, and a benchmark sweep
-        showed agents shelling out for exactly this context only on failures.
-
-        The record (``human=False``, the default) is plain text. ``human=True``
-        is the terminal form: colored, with long test names cut.
-        """
-        lines = ["", "--- summary (Sandbox) ---"]
-        for r in all_results:
-            verdict = _verdict_word(inconclusive=r.inconclusive, passed=r.passed)
-            tests_passed = sum(1 for t in r.tests if t.passed)
-            sva_errors = sum(t.sva_errors for t in r.tests)
-            flags = f", {describe_error_message_count(sva_errors)}" if sva_errors else ""
-            if any(t.timed_out for t in r.tests):
-                flags += ", TIMED OUT"
-            elapsed = _human_elapsed(r.elapsed_s) if human else _report_elapsed(r.elapsed_s)
-            name = colors.bold_accent(r.target) if human else r.target
-            lines.append(
-                f"[sim] {name}: {_paint_verdict(verdict) if human else verdict} "
-                f"({tests_passed}/{len(r.tests)} tests{flags}, {elapsed})"
-            )
-            if r.tests:
-                lines.extend(_test_table_lines(r.tests, human=human))
-            # F-35: the waveform's path+size must survive tail-truncation too —
-            # it is the whole point of having asked for --trace.
-            lines.extend(ln for ln in (_trace_line(t) for t in r.tests) if ln)
-            failing = not r.passed or any(not t.passed for t in r.tests)
-            if not failing:
-                continue
-            pointer = next(
-                (test.run_log_path for test in r.tests if test.run_log_path),
-                None,
-            )
-            if pointer:
-                lines.append(f"  log: {pointer}")
-            lines.extend(f"  {ln}" for ln in self._build_context_lines(r.target))
-        # render_table styles its own header and rule, so the record is stripped.
-        return lines if human else [colors.strip_ansi(ln) for ln in lines]
-
-    def _build_context_lines(self, target: str) -> list[str]:
-        """≤2 compact failure-card lines naming the build config (best-effort).
-
-        The invisible half of most sim failures (benchmark finding, 47/57
-        cases): the composed compile command (the edalize make line — e.g. a
-        missing ``-g2012``) and the fileset size (a ``.scr`` missing the
-        testbench). One line each; the full file list lives in the per-target
-        report JSON. Empty on any composition failure — context must never
-        fail the EDA tool.
-        """
-        lines: list[str] = []
-        build = self._compile_command_str(target)
-        if build:
-            lines.append(f"build: {build}")
-        fileset = self._fileset_for_report(target)
-        if fileset is not None:
-            total = len(fileset["rtl"]) + len(fileset["tb"])
-            lines.append(f"fileset: {total} files ({len(fileset['tb'])} tb)")
-        return lines
-
-    def _compile_command_str(self, target: str) -> str | None:
-        """The composed setup+build+run command line for *target*, or None.
-
-        Uses the production execution preview so reports and ``--dry-run``
-        cannot diverge. Optional report metadata remains best-effort.
-        """
-        cache: dict[str, str | None] = getattr(self, "_compile_command_cache", {})
-        if not hasattr(self, "_compile_command_cache"):
-            self._compile_command_cache = cache
-        if target in cache:
-            return cache[target]
-        command: str | None = None
-        try:
-            test_names_map = getattr(self, "_test_names_map", None) or _get_test_names(
-                self.args.work_dir
-            )
-            preview = self._simulation_execution().preview(
-                self._target_handle(target), self._test_run_selection(target, test_names_map)
-            )
-            scripts = [item[2] for item in preview.commands if item[:2] == ("sh", "-c")]
-            command = "\n".join(scripts) or None
-        except (
-            fusesoc_registry.FuseSocError,
-            SimulationBuildPreparationError,
-            OSError,
-            ValueError,
-        ):
-            logger.debug("could not compose compile command for %s", target, exc_info=True)
-        cache[target] = command
-        return command
-
-    def _fileset_for_report(self, target: str) -> dict[str, list[str]] | None:
-        """*target*'s declared source fileset, split rtl/tb, or None.
-
-        Uses the canonical pre-setup Target inspection, including FuseSoC's
-        condition evaluation and dependency closure. Cached per Target and
-        best-effort like :meth:`_compile_command_str`.
-        """
-        cache: dict[str, dict[str, list[str]] | None] = getattr(self, "_fileset_cache", {})
-        if not hasattr(self, "_fileset_cache"):
-            self._fileset_cache = cache
-        if target in cache:
-            return cache[target]
-        fileset: dict[str, list[str]] | None = None
-        try:
-            catalog = TargetCatalog.build(self.args.work_dir)
-            inspection = catalog.inspect(self._target_handle(target))
-            fileset = {
-                "rtl": list(inspection.rtl_files),
-                "tb": list(inspection.tb_files),
-            }
-        except (fusesoc_registry.FuseSocError, OSError, ValueError):
-            logger.debug("could not read fileset for %s", target, exc_info=True)
-        cache[target] = fileset
-        return fileset
-
-    def _format_summary(
-        self,
-        all_results: list[TargetResult],
-        output_lines: list[str],
-        overall_pass: bool,
-    ) -> str:
-        """Assemble report_text: verbose detail first, headline block LAST.
-
-        Truncation-resilient ordering: the MCP server tail-truncates the whole
-        EDA-tool stdout to ~12KB keeping the END, so the compact per-target
-        headline block (and the RESULT verdict after it) is emitted at the
-        very end — one chatty failing target can no longer push another
-        target's verdict or cycle counts out of the surviving window.
-        """
-        report_path = self._report_destination()
-        tail = [f"  report: {report_path}"] if report_path is not None else []
-        result_line = self._result_line(all_results, overall_pass)
-        record = "\n".join(
-            [*output_lines, *self._headline_lines(all_results), *tail, "", result_line]
-        )
-        self._human_report = None
-        if self._human_terminal():
-            # Printed by endpoint_reporting once the live progress rows are closed.
-            paint = (
-                colors.bold_green if result_line.startswith("RESULT: PASS") else colors.bold_red
-            )
-            human = "\n".join(
-                [
-                    *output_lines,
-                    *self._headline_lines(all_results, human=True),
-                    *tail,
-                    "",
-                    paint(result_line),
-                ]
-            )
-            self._human_report = ProgressText(human, record_text=record)
-            return record
-        # Surface the summary (incl. the RESULT line) on stdout so a passing
-        # run is not silent. base.py only echoes report_text on failure, so
-        # without this the happy-path RESULT: PASS never reaches the user —
-        # elaborate/lint already print their summary the same way. The MCP
-        # renderer dedupes: it drops its own report_text section when this
-        # print already carries it verbatim, so keep the print.
-        print(record)
-        return record
-
-    def _human_terminal(self) -> bool:
-        """True when the CLI summary goes to a real terminal (never a pipe or MCP)."""
-        return self._console_publication_requested and sys.stdout.isatty()
-
-    @staticmethod
-    def _result_line(all_results: list[TargetResult], overall_pass: bool) -> str:
-        """The closing ``RESULT:`` line of the run."""
-        if any(r.inconclusive for r in all_results):
-            # Report the reason the RUN recorded, never a fixed sentence: a
-            # trace-verification failure and a missing sentinel are different
-            # problems with different fixes (F-22).
-            reasons = {
-                t.inconclusive_reason
-                for r in all_results
-                for t in r.tests
-                if t.inconclusive_reason
-            }
-            detail = "; ".join(sorted(reasons)) or _INCONCLUSIVE_NO_SENTINEL
-            return f"RESULT: INCONCLUSIVE — {detail}"
-        targets_passed = sum(1 for r in all_results if r.passed)
-        word = "PASS" if overall_pass else "FAIL"
-        return f"RESULT: {word} ({targets_passed}/{len(all_results)} targets)"
-
-    def _run_resolved_target(
-        self,
-        target: str,
-        test_names_map: dict[str, list[str]],
-        output_lines: list[str],
-    ) -> TargetResult:
-        """Resolve target metadata, then include that work in setup timing."""
-        resolution_started = monotonic()
-        tb_top = self._tb_top_for_target(target)
-        resolution_s = monotonic() - resolution_started
-        result = self._run_target(target, tb_top, test_names_map, output_lines)
-        result.elapsed_s = round(result.elapsed_s + resolution_s, 3)
-        timings = result.phase_timings_s
-        timings["setup"] = round(timings.get("setup", 0.0) + resolution_s, 3)
-        timings["execution_total"] = result.elapsed_s
-        return result
-
-    def _run_target(
-        self,
-        target: str,
-        tb_top: str,
-        test_names_map: dict[str, list[str]],
-        output_lines: list[str],
-        *,
-        plan_role: WorkUnitRole | None = None,
-    ) -> TargetResult:
-        """Execute one selected Target through the deep Simulation boundary."""
-        del tb_top
-        skipped = self._skipped_tests(target, test_names_map)
-        if skipped:
-            output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
-        selection = self._role_selection(target, test_names_map, plan_role)
-        artifact_root = self._simulation_artifact_root(plan_role)
-        execution = self._simulation_execution(artifact_root=artifact_root)
-        planned_groups = self._planned_simulation_groups(target, plan_role)
-        outcome = execution.run(
-            self._target_handle(target),
-            selection,
-            planned_groups=planned_groups,
-            planned_runs=self._planned_test_runs(target, plan_role, planned_groups),
-        )
-        from .execution.pre_sim_reporting import pre_sim_document
-
-        if not hasattr(self, "_legacy_pre_sim_runs"):
-            self._legacy_pre_sim_runs = []
-        self._legacy_pre_sim_runs.extend(
-            (outcome.target, pre_sim_document(item)) for item in outcome.pre_sim_runs
-        )
-        result = self._project_execution_outcome(outcome)
-        output_lines.append(f"[sim] {target}")
-        output_lines.extend(result.diagnostics)
-        output_lines.extend(self._pre_sim_output_lines(outcome))
-        for test in result.tests:
-            _append_test_output_line(test, output_lines, self._run_log_is_fresh(target))
-        if len(result.tests) > 1:
-            passed = sum(1 for test in result.tests if test.passed)
-            output_lines.append(f"  --- {passed}/{len(result.tests)} passed ---")
-        rows = _test_run_rows(result.tests)
-        default_seed = _effective_default_seed(self._test_runs.default_seeds, target)
-        output_lines.extend(informative_test_run_lines(target, rows, default_seed=default_seed))
-        return result
-
-    def _role_selection(
-        self, target: str, test_names_map: Mapping[str, list[str]], role: WorkUnitRole | None
-    ) -> SimulationSelection:
-        """What *target* runs in *role*: a baseline runs the candidate's Test Runs."""
-        if role != "baseline":
-            return self._test_run_selection(target, test_names_map)
-        return SelectedTestRuns(self._test_runs.baseline.runs_of(target))
-
-    def _simulation_artifact_root(self, role: WorkUnitRole | None) -> Path | None:
-        """Return the authorized direct-run evidence namespace without reserving."""
-        invocation_dir = self._reserved_invocation_dir
-        if invocation_dir is None:
-            return None
-        if role != "baseline":
-            return invocation_dir / "artifacts" / "candidate"
-        revision, _, _ = self._planned_cycle_baseline_selection()
-        assert revision is not None
-        return invocation_dir / "artifacts" / "baseline" / _artifact_path_component(revision)
-
-    def _planned_simulation_groups(
-        self,
-        target: str,
-        role: WorkUnitRole | None,
-    ) -> tuple[tuple[str, ...], ...]:
-        """Read the exact test grouping authorized by the current FlowPlan."""
-        groups = tuple(
-            unit.test_or_module_scope
-            for unit in self._flow_plan.work_units
-            if unit.selector == target
-            and (unit.role == role if role is not None else unit.role in {"ordinary", "candidate"})
-        )
-        if not groups:
-            label = role or "candidate"
-            raise RuntimeError(f"Simulation plan has no {label} work for {target!r}")
-        return groups
-
-    def _planned_test_runs(
-        self,
-        target: str,
-        role: WorkUnitRole | None,
-        groups: tuple[tuple[str, ...], ...],
-    ) -> tuple[tuple[TestRun, ...], ...] | None:
-        """The Test Runs the FlowPlan froze for *target*'s groups, when it has them."""
-        planned = self._test_runs.planned_groups
-        for key in (role,) if role is not None else ("ordinary", "candidate"):
-            runs = planned.get((key, target))
-            if runs is not None and len(runs) == len(groups):
-                return runs
-        return None
-
-    def _simulation_execution(self, *, artifact_root: Path | None = None) -> SimulationExecution:
+    def _simulation_execution(self) -> SimulationExecution:
         """Compose the execution boundary with the Flow's process transport."""
         override = getattr(self, "_simulation_execution_override", None)
         if override is not None:
-            override._artifact_root = artifact_root
             return cast(SimulationExecution, override)
         return SimulationExecution(
             invoke=self._execute_boundary,
-            artifact_root=artifact_root,
             options=SimulationOptions(
                 trace=self.args.trace,
                 timeout_ms=self.args.timeout_ms,
@@ -6793,111 +4961,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 result_verbosity=self.args.result_verbosity,
             ),
         )
-
-    @staticmethod
-    def _execution_selection(tests: list[str | None]) -> NamedTests | DefaultSelection:
-        """Translate the legacy suite representation before crossing the seam."""
-        names = tuple(test for test in tests if test is not None)
-        return NamedTests(names) if names else DefaultSelection()
-
-    def _project_execution_outcome(self, outcome: SimulationTargetOutcome) -> TargetResult:
-        """Project immutable execution evidence into the compatibility report model."""
-        if outcome.infrastructure_failure is not None and not outcome.tests:
-            detail = (
-                outcome.infrastructure_failure.detail or outcome.infrastructure_failure.message
-            )
-            missing = outcome.infrastructure_failure.missing_executable or find_missing_executable(
-                detail
-            )
-            if missing:
-                raise MissingExecutableError(missing, detail)
-            raise SimulationBuildInfrastructureError.from_target_outcome(outcome)
-        tests = [self._project_execution_test(test) for test in outcome.tests]
-        self._record_execution_artifacts(outcome)
-        return TargetResult(
-            target=outcome.target,
-            tb_top=outcome.toplevel,
-            eda_tool=outcome.eda_tool,
-            passed=outcome.passed,
-            elapsed_s=round(outcome.elapsed_s, 1),
-            tests=tests,
-            inconclusive=outcome.verdict == "inconclusive",
-            elab_failed=any(test.elab_failed for test in tests),
-            target_identity=outcome.target_identity,
-            diagnostics=tuple(f"  (note: {note})" for note in outcome.diagnostics),
-            phase_timings_s=dict(outcome.phase_timings_s),
-            artifacts=outcome.artifacts,
-            infrastructure_error=outcome.infrastructure_failure is not None,
-        )
-
-    def _project_execution_test(self, outcome: Any) -> TestResult:
-        """Build one compatibility test row from immutable execution evidence."""
-        trace = next((item for item in outcome.artifacts if item.kind == "trace"), None)
-        return TestResult(
-            name=outcome.name,
-            passed=outcome.passed,
-            elapsed_s=outcome.elapsed_s,
-            build_s=outcome.build_s,
-            cycles=outcome.cycles,
-            cycle_status=outcome.cycle_status,
-            sva_errors=outcome.sva_errors,
-            error_tail=outcome.error_tail,
-            timed_out=outcome.timed_out,
-            inconclusive=outcome.inconclusive,
-            inconclusive_reason=outcome.reason,
-            termination=outcome.termination,
-            failure_kind=outcome.failure_kind,
-            elab_failed=outcome.elab_failed,
-            test_validated=outcome.test_validated,
-            trace_path=(
-                artifacts.relative(
-                    Path(trace.path), getattr(self, "_evidence_work_dir", self.args.work_dir)
-                )
-                or ""
-                if trace is not None
-                else ""
-            ),
-            trace_bytes=trace.size if trace is not None else 0,
-            trace_top_scope=trace.top_scope if trace is not None else "",
-            trace_signal_count=trace.signal_count if trace is not None else 0,
-            trace_total_ticks=trace.total_ticks if trace is not None else 0,
-            run_log_path=(
-                artifacts.relative(
-                    Path(outcome.run_log_path),
-                    getattr(self, "_evidence_work_dir", self.args.work_dir),
-                )
-                or ""
-                if outcome.run_log_path
-                else ""
-            ),
-            workload_snapshot=dict(outcome.workload_snapshot or {}),
-            build_outcome=outcome.build,
-            phase_timings_s=dict(outcome.phase_timings_s),
-            resources=dict(outcome.resources),
-            test_run=outcome.test_run,
-        )
-
-    def _record_execution_artifacts(self, outcome: SimulationTargetOutcome) -> None:
-        """Expose validated execution artifacts to existing report projection."""
-        run_log = next(
-            (item for item in outcome.artifacts if item.kind == "live_run_log"),
-            None,
-        )
-        if run_log is not None:
-            self._run_log_dirs = getattr(self, "_run_log_dirs", {})
-            self._run_log_dirs[outcome.target] = Path(run_log.path).parent
-        if outcome.eda_tool:
-            self._record_eda_tool(outcome.target, outcome.eda_tool)
-
-    @staticmethod
-    def _pre_sim_output_lines(outcome: SimulationTargetOutcome) -> list[str]:
-        """Render execution-owned Pre-Sim Commands evidence."""
-        from .execution.pre_sim_reporting import pre_sim_document, pre_sim_report_line
-
-        return [
-            pre_sim_report_line(outcome.target, pre_sim_document(item))
-            for item in outcome.pre_sim_runs
-        ]
 
     def _effective_skips(self, target: str) -> set[str]:
         """Return Project-configured exact names excluded by default."""
@@ -7191,165 +5254,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if not runs:
             return DefaultSelection()
         return SelectedTestRuns(runs)
-
-    def _skipped_tests(
-        self,
-        target: str,
-        test_names_map: dict[str, list[str]],
-    ) -> list[str]:
-        """Known tests actually excluded from this run (for the run note).
-
-        Mirrors :meth:`_resolve_tests_to_run`'s decision so the display can
-        report what was skipped — silent truncation reads as "ran everything".
-        Empty when nothing was skipped or when ``--test`` overrode the skip list.
-        """
-        if self.args.test:
-            return []
-        return list(
-            resolve_target_test_suite(
-                target,
-                identity=self._target_identity(target),
-                test_names=test_names_map,
-                test_skips=_get_test_skips(self.args.work_dir),
-            ).skipped
-        )
-
-    def _handle_dry_run(
-        self,
-        targets: list[str],
-        test_names_map: dict[str, list[str]],
-    ) -> EndpointOutcome:
-        """Render the normalized plan resolved by preflight."""
-        del targets, test_names_map
-        return self._dry_run_result(self._flow_plan)
-
-    def _write_target_report(self, result: TargetResult, *, complete: bool = True) -> None:
-        """Write one Target's verdict, build context, and artifact pointers."""
-        report_dir = self.args.report_dir
-        if report_dir is None:
-            return
-        report_dir.mkdir(parents=True, exist_ok=True)
-        invocation_dir = self.reserve_invocation_dir()
-        assert invocation_dir is not None
-        report_path = target_report_directory(invocation_dir, result.target) / "simulation.json"
-        report = self._target_report_payload(result, report_path, complete=complete)
-        _atomic_write_json(report_path, report)
-
-    def _target_report_payload(
-        self,
-        result: TargetResult,
-        report_path: Path,
-        *,
-        complete: bool,
-    ) -> dict[str, Any]:
-        """Compose best-effort build context around one Target verdict."""
-        report: dict[str, Any] = {
-            "flow": self.name,
-            "mode": self._mode.value,
-            "target": result.target,
-            "target_identity": result.target_identity,
-            "tb_top": result.tb_top,
-            "eda_tool": result.eda_tool,
-            "timestamp": utc_now_rfc3339(),
-            "elapsed_s": result.elapsed_s,
-            "phase_timings_s": dict(result.phase_timings_s),
-            "passed": result.passed,
-            "complete": complete,
-            "tests": [_test_report_entry(t) for t in result.tests],
-            "test_runs": _test_run_rows(result.tests),
-        }
-        build_stage = [_build_outcome_entry(test.build_outcome) for test in result.tests]
-        if any(entry is not None for entry in build_stage):
-            report["build_stage"] = [entry for entry in build_stage if entry is not None]
-        run_id = os.environ.get("BOOLEY_RUN_ID", "")
-        if run_id:
-            report["run_id"] = run_id
-        compile_command = self._compile_command_str(result.target)
-        if compile_command is not None:
-            report["compile_command"] = compile_command
-        fileset = self._fileset_for_report(result.target)
-        if fileset is not None:
-            report["fileset"] = fileset
-        # ``report`` names the file being written right now: it does not exist
-        # yet, so it is added directly rather than through artifacts_block's
-        # exists() filter. By the time anyone reads this JSON, it does.
-        artifacts = self._artifacts_for(result)
-        artifacts["report"] = posix_relpath(report_path, self.args.work_dir)
-        report["artifacts"] = artifacts
-        baseline_evidence = self._baseline_evidence_for_report()
-        if baseline_evidence:
-            report["baseline_evidence"] = baseline_evidence
-        return report
-
-    def _write_progress_report(
-        self,
-        targets: list[str],
-        results: list[TargetResult],
-        *,
-        phase: str,
-        complete: bool = False,
-    ) -> None:
-        """Checkpoint a long campaign after every completed Target."""
-        invocation_dir = self.reserve_invocation_dir()
-        if invocation_dir is None:
-            return
-        completed = [result.target for result in results]
-        payload = progress_document(
-            flow=self.name,
-            run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-            phase=phase,
-            targets=targets,
-            completed_targets=completed,
-            detail={result.target: _target_progress_detail(result) for result in results},
-            extra={
-                "mode": self._mode.value,
-            },
-        )
-        if complete != bool(payload["complete"]):
-            raise ValueError("simulation progress complete and phase disagree")
-        publish_checkpoint(invocation_dir / "progress.json", payload)
-
-    def _persist_target_outcome(self, result: TargetResult) -> None:
-        """Durably record one terminal Target before starting the next."""
-        started = monotonic()
-        # Publish an explicit recovery checkpoint before Criteria mutation.
-        # A retry can safely replace it; readers never mistake it for a fully
-        # committed target when interruption prevents the final publication.
-        self._write_target_report(result, complete=False)
-        self._record_elab_criterion(result)
-        self._record_sim_criterion(result)
-        self._record_test_goal_criteria(result)
-        self._record_cycle_count_criteria(result)
-        if self.state._file_path is not None:
-            self.state.save()
-        publication_s = round(monotonic() - started, 3)
-        result.phase_timings_s["publication"] = publication_s
-        execution_s = result.phase_timings_s.get("execution_total", result.elapsed_s)
-        result.phase_timings_s["total"] = round(execution_s + publication_s, 3)
-        self._write_target_report(result, complete=True)
-
-    def _record_elab_criterion(self, result: TargetResult) -> None:
-        """Record authenticated full-Simulation build-stage evidence."""
-        if self.args.state_file is None:
-            return
-        outcomes = [test.build_outcome for test in result.tests if test.build_outcome is not None]
-        if not outcomes:
-            return
-        if any(outcome.design_failed for outcome in outcomes):
-            met = False
-        elif any(outcome.verdict is None for outcome in outcomes):
-            return
-        else:
-            met = all(outcome.passed for outcome in outcomes)
-        attempts = [
-            entry for outcome in outcomes if (entry := _build_outcome_entry(outcome)) is not None
-        ]
-        self.set_criterion(
-            f"elab_pass_{result.target}",
-            met,
-            source_target=result.target,
-            detail={"mode": self._mode.value, "target": result.target, "attempts": attempts},
-        )
 
 
 if __name__ == "__main__":
