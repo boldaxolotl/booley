@@ -386,9 +386,9 @@ def test_doctor_names_unrecorded_stealth_choice_for_hidden_booley_dir(project, c
     from booley.harness import doctor
 
     root, selected = project
-    (selected / "booley.toml").write_text(config)
+    (selected / "booley.toml").write_text(config, encoding="utf-8")
     exclude = root / ".git/info/exclude"
-    exclude.write_text(exclude.read_text() + "/.booley\n")
+    exclude.write_text(exclude.read_text(encoding="utf-8") + "/.booley\n", encoding="utf-8")
 
     reporter = doctor._Reporter.create()
     doctor._check_project_trackability(root, selected, reporter.warn_)

@@ -217,7 +217,9 @@ def test_hidden_setup_choice_hides_booley_dir_on_init_rerun(repo):
     """
     assert _run_full_init(repo) == 0
     config = repo / ".booley/booley.toml"
-    config.write_text(config.read_text(encoding="utf-8") + "\n[stealth]\nenabled = true\n")
+    config.write_text(
+        config.read_text(encoding="utf-8") + "\n[stealth]\nenabled = true\n", encoding="utf-8"
+    )
     (repo / ".gitattributes").unlink()
 
     assert _run_full_init(repo) == 0
