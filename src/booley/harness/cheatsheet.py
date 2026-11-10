@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .colors import accent, len_visible
+from booley.presentation.colors import accent, len_visible
+
 from .render_md import inline, wrap
 
 # Cheatsheet sections are `### ` headings; `## ` is the document title.

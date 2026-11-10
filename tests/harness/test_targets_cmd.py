@@ -11,7 +11,7 @@ import pytest
 
 from booley.fusesoc import fusesoc_registry
 from booley.harness import booley as tlr
-from booley.harness import colors
+from booley.presentation import colors
 
 _CORE = textwrap.dedent(
     """\

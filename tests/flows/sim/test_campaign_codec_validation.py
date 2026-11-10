@@ -55,11 +55,11 @@ def test_codec_rejects_non_json_wrong_shape_and_wrong_schema() -> None:
     with pytest.raises(SimulationCampaignIntegrityError, match="canonical JSON"):
         codec.canonical_json_bytes({"value": object()})
     with pytest.raises(SimulationCampaignIntegrityError):
-        codec.decode_build_result(codec.canonical_json_bytes([]))
+        codec.decode_bundle_build_result(codec.canonical_json_bytes([]))
     document = json.loads(_BUILD_READY)
     document["$schema"] = "unknown"
     with pytest.raises(SimulationCampaignIntegrityError, match="unsupported"):
-        codec.decode_build_result(codec.canonical_json_bytes(document))
+        codec.decode_bundle_build_result(codec.canonical_json_bytes(document))
 
 
 def test_common_timestamps_must_be_canonical_utc() -> None:
@@ -71,7 +71,7 @@ def test_common_timestamps_must_be_canonical_utc() -> None:
 
 def test_encoder_and_path_type_guards() -> None:
     with pytest.raises(SimulationCampaignIntegrityError, match="expected"):
-        codec.encode_simulation_result(codec.decode_build_result(_BUILD_READY))  # type: ignore[arg-type]
+        codec.encode_simulation_result(codec.decode_bundle_build_result(_BUILD_READY))  # type: ignore[arg-type]
     with pytest.raises(SimulationCampaignIntegrityError, match="unsupported"):
         codec.encode_simulation_campaign_document(object())  # type: ignore[arg-type]
     with pytest.raises(SimulationCampaignIntegrityError, match="1 KiB"):
@@ -139,7 +139,7 @@ def _tamper_snapshot(document: dict[str, object]) -> None:
             lambda: _fixture_document("build-attempt-private.json"),
             _tamper_build_attempt,
         ),
-        (codec.decode_build_result, lambda: json.loads(_BUILD_READY), _tamper_build_result),
+        (codec.decode_bundle_build_result, lambda: json.loads(_BUILD_READY), _tamper_build_result),
         (
             codec.decode_simulator_bundle,
             lambda: _fixture_document("bundle.json"),
@@ -184,7 +184,7 @@ def test_reader_rejects_corrupt_record(tmp_path, reader, error):
             codec.decode_bundle_build_attempt,
             lambda: json.loads((files / "build-attempt-private.json").read_bytes()),
         ),
-        "build_result": (codec.decode_build_result, lambda: json.loads(_BUILD_READY)),
+        "build_result": (codec.decode_bundle_build_result, lambda: json.loads(_BUILD_READY)),
         "bundle": (
             codec.decode_simulator_bundle,
             lambda: json.loads((files / "bundle.json").read_bytes()),

@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 _SOURCE_ROOT = Path(__file__).parents[2] / "src" / "booley"
-_COLOR_HELPERS = "harness/colors.py"
+_COLOR_HELPERS = "presentation/colors.py"
 # SGR (color/style) sequences only; cursor and window controls end in other letters.
 _SGR = re.compile(r"\x1b\[[0-9;]*m")
 

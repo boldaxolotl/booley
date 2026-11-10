@@ -1268,15 +1268,14 @@ def _plan(
 
 
 class _FailedCoverageBuild(NativeExecution):
-    def __init__(self, *, infrastructure: bool) -> None:
+    def __init__(self, *, infrastructure: bool, reason: str = "compile failed") -> None:
         super().__init__()
         self.infrastructure = infrastructure
+        self.reason = reason
 
     def build(self, request):
         del request
-        return SimulationBuildResult(
-            False, "compile failed", infrastructure_error=self.infrastructure
-        )
+        return SimulationBuildResult(False, self.reason, infrastructure_error=self.infrastructure)
 
     def run(self, request):
         raise AssertionError(f"failed build launched {request.run_id}")

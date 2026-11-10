@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from booley.flows.sim.campaign.codec import (
-    decode_build_result,
+    decode_bundle_build_result,
     decode_simulation_result,
     encode_bundle_build_result,
     encode_simulation_result,
@@ -18,7 +18,7 @@ _BUILD_INFRA = b'{"$schema":"booley.bundle-build-result/v1","build_attempt":{"bu
 
 @pytest.mark.parametrize("raw", [_BUILD_READY, _BUILD_DESIGN, _BUILD_INFRA])
 def test_build_result_golden_discriminators(raw: bytes) -> None:
-    value = decode_build_result(raw)
+    value = decode_bundle_build_result(raw)
     assert value.canonical_bytes() == raw
     assert encode_bundle_build_result(value) == raw
 

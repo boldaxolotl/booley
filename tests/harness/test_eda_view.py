@@ -9,7 +9,8 @@ import pytest
 
 from booley.eda import cli as eda_cli
 from booley.eda.provisioning import authority
-from booley.harness import booley, colors
+from booley.harness import booley
+from booley.presentation import colors
 
 _LONG_SOURCE = "/opt/Xilinx/" + "a" * 50
 
