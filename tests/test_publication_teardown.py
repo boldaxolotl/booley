@@ -196,3 +196,25 @@ def test_publication_guard_cleans_sessions_after_failure(tmp_path: Path, failure
         assert "Publication resources leaked past the test" in output, output
     else:
         assert f"intentional {failure} failure" in output, output
+
+
+_CHILD_PATCHED_SCANDIR_TEST = """
+import os
+
+def test_patched_scandir(monkeypatch, tmp_path):
+    (tmp_path / "entry").write_bytes(b"x")
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("scandir patch leaked into teardown")
+
+    monkeypatch.setattr(os, "scandir", refuse)
+"""
+
+
+def test_test_patches_are_undone_before_tmp_path_teardown(tmp_path: Path) -> None:
+    """A test's process-wide ``os.scandir`` patch cannot reach the teardown walk or rmtree."""
+    result = _run_child_pytest(tmp_path, _CHILD_PATCHED_SCANDIR_TEST)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "1 passed" in output, output
+    assert "error" not in output.lower(), output

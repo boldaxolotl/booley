@@ -2,18 +2,11 @@
 
 from __future__ import annotations
 
-import builtins
 import os
 from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
 from typing import BinaryIO
-
-# Captured at import: teardown enumeration runs while a test's autouse patches
-# may still be active, and some tests replace ``os.walk`` to prove a code path
-# never walks. ``builtins.open`` does not go through the Python-level ``os.open``.
-_WALK = os.walk
-_OPEN = builtins.open
 
 
 def handle_lock_is_held(handle: BinaryIO) -> bool:
@@ -44,7 +37,7 @@ def invocation_lock_paths(root: Path) -> Iterator[Path]:
     directories cannot contain Simulation invocation locks, so pruning them also
     keeps the teardown probe from racing Git maintenance.
     """
-    for directory, subdirectories, filenames in _WALK(root):
+    for directory, subdirectories, filenames in os.walk(root):
         subdirectories[:] = [name for name in subdirectories if name != ".git"]
         parent = Path(directory)
         for filename in filenames:
@@ -65,7 +58,7 @@ def open_invocation_locks(root: Path) -> list[tuple[Path, BinaryIO]]:
         locks: list[tuple[Path, BinaryIO]] = []
         for path in sorted(invocation_lock_paths(root)):
             try:
-                handle = _OPEN(path, "rb")
+                handle = path.open("rb")
             except FileNotFoundError:
                 continue
             opened.callback(handle.close)

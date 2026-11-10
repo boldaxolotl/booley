@@ -185,14 +185,11 @@ def test_durable_publication_removes_partial_destination_on_failure(
         def __exit__(self, *_args):
             return False
 
-    # Scope the process-wide os patches to the call: pytest removes a passing
-    # test's tmp_path (retention policy "failed") while `monkeypatch` is active.
-    with monkeypatch.context() as patch:
-        patch.setattr(artifact_durability.os, "open", lambda *_args: 99)
-        patch.setattr(artifact_durability.os, "close", lambda _fd: None)
-        patch.setattr(artifact_durability.os, "fdopen", lambda *_args, **_kwargs: BrokenWriter())
-        with pytest.raises(RuntimeError, match="write failed"):
-            artifact_durability.durable_create(destination, b"value")
+    monkeypatch.setattr(artifact_durability.os, "open", lambda *_args: 99)
+    monkeypatch.setattr(artifact_durability.os, "close", lambda _fd: None)
+    monkeypatch.setattr(artifact_durability.os, "fdopen", lambda *_args, **_kwargs: BrokenWriter())
+    with pytest.raises(RuntimeError, match="write failed"):
+        artifact_durability.durable_create(destination, b"value")
     assert not destination.exists()
 
 

@@ -31,6 +31,18 @@ def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.fixture
+def monkeypatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Undo every patch before ``tmp_path`` is torn down.
+
+    ``tmp_path`` is requested first, so it is finalized last: patches of
+    ``os.scandir``, ``os.walk`` or ``os.close`` are gone before the lock walk
+    in the ``tmp_path`` override below and before pytest deletes a passing
+    test's directory under ``tmp_path_retention_policy = "failed"``.
+    """
+    return monkeypatch
+
+
+@pytest.fixture
 def isolated_git_attributes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Attribute boundary tests select their own policy instead of the host's."""
     monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "1")
@@ -415,8 +427,9 @@ def _publication_leaks(
 def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     """Detect leaked publication resources, then close every tracked stack.
 
-    Direct Flow calls must own their publication scope. Observe leaks after all
-    fixture finalizers so test patches of Path or fcntl are no longer active.
+    Direct Flow calls must own their publication scope. Probe the held lock
+    handles after all fixture finalizers so test patches of Path or fcntl are
+    no longer active.
     Emergency cleanup still runs when a finalizer or the leak probe fails.
     """
     try:
