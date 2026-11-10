@@ -18,6 +18,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from time import monotonic
 from typing import Any, ClassVar, cast
@@ -77,7 +78,7 @@ from booley.flows.sim.config import (
     resolve_sim_build_timeout_ms,
     resolve_sim_trace_convert_timeout_ms,
 )
-from booley.flows.sim.coverage_campaign import CoverageCampaign
+from booley.flows.sim.coverage_campaign import CoverageCampaign, CoverageRollup
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_json import FrozenJson
 from booley.flows.sim.coverage_policy import coverage_metrics
@@ -370,6 +371,59 @@ def _coverage_report_suffix(campaign: CoverageCampaign) -> str:
     return f"coverage collection {collection_status} · evaluation {evaluation_status}"
 
 
+def _truncated_percent(rollup: CoverageRollup, decimals: int) -> str:
+    """Return covered/eligible as a percentage truncated (not rounded) to *decimals*.
+
+    Truncation keeps ``100.0%`` meaning full coverage and keeps a printed number on the
+    same side of a minimum as the exact verdict, which a rounded value would not.
+    """
+    scale = 10**decimals
+    scaled = Fraction(rollup.covered_points * 100 * scale, rollup.eligible_points)
+    whole, fraction = divmod(scaled.numerator // scaled.denominator, scale)
+    # Integer formatting: dividing by *scale* as a float can round a long-decimal value up.
+    return f"{whole}.{fraction:0{decimals}d}%"
+
+
+def _coverage_metric_part(rollup: CoverageRollup, threshold: object, met: object) -> str:
+    """Render one metric of the card's ``coverage:`` line, with its floor when it has one."""
+    decimals = 1
+    suffix = ""
+    if threshold is not None:
+        minimum = _compact_coverage_number(cast(FrozenJson, threshold))
+        decimals = max(1, len(minimum.partition(".")[2]))
+        suffix = f" (min {minimum}%, {'met' if met else 'missed'})"
+    value = "n/a" if rollup.eligible_points == 0 else _truncated_percent(rollup, decimals)
+    return f"{rollup.metric} {value}{suffix}"
+
+
+def _coverage_metrics_line(campaign: CoverageCampaign) -> str | None:
+    """Return the card's ``coverage:`` line, or ``None`` unless collection is complete."""
+    if campaign.collection["status"] != "complete" or not campaign.rollups:
+        return None
+    metrics = coverage_metrics(campaign)
+    parts = [
+        _coverage_metric_part(
+            rollup, metrics[rollup.metric]["threshold"], metrics[rollup.metric]["met"]
+        )
+        for rollup in campaign.rollups
+    ]
+    return "  coverage: " + " · ".join(parts)
+
+
+def _coverage_campaign_path(outcome: CampaignOutcome) -> Path:
+    """Return the public ``coverage.json`` beside the Target's Campaign directory."""
+    return outcome.manifest_path.parents[1] / "coverage.json"
+
+
+def _coverage_campaign_lines(outcomes: Sequence[CampaignOutcome]) -> list[str]:
+    """One ``coverage campaign:`` line per finished coverage outcome."""
+    return [
+        f"  coverage campaign: {_coverage_campaign_path(outcome).resolve()}"
+        for outcome in outcomes
+        if getattr(outcome, "coverage_reference", None) is not None
+    ]
+
+
 def _waiver_block_hint_lines(campaign: CoverageCampaign) -> list[str]:
     """Suggest raw numbers when approved waivers, not the evidence, blocked evaluation."""
     evaluation = campaign.evaluation
@@ -395,7 +449,7 @@ def _resolved_coverage_campaigns(
     for outcome in outcomes:
         if getattr(outcome, "coverage_reference", None) is None:
             continue
-        public = outcome.manifest_path.parents[1] / "coverage.json"
+        public = _coverage_campaign_path(outcome)
         selector = str(outcome.target["selector"])
         campaigns[selector] = resolve_coverage_campaign_reference(public).loaded.campaign
     return campaigns
@@ -496,10 +550,18 @@ def _campaign_report_blocks(
         build_detail = _campaign_build_infrastructure_detail([outcome])
         if build_detail and reasons:
             line += f": {reasons[0].splitlines()[0]}"
+        coverage_lines: list[str] = []
+        if getattr(outcome, "coverage_reference", None) is not None:
+            metrics_line = _coverage_metrics_line(campaign)
+            coverage_lines = [
+                *([metrics_line] if metrics_line else []),
+                *_coverage_campaign_lines([outcome]),
+            ]
         report_lines = [
             line,
             f"  manifest: {outcome.manifest_path.resolve()}",
             *([f"  report: {report_path.resolve()}"] if report_path is not None else []),
+            *coverage_lines,
             *(f"  {reason}" for reason in reasons),
             *_campaign_test_run_lines(
                 selector, outcome, _effective_default_seed(default_seeds, selector)
@@ -1191,7 +1253,7 @@ def _coverage_compatibility_targets(
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
-        public = outcome.manifest_path.parents[1] / "coverage.json"
+        public = _coverage_campaign_path(outcome)
         selector = str(outcome.target["selector"])
         campaign = resolved[selector]
         target = {
@@ -1326,9 +1388,12 @@ def _unmatched_coverage_failure(
             "campaigns": _campaign_structured_details(outcomes),
             "targets": dict(targets),
         },
-        report_text=(
-            "Simulation Campaign coverage execution failed: cannot match failed "
-            f"Target to the prepared Coverage plan ({error})"
+        report_text="\n".join(
+            [
+                "Simulation Campaign coverage execution failed: cannot match failed "
+                f"Target to the prepared Coverage plan ({error})",
+                *_coverage_campaign_lines(outcomes),
+            ]
         ),
     )
 
@@ -1348,7 +1413,12 @@ def _coverage_failure_outcome(
             "targets": dict(targets),
             "pending_targets": pending,
         },
-        report_text=f"Simulation Campaign coverage execution failed: {error}",
+        report_text="\n".join(
+            [
+                f"Simulation Campaign coverage execution failed: {error}",
+                *_coverage_campaign_lines(outcomes),
+            ]
+        ),
     )
 
 
@@ -3395,7 +3465,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 outcome = campaign.run(request)
             except SimulationCampaignCancellationError as exc:
                 self._capture_cycle_report(outcomes)
-                return self._campaign_cancelled_outcome(exc)
+                return self._with_coverage_campaign_lines(
+                    self._campaign_cancelled_outcome(exc), outcomes
+                )
             except (OSError, ValueError, RuntimeError) as exc:
                 return self._coverage_campaign_failure(outcomes, requests, index, request, exc)
             outcomes.append(outcome)
@@ -3420,6 +3492,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     path=progress.invocation_dir / "progress.json",
                 )
         return self._campaign_endpoint_outcome(outcomes)
+
+    @staticmethod
+    def _with_coverage_campaign_lines(
+        result: EndpointOutcome, outcomes: Sequence[CampaignOutcome]
+    ) -> EndpointOutcome:
+        """Append the finished Targets' ``coverage campaign:`` lines to a stopped run's card."""
+        lines = _coverage_campaign_lines(outcomes)
+        if lines:
+            result.report_text = "\n".join([result.report_text, *lines])
+        return result
 
     def _coverage_campaign_failure(
         self,
@@ -3580,11 +3662,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return publish
 
     def _report_destination(self) -> Path | None:
+        """Reserve and name this run's ``report.json``; call it only before ``write_report``."""
         args = self._args
         if args is None or getattr(args, "dry_run", False):
             return None
-        root = getattr(args, "report_dir", None)
-        return (Path(root) / "sim.json").resolve() if root is not None else None
+        if getattr(args, "report_dir", None) is None:
+            return None
+        try:
+            # Reserves the directory write_report later fills, so the path is this run's report.
+            invocation = self.reserve_invocation_dir()
+        except (OSError, ValueError, RuntimeError):
+            return None
+        return None if invocation is None else (invocation / "report.json").resolve()
 
     def _with_campaign_paths(
         self, result: EndpointOutcome, published: Sequence[Path] = ()

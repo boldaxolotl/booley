@@ -469,6 +469,25 @@ def test_status_shows_synth_baseline_pending_complete_unavailable(synth, monkeyp
     assert ": baseline: unavailable (" in states["base"] and "timeout" in states["base"]
 
 
+def test_synth_status_shows_a_baseline_completed_between_reads(synth, monkeypatch):
+    _synth_family()
+    _enter(synth, [RELATIVE_TOP])
+    _seam(synth, monkeypatch)
+    path, _request = _request_for(synth, "top")
+    real_read = job_records.read_record
+    armed = [True]
+
+    def read_after_supervisor_finished(run_id, root):
+        if armed[0]:
+            armed[0] = False  # the supervisor reads the record too
+            _supervise(monkeypatch, path)
+        return real_read(run_id, root)
+
+    monkeypatch.setattr(job_records, "read_record", read_after_supervisor_finished)
+
+    assert [line.rpartition(": baseline: ")[2] for line in _baseline_lines(synth)] == ["complete"]
+
+
 def test_job_list_shows_synth_baseline_job_state(synth, monkeypatch):
     from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobReader
 

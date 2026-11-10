@@ -424,16 +424,36 @@ class JobLifecycle:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
+    def _still_running(self, rec: jobrec.JobRecord) -> jobrec.JobRecord | None:
+        """The current record when its owner has not finished it, else ``None``.
+
+        An adopted Job's owner writes its own terminal record and exits, so a
+        copy read before that can look dead or stoppable while the disk already
+        holds the real outcome; writing the stale copy would overwrite it.
+        """
+        fresh = self._read_run(rec.run_id)
+        if fresh is None or fresh.status != jobrec.STATUS_RUNNING:
+            return None
+        return fresh
+
     async def _cancel_adopted_job(self, rec: jobrec.JobRecord) -> None:
         if self._adopt_report_outcome(rec):
             return
         if rec.pid is not None and not self._is_alive(rec.pid):
-            self._record_terminal(rec, 2, timed_out=False)
+            fresh = self._still_running(rec)
+            if fresh is not None:
+                self._record_terminal(fresh, 2, timed_out=False)
             return
         if rec.pid is not None:
             await self._cancel_process(rec.pid)
-            if self._adopt_report_outcome(rec):
+            # A SIGTERMed owner records its own failure; that is still the user's
+            # cancellation. Only a completion that won the race is kept as is.
+            fresh = self._read_run(rec.run_id)
+            if fresh is None or fresh.status == jobrec.STATUS_DONE:
                 return
+            if self._adopt_report_outcome(fresh):
+                return
+            rec = fresh
         self._record_user_cancellation(rec)
 
     async def cancel(self, run_id: str) -> str | None:
@@ -687,6 +707,12 @@ class JobLifecycle:
             return
         if jobrec.derive_status(rec, self._is_alive) == jobrec.STATUS_RUNNING:
             return
+        # Re-read: the owner may have written its terminal record and exited
+        # since the listing; the stale copy must not overwrite that outcome.
+        current = read_record_or_none(rec.run_id, located.root)
+        if current is None or current.status != jobrec.STATUS_RUNNING:
+            return
+        rec = current
         report, fresh = self._report(rec)
         report_exit = report.get("exit_code") if fresh and report else None
         if isinstance(report_exit, int):
