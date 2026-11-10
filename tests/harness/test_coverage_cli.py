@@ -81,6 +81,7 @@ def _mixed_points() -> list[dict[str, object]]:
         _point("rtl/a.sv", 7, "branch", {"outcome": "else"}),
         _point("rtl/a.sv", 30, "toggle", {"bit": "wr_ptr[2]:1->0"}),
         _point("rtl/b.sv", 1, "branch", {"outcome": "if"}),
+        _point("rtl/b.sv", 6, "line", {"basic_block": ""}),
         _point("rtl/a.sv", 2, "line", {"basic_block": 9}, hits=hit),
         _point("rtl/a.sv", 31, "line", {"basic_block": 4}, disposition=_waiver("waiver:a")),
         _point("rtl/b.sv", 9, "branch", {"outcome": "if"}, disposition=_waiver("waiver:b")),
@@ -160,6 +161,7 @@ _ALL_LINES = [
     "rtl/a.sv:30  toggle  wr_ptr[2]:1->0  TOP.counter",
     "rtl/b.sv:1  branch  if  TOP.counter",
     "rtl/b.sv:5  line  3  TOP.counter",
+    "rtl/b.sv:6  line  -  TOP.counter",
 ]
 
 
@@ -169,7 +171,7 @@ def test_uncovered_prints_one_line_per_point_and_a_summary(tmp_path, monkeypatch
     code, out, err = _run(monkeypatch, capsys, str(path))
 
     assert (code, err) == (0, "")
-    assert out.splitlines() == [*_ALL_LINES, "6 uncovered points; 2 waived points not listed"]
+    assert out.splitlines() == [*_ALL_LINES, "7 uncovered points; 2 waived points not listed"]
 
 
 def test_summary_reports_waived_points_left_out(tmp_path, monkeypatch, capsys) -> None:
@@ -199,8 +201,8 @@ def test_summary_has_no_waived_clause_without_waived_points(tmp_path, monkeypatc
 @pytest.mark.parametrize(
     ("filters", "lines", "summary"),
     [
-        (["--metric", "line"], [1, 2, 5], "3 uncovered points; 1 waived point not listed"),
-        (["--source", "rtl/b.sv"], [4, 5], "2 uncovered points; 1 waived point not listed"),
+        (["--metric", "line"], [1, 2, 5, 6], "4 uncovered points; 1 waived point not listed"),
+        (["--source", "rtl/b.sv"], [4, 5, 6], "3 uncovered points; 1 waived point not listed"),
         (
             ["--metric", "branch", "--source", "rtl/a.sv"],
             [0],
@@ -371,7 +373,7 @@ def test_command_reads_the_record_on_host_and_in_sandbox(
     code, out, err = _run(monkeypatch, capsys, str(path))
 
     assert (code, err) == (0, "")
-    assert out.splitlines() == [*_ALL_LINES, "6 uncovered points; 2 waived points not listed"]
+    assert out.splitlines() == [*_ALL_LINES, "7 uncovered points; 2 waived points not listed"]
 
 
 def test_command_needs_no_project_and_refuses_project_selection(

@@ -188,8 +188,9 @@ def test_matches_ignores_filters_left_as_none_and_checks_each_given_one() -> Non
         ({"outcome": "if"}, "if"),
         ({"bit": "wr_ptr[2]:1->0"}, "wr_ptr[2]:1->0"),
         ({"basic_block": 0}, "0"),
+        ({"basic_block": ""}, "-"),
     ],
-    ids=["text", "bit", "number"],
+    ids=["text", "bit", "number", "empty"],
 )
 def test_point_detail_is_the_subject_value_as_text(
     subject: dict[str, object], detail: str

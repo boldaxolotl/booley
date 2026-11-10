@@ -67,9 +67,10 @@ def uncovered_points(
 def coverage_point_detail(point: CoveragePoint) -> str:
     """The point's subject value as text, such as ``if``, ``wr_ptr[2]:1->0`` or ``0``.
 
-    A valid point's subject always has at least one entry.
+    A valid point's subject always has at least one entry, but its value may be
+    empty; ``-`` stands in so a listing line keeps all four columns.
     """
-    return str(next(iter(point.identity.subject.values())))
+    return str(next(iter(point.identity.subject.values()))) or "-"
 
 
 def coverage_point_line(point: CoveragePoint) -> int:
