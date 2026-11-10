@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
+from tests.subprocess_budget import run_bounded_child
 
 NEW_RUNTIME_PATHS = (
     "reviewer-evidence/audit.json",
@@ -21,9 +21,7 @@ NEW_RUNTIME_PATHS = (
 
 def git(root: Path, *args: str) -> str:
     """Run bounded Git against an isolated fixture repository."""
-    return subprocess.run(
-        ["git", "-C", str(root), *args], check=True, capture_output=True, text=True, timeout=10
-    ).stdout
+    return run_bounded_child(["git", "-C", str(root), *args], timeout=10, check=True).stdout
 
 
 def initialize_repository(root: Path, data: Path, monkeypatch: pytest.MonkeyPatch) -> None:

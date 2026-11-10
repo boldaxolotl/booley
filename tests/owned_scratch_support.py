@@ -15,7 +15,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 CHILD_TIMEOUT_S = 60
 
@@ -83,13 +83,8 @@ def child_environment(scratch: Path, home: Path) -> dict[str, str]:
 
 def run_child(script: str, repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Run *script* in a child Python (reaped on return) and capture its output."""
-    return subprocess.run(
-        [sys.executable, "-c", script, str(repo)],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=CHILD_TIMEOUT_S,
-        check=False,
+    return run_bounded_child(
+        [sys.executable, "-c", script, str(repo)], env=env, timeout=CHILD_TIMEOUT_S
     )
 
 
@@ -138,7 +133,5 @@ def make_repo(path: Path) -> Path:
         ["add", "tracked.sv"],
         ["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "--quiet", "-m", "x"],
     ):
-        subprocess.run(
-            ["git", *args], cwd=path, check=True, capture_output=True, timeout=SUBPROCESS_TIMEOUT_S
-        )
+        run_bounded_child(["git", *args], cwd=path, check=True)
     return path
