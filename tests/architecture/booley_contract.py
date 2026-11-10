@@ -234,7 +234,11 @@ DIRECTION_RULES = (
     ),
     DirectionRule(
         "D26",
-        (exact("booley.harness.host_diagnostics"), exact("booley.harness.setup.readiness")),
+        (
+            exact("booley.harness.host_diagnostics"),
+            exact("booley.harness.setup.readiness"),
+            exact("booley.runtime.inspection"),
+        ),
         (
             exact("booley.harness.doctor"),
             exact("booley.harness.init_cmd"),
