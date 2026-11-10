@@ -7,13 +7,14 @@ import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.flows.sim.coverage_analysis_input import CoverageSourceClosure
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_evidence import (
     MAX_RESPONSE_BYTES,
     CoverageEvidenceSession,
     decode_coverage_evidence_audit,
 )
 from booley.flows.sim.coverage_json import freeze_coverage_mapping
+from tests.flows.sim.coverage_campaign_test_support import decode_document
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 
@@ -37,9 +38,7 @@ def _campaign_with_waiver():
     document["rollups"][0].update(
         eligible_points=0, covered_points=0, waived_points=1, percent=None
     )
-    return decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    return decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
 
 
 def test_points_view_keeps_complete_approved_waiver_disposition():
@@ -69,9 +68,7 @@ def test_overview_counts_waivers_without_expanding_every_point():
 def test_verbose_overview_falls_back_to_bounded_rollups():
     document = _valid_document()
     document["collection"]["diagnostics"] = ["x" * 100_000]
-    campaign = decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
 
     result = CoverageEvidenceSession(campaign, None).query({"view": "overview"})
 
@@ -266,9 +263,7 @@ def test_points_covered_false_filter_is_not_treated_as_unfiltered():
 
 def test_source_view_is_limited_to_exact_campaign_point_ids():
     document = _valid_document()
-    campaign = decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
     source = "\n".join(f"line {line}" for line in range(1, 21)) + "\n"
     point = campaign.points[0]
     point = replace(
@@ -308,9 +303,7 @@ def test_source_view_is_limited_to_exact_campaign_point_ids():
 
 def test_source_view_resolves_only_previously_delivered_point_references():
     document = _valid_document()
-    campaign = decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
     source = "\n".join(f"line {line}" for line in range(1, 21)) + "\n"
     sources = CoverageSourceClosure(
         campaign.target.identity,
@@ -338,9 +331,7 @@ def test_source_view_resolves_only_previously_delivered_point_references():
 
 def test_source_view_preserves_requested_order_and_duplicates():
     document = _valid_document()
-    campaign = decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
     first = campaign.points[0]
     second = replace(first, id=f"{first.id}-second")
     campaign = replace(campaign, points=(first, second))
