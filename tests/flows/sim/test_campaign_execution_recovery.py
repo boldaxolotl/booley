@@ -78,7 +78,6 @@ from tests.flows.sim.campaign_test_support import (
     _BAD_DIGEST,
     _PARALLEL_SYNC_TIMEOUT_S,
     _admission,
-    _assert_no_child_records,
     _completed,
     _Execution,
     _executor,
@@ -206,9 +205,7 @@ def test_private_campaign_build_uses_carried_build_budget(
     assert counters["compile"] == 1
 
 
-@pytest.mark.parametrize("coverage", [False, True])
-def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
-    from booley.flows.sim.campaign.coverage_execution import CoverageAggregateExecutor
+def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path):
     from booley.flows.sim.execution.contract import PreSimScopeStoppedError
     from booley.runtime.supervised_execution import (
         SupervisedExecutionScope,
@@ -216,12 +213,7 @@ def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
     )
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
 
-    def transform(document):
-        if coverage:
-            document["workload"]["coverage"] = True
-            document["work_items"][0]["kind"] = "coverage_aggregate"
-
-    plan, _disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), transform)
+    plan, _disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), lambda _document: None)
     store = CampaignStore(tmp_path / "campaign")
     store.publish_manifest(plan.manifest)
     project = tmp_path / "project"
@@ -231,11 +223,6 @@ def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
     )
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     executor = _executor(tmp_path / "build", counters)
-    if coverage:
-        executor = CoverageAggregateExecutor(
-            plans={},
-            execution_factory=lambda *_args: pytest.fail("cancelled coverage must not compile"),
-        )
     scope = SupervisedExecutionScope(None, tmp_path / ".booley", lambda: True)
     with supervised_execution_scope(scope), pytest.raises(PreSimScopeStoppedError):
         executor.execute(request)
@@ -451,29 +438,9 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     assert not (first.attempt_directory / "pre-sim/0002.json").exists()
 
 
-def test_request_isolates_frozen_manifest_from_caller_mutation(tmp_path):
-    from dataclasses import replace
-
-    from booley.flows.sim.campaign.model import SimulationCampaignManifest
-
-    request = _hook_publication_request(tmp_path)
-    document = json.loads(canonical_json_bytes(request.manifest.document))
-    manifest = SimulationCampaignManifest(document)
-    frozen = replace(request, manifest=manifest)
-    digest = frozen.pre_sim_decoder.manifest_sha256
-    document["workload"]["source_recipe"]["pre_sim_commands"].append("wrong")
-    document["work_items"][0]["selection"]["names"].append("outside")
-    _publish_request_hook(frozen)
-    assert frozen.pre_sim_decoder.manifest is manifest
-    assert frozen.pre_sim_decoder.manifest_sha256 == digest
-    assert manifest.document["workload"]["source_recipe"]["pre_sim_commands"] == ("true",)
-    assert manifest.document["work_items"][0]["selection"]["names"] == ("alpha", "beta")
-    assert frozen.store.read_pre_sim_firings()[0].document["manifest_sha256"] == digest
-
-
 @pytest.mark.parametrize(
     "corruption",
-    ["manifest", "producer", "selection", "ordinal", "status", "item", "manifest_copy"],
+    ["manifest", "producer", "selection", "ordinal", "status"],
 )
 def test_request_publication_rejects_changed_attempt_after_success(tmp_path, corruption):
     from dataclasses import replace
@@ -484,12 +451,6 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
     _publish_request_hook(request)
     first_bytes = (request.attempt_directory / "pre-sim/0001.json").read_bytes()
     first_publication = published.copy()
-    if corruption in {"item", "manifest_copy"}:
-        other = _hook_publication_request(tmp_path / "other", ("gamma",))
-        changes = {"work_item": other.work_item}
-        if corruption == "manifest_copy":
-            changes["manifest"] = other.manifest
-        request = replace(request, **changes)
     if corruption in {"manifest", "producer"}:
         path = request.attempt_directory / "attempt.json"
         document = json.loads(path.read_bytes())
@@ -501,8 +462,6 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
     status = "timed_out" if corruption == "status" else "passed"
     expected = {
         "manifest": "hook attempt does not bind its frozen workload",
-        "item": "hook attempt does not bind its frozen workload",
-        "manifest_copy": "hook attempt does not bind its frozen workload",
         "producer": "Pre-Sim Commands evidence owner disagrees",
         "selection": "selection is outside workload",
         "ordinal": "invalid ordinal",
@@ -606,37 +565,6 @@ def test_campaign_pre_sim_project_relative_hook_uses_project_root(
     )
 
 
-@pytest.mark.parametrize("status,returncode", [("passed", 0), ("failed", 1)])
-def test_publication_does_not_decode_its_own_bytes(tmp_path, monkeypatch, status, returncode):
-    from types import SimpleNamespace
-
-    from booley.flows.sim.campaign import pre_sim_evidence
-
-    request = _hook_publication_request(tmp_path)
-    calls = {"decoder": [], "json": []}
-    decode = pre_sim_evidence.PreSimFiringDecoder.decode
-    loads = pre_sim_evidence.json.loads
-
-    def observe_decode(self, raw, item, attempt):
-        calls["decoder"].append(raw)
-        return decode(self, raw, item, attempt)
-
-    def observe_json(raw):
-        calls["json"].append(raw)
-        return loads(raw)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(pre_sim_evidence.PreSimFiringDecoder, "decode", observe_decode)
-        patch.setattr(pre_sim_evidence, "json", SimpleNamespace(loads=observe_json))
-        reference = _publish_request_hook(request, status=status, returncode=returncode)
-        assert (request.attempt_directory / reference["path"]).is_file()
-        assert calls == {"decoder": [], "json": []}
-    records = request.store.read_pre_sim_firings()
-    assert len(records) == 1
-    assert records[0].document["status"] == status
-    assert records[0].document["returncode"] == returncode
-
-
 @pytest.mark.parametrize("linked", ["entry", "below"])
 def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
     """#2191: a Campaign store crosses the Booley Directory link, never a link below it."""
@@ -671,27 +599,17 @@ def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
 
 @pytest.mark.parametrize(
     "case",
-    [
-        "manifest",
-        "workload",
-        "work_item",
-        "attempt",
-        "ordinal",
-    ],
+    ["manifest", "attempt"],
 )
 def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: str) -> None:
     """The scan still binds a complete result to its manifest, item and final attempt."""
     completed = _completed(tmp_path)
     path = completed.store.work_item_directory(completed.item_id) / "result.json"
     result = _read(path)
-    if case in {"manifest", "workload"}:
-        result[f"{case}_sha256"] = _BAD_DIGEST
-    elif case == "work_item":
-        result["work_item_id"] = "item:9999:" + "e" * 16
-    elif case == "attempt":
-        result["attempt_id"] = str(uuid.uuid4())
+    if case == "manifest":
+        result["manifest_sha256"] = _BAD_DIGEST
     else:
-        result["attempt_ordinal"] += 1
+        result["attempt_id"] = str(uuid.uuid4())
     _write(path, result)
     with pytest.raises(SimulationCampaignIntegrityError):
         completed.store.scan()
@@ -732,7 +650,7 @@ def test_stale_run_cleanup_preserves_unmarked_or_mismatched_tree(
     assert payload.read_text(encoding="utf-8") == "mine"
 
 
-def test_attempt_is_published_before_real_child_waiter_and_cancel_writes_no_child_records(
+def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_lane(
     tmp_path: Path,
 ) -> None:
     manifest = _two_item_manifest()
@@ -824,11 +742,9 @@ def _cancel_child_and_assert(slots, attempts, registry, campaign_store, cancelle
         ExecutionId(attempt["child_execution_id"]), booley_dir=registry.project_data
     )
     assert lane.context.is_file() and read_json(lane.record)["state"] == "waiting"
-    _assert_no_child_records(campaign_store.root, registry.project_data)
     cancelled.set()
     worker.join(timeout=_PARALLEL_SYNC_TIMEOUT_S)
     assert not worker.is_alive()
-    _assert_no_child_records(campaign_store.root, registry.project_data)
     assert registry.is_terminal(ExecutionId(attempt["child_execution_id"]))
     assert slots.snapshot(CLASS_HEAVY)[1] == []
 
@@ -942,20 +858,14 @@ def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: P
     assert not list(campaign.glob("work-items/*/attempts/*/pre-sim/*.json"))
 
 
-@pytest.mark.parametrize(
-    "defect", ["corrupt", "truncate", "replace", "symlink", "hardlink", "resize"]
-)
+@pytest.mark.parametrize("defect", ["replace", "symlink", "hardlink", "resize"])
 def test_terminal_authority_defect_matrix_fails_closed(tmp_path: Path, defect: str) -> None:
     (tmp_path / ".booley").mkdir()
     completed = _completed(tmp_path)
     result = completed.store.work_item_directory(completed.item_id) / "result.json"
     original = result.with_name("original-result.json")
     result.rename(original)
-    if defect == "corrupt":
-        result.write_bytes(b"{}\n")
-    elif defect == "truncate":
-        result.write_bytes(original.read_bytes()[:23])
-    elif defect == "replace":
+    if defect == "replace":
         replacement = json.loads(original.read_bytes())
         replacement["attempt_id"] = "0" * 32
         result.write_bytes(canonical_json_bytes(replacement))

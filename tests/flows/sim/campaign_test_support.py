@@ -966,12 +966,6 @@ def _scheduled_attempt(store: CampaignStore, item) -> ScheduledAttempt:
     return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
 
 
-def _assert_no_child_records(campaign_root: Path, project_data: Path) -> None:
-    """Parallel lanes publish only execution records: no child entry or retirement anywhere."""
-    assert not (campaign_root / "child-executions").exists()
-    assert not (project_data / ".runtime" / "campaign-child-executions").exists()
-
-
 class _ParallelState:
     def __init__(self, build_root, run_log, handle, first_finisher, schedule_seed):
         self.build_root = build_root

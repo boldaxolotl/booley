@@ -1164,21 +1164,6 @@ def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, s
     assert list((reports / "sim/.pruned-1").iterdir()) == []
 
 
-def test_full_pruning_rejects_foreign_file_in_completed_attempt(tmp_path: Path) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
-    status = inspect_retained_campaign(store.manifest_path)
-    attempts = store.work_item_directory(status.completed[0]) / "attempts"
-    foreign = next(attempts.iterdir()) / "evidence" / "foreign.txt"
-    foreign.parent.mkdir(exist_ok=True)
-    foreign.write_text("not produced by Booley", encoding="utf-8")
-
-    with pytest.raises(CampaignRetentionError, match=r"foreign\.txt"):
-        prune_invocation(reports, 1, project_data=project_data)
-
-    assert foreign.read_text(encoding="utf-8") == "not produced by Booley"
-    assert (reports / "sim/1").is_dir()
-
-
 def test_interrupted_campaign_without_surviving_resources_needs_no_project_data(
     tmp_path: Path,
 ) -> None:

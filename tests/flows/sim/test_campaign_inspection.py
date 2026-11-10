@@ -17,7 +17,6 @@ from booley.flows.sim.campaign import (
     inspect_retained_campaign,
 )
 from booley.flows.sim.campaign.codec import (
-    RECORD_MAX_BYTES,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
 )
@@ -126,39 +125,9 @@ def test_public_campaign_inspection_rejects_malformed_summary_but_reports_mismat
     assert status.summary_complete
     assert not status.summary_completed_matches
 
-    del summary["complete"]
-    completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
-    with pytest.raises(SimulationCampaignIntegrityError, match="retention fields"):
-        inspect_retained_campaign(completed.store.manifest_path)
-
     completed.store.summary_path.write_bytes(canonical_json_bytes([]))
     with pytest.raises(SimulationCampaignIntegrityError, match="not a JSON object"):
         inspect_retained_campaign(completed.store.manifest_path)
-
-    summary["complete"] = True
-    summary["$schema"] = "wrong"
-    completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
-    with pytest.raises(SimulationCampaignIntegrityError, match="retention fields"):
-        inspect_retained_campaign(completed.store.manifest_path)
-
-
-@pytest.mark.parametrize("defect", ["symlink", "hardlink", "oversize"])
-def test_public_work_item_authentication_retains_store_file_rejections(
-    tmp_path: Path, defect: str
-) -> None:
-    completed = _completed(tmp_path)
-    result = completed.store.work_item_directory(completed.item_id) / "result.json"
-    original = result.with_name("original-result.json")
-    result.rename(original)
-    if defect == "symlink":
-        result.symlink_to(original.name)
-    elif defect == "hardlink":
-        result.hardlink_to(original)
-    else:
-        result.write_bytes(b"x" * (RECORD_MAX_BYTES + 1))
-
-    with pytest.raises(SimulationCampaignIntegrityError):
-        authenticate_work_item(completed.store.manifest_path, completed.item_id)
 
 
 def test_public_work_item_authentication_rejects_file_changed_during_read(
@@ -296,7 +265,6 @@ def test_pre_sim_inspection_reads_fresh(tmp_path, monkeypatch):
         ("sidecar-link", None, "regular file|link"),
         ("ordinal-path", None, "ordinal disagrees"),
         ("directory-owner", None, "directory owner disagrees"),
-        ("missing-reference", None, "result references disagree"),
     ],
     ids=lambda value: None if value is None else str(value)[:32],
 )

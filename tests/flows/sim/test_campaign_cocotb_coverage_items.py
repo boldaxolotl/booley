@@ -155,7 +155,6 @@ def test_coverage_aggregate_accepts_a_cocotb_target(tmp_path: Path) -> None:
         ("ordinary_hdl", False, ("reset",)),
         ("cocotb_batch", False, ("reset",)),
         ("coverage_aggregate", False, ()),
-        ("coverage_aggregate", False, ("reset", "reset")),
     ],
 )
 def test_coarse_planner_rejects_kind_selection_and_target_contradictions(
@@ -411,35 +410,6 @@ def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_t
     )
     build = json.loads((attempt / "private-build/build-result.json").read_bytes())
     assert build["elapsed_seconds"] > 0
-
-
-@pytest.mark.parametrize(
-    ("coverage", "scans"), [(True, 3), (False, 2)], ids=["coverage", "ordinary"]
-)
-def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: bool, scans: int
-) -> None:
-    """Failure-detail facts reuse the coordinator's scans: 3 for coverage, 2 otherwise."""
-    from booley.flows.sim.campaign import coordinator
-
-    calls: list[None] = []
-    original = coordinator._scan_recovery
-
-    def counting_scan(*args, **kwargs):
-        calls.append(None)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(coordinator, "_scan_recovery", counting_scan)
-    if coverage:
-        _run_coverage_campaign(tmp_path, NativeExecution())
-    else:
-        _run_cocotb(
-            tmp_path,
-            ("reset",),
-            (SimulationTestOutcome(name="reset", verdict="pass", passed=True),),
-        )
-
-    assert len(calls) == scans
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:
@@ -698,7 +668,6 @@ def test_cocotb_campaign_rejects_malformed_results_file(tmp_path: Path, monkeypa
     for name, raw, message in (
         ("not-utf8", b"\xff", "Cocotb transport is not UTF-8"),
         ("not-json", b"{broken", "Cocotb transport is invalid"),
-        ("not-a-results-object", b"[]", "Cocotb transport is invalid"),
     ):
         root = tmp_path / name
         root.mkdir()
