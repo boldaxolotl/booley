@@ -2978,3 +2978,16 @@ def test_attached_untracked_poll_with_held_progress_is_an_error_result(monkeypat
     )
     assert isinstance(result, mcp_server.McpDispatchResult) and result.is_error
     assert "run-1" in result.value[0].text
+
+
+def test_server_supervisor_writes_job_log(tmp_path):
+    """The production wrapper forwards ``log_path`` so every MCP Job tees its output."""
+    import asyncio
+
+    log = tmp_path / "run-1" / "job.log"
+    cmd = [sys.executable, "-c", "print('to-agent')"]
+    exit_code, stdout, _stderr, timed_out = asyncio.run(
+        mcp_server._run_subprocess(cmd, timeout=30, log_path=log)
+    )
+    assert (exit_code, stdout.splitlines(), timed_out) == (0, ["to-agent"], False)
+    assert log.read_text(encoding="utf-8").splitlines() == ["to-agent"]
