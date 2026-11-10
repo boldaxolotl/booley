@@ -1,5 +1,6 @@
-# Validate up to four cumulative candidates concurrently, with one PR per
-# batch and no automatic retries. Before rollout, verify required checks on a
+# Validate up to four cumulative candidates concurrently, each adding a batch
+# of up to three PRs (up to 12 PRs in flight), with no automatic retries. When
+# a batch fails, Mergify splits it to find the culprit. Before rollout, verify required checks on a
 # draft-PR compatibility canary and disable strict up-to-date branch checks
 # while retaining required checks and Mergify-exclusive merges.
 merge_queue:
@@ -15,7 +16,14 @@ merge_queue:
 
 queue_rules:
   - name: default
-    batch_size: 1
+    batch_size: 3
+    # Start a partial batch after 30 seconds (Mergify's default, pinned) so a
+    # lone PR is not held waiting for batchmates. While all check slots are
+    # busy, waiting PRs already fill the next batch.
+    batch_max_wait_time: 30 seconds
+    # Leave batch_max_failure_resolution_attempts unset: Mergify then splits a
+    # failed batch until it isolates the culprit, dequeues only that PR, and
+    # merges the rest. Setting it to 0 would dequeue every batchmate.
     # Cold-cache runtime image validation takes about 57 minutes. Keep the
     # queue bound explicit so Mergify's shorter history-derived timeout cannot
     # dequeue a healthy build before ci-required reports.
