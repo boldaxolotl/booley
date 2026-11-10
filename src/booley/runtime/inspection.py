@@ -5,6 +5,8 @@ Host validation may create/lock the private authority store when EDA is active.
 In-runtime validation probes mounted Vivado (90s), without host authority access.
 A CLI timeout does not itself prove remote container cleanup. Live execution
 must independently validate authority; a diagnostic report grants no authority.
+It also owns the host-side Interactive Git inspection (`info/exclude` entries and
+tracked `.interactive_logs`) through bounded `git rev-parse` / `git ls-files` probes.
 """
 
 from __future__ import annotations
