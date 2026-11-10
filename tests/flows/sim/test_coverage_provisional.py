@@ -13,7 +13,7 @@ from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     CoveragePoint,
     CoveragePointIdentity,
-    CoverageRollup,
+    derive_coverage_rollups,
 )
 from booley.flows.sim.coverage_policy import (
     ApprovedWaiverSet,
@@ -53,12 +53,13 @@ def _point(point_id: str, *, hits: int, source: str = _SOURCE) -> CoveragePoint:
     )
 
 
-def _evaluated(minimum: int) -> tuple[CoverageCampaign, CoverageCriterion]:
-    """Three covered and two uncovered line points, strictly evaluated."""
+def _evaluated(
+    minimum: int | Fraction, *, covered: int = 3, uncovered: int = 2
+) -> tuple[CoverageCampaign, CoverageCriterion]:
+    """Covered and uncovered line points (default 3 and 2), strictly evaluated."""
     points = (
-        *(_point(f"c{index}", hits=1) for index in range(3)),
-        _point("u1", hits=0),
-        _point("u2", hits=0),
+        *(_point(f"c{index}", hits=1) for index in range(covered)),
+        *(_point(f"u{index}", hits=0) for index in range(1, uncovered + 1)),
     )
     campaign = replace(
         _campaign(),
@@ -66,7 +67,7 @@ def _evaluated(minimum: int) -> tuple[CoverageCampaign, CoverageCriterion]:
         source_closure=MappingProxyType(
             {"rtl": (MappingProxyType({"path": _SOURCE, "sha256": _SHA}),)}
         ),
-        rollups=(CoverageRollup("line", "line semantics", 5, 5, 3, 0, 60.0),),
+        rollups=derive_coverage_rollups(points),
     )
     criterion = CoverageCriterion(_TARGET, (CoverageThreshold("line", Fraction(minimum)),), None)
     return evaluate_coverage_campaign(campaign, criterion, _NO_WAIVERS), criterion
@@ -154,6 +155,9 @@ def test_waiving_every_point_blocks_on_an_empty_denominator() -> None:
 
     assert verdict.status == "blocked"
     assert verdict.evaluation["diagnostics"][0]["code"] == "COV_EVAL_EMPTY_DENOMINATOR"
+    assert verdict.evaluation["diagnostics"][0]["message"] == (
+        "Candidates leave no eligible points: line."
+    )
 
 
 def test_provisional_evaluation_projects_through_the_existing_criterion_projection() -> None:
@@ -174,6 +178,51 @@ def test_criterion_round_trips_through_the_persisted_strict_evaluation(minimum: 
     evaluated = evaluate_coverage_campaign(campaign, criterion, _NO_WAIVERS)
 
     assert criterion_from_evaluation(evaluated) == criterion
+
+
+def test_threshold_edges_agree_across_criterion_provisional_and_report() -> None:
+    """The Criterion, the Provisional Verdict and the Job report share one scorer."""
+    from booley.flows.sim.coverage_policy import coverage_metrics
+
+    edges = [
+        (1, 1, Fraction(50), "pass"),  # exact hit
+        (1, 2, Fraction("33.33"), "pass"),  # decimal edge, passes
+        (2, 1, Fraction("66.67"), "fail"),  # decimal edge, fails
+    ]
+    for covered, uncovered, minimum, verdict in edges:
+        strict, _ = _evaluated(minimum, covered=covered, uncovered=uncovered)
+        assert strict.evaluation["metrics"][0]["verdict"] == verdict
+        assert coverage_metrics(strict)["line"]["met"] is (verdict == "pass")
+
+        # One extra uncovered point fails the strict verdict; waiving it restores the edge.
+        extra, criterion = _evaluated(minimum, covered=covered, uncovered=uncovered + 1)
+        assert extra.evaluation["status"] == "fail"
+        provisional = evaluate_provisional_coverage(
+            extra, criterion, [_candidate(f"u{uncovered + 1}")]
+        )
+        assert provisional.evaluation["metrics"][0]["verdict"] == verdict
+        assert provisional.status == verdict
+
+
+def test_rebuild_reports_a_rejected_stored_threshold_as_provisional_error() -> None:
+    campaign, _ = _evaluated(100)
+    stored = {**campaign.evaluation, "thresholds": {"line": 150}}
+    corrupt = replace(campaign, evaluation=MappingProxyType(stored))
+
+    with pytest.raises(ProvisionalCoverageError, match=r"threshold is malformed.*finite numbers"):
+        criterion_from_evaluation(corrupt)
+
+
+@pytest.mark.parametrize("stored_minimum", ["50", True, float("nan")], ids=["str", "bool", "nan"])
+def test_rebuild_reports_a_malformed_stored_threshold_as_provisional_error(
+    stored_minimum: object,
+) -> None:
+    campaign, _ = _evaluated(100)
+    stored = {**campaign.evaluation, "thresholds": {"line": stored_minimum}}
+    corrupt = replace(campaign, evaluation=MappingProxyType(stored))
+
+    with pytest.raises(ProvisionalCoverageError, match="malformed"):
+        criterion_from_evaluation(corrupt)
 
 
 def test_criterion_cannot_be_rebuilt_from_an_unscored_evaluation() -> None:

@@ -346,6 +346,9 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{os.getuid()}\n", stderr="")
         if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["git", "--version"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
+        if cmd[1:3] == ["image", "ls"]:
+            # No issued Sandbox Image keepers; the strict listing rejects stray output.
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[1:3] == ["image", "inspect"] and "{{json .Config.Env}}" in cmd:
             # Healthy default: the sandbox image bakes the ADR 0028 runtime marker.
             return subprocess.CompletedProcess(

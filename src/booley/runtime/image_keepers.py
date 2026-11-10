@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def _image_id(tag: str) -> str | None:
-    value = docker.image_id_strict(tag)
+    value = docker.image_id(tag)
     return docker.validated_image_id(value) if value is not None else None
 
 
@@ -99,7 +99,7 @@ def _preview(roots: frozenset[str]) -> PruneResult:
     protected = _protected_tags(roots)
     containers = docker.container_image_ids_strict()
     candidates = []
-    for tag in docker.issued_image_tags_strict():
+    for tag in docker.issued_image_tags():
         image = _image_id(tag)
         if image is None:
             raise RuntimeError("keeper disappeared during preview; retry")

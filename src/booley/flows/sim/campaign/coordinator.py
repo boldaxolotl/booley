@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 from collections.abc import Callable, Mapping
@@ -993,7 +992,7 @@ def collected_result_facts(
         item = by_id[recovered.work_item_id]
         result_path = store.work_item_directory(recovered.work_item_id) / "result.json"
         raw = result_path.read_bytes()
-        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        digest = content_digest(raw)
         invocation = store.root.parents[2]
         relative = result_path.relative_to(invocation).as_posix()
         document = recovered.result.document
@@ -1083,7 +1082,7 @@ def _prerequisite_facts(
         selected = _selected_prerequisite_result(store.scan(linked), entry)
         result_path = store.work_item_directory(selected.work_item_id) / "result.json"
         raw = result_path.read_bytes()
-        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        digest = content_digest(raw)
         result_reference = {
             "path_base": "origin_invocation",
             "path": result_path.relative_to(invocation).as_posix(),
