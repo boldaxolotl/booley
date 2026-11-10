@@ -922,7 +922,7 @@ def test_real_pending_journal_preserves_keeper_and_inventory(
         _, preview = _prune(capsys)
     if journal_kind == "invalidation":
         issuance_invalidation.prepare(str(project))
-        journal = issuance_invalidation._path(str(project))
+        journal = issuance_invalidation.journal_store().path(str(project))
     else:
         journal = _write_restore_journal(tmp_path / "config", project)
         if journal_kind == "malformed-refresh":

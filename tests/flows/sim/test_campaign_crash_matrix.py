@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows.sim.campaign import collect_pre_sim_firings
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -183,8 +184,11 @@ def _crash_manifest(*, shared: bool = True):
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
         {"declaration_id": declaration_id, **identity}
     ]
-    # Planner never emits immutable access with sharing off; either field false selects
-    # the private build, which passes the same publication checkpoints.
+    # Routing reads only ``pre_sim_build_access``: immutable access shares one
+    # Simulator Bundle, legacy-per-test access compiles a private per-attempt build.
+    # Planning derives ``sharing_eligible`` from the same access, so keep them aligned.
+    access = "immutable" if shared else "legacy-per-test"
+    document["workload"]["pre_sim_build_access"] = access  # type: ignore[index]
     document["build_variants"][0]["sharing_eligible"] = shared  # type: ignore[index]
     return finalize_manifest(document)
 
@@ -281,6 +285,9 @@ def test_serial_publication_boundary_resume_matrix(
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     outcome = _resume_crashed_campaign(campaign, new_request, store, manifest, plan, crash_point)
     _assert_crash_recovery(outcome, store, crash_point, launches, crash)
+    # The route axis must really reach its build: private builds live under the attempt.
+    private_builds = list(store.root.glob("work-items/*/attempts/*/private-build"))
+    assert bool(private_builds) == (route == "private")
     from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA, RESULT_SCHEMA
 
     assert store.load_manifest().document["$schema"] == MANIFEST_SCHEMA
@@ -812,7 +819,7 @@ def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
     assert crash.tripped
     invocation = tmp_path / "reports/1"
     store = CampaignStore(invocation / "targets/sim/campaign")
-    old = store.read_pre_sim_firings()
+    old = collect_pre_sim_firings(store.manifest_path)
     assert len(old) == int(side == "after")
     assert store.scan().interrupted
     before_bytes = {firing.path: firing.path.read_bytes() for firing in old}

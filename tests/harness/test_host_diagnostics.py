@@ -1,7 +1,10 @@
 """Host diagnostics use Bootstrap observations without initiating preparation."""
 
+import hashlib
+import json
 import subprocess
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +12,13 @@ from booley.audit import host_environment
 from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import SandboxHostPolicy
 from booley.harness import host_diagnostics
-from booley.runtime import runtime_context
+from booley.runtime import (
+    issuance_invalidation,
+    runtime_context,
+    session_admission,
+    session_issuance,
+    session_refresh,
+)
 from booley.runtime.host_install import HostInstallationIdentity
 
 
@@ -222,3 +231,77 @@ def test_host_diagnostics_preserves_environment_failures_and_warning_identity(
     actual = next(f for f in report.findings if f.message == observation.message)
     assert actual.severity == severity.value
     assert (actual.fix, actual.check_id) == (observation.fix, observation.check_id)
+
+
+def _stub_offline_host(monkeypatch) -> None:
+    """Stub the host probes so `inspect_host` reaches the Session store scan offline."""
+    bootstrap = host_diagnostics.bootstrap
+    monkeypatch.setattr(
+        bootstrap, "reconcile_bootstrap", lambda intent: bootstrap.BootstrapResult(intent, ())
+    )
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    identity = _identity()
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
+    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
+    monkeypatch.setattr(
+        host_environment,
+        "probe_host_clock",
+        lambda: host_environment.EnvironmentFinding(
+            host_environment.EnvironmentSeverity.SKIP, "offline"
+        ),
+    )
+
+
+def test_host_doctor_reports_session_store_file_named_for_another_root(
+    monkeypatch, tmp_path: Path
+):
+    """A Session store file not named for the Project Root it holds fails Doctor read-only."""
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    held_root = str(tmp_path / "project")
+    misnamed = []
+    for module, attribute in (
+        (session_issuance, "stamp_store"),
+        (session_admission, "claim_store"),
+        (session_refresh, "journal_store"),
+        (issuance_invalidation, "journal_store"),
+    ):
+        store = getattr(module, attribute)()
+        store.private.ensure_directory()
+        path = store.private.root / (hashlib.sha256(b"another-root").hexdigest() + ".json")
+        store.private.atomic_write_text(path.name, json.dumps({"project_root": held_root}))
+        misnamed.append((path, path.read_bytes()))
+
+    _stub_offline_host(monkeypatch)
+
+    result = host_diagnostics.inspect_host()
+
+    failures = [f for f in result.report.findings if f.severity is Severity.FAIL]
+    assert len(failures) == len(misnamed)
+    for (path, before), failure in zip(misnamed, failures, strict=True):
+        assert str(path) in failure.message
+        assert "booley init --seed --project" in failure.message
+        assert path.read_bytes() == before
+
+
+def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
+    """Doctor counts per-Project Session store files named for their Project Roots."""
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    project_root = str(tmp_path / "project")
+    stores = (
+        session_issuance.stamp_store(),
+        session_admission.claim_store(),
+        session_refresh.journal_store(),
+        issuance_invalidation.journal_store(),
+    )
+    for store in stores:
+        store.write(project_root, json.dumps({"project_root": project_root}))
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host().report.findings
+
+    assert not [f for f in findings if f.severity is Severity.FAIL]
+    assert any(f"Session stores: {len(stores)} per-Project file(s)" in f.message for f in findings)

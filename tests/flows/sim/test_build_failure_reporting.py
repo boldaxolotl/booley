@@ -547,16 +547,16 @@ def test_build_owned_loader_startup_is_infrastructure(executable):
     assert "libx.so" in outcome.reason
 
 
-@pytest.mark.parametrize("sharing", [False, True])
+@pytest.mark.parametrize("access", ["legacy-per-test", "immutable"])
 def test_large_batch_build_failure_publishes_bounded_terminal_result(
-    tmp_path, monkeypatch, sharing
+    tmp_path, monkeypatch, access
 ) -> None:
     from dataclasses import replace
 
     from tests.flows.sim.campaign_test_support import _plan
 
     names = tuple(f"test_{index}" for index in range(1000))
-    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names)
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names, access=access)
     outcome = _engine_timeout_outcome(tmp_path / "engine")
     assert outcome.infrastructure_failure is not None
     outcome = replace(
@@ -566,7 +566,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     )
     from booley.flows.sim.execution.contract import SimulationTestOutcome
 
-    if not sharing:
+    if access == "legacy-per-test":
         outcome = replace(
             outcome,
             tests=tuple(
@@ -584,9 +584,6 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
         def ordinary_group(self, _handle, _names, _test_runs=None):
             yield _InfrastructureGroup(root, outcome)
 
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.serial_execution._sharing_eligible", lambda _request: sharing
-    )
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,
         execution_factory=lambda _options: Execution(),
@@ -612,7 +609,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
     assert endpoint.detail["build_stage"]["timed_out"] is True
     assert "compiler failed:" in campaign.observations[0]["detail"]["reason"]
-    if not sharing:
+    if access == "legacy-per-test":
         assert "tail sentinel" in campaign.observations[0]["detail"]["reason"]
 
 

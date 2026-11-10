@@ -23,8 +23,7 @@ from .codec import (
 from .coordinator import collected_result_facts
 from .model import SimulationCampaignManifest, SimulationResult
 from .planning import manifest_digest
-from .pre_sim_evidence import PreSimFiring
-from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings, reread_pre_sim_firings
+from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings
 from .test_run_report import observation_test_run_rows
 
 
@@ -65,29 +64,6 @@ class RetainedCampaignStatus:
     coverage_directories: tuple[Path, ...]
 
 
-def read_pre_sim_firings(
-    manifest_path: Path, *, booley_dir: Path | None = None
-) -> tuple[PreSimFiring, ...]:
-    """Read authenticated firing evidence without exposing a mutable store to Flow."""
-    store = _store_for_manifest(manifest_path, booley_dir)
-    return store.inspect_pre_sim_firings()
-
-
-def read_invocation_pre_sim_firings(
-    invocation: Path, resumed_origin: Path | None = None, *, booley_dir: Path | None = None
-) -> tuple[PreSimFiring, ...]:
-    """Inspect Campaigns published in this invocation, including unfinished work.
-
-    A resumed origin Campaign is one more root of the same bounded collection.
-    """
-    paths = sorted((invocation / "targets").glob("*/campaign/manifest.json"))
-    if len(paths) > 4000:
-        raise SimulationCampaignIntegrityError("invocation Campaign count exceeds bound")
-    if resumed_origin is not None:
-        paths.append(resumed_origin)
-    return collect_pre_sim_firings(*paths, booley_dir=booley_dir)
-
-
 def authenticate_work_item(
     manifest_path: Path, work_item_id: str, *, booley_dir: Path | None = None
 ) -> CampaignWorkItemEvidence:
@@ -96,7 +72,7 @@ def authenticate_work_item(
     try:
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)
-        recovery = store.scan_validated(manifest, digest)
+        recovery = store.scan(manifest, digest)
     except SimulationCampaignIntegrityError:
         raise
     except OSError as exc:
@@ -134,7 +110,7 @@ def inspect_retained_campaign(
     try:
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)
-        recovery = store.scan_validated(manifest, digest)
+        recovery = store.scan(manifest, digest)
         if not store.summary_path.exists() and not store.summary_path.is_symlink():
             summary = None
         else:
@@ -341,7 +317,7 @@ def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampa
         raise SimulationCampaignIntegrityError(
             "Simulation Campaign manifest is not the one that was registered"
         )
-    recovery = store.scan_validated(manifest, digest)
+    recovery = store.scan(manifest, digest)
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     by_id = {item["work_item_id"]: item for item in items}
     consumed, observations = collected_result_facts(store, recovery, by_id)
@@ -378,7 +354,6 @@ __all__ = [
     "inspect_retained_campaign",
     "read_durable_results",
     "recover_retained_campaign_resources",
-    "reread_pre_sim_firings",
     "retained_campaign_lock",
     "started_campaign",
 ]

@@ -637,6 +637,8 @@ def _manifest_for(names: tuple[str, ...], *, access: str = "immutable"):
     }
     target = document["target"]
     variant = document["build_variants"][0]  # type: ignore[index]
+    # Planning writes this flag as ``pre_sim_build_access == "immutable"``.
+    variant["sharing_eligible"] = access == "immutable"
     items = []
     for ordinal, name in enumerate(names):
         identity = {
@@ -866,7 +868,7 @@ def _observe_pre_sim_reads(monkeypatch):
 
     from booley.flows.sim.campaign.pre_sim_evidence import PreSimFiringDecoder
 
-    accesses, decodes = Counter(), Counter()
+    accesses, decodes, results = Counter(), Counter(), Counter()
 
     def observe(method):
         def read(store, path, **kwargs):
@@ -876,6 +878,13 @@ def _observe_pre_sim_reads(monkeypatch):
 
         return read
 
+    read_bytes = CampaignStore._read
+
+    def count_results(store, path, **kwargs):
+        if path.name == "result.json":
+            results[path] += 1
+        return read_bytes(store, path, **kwargs)
+
     decode = PreSimFiringDecoder.decode
 
     def count_decode(decoder, raw, item, attempt):
@@ -883,10 +892,10 @@ def _observe_pre_sim_reads(monkeypatch):
         decodes[(document["attempt_id"], document["ordinal"])] += 1
         return document
 
-    monkeypatch.setattr(CampaignStore, "_read", observe(CampaignStore._read))
+    monkeypatch.setattr(CampaignStore, "_read", observe(count_results))
     monkeypatch.setattr(CampaignStore, "_identity", observe(CampaignStore._identity))
     monkeypatch.setattr(PreSimFiringDecoder, "decode", count_decode)
-    return accesses, decodes
+    return accesses, decodes, results
 
 
 def _managed(store: SlotStore, outer, *, max_heavy: int = 2) -> AdmissionContext:
@@ -1161,11 +1170,17 @@ def _parallel_environment(tmp_path, first_finisher, schedule_seed):
 
 
 def _facts(
-    root: Path, *, cocotb: bool, preview_names: tuple[str, ...] = ("count", "reset")
+    root: Path,
+    *,
+    cocotb: bool,
+    preview_names: tuple[str, ...] = ("count", "reset"),
+    access: str = "immutable",
 ) -> tuple[TargetHandle, TargetInspection, SimulationPreview]:
     project = root / ".booley"
     project.mkdir()
-    (project / "booley.toml").write_text("[flows.sim]\nrun_cwd = '.'\n", encoding="utf-8")
+    (project / "booley.toml").write_text(
+        f"[flows.sim]\nrun_cwd = '.'\npre_sim_build_access = '{access}'\n", encoding="utf-8"
+    )
     (project / "tests.toml").write_text('[sim]\ntests = ["reset", "count"]\n', encoding="utf-8")
     source = root / ("test_counter.py" if cocotb else "tb.sv")
     source.write_text("# cocotb\n" if cocotb else "module tb; endmodule\n", encoding="utf-8")
@@ -1234,8 +1249,9 @@ def _plan(
     names: tuple[str, ...] = ("count", "reset"),
     cocotb: bool,
     no_waivers: bool = False,
+    access: str = "immutable",
 ):
-    handle, inspection, preview = _facts(root, cocotb=cocotb, preview_names=names)
+    handle, inspection, preview = _facts(root, cocotb=cocotb, preview_names=names, access=access)
     return plan_coarse_simulation_campaign(
         handle=handle,
         inspection=inspection,

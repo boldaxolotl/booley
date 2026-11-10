@@ -12,7 +12,7 @@ from typing import cast
 import pytest
 
 from booley.flows.sim.backends import cocotb_results
-from booley.flows.sim.campaign import serial_execution
+from booley.flows.sim.campaign import collect_pre_sim_firings, serial_execution
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -281,10 +281,30 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     tmp_path: Path,
 ) -> None:
     native = _ImageCheckingExecution()
-    outcome, _store = _run_coverage_campaign(tmp_path, native)
+    outcome, store = _run_coverage_campaign(tmp_path, native)
 
     assert outcome.complete is True
     assert native.executed_original is False
+    _assert_native_build_scope(store)
+
+
+def _assert_native_build_scope(store: CampaignStore) -> None:
+    """Native coverage builds stay private to their work item, with no compiler record."""
+    (build_result,) = store.root.rglob("private-build/build-result.json")
+    directory = build_result.parent
+    attempt = json.loads((directory / "build-attempt.json").read_text())
+    bundle = json.loads((directory / "evidence" / "bundle.json").read_text())
+    result = json.loads(build_result.read_text())
+    simulation_attempt_id = directory.parent.name.split("-", 1)[1]
+    assert attempt["sharing"] == bundle["sharing"] == "private_work_item"
+    assert result["bundle"]["sharing"] == "private_work_item"
+    assert attempt["owner"] == bundle["owner"]
+    assert attempt["owner"]["simulation_attempt_id"] == simulation_attempt_id
+    assert attempt["owner"]["work_item_id"]
+    assert attempt["build_attempt_id"] == simulation_attempt_id
+    assert attempt["build_attempt_ordinal"] == 1
+    assert result["build_attempt"]["build_attempt_id"] == simulation_attempt_id
+    assert result["evidence"] == []
 
 
 def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None:
@@ -803,7 +823,7 @@ def _aggregate_result_bound_fixture(tmp_path):
     document["evidence"] = store.pre_sim_references(request.attempt_directory)
     document["observations"] = [
         {
-            **serial_execution._observation(
+            **serial_execution.observation_document(
                 SimulationTestOutcome(name=name, verdict="pass", passed=True)
             ),
             "test_run": name,
@@ -825,7 +845,7 @@ def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_
     with pytest.raises(SimulationCampaignIntegrityError, match="byte size ceiling"):
         store.publish_result(request.work_item["work_item_id"], decode_simulation_result(raw))
     assert not (request.attempt_directory.parent.parent / "result.json").exists()
-    assert len(store.read_pre_sim_firings()) == 4000
+    assert len(collect_pre_sim_firings(store.manifest_path)) == 4000
     without_hooks = {**document, "evidence": []}
     assert len(canonical_json_bytes(without_hooks)) < RECORD_MAX_BYTES
     assert (

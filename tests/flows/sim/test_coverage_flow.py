@@ -10,7 +10,11 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import ResolvedFlowAcceptance
-from booley.flows.sim.campaign import SimulationCampaign, resolve_report_artifact_reference
+from booley.flows.sim.campaign import (
+    SimulationCampaign,
+    collect_pre_sim_firings,
+    resolve_report_artifact_reference,
+)
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
@@ -462,9 +466,10 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
         )
     ]
     assert "pre_run_commands (1 line(s)) for sim_0/reset: rc=0 in " in result.outcome.report_text
-    from booley.flows.sim.campaign import read_pre_sim_firings
 
-    firings = read_pre_sim_firings(tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json")
+    firings = collect_pre_sim_firings(
+        tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
+    )
     assert len(firings) == 1
     assert firings[0].document["stdout_tail"] == "frozen-hook\n"
 
@@ -490,7 +495,6 @@ def _publish_real_hook_series(request, handle, commands, count):
 def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_path, monkeypatch):
     import json
 
-    from booley.flows.sim.campaign import read_pre_sim_firings
     from booley.flows.sim.campaign.store import CampaignStore
     from booley.runtime.endpoint_execution import EndpointOutcome
     from tests.flows.sim.campaign_test_support import _executor, _handle, _request
@@ -529,7 +533,7 @@ def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_pa
     assert reads["manifest"] == 1
     assert reads["decoder_manifest"] == 1
     assert reads["preview"] <= 32
-    firings = read_pre_sim_firings(store.manifest_path)
+    firings = collect_pre_sim_firings(store.manifest_path)
     assert len(firings) == 40
     assert all(
         firing.document["stdout_tail"] == "hook-out\n"
@@ -2842,9 +2846,8 @@ def test_actual_coverage_hook_publication_crash_keeps_only_durable_evidence(
         )
     assert crash.tripped
     manifest = tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
-    from booley.flows.sim.campaign import read_pre_sim_firings
 
-    firings = read_pre_sim_firings(manifest)
+    firings = collect_pre_sim_firings(manifest)
     assert len(firings) == int(side == "after")
     assert all(f.document["stdout_tail"] == "frozen-hook\n" for f in firings)
     assert not list(manifest.parent.glob("work-items/*/result.json"))
@@ -2880,9 +2883,10 @@ def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_pa
     assert "hook publication integrity probe" in result.outcome.report_text
     assert "collector_error" not in result.outcome.report_text
     assert categories == [SimulationCampaignIntegrityError]
-    from booley.flows.sim.campaign import read_pre_sim_firings
 
-    firings = read_pre_sim_firings(tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json")
+    firings = collect_pre_sim_firings(
+        tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
+    )
     assert len(firings) == 1
     assert firings[0].document["stdout_tail"] == "frozen-hook\n"
     assert result.outcome.detail["pre_sim_current"] == 1
@@ -2918,7 +2922,7 @@ def _observe_pre_sim_projection(monkeypatch):
 def _owned_coverage_hook_request(tmp_path):
     from booley.flows.sim.campaign.codec import canonical_json_bytes
     from booley.flows.sim.campaign.planning import finalize_manifest
-    from booley.flows.sim.campaign.serial_execution import _attempt
+    from booley.flows.sim.campaign.serial_execution import simulation_attempt
     from booley.flows.sim.campaign.store import CampaignStore
     from tests.flows.sim.campaign_test_support import _maximum_hook_selection_plan, _request
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _refresh_hook_workload_identity
@@ -2933,7 +2937,7 @@ def _owned_coverage_hook_request(tmp_path):
     store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
     store.publish_manifest(manifest)
     request = _request(store, manifest, manifest.document["work_items"][0], tmp_path, invocation=1)
-    store.publish_attempt(request.attempt_directory, _attempt(request)[0])
+    store.publish_attempt(request.attempt_directory, simulation_attempt(request)[0])
     return request
 
 
@@ -2965,7 +2969,7 @@ def test_owned_coverage_sink_crash_preserves_actual_hook_before_adapter_launch(
         execution.run(_run_request(target, raw_path))
     assert crash.tripped
     assert "run_script" not in captured
-    firings = request.store.read_pre_sim_firings()
+    firings = collect_pre_sim_firings(request.store.manifest_path)
     assert len(firings) == int(side == "after")
     assert all(f.document["stdout_tail"] == "owned-hook\n" for f in firings)
     assert all(f.document["returncode"] == 0 for f in firings)

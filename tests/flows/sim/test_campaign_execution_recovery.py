@@ -17,9 +17,7 @@ import pytest
 from booley.config.jobs import SlotCaps
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
-from booley.flows.sim.campaign import (
-    serial_execution,
-)
+from booley.flows.sim.campaign import collect_pre_sim_firings, serial_execution
 from booley.flows.sim.campaign.capacity import HeavyCapacity
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.codec import (
@@ -371,7 +369,7 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
     with supervised_execution_scope(scope), pytest.raises(PreSimScopeStoppedError):
         executor.execute(request)
     assert counters["launch"] == 0
-    firings = store.read_pre_sim_firings()
+    firings = collect_pre_sim_firings(store.manifest_path)
     assert len(firings) == 1
     assert firings[0].document["returncode"] == 0
     assert firings[0].document["stdout_tail"] == "actual-hook\n"
@@ -395,7 +393,7 @@ def test_request_reuses_authenticated_manifest_across_firings(tmp_path, monkeypa
     assert len(calls) == 1
     assert first["path"] == "pre-sim/0001.json"
     assert second["path"] == "pre-sim/0002.json"
-    assert len(request.store.read_pre_sim_firings()) == 2
+    assert len(collect_pre_sim_firings(request.store.manifest_path)) == 2
 
 
 def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monkeypatch):
@@ -430,7 +428,7 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     _publish_request_hook(first)
     _publish_request_hook(changed, "gamma")
     assert len(calls) == 4
-    records = changed.store.read_pre_sim_firings()
+    records = collect_pre_sim_firings(changed.store.manifest_path)
     assert records[0].document["manifest_sha256"] == changed.pre_sim_decoder.manifest_sha256
     assert records[0].document["producer_invocation_id"] == 2
     with pytest.raises(SimulationCampaignIntegrityError):
@@ -518,14 +516,13 @@ def _project_relative_hook_campaign(tmp_path: Path, route: str, configured: str)
             "kind": "templated" if templated else "literal",
             "collision_template": "runs/test/attempt" if templated else configured,
         }
-        document["build_variants"][0]["sharing_eligible"] = route == "shared"
 
     access = "legacy-per-test" if route == "legacy-per-test" else "immutable"
     plan, disclosures = _pre_sim_plan(access, (command,), configure)
     return project, plan, disclosures
 
 
-@pytest.mark.parametrize("route", ["shared", "private", "legacy-per-test"])
+@pytest.mark.parametrize("route", ["shared", "legacy-per-test"])
 @pytest.mark.parametrize("configured", ["runs/literal", "runs/{test}/{attempt}"])
 def test_campaign_pre_sim_project_relative_hook_uses_project_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, configured: str
@@ -793,7 +790,7 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
         "Pre-Sim Commands failed (failed): vector generator rejected input"
     )
 
-    firings = store.read_pre_sim_firings()
+    firings = collect_pre_sim_firings(store.manifest_path)
     assert [f.document["ordinal"] for f in firings] == [1, 2]
     assert [f.document["test_names"] for f in firings] == [("reset",), ("wrap",)]
     assert all(f.document["status"] == "failed" for f in firings)
@@ -841,7 +838,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
 
     # This injected external adapter has no observed process exit status.
     store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
-    (firing,) = store.read_pre_sim_firings()
+    (firing,) = collect_pre_sim_firings(store.manifest_path)
     assert firing.document["status"] == "spawn_error"
     assert firing.document["returncode"] is None
     assert firing.document["command_count"] == 1

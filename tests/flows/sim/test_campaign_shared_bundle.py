@@ -35,7 +35,7 @@ from booley.flows.sim.campaign.resume import (
 )
 from booley.flows.sim.campaign.serial_execution import (
     OrdinaryHdlSerialExecutor,
-    _capture_private_image,
+    capture_private_image,
 )
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import (
@@ -559,7 +559,7 @@ def test_private_image_capture_refuses_an_unsafe_runtime_input_path(
     (source_root / "in.hex").write_bytes(b"y")
     destination = tmp_path / "private"
     with pytest.raises(SimulationCampaignIntegrityError, match="invalid runtime input path"):
-        _capture_private_image(
+        capture_private_image(
             (source_root / "sim.bin",),
             source_root,
             destination,

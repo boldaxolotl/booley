@@ -18,26 +18,30 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from booley.flows.base import SubprocessResult
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
     AdapterTraceResult,
+    AdapterTransportIdentity,
     work_transport_identity,
     write_adapter_result,
 )
+from booley.flows.sim.backends import cocotb as cocotb_backend
 from booley.flows.sim.backends import cocotb_results
+from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.build_session import SimulationBuildSession
 from booley.flows.sim.execution import SimulationExecution
 from booley.flows.sim.flow import _TRACE_OK_RE, SimulateFlow, _trace_metadata
 from booley.flows.sim.request import SimRequest
-from booley.flows.sim.result import parse_sim_verdict, parse_summary_line
+from booley.flows.sim.result import count_sva_errors, parse_sim_verdict, parse_summary_line
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.runtime.endpoint_execution import ExecutionResult
@@ -66,7 +70,22 @@ _DEFAULT_REPORT_DIR: Any = object()
 
 _BUILD_TOKEN = re.compile(r"BOOLEY_BUILD_STAGE token=(\S+?)[\s\"']")
 
-ProcessFactory = Callable[[str, tuple[str, ...]], SubprocessResult]
+
+@dataclass(frozen=True)
+class Launch:
+    """One simulator launch the campaign handed to the process edge."""
+
+    target: str
+    tests: tuple[str, ...]
+    # The checkout the command runs in (a Cycle Count baseline's is not the invocation's).
+    cwd: Path
+    # The launch shell script, for the environment it exports.
+    script: str = field(repr=False)
+    # The decoded work document: adapter, plusargs, cocotb module, trace scope, ...
+    work: PreparedSimulationWork = field(repr=False)
+
+
+ProcessFactory = Callable[[Launch], SubprocessResult]
 
 
 @dataclass
@@ -75,8 +94,13 @@ class CampaignSimRun:
 
     result: ExecutionResult
     flow: SimulateFlow
-    # (target, selected tests) for every simulator launch, in order.
-    launched: list[tuple[str, tuple[str, ...]]]
+    # Every simulator launch, in order.
+    launches: list[Launch]
+
+    @property
+    def launched(self) -> list[tuple[str, tuple[str, ...]]]:
+        """``(target, selected tests)`` of every simulator launch, in order."""
+        return [(launch.target, launch.tests) for launch in self.launches]
 
 
 def run_campaign_sim(
@@ -86,6 +110,7 @@ def run_campaign_sim(
     process: SubprocessResult | ProcessFactory,
     *,
     skip: dict[str, list[str]] | None = None,
+    files: Mapping[str, str] | None = None,
     build: SubprocessResult | None = None,
     report_dir: Path | None = _DEFAULT_REPORT_DIR,
     project_data: Path | None = None,
@@ -95,18 +120,26 @@ def run_campaign_sim(
     """Run ``SimulateFlow.execute`` for *targets* with only the process edge faked.
 
     *targets* maps each Target to its tests. *process* is the canned simulator
-    result (or a callable of ``(target, tests)``); *build* answers the build
+    result (or a callable of the ``Launch``); *build* answers the build
     stage (default: success). The adapter result is derived from *process*; a
-    timed-out launch writes none (the wrapper killed the adapter). ``report_dir=None`` keeps the endpoint default
-    report root; *project_data* places ``.booley`` outside *tmp_path*.
+    timed-out launch writes none (the wrapper killed the adapter). *files* maps
+    paths under *tmp_path* to text written after the default project (it adds
+    or overrides ``.core`` files, ``.booley/tests.toml``, ``.booley/booley.toml``).
+    ``report_dir=None`` keeps the endpoint default report root; *project_data*
+    places ``.booley`` outside *tmp_path*.
     """
     from booley.runtime.booley_dir import reset_cache
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     data = write_sim_preview_project(tmp_path, targets)
+    for relative, text in (files or {}).items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
     if project_data is not None:
         project_data.mkdir(parents=True, exist_ok=True)
-        (data / "tests.toml").replace(project_data / "tests.toml")
+        for entry in data.iterdir():
+            entry.replace(project_data / entry.name)
         data.rmdir()
         data = project_data
     if skip:
@@ -117,26 +150,26 @@ def run_campaign_sim(
         registry.write_text(text, encoding="utf-8")
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
-    launched: list[tuple[str, tuple[str, ...]]] = []
+    launches: list[Launch] = []
     flow = SimulateFlow()
     if report_dir is _DEFAULT_REPORT_DIR:
         report_dir = tmp_path / "reports"
     # Undo the fakes before returning: an autouse fixture may have patched the same
     # class attributes, and a test-long undo would restore its patch after it exits.
     with monkeypatch.context() as scoped:
-        _install_fakes(scoped, process, build, launched)
+        _install_fakes(scoped, process, build, launches)
         result = flow.execute(
             SimRequest(work_dir=tmp_path, report_dir=report_dir, **request),
             adapter=adapter,
         )
-    return CampaignSimRun(result, flow, launched)
+    return CampaignSimRun(result, flow, launches)
 
 
 def _install_fakes(
     monkeypatch: Any,
     process: SubprocessResult | ProcessFactory,
     build: SubprocessResult | None,
-    launched: list[tuple[str, tuple[str, ...]]],
+    launches: list[Launch],
 ) -> None:
     def prepare_build(self: SimulationExecution, handle: Any) -> Any:
         assert self._build_session is not None
@@ -145,17 +178,19 @@ def _install_fakes(
         build_root.mkdir()
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         (build_root / "Vtop").write_bytes(b"image")
+        module = inspection.flow_options.get("cocotb_module")
+        cocotb_module = module if isinstance(module, str) else None
         resolved = ResolvedTarget(
             name=handle.selector,
             vlnv=handle.vlnv,
             toplevel=inspection.toplevel,
-            eda_tool="verilator",
+            eda_tool=inspection.eda_tool or "verilator",
             files=(),
             parameters={},
             build_root=build_root,
             edam_path=build_root / "test.eda.yml",
             flow_options={},
-            cocotb_module=None,
+            cocotb_module=cocotb_module,
         )
         prepared = PreparedSimulationBuild(
             handle.selector,
@@ -163,13 +198,15 @@ def _install_fakes(
             resolved,
             work_root,
             build_root,
-            "verilator",
+            resolved.eda_tool,
             inspection.toplevel,
             ("make", "-C", str(build_root)),
         )
         return prepared, TraceMode.VCD_FIFO
 
-    def boundary(self: SimulateFlow, command: list[str], *, timeout: float, **_kw: Any) -> Any:
+    def boundary(
+        self: SimulateFlow, command: list[str], *, timeout: float, cwd: Path, **_kw: Any
+    ) -> Any:
         del self, timeout
         script = command[-1]
         if "BOOLEY_BUILD_STAGE" in script:
@@ -182,14 +219,20 @@ def _install_fakes(
                 stdout=built.stdout + record,
                 stderr=built.stderr,
             )
-        identity = work_transport_identity(launched_work(script.splitlines()[-1]))
+        work = launched_work(script.splitlines()[-1])
+        identity = work_transport_identity(work)
         assert identity is not None
-        target = identity.target_identity.split("#")[-1]
-        selected = identity.selected_tests
-        launched.append((target, selected))
-        canned = process(target, selected) if callable(process) else process
+        launch = Launch(
+            identity.target_identity.split("#")[-1], identity.selected_tests, cwd, script, work
+        )
+        launches.append(launch)
+        canned = process(launch) if callable(process) else process
         if not canned.timed_out:
-            write_adapter_result(identity, adapter_result_for_test_process(selected, canned))
+            if work.adapter == "cocotb":
+                result = _cocotb_adapter_result(identity, canned)
+            else:
+                result = adapter_result_for_test_process(launch.tests, canned)
+            write_adapter_result(identity, result)
         return canned
 
     monkeypatch.setattr(SimulationExecution, "_prepare_build", prepare_build)
@@ -203,86 +246,68 @@ def _install_fakes(
     )
 
 
+def _cocotb_adapter_result(
+    identity: AdapterTransportIdentity, process: SubprocessResult
+) -> AdapterResult:
+    """The result the production Cocotb adapter publishes for *process*'s output.
+
+    Composes the adapter's own verdict assessment and result builder: only the
+    simulator run (which would have produced ``results.xml``) is replaced by the
+    transported ``[COCOTB_RESULTS]`` line, or by a missing ``results.xml`` when
+    the run printed none.
+    """
+    output = _process_output(process)
+    names = list(identity.selected_tests)
+    timed_out = "cocotb simulation timed out" in output.lower()
+    termination = (
+        RunTermination("timeout", "cocotb simulation timed out", "timeout")
+        if timed_out
+        else RunTermination()
+    )
+    parsed = cocotb_results.parse_results_line(output) or cocotb_results.parse_results_xml(
+        Path("absent") / "results.xml"
+    )
+    results = cocotb_backend._recover_partial_timeout_results(  # pyright: ignore[reportPrivateUsage]
+        parsed, output, timed_out, names
+    )
+    _focused, assessment = cocotb_backend._assess_verdict(  # pyright: ignore[reportPrivateUsage]
+        results, output, process.returncode, termination, names, ""
+    )
+    failure_kind = (
+        termination.failure_kind
+        if termination.aborted
+        else "design"
+        if process.returncode != 0 or count_sva_errors(output)
+        else ""
+    )
+    return cocotb_backend._cocotb_adapter_result(  # pyright: ignore[reportPrivateUsage]
+        identity,
+        output,
+        results,
+        assessment.passed,
+        failure_kind,
+        "",
+        _test_trace_result(output),
+        termination,
+        process.returncode,
+    )
+
+
+def _process_output(process: SubprocessResult) -> str:
+    return process.stdout + ("\n" + process.stderr if process.stderr else "")
+
+
 def adapter_result_for_test_process(
     names: tuple[str, ...],
     process: SubprocessResult,
 ) -> AdapterResult:
-    output = process.stdout + ("\n" + process.stderr if process.stderr else "")
+    """The result the native adapter publishes for *process* (sentinels and summary)."""
+    output = _process_output(process)
     try:
         summary = parse_summary_line(output)
     except ValueError:
         summary = None
-    parsed = cocotb_results.parse_results_line(output)
-    if parsed is not None:
-        return _cocotb_adapter_result(names, process, output, summary, parsed)
     return _native_adapter_result(names, process, output, summary)
-
-
-def _cocotb_adapter_result(names, process, output, summary, parsed) -> AdapterResult:
-    timed_out = "cocotb simulation timed out" in output.lower() or process.timed_out
-    if timed_out:
-        parsed = cocotb_results.recover_timeout_progress(output, list(names), parsed)
-    elapsed = {test.name: test.elapsed_s for test in parsed.tests}
-    tests = tuple(
-        AdapterTestResult(
-            name,
-            "timeout" if detail == cocotb_results.TIMEOUT_ACTIVE_DETAIL else verdict,
-            elapsed.get(name, process.duration_s),
-            detail,
-        )
-        for name, verdict, detail in cocotb_results.reconcile(list(names), parsed)
-    )
-    extras = tuple(test.name for test in parsed.tests if test.name not in names)
-    diagnostics = (
-        (
-            "results.xml reports extra non-selected test(s): "
-            f"{', '.join(extras)} — logged, not verdict-bearing",
-        )
-        if extras
-        else ()
-    )
-    sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
-    tests = _normalize_canned_cocotb_timeout(tests, timed_out)
-    inconclusive = not timed_out and any(test.verdict == "inconclusive" for test in tests)
-    passed = bool(
-        process.returncode == 0
-        and summary is not None
-        and summary["passed"]
-        and sva_errors == 0
-        and tests
-        and all(test.verdict == "pass" for test in tests)
-    )
-    return _test_adapter_result(
-        names,
-        tests,
-        passed,
-        inconclusive,
-        sva_errors,
-        diagnostics,
-        _test_trace_result(output),
-        simulator_returncode=process.returncode,
-        termination="timeout" if timed_out else "completed",
-        termination_detail="cocotb simulation timed out" if timed_out else "",
-    )
-
-
-def _normalize_canned_cocotb_timeout(tests, timed_out):
-    if not timed_out:
-        return tests
-    detail = "cocotb simulation timed out"
-    return tuple(
-        test
-        if test.verdict in {"pass", "fail"}
-        else AdapterTestResult(
-            test.name,
-            "timeout",
-            test.elapsed_s,
-            detail,
-            "timeout",
-            "timeout",
-        )
-        for test in tests
-    )
 
 
 def _native_adapter_result(names, process, output, summary) -> AdapterResult:

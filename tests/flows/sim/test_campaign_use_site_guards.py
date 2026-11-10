@@ -231,7 +231,7 @@ def _refuse_malformed_result(root: Path, case: str) -> None:
     digest = manifest_digest(manifest)
     with pytest.raises(SimulationCampaignIntegrityError):
         if case == "grade":
-            store.regenerate_summary_validated(manifest, digest)
+            store.regenerate_summary(manifest, digest)
         elif case.startswith("observation"):
             read_durable_results(store.manifest_path, digest)
         else:
