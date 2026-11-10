@@ -233,15 +233,26 @@ commands inside the Sandbox, and remove a worktree as the
 ERROR: post-setup hook failed (rc=3); log: .../.booley/worktrees/.logs/<name>.log
 ```
 
-Booley removed the worktree and its `booley/<name>` and `booley-worktree/<name>`
-branches, so nothing is left to clean up, unless the error also says
-`outer rollback failed` or the hook committed on `booley/<name>`, which Booley
-keeps. Read the log the error names for the hook's output. Fix
-`.booley/hooks/post-setup.*`, commit the fix if your Booley Directory is its own
-Git repository (a Paired Checkout starts from its last commit), and run the
-command again. The same cleanup follows a failed submodule fill.
+Booley removed the worktree and its `booley/<name>` branch, so nothing is left
+to clean up, unless the error also says `outer rollback failed` or the hook
+committed on `booley/<name>`, which Booley keeps. Read the log the error names
+for the hook's output. Fix `.booley/hooks/post-setup.*` and run the command
+again. The same cleanup follows a failed submodule fill.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+Booley also removed the `booley-worktree/<name>` branch. Commit the hook fix in
+the Booley Directory's own repository before you retry: the worktree's Paired
+Checkout starts from that repository's last commit. See
+[Stealth Mode](https://booley.dev/docs/stealth/).
+
+</details>
 
 ### A new worktree lacks my uncommitted `.booley` changes
+
+This happens only in [Stealth Mode](https://booley.dev/docs/stealth/), where
+the Booley Directory is its own Git repository.
 
 `booley worktree new` warned that files were left out. A Paired Checkout starts
 from the last commit of your Booley Directory's repository, so uncommitted and
@@ -255,7 +266,7 @@ $ git checkout -- .booley/booley.toml
 error: pathspec '.booley/booley.toml' did not match any file(s) known to git
 ```
 
-In [Stealth Mode](https://booley.dev/docs/stealth/), the default, your RTL
+This happens only in [Stealth Mode](https://booley.dev/docs/stealth/): your RTL
 repository ignores `.booley/`, so its Git commands can't see `booley.toml`,
 `tests.toml`, Goalsets or `.core` files there. If `.booley/` is its own Git
 repository, run Git there:
@@ -538,9 +549,17 @@ and [Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-re
 Never delete a lock file to get past a message, and keep any empty
 `.pruned-N` folders: they reserve used run numbers.
 
-The Coverage Analyst gives report-only analysis, without Waiver Candidates, in
-Stealth Mode Projects and when the Target's sources changed since the Campaign
-ran. The Campaign's measured result stays the same.
+The Coverage Analyst gives report-only analysis, without Waiver Candidates,
+when the Target's sources changed since the Campaign ran. The Campaign's
+measured result stays the same.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The Coverage Analyst always gives report-only analysis, without Waiver
+Candidates. See [Stealth Mode](https://booley.dev/docs/stealth/).
+
+</details>
 
 Coverage needs a Verilator simulation Target. Coverage controls such as reset
 and hooks go in the Target's `flow_options.booley.coverage`. When evaluation is

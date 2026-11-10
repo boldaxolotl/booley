@@ -277,10 +277,15 @@ doesn't replace your own review.
 > server, because the container blocks that network access. So: let it commit,
 > review the commits, then push them yourself from a terminal outside the
 > container.
->
-> With [Stealth Mode](STEALTH.md) on, a Git hook removes AI and Booley names
-> from commit messages and rejects `Co-Authored-By` lines. If a commit is
-> rejected, the agent just retries without that line.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+A Git hook removes AI and Booley names from commit messages and rejects
+`Co-Authored-By` lines. If a commit is rejected, the agent just retries without
+that line. See [STEALTH.md](STEALTH.md#commit-messages).
+
+</details>
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
 are saved in `.booley/.interactive_logs/`. Chat transcripts live in
@@ -296,9 +301,15 @@ it). The `AGENTS.md` and `CLAUDE.md` in your project root are just links to that
 file, so editing any of them changes the same text. Booley creates the links
 and keeps them out of Git.
 
-To save your edits, commit the real file (`git add .booley/AGENTS.md`). If your
-Booley Directory is its own Git repository (as in Stealth mode), commit
-`AGENTS.md` there instead.
+To save your edits, commit the real file (`git add .booley/AGENTS.md`).
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The Booley Directory is its own Git repository, so commit `AGENTS.md` there
+instead: `git -C .booley commit`. See [STEALTH.md](STEALTH.md#turning-it-on).
+
+</details>
 
 ### Viewing waveforms
 

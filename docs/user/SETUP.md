@@ -198,14 +198,18 @@ What lands, wired together and ready to run:
 - `tb/tb_my_ip.sv` (or `tb/test_my_ip.py` for cocotb): a self-checking
   testbench with two tests, following the shipped TB style guides
 - `my_ip.core`: one Target per enabled flow (`sim`, `lint`, and optionally
-  `synth` (plus SDC in physical mode), `fpga` + XDC); with `--stealth` it
-  lives at `.booley/cores/my_ip.core`
+  `synth` (plus SDC in physical mode), `fpga` + XDC)
 - `.booley/booley.toml` and [`tests.toml`](TESTS.md), populated rather than
-  skeletons. The scaffolded config turns
-  [stealth mode](STEALTH.md#stealth-mode) off, since this repo exists to
-  exercise Booley and commit messages should stay verbatim. `--stealth`
-  writes `[stealth] enabled = true` instead and puts the design and Doctor
-  selftest cores under `.booley/cores/`
+  skeletons
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+`--stealth` writes `[stealth] enabled = true` and puts the design and Doctor
+selftest cores under `.booley/cores/`, so the design core lives at
+`.booley/cores/my_ip.core`. See [STEALTH.md](STEALTH.md).
+
+</details>
 
 The scaffold refuses to run in a repo that already contains `.core` or RTL
 files. That's a porting job, so use a plain `booley init` there. Once the
@@ -236,9 +240,8 @@ Agent's chat to finish.
 
 **Setup asks whether to keep Booley out of your git history.** Yes turns on
 [Stealth Mode](STEALTH.md#stealth-mode), which keeps Booley's files out of
-your repository and cleans AI attribution out of commit messages. The commit
-hook doesn't force `type(scope):` subjects unless you set
-[`enforce_convention`](STEALTH.md#enforcing-the-subject-convention-enforce_convention).
+your repository and cleans AI attribution out of commit messages. No, the
+default, leaves Booley's setup in your repository for colleagues to share.
 
 ### Porting an existing project: plan, then execute
 

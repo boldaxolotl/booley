@@ -209,8 +209,8 @@ expires = 2026-12-01
 
 [[waiver]]
 check = "project.git-excludes-missing"
-subject = ".booley"
-reason = "This project deliberately tracks .booley in its parent repository."
+subject = ".devcontainer"
+reason = "This project deliberately tracks .devcontainer in its repository."
 permanent = true
 ```
 

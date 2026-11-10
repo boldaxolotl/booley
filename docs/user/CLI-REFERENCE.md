@@ -150,19 +150,25 @@ submodule step or the hook fails, Booley removes the worktree and its
 `booley/<name>` and `booley-worktree/<name>` branches and exits nonzero. A
 branch that already gained commits is kept.
 
-The worktree gets its own Booley Directory (the `.booley/` folder):
+The worktree gets its own Booley Directory (the `.booley/` folder), a
+**Snapshot**: a copy of the Booley Directory's configuration (settings,
+`cores/`, hooks, Goal and Ticket history). Build results, reports, logs, and
+evidence stay in the main Booley Directory. A path Booley does not classify is
+not copied, and the command names it.
 
-- **Paired Checkout**, when your Booley Directory is its own Git repository:
-  a checkout of its last commit on branch `booley-worktree/<name>`.
-  Uncommitted and untracked files are left out; one warning names them (the
-  first 10, then a count). Commit them first if the worktree needs them.
-  Booley refuses a repository with no commits or an existing branch of that
-  name. Ignored files stay behind. Booley refuses to create a worktree from
-  inside a Paired Checkout.
-- **Snapshot**, otherwise: a copy of the Booley Directory's configuration
-  (settings, `cores/`, hooks, Goal and Ticket history). Build results, reports, logs,
-  and evidence stay in the main Booley Directory. A path Booley does not
-  classify is not copied, and the command names it.
+<details markdown>
+<summary>In stealth mode</summary>
+
+Your Booley Directory is its own Git repository, so the worktree gets a
+**Paired Checkout** instead: a checkout of its last commit on branch
+`booley-worktree/<name>`. Uncommitted and untracked files are left out; one
+warning names them (the first 10, then a count). Commit them first if the
+worktree needs them. Booley refuses a repository with no commits or an
+existing branch of that name. Ignored files stay behind. Booley refuses to
+create a worktree from inside a Paired Checkout. See
+[STEALTH.md](STEALTH.md).
+
+</details>
 
 **Listing worktrees.** `booley worktree list` shows one row per worktree
 under `.booley/worktrees/`, from the main checkout or from any worktree:
@@ -186,8 +192,7 @@ Booley has no command for it. First save what you need:
 1. Put the commits you want on a branch you keep. Commits made in the worktree
    are on `booley/<name>`; an older worktree, or one named
    `<branch>--<description>`, may be on a detached HEAD, so its commits may be
-   on no branch at all. For a Paired Checkout, the same goes for its
-   `booley-worktree/<name>` branch.
+   on no branch at all.
 2. Copy needed untracked and ignored files into a new folder outside the
    worktree, overwriting nothing. Look through the whole worktree, including
    its `.booley/`: `reviewer-evidence/`, `handoffs/`, the Findings Log
@@ -199,14 +204,25 @@ Then, in the same Sandbox and from outside the worktree:
 
 1. Clean dirty and untracked files, including a Snapshot's copied files when
    Git lists them as untracked.
-2. Paired Checkout only: remove the inner checkout with
-   `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley`.
-3. Remove the worktree with
+2. Remove the worktree with
    `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
-4. Optional: to reuse the name, delete its branch with
-   `git -C <absolute-project-root> branch -D booley/<name>`, and for a Paired
-   Checkout also
-   `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+3. Optional: to reuse the name, delete its branch with
+   `git -C <absolute-project-root> branch -D booley/<name>`.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+A Paired Checkout has its own branch and inner checkout to handle:
+
+- Before you start, put the commits you want from its
+  `booley-worktree/<name>` branch on a branch you keep, as in step 1 of
+  saving.
+- Before removing the worktree, remove the inner checkout with
+  `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley`.
+- To reuse the name, also delete
+  `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+
+</details>
 
 Git refuses to remove a worktree that holds populated submodules; once your
 files are saved, add `--force` to each `git worktree remove`. Check for locks

@@ -39,17 +39,24 @@ for you:
 - It turns off Git's line-ending conversion for the repository
   (`core.autocrlf=false`).
 - It adds the rule `* text=auto eol=lf` unless your repository already sets a
-  line-ending policy. With [Stealth Mode](STEALTH.md) on, the rule goes in
-  `.git/info/attributes` and stays local; otherwise it goes in the root
-  `.gitattributes`, which you commit only if you want to share it.
+  line-ending policy. The rule goes in the root `.gitattributes`, which you
+  commit only if you want to share it.
 - It rewrites files already checked out with CRLF, but only on a clean tree.
   If init says the repair is unsafe, commit or stash your changes and run
   `booley init` again.
 
+<details markdown>
+<summary>In stealth mode</summary>
+
+The rule goes in `.git/info/attributes` and stays local. `booley doctor` also
+checks line endings in the Booley Directory's own repository. See
+[STEALTH.md](STEALTH.md).
+
+</details>
+
 Don't fix this by hand: `git checkout -- .` keeps the CRLF endings.
 
-`booley doctor` checks line endings on every run, including a separate Booley
-Directory repository, and fails with the fix (usually `booley init`) when files are checked out with
+`booley doctor` checks line endings on every run and fails with the fix (usually `booley init`) when files are checked out with
 CRLF again. It warns `git.autocrlf-risk` when a Git config change would bring
 CRLF back on the next checkout. If it warns
 `git.attributes-policy-unknown` instead, see
