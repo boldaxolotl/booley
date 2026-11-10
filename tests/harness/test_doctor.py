@@ -1074,7 +1074,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
 
 
 def _tool_check_harness(tmp_path, monkeypatch, fake_run):
-    """Drive ``_run_flow_check`` directly: stub subprocess + Target probing.
+    """Drive ``_run_flow_check`` directly: stub subprocess + Sandbox session startup.
 
     Returns ``(project, calls)`` — *calls* records every argv *fake_run* saw.
     """
@@ -10185,7 +10185,7 @@ def _flow_phase_output(tmp_path, monkeypatch, capsys, *, verbose: bool) -> tuple
 
 _FLOW_FAIL_ROWS = [
     "  ✗  sim dry-run [sim_fast] failed with exit 3",
-    "     → see <root>/.booley/tmp/doctor/flow-reports",
+    f"     → see {Path('<root>') / '.booley' / doctor.DOCTOR_TMP_DIR / 'flow-reports'}",
     "      %Error: undefined signal foo",
     "      sim: reason follows",
     "      … (11 more line(s); see the report dir)",
@@ -10552,9 +10552,10 @@ def test_deep_synth_calibration_follows_flow_check_findings(tmp_path, monkeypatc
     def run(cmd, **kwargs):
         if "booley.flows.synth" not in cmd:
             return base_run(cmd, **kwargs)
+        # The Flow wrote its report even when it then hung: a timeout must still skip calibration.
+        _write_complete_synth_report(booley_dir)
         if timed_out:
             raise subprocess.TimeoutExpired(cmd, 1)
-        _write_complete_synth_report(booley_dir)
         return subprocess.CompletedProcess(cmd, 0, "ok", "")
 
     monkeypatch.setattr(doctor.subprocess, "run", run)
