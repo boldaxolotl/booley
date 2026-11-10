@@ -53,7 +53,10 @@ ACTIVE_QUEUE_LABELS = frozenset({"queued", "merge-queue-checking"})
 # How long a dequeued label older than the newest queue command is tolerated
 # before the watcher concludes Mergify never acted on that command.
 STALE_DEQUEUE_GRACE_SECONDS = QUEUE_POLL_SECONDS
-NO_CHECKS_REPORTED = re.compile(r"^no checks reported on .+ branch$", re.I)
+# gh prints "no checks reported on the '<branch>' branch" for a plain read and
+# "no required checks reported on ..." under --required (checked against gh
+# 2.96.0). Both mean no check has registered yet, not a read failure.
+NO_CHECKS_REPORTED = re.compile(r"^no (?:required )?checks reported on .+ branch$", re.I)
 NONTERMINAL_PRODUCER_STATUSES = {
     "action_required",
     "in_progress",
