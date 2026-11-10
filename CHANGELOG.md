@@ -20,7 +20,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 - A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
   with its points now loads with values recomputed from the points instead of
   failing. A forged pass/fail on a blocked or not-requested evaluation is still
-  refused (`COV_EVALUATION_MISMATCH`).
+  refused (`COV_EVALUATION_MISMATCH`), as is a pass/fail evaluation that cannot
+  be re-scored (no thresholds, an unknown threshold metric, a missing rollup or
+  incomplete collection) or whose metric rows are malformed or repeated. The
+  load no longer cross-checks collection state, selected tests against runs,
+  or native-format and unknown-record consistency; those fields load as stored.
 
 ## 0.4.0 - 04 NOV 2026
 

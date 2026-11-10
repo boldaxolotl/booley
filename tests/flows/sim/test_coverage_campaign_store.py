@@ -714,6 +714,8 @@ def test_a_scored_campaign_written_before_the_change_reloads_unchanged(tmp_path:
         pytest.param(1, 2, "50", "pass", id="exact-hit"),
         pytest.param(1, 3, "33.33", "pass", id="third-passes"),
         pytest.param(2, 3, "66.67", "fail", id="two-thirds-fails"),
+        # Float 0.1 is above 1/10, so reading the stored value without str() would fail this.
+        pytest.param(1, 1000, "0.1", "pass", id="decimal-exact-hit"),
     ],
 )
 def test_reload_rescores_threshold_edges_like_the_criterion(
