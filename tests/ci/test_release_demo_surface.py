@@ -46,7 +46,7 @@ def test_demo_surface_records_candidate_and_requires_finished_goal(tmp_path, mon
     assert captured["goals"][0].family.value == "lint"
     assert captured["goals"][0].target == "lint_core"
     assert captured["python"] == Path(sys.executable)
-    assert commands[-1][0][-1] == "booley.runtime.incontainer_register"
+    assert commands[-1][0][-1] == "booley.harness.incontainer_register"
     assert result["candidate"] == {"sha": "candidate", "image_digest": "sha256:image"}
     assert result["checks"][-1] == {"id": "demo.goal-finish", "status": "pass"}
 

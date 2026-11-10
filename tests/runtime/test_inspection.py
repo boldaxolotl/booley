@@ -227,6 +227,11 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
     )
     state["Config"]["Labels"] = labels
     state["State"] = {"Running": True}
+    # Current, pinned Booley Directory mounts: the editor is stale, not outdated.
+    state["Mounts"] += [
+        {"Destination": target, "Source": str(booley_dir), "Type": "bind", "RW": True}
+        for target in ("/booley-project", "/work/.booley")
+    ]
     spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
     spec_path.parent.mkdir()
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
