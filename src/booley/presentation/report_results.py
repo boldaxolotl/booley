@@ -540,8 +540,8 @@ def present_job_report(
 ) -> ReportPresentation:
     """Project a Job's report with the Job's own exit code, Flow or tool, and arguments.
 
-    The record's facts override whatever the report carries, so the Dashboard and
-    the MCP notice name the same verdict for the same Job.
+    The record's facts override whatever the report carries. The Dashboard and the
+    MCP notice both use it; each supplies the exit code it resolved for the Job.
     """
     stamped = dict(report)
     stamped["exit_code"] = exit_code

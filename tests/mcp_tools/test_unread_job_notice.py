@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,7 +20,7 @@ except ImportError:
     pytest.skip("mcp package not installed", allow_module_level=True)
 
 from booley.core.booley_dir import reset_cache
-from booley.mcp.application import McpDispatchResult
+from booley.mcp.application import McpDispatchResult, McpInputRequired
 from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir
@@ -128,11 +127,12 @@ def _read(run_id: str) -> jobrec.JobRecord:
     return rec
 
 
-def _report(run_id: str, report: dict[str, Any]) -> None:
-    """Write the exact-run report of a ``sim`` Job, which makes it fresh."""
-    directory = session_jobs_dir().parent / "flow-reports" / "sim" / "1"
+def _report(run_id: str | None, report: dict[str, Any], index: int = 1) -> None:
+    """Write a ``sim`` report; stamped with *run_id* it is fresh for exactly that Job."""
+    directory = session_jobs_dir().parent / "flow-reports" / "sim" / str(index)
     directory.mkdir(parents=True)
-    (directory / "report.json").write_bytes(json.dumps({"run_id": run_id, **report}).encode())
+    stamp = {} if run_id is None else {"run_id": run_id}
+    (directory / "report.json").write_bytes(json.dumps({**stamp, **report}).encode())
 
 
 @pytest.mark.asyncio
@@ -257,6 +257,13 @@ async def test_notice_line_facts():
         exit_code=None,
         ended_at="2026-01-01T00:02:00Z",
     )
+    # An unstamped, undated report cannot vouch for the run, so no metric is taken from it.
+    _write("stale-job", ended_at="2026-01-01T00:03:00Z")
+    _report(None, {"flow": "sim", "detail": {"targets": 3, "targets_passed": 3}}, 2)
+    # Killed by a signal: no verdict word exists for the code, so the status is shown.
+    _write(
+        "killed-job", status=jobrec.STATUS_FAILED, exit_code=-9, ended_at="2026-01-01T00:04:00Z"
+    )
 
     lines = _notice_lines(await _call(_application(), "booley_targets"))
 
@@ -267,6 +274,10 @@ async def test_notice_line_facts():
         " · call 'booley_poll' with run_id=fail-job for the full result.",
         f"{NOTICE} cancel-job · sim · Target default · CANCELLED"
         " · call 'booley_poll' with run_id=cancel-job for the full result.",
+        f"{NOTICE} stale-job · sim · Target default · PASSED"
+        " · call 'booley_poll' with run_id=stale-job for the full result.",
+        f"{NOTICE} killed-job · sim · Target default · FAILED"
+        " · call 'booley_poll' with run_id=killed-job for the full result.",
     ]
 
 
@@ -343,13 +354,13 @@ async def test_notice_failure_keeps_result(monkeypatch, caplog):
     def broken(_self, _caller):
         raise RuntimeError("scan failed")
 
-    monkeypatch.setattr(server.job_lifecycle.JobLifecycle, "unread_owned", broken, raising=False)
+    monkeypatch.setattr(server.job_lifecycle.JobLifecycle, "unread_owned", broken)
     with caplog.at_level(logging.WARNING):
         result = await _call(application, "booley_targets")
 
     assert result == baseline
     assert any(
-        record.levelno == logging.WARNING and "scan failed" in caplog.text
+        record.levelno == logging.WARNING and record.exc_info is not None
         for record in caplog.records
     )
 
@@ -363,12 +374,37 @@ async def test_first_read_time_recorded_and_latency_visible():
     application = _application()
 
     await _call(application, "booley_poll", {"run_id": "mine-job"})
-    await _call(application, "booley_poll", {"run_id": "mine-job"})
-
     rec = _read("mine-job")
     assert rec.read_at is not None
+    await _call(application, "booley_poll", {"run_id": "mine-job"})
     waited = (parse_timestamp(rec.read_at) - parse_timestamp(EARLIER)).total_seconds()
-    detail = job_detail(JobView(Path(session_jobs_dir()), rec, "completed"))
+    detail = job_detail(JobView(session_jobs_dir(), rec, "completed"))
     assert f"Read: {format_clock(rec.read_at)} · {format_duration(waited)} after end" in detail
     # The second poll did not move the first-read time.
     assert _read("mine-job").read_at == rec.read_at
+
+
+@pytest.mark.asyncio
+async def test_form_request_is_returned_unchanged():
+    """A Goal form is shown to the human, not a tool result: the hook never sees it."""
+    _write("mine-job")
+
+    async def form(*_args):
+        return McpInputRequired("opaque-state", "answer", "human form", {"type": "object"})
+
+    def forbidden(_payload, _context):
+        raise AssertionError("the response hook ran on a form request")
+
+    application = server.McpApplication(
+        [{"name": "goal_propose_change", "schema": {"type": "object"}}],
+        dispatch=form,
+        request_dispatch=form,
+        canonicalize=lambda value: value,
+        on_discovery_error=lambda _: None,
+        finalize=forbidden,
+    )
+    params = CallToolRequestParams(name="goal_propose_change", _meta={"threadId": "t1"})
+
+    result = await server._call_application_tool(application, params, None, Observer())
+
+    assert result.request_state == "opaque-state"

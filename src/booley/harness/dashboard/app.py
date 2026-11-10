@@ -563,7 +563,8 @@ def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]
 def _read_row(job: JobView, *, now: float | None = None) -> list[ResultLine]:
     """When the owner first read a finished Job's result, and how long it waited.
 
-    A record without an owner (written before owners existed, or an inline
+    A Job that has not been read shows "unread" only when it is finished and
+    owned; a record without an owner (written before owners existed, or an inline
     endpoint that never tracks reads) and a Job still running show no row: the
     detail never invents a latency.
     """

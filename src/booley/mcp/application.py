@@ -113,7 +113,7 @@ RequestDispatch = Callable[
 Canonicalize = Callable[[str], str]
 DiscoveryError = Callable[[str], None]
 # Last step of a tool response: may add to a payload, e.g. a notice for the caller.
-Finalize = Callable[["McpToolPayload", McpRequestContext], "McpToolPayload"]
+Finalize = Callable[[McpToolPayload, McpRequestContext], McpToolPayload]
 
 
 @dataclass(frozen=True, slots=True)

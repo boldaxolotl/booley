@@ -39,9 +39,6 @@ class UnreadNotice:
 
     def __init__(self, jobs: JobLifecycle) -> None:
         self._jobs = jobs
-        # owner -> run_id -> rendered line, so a finished Job's report is read once
-        # rather than on every tool call. Pruned per owner to its current unread set.
-        self._lines: dict[str, dict[str, str]] = {}
 
     def append(self, payload: McpToolPayload, caller: Caller) -> McpToolPayload:
         """Return *payload* with a closing notice block, or unchanged when nothing is unread.
@@ -61,14 +58,8 @@ class UnreadNotice:
     def _notice(self, caller: Caller) -> str:
         """The notice text for *caller*; empty when it has no unread Job."""
         unread = self._jobs.unread_owned(caller)
-        cached = self._lines.get(caller.owner, {})
         shown = unread[:_MAX_NOTICE_LINES]
-        lines = {rec.run_id: cached.get(rec.run_id) or self._line(rec) for rec in shown}
-        if lines:
-            self._lines[caller.owner] = lines
-        else:
-            self._lines.pop(caller.owner, None)
-        text = list(lines.values())
+        text = [self._line(rec) for rec in shown]
         hidden = len(unread) - len(shown)
         if hidden > 0:
             text.append(
