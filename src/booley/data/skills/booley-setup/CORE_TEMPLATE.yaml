@@ -46,11 +46,10 @@ parameters:
 targets:
   # Target names follow <axis>_<subject>: an axis token for the driving Booley Flow
   # (sim | lint | synth | fpga) then a distinguishing subject, coarse to fine —
-  # `sim_soc`, `synth_matmul_b8`. A bare axis (below) is fine when only one
-  # Target needs that axis.
-  # `booley doctor` warns on names that do not. Do NOT declare a `default:`
+  # `sim_soc`, `synth_matmul_b8`. The axis alone (`sim`) is not a name.
+  # `booley doctor` notes names that do not follow it. Do NOT declare a `default:`
   # target unless another .core `depend:`s on this one.
-  sim:                       # one target per (EDA tool, intent); name == the --target
+  sim_dut:                   # one target per (EDA tool, intent); name == the --target
     flow: sim
     flow_options:
       tool: verilator        # verilator | icarus
@@ -67,7 +66,7 @@ targets:
     parameters: [WIDTH]
 
   # --- Cocotb Target (ADR 0034) — a sim Target with a PYTHON testbench. -------
-  # Delete this block for an SV-testbench project; delete the `sim` block above
+  # Delete this block for an SV-testbench project; delete the `sim_dut` block above
   # for a cocotb one. The ONLY thing that marks a Target as cocotb is
   # `cocotb_module` in its flow_options. Requires the Python TB in a `tags: [tb]`
   # fileset with `file_type: user` + `copyto:` (staged into the build root), and
@@ -88,7 +87,7 @@ targets:
   #                          # HDL wrapper that instantiates them, and the WRAPPER
   #                          # is the toplevel here (e.g. toplevel: test_dut).
 
-  lint:
+  lint_dut:
     flow: lint
     flow_options: {tool: verilator, booley: {doctor: [lint]}}
                              # NB: with `tool: icarus` on ANY target (lint /
@@ -104,7 +103,7 @@ targets:
                              # mismatch"). Point lint AND synth at a flat-port
                              # wrapper that instantiates the interfaces with real
                              # parameters. `booley doctor` flags this.
-  synth:                     # asic_synthesize (an fpga_impl target would be `fpga`)
+  synth_dut:                 # asic_synthesize (an fpga_impl target would be `fpga_dut`)
     flow: generic
     flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}
                              # Every Doctor-marked synth Target is deep-run;

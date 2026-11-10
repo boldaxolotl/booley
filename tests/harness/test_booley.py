@@ -1285,6 +1285,8 @@ class TestCmdFlow:
         help_text = tlr._build_parser().format_help()
         assert "flow" in help_text
         assert "Run a Booley Flow directly" in help_text
+        # Collapse whitespace so argparse wrapping cannot split the example.
+        assert "--target lint_soc" in " ".join(help_text.split())
 
 
 class TestEndpointResolution:

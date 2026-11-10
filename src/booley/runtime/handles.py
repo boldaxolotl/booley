@@ -5,7 +5,7 @@ import logging
 import re
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +15,7 @@ from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.filesystem_utils import open_with_sharing_retry
 from booley.runtime.job_records import STATUS_RUNNING, JobRecord, parse_stamp
 from booley.runtime.safe_storage import refuse_symlinks
+from booley.runtime.worktree_usage import session_number_taken
 
 logger = logging.getLogger(__name__)
 MAX_MAP_BYTES = 16 * 1024 * 1024
@@ -49,6 +50,12 @@ class HandleMap:
     entries: dict[str, str] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     next_number: int = 1
+    # Session maps only: numbers a worktree or branch occupies are never allocated.
+    number_taken: Callable[[int], bool] | None = field(default=None, compare=False, repr=False)
+
+    def stored(self) -> dict[str, object]:
+        """The persisted fields; the allocation predicate never reaches storage."""
+        return {"entries": self.entries, "aliases": self.aliases, "next_number": self.next_number}
 
     def labels(self) -> dict[str, str]:
         entries = self.entries
@@ -66,6 +73,8 @@ class HandleMap:
                     target = self.aliases[key] = prior
                     break
             else:
+                while self.number_taken is not None and self.number_taken(self.next_number):
+                    self.next_number += 1
                 self.entries[key] = f"{prefix}{self.next_number}"
                 self.next_number += 1
         for old in predecessors:
@@ -132,8 +141,9 @@ class HandleStore:
 
     def load(self) -> HandleMap:
         refuse_symlinks(self.path, booley_dir=self.booley_dir)
+        taken = None if self.jobs else session_number_taken(self.booley_dir)
         if not self.path.exists():
-            return HandleMap()
+            return HandleMap(number_taken=taken)
         with open_with_sharing_retry(lambda: self.path.open("rb"), self.path) as stream:
             raw = stream.read(MAX_MAP_BYTES + 1)
         if len(raw) > MAX_MAP_BYTES:
@@ -148,11 +158,11 @@ class HandleStore:
             (int(m[0]) for v in entries.values() if (m := re.search(r"[0-9]+$", v))), default=0
         )
         counter = max(1, require_int(data.get("next_number"), field="handle counter"), highest + 1)
-        return HandleMap(entries, aliases, counter)
+        return HandleMap(entries, aliases, counter, taken)
 
     def save(self, handles: HandleMap) -> None:
         refuse_symlinks(self.path, booley_dir=self.booley_dir)
-        payload = (json.dumps({"schema": 1, **asdict(handles)}, sort_keys=True) + "\n").encode()
+        payload = (json.dumps({"schema": 1, **handles.stored()}, sort_keys=True) + "\n").encode()
         if len(payload) > MAX_MAP_BYTES:
             raise ValueError("handle map exceeds 16 MiB")
         atomic_replace_bytes(self.path, payload)
@@ -161,9 +171,9 @@ class HandleStore:
         root = self.root if self.jobs else self.root.parent
         with _writer(root, wait_s=1 if self.jobs else None, booley_dir=self.booley_dir):
             handles = self.load()
-            before = asdict(handles)
+            before = json.dumps(handles.stored(), sort_keys=True)
             label = handles.reserve(key, prefix, predecessors=predecessors)
-            if asdict(handles) != before:
+            if json.dumps(handles.stored(), sort_keys=True) != before:
                 self.save(handles)
             return label
 

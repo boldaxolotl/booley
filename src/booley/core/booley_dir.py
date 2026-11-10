@@ -246,7 +246,7 @@ def resolve_authoritative_booley_dir(project_root: Path) -> Path:
     return root / BOOLEY_DIR_NAME
 
 
-def _owning_checkout(selected: Path) -> Path | None:
+def owning_checkout(selected: Path) -> Path | None:
     """Return the RTL checkout owning *selected*: its first strict ancestor with ``.git``.
 
     A Paired Checkout or Versioned Booley Directory has a ``.git`` of its own;
@@ -283,7 +283,7 @@ def _main_booley_dir(selected: Path) -> Path | None:
     ``None`` means the selection already is main or the Git topology cannot be
     read (outside Git, stale pointer, bare repository or submodule).
     """
-    checkout = _owning_checkout(selected)
+    checkout = owning_checkout(selected)
     main_root = None if checkout is None else _main_checkout_root(checkout)
     if checkout is None or main_root is None:
         return None

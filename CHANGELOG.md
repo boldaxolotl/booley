@@ -32,6 +32,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   timed-out conversion reports a trace incident: a failing simulation stays
   failed, a passing one is reported inconclusive, and neither is `timeout`.
   Icarus no longer reports an unconverted raw VCD as a waveform.
+- `booley init --scaffold` now names Targets `<axis>_<ip>` (`sim_<ip>`,
+  `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`) with a matching `tests.toml` section.
+  Doctor notes a Target it runs (or one in a stealth core) named just `sim`,
+  `lint`, `synth`, or `fpga` and suggests `<axis>_<core name>`.
 - A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
   with its points now loads with values recomputed from the points instead of
   failing. A forged pass/fail on a blocked or not-requested evaluation or one
@@ -54,6 +58,26 @@ Packaged release history starts at 0.2.7. For older changes, see
   removed, naming the file. Remove it, then run
   `booley init --seed --project <root>` on the host to reissue the Sandbox
   spec. Linux and macOS file names do not change.
+- Booley no longer migrates Sandbox state from releases before 0.3.0. The
+  host-issued Sandbox spec stamp format version is bumped, so every spec issued
+  by an earlier release is rejected as stale. Stamps at the old
+  `eda/session-specs` location, specs that use the old registrar module or the
+  `--project-root` initialize command, and stamps without a Booley Directory
+  layout are rejected the same way. Doctor names the repair: run
+  `booley init --seed` on the host.
+
+  Finish or recover any interrupted `booley session refresh` before upgrading,
+  because its journal cannot be resumed after the upgrade. If you already
+  upgraded, every lifecycle command fails closed naming the journal file:
+  remove it, then run `booley init --seed --project <root>` on the host.
+
+  A Sandbox Image without the current provenance schema is stale and is rebuilt
+  or re-pulled.
+
+  `booley session prepare` now refuses, rather than stops and removes, a running
+  VS Code container whose Booley Directory mounts are outdated, including any
+  from before 0.3.0. Close VS Code, stop and remove that container, run
+  `booley init --seed`, then reopen the folder in the container.
 
 ## 0.4.0 - 04 NOV 2026
 

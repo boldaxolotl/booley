@@ -119,7 +119,6 @@ from booley.harness.setup.docker_image import (
     _image_label,
     _iter_fingerprint_files,
     _read_version,
-    _stamp_image_fingerprint,
     _step_docker_image,
     _try_pull_image,
     ensure_flavor_image,

@@ -162,6 +162,22 @@ _Avoid_: human run, dashboard job, manual job
 The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of other requester roles; unknown persisted roles retain a fallback priority.
 _Avoid_: tier, weight, pool, semaphore
 
+**Resource History**:
+The per-**Project** record of each Job phase's measured peak memory, CPU time and wall-clock time, from which Booley estimates what the next run of that phase will need.
+_Avoid_: telemetry, metrics, profile
+
+**Memory Budget**:
+The part of a **Sandbox**'s memory that Booley may hand out to running Jobs: the Sandbox's memory limit minus a reserve for the Developer Agent and Booley's own processes.
+_Avoid_: memory limit (the Sandbox's hard limit), capacity, quota
+
+**Memory Reservation**:
+The share of the **Memory Budget** a running Job holds: the estimated peak of its largest remaining phase. It shrinks as phases finish and never grows.
+_Avoid_: slot, allocation, lease
+
+**Seat Cap**:
+The number of Jobs that may use one licensed EDA tool at the same time, declared by the **Project**.
+_Avoid_: licence budget, seat pool, license count
+
 ### Configuration
 
 The design-description primitives Booley references but does not own. **Target** is the load-bearing one: almost every other entry binds to a Target by name.

@@ -30,9 +30,6 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "git_directories", lambda _: SimpleNamespace(common_dir=common))
     monkeypatch.setattr(tasks, "_task_file_tracked", lambda _: False)
     monkeypatch.setattr(session_issuance, "stamp_path_for_identity", lambda _: root / "stamp.json")
-    monkeypatch.setattr(
-        session_issuance, "_legacy_stamp_path", lambda _: root / "legacy-stamp.json"
-    )
     return SimpleNamespace(
         root=root, data=data, exclude=common / "info/exclude", file=root / ".vscode/tasks.json"
     )
