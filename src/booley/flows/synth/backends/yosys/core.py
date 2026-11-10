@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from booley.core.booley_dir_links import lexical_booley_path
@@ -132,7 +133,7 @@ def _parameter_guard_commands(
     design_name: str,
     work_dir: Path,
     defines: list[str],
-) -> list[str]:
+) -> str:
     """Emit the effective-param artifact and fail on enabled-but-zero collisions."""
     artifact = _quote_yosys_path(work_dir / effective_params_filename(design_name))
     commands: list[str] = []
@@ -143,7 +144,7 @@ def _parameter_guard_commands(
         pattern = rf"parameter \\{escaped} (0|[0-9]+'s?0+)[[:space:]]*$"
         commands.extend((f'logger -warn "{pattern}"', f'logger -werror "{pattern}"'))
     commands.append(f"tee -o {artifact} dump -n {design_name}")
-    return commands
+    return "; ".join(commands)
 
 
 def sv2v_argv(
@@ -248,16 +249,13 @@ def resolve_slang_options(
     return list(slang_options)
 
 
-def _slang_parameter(value: str | ParameterValue) -> str:
-    if isinstance(value, ParameterValue):
-        return sv_byte_string_literal(value.value) if value.is_string else value.value
-    return value
-
-
-def _chparam_parameter(value: str | ParameterValue) -> str:
-    if isinstance(value, ParameterValue):
-        return packed_string_constant(value.value) if value.is_string else value.value
-    return value
+def _string_parameter(value: str | ParameterValue, encode: Callable[[str], str]) -> str:
+    """Encode a declared string for one receiver; other values pass through unchanged."""
+    return (
+        encode(value.value)
+        if isinstance(value, ParameterValue) and value.is_string
+        else str(value)
+    )
 
 
 def _slang_read_command(
@@ -289,7 +287,10 @@ def _slang_read_command(
     opts += [f"-I {q(d)}" for d in inc_dirs]
     opts += [f"-D {d}" for d in defines]
     if params:
-        opts += [f"-G {name}={_slang_parameter(value)}" for name, value in params.items()]
+        opts += [
+            f"-G {name}={_string_parameter(value, sv_byte_string_literal)}"
+            for name, value in params.items()
+        ]
     opts += slang_options or []
     files_str = " ".join(q(f) for f in source_files)
     return f"read_slang {' '.join(opts)} {files_str}"
@@ -304,7 +305,7 @@ def _rtl_frontend_commands(
     defines: list[str],
     params: dict[str, str | ParameterValue] | None,
     slang_options: list[str] | None,
-) -> list[str]:
+) -> str:
     """Read RTL and prepare the selected top for synthesis tech-mapping.
 
     This is the synthesis RTL frontend: source ingestion, hierarchy selection,
@@ -326,16 +327,18 @@ def _rtl_frontend_commands(
         # harmless. ``chformal -remove`` runs right after ``proc`` (which lowers
         # the last procedural assertions into cells) and before ``opt``/
         # ``techmap`` — see FORMAL_CELL_TYPES for why it is slang-only.
-        commands = [read_src, f"hierarchy -check -top {design_name}", "proc", CHFORMAL_REMOVE]
+        hls = f"hierarchy -check -top {design_name}; proc; {CHFORMAL_REMOVE}"
     else:
-        commands = [f"read_verilog {q(f)}" for f in source_files]
+        read_src = "; ".join(f"read_verilog {q(f)}" for f in source_files)
+        chparam_cmd = ""
         if params:
             set_args = " ".join(
-                f"-set {name} {_chparam_parameter(value)}" for name, value in params.items()
+                f"-set {name} {_string_parameter(value, packed_string_constant)}"
+                for name, value in params.items()
             )
-            commands.append(f"chparam {set_args} {design_name}")
-        commands.extend([f"hierarchy -libdir ./ -check -top {design_name}", "proc"])
-    return commands
+            chparam_cmd = f"chparam {set_args} {design_name}; "
+        hls = f"{chparam_cmd}hierarchy -libdir ./ -check -top {design_name}; proc"
+    return f"{read_src}; {hls}"
 
 
 def _build_yosys_script(
@@ -353,9 +356,7 @@ def _build_yosys_script(
     generic_abc_before_mapping: bool = False,
     abc_script: str | None = None,
     abc_delay_ps: int | None = None,
-    *,
-    command_sequence: bool = False,
-) -> str | list[str]:
+) -> str:
     """Build the Yosys synthesis command script string.
 
     *frontend* selects how the RTL enters Yosys — see
@@ -434,12 +435,13 @@ def _build_yosys_script(
     # duplicating it in yosys.log. The completed final check supplies authoritative
     # structural counts; earlier-only loops remain advisory.
     check_out = q(out_dir + "/check_" + design_name + ".txt")
-    final_check = [
-        "select -assert-none =A:booley_check_library=1",
-        "read_liberty -lib -nooverwrite -setattr booley_check_library " + lib_path,
-        f"tee -q -o {check_out} check",
-        "delete =A:booley_check_library=1",
-    ]
+    final_check = (
+        "select -assert-none =A:booley_check_library=1; "
+        "read_liberty -lib -nooverwrite -setattr booley_check_library "
+        f"{lib_path}; "
+        f"tee -q -o {check_out} check; "
+        "delete =A:booley_check_library=1"
+    )
 
     # Step 7: Write final netlists and statistics. The sta_* netlist keeps
     # OpenROAD on a plain structural dialect while the regular netlist preserves
@@ -447,25 +449,14 @@ def _build_yosys_script(
     synth_out = q(out_dir + "/synth_" + design_name + ".v")
     sta_out = q(out_dir + "/sta_" + design_name + ".v")
     stat_out = q(out_dir + "/stat_" + design_name + ".txt")
-    wout = [
-        f"write_verilog {synth_out}",
-        "setundef -zero",
-        "splitnets",
-        "clean",
-        f"write_verilog -noattr -noexpr -nohex -nodec {sta_out}",
-        f"tee -o {stat_out} stat -liberty {lib_path}",
-    ]
-    commands = [
-        *hls,
-        *parameter_guard,
-        synth,
-        dfflibmap,
-        abc.removesuffix("; opt"),
-        "opt",
-        *final_check,
-        *wout,
-    ]
-    return commands if command_sequence else "; ".join(commands)
+    wout = (
+        f"write_verilog {synth_out}; "
+        "setundef -zero; splitnets; clean; "
+        f"write_verilog -noattr -noexpr -nohex -nodec {sta_out}; "
+        f"tee -o {stat_out} stat -liberty {lib_path}"
+    )
+
+    return f"{hls}; {parameter_guard}; {synth}; {dfflibmap}; {abc}; {final_check}; {wout}"
 
 
 def _build_abc_command(
