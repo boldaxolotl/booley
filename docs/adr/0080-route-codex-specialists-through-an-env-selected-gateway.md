@@ -167,10 +167,11 @@ Sandbox with Codex on the gateway. It supersedes the "never receive
   `settings.json`, SDK runs, `booley chat --cli claude`) and sets
   `BOOLEY_HIDDEN_GATEWAY=1`. This is not an isolation boundary: VS Code
   terminals, lifecycle hooks and the HTTP MCP server carry the variables, and a
-  same-user process can read `/proc/<pid>/environ`. On first creation there is
-  no `waitFor`, so a Claude panel opened before the start hook writes the blanks
-  runs with the values once; later starts are covered because `settings.json`
-  persists. Hand-written Sandboxes keep today's environment. Consequence: a
+  same-user process can read `/proc/<pid>/environ`. On the first start with new Claude
+  state (a new Sandbox, a changed Claude policy, a rebuild when Claude is not
+  listed) there is no `waitFor`, so a Claude panel opened before the start hook
+  writes the blanks runs with the values once; other starts are covered because
+  `settings.json` persists. Hand-written Sandboxes keep today's environment. Consequence: a
   `booley` command run from Claude's shell cannot reach the gateway, while
   Codex Specialists run by the MCP server still do. A short-lived
   `BOOLEY_GATEWAY_TOKEN_COMMAND` token limits the exposure.

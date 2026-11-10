@@ -407,6 +407,24 @@ def test_auth_status_on_host_reads_declared_gateway_as_auto(gateway_env, monkeyp
     assert "codex: agents run on" in output
 
 
+def test_auth_status_in_handwritten_sandbox_reports_declared_gateway(
+    gateway_env, monkeypatch, capsys
+):
+    """No record and no hand-off: a declared `codex = "gateway"` is still the gateway."""
+    monkeypatch.delenv("BOOLEY_PRIMARY_AUTH")
+    _write_toml(
+        gateway_env,
+        '[agent]\ndefault = "codex"\nclis = ["claude", "codex"]\n[agent.auth]\ncodex = "gateway"\n',
+    )
+
+    code, captured = _auth_status(gateway_env, capsys)
+
+    output = captured.out + captured.err
+    assert code == 0
+    assert "agents run on the gateway at" in output
+    assert "applies inside a Sandbox only" not in output
+
+
 def test_claude_sdk_env_blanks_gateway_settings(gateway_env, monkeypatch):
     monkeypatch.setenv("BOOLEY_AGENT_CLIS", _RECORD)
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")

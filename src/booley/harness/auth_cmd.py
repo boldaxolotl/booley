@@ -119,6 +119,7 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     """Report the launching process's credential under the selected Project policy."""
     from booley.config import agent_app
     from booley.config.agent import (
+        _inside_container,
         gateway_handoff_active,
         project_credential_policy,
     )
@@ -132,7 +133,9 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
         provider, policy = project_credential_policy(project_root, cli=app)
         app = app or provider
-    handoff = gateway_handoff_active()
+    # A declared gateway policy is honored inside any Sandbox (hand-written specs
+    # included), as the runtime and Doctor do; only outside one does it read as `auto`.
+    handoff = gateway_handoff_active() or (policy == GATEWAY_AUTH and _inside_container())
     if handoff and _gateway_covers(app):
         return _report_gateway_status(app)
     policy = _host_policy(policy, handoff=handoff)

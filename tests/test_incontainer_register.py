@@ -1927,7 +1927,7 @@ def test_gateway_hiding_replaces_a_misshaped_env_map(first_run, tmp_path, monkey
 def test_unreadable_claude_settings_refuses_a_gateway_start(
     first_run, tmp_path, monkeypatch, capsys
 ):
-    _gateway_start(first_run, tmp_path, monkeypatch, app="none", record=_ISSUED_RECORD)
+    _gateway_start(first_run, tmp_path, monkeypatch, app="codex", record=_ISSUED_RECORD)
     path = reg.claude_settings_path(first_run.home)
     path.parent.mkdir()
     path.write_text("{ not json", encoding="utf-8")
