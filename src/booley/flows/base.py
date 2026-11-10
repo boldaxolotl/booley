@@ -653,6 +653,10 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         return max(1, self._timeout_ms() // 1000)
 
 
+#: Seconds ``_drain_after_kill`` waits for pipes a surviving descendant still holds.
+_FLOW_KILL_DRAIN_TIMEOUT_S = 10
+
+
 def _drain_after_kill(proc: subprocess.Popen) -> tuple[str, str]:
     """Read whatever the killed tree already wrote, without hanging on it.
 
@@ -662,7 +666,7 @@ def _drain_after_kill(proc: subprocess.Popen) -> tuple[str, str]:
     Partial output beats no output — the tail is usually where the hang is.
     """
     try:
-        stdout, stderr = proc.communicate(timeout=10)
+        stdout, stderr = proc.communicate(timeout=_FLOW_KILL_DRAIN_TIMEOUT_S)
     except subprocess.TimeoutExpired as exc:
         with contextlib.suppress(OSError):
             proc.kill()
