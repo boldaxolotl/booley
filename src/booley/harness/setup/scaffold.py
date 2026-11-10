@@ -2,8 +2,10 @@
 
 Everything else in init assumes an *existing* RTL project being ported to
 Booley; this step covers the opposite case, designing an IP from scratch. It
-interviews the user (simulator, testbench style, lint EDA tool, ASIC/FPGA flows)
-and emits a minimal but *working* project — parameterized counter RTL, a
+asks nothing: the design choices (simulator, testbench style, lint EDA tool,
+ASIC/FPGA flows, Stealth) arrive as flags — ``/booley-setup new`` asks the user
+and passes the answers — and a missing flag takes the default init reports. It
+emits a minimal but *working* project — parameterized counter RTL, a
 self-checking testbench, a `.core` with one Target per enabled flow, and
 populated ``booley.toml``/``tests.toml`` — so ``booley doctor`` and the
 simulate/lint/synth flows are green before the user writes a single line.
@@ -15,17 +17,24 @@ starting point.
 
 The scaffold refuses to run when the repo already contains design files
 (``.core``/RTL) or a populated config — scaffolding into a live project is a
-porting job, and ``docs/user/SETUP.md`` owns that path.
+porting job, and ``docs/user/SETUP.md`` owns that path. What a completed plain
+``booley init`` wrote (the ``[agent]`` table, the Stealth footprint) does not
+count: the scaffold keeps ``[agent]`` and, for an open scaffold, removes the
+still-empty hidden layout so ``.booley/`` can be committed normally.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+import tomlkit
+
+from booley.core.booley_dir import BOOLEY_DIR_NAME
 from booley.harness.setup.common import (
     InitContext,
     err,
@@ -46,8 +55,10 @@ from booley.harness.setup.plan import (
 from booley.harness.setup.project_origin import record_scaffold_origin
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.docs_links import docs_url, sandbox_doc_path
+from booley.runtime.git import git_exclude_entries, remove_git_excludes
+from booley.runtime.project_repositories import is_standalone_git_repository, run_git
 
-# Wizard vocabulary. `sv` = a plain self-checking SystemVerilog TB scored by
+# Choice vocabulary. `sv` = a plain self-checking SystemVerilog TB scored by
 # stdout sentinels; `cocotb` = a Python TB per ADR 0034 (verdict from
 # results.xml).
 SIM_EDA_TOOLS = ("verilator", "icarus")
@@ -80,7 +91,7 @@ def is_scaffold_core_description(description: object) -> bool:
 
 @dataclass(frozen=True)
 class ScaffoldChoices:
-    """Resolved wizard answers — the full input of :func:`scaffold_files`."""
+    """Resolved scaffold answers — the full input of :func:`scaffold_files`."""
 
     name: str
     sim_eda_tool: str  # one of SIM_EDA_TOOLS
@@ -146,7 +157,10 @@ def _scaffold_inputs_available(ctx: InitContext) -> bool:
         return False
     for cfg_name in ("booley.toml", "tests.toml"):
         cfg = ctx.project_root / ".booley" / cfg_name
-        if _config_is_populated(cfg):
+        # A completed plain `booley init` wrote `[agent]` into booley.toml.
+        if _config_is_populated(
+            cfg, ignored_tables=("agent",) if cfg_name == "booley.toml" else ()
+        ):
             err(
                 f"{cfg} is already populated — scaffold would overwrite deliberate "
                 "config. Remove it first if you really want a fresh start."
@@ -157,29 +171,8 @@ def _scaffold_inputs_available(ctx: InitContext) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Wizard prompts
+# Choices — flags win; a missing flag takes the default init reports
 # ---------------------------------------------------------------------------
-
-
-def _ask_choice(question: str, options: list[tuple[str, str]], default: str) -> str:
-    """Numbered-menu prompt; empty input, EOF, or a bad TTY yields the default."""
-    print(f"  {question}")
-    for idx, (value, blurb) in enumerate(options, 1):
-        marker = "  (default)" if value == default else ""
-        print(f"    {idx}. {value} — {blurb}{marker}")
-    while True:
-        try:
-            raw = input(f"  choice [{default}]: ").strip().lower()
-        except EOFError:
-            return default
-        if not raw:
-            return default
-        if raw.isdigit() and 1 <= int(raw) <= len(options):
-            return options[int(raw) - 1][0]
-        for value, _ in options:
-            if raw == value:
-                return value
-        print("    answer with a number or an option name")
 
 
 def _ask_yes_no(question: str, default: bool) -> bool:
@@ -198,41 +191,32 @@ def _ask_yes_no(question: str, default: bool) -> bool:
         print("    answer y or n")
 
 
-def _ask_text(question: str, default: str = "") -> str:
-    try:
-        raw = input(f"  {question}: ").strip()
-    except EOFError:
-        return default
-    return raw or default
-
-
-def _resolve_synth_mode(args, asic: bool, interactive: bool) -> str | None:
+def _resolve_synth_mode(args, asic: bool) -> str | None:
     explicit = getattr(args, "synth_mode", None)
     if explicit is not None and not asic:
         err("--synth-mode conflicts with --no-asic; enable ASIC synthesis or omit --synth-mode")
         return None
-    mode = "physical" if explicit is None else explicit
-    if asic and explicit is None and interactive:
-        mode = _ask_choice(
-            "Which synthesis mode?",
-            [
-                ("physical", "Yosys + OpenROAD, constrained timing with SDC"),
-                ("logical", "Yosys mapped area only, without SDC"),
-            ],
-            "physical",
-        )
-    elif asic and explicit is None:
-        info("Synthesis mode: physical (non-interactive default; set --synth-mode)")
-    return mode
+    if asic and explicit is None:
+        info("Synthesis mode: physical (default; set --synth-mode)")
+    return "physical" if explicit is None else explicit
+
+
+def _flag_or_default(args, flag: str, default: str, label: str) -> str:
+    """The value of ``--<flag>``, or *default* with a line saying so."""
+    flagged = getattr(args, flag, None)
+    if flagged:
+        return str(flagged)
+    info(f"{label}: {default} (default; set --{flag.replace('_', '-')})")
+    return default
 
 
 def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
-    """Resolve wizard answers from CLI flags, prompts, or defaults.
+    """Resolve the scaffold answers from CLI flags and the documented defaults.
 
-    A flag always wins over a prompt (agent/CI runs pass everything as flags);
-    unanswered questions fall back to prompts only on an interactive TTY
-    outside ``--check-only`` — otherwise the documented defaults apply, with a
-    note, matching init's "prompts are skipped when non-interactive" contract.
+    Init asks no design questions (``/booley-setup new`` does, and passes every
+    answer as a flag). A flag always wins; each missing one takes its default
+    and init prints which default it used, so a bare ``--scaffold`` run is
+    never a silent guess.
 
     Returns ``None`` (after printing the error) on an invalid name or a
     flag-forced combination the runtime rejects.
@@ -245,26 +229,7 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
         )
         return None
 
-    interactive = ctx.interactive and not ctx.check_only
-
-    def resolve(flag: str, options: list[tuple[str, str]], default: str, question: str) -> str:
-        flagged = getattr(args, flag, None)
-        if flagged:
-            return str(flagged)
-        if interactive:
-            return _ask_choice(question, options, default)
-        info(f"{question}: {default} (non-interactive default; set --{flag.replace('_', '-')})")
-        return default
-
-    sim_eda_tool = resolve(
-        "sim_eda_tool",
-        [
-            ("verilator", "fast compiled sim, runs in the Booley sandbox"),
-            ("icarus", "event-driven interpreter, runs in the Booley sandbox"),
-        ],
-        "verilator",
-        "Which simulator?",
-    )
+    sim_eda_tool = _flag_or_default(args, "sim_eda_tool", "verilator", "Simulator")
     if sim_eda_tool not in SIM_EDA_TOOLS:
         err(
             f"simulator {sim_eda_tool!r} is not supported by the Sandbox; "
@@ -272,25 +237,9 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
         )
         return None
 
-    tb_style = resolve(
-        "tb_style",
-        [
-            ("sv", "self-checking SystemVerilog TB, verdict via stdout sentinel"),
-            ("cocotb", "Python TB (ADR 0034), verdict via cocotb results.xml"),
-        ],
-        "sv",
-        "Which testbench style?",
-    )
+    tb_style = _flag_or_default(args, "tb_style", "sv", "Testbench style")
 
-    lint_eda_tool = resolve(
-        "lint_eda_tool",
-        [
-            ("verilator", "verilator --lint-only: structural/semantic checks"),
-            ("verible", "verible style lint: naming/formatting conventions"),
-        ],
-        "verilator",
-        "Which lint EDA tool?",
-    )
+    lint_eda_tool = _flag_or_default(args, "lint_eda_tool", "verilator", "Lint EDA tool")
     if lint_eda_tool not in LINT_EDA_TOOLS:
         err(
             f"lint EDA tool {lint_eda_tool!r} is not supported; "
@@ -301,28 +250,21 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
     asic_flag = getattr(args, "asic", None)
     if asic_flag is not None:
         asic = bool(asic_flag)
-    elif interactive:
-        asic = _ask_yes_no(
-            "Enable ASIC synthesis (Yosys; physical mode also uses OpenROAD and SDC)?",
-            default=True,
-        )
     else:
-        info("ASIC synthesis: enabled (non-interactive default; set --no-asic to skip)")
+        info("ASIC synthesis: enabled (default; set --no-asic to skip)")
         asic = True
 
-    synth_mode = _resolve_synth_mode(args, asic, interactive)
+    synth_mode = _resolve_synth_mode(args, asic)
     if synth_mode is None:
         return None
 
     fpga_part = getattr(args, "fpga_part", None)
-    if fpga_part is None and interactive:
-        if _ask_yes_no("Enable FPGA implementation (Vivado Sandbox policy)?", default=False):
-            fpga_part = _ask_text("Vivado part (e.g. xc7a200tfbg484-1)")
-            if not fpga_part:
-                info("no part given — skipping the fpga flow")
-                fpga_part = None
-    elif fpga_part is None:
-        info("FPGA implementation: skipped (non-interactive default; set --fpga-part to enable)")
+    if fpga_part is None:
+        info("FPGA implementation: skipped (default; set --fpga-part to enable)")
+
+    stealth = bool(getattr(args, "stealth", False))
+    if not stealth:
+        info("Stealth: off (default; set --stealth)")
 
     return ScaffoldChoices(
         name=name,
@@ -332,7 +274,7 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
         asic=asic,
         fpga_part=fpga_part or None,
         synth_mode=synth_mode,
-        stealth=bool(getattr(args, "stealth", False)),
+        stealth=stealth,
     )
 
 
@@ -366,12 +308,13 @@ def existing_design_files(root: Path, limit: int = 5) -> list[Path]:
     return found
 
 
-def _config_is_populated(path: Path) -> bool:
+def _config_is_populated(path: Path, ignored_tables: tuple[str, ...] = ()) -> bool:
     """True when a config file holds real (or unparseable) content.
 
     ``booley init`` scaffolds comment-only skeletons for ``booley.toml`` /
     ``tests.toml``; those parse to an empty document and are fair game to
-    replace. Anything that parses non-empty was authored on purpose.
+    replace. Anything that parses non-empty was authored on purpose — except
+    the *ignored_tables* plain init itself writes (``[agent]``).
     """
     if not path.is_file():
         return False
@@ -384,7 +327,8 @@ def _config_is_populated(path: Path) -> bool:
             line.strip() and not line.lstrip().startswith("#") for line in content.splitlines()
         ):
             return False
-        return tomllib.loads(content) != {}
+        document = tomllib.loads(content)
+        return any(key not in ignored_tables for key in document)
     except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
         return True  # unreadable/broken — treat as user content, refuse
 
@@ -1023,36 +967,160 @@ def scaffold_files(c: ScaffoldChoices) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Hidden layout — what a default plain `booley init` left for an open scaffold
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _HiddenFootprint:
+    """The Stealth footprint an open scaffold removes: ``.booley/.git`` and exclusions."""
+
+    inner_repo: Path | None = None  # the empty inner repository's .git directory
+    exclude_entries: tuple[str, ...] = ()  # `/.booley` lines in the honored info/exclude
+
+    @property
+    def present(self) -> bool:
+        return self.inner_repo is not None or bool(self.exclude_entries)
+
+
+def _inner_repo_has_history(booley_dir: Path) -> bool:
+    """True unless ``booley_dir`` is a standalone repository with no commits.
+
+    An unreadable or non-standalone repository counts as history: removing it
+    could destroy something this code cannot see.
+    """
+    if not is_standalone_git_repository(booley_dir):
+        return True
+    heads = run_git(booley_dir, "rev-list", "-n", "1", "--all")
+    return heads.returncode != 0 or bool(heads.stdout.strip())
+
+
+def _inspect_hidden_footprint(
+    ctx: InitContext, choices: ScaffoldChoices
+) -> _HiddenFootprint | None:
+    """Find the footprint to remove, or ``None`` after refusing (nothing changed).
+
+    ``--stealth`` keeps the hidden layout. A symlinked (pinned) ``.booley``
+    belongs to the relocated Booley Directory family and is left alone.
+    """
+    if choices.stealth:
+        return _HiddenFootprint()
+    booley_dir = ctx.project_root / BOOLEY_DIR_NAME
+    exclude_entries = git_exclude_entries(ctx.project_root, (BOOLEY_DIR_NAME,))
+    inner_git = booley_dir / ".git"
+    if booley_dir.is_symlink():
+        if exclude_entries or inner_git.exists():
+            warn(f"{booley_dir} is a symlink; leaving its hidden layout as is")
+        return _HiddenFootprint()
+    if not inner_git.exists() and not inner_git.is_symlink():
+        return _HiddenFootprint(None, exclude_entries)
+    if inner_git.is_symlink() or _inner_repo_has_history(booley_dir):
+        err(
+            f"{booley_dir} is its own git repository with history, so an open scaffold "
+            "would commit an embedded repository. Rerun with `--stealth` to keep the "
+            f"hidden layout, or move or remove {inner_git} and rerun."
+        )
+        ctx.record("scaffold", "err", "inner repository has history")
+        return None
+    return _HiddenFootprint(inner_git, exclude_entries)
+
+
+def _remove_hidden_footprint(ctx: InitContext, footprint: _HiddenFootprint) -> bool:
+    """Remove the footprint (inner repo first, so a failure keeps the exclusion); report each part."""
+    try:
+        if footprint.inner_repo is not None:
+            shutil.rmtree(footprint.inner_repo)
+            ok(f"removed empty inner git repository {footprint.inner_repo}")
+        if footprint.exclude_entries:
+            remove_git_excludes(ctx.project_root, footprint.exclude_entries)
+            ok("removed /.booley from git info/exclude")
+    except OSError as exc:
+        err(f"could not remove the hidden layout: {exc}; fix it and rerun the scaffold")
+        ctx.record("scaffold", "err", "hidden layout removal failed")
+        return False
+    return True
+
+
+def _report_hidden_footprint(footprint: _HiddenFootprint) -> None:
+    if footprint.inner_repo is not None:
+        warn(f"would remove empty inner git repository {footprint.inner_repo}")
+    if footprint.exclude_entries:
+        warn("would remove /.booley from git info/exclude")
+
+
+def _keep_agent_table(files: dict[str, str], existing_config: Path) -> None:
+    """Append the plain-init ``[agent]`` table verbatim to the rendered booley.toml."""
+    try:
+        agent = tomlkit.parse(existing_config.read_text(encoding="utf-8")).get("agent")
+    except (OSError, ValueError):
+        return  # unreadable config was already refused by the input gate
+    if agent is None:
+        return
+    # Re-emit as a real `[agent]` table: an inline `agent = {...}` or dotted
+    # key appended after `[flows.fpga]` would land inside that table instead.
+    agent_table = tomlkit.table()
+    agent_table.update(agent)
+    kept = tomlkit.document()
+    kept["agent"] = agent_table
+    files[".booley/booley.toml"] += "\n" + kept.as_string()
+
+
+# ---------------------------------------------------------------------------
 # The init step
 # ---------------------------------------------------------------------------
 
 
-def step_scaffold(ctx: InitContext, args) -> bool:
-    """Run the scaffold wizard and write the starter project.
+@dataclass(frozen=True)
+class _PreparedScaffold:
+    """Everything the scaffold decided before touching the disk."""
 
-    Returns True when init should proceed to the regular steps; False aborts
-    the run (refusal or invalid answers) after recording an err result.
-    """
+    choices: ScaffoldChoices
+    footprint: _HiddenFootprint
+    plan: InitPlan
 
-    ctx.step_banner("scaffold a new IP from scratch")
 
+def _prepare_scaffold(ctx: InitContext, args) -> _PreparedScaffold | None:
+    """Run every refusal in order; ``None`` means refused with nothing changed."""
     choices = gather_scaffold_choices(args, ctx)
     if choices is None:
         ctx.record("scaffold", "err", "invalid scaffold options")
-        return False
+        return None
 
     # Refusal gate: an existing design means this is a *porting* job.
     if not _scaffold_inputs_available(ctx):
-        return False
+        return None
+
+    footprint = _inspect_hidden_footprint(ctx, choices)
+    if footprint is None:
+        return None
 
     files = scaffold_files(choices)
+    _keep_agent_table(files, ctx.project_root / ".booley" / "booley.toml")
 
     plan = _plan_scaffold_files(ctx, files)
     if plan.blockers:
         for action in plan.blockers:
             err(f"scaffold would replace user-owned path {action.path}")
         ctx.record("scaffold", "err", "filesystem ownership conflict")
+        return None
+    return _PreparedScaffold(choices, footprint, plan)
+
+
+def step_scaffold(ctx: InitContext, args) -> bool:
+    """Write the starter project from the resolved choices.
+
+    Returns True when init should proceed to the regular steps; False aborts
+    the run (refusal or invalid answers) after recording an err result.
+    Refusals all precede the first destructive step, so a refused run changes
+    nothing.
+    """
+
+    ctx.step_banner("scaffold a new IP from scratch")
+
+    prepared = _prepare_scaffold(ctx, args)
+    if prepared is None:
         return False
+    choices, footprint, plan = prepared.choices, prepared.footprint, prepared.plan
 
     if ctx.check_only:
         pending = [
@@ -1060,9 +1128,12 @@ def step_scaffold(ctx: InitContext, args) -> bool:
         ]
         for action in pending:
             warn(f"would write {action.path.relative_to(ctx.project_root).as_posix()}")
+        _report_hidden_footprint(footprint)
         ctx.record("scaffold", "warn", f"would write {len(pending)} file(s)")
         return True
 
+    if footprint.present and not _remove_hidden_footprint(ctx, footprint):
+        return False
     if not _apply_scaffold_files(ctx, plan) or not _publish_scaffold_origin(ctx):
         return False
     reset_cache()  # .booley may have just come into existence
@@ -1082,10 +1153,8 @@ def step_scaffold(ctx: InitContext, args) -> bool:
     info("commit the scaffolded files — doctor flags .core-referenced files a clone would lack")
     if choices.stealth:
         info("  commit .booley/ (incl. cores/) in its own git repository, not the RTL repo")
-    info("after init finishes: `booley doctor --deep` should be green, then try")
-    info(
-        f"  a sim run of test 'reset' on target 'sim_{choices.name}' — then replace {choices.name}."
-    )
+    info("`/booley-setup new` runs the Doctor gate in the container; then replace")
+    info(f"  {choices.name} (try a sim run of test 'reset' on target 'sim_{choices.name}' first).")
     ctx.record("scaffold", "ok", summary)
     return True
 
