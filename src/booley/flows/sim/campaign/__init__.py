@@ -51,6 +51,7 @@ from .inspection import (
     SimulationCampaignWorkItemError,
     authenticate_retained_campaign_inventory,
     authenticate_work_item,
+    collect_pre_sim_firings,
     inspect_retained_campaign,
     read_durable_results,
     recover_retained_campaign_resources,
@@ -75,7 +76,6 @@ from .projection import (
     decode_simulation_projection,
 )
 from .resume import ValidatedResumeManifest, validate_resume_manifest
-from .store import collect_pre_sim_firings
 
 __all__ = [
     "SIMULATION_PROJECTION_SCHEMA",
