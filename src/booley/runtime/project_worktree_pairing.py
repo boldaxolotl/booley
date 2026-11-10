@@ -97,7 +97,7 @@ def _refuse_registered(source: Path, nested: Path) -> None:
             raise ProjectPairingError(
                 f"the Booley Directory's repository already registers a checkout at {nested}; "
                 "in the same Sandbox, preserve needed work and evidence first "
-                "(see docs/user/CLI-REFERENCE.md), then remove it with "
+                "as described in CLI-REFERENCE.md (host doc, not shipped), then remove it with "
                 f"`git -C {shlex.quote(str(source.resolve()))} worktree remove "
                 f"{shlex.quote(str(target))}`; inspect locks before unlocking or forcing removal"
             )
@@ -283,7 +283,7 @@ def worktree_removal_instructions(
         f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
         "These are Sandbox paths; do not paste them into a host terminal.",
         "First preserve needed evidence and other ignored/untracked files outside "
-        "this worktree (see docs/user/CLI-REFERENCE.md).",
+        "this worktree, as described in CLI-REFERENCE.md (host doc, not shipped).",
         "Then clean dirty/untracked files, including a Snapshot's copied files; "
         "inspect locks before unlocking or forcing removal.",
         "Git refuses to remove a worktree that holds populated submodules without "
@@ -303,6 +303,12 @@ def worktree_removal_instructions(
         steps.append(
             "Optional, to reuse the name, delete the Project branch after preserving its commits: "
             f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
+        )
+    if "--" not in name:
+        # A <branch>--<description> name checks out an existing branch and creates none.
+        steps.append(
+            "Optional, to reuse the name, delete the worktree's branch after preserving its "
+            f"commits: git -C {quote(root)} branch -D {shlex.quote(f'booley/{name}')}"
         )
     return "\n".join(steps)
 

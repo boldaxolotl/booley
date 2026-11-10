@@ -8,15 +8,19 @@ import os
 import pytest
 
 from booley.goals.store import GoalStore
-from booley.harness.dashboard.app import job_detail
-from booley.harness.dashboard.jobs import JobReader
+from booley.harness.dashboard.app import job_detail, job_paths
+from booley.harness.dashboard.jobs import JobReader, target_arg
 from booley.harness.dashboard.resources import ResourceSampler
 from booley.mcp import (
     call_context,
 )
 from booley.runtime import job_records
 from booley.runtime.pid import ProcessIdentity
+from tests.conftest import symlink_or_skip
+from tests.goals import conftest as goal_fixtures
 from tests.goals.conftest import INPUT_PATHS
+
+layout = goal_fixtures.layout
 
 
 def snapshot_jobs(
@@ -708,3 +712,83 @@ def test_zero_resource_measurements_are_recorded(tmp_path):
     )
     assert "CPU time: 0s" in text
     assert "Peak memory (largest process): 0 MiB" in text
+
+
+def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
+    """A shell Flow run shows in the Dashboard with its ``job.log`` and its own report."""
+    from booley.flows.lint.flow import LintFlow
+    from booley.harness import booley as cli
+    from booley.mcp.registry import McpToolInfo
+    from booley.runtime import runtime_context
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from tests.flows.invocation_doubles import replace_run
+
+    def make_lint():
+        flow = LintFlow()
+        replace_run(monkeypatch, flow, EndpointOutcome)
+        return flow
+
+    info = McpToolInfo(name="lint", path="lint.py", description="lint", kind="flow")
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(cli, "_discover_project_mcp_tools", lambda _root: [info])
+    monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: make_lint)
+    monkeypatch.delenv("BOOLEY_RUN_ID", raising=False)
+    monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
+    parser = cli._build_parser()
+    args = cli._normalize_args(
+        parser,
+        parser.parse_args(
+            ["flow", "lint", "-C", str(layout.worktree), "--target", "top", "--quiet"]
+        ),
+    )
+
+    assert cli._cmd_flow(args, layout.worktree) == 0
+
+    capsys.readouterr()
+    (view,) = snapshot_jobs(layout.control).jobs
+    assert view.record.session_key is None
+    assert view.state == "completed"
+    log = layout.control / ".interactive_logs/standalone" / view.record.run_id / "job.log"
+    assert view.report is not None  # found under the checkout's reports, by the run's own id
+    detail = job_detail(view)
+    assert f"Log:\n{log}" in detail
+    assert f"Report:\n{view.report_path}" in detail
+    assert job_paths(view) == (str(log), str(view.report_path))
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--target", "top"], "top"),
+        (["--target=top#sim"], "top#sim"),
+        (["--target"], None),
+        (["lint", "--report-dir", "x"], None),
+    ],
+)
+def test_target_arg_reads_both_spellings(argv, expected):
+    assert target_arg(argv) == expected
+
+
+def test_job_detail_links_job_log(tmp_path):
+    root = tmp_path / "logs/.runtime/jobs"
+    job_records.write_record(rec(status="done", exit_code=0), root)
+    log = root / "one" / "job.log"
+    log.parent.mkdir()
+    log.write_bytes(b"full output\n")
+    view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
+    assert view.log_path == str(log)
+    assert f"Log:\n{log}" in job_detail(view)
+    assert str(log) in job_paths(view)
+
+
+def test_symlinked_job_log_is_not_linked(tmp_path):
+    root = tmp_path / "logs/.runtime/jobs"
+    job_records.write_record(rec(status="done", exit_code=0), root)
+    target = tmp_path / "elsewhere.log"
+    target.write_bytes(b"secret\n")
+    (root / "one").mkdir()
+    symlink_or_skip(root / "one" / "job.log", target)
+    view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
+    assert view.log_path == ""
+    assert "Log:" not in job_detail(view)
+    assert str(root / "one" / "job.log") not in job_paths(view)

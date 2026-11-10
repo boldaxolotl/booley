@@ -27,7 +27,7 @@ from booley.flows.sim.campaign.serial_execution import (
 from booley.flows.sim.campaign.store import _validate_build_execution_document
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
-from tests.flows.sim.test_campaign_phase3 import _build_execution
+from tests.flows.sim.campaign_test_support import _build_execution
 from tests.flows.sim.test_verilator_build_reuse_campaign import _configure, flow_project
 
 __all__ = ["flow_project"]  # re-exported pytest fixture

@@ -25,6 +25,19 @@ Packaged release history starts at 0.2.7. For older changes, see
   incomplete collection) or whose metric rows are malformed or repeated. The
   load no longer cross-checks collection state, selected tests against runs,
   or native-format and unknown-record consistency; those fields load as stored.
+- `sim --trace` now converts a declared `trace_files` entry that is a literal
+  relative `.vcd` path inside the run directory while the test runs, so the
+  waveform is ready at run end and no VCD is left on disk. Other entries still
+  convert after the run. `bwave build` now fails on a VCD holding a second
+  header instead of merging the dumps.
+- Doctor now scans the per-Project Session stores on the host and fails when a
+  file is not named for the Project Root it holds, naming the file and its
+  repair. On Windows the stores now name a Project Root without regard to
+  case, so Sandbox issuance, pending refresh, and pending invalidation files
+  written by earlier releases are not migrated: each fails closed until it is
+  removed, naming the file. Remove it, then run
+  `booley init --seed --project <root>` on the host to reissue the Sandbox
+  spec. Linux and macOS file names do not change.
 
 ## 0.4.0 - 04 NOV 2026
 

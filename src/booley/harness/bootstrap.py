@@ -33,7 +33,6 @@ from booley.runtime.host_install import (
     inspect_host_installation,
 )
 from booley.runtime.image_lifecycle import (
-    HostImageScope,
     ImageLifecycleError,
     Intent,
     LifecycleResult,
@@ -704,7 +703,6 @@ def _reconcile_base_image(
 ) -> tuple[LifecycleResult | None, BootstrapFinding]:
     try:
         result = reconcile_images(
-            HostImageScope(),
             intent,
             verbose=verbose,
             capacity_plan=capacity_plan,
