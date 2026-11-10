@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.commit_policy import stealth_choice_unset
+from booley.runtime import runtime_context
 from booley.runtime.booley_dir import own_booley_dir_repo_path, resolve_checkout_booley_dir
 from booley.runtime.git import stealth_exclude_names
 from booley.runtime.git_attributes_policy import has_managed_attributes
@@ -35,10 +36,24 @@ _INPUT_TREES = (
     "goals/history",
     "tickets/history",
 )
-FIX = (
-    "edit the reported exclusion (including excluded ancestors) to allow the named paths, "
-    "then rerun booley init or booley doctor"
-)
+
+
+def fix() -> str:
+    """Return the repair hint, naming where `booley init` runs at the time of the call.
+
+    Sandbox ``booley init`` never inspects trackability, so a hand-written Sandbox
+    is sent to ``booley doctor`` alone.
+    """
+    if runtime_context.runtime_location() is runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX:
+        rerun = "booley doctor"
+    else:
+        rerun = f"{runtime_context.booley_init_hint()} or booley doctor"
+    return (
+        "edit the reported exclusion (including excluded ancestors) to allow the named paths, "
+        f"then rerun {rerun}"
+    )
+
+
 STEALTH_UNSET = (
     "git info/exclude hides /{name}, but booley.toml leaves [stealth] enabled unset, "
     "so Stealth Mode is off (commit messages are not scrubbed)"

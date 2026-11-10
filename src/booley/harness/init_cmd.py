@@ -58,6 +58,8 @@ import tomlkit
 
 from booley import __version__
 from booley.commit_policy import stealth_enabled
+from booley.config import agent_app
+from booley.config.agent import AGENT_CLIS
 from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
@@ -86,6 +88,7 @@ from booley.harness.bootstrap import (
     parse_git_version,
     reconcile_bootstrap,
 )
+from booley.harness.setup import git_hooks
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import (
     InitContext,
@@ -147,7 +150,13 @@ from booley.harness.setup.skills import _deploy_skills
 from booley.harness.terminal_status import LineStatus, section_header, status_line
 from booley.presentation.colors import bold_amber, green, red, yellow
 from booley.projects.inventory import ProjectInventoryError, remember_project
-from booley.runtime import auth_token, dashboard_tasks, doctor_stamp, project_repositories
+from booley.runtime import (
+    auth_token,
+    dashboard_tasks,
+    doctor_stamp,
+    project_repositories,
+    runtime_context,
+)
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
@@ -1080,7 +1089,7 @@ def _select_interactive_app(
 ) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
-        from booley.config.agent import AGENT_CLIS, parse_agent_section
+        from booley.config.agent import parse_agent_section
 
         config_path = resolve_toml(
             project_data_source or authorized_project_data_source(project_root)
@@ -1958,9 +1967,9 @@ def _step_advisories(ctx: InitContext) -> None:
 def _step_project_trackability(ctx: InitContext) -> None:
     """Advise on effective exclusions after full Project reconciliation."""
     from booley.runtime.project_trackability import (
-        FIX,
         STEALTH_UNSET,
         STEALTH_UNSET_FIX,
+        fix,
         inspect_project_trackability,
         unrecorded_stealth_exclusions,
     )
@@ -1976,7 +1985,7 @@ def _step_project_trackability(ctx: InitContext) -> None:
     inspection = inspect_project_trackability(ctx.project_root, selected)
     for group in inspection.ignored:
         warn(group.message)
-        hint(FIX)
+        hint(fix())
     for error in inspection.errors:
         warn(error)
     problems = len(unrecorded) + len(inspection.ignored) + len(inspection.errors)
@@ -2400,15 +2409,25 @@ def _step_worktree_policies(
     )
 
 
+def _step_agent_unset(ctx: InitContext) -> bool:
+    """Note that no source names a default Agent CLI; booley.toml stays untouched."""
+    ctx.step_banner("agent provider and authentication policy")
+    info("no default Agent CLI in booley.toml or BOOLEY_AGENT_APP; left unset")
+    ctx.record("agent_config", "skip", "default Agent CLI left unset")
+    return True
+
+
 def _initialize_project_configuration(
     ctx: InitContext,
-    selection: AgentSelection,
+    selection: AgentSelection | None,
     agent_config_path: Path,
 ) -> bool:
     """Prepare the Directory before allowing agent configuration writes."""
     _step_booley_dir(ctx)
     if any(result.name == "booley_dir" and result.status == "err" for result in ctx.results):
         return False
+    if selection is None:
+        return _step_agent_unset(ctx)
     return _step_agent_config(ctx, selection, agent_config_path)
 
 
@@ -2424,7 +2443,8 @@ class ProjectFacts:
 class ProjectInitialization:
     """Inputs of one :func:`initialize_project` run, besides the step context."""
 
-    agent: AgentSelection
+    #: ``None`` records no default Agent CLI (a Sandbox with no declared or environment source).
+    agent: AgentSelection | None
     agent_config_path: Path
     #: Called once, after the Booley Directory content steps and before Git integration.
     host_facts: Callable[[], ProjectFacts]
@@ -2771,8 +2791,136 @@ def _init_with_migration(args: argparse.Namespace, project_root: Path, migration
     return _run_init_unlocked(args, project_root)
 
 
+#: Options that only make sense for host-side setup; a Sandbox refuses them by name.
+_SANDBOX_REFUSED_OPTIONS = (
+    ("seed", "--seed"),
+    ("force", "--force"),
+    ("repin_booley_dir", "--repin-booley-dir"),
+    ("scaffold", "--scaffold"),
+    ("provider", "--provider"),
+    ("auth", "--auth"),
+)
+
+
+def _sandbox_agent_selection(config_path: Path) -> AgentSelection | None:
+    """Pick the Agent CLI selection inside a Sandbox; ``None`` leaves the default unset.
+
+    A default declared in ``booley.toml`` is kept and never written. Otherwise
+    ``BOOLEY_AGENT_APP`` of ``claude`` or ``codex`` is recorded as the default.
+    ``auto`` is not resolved here: the registrar publishes its choice per start,
+    after ``onCreateCommand``, and pinning one start's choice would defeat ``auto``.
+    A missing ``auth`` is never written; unset already means ``auto``.
+    Raises what :func:`_read_agent_selection` raises for an unreadable ``[agent]``.
+    """
+    provider, auth = _read_agent_selection(config_path)
+    if provider is not None:
+        return AgentSelection(provider, auth or "auto")
+    app = (os.environ.get(agent_app.AGENT_APP_ENV) or "").strip()
+    if app in AGENT_CLIS:
+        return AgentSelection(app, auth or "auto", write_provider=True)
+    return None
+
+
+def _sandbox_init_refusal(args: argparse.Namespace) -> str | None:
+    """Return why this Sandbox may not run ``booley init``, or ``None`` when it may.
+
+    Reads nothing but mountinfo, so a refusal can never have written anything.
+    """
+    if runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX:
+        return (
+            "ERROR: `booley init` cannot run inside a Booley-issued Sandbox: the host "
+            "owns this Project's Sandbox and Dashboard task. Run `booley init` on the host."
+        )
+    for attribute, flag in _SANDBOX_REFUSED_OPTIONS:
+        if getattr(args, attribute, None):
+            return (
+                f"ERROR: `booley init {flag}` is host-side setup and cannot run inside a "
+                f"Sandbox. Run `booley init {flag}` on the host."
+            )
+    return None
+
+
+def _sandbox_needs_host_migration(project_root: Path) -> bool:
+    """Observe (never change) whether a Booley Directory migration is pending."""
+    from booley.core.booley_layout import Layout, classify_layout
+    from booley.harness.setup.directory_migration import inspect_migration
+
+    return classify_layout(project_root) is Layout.RETIRED or (
+        inspect_migration(project_root) is not None
+    )
+
+
+def _initialize_sandbox_project(ctx: InitContext) -> int:
+    """Run Project Initialization with the Sandbox's own Git and Agent CLI facts."""
+    if not _project_checkout_ready(ctx):
+        return _print_summary(ctx)
+    if _sandbox_needs_host_migration(ctx.project_root):
+        err("this Project needs a Booley Directory migration, which runs on the host")
+        hint("run `booley init` on the host")
+        ctx.record("migration", "err", "Booley Directory migration required")
+        return _print_summary(ctx)
+    config_path = _agent_config_path(ctx.project_root, seed=False)
+    if not _project_config_migration_preflight(ctx, config_path):
+        return _print_summary(ctx)
+    try:
+        selection = _sandbox_agent_selection(config_path)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        err(f"cannot select an agent from {config_path}: {exc}")
+        ctx.record("agent_config", "err", "invalid booley.toml")
+        return _print_summary(ctx)
+    guidance_plan, may_proceed = _plan_existing_guidance(ctx)
+    if not may_proceed:
+        return _print_summary(ctx)
+    local_git = git_hooks._host_git_version()
+    request = ProjectInitialization(
+        selection,
+        config_path,
+        lambda: ProjectFacts(local_git),
+        reconcile_interactive_files=True,
+        guidance_plan=guidance_plan,
+        line_ending_baseline=_sample_line_ending_baseline(ctx),
+    )
+    with init_booley_dir_scope(ctx.project_root):
+        initialize_project(ctx, request)
+    return _print_summary(ctx)
+
+
+def run_sandbox_init(args: argparse.Namespace, project_root: Path) -> int:
+    """Project Initialization alone, for a hand-written Sandbox (issue 2751).
+
+    No Docker, Host Bootstrap, image work, Sandbox Issuance, pin, inventory or
+    advisories. Idempotent, so a spec can call it from ``onCreateCommand``.
+    Exits 2 only on a real failure or a refusal.
+    """
+    from booley.core.booley_layout import BooleyLayoutError
+
+    refusal = _sandbox_init_refusal(args)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 2
+    configure_progress_output()
+    ctx = InitContext(
+        project_root=project_root,
+        interactive=False,
+        check_only=getattr(args, "check_only", False),
+        verbose=getattr(args, "verbose", False),
+    )
+    _print_init_banner(ctx)
+    try:
+        return _initialize_sandbox_project(ctx)
+    except (BooleyLayoutError, OSError, subprocess.SubprocessError) as exc:
+        err(f"{exc}; run `booley init` again after resolving this condition")
+        ctx.record("inspection", "err", str(exc))
+        return _print_summary(ctx)
+
+
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
-    """Refuse before writes, then migrate under host-wide lifecycle serialization."""
+    """Refuse before writes, then migrate under host-wide lifecycle serialization.
+
+    Inside a Sandbox only Project Initialization runs (:func:`run_sandbox_init`).
+    """
+    if runtime_context.inside_session_runtime():
+        return run_sandbox_init(args, project_root)
     from booley.core.booley_layout import BooleyLayoutError
     from booley.core.checkout_role import SourceCheckoutProjectError
     from booley.runtime import issuance_invalidation, session_runtime

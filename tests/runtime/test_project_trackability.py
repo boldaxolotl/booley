@@ -10,6 +10,7 @@ import pytest
 from tests.conftest import reset_git_command_config
 
 from booley.runtime import project_trackability as pt
+from booley.runtime import runtime_context
 from booley.runtime.booley_dir import reset_cache
 
 
@@ -481,3 +482,21 @@ def test_relocated_history_probe_uses_configured_directory(project):
     history = [group for group in inspection.ignored if group.history]
     assert [group.paths for group in history] == [("tools/booley/goals/history/doctor-probe.md",)]
     reset_cache()
+
+
+@pytest.mark.parametrize(
+    ("location", "rerun"),
+    [
+        ("HOST", "then rerun booley init or booley doctor"),
+        ("HAND_WRITTEN_SANDBOX", "then rerun booley doctor"),
+        ("ISSUED_SANDBOX", "then rerun booley init on the host or booley doctor"),
+    ],
+)
+def test_fix_names_where_to_rerun(
+    monkeypatch: pytest.MonkeyPatch, location: str, rerun: str
+) -> None:
+    """Sandbox `booley init` skips this check, so only Doctor is offered there."""
+    kind = runtime_context.RuntimeLocation[location]
+    monkeypatch.setattr(runtime_context, "runtime_location", lambda: kind)
+
+    assert pt.fix().endswith(rerun)
