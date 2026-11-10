@@ -65,16 +65,12 @@ from booley.targets.catalog import TargetCatalog
 
 from ..build import build_output_tail
 from .codec import (
+    MAX_COMMAND_BYTES,
     MAX_DETAIL_BYTES,
     RECORD_MAX_BYTES,
     RESULT_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
-    decode_bundle_build_attempt,
-    decode_bundle_build_result,
-    decode_simulation_attempt,
-    decode_simulation_result,
-    decode_simulator_bundle,
     encode_bundle_build_attempt,
     encode_bundle_build_result,
     encode_executable_snapshot,
@@ -808,7 +804,7 @@ def simulation_attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt
         },
         "started_at": _now(),
     }
-    return decode_simulation_attempt(canonical_json_bytes(document)), run
+    return SimulationAttempt(document), run
 
 
 def _frozen_hook_commands(request: WorkExecutionRequest) -> tuple[str, ...]:
@@ -1013,7 +1009,7 @@ def bundle_build_attempt(request: WorkExecutionRequest, scope: BuildScope) -> Bu
         },
         "started_at": _now(),
     }
-    return decode_bundle_build_attempt(canonical_json_bytes(document))
+    return BundleBuildAttempt(document)
 
 
 def _common(request: WorkExecutionRequest, *, include_work_item: bool = True) -> dict[str, object]:
@@ -1048,7 +1044,7 @@ def publish_ready_build_result(
     document = _ready_result_document(
         request, build_directory, build_attempt, bundle, bundle_raw, execution_ref, elapsed
     )
-    result = decode_bundle_build_result(canonical_json_bytes(document))
+    result = BundleBuildResult(document)
     request.store.publish_build_result(build_directory, result)
     return result, bundle
 
@@ -1075,7 +1071,7 @@ def _simulator_bundle(
             [item for item in artifacts if item["kind"] != "runtime_input"]
         ),
     }
-    return decode_simulator_bundle(canonical_json_bytes(document))
+    return SimulatorBundle(document)
 
 
 def _ready_result_document(
@@ -1251,14 +1247,26 @@ def _failed_build_result(
         "observation": {
             "class": "infrastructure" if infrastructure else "design",
             "code": failure.kind if failure is not None else "elaboration",
-            "message": (failure.message if failure is not None else "Simulation build failed"),
+            "message": (
+                _bounded_message(failure.message)
+                if failure is not None
+                else "Simulation build failed"
+            ),
             "detail": _build_failure_detail(outcome, detail)
             if infrastructure
             else {"text": detail[:1536]},
         },
         "evidence": [],
     }
-    return decode_bundle_build_result(canonical_json_bytes(document))
+    return BundleBuildResult(document)
+
+
+def _bounded_message(message: str) -> str:
+    """Keep the first ``MAX_COMMAND_BYTES`` UTF-8 bytes of a build failure message.
+
+    Messages can carry a whole tool output; readers refuse longer strings.
+    """
+    return message.encode("utf-8")[:MAX_COMMAND_BYTES].decode("utf-8", errors="ignore")
 
 
 def blocked_result(
@@ -1523,7 +1531,7 @@ def simulation_result(
             *request.store.pre_sim_references(request.attempt_directory),
         ],
     }
-    return decode_simulation_result(canonical_json_bytes(document))
+    return SimulationResult(document)
 
 
 def _result_grade(observations: list[dict[str, object]]) -> str:

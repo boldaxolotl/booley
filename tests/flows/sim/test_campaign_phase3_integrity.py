@@ -866,13 +866,14 @@ def _aggregate_result_bound_fixture(tmp_path):
 @pytest.mark.timeout(90)
 def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_path):
     from booley.flows.sim.campaign.codec import RECORD_MAX_BYTES, decode_simulation_result
+    from booley.flows.sim.campaign.model import SimulationResult
 
     store, request, document = _aggregate_result_bound_fixture(tmp_path)
     raw = canonical_json_bytes(document)
     assert len(document["evidence"]) == len(document["observations"]) == 4000
     assert len(raw) > RECORD_MAX_BYTES
     with pytest.raises(SimulationCampaignIntegrityError, match="byte size ceiling"):
-        store.publish_result(request.work_item["work_item_id"], decode_simulation_result(raw))
+        store.publish_result(request.work_item["work_item_id"], SimulationResult(document))
     assert not (request.attempt_directory.parent.parent / "result.json").exists()
     assert len(store.read_pre_sim_firings()) == 4000
     without_hooks = {**document, "evidence": []}
