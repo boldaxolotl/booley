@@ -607,7 +607,7 @@ def _encode_checked(
     if type(value) is not expected_type:
         raise SimulationCampaignIntegrityError(f"expected {expected_type.__name__}")
     raw = canonical_json_bytes(value.document)
-    # Builders never decode what they build, so publication enforces the ceiling every reader applies.
+    # Builders never decode what they build, so publication enforces each record's ceiling.
     _require_within_ceiling(raw, _DOCUMENT_SPECS[expected_type][2])
     return raw
 

@@ -867,6 +867,8 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
     [
         pytest.param("compile failed", id="short-reason"),
         pytest.param("x" * (MAX_COMMAND_BYTES + 1), id="over-ceiling-reason"),
+        # The odd-length ASCII prefix puts the byte cut inside a two-byte character.
+        pytest.param("x" + "\u00e9" * MAX_COMMAND_BYTES, id="multibyte-straddles-cut"),
     ],
 )
 def test_coverage_infrastructure_build_failure_has_terminal_error_result(
