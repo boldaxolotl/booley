@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Generator, Iterator
 from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, BinaryIO
 
 import pytest
 
@@ -58,6 +58,18 @@ def subprocesses_run_the_test_interpreter(
     monkeypatch.setenv(
         "PATH", interpreter_first_path(_python_shim_entry, os.environ.get("PATH", os.defpath))
     )
+
+
+@pytest.fixture
+def monkeypatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Undo every patch before ``tmp_path`` is torn down.
+
+    ``tmp_path`` is requested first, so it is finalized last: patches of
+    ``os.scandir``, ``os.walk`` or ``os.close`` are gone before the lock walk
+    in the ``tmp_path`` override below and before pytest deletes a passing
+    test's directory under ``tmp_path_retention_policy = "failed"``.
+    """
+    return monkeypatch
 
 
 @pytest.fixture
@@ -399,7 +411,30 @@ def _track_flow_invocations(request: pytest.FixtureRequest) -> Iterator[None]:
         yield
 
 
-def _publication_leaks(item: pytest.Item, stacks: list[tuple[str, Any]]) -> list[str]:
+# Open (path, read handle) pairs for the invocation locks found under tmp_path.
+_INVOCATION_LOCKS = pytest.StashKey[list[tuple[Path, BinaryIO]]]()
+
+
+@pytest.fixture
+def tmp_path(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[Path]:
+    """Hold read handles on invocation locks before pytest deletes a passing test's tmp_path.
+
+    ``tmp_path_retention_policy = "failed"`` removes the directory of a passing
+    test in pytest's own ``tmp_path`` finalizer, before the teardown guard below
+    walks it.  This fixture tears down first, so the guard can still probe locks
+    a passing test leaked.  It only sees locks created while the test ran under
+    the directory this fixture yields.
+    """
+    yield tmp_path
+    if sys.platform != "win32":
+        from tests.file_lock_probe import open_invocation_locks
+
+        request.node.stash[_INVOCATION_LOCKS] = open_invocation_locks(tmp_path)
+
+
+def _publication_leaks(
+    stacks: list[tuple[str, Any]], locks: list[tuple[Path, BinaryIO]]
+) -> list[str]:
     """Observe callbacks and locks before emergency cleanup can hide a leak."""
     # ExitStack has no public callback-count API; this is test-only introspection.
     leaks = [
@@ -407,14 +442,13 @@ def _publication_leaks(item: pytest.Item, stacks: list[tuple[str, Any]]) -> list
         for name, stack in stacks
         if stack._exit_callbacks
     ]
-    tmp_path = getattr(item, "funcargs", {}).get("tmp_path")
-    if sys.platform != "win32" and isinstance(tmp_path, Path):
-        from tests.file_lock_probe import invocation_lock_paths, lock_is_held
+    if locks:
+        from tests.file_lock_probe import handle_lock_is_held
 
         leaks.extend(
             f"Simulation invocation lock still held: {path}"
-            for path in sorted(invocation_lock_paths(tmp_path))
-            if lock_is_held(path)
+            for path, handle in locks
+            if handle_lock_is_held(handle)
         )
     return leaks
 
@@ -423,18 +457,22 @@ def _publication_leaks(item: pytest.Item, stacks: list[tuple[str, Any]]) -> list
 def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     """Detect leaked publication resources, then close every tracked stack.
 
-    Direct Flow calls must own their publication scope. Observe leaks after all
-    fixture finalizers so test patches of Path or fcntl are no longer active.
+    Direct Flow calls must own their publication scope. Probe the held lock
+    handles after all fixture finalizers so test patches of Path or fcntl are
+    no longer active.
     Emergency cleanup still runs when a finalizer or the leak probe fails.
     """
     try:
         return (yield)
     finally:
         stacks = item.stash.get(_FLOW_PUBLICATIONS, [])
+        locks = item.stash.get(_INVOCATION_LOCKS, [])
         try:
-            leaks = _publication_leaks(item, stacks)
+            leaks = _publication_leaks(stacks, locks)
         finally:
             with ExitStack() as cleanup:
+                for _name, handle in locks:
+                    cleanup.callback(handle.close)
                 for _name, stack in stacks:
                     cleanup.callback(stack.close)
         if leaks:
