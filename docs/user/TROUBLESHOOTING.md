@@ -285,6 +285,28 @@ A stopped Sandbox refuses to start after the switch; run
 on purpose, waive `host.sandbox-egress-mismatch` with `subject` set to its
 Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waivers-doctor-waiverstoml).
 
+### Doctor reports a Session store file named for another Project Root
+
+Doctor fails with `Session store check: ... identity mismatch: <file> is not
+named for the Project Root it holds (<root>)`, and `booley session` commands
+refuse with the same message. Booley keeps one private file per Project for
+Sandbox issuance, pending editor starts, pending refreshes, and pending
+invalidations, and it names each file after its Project Root. A file with the
+wrong name is never trusted. Remove the file the message names, then reissue
+the Sandbox spec on the host:
+
+```bash
+booley init --seed --project <root>
+```
+
+After upgrading on Windows, Booley names a Project Root without regard to case.
+Files written by earlier releases are not migrated, so each Project needs this
+once. Doctor names one file per store, so rerun it until it passes. Removing a
+pending refresh file drops its rollback snapshot and its parked prior Sandbox;
+removing a pending invalidation file skips its cleanup of the Project's FlexNet
+relay containers and networks, which then need removing by hand in Docker.
+`init --seed` regenerates the spec.
+
 ### Doctor reports that devcontainer.json differs
 
 Doctor rebuilds the `.devcontainer/devcontainer.json` that `booley init` would
