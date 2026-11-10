@@ -1330,7 +1330,7 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
 
 def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:
     jobs = _workflow(".github/workflows/test.yml")["jobs"]
-    smoke_job = jobs["bwave-smoke"]
+    smoke_job = jobs["riscv-image"]
     checkout = _named_step(smoke_job, "Prepare exact reviewed Ibex candidate")
     lint_command = _named_step(smoke_job, "Run pinned Ibex lint demo")["run"]
     command_argv = shlex.split(lint_command)

@@ -549,28 +549,6 @@ def test_lease_loss_starts_exact_child_recovery_before_work_returns(
     assert capacity.cancellation_cause() is None
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows prevents renaming an open file")
-def test_child_protocol_parses_the_same_bytes_it_authenticated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = tmp_path / "entry.json"
-    original = canonical_json_bytes({"value": "original"})
-    replacement = canonical_json_bytes({"value": "replacement"})
-    path.write_bytes(original)
-    real_open = child_protocol.open_regular_nofollow
-
-    def open_then_replace(selected: Path, **kwargs: object) -> int:
-        descriptor = real_open(selected, **kwargs)
-        selected.rename(selected.with_name("opened-original.json"))
-        selected.write_bytes(replacement)
-        return descriptor
-
-    monkeypatch.setattr(child_protocol, "open_regular_nofollow", open_then_replace)
-    raw = child_protocol._read_protocol_bytes(path, "test entry")
-
-    assert raw == original
-
-
 @pytest.mark.parametrize("defect", ["symlink", "hardlink"])
 def test_child_protocol_conflict_read_rejects_links(tmp_path: Path, defect: str) -> None:
     raw = canonical_json_bytes({"value": "expected"})

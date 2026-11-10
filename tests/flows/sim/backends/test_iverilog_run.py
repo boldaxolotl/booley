@@ -2,7 +2,7 @@
 
 These cover the pure run-half logic that does not need a real ``vvp``: image
 discovery from the ``.scr`` sibling, the vvp command shape (``-M`` + absolute
-image, no ``-fst`` → VCD), arg round-trip, and the missing-image early return.
+image, no ``-fst`` → VCD), the work-document mapping, and the missing-image early return.
 The real vvp run + VCD→bwave postprocess is exercised end-to-end in the Sandbox
 (it needs ``fusesoc``/``iverilog`` and per-project Icarus ``.core`` Targets).
 """
@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterTransportIdentity,
     read_adapter_result,
@@ -55,62 +56,41 @@ def test_build_vvp_cmd_no_plusargs(tmp_path: Path):
     assert cmd == ["vvp", "-n", f"-M{tmp_path}", str(tmp_path / "sim_cfg")]
 
 
-def test_parse_args_round_trips_run_options():
-    args = ir._parse_args(
-        [
-            "--build-dir",
-            "build/sim",
-            "--run-cwd",
-            "util/sim",
-            "--work-dir",
-            "out",
-            "--timeout",
-            "120",
-            "--trace",
-            "--trace-scope",
-            "tb.dut",
-            "--plusarg",
-            "test_id=2",
-            "--plusarg",
-            "verbose",
-        ]
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
+def test_traced_document_with_trace_args_starts(tmp_path: Path, monkeypatch):
+    """Project ``trace_args`` ride in the document; Icarus ignores them and still runs."""
+    from booley.flows.sim import run_guard
+    from booley.flows.sim.adapter_contract import encode_simulation_work
+
+    monkeypatch.setattr(run_guard, "install_parent_death_guard", lambda: None)
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "sim_cfg.scr").write_bytes(b"")
+    (build / "sim_cfg").write_bytes(b"")
+    marker = tmp_path / "vvp-ran"
+    fake_vvp = tmp_path / "fake_vvp"
+    fake_vvp.write_bytes(f"#!/bin/sh\necho \"$@\">'{marker}'\necho 'ALL TESTS PASSED.'\n".encode())
+    fake_vvp.chmod(0o755)
+    monkeypatch.setattr(ir, "_find_vvp", lambda: str(fake_vvp))
+    work = PreparedSimulationWork(
+        adapter="icarus",
+        build_dir=str(build),
+        run_cwd="",
+        timeout_s=30,
+        work_dir=str(tmp_path / "work"),
+        plusargs=("test_id=2",),
+        trace=True,
+        trace_args=("--trace={file}",),
+        pass_sentinels=("ALL TESTS PASSED.",),
     )
-    assert args.build_dir == "build/sim"
-    assert args.run_cwd == "util/sim"
-    assert args.work_dir == "out"
-    assert args.timeout == 120
-    assert args.trace is True
-    assert args.trace_scope == "tb.dut"
-    assert args.plusargs == ["test_id=2", "verbose"]
 
-
-def test_parse_args_round_trips_sentinels():
-    args = ir._parse_args(
-        [
-            "--build-dir",
-            "b",
-            "--pass-sentinel",
-            "ALL TESTS PASSED.",
-            "--fail-sentinel",
-            "ERROR!",
-            "--fail-sentinel",
-            "TIMEOUT",
-        ]
-    )
-    assert args.pass_sentinels == ["ALL TESTS PASSED."]
-    assert args.fail_sentinels == ["ERROR!", "TIMEOUT"]
-
-
-@pytest.mark.parametrize("bad", ["0", "-5"])
-def test_parse_args_rejects_non_positive_timeout(bad: str):
-    # A non-positive timeout would fire threading.Timer immediately; reject at CLI.
-    with pytest.raises(SystemExit):
-        ir._parse_args(["--build-dir", "b", "--timeout", bad])
+    assert ir.main([encode_simulation_work(work)]) == 0
+    assert "+test_id=2" in marker.read_text(encoding="utf-8")
 
 
 def test_run_icarus_image_missing_image_returns_error(tmp_path: Path):
     """A build dir with no .scr yields a clear error string (no crash, no vvp)."""
-    out = ir.run_icarus_image(build_dir=tmp_path)
+    out = ir.run_icarus_image(build_dir=tmp_path).output
     assert "no vvp image" in out
 
 
@@ -183,7 +163,7 @@ def test_bad_build_fixture_keeps_runtime_asset_and_grades_design_failure(
         (build / f"{kind}.scr").write_text("")
         (build / kind).write_text("")
         work = tmp_path / f"{kind}-result"
-        output = ir.run_icarus_image(build_dir=build, run_cwd=runtime, work_dir=work)
+        output = ir.run_icarus_image(build_dir=build, run_cwd=runtime, work_dir=work).output
         assert "missing $readmemh" not in output
         results[kind] = json.loads((work / "result.json").read_text(encoding="utf-8"))
 
@@ -199,13 +179,6 @@ def test_bad_build_fixture_keeps_runtime_asset_and_grades_design_failure(
 # ---------------------------------------------------------------------------
 # Per-run safety guards: missing $readmemh (SETUP-23) + disk budget (SETUP-25)
 # ---------------------------------------------------------------------------
-
-
-def test_parse_args_round_trips_max_rundir_bytes():
-    args = ir._parse_args(["--build-dir", "b", "--max-rundir-bytes", "5000"])
-    assert args.max_rundir_bytes == 5000
-    # Unset -> guard disabled (0).
-    assert ir._parse_args(["--build-dir", "b"]).max_rundir_bytes == 0
 
 
 @pytest.mark.skipif(
@@ -342,7 +315,7 @@ def _run_traced_icarus(
         vcd=True,
         timeout=timeout,
         trace_files=trace_files,
-    )
+    ).output
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")

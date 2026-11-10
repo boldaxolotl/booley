@@ -761,6 +761,7 @@ def test_forget_release_requires_reissuance_before_admission(
             else (_ for _ in ()).throw(issuance.RuntimeSpecError("missing image"))
         ),
     )
+    monkeypatch.setattr(issuance, "_keeper_image_id", keeper_host.tags.get)
     monkeypatch.setattr(issuance, "_project_data_alias_capable", lambda _image: False)
     prepared = issuance.preview(project, fixed(spec))
     monkeypatch.setattr(

@@ -152,7 +152,7 @@ def _run(
             trace_mode=vr.TraceMode.NATIVE_FST,
             trace_args=["--trace={file}"],
             trace_files=declared,
-        )
+        ).output
     else:
         monkeypatch.setattr(crun, "_prepare_invocation", lambda **_kw: ({}, ["sim"]))
         run = crun._prepare_cocotb_run(
