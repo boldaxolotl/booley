@@ -1,4 +1,9 @@
-"""Strict, user-owned configuration for Project-independent Host Bootstrap."""
+"""Strict, user-owned configuration for Project-independent Host Bootstrap.
+
+The file belongs to the user. Booley reads it and never rewrites it, with one
+exception: ``booley bootstrap --egress`` edits only ``[sandbox] egress``
+(see :func:`plan_host_egress`).
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import tomlkit
 
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_int, require_list
 from booley.core.egress_modes import EGRESS_MODES
@@ -40,6 +47,16 @@ class SandboxHostPolicy:
     egress: str = "proxy"
 
 
+@dataclass(frozen=True, slots=True)
+class HostEgressChange:
+    """A validated edit that records one Sandbox egress mode in the host config."""
+
+    path: Path
+    previous: str  # recorded value as written (absent key: "proxy"); display only
+    requested: str
+    content: bytes | None  # new file bytes; None when the mode is already in effect
+
+
 class HostConfigError(ValueError):
     """A host configuration boundary failed strict validation."""
 
@@ -59,7 +76,7 @@ def host_config_path() -> Path:
 def load_host_policy(
     path: Path | None = None, *, on_deprecation: Callable[[str], None] | None = None
 ) -> SandboxHostPolicy:
-    """Load the optional host policy without creating or rewriting its file."""
+    """Load the optional host policy; loading never creates or rewrites the file."""
     resolved = path or host_config_path()
     if not resolved.exists():
         return SandboxHostPolicy()
@@ -74,6 +91,51 @@ def load_host_policy(
     if on_deprecation is not None and "interactive" in document:
         on_deprecation(_legacy_host_policy_message(document, resolved))
     return policy
+
+
+def plan_host_egress(mode: str, path: Path | None = None) -> HostEgressChange:
+    """Plan recording ``[sandbox] egress = mode`` without writing anything.
+
+    Only the merged result must be a valid host policy, so this can repair an
+    invalid recorded value. Everything else in the file (comments, spacing,
+    line endings, other keys) is preserved byte for byte.
+    """
+    resolved = path or host_config_path()
+    try:
+        text = resolved.read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        text = ""
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HostConfigError(resolved, "", f"cannot read file: {exc}") from exc
+    try:
+        document = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise HostConfigError(resolved, "", f"malformed TOML: {exc}") from exc
+    if "interactive" in document:
+        raise HostConfigError(
+            resolved,
+            "interactive",
+            "booley bootstrap --egress cannot edit a host config that still has legacy "
+            f"[interactive]; {HOST_POLICY_MIGRATION_GUIDANCE}",
+        )
+    previous = _table(document.get("sandbox", {}), resolved, "sandbox").get("egress", "proxy")
+    if previous == mode:
+        return HostEgressChange(resolved, mode, mode, None)
+    if resolved.is_symlink():
+        raise HostConfigError(resolved, "", "refusing to edit symlinked host config")
+    edited = tomlkit.parse(text)
+    if "sandbox" in edited:
+        edited["sandbox"]["egress"] = mode  # type: ignore[index]
+    else:
+        section = tomlkit.table()
+        section["egress"] = mode
+        edited["sandbox"] = section
+    new_text = tomlkit.dumps(edited)
+    if "\r\n" in text and "\n" not in text.replace("\r\n", ""):
+        # A CRLF-only file stays CRLF-only: tomlkit writes the inserted line with LF.
+        new_text = new_text.replace("\r\n", "\n").replace("\n", "\r\n")
+    _parse_document(tomllib.loads(new_text), resolved)
+    return HostEgressChange(resolved, str(previous), mode, new_text.encode("utf-8"))
 
 
 def _parse_document(document: object, path: Path) -> SandboxHostPolicy:
