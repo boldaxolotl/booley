@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -34,6 +33,7 @@ from booley.mcp import (
 from booley.runtime import job_records
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.domain import UnknownTargetError
+from tests.subprocess_budget import run_bounded_child
 
 GIT_TIMEOUT_S = 30
 KNOWN_TARGETS = frozenset({"top", "base"})
@@ -52,7 +52,7 @@ def git(cwd: Path, *args: str) -> str:
     Automatic maintenance is off: a detached repack started by one fixture
     commit would otherwise change the object store under a later assertion.
     """
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             "git",
             "-c",
@@ -68,11 +68,8 @@ def git(cwd: Path, *args: str) -> str:
             *args,
         ],
         cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=True,
         timeout=GIT_TIMEOUT_S,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -169,6 +166,14 @@ def write_project_files(booley_dir: Path) -> None:
     (booley_dir / "mcp_tools").mkdir(parents=True)
     (booley_dir / "booley.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
     (booley_dir / "mcp_tools" / "tool.py").write_text("# custom tool\n", encoding="utf-8")
+
+
+def enable_stealth(layout: SimpleNamespace) -> SimpleNamespace:
+    """Record the Stealth choice the excluded layout implies; a missing key means off."""
+    for booley_dir in (layout.control, layout.worktree / ".booley"):
+        with (booley_dir / "booley.toml").open("a", encoding="utf-8") as config:
+            config.write("\n[stealth]\nenabled = true\n")
+    return layout
 
 
 def install_paired_project(layout: SimpleNamespace, tmp_path: Path) -> Path:

@@ -1696,6 +1696,66 @@ def test_test_verify_proves_each_linux_group_when_sharded() -> None:
         assert ("test" in jobs) == ("test-verify" in jobs)
 
 
+def test_suite_resolves_failed_tmp_path_retention(pytestconfig: pytest.Config) -> None:
+    """The running session keeps `tmp_path` only for failing tests.
+
+    Catches a higher-precedence ini file (`pytest.ini`, `tox.ini`) shadowing the
+    `pyproject.toml` setting, which a TOML-only assertion would miss.
+    """
+    assert pytestconfig.getini("tmp_path_retention_policy") == "failed"
+
+
+def test_explicit_basetemp_keeps_only_failing_tmp_path(tmp_path: Path) -> None:
+    """With an explicit `--basetemp`, a passing test's directory is removed."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "test_inner.py").write_bytes(
+        b"def test_passes(tmp_path):\n"
+        b"    (tmp_path / 'out.txt').write_text('x')\n"
+        b"\n"
+        b"def test_fails(tmp_path):\n"
+        b"    (tmp_path / 'out.txt').write_text('x')\n"
+        b"    assert False\n"
+    )
+    basetemp = tmp_path / "inner-basetemp"
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name != "PYTEST_ADDOPTS" and not name.startswith("PYTEST_XDIST_")
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-c",
+            str(REPOSITORY_ROOT / "pyproject.toml"),
+            "--rootdir",
+            str(project),
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "no:xdist",
+            f"--basetemp={basetemp}",
+            "test_inner.py",
+        ],
+        cwd=project,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "1 failed, 1 passed" in output, output
+    # pytest's `*current` convenience links are platform-dependent; ignore them.
+    kept = sorted(entry.name for entry in basetemp.iterdir() if not entry.is_symlink())
+    assert kept == ["test_fails0"], output
+    assert (basetemp / "test_fails0" / "out.txt").exists()
+
+
 def _scoped_git_value(key: str, cwd: Path) -> str:
     """Return ``<scope>\\t<value>`` Git reports for ``key`` (empty when unset).
 

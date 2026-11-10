@@ -151,19 +151,25 @@ submodule step or the hook fails, Booley removes the worktree and its
 `booley/<name>` and `booley-worktree/<name>` branches and exits nonzero. A
 branch that already gained commits is kept.
 
-The worktree gets its own Booley Directory (the `.booley/` folder):
+The worktree gets its own Booley Directory (the `.booley/` folder), a
+**Snapshot**: a copy of the Booley Directory's configuration (settings,
+`cores/`, hooks, Goal and Ticket history). Build results, reports, logs, and
+evidence stay in the main Booley Directory. A path Booley does not classify is
+not copied, and the command names it.
 
-- **Paired Checkout**, when your Booley Directory is its own Git repository:
-  a checkout of its last commit on branch `booley-worktree/<name>`.
-  Uncommitted and untracked files are left out; one warning names them (the
-  first 10, then a count). Commit them first if the worktree needs them.
-  Booley refuses a repository with no commits or an existing branch of that
-  name. Ignored files stay behind. Booley refuses to create a worktree from
-  inside a Paired Checkout.
-- **Snapshot**, otherwise: a copy of the Booley Directory's configuration
-  (settings, `cores/`, hooks, Goal and Ticket history). Build results, reports, logs,
-  and evidence stay in the main Booley Directory. A path Booley does not
-  classify is not copied, and the command names it.
+<details markdown>
+<summary>In stealth mode</summary>
+
+Your Booley Directory is its own Git repository, so the worktree gets a
+**Paired Checkout** instead: a checkout of its last commit on branch
+`booley-worktree/<name>`. Uncommitted and untracked files are left out; one
+warning names them (the first 10, then a count). Commit them first if the
+worktree needs them. Booley refuses a repository with no commits or an
+existing branch of that name. Ignored files stay behind. Booley refuses to
+create a worktree from inside a Paired Checkout. See
+[STEALTH.md](STEALTH.md).
+
+</details>
 
 **Listing worktrees.** `booley worktree list` shows one row per worktree
 under `.booley/worktrees/`, from the main checkout or from any worktree:
@@ -188,19 +194,18 @@ checkout or another worktree (never from inside the one you remove):
 booley worktree rm <name> [--force]
 ```
 
-It moves the worktree's evidence aside, removes the Paired Checkout first and
-then the outer worktree, and keeps the branches (`booley/<name>`, or the Goal
-Branch, and `booley-worktree/<name>`), so commits made in the worktree stay
-reachable. A worktree on a detached HEAD, which has no branch, is reported as
-`detached HEAD was <commit>`; save that commit on a branch if you need it.
+It moves the worktree's evidence aside, removes the worktree, and keeps its
+branch (`booley/<name>`, or the Goal Branch), so commits made in the worktree
+stay reachable. A worktree on a detached HEAD, which has no branch, is reported
+as `detached HEAD was <commit>`; save that commit on a branch if you need it.
 
 Without `--force` it refuses, listing every reason, while the worktree has:
 
 - a live Session or an active Goal Mode (an unreadable Session Registry or Goal
   Record also refuses);
-- uncommitted changes, in the worktree or in its Paired Checkout, including
-  untracked files in a Snapshot's `.booley/` that are neither evidence nor a
-  copy of the Main Booley Directory's file;
+- uncommitted changes in the worktree, including untracked files in a
+  Snapshot's `.booley/` that are neither evidence nor a copy of the Main
+  Booley Directory's file;
 - commits not yet in the main checkout's branch (a branch merged by squash
   counts as merged);
 - a populated submodule at a commit the main checkout's submodule lacks;
@@ -228,13 +233,22 @@ example across file systems, nothing is removed.
 If the command is interrupted, run it again: it finishes the removal, and checks
 a worktree that is still intact again, so work added since is never removed
 without the refusal. It never prunes other worktrees' registrations. To reuse
-the name, delete the kept branches first with
-`git -C <absolute-project-root> branch -D booley/<name>` and, for a Paired
-Checkout,
-`git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+the name, delete the kept branch first with
+`git -C <absolute-project-root> branch -D booley/<name>`.
 
 If `booley worktree new` fails and leaves a checkout behind, it prints the
 manual Git steps with the real Sandbox paths; use those, not host paths.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+`booley worktree rm` removes the Paired Checkout first, then the outer
+worktree, and also keeps the `booley-worktree/<name>` branch. Uncommitted
+changes in the Paired Checkout count toward the refusal too. To reuse the name,
+also delete that branch with
+`git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+
+</details>
 
 ### Commands for skills
 

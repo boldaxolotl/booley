@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from booley.runtime.process_group import (
@@ -184,13 +185,21 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
 _KILL_DRAIN_TIMEOUT_S = 5
 
 
-def run_captured_bounded(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+def run_captured_bounded(
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run *argv* capturing text output; never wait unboundedly on a timeout.
 
     Unlike ``subprocess.run(..., timeout=...)``, which kills only the direct
     child and (on Windows) then waits for the output pipes to reach EOF with no
     limit, this starts the child in its own process group, kills the whole tree
     on timeout and abandons pipes a surviving descendant still holds.
+    *cwd* and *env* are the child's working directory and complete environment;
+    ``None`` inherits the caller's.
 
     Returns the ``CompletedProcess`` for any exit status (never raises on a
     non-zero exit). Raises ``subprocess.TimeoutExpired`` after *timeout*
@@ -207,6 +216,8 @@ def run_captured_bounded(argv: list[str], *, timeout: float) -> subprocess.Compl
         text=True,
         encoding="utf-8",
         errors="replace",
+        cwd=cwd,
+        env=env,
         **popen_new_group_kwargs(),
     )
     try:

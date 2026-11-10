@@ -76,10 +76,11 @@ def test_listing_fails_naming_the_root_when_git_hangs(
 ) -> None:
     from tests.source_checkout_support import source_checkout_files
 
-    def hang(*args: object, **kwargs: object) -> object:
-        raise subprocess.TimeoutExpired(cmd="git", timeout=60)
+    def hang(argv: list[str], **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(argv, 60, output=None, stderr=None)
 
-    monkeypatch.setattr(subprocess, "run", hang)
+    monkeypatch.setattr("tests.subprocess_budget.run_captured_bounded", hang)
     with pytest.raises(BaseException, match=re.escape(str(tmp_path))) as raised:
         source_checkout_files(tmp_path)
     assert raised.type is pytest.fail.Exception
+    assert "timed out" in str(raised.value)

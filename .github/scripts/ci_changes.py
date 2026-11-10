@@ -68,8 +68,11 @@ STRESS_JOB = "flake-stress"
 # leave that category to its compatibility inputs, so `full` must not force it.
 RISCV_IMAGE_JOB = "riscv-image"
 ALWAYS_JOBS = ("changes", "release-semantic")
-# A push to main runs only these jobs. Mergify merges the exact tree its queue
-# candidate validated, so re-running the suite there repeats a passed check.
+# A push to main runs only these jobs. Mergify merges a batch's PRs one by one:
+# the merge of the batch's last PR reproduces the tree its queue candidate
+# validated, so re-running the suite there repeats a passed check. The commits
+# before it are untested intermediate trees; the nightly full run covers main's
+# tip.
 # `bwave-smoke` stays because only a main push may write the shared substrate
 # build cache, and it installs the wheel from `package-artifacts`. The nightly
 # scheduled run and manual runs still select every job.

@@ -246,22 +246,32 @@ plain-English reason it matters.
    the placeholder `booley.toml`, then re-run `booley init` (idempotent) so it
    builds/pulls the planned image and re-seeds the devcontainer config. Skip
    entirely when the plan keeps the base image.
-2. **Commercial EDA authority · host.** Only if row 14 selects
+2. **Stealth footprint · host.** Only if row 16 keeps `.booley/` hidden
+   (including hybrid) with row 20 `enabled = true`. A fresh `booley init` records no Stealth choice
+   (missing key = off), so it neither hid `.booley/` nor gave it a repo. Write
+   the plan's `[stealth]` block into `.booley/booley.toml` now (Step 2 keeps
+   it). Undo init's non-Stealth line-ending edit: delete the root
+   `.gitattributes` if `git status` shows it untracked and it holds only
+   `* text=auto eol=lf`, otherwise remove just that added first line. Then
+   re-run `booley init`: it adds `/.booley` to `.git/info/exclude`, creates
+   the inner repo, keeps the line-ending rule repository-local, and activates
+   the commit-msg and pre-push hooks.
+3. **Commercial EDA authority · host.** Only if row 14 selects
    host-provisioned EDA: perform Step 2's
    [host-authority bootstrap](steps/2-project-config.md#host-authority-bootstrap)
    before creating the licensed/mounted Sandbox. This writes the planned
    `[eda.<kind>]` request, registers the installation, adds the exact Project
    Grant, reseeds the issued specification, and runs host Doctor. Skip when
    every selected EDA tool is image-provisioned.
-3. **Enter the Sandbox** (Reopen in Container, or
+4. **Enter the Sandbox** (Reopen in Container, or
    `booley session up --rebuild`).
-4. **Steps 2 → 4 in order**, per the plan: finish config, AGENTS.md, then the doctor
+5. **Steps 2 → 4 in order**, per the plan: finish config, AGENTS.md, then the doctor
    gate.
-5. After the Step 4 gate is green, set `status: complete` and write the final
+6. After the Step 4 gate is green, set `status: complete` and write the final
    report: what was built, the §3 deviation log, and (unattended) the
    `review`-flagged decisions the user should audit. Flow claims follow the
    Delivered Flow results contract below and appear after Step 6 renders the report.
-6. **Step 5 — parity · optional.** Only if the plan's row 18 selects an oracle
+7. **Step 5 — parity · optional.** Only if the plan's row 18 selects an oracle
    (≠ `none`): run `steps/5-parity.md` after the gate to diff Booley against the
    repo's native flow where the EDA tools match. It produces
    `.booley/PARITY-REPORT.md` and a note in the final report; it never
@@ -269,10 +279,10 @@ plain-English reason it matters.
    of real Booley findings in the whole run — a number that differs from the
    native flow's is about as unambiguous as evidence gets — so log every
    discrepancy with `booley feedback add`, not just the ones you can explain.
-7. **Step 6 — findings.** Always: `steps/6-findings.md` triages the log, writes
+8. **Step 6 — findings.** Always: `steps/6-findings.md` triages the log, writes
    `.booley/SETUP-REPORT.md`, and creates a redacted export only when the
    user explicitly requests one. Post-gate and non-blocking.
-8. **Step 7 — cleanup.** Always: `steps/7-cleanup.md` previews and applies the
+9. **Step 7 — cleanup.** Always: `steps/7-cleanup.md` previews and applies the
    approved retention mode after the report exists. It removes only the
    current run's marked scratch root, materializes structured Feedback
    attachments before deletion, and does nothing for a plan without a run ID.

@@ -112,26 +112,11 @@ def decode_list_metadata(text: str) -> BWaveListMetadata:
     )
 
 
-def decode_trace_metadata(text: str) -> BWaveListMetadata:
-    """Decode the compact ``TRACE_METADATA`` marker payload."""
-    data = require_dict(json.loads(text), field="TRACE_METADATA")
-    top_scope = as_str(data.get("top_scope"))
-    if top_scope is None:
-        raise BoundaryError("TRACE_METADATA.top_scope must be a string")
-    return BWaveListMetadata(
-        scope_prefix=top_scope.strip(),
-        root_scopes=(),
-        signal_count=_require_non_negative_int(data, "signal_count", field="TRACE_METADATA"),
-        total_ticks=_require_non_negative_int(data, "total_ticks", field="TRACE_METADATA"),
-    )
-
-
 def _require_non_negative_int(
     data: dict,
     key: str,
-    *,
-    field: str = "B-Wave list response.data",
 ) -> int:
+    field = "B-Wave list response.data"
     value = require_int(data.get(key), field=f"{field}.{key}")
     if value < 0:
         raise BoundaryError(f"{field}.{key} must be non-negative")

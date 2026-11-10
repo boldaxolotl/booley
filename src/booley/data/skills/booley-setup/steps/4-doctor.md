@@ -217,18 +217,26 @@ allowlist exactly—hybrid does not authorize committing operational state.
   line in it is committed, shows up in every diff and blame, and advertises
   Booley in exactly the history stealth mode exists to keep clean.
   `info/exclude` is local to the clone and travels nowhere.
-- `booley init` already wrote `/.devcontainer`, `/.booley`, and
-  `/.claude` there, so normally you are only **verifying**: `git check-ignore
-  -v .booley` should name `.git/info/exclude`, and `git status
-  --porcelain` must not list `.booley/` as untracked. Repair a missing
-  entry by re-running `booley init` (idempotent), not by hand-editing.
+- With `[stealth] enabled = true`, the execution phase's host Stealth
+  footprint step re-ran `booley init`, which wrote `/.devcontainer`,
+  `/.booley`, and `/.claude` there, so normally you are only **verifying**:
+  `git check-ignore -v .booley` should name `.git/info/exclude`, and `git
+  status --porcelain` must not list `.booley/` or a Booley-added root
+  `.gitattributes`. Repair a missing entry by running that host step
+  (idempotent), not by hand-editing. A fresh init records no Stealth choice,
+  so it never hides `.booley/` itself.
   Worktree gotcha: git honors `info/exclude` only from `$GIT_COMMON_DIR`, so
   check there, not in `.git/worktrees/<id>/info/`.
+- **Hidden without the scrub** (row 20 `enabled = false`): init never hides
+  `.booley/` then. Add `/.booley` under the `# Booley (generated; local,
+  uncommitted)` header in `$(git rev-parse --git-common-dir)/info/exclude`
+  yourself. Doctor then warns `project.inputs-ignored` for the excluded
+  configuration; waive it under **Using Doctor waivers**, citing row 16.
 - Hidden is not unversioned. Offer to give `.booley/` **its own git
   repo** (`git init` inside it, commit) — this keeps hidden
   authored cores under `.booley/cores/`, which are versioned nowhere
-  otherwise. Hidden authored cores require `[stealth] enabled = true`, and
-  `booley init` creates the inner repo and ignored root-level projections.
+  otherwise. Hidden authored cores require `[stealth] enabled = true`; with
+  it, `booley init` creates the inner repo and ignored root-level projections.
   Its `.gitignore` (written by `booley init`) already keeps the
   transient state — `tmp/`, `.runtime/`, `worktrees/`, Goal logs and locks —
   out. The inner repo is invisible to the parent, which sees only an excluded
