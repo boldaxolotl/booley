@@ -16,6 +16,7 @@ from booley.presentation.colors import PALETTE_DODGER_BLUE
 ITEMS: tuple[tuple[str, str], ...] = (
     ("Sessions", "sessions"),
     ("Jobs", "jobs"),
+    ("Targets", "targets"),
 )
 # (label, filter name): the Jobs window's status filters, shown only while it is active.
 JOB_FILTERS: tuple[tuple[str, str], ...] = (
@@ -24,15 +25,16 @@ JOB_FILTERS: tuple[tuple[str, str], ...] = (
     ("All", "all"),
 )
 # Item kinds posted in ``Selected``.
-WINDOW, FILTER, OWNER, HELP_ITEM = "window", "filter", "owner", "help"
+WINDOW, FILTER, OWNER, WORKTREE, HELP_ITEM = "window", "filter", "owner", "worktree", "help"
 
 
 class TopBar(Widget, can_focus=True):
-    """Window tabs, the Jobs filters and Help.
+    """Window tabs, the Jobs filters, the Targets worktree and Help.
 
     The active window's tab and the active status filter are bold, the cursor
     item is reversed. The Jobs window adds the status filters and the owner
-    chip between its tab and Help; the app tells the bar their state.
+    chip between its tab and Help; the Targets window adds its worktree there.
+    The app tells the bar their state.
     """
 
     DEFAULT_CSS = "TopBar { height: 1; }"
@@ -56,6 +58,8 @@ class TopBar(Widget, can_focus=True):
     owner = reactive("All sessions")
     #: Number of unfinished Jobs, shown on the Jobs tab; nothing when zero.
     unfinished = reactive(0)
+    #: Directory name of the worktree the Targets window lists.
+    worktree = reactive("")
 
     class Selected(Message):
         """Enter was pressed on an item: its kind and value (window name, filter name or None)."""
@@ -81,6 +85,8 @@ class TopBar(Widget, can_focus=True):
         if self.active == "jobs":
             items.extend((label, FILTER, name) for label, name in JOB_FILTERS)
             items.append((f"Owner: {self.owner}", OWNER, None))
+        if self.active == "targets":
+            items.append((f"Worktree: {self.worktree}", WORKTREE, None))
         items.append(("Help", HELP_ITEM, None))
         return items
 
@@ -113,8 +119,8 @@ class TopBar(Widget, can_focus=True):
         text = Text()
         previous_kind = ""
         for index, (label, kind, value) in enumerate(self._items()):
-            # A divider opens the filter group and sets Help apart.
-            if (kind == FILTER and previous_kind != FILTER) or kind == HELP_ITEM:
+            # A divider opens the filter group and sets the worktree and Help apart.
+            if (kind == FILTER and previous_kind != FILTER) or kind in {WORKTREE, HELP_ITEM}:
                 text.append("│")
             previous_kind = kind
             highlighted = (kind == WINDOW and value == self.active) or (

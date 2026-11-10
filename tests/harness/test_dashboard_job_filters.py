@@ -23,8 +23,8 @@ from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.runtime.job_records import JobRecord
 from tests.harness.test_dashboard import STAMP, open_session, snapshot
 
-# Positions in the Jobs window's bar: Sessions, Jobs, Running, Finished, All, owner, Help.
-RUNNING, FINISHED, ALL, OWNER = 2, 3, 4, 5
+# Positions in the Jobs window's bar: Sessions, Jobs, Targets, Running, Finished, All, owner, Help.
+RUNNING, FINISHED, ALL, OWNER = 3, 4, 5, 6
 ALIAS_KEY = "worktree:path:/fixture/0"
 DASHBOARD_DOC = Path(__file__).parents[2] / "docs" / "user" / "USAGE.md"
 
@@ -108,7 +108,7 @@ async def test_top_bar_status_filters_reachable_with_arrows_and_applied_with_ent
 
         await focus_bar(app, pilot)
         bar = app.query_one(TopBar)
-        await pilot.press("right", "right")
+        await pilot.press("right", "right", "right")
         assert bar.cursor == FINISHED  # arrows reach the filters; Enter applies
         assert app.navigation.job_filter == "running"
         await pilot.press("enter")
@@ -147,7 +147,7 @@ async def test_owner_chip_reachable_with_arrows_and_applied_with_enter():
 
         await focus_bar(app, pilot)
         bar = app.query_one(TopBar)
-        await pilot.press("right", "right", "right", "right")
+        await pilot.press("right", "right", "right", "right", "right")
         assert bar.cursor == OWNER
         assert app.navigation.session is None  # arrows alone change nothing
         await pilot.press("enter")
@@ -366,7 +366,7 @@ async def test_no_jobs_filter_text_says_recent_or_results():
                 await choose(app, pilot, index)
                 texts += [bar_text(app), orientation(app), empty_text(app)]
     excerpt = DASHBOARD_DOC.read_text(encoding="utf-8")
-    excerpt = excerpt.split("The Dashboard has two windows")[1].split("Sessions have short")[0]
+    excerpt = excerpt.split("The Dashboard has three windows")[1].split("Sessions have short")[0]
     texts.append(excerpt)
     assert [text for text in texts if word.search(text)] == []
 
