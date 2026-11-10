@@ -158,7 +158,15 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
         SOURCE_ROOT,
         checkout,
         ignore=shutil.ignore_patterns(
-            ".git", ".worktrees", ".runtime", ".venv", "target", "build", "dist"
+            ".git",
+            ".worktrees",
+            ".runtime",
+            ".venv",
+            "target",
+            "build",
+            "dist",
+            # Coverage workers create and delete these while the checkout is copied.
+            ".coverage*",
         ),
     )
     expected = contracts.source_image_build_contracts(checkout)
