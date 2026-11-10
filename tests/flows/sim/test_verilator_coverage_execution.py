@@ -31,7 +31,11 @@ from booley.flows.sim.campaign.coverage_execution import (
 )
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest
-from booley.flows.sim.campaign.serial_execution import _attempt, _build_attempt
+from booley.flows.sim.campaign.serial_execution import (
+    BuildScope,
+    bundle_build_attempt,
+    simulation_attempt,
+)
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.coverage_overlay import CoverageOverlay
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
@@ -54,7 +58,7 @@ from booley.flows.sim.verilator_coverage_execution import (
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.fusesoc.fusesoc_registry import core_target_coverage_errors
 from booley.targets.catalog import TargetCatalog
-from tests.flows.sim.test_campaign_crash_matrix import _admission
+from tests.flows.sim.campaign_test_support import _admission
 from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
 
 
@@ -985,11 +989,11 @@ def test_coverage_infrastructure_guard_preserves_abort_evidence(
 
 class _CoverageFailedBuildExecutor:
     def execute(self, request):
-        attempt, _run_directory = _attempt(request)
+        attempt, _run_directory = simulation_attempt(request)
         request.store.publish_attempt(request.attempt_directory, attempt)
         directory = request.attempt_directory / "private-build"
         directory.mkdir()
-        build_attempt = _build_attempt(request)
+        build_attempt = bundle_build_attempt(request, BuildScope.private(request))
         request.store.publish_build_attempt(directory, build_attempt)
         outcome = CoverageTargetOutcome(
             "sim",

@@ -39,12 +39,13 @@ from booley.flows.sim.execution.contract import (
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.test_runs import build_test_run
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
-from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.domain import TargetHandle
 from tests.flows.report_headline import final_report_omits_headline
+from tests.flows.sim.campaign_boundary import run_campaign_sim
+from tests.flows.sim.campaign_test_support import _admission, _facts, _plan
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.leased_session import canned_build_session
-from tests.flows.sim.test_campaign_phase5_adversarial import _facts, _plan, _unmanaged
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 
@@ -55,23 +56,16 @@ def _leased_build_session():
         yield
 
 
+# Only the `[SIM_SUMMARY]` rows stay: that precedence exists only in the legacy
+# `_determine_pass_fail`, the campaign's native adapter ignores the summary. The other
+# precedence rows live on the campaign path: `test_flow.py::
+# test_campaign_verdict_sets_exit_code` (pass and fail sentinels),
+# `TestTimeout::test_timeout_results_in_fail`,
+# `TestErrorTailSource::test_elab_failure_tail_falls_back_to_stderr` and
+# `TestMissingExecutableIsEdaToolError::test_missing_verilator_in_build_exits_2`.
 @pytest.mark.parametrize(
     ("process", "exit_code", "verdict", "sva_errors"),
     [
-        pytest.param(
-            SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n"),
-            EXIT_SUCCESS,
-            "pass",
-            0,
-            id="pass-sentinel",
-        ),
-        pytest.param(
-            SubprocessResult(returncode=0, stdout="[SIM_RESULT] FAILED\n"),
-            EXIT_FAILURE,
-            "fail",
-            0,
-            id="fail-sentinel",
-        ),
         pytest.param(
             SubprocessResult(
                 returncode=0,
@@ -92,49 +86,6 @@ def _leased_build_session():
             2,
             id="dirty-sva-overrides-pass-sentinel",
         ),
-        pytest.param(
-            SubprocessResult(
-                returncode=-9,
-                stdout=('[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":false,"sva_errors":3}\n'),
-                timed_out=True,
-                duration_s=600.0,
-            ),
-            EXIT_FAILURE,
-            "timeout",
-            3,
-            id="timeout-overrides-fail-and-dirty-sva",
-        ),
-        pytest.param(
-            SubprocessResult(
-                returncode=1,
-                stdout=(
-                    "%Error: tb.sv:12: syntax error\n"
-                    "ERROR: Verilator elaboration failed (rc=1)\n"
-                    "[SIM_RESULT] PASSED\n"
-                    '[SIM_SUMMARY] {"passed":false,"sva_errors":4}\n'
-                ),
-                duration_s=0.1,
-            ),
-            EXIT_FAILURE,
-            "elab_error",
-            0,
-            id="elaboration-overrides-sentinel-and-dirty-sva",
-        ),
-        pytest.param(
-            SubprocessResult(
-                returncode=127,
-                stdout=(
-                    "/bin/sh: 1: verilator: not found\n"
-                    "ERROR: Verilator elaboration failed (rc=127)\n"
-                    "[SIM_RESULT] PASSED\n"
-                    '[SIM_SUMMARY] {"passed":false,"sva_errors":5}\n'
-                ),
-            ),
-            EXIT_ERROR,
-            None,
-            None,
-            id="infrastructure-overrides-sentinel-and-dirty-sva",
-        ),
     ],
 )
 def test_public_simulation_precedence_table(
@@ -142,8 +93,8 @@ def test_public_simulation_precedence_table(
     _leased_build_session: None,
     process: SubprocessResult,
     exit_code: int,
-    verdict: str | None,
-    sva_errors: int | None,
+    verdict: str,
+    sva_errors: int,
 ) -> None:
     """Conflicting execution evidence reaches the established public exit."""
     flow = _make_flow(tmp_path, config="lite")
@@ -157,10 +108,6 @@ def test_public_simulation_precedence_table(
 
     assert outcome.exit_code == exit_code
     report_path = tmp_path / "reports/sim/1/targets/lite/simulation.json"
-    if verdict is None:
-        assert not report_path.exists()
-        assert outcome.detail["eda_tool_error"] == "missing_executable"
-        return
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["tests"][0]["verdict"] == verdict
     assert report["tests"][0]["sva_errors"] == sva_errors
@@ -590,7 +537,7 @@ def test_adapter_termination_reaches_normalized_campaign_result(tmp_path: Path) 
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
 
@@ -655,7 +602,7 @@ def _run_campaign_result(tmp_path: Path, plan: Any, execution: Any) -> Any:
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -846,7 +793,7 @@ def test_infrastructure_guard_publishes_terminal_campaign(
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -894,7 +841,7 @@ def test_infrastructure_without_tests_retains_selected_identities(
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -936,7 +883,7 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -948,23 +895,15 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
 
 
 @pytest.mark.parametrize("met", [True, False])
-def test_standalone_legacy_simulation_final_report_is_run_local(
-    tmp_path, _leased_build_session, met
-):
-    flow = _make_flow(tmp_path, config="lite")
-    flow.args.state_file = None
-    flow.read_state()
+def test_standalone_campaign_final_report_is_run_local(tmp_path, monkeypatch, met):
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     process = SubprocessResult(
         returncode=0, stdout=f"[SIM_RESULT] {'PASSED' if met else 'FAILED'}\n"
     )
-    with (
-        patch("booley.flows.sim.flow._get_test_names", return_value={}),
-        patch.object(SimulateFlow, "_flow_enabled", return_value=True),
-        patch.object(flow, "_execute", return_value=process),
-        flow.publication_resources,
-    ):
-        outcome = flow._run()
-        final_report_omits_headline(flow, outcome)
+    run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite")
+    flow = run.flow
+    with flow.publication_resources:
+        final_report_omits_headline(flow, run.result.outcome)
     assert flow.state.criteria["sim_pass_lite"].met is met
     assert "elab_pass_lite" not in flow.state.criteria
     assert flow.state._file_path is None

@@ -29,8 +29,9 @@ from booley.audit import (
 )
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
-from booley.harness import colors, developer_probe, doctor, host_diagnostics
+from booley.harness import developer_probe, doctor, host_diagnostics
 from booley.harness.setup import readiness
+from booley.presentation import colors
 from booley.runtime import (
     auth_token,
     doctor_stamp,

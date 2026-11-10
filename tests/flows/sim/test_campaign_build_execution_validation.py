@@ -13,7 +13,7 @@ import pytest
 
 from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
 from booley.flows.sim.campaign.store import _validate_build_execution_document
-from tests.flows.sim.test_campaign_phase3 import _build_execution
+from tests.flows.sim.campaign_test_support import _build_execution
 
 _HIT = "hit; Target=acme:lib:demo:1#sim; digest=abc; generation=0123456789abcdef"
 

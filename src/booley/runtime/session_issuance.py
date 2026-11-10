@@ -14,7 +14,7 @@ import sys
 import sysconfig
 import tempfile
 import tomllib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -964,6 +964,17 @@ def labels(issuance: Issuance) -> tuple[str, ...]:
         "booley.license-profile": issuance.license_profile or "none",
     }
     return tuple(f"{key}={value}" for key, value in values.items())
+
+
+def missing_labels(issuance: Issuance, container_labels: Mapping[str, object]) -> tuple[str, ...]:
+    """Issuance labels a container lacks or carries with another value."""
+    pairs = (label.split("=", 1) for label in labels(issuance))
+    return tuple(f"{key}={value}" for key, value in pairs if container_labels.get(key) != value)
+
+
+def labels_cover(issuance: Issuance, container_labels: Mapping[str, object]) -> bool:
+    """Whether a container's labels include every issuance label with its exact value."""
+    return not missing_labels(issuance, container_labels)
 
 
 _ISSUANCE_LABEL_PREFIXES = tuple(

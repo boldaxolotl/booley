@@ -7,6 +7,7 @@ import pytest
 
 from booley.config.sandbox import project_image_name
 from booley.runtime import image_lifecycle as lifecycle
+from booley.runtime.image_identity import ImageMetadata
 from tests.harness.test_image_lifecycle import (
     FakeDocker,
     TransactionBuilder,
@@ -187,7 +188,9 @@ def test_manual_final_scratch_cannot_claim_parent_with_labels(tmp_path, monkeypa
     from booley.harness import image_lifecycle as harness
 
     layers = {"parent": ("base", "wheel"), "child": ()}
-    docker = SimpleNamespace(image_layers=lambda ref: layers[ref])
+    docker = SimpleNamespace(
+        inspect=lambda ref: ImageMetadata(ref, f"sha256:{ref}", {}, {}, layers[ref])
+    )
     adapter = harness._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
     with pytest.raises(lifecycle.ImageLifecycleError, match="does not descend"):
         adapter._verify_manual_ancestry("child", "parent")
