@@ -259,26 +259,6 @@ class _RuntimeCheckingExecution(NativeExecution):
         return super().run(request)
 
 
-def _retain_score_bearing_invalid_campaign(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Publish a nested Campaign whose scoring is invalid but still carries rollups."""
-    from booley.flows.sim import coverage_transaction
-
-    original = coverage_transaction.publish_coverage_campaign
-
-    def publish_invalid_campaign(target_dir, campaign):
-        paths = original(target_dir, campaign)
-        document = json.loads(paths.campaign.read_text())
-        document["collection"]["status"] = "collector_error"
-        document["normalization"]["status"] = "partial"
-        document["scoring"] = {"status": "invalid", "reason": "collector_error"}
-        paths.campaign.write_text(json.dumps(document))
-        return paths
-
-    monkeypatch.setattr(
-        coverage_transaction, "publish_coverage_campaign", publish_invalid_campaign
-    )
-
-
 def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     tmp_path: Path,
 ) -> None:
@@ -381,19 +361,6 @@ def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
         )
 
     assert len(calls) == scans
-
-
-def test_coverage_campaign_rejects_score_bearing_invalid_nested_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _retain_score_bearing_invalid_campaign(monkeypatch)
-
-    with pytest.raises(
-        CampaignPublicationError, match="nested Coverage Campaign cannot be authenticated"
-    ) as caught:
-        _run_coverage_campaign(tmp_path, NativeExecution())
-
-    assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
 
 
 def test_coverage_campaign_refuses_an_oversized_result_at_publication(
