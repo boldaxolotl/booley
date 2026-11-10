@@ -34,7 +34,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from booley.config.gateway import GATEWAY_AUTH, gateway_settings_from_env
+from booley.config.gateway import GATEWAY_AUTH, HIDDEN_GATEWAY_ENV, gateway_settings_from_env
 from booley.harness.setup.common import banner, err, hint, info, note, ok, warn
 from booley.runtime import auth_token
 from booley.runtime.auth_token import APP_CLAUDE, APP_CODEX, AppCredential
@@ -69,6 +69,13 @@ def _report_gateway_status(app: str | None) -> int:
     if app != APP_CODEX:
         err(f"{app}: auth '{GATEWAY_AUTH}' routes Codex only")
         return 1
+    if os.environ.get(HIDDEN_GATEWAY_ENV) == "1":
+        # A Claude session was deliberately kept from the gateway values: nothing to grade.
+        note(
+            "Codex gateway settings are hidden from Claude sessions; "
+            "run `booley auth --status` from a VS Code terminal to check them"
+        )
+        return 0
     settings = gateway_settings_from_env()  # GatewayConfigError names the variable
     ok(
         f"{app}: agents run on the gateway at {settings.url} "
@@ -77,11 +84,42 @@ def _report_gateway_status(app: str | None) -> int:
     return 0
 
 
+def _gateway_covers(app: str | None) -> bool:
+    """Whether the gateway hand-off in force is the status to report for *app*.
+
+    Codex's gateway is its own policy: a Claude status in a per-CLI Sandbox reports
+    Claude's credential. A hand-written spec's Sandbox-wide hand-off covers every CLI,
+    so a Claude status there keeps the "routes Codex only" refusal.
+    """
+    from booley.config.agent import sandbox_cli_policy
+
+    return app in (None, APP_CODEX) or (bool(app) and sandbox_cli_policy(app) == GATEWAY_AUTH)
+
+
+def _host_policy(policy: str, *, handoff: bool) -> str:
+    """The policy to report when no gateway hand-off applies, with a note per mapping.
+
+    ``gateway`` has no credential of its own (``_MODE_DESC`` has no entry for it), so a
+    declared one reads as ``auto``, as Doctor does outside a Sandbox.
+    """
+    from booley.config.agent import env_auth_handoff
+
+    if env_auth_handoff() == GATEWAY_AUTH and not handoff:
+        note(
+            "BOOLEY_PRIMARY_AUTH=gateway is ignored outside a Sandbox that sets it; "
+            "showing the booley.toml policy"
+        )
+    if policy == GATEWAY_AUTH:
+        note("auth policy 'gateway' applies inside a Sandbox only; showing 'auto'")
+        return "auto"
+    return policy
+
+
 def _report_status(app: str | None = None, project_root: Path | None = None) -> int:
     """Report the launching process's credential under the selected Project policy."""
     from booley.config import agent_app
     from booley.config.agent import (
-        env_auth_handoff,
+        _inside_container,
         gateway_handoff_active,
         project_credential_policy,
     )
@@ -95,13 +133,12 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
         provider, policy = project_credential_policy(project_root, cli=app)
         app = app or provider
-    if gateway_handoff_active():
+    # A declared gateway policy is honored inside any Sandbox (hand-written specs
+    # included), as the runtime and Doctor do; only outside one does it read as `auto`.
+    handoff = gateway_handoff_active() or (policy == GATEWAY_AUTH and _inside_container())
+    if handoff and _gateway_covers(app):
         return _report_gateway_status(app)
-    if env_auth_handoff() == GATEWAY_AUTH:
-        note(
-            "BOOLEY_PRIMARY_AUTH=gateway is ignored outside a Sandbox that sets it; "
-            "showing the booley.toml policy"
-        )
+    policy = _host_policy(policy, handoff=handoff)
     apps = [app] if app else list(auth_token.CREDENTIALS)
     usable = 0
     _policy_note(policy)
