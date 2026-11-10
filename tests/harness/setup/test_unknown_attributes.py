@@ -11,7 +11,7 @@ import pytest
 
 from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.harness import doctor, init_cmd
-from booley.harness.setup import git_hooks, line_endings
+from booley.harness.setup import git_hooks, line_endings, readiness
 from booley.harness.setup.common import InitContext
 from booley.harness.setup.line_endings import (
     LineEndingActionKind as ActionKind,
@@ -27,6 +27,9 @@ from booley.harness.setup.line_endings import (
 )
 from booley.harness.setup.line_endings import (
     LineEndingObservationCode as Code,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingReport,
 )
 from booley.harness.setup.line_endings import (
     LineEndingStatus as Status,
@@ -116,8 +119,8 @@ def test_unknown_sibling_bytes_can_be_printed_and_persisted_as_utf8(tmp_path):
     root, data, _local = _checkout(tmp_path)
     _missing_sibling(root, tmp_path, os.fsdecode(b"sibling-\xff"))
     reporter = _reporter(data)
-    doctor._check_line_endings(
-        root, reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_, booley_dir=data
+    reporter.diagnostics(
+        readiness.inspect_line_endings(readiness.LineEndingInspectionRequest(root, data))
     )
     message = reporter.findings[0].message
     message.encode("utf-8")
@@ -197,8 +200,8 @@ def test_unknown_system_policy_is_reported_once_across_worktrees(
     report = line_endings.reconcile_project_line_endings(root, data, mode=Mode.INSPECT)
     assert len(_unknown(report.repositories[0])) == 1
     reporter = _reporter(data)
-    doctor._check_line_endings(
-        root, reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_, booley_dir=data
+    reporter.diagnostics(
+        readiness.inspect_line_endings(readiness.LineEndingInspectionRequest(root, data))
     )
     assert reporter.findings[0].message.count("system attributes path unresolved") == 1
     assert reporter.finish() == 0 and not reporter.result(0).clean
@@ -264,16 +267,16 @@ def test_unknown_never_erases_publication_error(tmp_path, monkeypatch, mode, fai
         a.kind is ActionKind.PUBLISH_ATTRIBUTES and a.state is ActionState.REFUSED
         for a in report.repositories[0].actions
     )
-    reporter = _reporter(data)
-    doctor._report_repository_line_endings(
-        report.repositories[0], reporter.pass_, reporter.warn_, reporter.fail_
-    )
+    monkeypatch.setattr(readiness, "reconcile_project_line_endings", lambda *_a, **_k: report)
+    findings = readiness.inspect_line_endings(
+        readiness.LineEndingInspectionRequest(root, data)
+    ).findings
     primary = (
         "git.autocrlf-risk"
         if failure == "snapshot" and mode is Mode.INSPECT
         else "git.line-endings-unreadable"
     )
-    assert {f.check_id for f in reporter.findings} == {"git.attributes-policy-unknown", primary}
+    assert {f.check_id for f in findings} == {"git.attributes-policy-unknown", primary}
 
 
 @pytest.mark.parametrize("mode", list(Mode))
@@ -341,8 +344,8 @@ def test_doctor_unknown_siblings_warn_read_only_in_stable_order(tmp_path):
     _missing_sibling(root, tmp_path, "a sibling")
     before = _snapshot(root)
     reporter = _reporter(data)
-    doctor._check_line_endings(
-        root, reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_, booley_dir=data
+    reporter.diagnostics(
+        readiness.inspect_line_endings(readiness.LineEndingInspectionRequest(root, data))
     )
     assert len(reporter.findings) == 1
     finding = reporter.findings[0]
@@ -368,7 +371,7 @@ def test_doctor_unknown_siblings_warn_read_only_in_stable_order(tmp_path):
         "leaked-root-policy",
     ],
 )
-def test_doctor_unknown_does_not_mask_primary_findings(tmp_path, other):
+def test_doctor_unknown_does_not_mask_primary_findings(tmp_path, monkeypatch, other):
     root, data, _local = _checkout(tmp_path)
     _missing_sibling(root, tmp_path)
     report = line_endings.reconcile_project_line_endings(
@@ -381,11 +384,17 @@ def test_doctor_unknown_does_not_mask_primary_findings(tmp_path, other):
             Observation(Code(other), count=1, detail="actual problem"),
         ),
     )
-    reporter = _reporter(data)
-    doctor._report_repository_line_endings(report, reporter.pass_, reporter.warn_, reporter.fail_)
-    assert len(reporter.findings) == 2
-    assert reporter.findings[0].check_id == "git.attributes-policy-unknown"
-    assert reporter.findings[1].severity == (
+    monkeypatch.setattr(
+        readiness,
+        "reconcile_project_line_endings",
+        lambda *_a, **_k: LineEndingReport(Status.UNSAFE, (report,), ()),
+    )
+    findings = readiness.inspect_line_endings(
+        readiness.LineEndingInspectionRequest(root, data)
+    ).findings
+    assert len(findings) == 2
+    assert findings[0].check_id == "git.attributes-policy-unknown"
+    assert findings[1].severity == (
         "fail" if other in ("stale-index", "crlf-mismatch") else "warn"
     )
 
@@ -402,8 +411,8 @@ def test_unknown_waiver_is_separate_from_real_conflicts(tmp_path, waiver):
         f'version = 1\n[[waiver]]\ncheck = "{check}"\nsubject = "{subject}"\nreason = "Accepted limitation"\n{expiry}\n'
     )
     reporter = _reporter(data)
-    doctor._check_line_endings(
-        root, reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_, booley_dir=data
+    reporter.diagnostics(
+        readiness.inspect_line_endings(readiness.LineEndingInspectionRequest(root, data))
     )
     findings = {f.check_id: f for f in reporter.findings}
     assert findings["git.attributes-policy-unknown"].severity == (
