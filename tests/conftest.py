@@ -18,7 +18,11 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 # Ensure src/ is importable (fallback when not installed via pip install -e .)
 sys.path.insert(0, str(_SOURCE_ROOT / "src"))
 
-pytest_plugins = ["tests.timeout_evidence", "tests.timeout_headroom"]
+pytest_plugins = [
+    "tests.timeout_evidence",
+    "tests.timeout_headroom",
+    "tests.thread_leak_guard",
+]
 
 
 @pytest.fixture(autouse=True)
