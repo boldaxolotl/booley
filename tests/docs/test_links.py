@@ -312,3 +312,45 @@ def test_tracked_files_name_the_site_by_its_current_domain() -> None:
     assert result.returncode in (0, 1), result.stderr
     stale = sorted(set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED)
     assert not stale, f"replace {_RETIRED_SITE_HOST} links with {SITE_URL} in: {stale}"
+
+
+PACKAGED_DOCS = REPO_ROOT / "src/booley/data/docs"
+
+
+def _packaged_links() -> list[tuple[Path, str]]:
+    """Return every ``(packaged doc, destination)`` pair, asserting the copies exist."""
+    documents = sorted(PACKAGED_DOCS.glob("*.md"))
+    assert documents, f"no packaged docs in {PACKAGED_DOCS}; run booley.dev_support.reference_docs"
+    return [
+        (document, destination)
+        for document in documents
+        for destination in _destinations(document)
+    ]
+
+
+def test_packaged_doc_links_resolve_to_sibling_files() -> None:
+    """A shipped doc's link to a shipped doc is a bare sibling file name with a live anchor."""
+    failures: list[str] = []
+    for document, destination in _packaged_links():
+        parts = urlsplit(destination)
+        if parts.scheme or parts.netloc or not parts.path:
+            continue  # external URL or in-page anchor
+        sibling = PACKAGED_DOCS / parts.path
+        if parts.path != Path(parts.path).name or not sibling.is_file():
+            failures.append(f"{document.name}: {destination} is not a sibling packaged doc")
+        elif reason := _destination_failure(sibling, destination):
+            failures.append(f"{document.name}: {destination} -> {reason}")
+    assert not failures, "\n".join(failures)
+    assert PACKAGED_DOCS / "TROUBLESHOOTING.md" in _markdown_files()
+
+
+def test_packaged_docs_link_no_unshipped_doc() -> None:
+    """No packaged link, relative or on the docs site, points back at an unshipped repo doc."""
+    failures: list[str] = []
+    for document, destination in _packaged_links():
+        target = _repository_path(document, destination)
+        if target is not None and not target.is_relative_to(PACKAGED_DOCS.resolve()):
+            failures.append(f"{document.name}: {destination} -> {target.relative_to(REPO_ROOT)}")
+    assert not failures, "links to docs that are not shipped must be plain text:\n" + "\n".join(
+        failures
+    )

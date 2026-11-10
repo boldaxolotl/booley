@@ -5,17 +5,17 @@ this page for the exact error text you see.
 
 Start with `booley doctor`: it checks the host, the Project and the Sandbox and
 prints a fix hint (`→`) under most problems; see
-[Doctor](https://booley.dev/docs/doctor/). Easier still, type `/booley-heal` in
+Doctor (host doc, not shipped). Easier still, type `/booley-heal` in
 the Developer Agent chat. The agent runs Doctor, fixes what it can using this
 page, checks the result with `booley doctor --deep`, and hands you the steps
 only you can do on the host. Do the same when Booley tells you its version
 changed.
 
 If you suspect the agent planted Git configuration or hooks, read the
-[known Sandbox escape warning](https://booley.dev/docs/sandbox/#known-sandbox-escape-through-shared-git-metadata)
+[known Sandbox escape warning](SANDBOX.md#known-sandbox-escape-through-shared-git-metadata)
 before you run Doctor on the host: host-side Doctor can trigger it.
 
-Windows-only first-run problems are on the [Windows](https://booley.dev/docs/windows/)
+Windows-only first-run problems are on the Windows (host doc, not shipped)
 page.
 
 ## Installation and editor integration
@@ -211,7 +211,7 @@ on the host can invalidate the container's copy mid-run.
 Use a sign-in that doesn't rotate: run `booley auth` for Claude, or
 `booley auth --cli codex` for Codex, on the host. Rebuild an existing container
 once so it gets the new credential. Billing choices are in
-[Setup](https://booley.dev/docs/setup/#sign-in-and-billing).
+Setup (host doc, not shipped).
 
 ### Two Developer Agents keep clobbering each other's edits
 
@@ -225,7 +225,7 @@ worktree but doesn't separate the agents.
 A worktree created in the Sandbox can sit at a container path the host can't
 reach, so host Git marks it `prunable`. Don't prune them from the host. Run Git worktree
 commands inside the Sandbox, and remove a worktree as the
-[CLI reference](https://booley.dev/docs/cli-reference/#worktrees) describes.
+CLI reference (host doc, not shipped) describes.
 
 ### `booley worktree new` fails in the post-setup hook
 
@@ -255,7 +255,7 @@ $ git checkout -- .booley/booley.toml
 error: pathspec '.booley/booley.toml' did not match any file(s) known to git
 ```
 
-In [Stealth Mode](https://booley.dev/docs/stealth/), the default, your RTL
+In Stealth Mode (host doc, not shipped), the default, your RTL
 repository ignores `.booley/`, so its Git commands can't see `booley.toml`,
 `tests.toml`, Goalsets or `.core` files there. If `.booley/` is its own Git
 repository, run Git there:
@@ -271,7 +271,7 @@ control at all: copy a file aside before you edit it.
 ### Doctor reports a Sandbox whose egress mode differs from the host
 
 You changed
-[`[sandbox] egress`](https://booley.dev/docs/sandbox/#host-configuration-configtoml)
+[`[sandbox] egress`](SANDBOX.md#host-configuration-configtoml)
 in the host `config.toml`, and a Sandbox still runs in the other mode. Doctor
 warns with `host.sandbox-egress-mismatch`. Recreate that Sandbox:
 
@@ -283,7 +283,7 @@ warns with `host.sandbox-egress-mismatch`. Recreate that Sandbox:
 A stopped Sandbox refuses to start after the switch; run
 `booley init --seed` and start it again. To keep one Sandbox in the other mode
 on purpose, waive `host.sandbox-egress-mismatch` with `subject` set to its
-Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waivers-doctor-waiverstoml).
+Project root; see Doctor waivers (host doc, not shipped).
 
 ### Doctor reports a Session store file named for another Project Root
 
@@ -336,7 +336,7 @@ For images left over from earlier forgets, run `booley projects prune-keepers`,
 then rerun it with the `--confirm <digest>` it prints. Images marked
 `unrecorded` are kept; remove one with `docker image rm <id>` once no other
 Project uses it. See the
-[CLI reference](https://booley.dev/docs/cli-reference/#projects-on-this-machine--host).
+CLI reference (host doc, not shipped).
 
 ### Recover sources hidden by an interrupted older run
 
@@ -367,7 +367,7 @@ state keeps failing or Booley reports a corrupt record, report it (see
 
 Simulation, Cycle Count and coverage Goals are judged on the exact Test Runs
 that Goal Mode fixed when it started; see
-[Simulation, Cycle Count, and coverage Goals](https://booley.dev/docs/goal-mode/#simulation-cycle-count-and-coverage-goals).
+Simulation, Cycle Count, and coverage Goals (host doc, not shipped).
 `booley goal status` lists each Goal's Test Runs with their outcomes and one of
 these reasons. A coverage Goal is decided by its coverage floors alone, so it
 can be met while one of its Test Runs failed.
@@ -407,7 +407,7 @@ the run times out, with no `results.xml`. No Python pin fixes it. Port the
 testbench to the image's cocotb 2.x (`cocotb.fork` becomes
 `cocotb.start_soon`, plus a few import moves), or build a project image with a
 matching Verilator. Image versions are in
-[Supported EDA tools](https://booley.dev/docs/supported-eda-tools/#versions-in-the-sandbox-image).
+[Supported EDA tools](SUPPORTED-EDA-TOOLS.md#versions-in-the-sandbox-image).
 
 ### A streamed `--trace` dump produces a trace incident
 
@@ -456,8 +456,8 @@ mismatches are common:
 Test the project's exact compile flags on one real file with
 `riscv-none-elf-gcc -march=<theirs> ...` in the Sandbox before writing
 configuration. The `booley-setup` skill plans that check during
-[setup](https://booley.dev/docs/setup/#the-booley-setup-skill). Image contents:
-[RISC-V toolchain image](https://booley.dev/docs/sandbox/#risc-v-toolchain-image-booley-sandbox-riscv).
+setup (host doc, not shipped). Image contents:
+[RISC-V toolchain image](SANDBOX.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
 ## Lint, synthesis, and FPGA
 
@@ -482,7 +482,7 @@ wrong thing. Known case: `$size()` on an array of interface instances
 `error: 'stat_if' cannot be used in an expression`. Put the count in a
 `localparam` and use it in both the declaration and the instantiation. If you
 don't need `slang`, stay on the default `sv2v` frontend; see
-[the frontends](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
+[the frontends](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
 
 ### Yosys rejects transpiled Verilog after `sv2v` succeeds
 
@@ -525,8 +525,8 @@ booley projects forget /exact/deleted/project
 ### Coverage Campaign diagnostics
 
 Where Campaign files live and how to delete finished runs:
-[Coverage results](https://booley.dev/docs/coverage/#reading-results)
-and [Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-reports).
+[Coverage results](COVERAGE.md#reading-results)
+and [Cleaning up reports](FLOW_REFERENCE.md#cleaning-up-reports).
 
 | Message | Fix |
 |---|---|
@@ -568,15 +568,15 @@ booley flow sim --resume-from /exact/path/to/campaign/manifest.json --dry-run
 Never delete Booley's job or execution records to force progress; they protect
 running EDA processes. To get rid of an abandoned Campaign, delete its run
 folder once no run is active
-([Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-reports)).
+([Cleaning up reports](FLOW_REFERENCE.md#cleaning-up-reports)).
 
 ### Waiver Candidates at review
 
 How waivers are proposed and approved is in
-[Coverage waivers at review](https://booley.dev/docs/coverage/#coverage-waivers).
+[Coverage waivers at review](COVERAGE.md#coverage-waivers).
 
 - **`[coverage.waivers] is not configured`:** set up the
-  [approval directory](https://booley.dev/docs/coverage/#waiver-directory-coveragewaivers)
+  [approval directory](COVERAGE.md#waiver-directory-coveragewaivers)
   before you enter Goal Mode; `booley.toml` is protected during it.
 - **A proposal stays pending:** cancelling or an invalid form decides nothing.
   Ask the agent to resume that proposal, or approve or reject it in chat with
@@ -591,7 +591,7 @@ How waivers are proposed and approved is in
 Type `/booley-feedback` in the Developer Agent chat while the problem is still
 on screen. It records how to reproduce it, checks Booley's code before blaming
 it, and saves a report locally; see
-[When Booley itself misbehaves](https://booley.dev/docs/usage/#when-booley-itself-misbehaves).
+When Booley itself misbehaves (host doc, not shipped).
 Then [open an issue on GitHub](https://github.com/boldaxolotl/Booley/issues/new),
 which is public, or email it privately to
 [boldaxolotl@proton.me](mailto:boldaxolotl@proton.me).
