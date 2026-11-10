@@ -582,10 +582,10 @@ def _job_resources(job: JobView) -> list[ResultLine]:
 
 
 def job_paths(job: JobView) -> tuple[str, ...]:
-    """Visible deduplicated side artifacts first, exact report last."""
+    """Visible deduplicated side artifacts first, then ``job.log``, exact report last."""
     report = str(job.report_path) if job.report_path is not None else None
     artifacts = tuple(path for path in dict.fromkeys(job.artifacts) if path != report)[:3]
-    return (*artifacts, *filter(None, (job.log_path, report)))
+    return (*artifacts, *(path for path in (job.log_path, report) if path))
 
 
 def _job_words(job: JobView, now: float) -> str:

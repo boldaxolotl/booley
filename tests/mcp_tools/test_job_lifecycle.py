@@ -705,17 +705,20 @@ def log_bytes(context, run_id):
     return path.read_bytes() if path.is_file() else b""
 
 
-def log_gate_command(context):
-    """Child that prints ``started``, waits for a release file, then prints ``finished``."""
+def log_gate_command(context, first="started", second="finished"):
+    """Child that emits *first*, waits for a release file, then emits *second*.
+
+    Lines are written as bytes so a Windows text layer cannot turn ``\\n`` into ``\\r\\n``.
+    """
     return command(f"""
         from pathlib import Path
-        import time
+        import sys, time
         release = Path({str(context.work_dir / "release")!r})
-        print('started', flush=True)
+        sys.stdout.buffer.write(b'{first}\\n'); sys.stdout.buffer.flush()
         deadline = time.monotonic() + 60
         while not release.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
-        print('finished', flush=True)
+        sys.stdout.buffer.write(b'{second}\\n'); sys.stdout.buffer.flush()
     """)
 
 
@@ -724,10 +727,11 @@ async def test_submitted_job_logs_full_combined_output(context, monkeypatch):
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "64")  # tail cap: 4 x 64 = 256 bytes
     script = """
         import sys
-        sys.stderr.write('err-marker\\n')
-        sys.stderr.flush()
+        sys.stderr.buffer.write(b'err-marker\\n')
+        sys.stderr.buffer.flush()
         for number in range(200):
-            print(f'out-{number:03d}')
+            sys.stdout.buffer.write(f'out-{number:03d}\\n'.encode())
+        sys.stdout.buffer.flush()
     """
     expected_stdout = "".join(f"out-{number:03d}\n" for number in range(200)).encode()
     submission = await JobLifecycle().submit_and_wait(
@@ -789,7 +793,7 @@ async def test_unwritable_job_log_does_not_fail_the_job(context):
         wait_seconds=WAIT_TIMEOUT,
     )
     result = submission.poll.result
-    assert result.exit_code == 0 and result.stdout == "completed\n"
+    assert result.exit_code == 0 and result.stdout.strip() == "completed"
     assert submission.poll.record.status == "done"
     assert result.stderr.count("job.log unavailable") == 1
 
@@ -807,6 +811,9 @@ class _FailingSecondWrite:
             raise OSError(errno.ENOSPC, "No space left on device")
         return self._raw.write(data)
 
+    def flush(self):
+        self._raw.flush()
+
     def close(self):
         self._raw.close()
 
@@ -822,16 +829,16 @@ async def test_job_log_write_failure_mid_run_keeps_job_and_reports_once(context,
         return _FailingSecondWrite(opened) if writing else opened
 
     monkeypatch.setattr(Path, "open", open_job_log)
-    script = """
-        import sys, time
-        for word in ('first', 'second', 'third'):
-            print(word, flush=True)
-            time.sleep(0.3)
-    """
-    submission = await JobLifecycle().submit_and_wait(
-        "lint", command(script), JOB_TIMEOUT, context=context, wait_seconds=WAIT_TIMEOUT
+    jobs = JobLifecycle()
+    run_id = jobs.submit(
+        "lint", log_gate_command(context, "first", "second"), JOB_TIMEOUT, context=context
     )
-    result = submission.poll.result
-    assert result.exit_code == 0 and result.stdout == "first\nsecond\nthird\n"
+    try:
+        # Release only once "first" is logged, so the two lines are separate chunks.
+        await wait_until(lambda: log_bytes(context, run_id) == b"first\n")
+    finally:
+        (context.work_dir / "release").write_text("go")
+    result = (await jobs.poll(run_id, WAIT_TIMEOUT)).result
+    assert result.exit_code == 0 and result.stdout == "first\nsecond\n"
     assert result.stderr.count("job.log unavailable") == 1
-    assert log_bytes(context, submission.poll.run_id) == b"first\n"
+    assert log_bytes(context, run_id) == b"first\n"

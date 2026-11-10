@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from booley.flows.endpoint_events import _write_display_event
 from booley.mcp.call_context import CallContext
@@ -61,12 +61,12 @@ class _JobLog:
 
     def __init__(self, path: Path | None) -> None:
         self.notice: str | None = None
-        self._file: Any = None
+        self._file: BinaryIO | None = None
         if path is None:
             return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            self._file = path.open("wb", buffering=0)
+            self._file = path.open("wb")
         except OSError as exc:
             self._fail(exc)
 
@@ -75,7 +75,10 @@ class _JobLog:
         if self._file is None:
             return
         try:
+            # Buffered handle: ``write`` finishes partial writes; flush so a tailing
+            # reader (the Dashboard link) sees output while the Job runs.
             self._file.write(chunk)
+            self._file.flush()
         except OSError as exc:
             self._fail(exc)
 
@@ -92,7 +95,7 @@ class _JobLog:
 
 
 async def _read_tail(
-    stream: asyncio.StreamReader, cap: int, sink: Callable[[bytes], None] | None = None
+    stream: asyncio.StreamReader, cap: int, sink: Callable[[bytes], None]
 ) -> bytes:
     """Drain *stream* to EOF, keeping only the last *cap* bytes.
 
@@ -105,8 +108,7 @@ async def _read_tail(
         chunk = await stream.read(8192)
         if not chunk:
             break
-        if sink is not None:
-            sink(chunk)
+        sink(chunk)
         buf.extend(chunk)
         if len(buf) > cap * 2:
             del buf[:-cap]
@@ -255,7 +257,7 @@ async def _run_subprocess(
     finally:
         log.close()
     if log.notice is not None:
-        stderr = f"{stderr}\n{log.notice}" if stderr else log.notice
+        stderr = f"{stderr.rstrip()}\n{log.notice}" if stderr else log.notice
     return exit_code, stdout, stderr, timed_out
 
 
