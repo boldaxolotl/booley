@@ -28,11 +28,11 @@ import contextlib
 import json
 import logging
 import os
-import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from time import time as wall_clock
 from typing import Any
 
 from booley.core.boundary import (
@@ -305,7 +305,7 @@ def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
     started_at = parse_stamp(record.started_at)
     if started_at is None:
         raise BoundaryError("Job started_at must be an RFC 3339 timestamp")
-    current = time.time() if now is None else now
+    current = wall_clock() if now is None else now
     if started_at > current + MAX_CLOCK_SKEW_SECONDS:
         raise BoundaryError("Job started_at is in the future")
     if record.run_started_at is not None:
@@ -400,7 +400,7 @@ def derive_status(
     # pre-stamp behavior, and the PID/argv guards still apply.
     started = parse_stamp(rec.run_started_at) or parse_stamp(rec.started_at)
     if started is not None and isinstance(rec.timeout_s, (int, float)):
-        current = time.time() if now is None else now
+        current = wall_clock() if now is None else now
         if current > started + rec.timeout_s + DEADLINE_SLACK_SECONDS:
             return STATUS_FAILED
 
@@ -424,5 +424,5 @@ def is_active(
     if derive_status(rec, is_pid_alive, now=now) == STATUS_RUNNING:
         return True
     started = parse_stamp(rec.started_at)
-    current = time.time() if now is None else now
+    current = wall_clock() if now is None else now
     return rec.pid is None and started is not None and current - started < SPAWN_GRACE_SECONDS

@@ -376,8 +376,8 @@ class TestTraceStatusManifest:
         monkeypatch.setattr(trace_session, "waveform_cache_dir", lambda *_a, **_k: cache)
         monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: "bwave")
         clock = {"now": start_s}
-        monkeypatch.setattr(waveform_store.time, "monotonic", lambda: clock["now"])
-        monkeypatch.setattr(trace_session.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(waveform_store, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(trace_session, "monotonic", lambda: clock["now"])
         builds: list[float] = []
 
         def fake_run(cmd, **kwargs):
