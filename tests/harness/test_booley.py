@@ -22,6 +22,13 @@ from booley.runtime.booley_dir import reset_cache
 TICKETS_REL = Path(".booley") / "tickets"
 
 
+@pytest.fixture(autouse=True)
+def _outside_any_job(monkeypatch):
+    """CLI dispatch tests never record a Standalone Job into a real Project (e.g. inside a Sandbox)."""
+    for name in ("BOOLEY_DIR", "BOOLEY_RUN_ID", "_BOOLEY_CLI_INVOCATION_ORIGIN"):
+        monkeypatch.delenv(name, raising=False)
+
+
 # ===========================================================================
 # ts()
 # ===========================================================================
