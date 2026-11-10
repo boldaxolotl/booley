@@ -703,7 +703,9 @@ def test_campaign_verdict_sets_exit_code(
     outcome = run.result.outcome
     assert run.result.exit_code == exit_code, outcome.report_text
     assert {name: row["grade"] for name, row in outcome.detail["campaigns"].items()} == grades
-    assert f"report: {tmp_path / 'reports/sim.json'}" in outcome.report_text
+    report = (tmp_path / "reports/sim/1/report.json").resolve()
+    assert f"report: {report}" in outcome.report_text
+    assert report.is_file()
     if grades == {"lite": "inconclusive"}:
         assert "INCONCLUSIVE" in outcome.report_text
 
