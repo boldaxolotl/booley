@@ -47,6 +47,7 @@ def run(
     args: list[str], cwd: Path, *, timeout: int = 300, success: bool = True
 ) -> subprocess.CompletedProcess[str]:
     """Run a bounded command, retaining output even when it fails."""
+    # Unbounded child: standalone script outside pytest (and it drives its own Popen)
     result = subprocess.run(
         args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
     )
@@ -82,10 +83,12 @@ def terminate_and_reap(child: subprocess.Popen, *, timeout: float = 5) -> int:
     """Preserve a failed graceful stop while bounding forced cleanup as well."""
     try:
         child.terminate()
+        # Unbounded child: standalone script outside pytest (and it drives its own Popen)
         return child.wait(timeout=timeout)
     finally:
         if child.poll() is None:
             child.kill()
+            # Unbounded child: standalone script outside pytest (and it drives its own Popen)
             child.wait(timeout=5)
 
 
@@ -178,6 +181,7 @@ class Acceptance(unittest.TestCase):
         )
         try:
             try:
+                # Unbounded child: standalone script outside pytest (and it drives its own Popen)
                 child.wait(timeout=0.2)
                 self.fail("hang fixture exited before termination")
             except subprocess.TimeoutExpired:
@@ -185,6 +189,7 @@ class Acceptance(unittest.TestCase):
         finally:
             if child.poll() is None:
                 child.kill()
+                # Unbounded child: standalone script outside pytest (and it drives its own Popen)
                 child.wait(timeout=5)
 
     def test_05_native_per_instance_reset_and_merge(self) -> None:

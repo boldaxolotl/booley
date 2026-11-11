@@ -9,7 +9,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 import sys
 import tomllib
 import zipfile
@@ -26,6 +25,7 @@ from tests.sidecar_image_helpers import (
     SIDECAR_BOOKWORM_BASE,
     SIDECAR_DOCKER_CLI,
 )
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import dockerfile_syntax, docs_links
 from booley.runtime.dockerfile_syntax import logical_instructions
@@ -700,13 +700,10 @@ def test_bundled_vsix_install_rejects_bad_payload(tmp_path: Path, name: str, cas
     body = body.replace("/tmp/", f"{tmp_path}/").replace("/usr/local", str(root / "usr/local"))
     # Substitute the network download only; run the shipped verification commands.
     curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; cp "$FIXTURE" "$1"; }; '
-    result = subprocess.run(
+    result = run_bounded_child(
         ["sh", "-c", curl + body],
         env=environment,
-        capture_output=True,
-        text=True,
         timeout=20,
-        check=False,
     )
     installed = list((root / "usr/local/libexec/booley").glob("*.vsix"))
     assert (result.returncode == 0) == (case == "good"), result.stderr
@@ -761,12 +758,9 @@ def test_agent_cli_versions_are_written_only_in_their_manifest() -> None:
         version = manifest["dependencies"][name]
         # Digit boundaries stop a version from matching inside a longer one.
         pattern = rf"(^|[^0-9.]){re.escape(version)}([^0-9]|$)"
-        result = subprocess.run(
+        result = run_bounded_child(
             ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"],
-            capture_output=True,
-            text=True,
             timeout=20,
-            check=False,
         )
         assert result.returncode in (0, 1), result.stderr
         found = result.stdout.splitlines()
@@ -807,13 +801,10 @@ def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(tmp_pat
             stub = bin_dir / name
             stub.write_text(f"#!/bin/sh\necho '{output}'\n", encoding="utf-8")
             stub.chmod(0o755)
-        return subprocess.run(
+        return run_bounded_child(
             ["sh", "-c", checks[0].replace(manifest_path, str(manifest))],
             env=env,
-            capture_output=True,
-            text=True,
             timeout=20,
-            check=False,
         ).returncode
 
     assert exit_code("9.9.9", "8.8.8") == 0
@@ -1451,13 +1442,10 @@ def test_riscv_document_install_rejects_wrong_checksums(
     ).replace("/opt/riscv-docs", str(tmp_path / "docs"))
     # Substitute network downloads only; execute the shipped checksum and index commands.
     curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; printf fixture > "$1"; }; '
-    result = subprocess.run(
+    result = run_bounded_child(
         ["sh", "-c", curl + install],
         env=environment,
-        capture_output=True,
-        text=True,
         timeout=10,
-        check=False,
     )
     assert (result.returncode != 0) == (bad_hash is not None), result.stderr
     assert (tmp_path / "docs" / "INDEX.md").exists() == (bad_hash is None)
