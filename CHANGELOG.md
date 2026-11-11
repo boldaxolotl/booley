@@ -14,6 +14,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   seeds of one Variant share an entry). Flow runs that `booley doctor` starts
   are no longer recorded, and each record stores the size of the Target's
   source files when it is known.
+- The `sim` result card now names each Test Run that did not pass with its log
+  (`log:`) and, when it ran with `--trace`, its waveform (`waveform:`); a
+  `--trace` run lists its passing Test Runs with their waveform too.
+  `simulation.json` `tests[]` rows and the MCP result carry `log` and `trace`
+  paths for every Test Run (`null` when absent), so nobody searches the
+  Campaign's work items for them.
 - A second `booley chat` while the main checkout is in use now starts in its
   own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
   and prints a line saying where it works. The first session and a lone

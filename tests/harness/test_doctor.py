@@ -2397,27 +2397,17 @@ targets:
 """
 
 
-def _write_cocotb_project(
-    root: Path,
-    *,
-    tb_body: str,
-    tests: list[str] | None = None,
-) -> None:
+def _write_cocotb_project(root: Path, *, tb_body: str) -> None:
     """A minimal project whose only sim Target is a Cocotb Target (ADR 0034).
 
-    *tb_body* is the Python testbench; *tests* (if given) is the tests.toml
-    ``tests = [...]`` list declared on the Target.
+    *tb_body* is the Python testbench.
     """
     (root / "design.core").write_text(_COCOTB_SIM_CORE, encoding="utf-8")
     (root / "rtl").mkdir(exist_ok=True)
     (root / "tb").mkdir(exist_ok=True)
     (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (root / "tb" / "test_dut.py").write_text(tb_body, encoding="utf-8")
-    pd = root / ".booley"
-    pd.mkdir(exist_ok=True)
-    if tests is not None:
-        names = ", ".join(f'"{t}"' for t in tests)
-        (pd / "tests.toml").write_text(f"[sim]\ntests = [{names}]\n", encoding="utf-8")
+    (root / ".booley").mkdir(exist_ok=True)
 
 
 class TestCoreAudit:
@@ -2508,12 +2498,14 @@ class TestCoreAudit:
             return result
 
         monkeypatch.setattr(doctor.TargetCatalog, "inspect", inspect)
-        monkeypatch.setattr(doctor, "_audit_native_dependencies", lambda *_args: None)
 
         rec = _audit(tmp_path)
 
         assert rec.fails() == []
-        assert sorted(calls) == ["lint", "sim"]
+        # The core audit reads each root partition once; the native-dependency
+        # source collection runs last and reads the seed Target (sim) again.
+        assert sorted(calls[:-1]) == ["lint", "sim"]
+        assert calls[-1] == "sim"
 
     def _cpp_target_project(self, tmp_path: Path, include_line: str) -> doctor.ProjectAudit:
         (tmp_path / "design.core").write_text(
@@ -2547,85 +2539,64 @@ targets:
             first_target="sim",
         )
 
-    def test_native_dependency_is_flagged(self, tmp_path: Path):
-        """F-9: Ibex's dpi_memutil.cc includes <libelf.h> and links -lelf.
+    def test_core_audit_hands_native_dependency_report_to_diagnostics(self, tmp_path: Path):
+        """Doctor selects the Targets' sources and only forwards the owner's report.
 
-        Requirements baking is Python-only, so the derived image shipped
-        only the runtime libelf.so.1 — no header, no linker input — and the
-        failure surfaced deep inside a simulation build.
+        The fixture's missing ``tb/dpi_memutil.cc`` also exercises the owner's
+        unreadable-file skip through the real Target path.
         """
         project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
         rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
+        reports: list[DiagnosticReport] = []
 
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("libelf-dev" in m for m in warns)
-        assert any("tb/harness.cc" in m for m in warns)
-        # Advisory only — this is a curated hint list, not a resolver.
-        assert rec.fails() == []
+        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=reports.append)
 
-    def test_clean_cpp_sources_pass(self, tmp_path: Path):
-        project = self._cpp_target_project(
-            tmp_path, "#include <cstdint>\n#include <verilated.h>\n"
-        )
-        rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
+        owner_report = reports[-1]
+        assert [(f.severity, f.check_id, f.subject) for f in owner_report.findings] == [
+            (Severity.WARN, "sandbox.native-dependency-missing", "libelf-dev")
+        ]
+        assert "tb/harness.cc" in owner_report.findings[0].message
+        assert [m for lvl, m in rec.events if "libelf" in m] == []
 
-        assert [m for lvl, m in rec.events if lvl == "warn"] == []
-        assert any("no known-missing native build" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_native_dependency_declared_in_project_dockerfile_passes(self, tmp_path: Path):
+    def test_native_dependency_warning_renders_waived_after_tests_toml(self, tmp_path: Path):
         project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        docker_dir = project.booley_dir / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text(
-            "FROM booley-sandbox-riscv\n"
-            "RUN apt-get update \\\n"
-            "    && apt-get install -y --no-install-recommends libelf-dev\n",
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+        (tmp_path / "tb" / "tb_dut.sv").write_text(
+            '$display("[SIM_RESULT] PASSED");\n', encoding="utf-8"
+        )
+        (project.booley_dir / "doctor-waivers.toml").write_text(
+            "version = 1\n\n"
+            "[[waiver]]\n"
+            'check = "sandbox.native-dependency-missing"\n'
+            'subject = "libelf-dev"\n'
+            'reason = "image built elsewhere"\n'
+            "permanent = true\n",
             encoding="utf-8",
         )
-        rec = _Rec()
+        reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
 
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-
-        assert [m for lvl, m in rec.events if lvl == "warn"] == []
-        assert any("libelf-dev" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_native_dependency_in_dockerfile_comment_still_warns(self, tmp_path: Path):
-        project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        docker_dir = project.booley_dir / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text(
-            "FROM booley-sandbox-riscv\n# install libelf-dev later\n",
-            encoding="utf-8",
+        doctor._run_core_audit(
+            project,
+            reporter.pass_,
+            reporter.warn_,
+            reporter.skip_,
+            reporter.fail_,
+            _note=reporter.note_,
+            _diagnostics=reporter.diagnostics,
         )
-        rec = _Rec()
 
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-
-        assert any("libelf-dev" in m for lvl, m in rec.events if lvl == "warn")
-
-    def test_headers_present_in_the_base_image_are_not_flagged(self, tmp_path: Path):
-        """zlib1g-dev is installed in the base sandbox — warning would be noise."""
-        project = self._cpp_target_project(tmp_path, "#include <zlib.h>\n")
-        rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-        assert [m for lvl, m in rec.events if lvl == "warn"] == []
-
-    def test_project_without_cpp_sources_is_silent(self, tmp_path: Path):
-        (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        pd = tmp_path / ".booley"
-        pd.mkdir(exist_ok=True)
-        project = doctor.ProjectAudit(
-            project_root=tmp_path,
-            booley_dir=pd,
-            booley_toml={"flows": {"sim": {}}},
-            configs_toml={"sim": {}},
-            first_target="sim",
+        findings = reporter.result(0).findings
+        start = next(i for i, f in enumerate(findings) if f.message.startswith("tests.toml not"))
+        tail = findings[start:]
+        assert [f.severity for f in tail] == [Severity.SKIP, Severity.WAIVED]
+        assert (tail[1].check_id, tail[1].subject) == (
+            "sandbox.native-dependency-missing",
+            "libelf-dev",
         )
-        rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-        assert rec.events == []
+        assert "tb/harness.cc" in tail[1].message
+        assert reporter.counts["waived"] == 1
+        assert reporter.finish() == 0
 
     def test_in_scope_script_is_advisory_not_a_hard_fail(self, tmp_path: Path):
         """F-10: doctor's Scope is synthetic, so it cannot hard-fail on it.
@@ -6824,181 +6795,6 @@ targets:
         assert not doctor._project_declares_verible_lint(project)
 
 
-class TestCocotbFactoryTests:
-    """B6: generated cocotb names cannot be grepped for as `def <name>(`.
-
-    ``TestFactory(...).generate_tests()`` and ``@cocotb.parametrize`` register
-    rendered names in the module namespace at import time, so the static check
-    is structurally blind to them. Not verifiable ⇒ report it as not
-    verifiable, not as a finding.
-    """
-
-    _FACTORY_TB = """\
-import cocotb
-from cocotb.regression import TestFactory
-
-
-async def run_test(dut, data_width=8):
-    pass
-
-
-factory = TestFactory(run_test)
-factory.add_option("data_width", [8, 16])
-factory.generate_tests()
-"""
-
-    _PARAMETRIZED_TB = """\
-import cocotb
-
-
-@cocotb.test()
-@cocotb.parametrize(("ifg", [12, 0]))
-async def run_test_tx(dut, ifg=12):
-    pass
-"""
-
-    @pytest.mark.parametrize(
-        ("body", "base"),
-        [
-            (_FACTORY_TB, "run_test"),
-            (_PARAMETRIZED_TB, "run_test_tx"),
-            (
-                _FACTORY_TB.replace("import TestFactory", "import TestFactory as Factory").replace(
-                    "TestFactory(run_test)", "Factory(run_test)"
-                ),
-                "run_test",
-            ),
-            (
-                _PARAMETRIZED_TB.replace("import cocotb", "import cocotb as c").replace(
-                    "@cocotb.", "@c."
-                ),
-                "run_test_tx",
-            ),
-        ],
-    )
-    def test_generating_base_name_is_deferred(self, tmp_path, body, base):
-        _write_cocotb_project(tmp_path, tb_body=body, tests=[base])
-        rec = _audit(tmp_path)
-        skips = [m for lvl, m in rec.events if lvl == "skip"]
-        assert any(base in m and "generating function" in m and "rendered IDs" in m for m in skips)
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    @pytest.mark.parametrize(
-        "names",
-        [
-            ["test_plain"],
-            ["test_plain", "run_test_tx"],
-            ["test_plain", "run_test_tx/ifg=12", "typo"],
-        ],
-    )
-    def test_generating_module_defers_every_registered_name(self, tmp_path, names):
-        body = self._PARAMETRIZED_TB + "\n@cocotb.test()\nasync def test_plain(dut): pass\n"
-        _write_cocotb_project(tmp_path, tb_body=body, tests=names)
-        rec = _audit(tmp_path)
-        skips = [
-            m for lvl, m in rec.events if lvl == "skip" and "cannot be verified statically" in m
-        ]
-        assert len(skips) == 1
-        assert f"{len(names)} tests.toml name(s)" in skips[0]
-        assert all(name in skips[0] for name in names)
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    @pytest.mark.parametrize("decorator", ["@cocotb.test()", "@cocotb.test", "@test()"])
-    def test_generation_words_in_comments_do_not_suppress_plain_checks(self, tmp_path, decorator):
-        body = f"import cocotb\nfrom cocotb import test\n# TestFactory generate_tests cocotb.parametrize\n{decorator}\nasync def test_reset(dut): pass\n"
-        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
-        rec = _audit(tmp_path)
-        assert any("tests.toml names all present" in m for lvl, m in rec.events if lvl == "pass")
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "async def test_reset(dut): pass\n",
-            "# def test_reset(dut):\n",
-            "class TB:\n    def test_reset(self): pass\n",
-        ],
-    )
-    def test_plain_function_search_does_not_earn_a_pass(self, tmp_path, body):
-        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
-        rec = _audit(tmp_path)
-        assert any(
-            "not found as" in m and "test_reset" in m for lvl, m in rec.events if lvl == "warn"
-        )
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "not python!",
-            "\x00",
-            "import cocotb\n@cocotb.test(name='other')\nasync def test_reset(dut): pass\n",
-        ],
-    )
-    def test_unverifiable_source_never_passes_names(self, tmp_path, body):
-        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
-        rec = _audit(tmp_path)
-        assert any("cannot be verified statically" in m for lvl, m in rec.events if lvl == "skip")
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    def test_factory_generated_names_are_reported_unverifiable_not_missing(
-        self,
-        tmp_path: Path,
-    ):
-        _write_cocotb_project(
-            tmp_path,
-            tb_body=self._FACTORY_TB,
-            tests=["run_test_001", "run_test_002"],
-        )
-        rec = _audit(tmp_path)
-        assert not any("not found as functions" in m for lvl, m in rec.events)
-        assert any(
-            "cannot be verified statically" in m and "factory" in m
-            for lvl, m in rec.events
-            if lvl == "skip"
-        )
-        assert rec.fails() == []
-
-    def test_parametrized_names_are_reported_unverifiable_not_missing(
-        self,
-        tmp_path: Path,
-    ):
-        _write_cocotb_project(
-            tmp_path,
-            tb_body=self._PARAMETRIZED_TB,
-            tests=["run_test_tx/ifg=12", "run_test_tx/ifg=0"],
-        )
-        rec = _audit(tmp_path)
-        assert not any("not found as functions" in m for lvl, m in rec.events)
-        assert any(
-            "cannot be verified statically" in m and "parameterized" in m
-            for lvl, m in rec.events
-            if lvl == "skip"
-        )
-        assert rec.fails() == []
-
-    def test_hand_written_names_still_warn_when_absent(self, tmp_path: Path):
-        # The softening is gated on the factory call: a module WITHOUT one that
-        # names a test it does not define is still a real, greppable mismatch.
-        _write_cocotb_project(
-            tmp_path,
-            tb_body="import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
-            tests=["test_reset", "test_typo"],
-        )
-        rec = _audit(tmp_path)
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("not found as functions" in m and "test_typo" in m for m in warns)
-        assert not any("test_reset" in m for m in warns)
-
-    def test_all_names_present_still_passes(self, tmp_path: Path):
-        _write_cocotb_project(
-            tmp_path,
-            tb_body="import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
-            tests=["test_reset"],
-        )
-        rec = _audit(tmp_path)
-        assert any("tests.toml names all present" in m for lvl, m in rec.events if lvl == "pass")
-
-
 class TestDeepLintFindingsAreNotToolFailure:
     """B3: `doctor --deep`'s lint smoke asked "did lint exit 0?", but lint exits
     1 on a WARN verdict (findings). Any project with a single lint warning could
@@ -7051,7 +6847,7 @@ class TestDeepLintFindingsAreNotToolFailure:
 
 
 class TestReporterAcceptsFixHints:
-    """The original crash: `_check_cocotb_targets` hands `_warn` a fix hint, but
+    """The original crash: a check handed `_warn` a fix hint, but
     `_Reporter.warn_` took only a message -> TypeError, aborting `doctor` on any
     cocotb project whose tests.toml names are factory-generated."""
 
@@ -9354,38 +9150,6 @@ def test_deep_doctor_synthesis_legacy_and_malformed(tmp_path):
     )
     assert doctor._synth_deep_report_error("synth", "synth", True, tmp_path) == ""
     assert doctor._synth_deep_report_error("lint", "lint", False, tmp_path) == ""
-
-
-def test_cocotb_select_check_reads_the_qualified_section(tmp_path):
-    booley_dir = _write_project(tmp_path)
-    (booley_dir / "tests.toml").write_text(
-        '["unit#sim_fast"]\nselect = "+t={name}"\n', encoding="utf-8"
-    )
-    project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        booley_dir=booley_dir,
-        booley_toml={},
-        configs_toml={},
-        first_target="sim_fast",
-    )
-    ref = fusesoc_registry.TargetRef(
-        name="sim_fast",
-        vlnv="::unit:0",
-        core_file=tmp_path / "unit.core",
-        eda_tool="verilator",
-        flow="sim",
-        cocotb_module="tb",
-    )
-    failures: list[str] = []
-    doctor._check_cocotb_targets(
-        project,
-        {"sim_fast": ref},
-        lambda _message: None,
-        lambda *_args, **_kwargs: None,
-        lambda _message: None,
-        lambda message, _fix="": failures.append(message),
-    )
-    assert any("`select` plusarg template" in message for message in failures)
 
 
 # =============================================================

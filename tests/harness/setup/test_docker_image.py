@@ -695,7 +695,6 @@ def test_source_step_explains_local_rebuild_after_pull_is_unavailable(
 ) -> None:
     docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
     monkeypatch.setattr(init_docker_image, "_docker_cli_ready", lambda _ctx: True)
-    monkeypatch.setattr(init_docker_image, "_base_image_note", lambda _image: None)
     monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda: False)
     monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
     monkeypatch.setattr(init_docker_image, "_image_build_fingerprint", lambda _root: "fp")

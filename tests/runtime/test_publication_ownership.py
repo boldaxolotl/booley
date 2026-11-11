@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.publication_ownership import PublicationOwnership
@@ -31,7 +31,8 @@ def _worktree(tmp_path: Path, ignore: str) -> tuple[Path, Path]:
     """A Git worktree root with *ignore* as its root ``.gitignore`` and the destination path."""
     root = tmp_path / "wt"
     (root / PREFIX / "goals" / "history").mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True, timeout=30)
+    init = run_bounded_child(["git", "init", "-q"], cwd=root)
+    assert init.returncode == 0, init.stderr
     (root / ".gitignore").write_bytes(ignore.encode())
     return root, root / PREFIX / "goals" / "history" / "g.md"
 

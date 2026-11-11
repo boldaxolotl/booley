@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 from booley.audit.diagnostic_results import DiagnosticFinding, Severity
 from booley.runtime import inspection
@@ -18,23 +17,13 @@ _EXCLUDES_PASS = "Booley files excluded from git (info/exclude)"
 
 
 def _git(root: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "-C", str(root), *args], check=True)
 
 
 def _init_repo(root: Path) -> None:
     """Create a repository with a local identity, independent of host config."""
     root.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "init", "-q", str(root)],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", "-q", str(root)], check=True)
     _git(root, "config", "user.name", "Test User")
     _git(root, "config", "user.email", "test@example.com")
 

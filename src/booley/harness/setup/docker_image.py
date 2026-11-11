@@ -68,9 +68,9 @@ LOCAL_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
 # Booley-SHIPPED sandbox flavors: purpose-built images a project selects by name
 # via ``[sandbox].image``, each ``FROM booley-sandbox`` plus a domain toolchain.
 # They are Booley's images, not the user's: this registry maps each tag to the
-# Dockerfile shipped beside this module in ``booley/data/docker/``. Init's
-# base-image note and Doctor read it to recognise a shipped flavor; the image
-# lifecycle (``booley.harness.image_lifecycle``) builds and refreshes them.
+# Dockerfile shipped beside this module in ``booley/data/docker/``. Doctor
+# reads it to recognise a shipped flavor; the image lifecycle
+# (``booley.harness.image_lifecycle``) builds and refreshes them.
 FLAVOR_IMAGES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
 
 # Docker image label carrying a content hash of the sources baked into the
@@ -372,30 +372,6 @@ def _tag_pulled_image(tag: str, image: str) -> bool:
     return True
 
 
-def _base_image_note(selected_image: str) -> None:
-    """Say why the base is built when the project's own image is something else.
-
-    The Docker-image step always builds ``booley-sandbox``: it is Booley's own
-    base image and a
-    project that selects another one nearly always layers on top of it, so a
-    skip here would just move the staleness one image down. But the step used to
-    announce a 20-minute rebuild of an image the project never runs, with no
-    word of the relationship — which reads as init building the wrong thing.
-    """
-    if not selected_image or selected_image == DOCKER_IMAGE:
-        return
-    if selected_image in FLAVOR_IMAGES:
-        info(
-            f"{DOCKER_IMAGE} is the base this project's [sandbox].image "
-            f"'{selected_image}' layers on — it is built first, that flavor image next"
-        )
-        return
-    info(
-        f"this project runs [sandbox].image '{selected_image}'; {DOCKER_IMAGE} is "
-        "Booley's base image and is kept current regardless"
-    )
-
-
 def _report_incompatible_image(
     ctx: InitContext,
     installed_version: str | None,
@@ -466,18 +442,16 @@ def _prepare_existing_base_image(
 
 def _step_docker_image(
     ctx: InitContext,
-    selected_image: str = "",
     *,
     allow_pull: bool = True,
     rebuild_runtime_base: bool | None = None,
     capacity_plan: DockerBuildPlan | None = None,
 ) -> None:
-    """Build or refresh ``booley-sandbox``; *selected_image* is explanatory only."""
+    """Build or refresh ``booley-sandbox``."""
     ctx.step_banner("Docker image")
     if not _docker_cli_ready(ctx):
         return
 
-    _base_image_note(selected_image)
     exists = _docker_image_exists()
     docker_dir = docker_data_dir()
     booley_root = docker_dir.parent.parent.parent.parent

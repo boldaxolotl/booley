@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import subprocess
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,10 +14,13 @@ import pytest
 
 from booley.audit import host_environment
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.config.host_config import SandboxHostPolicy
+from booley.config.project_config import normalize_tests_toml
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import doctor_stamp, inspection, session_admission, vaporview
+from tests.diagnostic_helpers import _Rec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.harness.test_doctor import (
     _disable_line_ending_stealth,
@@ -312,7 +317,22 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     assert (tmp_path / "AGENTS.md").exists() is (valid and not read_only)
 
 
-@pytest.mark.parametrize("owner", ["line-endings", "interactive-git", "viewer-bridge"])
+def _owner_frame(messages: list[str], owner: str) -> tuple[int, int]:
+    """Indices of the Doctor rows that bracket an owner's rows in the rendered report."""
+    if owner == "cocotb":
+        # Real Doctor rows frame the owner: Targets are enumerated first and the
+        # Target source checks follow, with the owner's rows contiguous between.
+        before = next(
+            i for i, m in enumerate(messages) if m.startswith(".core Targets enumerated")
+        )
+        after = next(
+            i for i, m in enumerate(messages) if m == "sim Target 'sim_fast' TB fileset tagged"
+        )
+        return before, after
+    return messages.index("before-marker"), messages.index("after-marker")
+
+
+@pytest.mark.parametrize("owner", ["line-endings", "interactive-git", "cocotb", "viewer-bridge"])
 def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
     """An owner's report is rendered where the old inline check ran, waivers applied."""
     booley_dir = _write_project(tmp_path)
@@ -332,6 +352,13 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
             doctor,
             "_check_worktree_core_shadow_guard",
             lambda _dir, ok, *_a, **_k: ok("after-marker"),
+        )
+    elif owner == "cocotb":
+        check_id, subject = "cocotb.tb-tag-missing", "sim_fast"
+        monkeypatch.setattr(
+            _cocotb_owner(),
+            "inspect_cocotb_targets",
+            lambda _request: _owner_report(check_id, subject),
         )
     elif owner == "viewer-bridge":
         check_id, subject = "project.git-excludes-missing", ".booley"
@@ -369,12 +396,10 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
 
     messages = [f.message for f in result.findings]
-    before, owned_pass, owned_warn, after = (
-        messages.index("before-marker"),
-        messages.index("owner pass"),
-        messages.index("owner warn"),
-        messages.index("after-marker"),
-    )
+    owned_pass, owned_warn = messages.index("owner pass"), messages.index("owner warn")
+    before, after = _owner_frame(messages, owner)
+    if owner == "cocotb":
+        assert owned_warn == owned_pass + 1
     assert before < owned_pass < owned_warn < after
     waived = result.findings[owned_warn]
     assert (waived.severity, waived.check_id, waived.subject) == (
@@ -437,3 +462,191 @@ def _owner_report(check_id: str, subject: str) -> DiagnosticReport:
             ),
         )
     )
+
+
+_COCOTB_AUDIT_CORE = """\
+CAPI=2:
+name: ::demo:0
+filesets:
+  rtl: {files: [rtl/dut.sv]}
+  tb: {files: [tb/test_a.py], tags: [tb]}
+  tb_untagged: {files: [tb/test_b.py]}
+targets:
+  sim_a:
+    flow: sim
+    flow_options: {tool: verilator, cocotb_module: test_a, booley: {doctor: [sim]}}
+    filesets: [rtl, tb]
+    toplevel: dut
+  sim_b:
+    flow: sim
+    flow_options: {tool: verilator, cocotb_module: test_b}
+    filesets: [rtl, tb_untagged]
+    toplevel: dut
+"""
+
+
+def _cocotb_audit_project(root: Path) -> doctor.ProjectAudit:
+    """A Project with two cocotb Targets that between them earn every cocotb row kind.
+
+    ``sim_a`` has a tagged module that defines only ``test_reset`` yet a
+    qualified tests.toml section names ``test_typo`` too and declares ``select``;
+    ``sim_b`` sits in an untagged fileset and its module is not on disk.
+    """
+    booley_dir = root / ".booley"
+    booley_dir.mkdir()
+    (root / "design.core").write_text(_COCOTB_AUDIT_CORE, encoding="utf-8", newline="\n")
+    (root / "rtl").mkdir()
+    (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+    (root / "tb").mkdir()
+    (root / "tb" / "test_a.py").write_text(
+        "import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    tests_toml = '["demo#sim_a"]\nselect = "+t={name}"\ntests = ["test_reset", "test_typo"]\n'
+    (booley_dir / "tests.toml").write_text(tests_toml, encoding="utf-8", newline="\n")
+    (booley_dir / "doctor-waivers.toml").write_text(
+        'version = 1\n[[waiver]]\ncheck = "cocotb.tb-tag-missing"\nsubject = "sim_b"\n'
+        'reason = "Accepted for this fixture"\npermanent = true\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    return doctor.ProjectAudit(
+        project_root=root,
+        booley_dir=booley_dir,
+        booley_toml={},
+        configs_toml={"x": {}},
+        first_target="x",
+    )
+
+
+def _cocotb_owner():
+    """The cocotb owner module, imported where used."""
+    return importlib.import_module("booley.flows.sim.backends.cocotb_target_checks")
+
+
+def test_cocotb_core_audit_output_is_pinned(tmp_path):
+    """The cocotb rows keep their text, severity, IDs, subjects, order, waiver and exit code.
+
+    The literals were captured from Doctor's own cocotb checks before they moved
+    to their Flow owner and are unchanged by the move.
+    """
+    project = _cocotb_audit_project(tmp_path)
+    reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
+    doctor._run_core_audit(
+        project,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        _note=reporter.note_,
+        _diagnostics=reporter.diagnostics,
+    )
+    exit_code = reporter.finish()
+
+    rows = [(f.severity, f.message, f.fix, f.check_id, f.subject) for f in reporter.findings]
+    last_before = (Severity.PASS, "2 Verilator sim Target(s) trace-capable (own a --exe main)")
+    first_after = (Severity.PASS, "sim Target 'sim_a' TB fileset tagged")
+    start = [row[:2] for row in rows].index(last_before)
+    assert rows[start + 6][:2] == first_after
+    assert rows[start + 1 : start + 6] == [
+        (
+            Severity.FAIL,
+            "cocotb Target 'sim_a' declares a tests.toml `select` plusarg template",
+            "remove `select` — cocotb test selection is the COCOTB_TEST_FILTER env var "
+            "built from the `tests` list (ADR 0034)",
+            None,
+            None,
+        ),
+        (Severity.PASS, "cocotb Target 'sim_a' module file present (test_a.py)", "", None, None),
+        (
+            Severity.WARN,
+            "cocotb Target 'sim_a': tests.toml names not found as functions decorated with "
+            "@cocotb.test in test_a.py: test_typo (static, advisory)",
+            "check the names against the @cocotb.test functions — a mismatch surfaces at "
+            "run time as inconclusive",
+            "cocotb.test-name-missing",
+            "sim_a",
+        ),
+        (
+            Severity.WAIVED,
+            "cocotb Target 'sim_b': the fileset carrying test_b.py is not tagged tags:[tb]",
+            "Accepted for this fixture",
+            "cocotb.tb-tag-missing",
+            "sim_b",
+        ),
+        (
+            Severity.WARN,
+            f"cocotb Target 'sim_b': module file {tmp_path / 'tb' / 'test_b.py'} not found on disk",
+            "author the Python testbench (or fix the fileset path)",
+            "cocotb.module-file-missing",
+            "sim_b",
+        ),
+    ]
+    assert reporter.counts["waived"] == 1
+    assert exit_code == 1
+
+
+def test_core_audit_renders_the_owner_report_unchanged(tmp_path, monkeypatch):
+    """Doctor builds the owner's request, hands over its report once, and adds no cocotb row."""
+    project = _cocotb_audit_project(tmp_path)
+    report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "owner-row"),))
+    requests = []
+
+    def spy(request):
+        requests.append(request)
+        return report
+
+    monkeypatch.setattr(_cocotb_owner(), "inspect_cocotb_targets", spy)
+    rendered = []
+    rec = _Rec()
+    doctor._run_core_audit(
+        project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=rendered.append
+    )
+
+    (request,) = requests
+    assert [target.name for target in request.targets] == ["sim_a", "sim_b"]
+    assert request.tests_sections == normalize_tests_toml(
+        tomllib.loads((project.booley_dir / "tests.toml").read_text(encoding="utf-8"))
+    )
+    # The Test Run plan owner also reports through the same path, after the cocotb owner.
+    assert [item for item in rendered if item is report] == [report]
+    assert rendered[0] is report
+    assert not any(message.startswith("cocotb Target") for _level, message in rec.events)
+
+
+def test_container_tools_ask_the_owner_for_cocotb(tmp_path, monkeypatch):
+    """The conditional cocotb container check is gated by the owner's answer."""
+    booley_dir = _write_project(tmp_path)
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        booley_dir=booley_dir,
+        booley_toml={},
+        configs_toml={},
+        first_target="sim_fast",
+    )
+    asked = []
+
+    def owner_says_yes(project_root):
+        asked.append(project_root)
+        return True
+
+    monkeypatch.setattr(_cocotb_owner(), "project_has_cocotb_target", owner_says_yes)
+    checks = []
+
+    def record(description, argv, fix):
+        checks.append((description, argv, fix))
+
+    doctor._run_container_tool_checks(project, record)
+    assert asked == [project.project_root]
+    assert (
+        "cocotb in container (a Cocotb Target exists)",
+        ["cocotb-config", "--version"],
+        "sandbox image predates cocotb support — rebuild the sandbox image",
+    ) in checks
+
+    asked.clear()
+    checks.clear()
+    doctor._run_container_tool_checks(None, record)
+    assert asked == []
+    assert not any(argv[0] == "cocotb-config" for _description, argv, _fix in checks)

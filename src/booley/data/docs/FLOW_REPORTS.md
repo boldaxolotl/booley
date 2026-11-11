@@ -189,7 +189,7 @@ unavailable` instead; the verdict and Criteria are unaffected.
 | `passed`, `inconclusive`, `complete` | Target verdict, whether it was inconclusive, and whether the run finished writing its results. `complete: false` means the run was interrupted while publishing and can be resumed. |
 | `tests[]` | One entry per test (see below). |
 | `test_runs[]` | One row per Test Run: `name`, `test`, `variant`, `seed`, `args`, `env`, `fingerprint`, and `grade` (`pass`, `fail`, `error`, or `inconclusive`). `test` is null for the unnamed invocation; `variant` and `seed` are null when the run has none. |
-| `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`, shaped `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). Per-Test-Run logs and waveforms live in the Campaign's work items, not in this file. |
+| `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`, shaped `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). |
 | `coverage_campaign`, `collection`, `evaluation` | Coverage runs only: a reference (same shape as `campaign_manifest`) to the Target's `coverage.json` and the collection and evaluation statuses. |
 
 Each `tests[]` entry has `name` (`default` for an unnamed test), `passed`,
@@ -197,6 +197,13 @@ nullable `cycles`, `sva_errors`, `timed_out`, `execution`, `failure_kind`,
 and `error_tail`.
 Every `tests[]` entry that observed a Test Run also names it: `test_run` (the
 Test Run name, `test[+variant][@seed]`), `variant`, `seed`, and `fingerprint`.
+Each entry also has `log` and `trace`: the Test Run's simulator log and, for a
+`--trace` run, its waveform, as POSIX paths relative to the directory holding
+this `simulation.json` (so a copied run directory keeps them valid), or `null`
+when the file does not exist (a run that never started a simulator has no log).
+They come from the evidence of the attempt the Campaign accepted for the Test
+Run; the Test Runs of one Cocotb batch share its files. The `test_runs[]` rows
+do not carry them.
 
 Elaboration checks write the same file with `mode` set to `elab_only` or
 `elab_only_standalone`, and these fields:
@@ -341,10 +348,11 @@ others depend on. Run it as
 with one of the options below. The algorithm is in
 FLOW_IMPLEMENTATION.md (host doc, not shipped).
 
-- **`--native-target <target>`** removes that Target's `native/` directory (raw and
-  merged Verilator databases). `coverage.json` and the point store stay, so the
-  Campaign can still be analyzed. `availability.json` in the Target directory
-  records the pruning.
+- **`--native-target <target>`** removes the `native/` directory (raw and merged
+  Verilator databases) of the Coverage Campaign that the Target's `coverage.json`
+  references. `coverage.json` and the point store stay, so the
+  Campaign can still be analyzed. `availability.json` in that
+  directory records the pruning.
 - **`--full`** removes the whole run. It leaves an empty `.pruned-N` marker so
   the run number is not reused. It refuses when later resumed runs depend on
   this one, unless `--include-dependents` is given.
