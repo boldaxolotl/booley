@@ -731,7 +731,7 @@ What goes here:
   write `ignore_native_cores = true`; otherwise omit it (default false). This
   switch is valid only with `enabled = true`.
 - **Agent backend — preserve row 19 exactly.** `booley init` has already written
-  explicit `provider` and `auth` values. Carry them forward unchanged; for a
+  explicit `default` (older Projects: `provider`) and `auth` values. Carry them forward unchanged; for a
   Project with a missing field, write only the missing field settled during planning. Preserve
   an existing `[agent.git]` identity unchanged; it controls the default author
   and committer for Interactive and Goal Mode checkouts.

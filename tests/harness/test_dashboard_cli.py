@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.harness.dashboard import command
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -242,12 +243,11 @@ def _dashboard_child_env():
 
 
 def test_dashboard_label_sets_linux_proc_identity():
-    import subprocess
     import sys
 
     if sys.platform != "linux":
         pytest.skip("Linux /proc process identity is required")
-    child = subprocess.run(
+    child = run_bounded_child(
         [
             sys.executable,
             "-c",
@@ -261,8 +261,6 @@ def test_dashboard_label_sets_linux_proc_identity():
             "restore() if restore else None",
         ],
         env=_dashboard_child_env(),
-        capture_output=True,
-        text=True,
         timeout=10,
         check=True,
     )
@@ -362,6 +360,7 @@ def _run_dashboard_pty(tmp_path):
     child = None
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        # Kept on subprocess.Popen: PTY child the test drives and signals.
         child = subprocess.Popen(
             [sys.executable, "-c", _PTY_DASHBOARD, str(tmp_path)],
             stdin=slave,
@@ -376,6 +375,7 @@ def _run_dashboard_pty(tmp_path):
         if child is not None:
             if child.poll() is None:
                 child.kill()
+            # Kept on subprocess.Popen: reaping the PTY child the test drives.
             child.wait(timeout=2)
         os.close(master)
         if slave is not None:

@@ -233,6 +233,7 @@ def run_child_until_signalled(project, tmp_path, signum):
             time.sleep(0.02)
         assert marker.exists(), "child never reached its run"
         child.send_signal(signum)
+        # Kept on subprocess.Popen: test drives the process and signals it
         return child.wait(timeout=CHILD_TIMEOUT_S)
     finally:
         if child.poll() is None:
