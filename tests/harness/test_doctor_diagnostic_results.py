@@ -15,7 +15,7 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.config.host_config import SandboxHostPolicy
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
-from booley.runtime import doctor_stamp, inspection, session_admission
+from booley.runtime import doctor_stamp, inspection, session_admission, vaporview
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.harness.test_doctor import (
     _disable_line_ending_stealth,
@@ -312,7 +312,7 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     assert (tmp_path / "AGENTS.md").exists() is (valid and not read_only)
 
 
-@pytest.mark.parametrize("owner", ["line-endings", "interactive-git"])
+@pytest.mark.parametrize("owner", ["line-endings", "interactive-git", "viewer-bridge"])
 def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
     """An owner's report is rendered where the old inline check ran, waivers applied."""
     booley_dir = _write_project(tmp_path)
@@ -332,6 +332,22 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
             doctor,
             "_check_worktree_core_shadow_guard",
             lambda _dir, ok, *_a, **_k: ok("after-marker"),
+        )
+    elif owner == "viewer-bridge":
+        check_id, subject = "project.git-excludes-missing", ".booley"
+        requests: list[vaporview.ViewerBridgeRequest] = []
+
+        def inspect_bridge(request):
+            requests.append(request)
+            return _owner_report(check_id, subject)
+
+        monkeypatch.setattr(vaporview, "inspect_viewer_bridge", inspect_bridge)
+        # Public owner calls run immediately before and after the Viewer Bridge.
+        monkeypatch.setattr(
+            inspection, "inspect_interactive_git", lambda *_a, **_k: marker("before-marker")
+        )
+        monkeypatch.setattr(
+            inspection, "inspect_retained_resources", lambda *_a, **_k: marker("after-marker")
         )
     else:
         check_id, subject = "project.git-excludes-missing", ".booley"
@@ -367,6 +383,8 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
         subject,
     )
     assert result.exit_code == 0
+    if owner == "viewer-bridge":
+        assert requests == [vaporview.ViewerBridgeRequest(tmp_path, "docker")]
 
 
 def _owner_report(check_id: str, subject: str) -> DiagnosticReport:

@@ -465,7 +465,13 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
 
 
 @pytest.mark.parametrize(
-    "owner", ["harness.host_diagnostics", "harness.setup.readiness", "runtime.inspection"]
+    "owner",
+    [
+        "harness.host_diagnostics",
+        "harness.setup.readiness",
+        "runtime.inspection",
+        "runtime.vaporview",
+    ],
 )
 @pytest.mark.parametrize(
     "target",
