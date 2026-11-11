@@ -76,16 +76,6 @@ class JobSnapshot:
     diagnostics: tuple[str, ...] = ()
 
 
-def target_arg(argv: list[str]) -> str | None:
-    """Read the producer's Target once, without inventing one for legacy records."""
-    for index, word in enumerate(argv):
-        if word == "--target":
-            return argv[index + 1] if index + 1 < len(argv) else None
-        if word.startswith("--target="):
-            return word.removeprefix("--target=")
-    return None
-
-
 def retained_job_roots(
     booley_dir: Path, records: Sequence[GoalRecord], *, interactive_root: Path | None = None
 ) -> tuple[Path, ...]:
@@ -225,7 +215,7 @@ def _job_log(path: Path | None) -> str:
 
 
 def _configured_tool(rec: job_records.JobRecord, catalogs: dict[str, TargetCatalog | None]) -> str:
-    target = target_arg(rec.argv)
+    target = job_records.target_arg(rec.argv)
     if rec.status != job_records.STATUS_RUNNING or not rec.work_dir or target is None:
         return ""
     try:

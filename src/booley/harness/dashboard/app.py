@@ -29,7 +29,7 @@ from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
 from booley.harness.dashboard import sessions
 from booley.harness.dashboard.footer import BackTarget, footer_hints
-from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView, target_arg
+from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
@@ -57,7 +57,7 @@ from booley.presentation.report_results import (
 )
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
-from booley.runtime.job_records import parse_stamp
+from booley.runtime.job_records import parse_stamp, target_arg
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import (
     UNKNOWN,
