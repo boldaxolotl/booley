@@ -78,7 +78,7 @@ def test_human_sinks_use_adaptive_durations():
 
 def _one_probe_recipe():
     """A single-module, single-frontend (Verilator) standalone recipe."""
-    probe = _StandaloneProbe("top", "top.sv", "verilator", False, ())
+    probe = _StandaloneProbe("top", "top.sv", "verilator", (), False, ())
     return _StandalonePlanRecipe(
         probes=(probe,),
         shared=(),

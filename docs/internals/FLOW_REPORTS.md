@@ -212,8 +212,10 @@ For `elab_only_standalone`, `report.json` also has `detail.standalone` with
 `modules_checked`, `shared_files`, `frontend`, `probes`, `failures`, any
 `unparsed` modules, and the log path. `frontend` is the `+`-joined probe
 frontends (`iverilog+verilator` for a mixed sweep, the plain name otherwise).
-`probes` groups the `{module, file}` pairs by `{frontend, fallback}`. Each
-`failures` and `unparsed` entry also carries `frontend` and `fallback`.
+`probes` groups the `{module, file}` pairs by `{frontend, dialect_flags,
+fallback}`; `dialect_flags` lists the language-dialect flags the probe ran with
+(empty for the compiler's default dialect). Each `failures` and `unparsed` entry
+also carries `frontend`, `dialect_flags` and `fallback`.
 
 ### Coverage Campaign files
 

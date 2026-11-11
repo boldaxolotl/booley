@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -77,9 +79,11 @@ def _stub_sources(
     *,
     tb: list[str] | None = None,
     eda_tool: str | None = "icarus",
-    targets: dict[str, tuple[list[str], str | None]] | None = None,
+    targets: dict[str, tuple[Any, ...]] | None = None,
 ) -> None:
-    """Stub Target resolution: ``targets`` maps name -> (rtl files, simulator).
+    """Stub Target resolution: ``targets`` maps name -> (rtl files, simulator[, options]).
+
+    The optional third element is ``{"flow_options": {...}, "tool_options": {...}}``.
 
     Without ``targets`` a single ``sim_dut`` Target simulating with *eda_tool*
     covers *rtl*. The simulator is never a ``MagicMock``: the probe selection
@@ -90,9 +94,16 @@ def _stub_sources(
         SimulateFlow, "_target_handle", lambda _self, name: SimpleNamespace(identity=name)
     )
 
-    def inspect(handle: SimpleNamespace) -> MagicMock:
-        files, tool = per_target[handle.identity]
-        return MagicMock(rtl_files=tuple(files), tb_files=tuple(tb or []), eda_tool=tool)
+    def inspect(handle: SimpleNamespace) -> SimpleNamespace:
+        files, tool, *rest = per_target[handle.identity]
+        options = rest[0] if rest else {}
+        return SimpleNamespace(
+            rtl_files=tuple(files),
+            tb_files=tuple(tb or []),
+            eda_tool=tool,
+            flow_options=options.get("flow_options", {}),
+            tool_options=options.get("tool_options", {}),
+        )
 
     monkeypatch.setattr(
         standalone_mod.TargetCatalog,
@@ -195,6 +206,7 @@ class TestStandaloneSweep:
         assert outcome.detail["probes"] == [
             {
                 "frontend": "iverilog",
+                "dialect_flags": [],
                 "fallback": False,
                 "modules": [
                     {"module": "alu", "file": "rtl/alu.sv"},
@@ -233,8 +245,8 @@ class TestStandaloneSweep:
 
         failures, unparsed, _logs, error = flow._run_standalone_probes(
             (
-                standalone_mod._StandaloneProbe("one", "one.sv", "iverilog", False, ()),
-                standalone_mod._StandaloneProbe("two", "two.sv", "iverilog", False, ()),
+                standalone_mod._StandaloneProbe("one", "one.sv", "iverilog", (), False, ()),
+                standalone_mod._StandaloneProbe("two", "two.sv", "iverilog", (), False, ()),
             ),
             primary_ok=True,
         )
@@ -259,7 +271,7 @@ class TestStandaloneSweep:
         monkeypatch.setattr(flow, "_run_standalone_probe", probe)
 
         failures, unparsed, logs, error = flow._run_standalone_probes(
-            (standalone_mod._StandaloneProbe("late", "late.sv", "iverilog", False, ()),),
+            (standalone_mod._StandaloneProbe("late", "late.sv", "iverilog", (), False, ()),),
             primary_ok=True,
         )
 
@@ -276,7 +288,7 @@ class TestStandaloneSweep:
         recipe = standalone_mod._StandalonePlanRecipe(
             probes=(
                 standalone_mod._StandaloneProbe(
-                    "top", "rtl/top.sv", "iverilog", False, ("rtl/pkg.sv",)
+                    "top", "rtl/top.sv", "iverilog", (), False, ("rtl/pkg.sv",)
                 ),
             ),
             shared=("rtl/pkg.sv",),
@@ -479,12 +491,14 @@ class TestStandaloneFrontend:
             "rtl/alu.sv",
             ["rtl/pkg.sv"],
             "verilator",
+            (),
         )
         iverilog = flow._standalone_compile_command(
             "alu",
             "rtl/alu.sv",
             ["rtl/pkg.sv"],
             "iverilog",
+            ("-g2005",),
         )
 
         assert verilator == [
@@ -496,8 +510,16 @@ class TestStandaloneFrontend:
             "rtl/pkg.sv",
             "rtl/alu.sv",
         ]
-        assert iverilog[:4] == ["iverilog", "-g2012", "-o", os.devnull]
-        assert iverilog[-2:] == ["rtl/pkg.sv", "rtl/alu.sv"]
+        assert iverilog == [
+            "iverilog",
+            "-g2005",
+            "-o",
+            os.devnull,
+            "-s",
+            "alu",
+            "rtl/pkg.sv",
+            "rtl/alu.sv",
+        ]
 
 
 def _run_sweep(flow: SimulateFlow, targets: list[str], *, primary_ok: bool = True):
@@ -658,6 +680,8 @@ class TestProbeFrontendSelection:
         outcome = _run_sweep(flow, ["sim_dut"], primary_ok=primary_ok)
 
         assert [command[0] for command in commands] == [compiler]
+        # A fallback probe keeps its own defaults, never a Target's flags.
+        assert commands[0][1] == ("-g2012" if compiler == "iverilog" else "--lint-only")
         if primary_ok:
             assert outcome.eda_tool_failed
             assert outcome.detail["unparsed"][0]["fallback"] is True
@@ -713,14 +737,300 @@ class TestProbeFrontendSelection:
         outcome = _run_sweep(flow, ["sim_dut"])
 
         log = (tmp_path / outcome.detail["log"]).read_text(encoding="utf-8")
-        assert "# standalone probe: alu (rtl/alu.sv) via verilator (fallback)" in log
+        assert (
+            "# standalone probe: alu (rtl/alu.sv) via verilator (default dialect) (fallback)"
+            in log
+        )
         assert outcome.detail["probes"] == [
             {
                 "frontend": "verilator",
+                "dialect_flags": [],
                 "fallback": True,
                 "modules": [{"module": "alu", "file": "rtl/alu.sv"}],
             }
         ]
+
+
+# SystemVerilog keywords used as plain Verilog-2005 identifiers: valid under
+# the Verilog-2005 generation, a syntax error under SystemVerilog.
+_KEYWORD_IDENTIFIER_RTL = (
+    "module kw(input wire [7:0] bit, output wire [7:0] byte);\n"
+    "  wire [7:0] int = bit;\n"
+    "  assign byte = int;\n"
+    "endmodule\n"
+)
+
+
+def _stub_dialect_compilers(
+    monkeypatch: pytest.MonkeyPatch, flow: SimulateFlow
+) -> list[list[str]]:
+    """Emulate Icarus/Verilator on keyword-identifier RTL; capture each argv.
+
+    Measured behavior: the RTL is a syntax error unless the command selects the
+    Verilog-2005 generation (Icarus: no ``-g2012``; Verilator: an explicit
+    ``--default-language 1364-2005``).
+    """
+    captured: list[list[str]] = []
+
+    def execute(command: list[str], *, timeout: int) -> SubprocessResult:
+        captured.append(command)
+        if command[0] == "iverilog":
+            sv_only = "-g2012" in command
+        else:
+            sv_only = not any(
+                first == "--default-language" and second == "1364-2005"
+                for first, second in itertools.pairwise(command)
+            )
+        if sv_only:
+            return SubprocessResult(returncode=1, stderr="rtl/kw.v:1: syntax error\n")
+        return SubprocessResult(returncode=0)
+
+    monkeypatch.setattr(flow, "_execute", execute)
+    return captured
+
+
+def _dialect_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    targets: dict[str, tuple[Any, ...]],
+    extra_files: dict[str, str] | None = None,
+) -> SimulateFlow:
+    """A project whose ``rtl/kw.v`` keyword-identifier module is shared by *targets*."""
+    _write_sources(tmp_path, {"rtl/kw.v": _KEYWORD_IDENTIFIER_RTL, **(extra_files or {})})
+    _stub_sources(monkeypatch, [], targets=targets)
+    _stub_which(monkeypatch, True)
+    return _make_flow(tmp_path)
+
+
+class TestDialectFlagExtraction:
+    """Which authored compiler options count as language-dialect flags."""
+
+    @pytest.mark.parametrize(
+        ("frontend", "options", "expected"),
+        [
+            pytest.param("iverilog", ["-g2005", "-Wall", "-DX=1"], ("-g2005",), id="icarus"),
+            pytest.param("iverilog", ["-g", "2012"], ("-g", "2012"), id="icarus_bare_g"),
+            pytest.param("iverilog", ["-g2005-sv -g2012"], ("-g2005-sv", "-g2012"), id="order"),
+            pytest.param("iverilog", ["-g'unterminated"], ("-g'unterminated",), id="no_shlex"),
+            pytest.param("iverilog", "-g2005", (), id="not_a_list"),
+            pytest.param("verilator", ["-DX", "+libext+.v", "+incdir+i", "-Wall"], (), id="none"),
+            pytest.param(
+                "verilator",
+                ["-language 1800-2012", "+systemverilogext+sv", "-y", "lib"],
+                ("-language", "1800-2012", "+systemverilogext+sv"),
+                id="verilator_single_dash",
+            ),
+            pytest.param("verilator", ["--language"], ("--language",), id="dangling_value"),
+            pytest.param("verilator", ["-g2012"], (), id="verilator_ignores_icarus_flag"),
+            pytest.param(
+                "iverilog", ["--language", "1364-2005"], (), id="icarus_ignores_verilator"
+            ),
+        ],
+    )
+    def test_only_dialect_flags_are_kept(self, frontend, options, expected) -> None:
+        assert standalone_mod._dialect_flags(frontend, options) == expected
+
+    def test_modern_options_precede_legacy_options(self) -> None:
+        inspection = SimpleNamespace(
+            eda_tool="icarus",
+            flow_options={"iverilog_options": ["-g2005"]},
+            tool_options={"iverilog_options": ["-g2012"], "other": 1},
+        )
+
+        assert standalone_mod._target_dialect(inspection) == standalone_mod._ProbeDialect(
+            "iverilog", ("-g2005", "-g2012")
+        )
+
+    def test_undrivable_simulator_has_no_dialect(self) -> None:
+        inspection = SimpleNamespace(eda_tool="xcelium", flow_options={}, tool_options={})
+
+        assert standalone_mod._target_dialect(inspection) is None
+
+
+class TestProbeDialectFlags:
+    """Issue #3392: the probe uses each Target's own language-dialect flags."""
+
+    @pytest.mark.parametrize(
+        ("options", "argv_prefix", "passes"),
+        [
+            pytest.param(
+                {"flow_options": {"iverilog_options": ["-g2005", "-Wall"]}},
+                ["iverilog", "-g2005"],
+                True,
+                id="verilog2005",
+            ),
+            pytest.param(
+                {"flow_options": {"iverilog_options": ["-Wall"]}},
+                ["iverilog"],
+                True,
+                id="no_generation_flag",
+            ),
+            pytest.param(
+                {"tool_options": {"iverilog_options": ["-g2005"]}},
+                ["iverilog", "-g2005"],
+                True,
+                id="legacy_tool_options",
+            ),
+            pytest.param(
+                {"flow_options": {"iverilog_options": ["-g2012"]}},
+                ["iverilog", "-g2012"],
+                False,
+                id="systemverilog",
+            ),
+        ],
+    )
+    def test_icarus_probe_uses_target_generation_flags(
+        self, tmp_path, monkeypatch, options, argv_prefix, passes
+    ) -> None:
+        flow = _dialect_project(tmp_path, monkeypatch, {"ice": (["rtl/kw.v"], "icarus", options)})
+        commands = _stub_dialect_compilers(monkeypatch, flow)
+
+        outcome = _run_sweep(flow, ["ice"])
+
+        assert outcome.passed is passes
+        assert commands == [[*argv_prefix, "-o", os.devnull, "-s", "kw", "rtl/kw.v"]]
+        if not passes:
+            assert outcome.detail["failures"][0]["dialect_flags"] == ["-g2012"]
+
+    @pytest.mark.parametrize(
+        "verilator_options",
+        [
+            pytest.param(
+                ["--default-language 1364-2005", "+1364-2005ext+v", "--timing"],
+                id="one_entry",
+            ),
+            pytest.param(
+                ["--default-language", "1364-2005", "+1364-2005ext+v", "--timing"],
+                id="split_entries",
+            ),
+        ],
+    )
+    def test_verilator_probe_honors_target_language_flags(
+        self, tmp_path, monkeypatch, verilator_options
+    ) -> None:
+        options = {"flow_options": {"verilator_options": verilator_options}}
+        flow = _dialect_project(
+            tmp_path, monkeypatch, {"ver": (["rtl/kw.v"], "verilator", options)}
+        )
+        commands = _stub_dialect_compilers(monkeypatch, flow)
+
+        outcome = _run_sweep(flow, ["ver"])
+
+        assert outcome.passed
+        assert commands == [
+            [
+                "verilator",
+                "--lint-only",
+                "-Wno-fatal",
+                "--default-language",
+                "1364-2005",
+                "+1364-2005ext+v",
+                "--top-module",
+                "kw",
+                "rtl/kw.v",
+            ]
+        ]
+
+    def test_target_defines_and_include_paths_never_reach_probe(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Guard, not the red test: defines/includes are not dialect flags."""
+        icarus = {
+            "flow_options": {
+                "iverilog_options": ["-g2012", "-DFOO=1", "-I", "inc", "-Iinc2", "-y", "lib"]
+            }
+        }
+        verilator = {
+            "flow_options": {
+                "verilator_options": [
+                    "-DFOO",
+                    "+define+BAR=1",
+                    "+incdir+inc",
+                    "-Iinc",
+                    "+libext+.v",
+                ]
+            }
+        }
+        flow = _dialect_project(
+            tmp_path,
+            monkeypatch,
+            {
+                "ice": (["rtl/kw.v"], "icarus", icarus),
+                "ver": (["rtl/kw.v"], "verilator", verilator),
+            },
+        )
+        commands = _stub_dialect_compilers(monkeypatch, flow)
+
+        _run_sweep(flow, ["ice", "ver"])
+
+        assert sorted(commands) == [
+            ["iverilog", "-g2012", "-o", os.devnull, "-s", "kw", "rtl/kw.v"],
+            ["verilator", "--lint-only", "-Wno-fatal", "--top-module", "kw", "rtl/kw.v"],
+        ]
+
+    def test_module_shared_by_different_dialects_probes_each_set(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        def icarus(*flags: str) -> dict[str, Any]:
+            return {"flow_options": {"iverilog_options": list(flags)}}
+
+        flow = _dialect_project(
+            tmp_path,
+            monkeypatch,
+            {
+                "v2005": (["rtl/kw.v"], "icarus", icarus("-g2005")),
+                "sv_a": (["rtl/pkg.sv", "rtl/kw.v"], "icarus", icarus("-g2012")),
+                "sv_b": (["rtl/kw.v"], "icarus", icarus("-g2012")),
+            },
+            extra_files={"rtl/pkg.sv": "package pkg; endpackage\n"},
+        )
+        commands = _stub_dialect_compilers(monkeypatch, flow)
+
+        outcome = _run_sweep(flow, ["v2005", "sv_a", "sv_b"])
+
+        assert sorted(commands) == [
+            ["iverilog", "-g2005", "-o", os.devnull, "-s", "kw", "rtl/kw.v"],
+            ["iverilog", "-g2012", "-o", os.devnull, "-s", "kw", "rtl/pkg.sv", "rtl/kw.v"],
+        ]
+        assert not outcome.passed
+        assert "standalone: 1/1 modules FAIL" in outcome.display
+        assert [(p["frontend"], p["dialect_flags"]) for p in outcome.detail["probes"]] == [
+            ("iverilog", ["-g2005"]),
+            ("iverilog", ["-g2012"]),
+        ]
+
+    def test_dialect_flags_named_in_plan_and_report(self, tmp_path, monkeypatch) -> None:
+        options = {"flow_options": {"iverilog_options": ["-g2012"]}}
+        flow = _dialect_project(
+            tmp_path,
+            monkeypatch,
+            {
+                "sv": (["rtl/kw.v"], "icarus", options),
+                "ver": (["rtl/kw.v"], "verilator"),
+            },
+        )
+
+        unit, error = flow._planned_standalone_unit(["sv", "ver"])
+
+        assert error is None
+        assert unit is not None
+        sources = unit.recipe["module_sources"]
+        assert {(e["frontend"], tuple(e["dialect_flags"])) for e in sources} == {
+            ("iverilog", ("-g2012",)),
+            ("verilator", ()),
+        }
+        assert {command.argv[0]: command.argv[1] for command in unit.commands}["iverilog"] == (
+            "-g2012"
+        )
+
+        _stub_dialect_compilers(monkeypatch, flow)
+        outcome = _run_sweep(flow, ["sv", "ver"])
+
+        console = "\n".join(outcome.lines)
+        assert "kw (rtl/kw.v) via iverilog -g2012:" in console
+        log = (tmp_path / outcome.detail["log"]).read_text(encoding="utf-8")
+        assert "# standalone probe: kw (rtl/kw.v) via iverilog -g2012\n" in log
+        assert "# standalone probe: kw (rtl/kw.v) via verilator (default dialect)\n" in log
 
 
 @pytest.mark.parametrize(

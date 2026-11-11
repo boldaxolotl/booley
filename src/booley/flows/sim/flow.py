@@ -4533,6 +4533,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         "module": probe.module,
                         "source": probe.file,
                         "frontend": probe.frontend,
+                        "dialect_flags": list(probe.flags),
                         "fallback": probe.fallback,
                         "shared_sources": list(probe.prereqs),
                     }
