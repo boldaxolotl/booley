@@ -289,7 +289,7 @@ def test_versioned_booley_directory_exported_at_committed_head(
 def test_filesystem_failure_is_a_commit_export_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.runtime import commit_export
+    from booley.runtime.commit_export import CommitExportError, export_commit
 
     repo = new_repository(tmp_path / "repo")
     write(repo / "a.v", "x")
@@ -298,10 +298,10 @@ def test_filesystem_failure_is_a_commit_export_error(
     def fail(*_args: object) -> None:
         raise PermissionError("read-only destination")
 
-    monkeypatch.setattr(commit_export, "materialize_tree", fail)
+    monkeypatch.setattr("booley.runtime.commit_export.materialize_tree", fail)
 
-    with pytest.raises(commit_export.CommitExportError, match="read-only destination"):
-        commit_export.export_commit(repo, head, tmp_path / "out")
+    with pytest.raises(CommitExportError, match="read-only destination"):
+        export_commit(repo, head, tmp_path / "out")
 
     assert not (tmp_path / "out").exists()
 
