@@ -7,7 +7,6 @@ import copy
 import inspect
 import re
 import shlex
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,6 +24,7 @@ from booley.flows.endpoint_cli import human_endpoint_parser
 from booley.harness import booley as cli
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
+from tests.subprocess_budget import run_bounded_child
 
 # Internal vocabulary that must not leak into human help.
 BANNED = re.compile(r"\bADR \d+|\bMCP\b|\bendpoint|mode=elab_only", re.IGNORECASE)
@@ -279,7 +279,7 @@ def test_help_from_the_booley_entry_point(
     """The wording reaches a person who types the command inside a Project."""
     for name in ("RTL_PROJECT_ROOT", "BOOLEY_DIR", INVOCATION_ORIGIN_ENV):
         monkeypatch.delenv(name, raising=False)
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)

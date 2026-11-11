@@ -48,6 +48,7 @@ from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -5162,13 +5163,10 @@ def _linked_project(tmp_path, monkeypatch, *, external=False, sandbox_pointer=Fa
             "initial",
         ],
     ):
-        subprocess.run(argv, check=True, capture_output=True, timeout=30)
+        run_bounded_child(argv, check=True)
     linked = tmp_path / "linked" if external else data / "worktrees" / "goal"
-    subprocess.run(
-        ["git", "-C", str(root), "worktree", "add", "--detach", str(linked)],
-        check=True,
-        capture_output=True,
-        timeout=30,
+    run_bounded_child(
+        ["git", "-C", str(root), "worktree", "add", "--detach", str(linked)], check=True
     )
     if sandbox_pointer:
         # A Sandbox-created worktree records both Git pointers as container paths.
