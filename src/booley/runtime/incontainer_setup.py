@@ -333,9 +333,7 @@ def _validate_codex_shape(parsed):
         if table in parsed and not isinstance(parsed[table], dict):
             raise ValueError(f"{table} must be a table")
     _require_project_tables(parsed)
-    if "suppress_unstable_features_warning" in parsed and not isinstance(
-        parsed["suppress_unstable_features_warning"], bool
-    ):
+    if not isinstance(parsed.get("suppress_unstable_features_warning", True), bool):
         raise ValueError("suppress_unstable_features_warning must be a boolean")
 
 
@@ -424,6 +422,9 @@ def _set_codex_table_key(parent, table: str, key: str, value) -> None:
     if table not in parent:
         parent[table] = editor.table()
     container = parent[table]
+    if isinstance(container, editor.container.OutOfOrderTableProxy) and key not in container:
+        # A split table: its one ``[table]`` header section takes a new key, first.
+        container = next((s for s in container._tables if not s.is_super_table()), container)
     flat = isinstance(container, (editor.items.InlineTable, editor.container.OutOfOrderTableProxy))
     if key in container or flat or not container.value.body:
         container[key] = value
@@ -917,7 +918,7 @@ def _desired_provider(provider_toml: str) -> dict:
     return _codex_editor().parse(provider_toml).unwrap()["model_providers"][GATEWAY_PROVIDER_ID]
 
 
-def _with_gateway_settings(document, provider_toml: str, model_pin: str | None) -> None:
+def _add_gateway_settings(document, provider_toml: str, model_pin: str | None) -> None:
     """Add the owned provider table and the set-if-absent keys to *document*."""
     from booley.config.gateway import GATEWAY_TOKEN_ENV
 
@@ -1011,7 +1012,7 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
     provider_toml, model_pin = inputs
     existing, document = _parse_codex_config(path)
     try:
-        _with_gateway_settings(document, provider_toml, model_pin)
+        _add_gateway_settings(document, provider_toml, model_pin)
         updated = document.as_string()
         data = _parse_codex_config(path, updated)[1].unwrap()
     except (ValueError, _codex_editor().exceptions.TOMLKitError):  # a layout we cannot extend

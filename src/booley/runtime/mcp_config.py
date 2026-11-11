@@ -91,10 +91,8 @@ def _codex_editor() -> ModuleType:
     try:
         import tomlkit
 
-        match = re.match(r"(\d+)\.(\d+)\.(\d+)", tomlkit.__version__)
-        if match is None:
-            raise ValueError(f"tomlkit version {tomlkit.__version__!r} is unparseable")
-        if tuple(map(int, match.groups())) < (0, 15, 2):  # the pin in pyproject.toml
+        # The leading major.minor.patch against the pin in pyproject.toml; none is too old.
+        if tuple(map(int, re.findall(r"\d+", tomlkit.__version__)[:3])) < (0, 15, 2):
             raise ValueError(f"tomlkit {tomlkit.__version__} is older than the pinned minimum")
     except Exception as exc:  # Installation failures only; user input is parsed elsewhere.
         raise RuntimeError(

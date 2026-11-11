@@ -788,7 +788,7 @@ class TestRegister:
 _FORM_TEMPLATES = {
     "dotted": "TBL.other=true\nTBL.KEY=false\n",
     "section": '["TBL"] # keep header\nother=true\n"KEY"=false # keep choice\n',
-    "split": "[TBL]\nother=true\n[other]\nx=1\n[TBL.sub]\ny=2\n",
+    "split": "[TBL]\nother=true\n# about other\n[other]\nx=1\n[TBL.sub]\ny=2\n",
     "inline": 'TBL = {other = {text = "a,b=}", values = [1, 2]}, KEY = false} # keep header\n',
     "inline-toml11": 'TBL = {\n # before\n other = {text="{a,b}", values=[1,2]}, # between\n}\n',
 }
@@ -851,7 +851,7 @@ for _table, _key in (("features", "mcp_2026_07_28"), ("notice", "hide_full_acces
     for _name, _template in _FORM_TEMPLATES.items():
         _CODEX_FORMS[f"{_table}-{_name}"] = (
             _template.replace("TBL", _table).replace("KEY", _key),
-            (),
+            ("# about other\n[other]",) if _name == "split" else (),
         )
 
 
