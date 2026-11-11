@@ -281,6 +281,38 @@ made only when the main checkout is taken, so a lone session behaves as before.
 - Run from inside an existing linked worktree, `booley chat` starts there and
   creates nothing.
 
+When the agent of a worktree session exits and you are still at the terminal,
+`booley chat` asks whether to keep or discard the worktree. The question lists
+the work that is not in the main checkout yet: uncommitted changes in the
+worktree and in its Paired Checkout, and the number of commits on each of its
+branches that main lacks (Git-ignored files are not counted):
+
+```text
+Session S3 has ended. Worktree s3: <path>
+Work not in main yet:
+  - 2 uncommitted change(s) in the worktree
+  - 3 commit(s) on booley/s3 not in main
+Discard deletes the uncommitted changes and keeps the branches. Booley never
+merges: merge what you need first.
+Keep or discard worktree s3? [K/d]
+```
+
+Enter keeps it. Discard removes the worktree, the same as
+`booley worktree rm s3`, and keeps its branches, so committed work stays
+reachable. Booley never merges anything for you. If the removal is refused, for
+example because the agent is still running somewhere or a Goal is active,
+Booley shows why and asks a second time before it removes the worktree anyway.
+A session in the main checkout gets no question.
+
+Booley keeps the worktree without asking, and prints `Kept worktree s3: <path>`,
+when nobody can answer: output goes to a pipe or a file, the terminal was
+closed, or the agent was stopped by a signal. A kept worktree is normal; find it
+with `booley worktree list` and remove it with `booley worktree rm`.
+
+Every `booley chat` launch also runs `booley worktree gc` first and prints only
+the worktrees it removed, so idle ones do not pile up. See
+[Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+
 Put both options before any arguments meant for the agent CLI. Claude Code's
 own `--worktree` still goes to the agent.
 
