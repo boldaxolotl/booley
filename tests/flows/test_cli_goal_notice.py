@@ -247,8 +247,8 @@ def test_store_selection_matches_actual_worktree(
 @pytest.mark.parametrize("damage", ["corrupt", "identity"])
 def test_lookup_failures_are_read_only_advisories(goal_mode, capsys, damage):
     from booley.goals.paths import record_paths
-    from booley.goals.store import REPOSITORY_ID_FILE
     from booley.harness.cli_goal_notice import warn_cli_goal_recording
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     if damage == "corrupt":
         record_paths(goal_mode.control, goal_mode.record.id).record_file.write_text("broken")
@@ -433,8 +433,8 @@ def test_foreign_store_does_not_require_identity_for_unrelated_checkout(
 def test_malformed_identity_is_not_a_foreign_store(goal_mode, capsys):
     import shutil
 
-    from booley.goals.store import REPOSITORY_ID_FILE
     from booley.harness.cli_goal_notice import warn_cli_goal_recording
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     shutil.rmtree(goal_mode.control / "goals")
     (goal_mode.main / ".git" / REPOSITORY_ID_FILE).write_text("malformed")

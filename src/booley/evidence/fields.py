@@ -22,6 +22,7 @@ BASELINE_RECIPE_FINGERPRINT_DETAIL = "_baseline_recipe_fingerprint"
 BASELINE_RECIPE_SNAPSHOT_DETAIL = "_baseline_recipe_snapshot"
 BASELINE_REF_PARAM = "_baseline_ref"
 BASELINE_REF_DETAIL = "_baseline_ref"
+BASELINE_TARGET_PARAM = "_baseline_target"
 BASELINE_TARGET_DETAIL = "_baseline_target"
 CANDIDATE_TARGET_DETAIL = "_candidate_target"
 

@@ -62,6 +62,7 @@ from booley.goals.test_run_resolution import (
     resolutions_to_json,
 )
 from booley.runtime.timefmt import parse_timestamp
+from booley.runtime.worktree_identity import CHECKOUT_PATTERN, WorktreeIdentity
 
 # ---------------------------------------------------------------------------
 # Enumerations
@@ -803,44 +804,20 @@ class RecordedGoal:
         return cls(GoalSpec.from_json(mapping, where=where), revision)
 
 
-@dataclass(frozen=True)
-class WorktreeIdentity:
-    """A worktree as Git knows it, the same from every path spelling (D3).
-
-    ``repository`` identifies the Git common directory: a UUID Booley stores
-    inside it, so two mount spellings of one repository agree. ``checkout`` is
-    ``main`` for the primary checkout and ``worktrees/<admin name>`` for a
-    linked worktree, the Git directory relative to the common directory.
-    """
-
-    repository: str
-    checkout: str
-
-    @property
-    def key(self) -> str:
-        """One string naming this worktree, used to name its lock."""
-        return f"{self.repository}/{self.checkout}"
-
-    def to_json(self) -> dict[str, str]:
-        """The JSON form stored in ``record.json``."""
-        return {"repository": self.repository, "checkout": self.checkout}
-
-    @classmethod
-    def from_json(cls, raw: object, *, where: str) -> WorktreeIdentity:
-        """Parse a stored worktree identity."""
-        mapping = _record_mapping(raw, where)
-        _require_keys(mapping, {"repository", "checkout"}, where)
-        try:
-            repository = require_uuid4(mapping["repository"], field=f"{where}.repository")
-        except BoundaryError as exc:
-            raise GoalRecordFormatError(str(exc)) from None
-        checkout = _record_str(mapping["checkout"], f"{where}.checkout")
-        if not _CHECKOUT.fullmatch(checkout):
-            raise GoalRecordFormatError(f"{where}.checkout {checkout!r} is not a checkout name")
-        return cls(repository, checkout)
+def worktree_identity_from_json(raw: object, *, where: str) -> WorktreeIdentity:
+    """Parse a stored worktree identity."""
+    mapping = _record_mapping(raw, where)
+    _require_keys(mapping, {"repository", "checkout"}, where)
+    try:
+        repository = require_uuid4(mapping["repository"], field=f"{where}.repository")
+    except BoundaryError as exc:
+        raise GoalRecordFormatError(str(exc)) from None
+    checkout = _record_str(mapping["checkout"], f"{where}.checkout")
+    if not CHECKOUT_PATTERN.fullmatch(checkout):
+        raise GoalRecordFormatError(f"{where}.checkout {checkout!r} is not a checkout name")
+    return WorktreeIdentity(repository, checkout)
 
 
-_CHECKOUT = re.compile(r"main|worktrees/[^/\x00]+")
 _COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 RECORD_SCHEMA_VERSION = 1
@@ -1029,7 +1006,7 @@ def _identity_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         "id": _record_str(mapping["id"], "record.id"),
         "revision": mapping["revision"],
         "state": state,
-        "worktree": WorktreeIdentity.from_json(mapping["worktree"], where="record.worktree"),
+        "worktree": worktree_identity_from_json(mapping["worktree"], where="record.worktree"),
         "worktree_path": _record_str(mapping["worktree_path"], "record.worktree_path"),
         "branch": _record_str(mapping["branch"], "record.branch"),
         "original_ref": _record_str(mapping["original_ref"], "record.original_ref"),
