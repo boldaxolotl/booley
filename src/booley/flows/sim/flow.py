@@ -92,6 +92,7 @@ from booley.flows.sim.live_progress import (
     observe_stage,
     publish_checkpoint,
 )
+from booley.flows.sim.metrics import coverage_campaign_path
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import (
@@ -460,15 +461,10 @@ def _coverage_metrics_line(campaign: CoverageCampaign) -> str | None:
     return "  coverage: " + " · ".join(parts)
 
 
-def _coverage_campaign_path(outcome: CampaignOutcome) -> Path:
-    """Return the public ``coverage.json`` beside the Target's Campaign directory."""
-    return outcome.manifest_path.parents[1] / "coverage.json"
-
-
 def _coverage_campaign_lines(outcomes: Sequence[CampaignOutcome]) -> list[str]:
     """One ``coverage campaign:`` line per finished coverage outcome."""
     return [
-        f"  coverage campaign: {_coverage_campaign_path(outcome).resolve()}"
+        f"  coverage campaign: {coverage_campaign_path(outcome).resolve()}"
         for outcome in outcomes
         if getattr(outcome, "coverage_reference", None) is not None
     ]
@@ -499,7 +495,7 @@ def _resolved_coverage_campaigns(
     for outcome in outcomes:
         if getattr(outcome, "coverage_reference", None) is None:
             continue
-        public = _coverage_campaign_path(outcome)
+        public = coverage_campaign_path(outcome)
         selector = str(outcome.target["selector"])
         campaigns[selector] = resolve_coverage_campaign_reference(public).loaded.campaign
     return campaigns
@@ -1319,7 +1315,7 @@ def _coverage_compatibility_targets(
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
-        public = _coverage_campaign_path(outcome)
+        public = coverage_campaign_path(outcome)
         selector = str(outcome.target["selector"])
         campaign = resolved[selector]
         target = {
