@@ -113,6 +113,7 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/harness/test_dashboard_layout.py",
     "tests/harness/test_dashboard_links.py",
     "tests/harness/test_dashboard_preview.py",
+    "tests/harness/test_dashboard_run.py",
     "tests/harness/test_dashboard_sessions.py",
     "tests/harness/test_dashboard_targets.py",
     "tests/harness/test_dashboard_view_owner.py",

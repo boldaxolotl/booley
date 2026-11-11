@@ -114,8 +114,8 @@ and for a failure the end of the simulator output. The Test Runs are listed
 when there is more to say than "everything passed at the Default Seed" (a
 failure, another seed or Variant, a Test that ran more than once, or a
 [`--trace`](#waveforms) run that saved a waveform). Each failed Test Run comes
-with a command that reruns exactly it, and every Test Run that did not pass
-names its log:
+with a command that reruns it with the same seed, and every Test Run that did
+not pass names its log:
 
 ```text
 sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
@@ -129,6 +129,16 @@ sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
     PASS         stress+soak@1681692777
   Rerun a failed Test Run with the same seed:
     booley flow sim --target sim_soc --test=stress+soak@846930886
+```
+
+A Cocotb Target with no Tests in `tests.toml` runs its test functions as one
+batch, so a failed test function cannot be rerun alone. The report then prints
+one command, however many of them failed, that reruns the whole batch at that
+seed:
+
+```text
+  Rerun the whole batch with the same seed (register its test functions as Tests in tests.toml to rerun one alone):
+    booley flow sim --target sim_soc --seed 846930886
 ```
 
 In a `--trace` run the card also names each waveform, and lists the Test Runs

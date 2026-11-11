@@ -58,44 +58,29 @@ from booley.harness.setup.project_git_hook_reconcile import (
 from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 from tests.conftest import symlink_or_skip
 from tests.harness.booley_dir_support import select_booley_dir
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
 
 def _git_init(root: Path) -> None:
-    subprocess.run(
-        ["git", "init", "-q", str(root)],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", "-q", str(root)], check=True)
 
 
 def _autocrlf(root: Path) -> str:
-    proc = subprocess.run(
-        ["git", "-C", str(root), "config", "--get", "core.autocrlf"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    proc = run_bounded_child(["git", "-C", str(root), "config", "--get", "core.autocrlf"])
     return proc.stdout.strip()
 
 
 def _local_autocrlf(root: Path) -> str:
-    proc = subprocess.run(
-        ["git", "-C", str(root), "config", "--local", "--get", "core.autocrlf"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
+    proc = run_bounded_child(
+        ["git", "-C", str(root), "config", "--local", "--get", "core.autocrlf"]
     )
     return proc.stdout.strip()
 
 
 def _git_commit(root: Path) -> None:
-    subprocess.run(
+    run_bounded_child(
         [
             "git",
             "-C",
@@ -108,9 +93,7 @@ def _git_commit(root: Path) -> None:
             "-qm",
             "wip",
         ],
-        capture_output=True,
         check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -129,13 +112,7 @@ def _run_git(
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run one bounded Git command for integration tests."""
-    return subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        text=True,
-        check=check,
-        timeout=30,
-    )
+    return run_bounded_child(["git", "-C", str(root), *args], check=check)
 
 
 class TestWorktreePruneGuardStep:
@@ -991,12 +968,7 @@ class TestLineEndingsStep:
     @staticmethod
     def _add_file(root: Path, name: str, data: bytes) -> None:
         (root / name).write_bytes(data)
-        subprocess.run(
-            ["git", "-C", str(root), "add", "-f", name],
-            capture_output=True,
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
+        run_bounded_child(["git", "-C", str(root), "add", "-f", name], check=True)
 
     def test_lf_tree_passes(self, tmp_path: Path):
         from booley.harness.setup.git_hooks import _step_line_endings
@@ -1385,21 +1357,13 @@ class TestLineEndingsAutoFix:
         dirty-tree refusal behind a false positive.
         """
         _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
-            capture_output=True,
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
+        run_bounded_child(
+            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"], check=True
         )
         TestLineEndingsStep._add_file(tmp_path, "a.v", b"module a;\nendmodule\n")
         _git_commit(tmp_path)
         (tmp_path / "a.v").unlink()
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "checkout", "--", "a.v"],
-            capture_output=True,
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
+        run_bounded_child(["git", "-C", str(tmp_path), "checkout", "--", "a.v"], check=True)
         assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
         return tmp_path
 
@@ -2275,7 +2239,7 @@ class TestLineEndingsAutoFix:
         assert (booley_dir / "notes.md").read_bytes() == b"notes\n"
         config = (booley_dir / "booley.toml").read_bytes()
         assert b"\r" not in config
-        assert config.endswith(b'[agent]\nprovider = "claude"\nauth = "auto"\n')
+        assert config.endswith(b'[agent]\ndefault = "claude"\nauth = "auto"\n')
 
     def test_without_baseline_booleys_config_edit_blocks_repair(self, tmp_path: Path) -> None:
         from booley.harness.setup.git_hooks import _step_line_endings
@@ -2706,10 +2670,8 @@ def test_legacy_line_endings_summary(tmp_path, capsys, distinct, check_only):
     assert result.detail in capsys.readouterr().out
 
 
-def _tracking_git(root: Path, *args: str) -> bytes:
-    return subprocess.run(
-        ["git", "-C", str(root), *args], check=True, capture_output=True, timeout=10
-    ).stdout
+def _tracking_git(root: Path, *args: str) -> str:
+    return run_bounded_child(["git", "-C", str(root), *args], check=True, timeout=10).stdout
 
 
 def _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged):
@@ -2860,21 +2822,17 @@ def test_paired_hooks_use_main_bundle_without_local_copy(tmp_path, monkeypatch, 
     _tracking_git(repo, "add", "change.v")
     _tracking_git(repo, "commit", "-qm", "fix(core): primaryphrase pairedphrase")
     expected = (
-        b"fix(core): redacted pairedphrase"
+        "fix(core): redacted pairedphrase"
         if checkout == "main"
-        else b"fix(core): primaryphrase redacted"
+        else "fix(core): primaryphrase redacted"
     )
     assert _tracking_git(repo, "log", "-1", "--format=%s").strip() == expected
     remote = tmp_path / "local-remote.git"
     _tracking_git(tmp_path, "init", "--bare", "-q", str(remote))
     banned = "primaryphrase" if checkout == "main" else "pairedphrase"
     _tracking_git(repo, "commit", "--amend", "--no-verify", "-qm", f"fix(core): {banned}")
-    refused = subprocess.run(
-        ["git", "-C", str(repo), "push", str(remote), "HEAD:refs/heads/policy-test"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
+    refused = run_bounded_child(
+        ["git", "-C", str(repo), "push", str(remote), "HEAD:refs/heads/policy-test"]
     )
     assert refused.returncode != 0, refused.stderr
     assert "push blocked by leak-guard pre-push hook" in refused.stderr

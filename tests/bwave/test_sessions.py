@@ -15,6 +15,7 @@ import pytest
 from booley.bwave.cli import SESSION_FILE
 from booley.dev_support.test_profiles import native_test_binary
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
+from tests.subprocess_budget import run_bounded_child
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
@@ -38,12 +39,8 @@ def _ensure_bwave_fixture() -> None:
     src = FIXTURE_DIR / "test_distance.vcd"
     if not src.exists():
         pytest.skip("test_distance.vcd fixture missing")
-    result = subprocess.run(
-        [str(native_bwave), "build", str(src), "-o", str(BWAVE)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+    result = run_bounded_child(
+        [str(native_bwave), "build", str(src), "-o", str(BWAVE)], timeout=60
     )
     if result.returncode != 0:
         pytest.fail(f"failed to build {BWAVE}: {result.stderr}")
@@ -64,7 +61,7 @@ def _make_entry(trace: str, **overrides) -> dict:
     }
 
 
-def _query(*extra_args: str, timeout: int = 30) -> subprocess.CompletedProcess:
+def _query(*extra_args: str) -> subprocess.CompletedProcess[str]:
     # bwave is container-only (ADR 0028); mark the venue so the subprocess
     # exercises the query surface rather than dying on the host guard.
     env = {
@@ -74,7 +71,7 @@ def _query(*extra_args: str, timeout: int = 30) -> subprocess.CompletedProcess:
             [str(BOOLEY_ROOT), str(BOOLEY_ROOT / "src"), os.environ.get("PYTHONPATH", "")]
         ),
     }
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -83,10 +80,6 @@ def _query(*extra_args: str, timeout: int = 30) -> subprocess.CompletedProcess:
             "query",
             *extra_args,
         ],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
         env=env,
     )
 

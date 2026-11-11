@@ -58,7 +58,7 @@ def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -
 # rewrites command scope.
 #
 # Known gaps (not covered by this setting):
-# - ``src/booley/goals/committed_bytes.py`` replaces command scope with
+# - ``src/booley/runtime/commit_export.py`` replaces command scope with
 #   ``GIT_CONFIG_COUNT=0`` / ``GIT_CONFIG_PARAMETERS=""`` for its shadow-repository Git.
 # - ``src/booley/runtime/incontainer_git_identity_cleanup.py`` strips every
 #   ``GIT_CONFIG_*`` for its ``git config --file`` reads.
@@ -100,8 +100,8 @@ def _disable_git_auto_maintenance_for_children() -> None:
     """Append the session settings to the command scope child processes inherit.
 
     Idempotent: a key whose effective (last) value already is the wanted one is not
-    appended again, so repeated ``pytest_configure`` calls (mutmut) and xdist workers
-    re-running it on an inherited environment add nothing. Inherited entries stay.
+    appended again, so xdist workers re-running it on an inherited
+    environment add nothing. Inherited entries stay.
     """
     entries = _git_command_entries(os.environ)
     for key, value in _SESSION_GIT_COMMAND_CONFIG:
@@ -383,35 +383,6 @@ def pytest_runtest_makereport(
     return report
 
 
-def hide_mutmut_stats_mode_from_children() -> None:
-    """Remove mutmut's ``stats`` marker from the environment child processes inherit.
-
-    Why: while collecting stats, mutmut calls ``set_mutant_under_test("stats")``,
-    which also exports ``MUTANT_UNDER_TEST=stats``. A child process that a test
-    spawns or execs (multiprocessing ``spawn``, a ``booley`` or pytest subprocess
-    with the mutated source on ``PYTHONPATH``) inherits it, so its first call
-    into mutated code tries to record a stats hit and loads mutmut's
-    configuration. Tests often start such children from an empty temporary
-    working directory (the harness autouse fixture), where mutmut finds no
-    ``setup.cfg`` and the child dies with ``FileNotFoundError``.
-
-    Relies on (mutmut >= 3.8.1, upstream mutmut #511): ``set_mutant_under_test``
-    also keeps a process-local copy, and ``get_mutant_under_test`` falls back to
-    it when the environment variable is missing. So the parent pytest process still records
-    which tests cover which functions, while a fresh child sees no mode at all and
-    runs the original, unmutated functions. Its hits were never recorded anyway,
-    so no stats are lost. A forked child keeps the in-memory copy and mutmut's
-    already-cached configuration, exactly as before. If a later mutmut drops the
-    fallback, the parent stops recording and the campaign ends early with "could
-    not find any test case for any mutant".
-
-    Only ``stats`` is removed: a mutant run must keep exporting the mutant name so
-    children exercise the mutant, and a plain pytest run has nothing to remove.
-    """
-    if os.environ.get("MUTANT_UNDER_TEST") == "stats":
-        del os.environ["MUTANT_UNDER_TEST"]
-
-
 def pytest_configure(config: pytest.Config) -> None:
     """Bound every test's wall-clock so a hang fails loudly instead of wedging
     the whole suite.
@@ -420,12 +391,8 @@ def pytest_configure(config: pytest.Config) -> None:
     this is a deliberate no-op that emits *no* config warning, keeping the suite
     warning-free (principle 12) in bare environments.
 
-    Runs for every session mutmut starts (it calls ``pytest.main`` repeatedly in
-    one process), so the stats marker is hidden before any test starts a child.
-
     Also exports the session's Git auto-maintenance settings to every child.
     """
-    hide_mutmut_stats_mode_from_children()
     _disable_git_auto_maintenance_for_children()
     _configure_test_profile(config)
     _begin_coverage_stamp(config)

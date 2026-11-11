@@ -51,6 +51,7 @@ def run(cmd_str: str, timeout: int = 30) -> tuple[int, str]:
         command += ["--name", container_name]
     command += [IMAGE, "bash", "-c", cmd_str]
     try:
+        # Unbounded child: standalone script outside pytest; it maps the timeout to a TIMED OUT result itself
         r = subprocess.run(
             command,
             capture_output=True,

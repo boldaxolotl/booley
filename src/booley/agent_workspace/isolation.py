@@ -135,7 +135,12 @@ def _configured_outputs(value: object, table: tuple[str, ...] = ()) -> list[Path
 
 def _booley_copy_roots(directory: Path) -> list[Path]:
     """Known disposable copies in one authoritative or checkout Booley Directory."""
-    from booley.goals.paths import GoalIdError, goals_root, record_paths
+    from booley.core.booley_layout import (
+        GOAL_RECORD_LOGS_DIR,
+        GOALS_DIR_NAME,
+        is_goal_record_name,
+    )
+    from booley.runtime.session_paths import RUNTIME_DIR
 
     roots = [
         directory / name
@@ -150,13 +155,11 @@ def _booley_copy_roots(directory: Path) -> list[Path]:
         )
     ]
     roots.extend(directory.glob(".baseline-wt-*"))
-    goals = goals_root(directory)
+    goals = directory / GOALS_DIR_NAME
     for child in goals.iterdir() if goals.is_dir() else ():
-        try:
-            paths = record_paths(directory, child.name)
-        except GoalIdError:
+        if not is_goal_record_name(child.name):
             continue  # history and locks are not per-Goal artifact trees
-        roots.extend((paths.runtime_dir, paths.logs_dir))
+        roots.extend((child / RUNTIME_DIR, child / GOAL_RECORD_LOGS_DIR))
     return roots
 
 
@@ -263,9 +266,18 @@ def _remove_snapshot_paths(root: Path, paths: set[Path], category: str) -> list[
 
 
 def _category_membership(
-    root: Path, category: str, category_files: dict[str, tuple[str, ...]], scope: tuple[str, ...]
+    root: Path,
+    category: str,
+    category_files: dict[str, tuple[str, ...]],
+    scope: tuple[str, ...],
+    shared_files: tuple[str, ...] = (),
 ) -> tuple[set[str], set[str]]:
-    """Validate exact declarations and grant only explicit unregistered files."""
+    """Validate exact declarations and grant only explicit unregistered files.
+
+    ``shared_files`` are exact non-HDL files both categories may read; they leave
+    the opposite set and join the own set, so they are neither hidden nor
+    removed as undeclared sources.
+    """
     if category not in ("rtl", "tb"):
         raise ValueError(f"unknown isolation category {category!r}")
     opposite = set(category_files["tb" if category == "rtl" else "rtl"])
@@ -278,6 +290,8 @@ def _category_membership(
         if name in opposite:
             raise ValueError(f"explicit scope is opposite-category source: {name}")
         own.add(name)  # unregistered explicit scope is a narrow own-category grant
+    opposite.difference_update(shared_files)
+    own.update(shared_files)
     return own, opposite
 
 
@@ -288,6 +302,7 @@ def hide_opposite_sources(
     category_files: dict[str, tuple[str, ...]],
     cwd: Path | None = None,
     scope: tuple[str, ...] = (),
+    shared_files: tuple[str, ...] = (),
     excluded_roots: tuple[Path, ...] = (),
 ) -> list[str]:
     """Sanitize exact sources and owned copies before recording snapshot history."""
@@ -295,7 +310,7 @@ def hide_opposite_sources(
     real = snapshot.real_root.resolve()
     if root.is_relative_to(real) or real.is_relative_to(root):
         raise ValueError("disposable snapshot must be separate from the live worktree")
-    own, opposite = _category_membership(root, category, category_files, scope)
+    own, opposite = _category_membership(root, category, category_files, scope, shared_files)
     excluded = []
     for path in excluded_roots:
         resolved = (path if path.is_absolute() else real / path).resolve()

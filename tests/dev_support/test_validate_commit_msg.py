@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.dev_support.validate_commit_msg import (
     ALLOWED_TYPES,
@@ -19,13 +19,19 @@ from booley.dev_support.validate_commit_msg import (
 )
 
 
+def _run_checked(argv: list[str], *, timeout: float = SUBPROCESS_TIMEOUT_S) -> None:
+    """Run a fixture command under the shared bound; a failure shows its stderr."""
+    result = run_bounded_child(argv, timeout=timeout)
+    assert result.returncode == 0, result.stderr
+
+
 def test_bundled_commit_msg_hook_honors_relocated_booley_dir(tmp_path: Path) -> None:
     """The installed hook reads ``[project].dir`` without importing Booley (``-S``)."""
     from booley.harness.setup.project_git_hook_bundle import build_project_git_hook_bundle
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=60)
+    _run_checked(["git", "init", "-q", str(repo)])
     (repo / "booley.toml").write_bytes(b'[project]\ndir = "state"\n')
     (repo / "state").mkdir()
     (repo / "state" / "booley.toml").write_bytes(
@@ -37,13 +43,8 @@ def test_bundled_commit_msg_hook_honors_relocated_booley_dir(tmp_path: Path) -> 
     message = tmp_path / "message.txt"
     message.write_bytes(b"not a conventional subject\n")
 
-    result = subprocess.run(
-        [sys.executable, "-I", "-S", str(bundle), "commit-msg", str(message)],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
+    result = run_bounded_child(
+        [sys.executable, "-I", "-S", str(bundle), "commit-msg", str(message)], cwd=repo
     )
 
     assert result.returncode == 1, result.stderr
@@ -510,9 +511,7 @@ class TestMainEntryPoint:
             diff_check.assert_not_called()
 
     def test_module_cli_honors_current_checkout_stealth_setting(self, tmp_path, monkeypatch):
-        import subprocess
-
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+        _run_checked(["git", "init", "-q", str(tmp_path)])
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = false\n", encoding="utf-8")
@@ -556,10 +555,9 @@ def test_project_state_repository_config_detection(tmp_path):
 
 
 def test_absolute_source_script_recovers_canonical_package_under_isolation(tmp_path):
-    import subprocess
     import sys
 
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+    _run_checked(["git", "init", "-q", str(tmp_path)])
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text(
@@ -568,12 +566,9 @@ def test_absolute_source_script_recovers_canonical_package_under_isolation(tmp_p
     )
     script = Path(__file__).resolve().parents[2] / "src/booley/dev_support/validate_commit_msg.py"
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-I", "-S", str(script), "fix(core): valid message"],
         cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
         timeout=10,
     )
 
@@ -609,22 +604,14 @@ class TestVendoredStandaloneImport:
 
     @staticmethod
     def _run(dst, msg: str):
-        import subprocess
         import sys
 
-        subprocess.run(
-            ["git", "init", "-q", str(dst)], capture_output=True, check=True, timeout=30
-        )
+        run_bounded_child(["git", "init", "-q", str(dst)], check=True)
         booley_dir = dst / ".booley"
         booley_dir.mkdir(exist_ok=True)
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        return subprocess.run(
-            [sys.executable, str(dst / "validate_commit_msg.py"), msg],
-            cwd=str(dst),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
+        return run_bounded_child(
+            [sys.executable, str(dst / "validate_commit_msg.py"), msg], cwd=str(dst)
         )
 
     def test_flat_run_tool_resolves(self, tmp_path):
@@ -643,32 +630,20 @@ class TestVendoredStandaloneImport:
     def test_flat_run_tool_actually_scans_staged_diff(self, tmp_path):
         """Prove the resolved run_command runs the git-diff scan (not just that the
         import succeeded): a banned term staged in the diff must be rejected."""
-        import subprocess
         import sys
 
         self._vendor(tmp_path, include_runner=True)
-        subprocess.run(
-            ["git", "init", "-q", str(tmp_path)], capture_output=True, check=True, timeout=30
-        )
+        run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         # A Co-Authored-By trailer is a banned attribution term the diff scan
         # flags. Stage it so `git diff --cached` (run via run_command) sees it.
         (tmp_path / "note.txt").write_text("Co-Authored-By: somebody <x@y.z>\n", encoding="utf-8")
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "add", "note.txt"],
-            capture_output=True,
-            check=True,
-            timeout=30,
-        )
-        proc = subprocess.run(
+        run_bounded_child(["git", "-C", str(tmp_path), "add", "note.txt"], check=True)
+        proc = run_bounded_child(
             [sys.executable, str(tmp_path / "validate_commit_msg.py"), "feat(x): ok"],
             cwd=str(tmp_path),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
         )
         assert proc.returncode == 1, proc.stdout + proc.stderr
         assert "co-authored-by" in proc.stderr.lower()
@@ -677,11 +652,9 @@ class TestVendoredStandaloneImport:
 def test_default_staged_engineering_prose_is_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import subprocess
-
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
+    _run_checked(["git", "init", "-q", str(tmp_path)], timeout=10)
     (tmp_path / "generated.txt").write_text("generated docker verification agent\nautomated fix\n")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "generated.txt"], check=True, timeout=10)
+    _run_checked(["git", "-C", str(tmp_path), "add", "generated.txt"], timeout=10)
     monkeypatch.chdir(tmp_path)
     assert validate_diff(tmp_path) == []
 

@@ -14,7 +14,8 @@ from typing import cast
 import pytest
 
 from booley.criteria.state import CriterionEntry, DevelopmentState
-from booley.criteria.templates import BASELINE_TARGET_PARAM, cycle_count_criterion_key
+from booley.criteria.templates import cycle_count_criterion_key
+from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.flows.endpoint_acceptance import record_acceptance
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.execution_persistence import EvidenceDiscarded

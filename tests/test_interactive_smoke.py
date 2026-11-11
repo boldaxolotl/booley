@@ -29,7 +29,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from tests.conftest import symlink_or_skip
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.target_test_support import write_sim_preview_project
 
 _BOOLEY_ENV_VARS = (
@@ -407,14 +407,7 @@ def _fake_runtime_inspect(project, prepared):
 
 
 def _init_git_project(project_root: Path) -> None:
-    import subprocess
-
-    subprocess.run(
-        ["git", "init", str(project_root)],
-        capture_output=True,
-        check=True,
-        timeout=10,
-    )
+    run_bounded_child(["git", "init", str(project_root)], timeout=10, check=True)
 
 
 def _stub_full_init_dependencies(

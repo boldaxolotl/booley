@@ -31,6 +31,7 @@ from booley.goals.model import (
     WorktreeIdentity,
     parse_stored_goal_arg,
     record_timestamp,
+    worktree_identity_from_json,
 )
 from booley.goals.naming import apply_names, optional_names, save_names
 from booley.goals.proposal_errors import ProposalError
@@ -135,7 +136,7 @@ class Proposal:
         return cls(
             require_uuid4(raw["id"], field="proposal id"),
             text(raw["record_id"], "record id"),
-            WorktreeIdentity.from_json(raw["worktree"], where="proposal.worktree"),
+            worktree_identity_from_json(raw["worktree"], where="proposal.worktree"),
             kind,
             text(raw["goal_key"], "goal_key"),
             before,

@@ -5,11 +5,11 @@ from pathlib import Path
 from booley.core.booley_layout import BooleyLayoutError
 from booley.goals.store import GoalStore
 from booley.harness.setup.directory_migration_jobs import observe_jobs
-from booley.mcp.session_registry import DEAD_PROCESS_STATES, SessionRegistry
+from booley.mcp.session_registry import SessionRegistry
 from booley.runtime.booley_dir_migration import Migration
 from booley.runtime.booley_dir_migration import inspect_migration as inspect_filesystem
 from booley.runtime.layout_consumers import require_quiescent
-from booley.runtime.pid import observe_process
+from booley.runtime.pid import DEAD_PROCESS_STATES, observe_process
 
 
 def observe_directory(directory: Path) -> None:

@@ -45,7 +45,15 @@ from booley.flows.eda_failures import (
     first_tool_diagnostic,
     strip_failure_markers,
 )
-from booley.flows.job_resources import SYNTH_PHASES, resource_phase
+from booley.flows.job_resources import SYNTH_PHASES, resolved_source_bytes, resource_phase
+from booley.flows.metric_declarations import (
+    Better,
+    CostTier,
+    FlowMetricValues,
+    MetricDeclaration,
+    MetricKind,
+    metric_values,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -281,6 +289,22 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 # ---------------------------------------------------------------------------
 
 
+# Metrics the synthesis Flow declares; names are the ones Goal thresholds are built from.
+# area_um2/area_kge are the mapped area in logical mode and the placed area in OpenROAD modes.
+_SYNTH_COST_TIER = CostTier.HIGH
+SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
+    MetricDeclaration("area_um2", "μm²", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("area_kge", "kGE", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("cell_count", "cells", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("fmax_mhz", "MHz", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration(
+        "critical_path_ps", "ps", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK
+    ),
+    MetricDeclaration("wns_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration("whs_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+)
+
+
 @dataclass
 class SynthMetrics:
     """Parsed synthesis metrics for a single config run."""
@@ -372,6 +396,18 @@ class SynthMetrics:
         """Normalize string-compatible construction at the metrics interface."""
         if isinstance(self.synth_mode, str):
             self.synth_mode = SynthMode(self.synth_mode)
+
+    def flow_metrics(self) -> FlowMetricValues:
+        """Return this run's typed values for :data:`SYNTH_METRIC_DECLARATIONS`."""
+        return metric_values(
+            SYNTH_METRIC_DECLARATIONS,
+            plain={
+                "area_um2": self.area_um2,
+                "area_kge": self.area_kge,
+                "cell_count": self.cells,
+            },
+            per_clock=self.per_clock,
+        )
 
     def qor_detail(self) -> dict[str, Any]:
         """Return the canonical QoR fields shared by every report surface."""
@@ -1493,12 +1529,14 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             target=target,
             temporary=role == "baseline",
         )
-        return self._run_configured(target, plan)
+        return self._run_configured(target, plan, resolved_source_bytes(planned.resolved))
 
-    def _run_configured(self, target: str, plan: Any) -> tuple[SynthMetrics, str]:
+    def _run_configured(
+        self, target: str, plan: Any, source_bytes: int | None
+    ) -> tuple[SynthMetrics, str]:
         """Run and interpret one configured plan, then refresh its OpenROAD reuse slot."""
         start = time.monotonic()
-        run = self._run_synth_make(target, plan)
+        run = self._run_synth_make(target, plan, source_bytes)
         elapsed = time.monotonic() - start
         metrics, output = self._interpret_boundary_run(
             target, plan, run.result, elapsed, producer=run.producer
@@ -1507,9 +1545,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         self._store_openroad_result(target, plan, metrics, run)
         return metrics, output
 
-    def _run_synth_make(self, target: str, plan: Any) -> _SynthRun:
+    def _run_synth_make(self, target: str, plan: Any, source_bytes: int | None) -> _SynthRun:
         """Run the synthesis Makefile; sv2v, Yosys and OpenROAD are measured as phases."""
-        with resource_phase(target, "synth", split=SYNTH_PHASES):
+        with resource_phase(target, "synth", split=SYNTH_PHASES, source_bytes=source_bytes):
             if not runs_openroad(plan.spec.timing.mode):
                 cmd = self._synth_boundary_cmd(plan)
                 return _SynthRun(self._execute_boundary(cmd, timeout=self._get_timeout()))

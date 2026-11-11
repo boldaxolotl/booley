@@ -54,9 +54,9 @@ from typing import Any
 
 from booley.core.boundary import BoundaryError, require_bool_value, require_list, require_str_value
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
 from booley.evidence.acceptance import PairedProjectBaseline
+from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.flows.baseline_pins import (
     BaselinePinError,
     SnapshotBuilder,

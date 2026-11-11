@@ -17,6 +17,29 @@ Packaged release history starts at 0.2.7. For older changes, see
   session ([#3483](https://github.com/boldaxolotl/Booley/issues/3483) tracks a
   per-checkout store). `bwave` without a trace path or session now says to rerun
   the simulation with `--trace`.
+- The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
+  as a Standalone Job: choose the worktree, the Flow, and its arguments, check
+  the equivalent shell command, then submit or copy it. The Jobs window opens
+  with the new Job selected. The Dashboard is no longer read-only.
+- Job resource history keeps the newest 20 runs per Target, Job phase, flags,
+  and Test Run with no overall cap, and deletes a group that has had no run in
+  90 days. Peak memory now includes processes forked by any thread of a Job
+  command, and counts the Job's temporary files only when `TMPDIR` is on
+  tmpfs (they are still recorded as the temporary-file peak); earlier runs
+  keep their earlier peak.
+- A failed test function that a Cocotb Target without registered Tests discovered
+  now gets one `booley flow sim --target <name> --seed N` command that reruns the
+  whole batch, instead of a `--test=<name>@N` command that Booley refused with
+  exit 2.
+- `booley init` now records the default Agent CLI as `[agent] default` instead of
+  the older name `provider`, and the `--provider` conflict error names
+  `[agent] default`. An existing `provider` key is kept as written and still
+  works.
+- `booley resources` now keeps each Test Variant of a simulation apart
+  (`tests=first+slow`; the default Variant keeps the bare Test name, and the
+  seeds of one Variant share an entry). Flow runs that `booley doctor` starts
+  are no longer recorded, and each record stores the size of the Target's
+  source files when it is known.
 - The `sim` result card now names each Test Run that did not pass with its log
   (`log:`) and, when it ran with `--trace`, its waveform (`waveform:`); a
   `--trace` run lists its passing Test Runs with their waveform too.

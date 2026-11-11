@@ -153,7 +153,7 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
 
     *request.image* is the project-resolved ``[sandbox].image``; the spec's own
     ``image`` must match it, else the Sandbox runs a stale image.
-    *request.declared_provider* is the project's *explicit* ``[agent] provider`` and
+    *request.declared_provider* is the project's *explicit* ``[agent] default`` and
     *request.declared_clis* its explicit ``[agent] clis`` (``None`` = undeclared); the
     spec's recorded Agent CLI set must match them. Beyond those preconditions the spec
     is compared against a rebuild of what ``booley init`` would write now.
@@ -208,9 +208,9 @@ def _provider_current(
             request,
             report,
             f"devcontainer.json BOOLEY_AGENT_APP 'auto' may resolve to an app other than "
-            f"[agent] provider '{pinned}': without that app's credential the session "
+            f"the [agent] default '{pinned}': without that app's credential the session "
             f"registers the other app while Specialists still use '{pinned}'; remove "
-            f"[agent] provider or set BOOLEY_AGENT_APP to '{pinned}'",
+            f"[agent] default (or its older name provider) or set BOOLEY_AGENT_APP to '{pinned}'",
         )
         return True
     return _cli_set_current(request, spec, spec_app, report)

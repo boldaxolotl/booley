@@ -13,13 +13,12 @@ from booley.criteria.simulation import (
     resolve_simulation_criterion_contract,
 )
 from booley.criteria.state import CriterionChange, DevelopmentState
-from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import (
     CYCLE_COUNT_PARAMS,
     evaluate_cycle_threshold,
     has_relative_threshold,
 )
-from booley.evidence.fields import BASELINE_REF_PARAM
+from booley.evidence.fields import BASELINE_REF_PARAM, BASELINE_TARGET_PARAM
 from booley.flows.execution_persistence import (
     AcceptanceRecorder,
     AcceptanceRecordingError,

@@ -21,6 +21,7 @@ from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.targets.domain import CoreCollisionError
 from tests.harness.test_dashboard import STAMP, open_session, snapshot
 from tests.harness.test_dashboard_keys import assert_retired_keys_change_nothing
+from tests.subprocess_budget import run_bounded_child
 
 FIFO_CORE = """CAPI=2:
 name: acme:ip:fifo:1.0
@@ -74,9 +75,7 @@ def core_text(name: str, target: str) -> str:
 
 def git(root: Path, *args: str) -> None:
     identity = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test"]
-    subprocess.run(
-        ["git", *identity, "-C", str(root), *args], check=True, capture_output=True, timeout=60
-    )
+    run_bounded_child(["git", *identity, "-C", str(root), *args], check=True)
 
 
 def write_files(root: Path, files: dict[str, str]) -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +14,7 @@ from jsonschema.exceptions import SchemaError
 
 from booley.core.booley_layout import BooleyLayoutError
 from booley.mcp import server as mcp_server
+from tests.subprocess_budget import run_bounded_child
 
 
 def _definition(name: str) -> dict[str, object]:
@@ -42,14 +42,10 @@ def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path) -> Non
         part for part in (str(source_root), existing_pythonpath) if part
     )
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-m", "booley.mcp.probe"],
         cwd=tmp_path,
         env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
     )
 
     assert result.returncode == 0, result.stderr

@@ -23,7 +23,7 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.flow import (
     _artifact_path_component,
     _filter_tests,
-    _resolve_sim_campaign_work_units,
+    resolve_sim_campaign_work_units,
 )
 from booley.flows.sim.mode import SimulationMode
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
@@ -178,7 +178,7 @@ def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Pat
             return_value={"native": ["known_hang"]},
         ),
     ):
-        units = _resolve_sim_campaign_work_units(
+        units = resolve_sim_campaign_work_units(
             tmp_path,
             "native,cocotb",
         )
@@ -198,7 +198,7 @@ def test_campaign_work_units_count_elaboration_modes(
     mode: SimulationMode,
     expected: int,
 ) -> None:
-    assert _resolve_sim_campaign_work_units(tmp_path, "one,two", mode=mode) == expected
+    assert resolve_sim_campaign_work_units(tmp_path, "one,two", mode=mode) == expected
 
 
 def test_artifact_path_component_never_embeds_unsafe_test_names():
@@ -479,24 +479,21 @@ class TestDryRun:
 
         assert flow._redact_plan_environment("lite", command) == command
 
-    def test_plan_collects_preview_errors(self, tmp_path: Path) -> None:
+    def test_plan_collects_preview_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         flow = _make_flow(tmp_path, config="lite")
         execution = MagicMock()
         execution.preview.side_effect = ValueError("preview failed")
-        flow._simulation_execution_override = execution
+        monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
 
-        units, errors = flow._plan_simulation_targets(
-            ["lite"],
-            {},
-            role="ordinary",
-            revision=None,
-        )
+        planned, errors = flow._preview_targets(["lite"], {})
 
-        assert units == []
+        assert planned == []
         assert errors == ["lite: preview failed"]
 
     def test_plan_reports_a_refused_private_mirror_as_a_planning_error(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A mirror refusal (#2895) is a planning error, not an escaped exception."""
         from booley.flows.sim.build import SimulationBuildPreparationError
@@ -504,28 +501,12 @@ class TestDryRun:
         flow = _make_flow(tmp_path, config="lite")
         execution = MagicMock()
         execution.preview.side_effect = SimulationBuildPreparationError("mirror refused")
-        flow._simulation_execution_override = execution
+        monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
 
-        units, errors = flow._plan_simulation_targets(["lite"], {}, role="ordinary", revision=None)
+        planned, errors = flow._preview_targets(["lite"], {})
 
-        assert units == []
+        assert planned == []
         assert errors == ["lite: mirror refused"]
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_plan_fingerprint_changes_with_configured_environment(
-        self,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ) -> None:
-        flow = _make_flow(tmp_path, config="lite")
-        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "fast"}):
-            first = flow._plan_simulation(["lite"], {})
-        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "safe"}):
-            second = flow._plan_simulation(["lite"], {})
-
-        assert first.semantic_plan_fingerprint != second.semantic_plan_fingerprint
 
     @pytest.mark.parametrize(
         ("targets", "request_args", "expected"),

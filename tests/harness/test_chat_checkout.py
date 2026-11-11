@@ -10,7 +10,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
+import hashlib
+import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -24,12 +27,14 @@ import pytest
 
 from booley.core import file_lock
 from booley.core.file_lock import acquire_file_lock, release_file_lock
-from booley.harness import chat_cmd, worktree_cmd
+from booley.harness import chat_cmd, codex_chat, worktree_cmd
 from booley.mcp import session_registry
 from booley.mcp.session_registry import Attribution, SessionRegistry
+from booley.runtime.chat_sessions import reserve_codex_chat
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.session_activity import process_session_key
+from tests.subprocess_budget import run_bounded_child
 
 if sys.platform != "linux" or shutil.which("git") is None:
     pytest.skip(
@@ -55,9 +60,7 @@ class _Started:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    done = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, timeout=60
-    )
+    done = run_bounded_child(["git", *args], cwd=cwd, check=True)
     return done.stdout
 
 
@@ -89,7 +92,7 @@ def _write_toml(project: Path, body: str) -> None:
 @pytest.fixture(autouse=True)
 def _inline_claude_launch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the launch in-process as Claude; each launch is a distinct process identity."""
-    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch: launch())
+    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch, **_kw: launch())
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(
         chat_cmd, "get_agent_settings", lambda: SimpleNamespace(default_cli="claude")
@@ -139,7 +142,12 @@ def _lock_is_free(project: Path) -> bool | None:
 
 
 def _start(
-    project: Path, monkeypatch: pytest.MonkeyPatch, capsys, *, flag: str | None = None
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    *,
+    flag: str | None = None,
+    agent_args: list[str] | None = None,
 ) -> _Started:
     """Run `booley chat` to the point where the agent would start."""
     seen: list[_Started] = []
@@ -149,7 +157,7 @@ def _start(
         raise _ExecCalledError
 
     monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
-    args = argparse.Namespace(agent_args=[], chat_worktree=flag)
+    args = argparse.Namespace(agent_args=list(agent_args or []), chat_worktree=flag)
     capsys.readouterr()
     try:
         code = chat_cmd.run(args, project)
@@ -252,8 +260,8 @@ def test_failed_worktree_setup_rolls_back_and_never_starts_the_agent(project, mo
     assert _branches(project) == []
 
 
-def _live_session_in_main(project: Path, *, alive: bool) -> None:
-    """A registry row (a plain `claude` tab, say) whose process works in the main checkout."""
+def _live_session_in_main(project: Path, *, alive: bool, work_dir: Path | None = None) -> None:
+    """A registry row (a plain `claude` tab, say) whose process works in *work_dir* (main)."""
     common = project / ".booley"
     if alive:
         identity = capture_process_identity(os.getpid())
@@ -265,7 +273,9 @@ def _live_session_in_main(project: Path, *, alive: bool) -> None:
     key = process_session_key(identity)
     HandleStore(common).reserve(key, "S")
     SessionRegistry(common, quiet_after=3600).upsert(
-        Attribution(key, "process", str(project), "key", process=identity, namespace=_NAMESPACE),
+        Attribution(
+            key, "process", str(work_dir or project), "key", process=identity, namespace=_NAMESPACE
+        ),
         "sim",
         "completed",
         now=time.time(),
@@ -353,6 +363,7 @@ def test_a_crashed_lock_holder_does_not_block_the_next_launch(project, monkeypat
         assert holder.stdout.readline() == "held\n"
         assert not _lock_is_free(project)
         holder.send_signal(signal.SIGKILL)
+        # Kept on subprocess.Popen: test drives the process (reads a line, SIGKILLs it)
         holder.wait(timeout=30)
     finally:
         if holder.poll() is None:
@@ -550,3 +561,512 @@ def test_an_unreadable_git_marker_runs_in_place(project, tmp_path, monkeypatch, 
     assert started.cwd == odd.resolve()
     assert started.lock_free
     assert _worktrees(project) == []
+
+
+# --- resuming a conversation reopens the worktree it ran in (#2614) ----------------------
+
+# A process that is gone: the earlier session of every recorded conversation.
+_OLD_IDENTITY = ProcessIdentity(990001, "fixture", 7)
+_OLD_KEY = process_session_key(_OLD_IDENTITY)
+_NEW_KEY = process_session_key(ProcessIdentity(5000, "fixture", 7))
+_MAIN_MTIME = 1_800_000_000
+
+
+@dataclass
+class _Homes:
+    """The CLIs' own storage, redirected into the test's temporary directory."""
+
+    claude: Path
+    codex: Path
+
+
+@pytest.fixture(autouse=True)
+def homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Homes:
+    found = _Homes(tmp_path / "claude-home", tmp_path / "codex-home")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(found.claude))
+    monkeypatch.setenv("CODEX_HOME", str(found.codex))
+    return found
+
+
+@pytest.fixture
+def codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Launch Codex with the real handle reservation, as a native Linux install would."""
+    launcher = tmp_path / "bin" / "codex"
+    launcher.parent.mkdir()
+    launcher.write_bytes(b"native\n")
+    monkeypatch.setattr(
+        chat_cmd, "get_agent_settings", lambda: SimpleNamespace(default_cli="codex")
+    )
+    others = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, **kwargs: str(launcher) if name == "codex" else others(name, **kwargs),
+    )
+    monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="linux", stderr=sys.stderr))
+    launches = iter(range(6000, 6100))
+    monkeypatch.setattr(
+        codex_chat,
+        "capture_process_identity",
+        lambda _pid: ProcessIdentity(next(launches), "fixture", 7),
+    )
+
+
+def _earlier_session(
+    project: Path, *, key: str = _OLD_KEY, client: str = "claude"
+) -> tuple[Path, str]:
+    """The worktree an earlier `booley chat` made and the handle its agent had."""
+    common = project / ".booley"
+    if client == "codex":
+        label = reserve_codex_chat(common, _OLD_IDENTITY)
+    else:
+        label = HandleStore(common).reserve(key, "S")
+    name = label.lower()
+    assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name=name), project) == 0
+    return common / "worktrees" / name, label
+
+
+def _record(
+    project: Path,
+    client: str,
+    conversation: str,
+    worktree: Path,
+    *,
+    key: str | None = _OLD_KEY,
+    handle: str | None = None,
+    git_stamp: int | None = None,
+    cwd: Path | None = None,
+) -> None:
+    """Write the conversation record the hook leaves when a conversation starts in *worktree*."""
+    stamp = git_stamp if git_stamp is not None else (worktree / ".git").stat().st_mtime_ns
+    record = {
+        "schema": 1,
+        "client": client,
+        "conversation_id": conversation,
+        "cwd": str(cwd or worktree),
+        "worktree": worktree.name,
+        "handle": handle or worktree.name.upper(),
+        "process_key": key,
+        "at": "2026-11-11T10:00:00Z",
+        "git_stamp": stamp,
+    }
+    digest = hashlib.sha256(f"{client}:{conversation}".encode()).hexdigest()
+    store = project / ".booley" / "worktrees" / ".conversations"
+    store.mkdir(parents=True, exist_ok=True)
+    (store / f"{digest}.json").write_bytes(json.dumps(record).encode())
+
+
+def _claude_transcript(homes: _Homes, cwd: Path, conversation: str, mtime: float) -> None:
+    """Claude's transcript of *conversation*: one file per directory slug, touched at *mtime*."""
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+    path = homes.claude / "projects" / slug / f"{conversation}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"{}\n")
+    os.utime(path, (mtime, mtime))
+
+
+def _codex_rollout(
+    homes: _Homes,
+    conversation: str,
+    cwd: Path,
+    *,
+    created: int,
+    updated: int,
+    first_line: bytes | None = None,
+) -> None:
+    """Codex's rollout: filed under its creation time, touched when the conversation updates."""
+    stamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime(created))
+    day = time.strftime("%Y/%m/%d", time.gmtime(created))
+    path = homes.codex / "sessions" / day / f"rollout-{stamp}-{conversation}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    meta = {"id": conversation, "cwd": str(cwd), "source": "cli"}
+    line = first_line or json.dumps({"type": "session_meta", "payload": meta}).encode()
+    path.write_bytes(line + b"\n")
+    os.utime(path, (updated, updated))
+
+
+def _new_launch_label(project: Path) -> str:
+    """The handle the resumed launch (the first fixture process) ended up with."""
+    return HandleStore(project / ".booley").load().labels()[_NEW_KEY]
+
+
+@pytest.mark.parametrize("resume", [["--resume", "conv-1"], ["--resume=conv-1"], ["-r", "conv-1"]])
+def test_claude_resume_by_id_reopens_the_recorded_worktree_with_its_handle(
+    project, monkeypatch, capsys, resume
+):
+    # Bug caught: a resume from the main checkout started the agent in main (or a fresh
+    # worktree), where Claude cannot find the conversation, and under a new handle.
+    worktree, label = _earlier_session(project)
+    _record(project, "claude", "conv-1", worktree)
+
+    started = _start(project, monkeypatch, capsys, agent_args=resume)
+
+    assert started.cwd == worktree.resolve()
+    assert started.exec_argv == [label, "-n", label, *resume]
+    assert _new_launch_label(project) == label
+    assert started.lock_free, "the main checkout stays free for the next launch"
+    assert _worktrees(project) == [worktree.name]
+    assert f"Booley session {label} resumes conversation conv-1 in worktree {worktree}.\n" in (
+        started.stderr
+    )
+
+
+def test_resume_starts_in_the_directory_the_conversation_had_inside_the_worktree(
+    project, monkeypatch, capsys
+):
+    # Bug caught: a conversation started in a subdirectory resumed at the worktree root.
+    worktree, _ = _earlier_session(project)
+    (worktree / "sub").mkdir()
+    _record(project, "claude", "conv-1", worktree, cwd=worktree / "sub")
+
+    started = _start(project, monkeypatch, capsys, agent_args=["--resume", "conv-1"])
+
+    assert started.cwd == (worktree / "sub").resolve()
+
+
+@pytest.mark.parametrize("latest", [["-c"], ["--continue"]])
+def test_claude_continue_reopens_the_worktree_of_the_most_recent_conversation(
+    project, monkeypatch, capsys, homes, latest
+):
+    # Bug caught: `-c` from main continued main's own conversation although a worktree
+    # conversation was more recent, or reopened the worktree without naming its conversation.
+    worktree, label = _earlier_session(project)
+    _record(project, "claude", "conv-1", worktree)
+    _claude_transcript(homes, project, "main-conv", _MAIN_MTIME)
+    _claude_transcript(homes, worktree, "conv-1", _MAIN_MTIME + 60)
+
+    started = _start(project, monkeypatch, capsys, agent_args=latest)
+
+    assert started.cwd == worktree.resolve()
+    assert started.exec_argv == [label, "-n", label, "--resume", "conv-1"]
+    assert _new_launch_label(project) == label
+
+
+def test_codex_resume_by_id_reopens_the_recorded_worktree_with_its_handle(
+    project, monkeypatch, capsys, codex
+):
+    # Bug caught: a Codex resume got a fresh handle, or its ownership marker pointed at the
+    # old key so the new launch no longer owned its tab.
+    worktree, label = _earlier_session(project, client="codex")
+    _record(project, "codex", "conv-1", worktree)
+
+    started = _start(project, monkeypatch, capsys, agent_args=["resume", "conv-1"])
+
+    assert started.cwd == worktree.resolve()
+    assert started.exec_argv == [label, "--no-daemon", "resume", "conv-1"]
+    new_key = process_session_key(ProcessIdentity(6000, "fixture", 7))
+    handles = HandleStore(project / ".booley").load()
+    assert handles.labels()[new_key] == label
+    assert handles.aliases["chat:codex:" + new_key] == new_key
+
+
+def test_codex_resume_last_reopens_the_worktree_of_the_most_recent_conversation(
+    project, monkeypatch, capsys, codex, homes
+):
+    # Bug caught: ordering by creation (the file's name) instead of last update: this
+    # conversation was created long before main's but updated after it.
+    worktree, label = _earlier_session(project, client="codex")
+    _record(project, "codex", "conv-1", worktree)
+    _codex_rollout(
+        homes, "conv-1", worktree, created=_MAIN_MTIME - 86400, updated=_MAIN_MTIME + 60
+    )
+    _codex_rollout(homes, "main-conv", project, created=_MAIN_MTIME, updated=_MAIN_MTIME + 30)
+
+    started = _start(project, monkeypatch, capsys, agent_args=["resume", "--last"])
+
+    assert started.cwd == worktree.resolve()
+    assert started.exec_argv == [label, "--no-daemon", "resume", "conv-1"]
+
+
+def test_continue_skips_the_conversation_of_a_running_session(project, monkeypatch, capsys, homes):
+    # Bug caught: `-c` reopening a worktree where another agent is running (its transcript is
+    # always the newest), instead of the newest conversation the user can continue.
+    running = capture_process_identity(os.getpid())
+    assert running is not None
+    busy, _ = _earlier_session(project, key=process_session_key(running))
+    _record(project, "claude", "run-1", busy, key=process_session_key(running))
+    _claude_transcript(homes, busy, "run-1", _MAIN_MTIME + 300)
+    _claude_transcript(homes, project, "main-conv", _MAIN_MTIME)
+
+    stays = _start(project, monkeypatch, capsys, agent_args=["-c"])
+
+    assert (stays.cwd, stays.exec_argv) == (project, ["S2", "-n", "S2", "-c"])
+    free, _ = _earlier_session(project)
+    _record(project, "claude", "free-1", free)
+    _claude_transcript(homes, free, "free-1", _MAIN_MTIME + 60)
+
+    moves = _start(project, monkeypatch, capsys, agent_args=["-c"])
+
+    assert moves.cwd == free.resolve()
+    assert moves.exec_argv[-2:] == ["--resume", "free-1"]
+
+
+def test_resume_into_an_occupied_worktree_refuses(project, monkeypatch, capsys):
+    # Bug caught: a second agent started in a worktree whose session is still running.
+    running = capture_process_identity(os.getpid())
+    assert running is not None
+    busy, label = _earlier_session(project, key=process_session_key(running))
+    _record(project, "claude", "conv-1", busy, key=process_session_key(running), handle=label)
+
+    started = _start(project, monkeypatch, capsys, agent_args=["--resume", "conv-1"])
+
+    assert started.code == 2
+    assert started.exec_argv == []
+    assert started.stderr == (
+        f"ERROR: conversation conv-1 belongs to worktree {busy.name}, where session {label} "
+        "is still running; end that session first.\n"
+    )
+    assert _worktrees(project) == [busy.name]
+
+
+@pytest.mark.parametrize("how", ["removed", "replaced"])
+def test_resume_of_a_removed_worktree_starts_in_main_with_a_notice(
+    project, monkeypatch, capsys, how
+):
+    # Bug caught: a record of a deleted worktree sent the resume to a path that is gone,
+    # or silently started in main with no word about it.
+    worktree, _ = _earlier_session(project)
+    _record(project, "claude", "conv-1", worktree)
+    stamp = (worktree / ".git").stat().st_mtime_ns
+    shutil.rmtree(worktree)
+    if how == "replaced":
+        _git(project, "worktree", "prune")
+        _git(project, "branch", "-D", "booley/s1")
+        assert (
+            worktree_cmd.run(argparse.Namespace(worktree_command="new", name="s1"), project) == 0
+        )
+        _record(project, "claude", "conv-1", worktree, git_stamp=stamp + 1)
+
+    started = _start(project, monkeypatch, capsys, agent_args=["--resume", "conv-1"])
+
+    assert started.cwd == project
+    assert started.exec_argv[-2:] == ["--resume", "conv-1"]
+    assert not started.lock_free
+    assert (
+        "NOTE: conversation conv-1 ran in worktree s1, which no longer exists; "
+        "resuming in the main checkout.\n"
+    ) in started.stderr
+
+
+@pytest.mark.parametrize("case", ["no-record", "main-is-newer"])
+def test_resume_of_a_main_checkout_conversation_starts_in_main(
+    project, monkeypatch, capsys, homes, case
+):
+    # Bug caught: `[chat] worktree = "always"` sent a main-checkout conversation to a new
+    # worktree, where the CLI cannot find it.
+    _write_toml(project, '[chat]\nworktree = "always"\n')
+    if case == "no-record":
+        arguments = ["--resume", "conv-9"]
+    else:
+        arguments = ["-c"]
+        worktree, _ = _earlier_session(project)
+        _record(project, "claude", "conv-1", worktree)
+        _claude_transcript(homes, worktree, "conv-1", _MAIN_MTIME)
+        _claude_transcript(homes, project, "main-conv", _MAIN_MTIME + 60)
+    before = _worktrees(project)
+
+    started = _start(project, monkeypatch, capsys, agent_args=arguments)
+
+    assert started.cwd == project
+    assert started.exec_argv[-len(arguments) :] == arguments
+    assert not started.lock_free, "main is held for the life of the agent"
+    assert _worktrees(project) == before
+    assert "resumes conversation" not in started.stderr
+
+
+def test_resume_into_a_busy_main_checkout_refuses_with_a_here_hint(project, monkeypatch, capsys):
+    # Bug caught: today the launch goes to a fresh worktree where the CLI cannot find the
+    # conversation, so the resume silently never worked.
+    with _lock_held_elsewhere(project):
+        started = _start(project, monkeypatch, capsys, agent_args=["--resume", "conv-9"])
+
+    assert started.code == 2
+    assert started.exec_argv == []
+    assert started.stderr == (
+        "ERROR: the main checkout is in use by another booley chat; conversation conv-9 "
+        "resumes only there. Run booley chat --here ... to resume it beside that session.\n"
+    )
+    assert _worktrees(project) == []
+
+
+def test_resume_into_an_occupied_worktree_without_a_process_key_refuses(
+    project, monkeypatch, capsys
+):
+    # Bug caught: a Codex started by hand (its record has no process key) was invisible, so a
+    # resume started a second agent beside it.
+    busy, _ = _earlier_session(project)
+    _record(project, "claude", "conv-1", busy, key=None)
+    _live_session_in_main(project, alive=True, work_dir=busy / "sub")
+
+    started = _start(project, monkeypatch, capsys, agent_args=["--resume", "conv-1"])
+
+    assert started.code == 2
+    assert started.exec_argv == []
+    assert "where session S2 is still running" in started.stderr
+
+
+@pytest.mark.parametrize("busy_by", ["lock", "session"])
+def test_continue_with_a_busy_main_resumes_the_free_worktree_conversation(
+    project, monkeypatch, capsys, homes, busy_by
+):
+    # Bug caught: the busy main's own (newest) transcript won `-c`, so the refusal hinted
+    # `--here -c`, which continues the running session's conversation, and the free worktree
+    # conversation could not be reached.
+    free, _ = _earlier_session(project)
+    _record(project, "claude", "free-1", free)
+    _claude_transcript(homes, free, "free-1", _MAIN_MTIME)
+    _claude_transcript(homes, project, "main-conv", _MAIN_MTIME + 300)
+    if busy_by == "session":
+        _live_session_in_main(project, alive=True)
+        started = _start(project, monkeypatch, capsys, agent_args=["-c"])
+    else:
+        with _lock_held_elsewhere(project):
+            started = _start(project, monkeypatch, capsys, agent_args=["-c"])
+
+    assert started.cwd == free.resolve()
+    assert started.exec_argv[-2:] == ["--resume", "free-1"]
+
+
+def test_continue_with_a_busy_main_and_no_free_conversation_refuses(project, monkeypatch, capsys):
+    # Bug caught: the latest-form refusal wording was never exercised.
+    with _lock_held_elsewhere(project):
+        started = _start(project, monkeypatch, capsys, agent_args=["-c"])
+
+    assert started.code == 2
+    assert started.stderr == (
+        "ERROR: the main checkout is in use by another booley chat; the latest conversation "
+        "resumes only there. Run booley chat --here ... to resume it beside that session.\n"
+    )
+    assert _worktrees(project) == []
+
+
+def test_resume_into_main_with_a_live_session_names_that_session(project, monkeypatch, capsys):
+    # Bug caught: the refusal names no occupant when a plain tab (no lock) works in main.
+    _live_session_in_main(project, alive=True)
+
+    started = _start(project, monkeypatch, capsys, agent_args=["--resume", "conv-9"])
+
+    assert started.code == 2
+    assert "in use by Session S1; conversation conv-9 resumes only there." in started.stderr
+
+
+def test_never_lets_a_resume_share_the_main_checkout(project, monkeypatch, capsys):
+    # Bug caught: the refusal applying to `never`, whose users chose a shared main checkout.
+    _write_toml(project, '[chat]\nworktree = "never"\n')
+    with _lock_held_elsewhere(project):
+        started = _start(project, monkeypatch, capsys, agent_args=["--resume", "conv-9"])
+
+    assert started.cwd == project
+    assert started.exec_argv[-2:] == ["--resume", "conv-9"]
+
+
+@pytest.mark.parametrize("case", ["here", "linked-worktree", "codex-all", "picker"])
+def test_resume_routing_leaves_these_launches_as_today(project, monkeypatch, capsys, homes, case):
+    # Bug caught: resume routing overriding an explicit flag, a launch inside a worktree, or
+    # a form that names no single conversation.
+    worktree, _ = _earlier_session(project, client="codex" if case == "codex-all" else "claude")
+    if case == "codex-all":
+        monkeypatch.setattr(
+            chat_cmd, "get_agent_settings", lambda: SimpleNamespace(default_cli="codex")
+        )
+        _record(project, "codex", "conv-1", worktree)
+        _codex_rollout(homes, "conv-1", worktree, created=_MAIN_MTIME, updated=_MAIN_MTIME + 60)
+        arguments, flag, expected = ["resume", "--last", "--all"], None, project
+        monkeypatch.setattr(codex_chat, "command", lambda *_a, **_k: ("codex", ["codex"], None))
+    else:
+        _record(project, "claude", "conv-1", worktree)
+        arguments, flag, expected = ["--resume", "conv-1"], None, project
+    if case == "here":
+        flag = "never"
+    elif case == "linked-worktree":
+        assert (
+            worktree_cmd.run(argparse.Namespace(worktree_command="new", name="s9"), project) == 0
+        )
+        expected = project / ".booley" / "worktrees" / "s9"
+        monkeypatch.chdir(expected)
+    elif case == "picker":
+        arguments = ["--resume"]
+
+    started = _start(project, monkeypatch, capsys, flag=flag, agent_args=arguments)
+
+    assert started.cwd == expected.resolve()
+    assert started.exec_argv[-len(arguments) :] == arguments
+    assert "resumes conversation" not in started.stderr
+
+
+def test_codex_last_stays_in_main_when_main_recency_is_unknown(
+    project, monkeypatch, capsys, codex, homes
+):
+    # Bug caught: a record winning because main's newer rollout could not be read; the
+    # rewrite to a conversation id would then pick the wrong conversation.
+    worktree, _ = _earlier_session(project, client="codex")
+    _record(project, "codex", "conv-1", worktree)
+    _codex_rollout(homes, "conv-1", worktree, created=_MAIN_MTIME, updated=_MAIN_MTIME)
+    oversized = b'{"type":"session_meta","payload":{"cwd":"' + b"a" * (1 << 21) + b'"}}'
+    _codex_rollout(
+        homes,
+        "main-conv",
+        project,
+        created=_MAIN_MTIME,
+        updated=_MAIN_MTIME + 60,
+        first_line=oversized,
+    )
+
+    started = _start(project, monkeypatch, capsys, agent_args=["resume", "--last"])
+
+    assert started.cwd == project
+    assert started.exec_argv[-2:] == ["resume", "--last"]
+
+
+# -- launch-time gc -------------------------------------------------------------------
+
+_DAY = 86400
+
+
+def _idle_worktree(project: Path, name: str, *, days: float | None) -> Path:
+    """Register worktree *name* on `booley/<name>`, last used *days* ago (``None``: never)."""
+    path = project / ".booley" / "worktrees" / name
+    _git(project, "worktree", "add", "-q", "-b", f"booley/{name}", str(path), "HEAD")
+    if days is not None:
+        stamp = project / ".booley" / "worktrees" / ".last-used" / name
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_bytes(b"")
+        then = time.time() - days * _DAY
+        os.utime(stamp, (then, then))
+    return path
+
+
+def test_launch_gc_removes_an_idle_clean_worktree(project, monkeypatch, capsys):
+    # Bug caught: no `gc` at launch (worktrees pile up), or its removal printed nowhere.
+    path = _idle_worktree(project, "s1", days=10)
+
+    started = _start(project, monkeypatch, capsys)
+
+    assert not path.exists()
+    assert "Removed worktree s1.\nBranches kept: booley/s1\n" in started.stderr
+    assert started.cwd == project
+    assert "booley/s1" in _branches(project)
+
+
+def test_launch_gc_is_quiet_about_kept_worktrees_and_errors(project, monkeypatch, capsys):
+    # Bug caught: launch-time `gc` printing `Kept worktree ...`, totals or an error for a
+    # recent, a dirty, an unstamped worktree or a bad `gc_older_than`; or blocking the launch.
+    recent = _idle_worktree(project, "s1", days=1)
+    dirty = _idle_worktree(project, "s2", days=10)
+    (dirty / "README.md").write_bytes(b"edited\n")
+    unstamped = _idle_worktree(project, "s3", days=None)
+    idle = _idle_worktree(project, "s4", days=10)
+    starting = "Booley is starting the claude interactive agent.\n"
+
+    started = _start(project, monkeypatch, capsys)
+
+    # Only the removal is printed: no `Kept` lines, no totals.
+    assert started.stderr == f"Removed worktree s4.\nBranches kept: booley/s4\n{starting}"
+    assert not idle.exists()
+
+    _write_toml(project, '[worktree]\ngc_older_than = "soon"\n')
+    started = _start(project, monkeypatch, capsys)
+
+    assert started.stderr == starting
+    assert started.cwd == project
+    assert all(path.is_dir() for path in (recent, dirty, unstamped))

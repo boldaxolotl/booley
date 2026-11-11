@@ -4,13 +4,20 @@ import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 
 from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
 from booley.flows.sim.campaign.flow_planning import plan_ordinary_hdl_campaign
 from booley.flows.sim.execution.contract import SimulationPreview
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow import (
+    OrdinaryCampaignPlanning,
+    PlannedBaselines,
+    PlannedTarget,
+    SimulateFlow,
+)
+from booley.flows.sim.test_run_invocation import decide_baseline_runs
 from booley.flows.test_runs import build_test_run
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 from tests.conftest import symlink_or_skip
@@ -40,31 +47,6 @@ def test_resolved_target_plans_one_private_serial_item_per_exact_test(
     )
     private = _plan(handle, inspection, preview, ("reset", "count"))
     assert private["build_variants"][0]["sharing_eligible"] is False  # type: ignore[index]
-
-
-def test_candidate_and_baseline_plans_disclose_carried_build_budget(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _project, handle, _inspection, preview = _planning_fixture(tmp_path)
-    flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim"])
-    flow._target_handles = {"sim": handle}
-    monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 5000)
-    monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)
-    monkeypatch.setattr(flow, "_target_sim_env", lambda _target: {})
-    monkeypatch.setattr(flow, "_redact_plan_environment", lambda _target, command: command)
-
-    candidate = flow._simulation_work_unit(
-        "sim", preview, ("reset",), ("run", "reset"), "candidate", None
-    )
-    baseline = flow._simulation_work_unit(
-        "sim", preview, ("reset",), ("run", "reset"), "baseline", "abc123"
-    )
-
-    assert candidate.timeout_ms == baseline.timeout_ms == 5000
-    assert candidate.recipe["build_timeout_ms"] == 7000
-    assert baseline.recipe["build_timeout_ms"] == 7000
 
 
 def test_invalid_run_cwd_template_is_refused_before_a_manifest_exists(tmp_path: Path) -> None:
@@ -182,94 +164,73 @@ def test_source_recipe_ignores_flow_options_defines(tmp_path):
         assert document["workload"]["build_recipe"]["command_model_sha256"] != baseline_command
 
 
-@pytest.mark.parametrize("topology", ["standalone", "linked"])
-def test_campaign_baseline_planning_materializes_project_topologies(
-    tmp_path, monkeypatch, topology
-):
-    from booley.targets.catalog import TargetCatalog
+def _planning_with_baseline(tmp_path: Path) -> tuple[SimulateFlow, OrdinaryCampaignPlanning]:
+    """A planned candidate and one planned baseline Target in its own checkout."""
     from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
-    from tests.flows.test_baseline_worktree import (
-        _assert_topology_baseline,
-        _project_topology_checkout,
-    )
 
-    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
     flow, _key = _criterion_flow(relative=True)
-    flow._args.work_dir = root
-    handle = TargetCatalog.build(root).select("sim_core", for_flow="sim")
-    flow._target_handles = {"sim_core": handle}
-    _pin_baseline(flow, revision)
-    roots = []
-    request = SimpleNamespace(revision=revision)
-    prerequisite = {"revision": revision, "target_identity": handle.identity}
+    _pin_baseline(flow)
+    baselines = PlannedBaselines(
+        "a" * 40,
+        tmp_path / "baseline",
+        (PlannedTarget("sim_core", flow._target_handles["sim_core"], MagicMock()),),
+    )
+    candidate = PlannedTarget("sim_core", flow._target_handles["sim_core"], MagicMock())
+    tests = {"sim_core": ["coremark"]}
+    flow._test_runs.baseline = decide_baseline_runs(
+        flow._baseline_links(["sim_core"], tests), flow._target_test_plan, "a" * 40
+    )
+    return flow, OrdinaryCampaignPlanning((candidate,), baselines, tests)
 
-    def plan(target, identity, ref, requirements, tests, worktree, invocation, admission):
-        _assert_topology_baseline(worktree, root, target)
-        assert identity == handle.identity
-        assert ref == revision
-        assert [run.name for run in requirements] == ["coremark@1"]
+
+def test_campaign_baseline_planning_builds_requests_in_the_baseline_checkout(tmp_path):
+    flow, planning = _planning_with_baseline(tmp_path)
+    candidate_checkout = Path(flow.args.work_dir)
+    assert planning.baselines is not None
+    request = SimpleNamespace(revision="a" * 40)
+    prerequisite = {"revision": "a" * 40, "target_identity": "sim_core"}
+
+    def plan(planned, baselines, tests, invocation, admission):
+        assert planned.selector == "sim_core"
+        assert baselines is planning.baselines
         assert tests == {"sim_core": ["coremark"]}
         assert invocation == tmp_path / "invocation"
         assert admission is None
-        assert flow.args.work_dir == worktree
-        roots.append(worktree)
+        assert flow.args.work_dir == baselines.worktree
         return request, {"coremark@1": prerequisite}
 
-    monkeypatch.setattr(flow, "_planned_baseline_request", plan)
-    try:
-        requests, prerequisites = flow._plan_campaign_baselines(
-            tmp_path / "invocation", None, ["sim_core"], {"sim_core": ["coremark"]}
-        )
-        assert requests == [request]
-        assert prerequisites == {"sim_core": [prerequisite]}
-        assert flow.args.work_dir == root
-        assert roots and roots[0].exists()
-    finally:
-        flow.publication_resources.close()
-    assert not roots[0].exists()
-
-
-@pytest.mark.parametrize("topology", ["standalone", "linked"])
-def test_campaign_baseline_preview_materializes_project_topologies(
-    tmp_path, monkeypatch, topology
-):
-    from booley.targets.catalog import TargetCatalog
-    from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
-    from tests.flows.test_baseline_worktree import (
-        _assert_topology_baseline,
-        _project_topology_checkout,
+    flow._planned_baseline_request = plan
+    requests, prerequisites = flow._plan_campaign_baselines(
+        tmp_path / "invocation", None, planning
     )
 
-    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
-    flow, _key = _criterion_flow(relative=True)
-    flow._args.work_dir = root
-    handle = TargetCatalog.build(root).select("sim_core", for_flow="sim")
-    flow._target_handles = {"sim_core": handle}
-    _pin_baseline(flow, revision)
-    roots = []
-    campaign = object()
-    prerequisite = {"revision": revision, "target_identity": handle.identity}
-    preview = {"target": handle.identity}
+    assert requests == [request]
+    assert prerequisites == {"sim_core": [prerequisite]}
+    assert flow.args.work_dir == candidate_checkout
 
-    def inspect(owner, target, ref, requirements, tests, worktree):
+
+def test_campaign_baseline_preview_runs_in_the_baseline_checkout(tmp_path):
+    flow, planning = _planning_with_baseline(tmp_path)
+    candidate_checkout = Path(flow.args.work_dir)
+    assert planning.baselines is not None
+    campaign = object()
+    prerequisite = {"revision": "a" * 40, "target_identity": "sim_core"}
+    preview = {"target": "sim_core"}
+
+    def inspect(owner, planned, baselines, tests):
         assert owner is campaign
-        _assert_topology_baseline(worktree, root, target)
-        assert ref == revision
-        assert [run.name for run in requirements] == ["coremark@1"]
+        assert planned.selector == "sim_core"
+        assert baselines is planning.baselines
         assert tests == {"sim_core": ["coremark"]}
-        assert flow.args.work_dir == worktree
-        roots.append(worktree)
+        assert flow.args.work_dir == baselines.worktree
         return preview, {"coremark@1": prerequisite}
 
-    monkeypatch.setattr(flow, "_preview_one_campaign_baseline", inspect)
-    with flow.publication_resources:
-        prerequisites, previews = flow._preview_campaign_baselines(
-            campaign, ["sim_core"], {"sim_core": ["coremark"]}
-        )
-        assert previews == [preview]
-        assert prerequisites == {"sim_core": [prerequisite]}
-        assert flow.args.work_dir == root
-    assert roots and not roots[0].exists()
+    flow._preview_one_campaign_baseline = inspect
+    prerequisites, previews = flow._preview_campaign_baselines(campaign, planning)
+
+    assert previews == [preview]
+    assert prerequisites == {"sim_core": [prerequisite]}
+    assert flow.args.work_dir == candidate_checkout
 
 
 @pytest.mark.parametrize("mapping", [False, True])

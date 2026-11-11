@@ -20,7 +20,7 @@ from booley.specialists.specialist_workspace import (
     isolated_agent_workspace,
     restore_result_paths,
 )
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 
 def _git(args: list[str], cwd: Path) -> None:
@@ -236,7 +236,7 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
     bundle = data / ".managed/project-git-hooks.pyz"
     bundle.parent.mkdir()
     bundle.write_bytes(build_project_git_hook_bundle().content)
-    subprocess.run(
+    run_bounded_child(
         [
             "git",
             "-C",
@@ -247,9 +247,8 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
             ".booley/booley.toml",
             ".booley/hooks/check.py",
         ],
-        check=True,
-        capture_output=True,
         timeout=10,
+        check=True,
     )
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
     with isolated_agent_workspace(params, "read_only") as (isolated, _snapshot):
@@ -913,3 +912,48 @@ def test_specialist_launch_reclaims_killed_run_scratch(tmp_path, monkeypatch):
     finally:
         for path in killed:  # unfixed code leaves the nested home in the real /tmp
             shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+def test_reviewers_read_firmware_in_snapshot(tmp_path, monkeypatch, category):
+    """Both Reviewers read non-HDL firmware under fw/; HDL there keeps its category."""
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    hdl_backups = ("fw/rom.sv.orig", "fw/rom.sv~")
+    for name in ("rtl/dut.sv", "tb/tb.sv", "fw/boot.c", "fw/rom.sv", "fw/start.c", *hdl_backups):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(f"// {name}\n")
+    (repo / "design.core").write_text(
+        "CAPI=2:\nname: ::fw:0\nfilesets:\n"
+        "  rtl:\n    files: [rtl/dut.sv, fw/rom.sv, {fw/boot.c: {file_type: cSource}}]\n"
+        "  tb:\n    tags: [tb]\n    files: [tb/tb.sv]\n"
+        "targets:\n  sim:\n    default_tool: verilator\n    filesets: [rtl, tb]\n"
+    )
+    _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", "fw/boot.c", "fw/rom.sv"], repo)
+    scope, focus = ("rtl/dut.sv", "bugs") if category == "rtl" else ("tb/tb.sv", "quality")
+    seen: dict[str, bool] = {}
+
+    def fake_call(params: AgentCallParams, *, on_event) -> AgentResult:
+        root = Path(params.cwd)
+        seen.update({name: (root / name).is_file() for name in ("fw/boot.c", "fw/start.c")})
+        seen["fw/rom.sv"] = (root / "fw/rom.sv").is_file()
+        seen["backups"] = any((root / name).is_file() for name in hdl_backups)
+        seen["opposite"] = (root / ("tb/tb.sv" if category == "rtl" else "rtl/dut.sv")).is_file()
+        return AgentResult(output="{}")
+
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        ["--work-dir", str(repo), "--category", category, "--focus", focus, "--scope", scope]
+    )
+    with (
+        patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
+        patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),
+    ):
+        endpoint._invoke_agent(AgentCallParams(prompt="review", model="test", cwd=repo))
+
+    assert seen["fw/boot.c"] and seen["fw/start.c"]
+    assert not seen["opposite"]
+    # HDL under fw/ stays RTL: the testbench Reviewer still never sees it.
+    assert seen["fw/rom.sv"] == (category == "rtl")
+    # Undeclared HDL backups are never firmware, so neither Reviewer sees them.
+    assert not seen["backups"]

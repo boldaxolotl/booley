@@ -24,6 +24,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _docker(*args: str) -> str:
+    # Kept on subprocess.run: the `_instrument` guard patches it to refuse foreign Docker mutations.
     result = subprocess.run(
         ["docker", *args], capture_output=True, text=True, timeout=180, check=False
     )
@@ -66,6 +67,7 @@ def _fail_and_restore(parked, tag: str, containers: list[str]) -> None:
     session_runtime.park_planned_session(parked)
     candidate = _start(parked.name, tag, parked.project_id)
     containers.append(candidate)
+    # Kept on subprocess.run: the `_instrument` guard patches it to refuse foreign Docker mutations.
     failed = subprocess.run(
         ["docker", "exec", parked.name, "sh", "-c", "exit 7"], timeout=180, check=False
     )

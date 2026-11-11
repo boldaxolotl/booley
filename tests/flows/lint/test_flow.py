@@ -6,7 +6,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import ClassVar
@@ -29,6 +28,7 @@ from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError, MissingTargetToplevelError, TargetHandle
+from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -2592,7 +2592,7 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
     prepared = SimpleNamespace(
         result=LintConfigResult(target="lite"),
         command=[sys.executable, str(fake)],
-        resolved=SimpleNamespace(configured_eda_tool=family),
+        resolved=SimpleNamespace(configured_eda_tool=family, files=(), build_root=tmp_path),
         attempt_token="",
     )
     result = flow._run_lint_target(_target_handle("lite"), prepared=prepared)
@@ -2672,9 +2672,15 @@ def _real_lint_setup(monkeypatch, command: list[str], root: Path) -> None:
         env[f"XDG_{kind}_HOME"] = str(root / f"isolated-{kind.lower()}")
 
     def bounded_runner(*args, **kwargs):
+        assert set(kwargs) <= {
+            "cwd",
+            "env",
+            "capture_output",
+            "text",
+        }  # the helper captures text itself
         assert kwargs["env"] == env
         assert args[0][args[0].index("--config") + 1] == str(config)
-        return subprocess.run(*args, **kwargs, timeout=30, check=False)
+        return run_bounded_child(args[0], cwd=kwargs.get("cwd"), env=kwargs["env"])
 
     def resolve(*args, **kwargs):
         return real_resolve(
@@ -2906,3 +2912,41 @@ def test_invocation_report_records_tools_by_target(tmp_path, state_file, target)
         else {"eda_tools": {"lite": "Verilator", "full": "Verilator"}}
     )
     assert {key: report[key] for key in ("eda_tool", "eda_tools") if key in report} == expected
+
+
+def test_lint_label_carries_target_source_bytes(tmp_path):
+    from types import SimpleNamespace
+
+    from booley.flows import job_resources
+    from booley.flows.base import SubprocessResult
+    from booley.fusesoc.fusesoc_registry import ResolvedFile
+
+    (tmp_path / "top.sv").write_bytes(b"module top; endmodule\n")
+    (tmp_path / "pkg.sv").write_bytes(b"package p; endpackage\n")
+    expected_bytes = sum(len(path.read_bytes()) for path in tmp_path.glob("*.sv"))
+    flow = LintFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    prepared = SimpleNamespace(
+        result=LintConfigResult(target="lite"),
+        command=["true"],
+        resolved=SimpleNamespace(
+            configured_eda_tool="verilator",
+            build_root=tmp_path,
+            files=(
+                ResolvedFile("top.sv", "systemVerilogSource"),
+                ResolvedFile("pkg.sv", "systemVerilogSource"),
+            ),
+        ),
+        attempt_token="",
+    )
+    seen: list[job_resources.ResourceLabel | None] = []
+
+    def execute(*_args, **_kwargs):
+        seen.append(job_resources.current_label())
+        return SubprocessResult(returncode=0)
+
+    with patch.object(flow, "_execute_boundary", side_effect=execute):
+        flow._run_lint_target(_target_handle("lite"), prepared=prepared)
+
+    assert seen == [job_resources.ResourceLabel("lite", "lint", source_bytes=expected_bytes)]
+    assert expected_bytes > 0

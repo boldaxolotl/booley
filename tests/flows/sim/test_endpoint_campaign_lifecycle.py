@@ -24,7 +24,7 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.campaign import collect_pre_sim_firings
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow import OrdinaryCampaignPlanning, SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_campaign_characterization import _AdapterAbortExecution, _plan
@@ -505,8 +505,9 @@ def test_all_campaigns_survive_terminal_progress_failure(
         lambda retained, outcome: retained.outcomes.append(outcome),
     )
 
-    result = flow._run_coverage_campaigns(
-        AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
+    result = flow._execute_campaign(
+        AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
+        flow._coverage_campaign_run(),
     )
 
     assert result.exit_code == 2
@@ -1280,10 +1281,9 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
         raise error("second target stopped")
 
     monkeypatch.setattr(flow, "_publish_and_run_campaign_requests", run)
-    result = flow._run_ordinary_campaigns(
-        [],
-        {},
+    result = flow._execute_campaign(
         AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
+        flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {})),
     )
     assert result.exit_code != 0
     assert flow._simulation_campaign_outcomes == ()
@@ -1553,10 +1553,11 @@ def _ordinary_public_hook_fixture(tmp_path, monkeypatch):
     )
     flow = SimulateFlow()
     # Publication tests must allow for Git for Windows shell startup under CI load.
-    flow._simulation_execution_override = SimulationExecution(
+    execution = SimulationExecution(
         invoke=_subprocess_invoker(project),
         options=SimulationOptions(timeout_ms=60_000 if os.name == "nt" else 5000),
     )
+    monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
     return project, flow
 
 
@@ -1740,10 +1741,22 @@ def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     flow = SimulateFlow()
+    flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
-    returned = SimpleNamespace(target=plan.manifest.document["target"])
+    validated = SimpleNamespace(manifest=plan.manifest, path=tmp_path / "origin" / "manifest.json")
+    recovery = SimpleNamespace(
+        manifest_sha256="sha256:x", completed=(), interrupted=(), pending=()
+    )
+    returned = SimpleNamespace(target=plan.manifest.document["target"], recovery=recovery)
     phases = []
-    monkeypatch.setattr(flow, "_run_validated_resume_campaign", lambda *_args: returned)
+
+    def run_resumed(*args):
+        args[-1](validated.path)  # the origin manifest is published before the work runs
+        return returned
+
+    def endpoint(outcomes):
+        assert outcomes == [returned]
+        return EndpointOutcome(report_text="resumed result")
 
     def checkpoint(_targets, outcomes, *, phase, complete):
         phases.append(phase)
@@ -1751,17 +1764,160 @@ def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
             assert outcomes == [returned]
             raise OSError("required terminal write unavailable")
 
+    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
+    monkeypatch.setattr(flow, "_prepare_campaign_resume_dependency", lambda *_args: None)
+    monkeypatch.setattr(flow, "_run_validated_resume_campaign", run_resumed)
+    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", endpoint)
     monkeypatch.setattr(flow, "_write_campaign_progress", checkpoint)
-    outcome, error = flow._execute_ordinary_resume_progress(
-        SimpleNamespace(manifest=plan.manifest),
-        tmp_path,
+
+    result = flow._execute_campaign(
         AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
-        lambda _path: None,
+        flow._resume_campaign_run(validated, recovery),
     )
-    assert outcome is returned
-    assert isinstance(error, OSError)
+
     assert phases == ["starting", "running", "complete", "aborted"]
-    assert flow.cycle_report_json is None
+    assert result.report_text.startswith("resumed result")
+    assert result.detail["completion_error"]["operation"] == "publish Simulation progress"
+    assert f"  manifest: {validated.path.resolve()}" in result.report_text.splitlines()
+
+
+_UNADMITTED = {
+    "ordinary": ("sim: Simulation Campaign has no borrowed admission context", {}),
+    "coverage": ("sim: Coverage Campaign has no borrowed admission context", {}),
+    "resume": (
+        "sim: no admission context",
+        {"manifest_sha256": "sha256:x", "completed": ["a"], "interrupted": [], "pending": ["b"]},
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
+def test_campaign_kinds_refuse_without_admission_before_reserving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
+    flow._coverage_prepared = SimpleNamespace(targets=[])
+    recovery = SimpleNamespace(
+        manifest_sha256="sha256:x", completed=("a",), interrupted=(), pending=("b",)
+    )
+    campaigns = {
+        "ordinary": lambda: flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {})),
+        "coverage": flow._coverage_campaign_run,
+        "resume": lambda: flow._resume_campaign_run(SimpleNamespace(), recovery),
+    }
+    monkeypatch.setattr(
+        flow, "reserve_invocation_dir", lambda: pytest.fail("reserved before the admission check")
+    )
+
+    result = flow._execute_campaign(None, campaigns[kind]())
+
+    text, detail = _UNADMITTED[kind]
+    assert (result.exit_code, result.report_text, result.detail) == (2, text, detail)
+
+
+def _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault):
+    """Build *kind*'s Campaign with its steps stubbed.
+
+    The first step publishes one manifest, then raises ``OSError`` for
+    ``before_result``; for ``completion`` the work returns a result and only the
+    terminal progress write fails.
+    """
+    manifest = tmp_path / "manifest.json"
+    done = EndpointOutcome(report_text="verdict")
+
+    def work(publish):
+        publish(manifest)
+        if fault == "before_result":
+            raise OSError("disk gone")
+
+    def checkpoint(*_args, phase=None, complete=False):
+        if complete and phase == "complete" and fault == "completion":
+            raise OSError("terminal progress unavailable")
+
+    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", lambda _outcomes: done)
+    if kind == "ordinary":
+        publishers = []
+        monkeypatch.setattr(
+            "booley.flows.sim.flow.SimulationCampaign",
+            lambda *_args, manifest_published, **_kwargs: publishers.append(manifest_published),
+        )
+
+        def baselines(*_args):
+            work(publishers[0])
+            return [], {}
+
+        monkeypatch.setattr(flow, "_write_campaign_progress", checkpoint)
+        monkeypatch.setattr(flow, "_plan_campaign_baselines", baselines)
+        monkeypatch.setattr(flow, "_candidate_campaign_requests", lambda *_args: [])
+        monkeypatch.setattr(flow, "_publish_and_run_campaign_requests", lambda *_a, **_k: None)
+        return flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {})), manifest
+    if kind == "coverage":
+        progress = SimpleNamespace(targets=("a",), outcomes=[object()], checkpoint=checkpoint)
+
+        def session(_admission, _invocation, publish):
+            work(publish)
+            return None, []
+
+        flow._coverage_prepared = SimpleNamespace(
+            targets=[SimpleNamespace(handle=SimpleNamespace(selector="a"))]
+        )
+        monkeypatch.setattr("booley.flows.sim.flow.CoverageProgress", lambda *_args: progress)
+        monkeypatch.setattr(flow, "_coverage_campaign_session", session)
+        monkeypatch.setattr(flow, "_execute_coverage_campaign_requests", lambda *_args: done)
+        return flow._coverage_campaign_run(), manifest
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
+    validated = SimpleNamespace(manifest=plan.manifest, path=manifest)
+    recovery = SimpleNamespace(
+        manifest_sha256="sha256:x", completed=(), interrupted=(), pending=()
+    )
+
+    def resumed(*args):
+        work(args[-1])
+        return SimpleNamespace(recovery=recovery)
+
+    monkeypatch.setattr(flow, "_write_campaign_progress", checkpoint)
+    monkeypatch.setattr(flow, "_prepare_campaign_resume_dependency", lambda *_args: None)
+    monkeypatch.setattr(flow, "_run_validated_resume_campaign", resumed)
+    monkeypatch.setattr(
+        "booley.flows.sim.flow._fresh_campaign_recovery_detail", lambda *_args: {"pending": []}
+    )
+    return flow._resume_campaign_run(validated, recovery), manifest
+
+
+@pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
+@pytest.mark.parametrize("fault", ["before_result", "completion"])
+def test_campaign_kind_failure_cards_name_published_manifests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, fault: str
+) -> None:
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
+    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
+    campaign, manifest = _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault)
+
+    result = flow._execute_campaign(
+        AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
+        campaign,
+    )
+
+    assert result.exit_code == 2
+    if fault == "completion":
+        operation = {
+            "ordinary": "publish simulation progress",
+            "coverage": "publish coverage progress",
+            "resume": "publish Simulation progress",
+        }[kind]
+        assert result.detail["completion_error"]["operation"] == operation
+        assert result.report_text.startswith("verdict")
+    else:
+        failed = {
+            "ordinary": "Simulation Campaign execution failed",
+            "coverage": "Simulation Campaign coverage planning failed",
+            "resume": "Simulation Campaign resume failed",
+        }[kind]
+        assert result.report_text.startswith(f"{failed}: disk gone")
+    # Whatever stopped the run, the card names the manifest --resume-from needs.
+    assert result.report_text.splitlines().count(f"  manifest: {manifest.resolve()}") == 1
 
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
@@ -1958,10 +2114,10 @@ def test_partial_campaign_planning_keeps_known_and_unknown_tools(tmp_path, monke
     (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a"]\n[sim_b]\ntests = ["a"]\n')
     original = flow._ordinary_campaign_plan
 
-    def plan(target, *args, **kwargs):
-        if target == "sim_b":
+    def plan(planned, *args, **kwargs):
+        if planned.selector == "sim_b":
             raise ValueError("second Target unavailable")
-        return original(target, *args, **kwargs)
+        return original(planned, *args, **kwargs)
 
     monkeypatch.setattr(flow, "_ordinary_campaign_plan", plan)
     result = flow.execute(

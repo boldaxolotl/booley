@@ -126,7 +126,9 @@ Don't continue until `booley doctor` shows no failures or warnings.
     Arguments after `booley chat` and its own options (`--cli`, `-C`,
     `--new-worktree`, `--here`) go to the
     CLI unchanged. To resume an earlier conversation, run
-    `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex).
+    `booley chat --resume <id>` (Claude) or `booley chat resume <id>` /
+    `booley chat resume --last` (Codex); a conversation that ran in a worktree
+    reopens there (see [Several agents at once](#several-agents-at-once)).
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
@@ -250,13 +252,22 @@ The Dashboard has three windows; press `←` or `→` to switch:
   Variants, and constraints. The **Worktree** item in the top bar picks the
   worktree: those with a connected session come first, the main checkout last.
 
+The **Run** item in the top bar starts a built-in Booley Flow as a Standalone
+Job. Pick the worktree, the Flow, and its arguments (the Project comes from the
+worktree, so `-C`, `--project`, and `--work-dir` are refused); the Dashboard
+checks them and shows the equivalent `cd … && booley flow …` command. **Submit**
+starts the Job, **Copy command** asks your terminal to copy the command instead.
+The Jobs window then opens on All sessions with the new Job selected; a
+Finished filter switches to Running, which keeps the Job listed after it
+finishes. `Esc` returns to where you started.
+
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
-the first row to reach the top bar with the tabs, filters, and Help; the footer
-shows the keys you can use.
+the first row to reach the top bar with the tabs, filters, Run, and Help; the
+footer shows the keys you can use.
 
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
 `J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
-handle.
+handle, except a conversation resumed in its worktree, which keeps its handle.
 
 ### Several agents at once
 
@@ -280,6 +291,75 @@ made only when the main checkout is taken, so a lone session behaves as before.
   the default; see [Interactive sessions](CONFIG.md#interactive-sessions-chat).
 - Run from inside an existing linked worktree, `booley chat` starts there and
   creates nothing.
+
+When the agent of a worktree session exits and you are still at the terminal,
+`booley chat` asks whether to keep or discard the worktree. The question lists
+the work that is not in the main checkout yet: uncommitted changes in the
+worktree and in its Paired Checkout, and the number of commits on each of its
+branches that main lacks (Git-ignored files are not counted):
+
+```text
+Session S3 has ended. Worktree s3: <path>
+Work not in main yet:
+  - 2 uncommitted change(s) in the worktree
+  - 3 commit(s) on booley/s3 not in main
+Discard deletes the uncommitted changes and keeps the branches. Booley never
+merges: merge what you need first.
+Keep or discard worktree s3? [K/d]
+```
+
+Enter keeps it. Discard removes the worktree, the same as
+`booley worktree rm s3`, and keeps its branches, so committed work stays
+reachable. Booley never merges anything for you. If the removal is refused, for
+example because the agent is still running somewhere or a Goal is active,
+Booley shows why and asks a second time before it removes the worktree anyway.
+A session in the main checkout gets no question.
+
+Booley keeps the worktree without asking, and prints `Kept worktree s3: <path>`,
+when nobody can answer: output goes to a pipe or a file, the terminal was
+closed, or the agent was stopped by a signal. A kept worktree is normal; find it
+with `booley worktree list` and remove it with `booley worktree rm`.
+
+Every `booley chat` launch also runs `booley worktree gc` first and prints only
+the worktrees it removed, so idle ones do not pile up. See
+[Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+
+#### Resuming a conversation
+
+Claude Code and Codex keep a conversation with the directory it ran in, so
+a conversation that ran in worktree `s3` cannot be resumed from the main
+checkout. Booley therefore sends a resume to the worktree the conversation ran
+in and keeps its handle (`S3` stays `S3`). It prints
+
+```text
+Booley session S3 resumes conversation <id> in worktree <path>.
+```
+
+- By id: `booley chat --resume <id>` (also `--resume=<id>` and `-r <id>`) for
+  Claude, `booley chat resume <id>` for Codex. Put the id right after `resume`.
+- The latest conversation: Claude's `-c`/`--continue` and Codex's
+  `resume --last` continue the most recent conversation (by the agent CLI's
+  own last-update time) among the main checkout and the worktrees whose
+  session is not running; a main checkout in use is skipped too. Booley then resumes that conversation by its id. If
+  Booley cannot tell which is newest, the agent CLI picks from the main
+  checkout, as before. `resume --last --all` is left to Codex.
+- A conversation that ran in the main checkout, or that Booley has no record
+  of, resumes in the main checkout.
+- If the worktree has since been removed, the conversation resumes in the main
+  checkout after a `NOTE`.
+- Resuming refuses a checkout that is in use, except the main checkout under
+  `[chat] worktree = "never"`, which is shared. A conversation whose worktree
+  has a running session (a Codex started by hand counts) is refused with exit 2
+  (end that session first). A conversation that belongs in the main checkout
+  while it is in use is refused too; run `booley chat --here ...` to resume it
+  beside that session.
+- `--here` and `--new-worktree` keep their meaning, and a launch from inside a
+  linked worktree stays there: none of them is redirected by a resume. The
+  `[chat] worktree` setting decides where new sessions start, not where a
+  resume goes.
+- A conversation you started by hand inside a worktree (not through
+  `booley chat`) reopens in that worktree, but may get a new handle once its
+  earlier session has ended.
 
 Put both options before any arguments meant for the agent CLI. Claude Code's
 own `--worktree` still goes to the agent.
