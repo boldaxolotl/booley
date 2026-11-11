@@ -1588,7 +1588,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     try:
         load_agent_settings(project_root)
     except (OSError, ValueError, RuntimeError) as exc:
-        # RuntimeError covers BackendConfigError (invalid [agent] provider /
+        # RuntimeError covers BackendConfigError (invalid [agent] default /
         # sandbox mode) — mirror doctor, which warns-and-defaults rather than
         # tracebacking a `booley shell` on a fixable toml typo.
         print(

@@ -154,10 +154,10 @@ Without `clis`, the Project uses only the default CLI. `clis` also decides
 which logins the Sandbox receives, see
 [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
 Without `default`, the
-first entry of `clis` is the default. `booley init` asks for the default (default `claude`), records it as
-`default`, and keeps your answer on re-runs; `booley init --provider codex`
-sets it without the prompt. `provider` is the older name for `default` and
-still works. Each Specialist runs on the Agent CLI its model needs, so
+first entry of `clis` is the default. `booley init` asks for the default CLI
+(`claude` if you just press Enter), records it as `default`, and keeps your
+answer on re-runs; `booley init --provider codex` sets it without the prompt.
+`provider` is the older name for `default` and still works. Each Specialist runs on the Agent CLI its model needs, so
 list a second CLI only when a [`[models]`](#model-selection-models) entry asks
 for it.
 
