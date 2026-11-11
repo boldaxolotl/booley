@@ -2592,7 +2592,7 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
     prepared = SimpleNamespace(
         result=LintConfigResult(target="lite"),
         command=[sys.executable, str(fake)],
-        resolved=SimpleNamespace(configured_eda_tool=family),
+        resolved=SimpleNamespace(configured_eda_tool=family, files=(), build_root=tmp_path),
         attempt_token="",
     )
     result = flow._run_lint_target(_target_handle("lite"), prepared=prepared)
