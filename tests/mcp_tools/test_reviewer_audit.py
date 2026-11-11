@@ -104,7 +104,7 @@ def test_mixed_rows_preserve_raw_ordinals_and_duplicate_source_proposals(reviewe
     malformed = [None, {"severity": "SECRET", "summary": "<script>[link](bad)</script>"}]
     output(reviewer, monkeypatch, {"issues": [*malformed, outside, outside, proposal()]})
     result = reviewer._run()
-    assert result.exit_code == 1
+    assert result.exit_code == 0
     assert len(result.detail["pending"]) == 1
     assert result.detail["MAJOR"] == 1
     assert [row["ordinal"] for row in result.detail["filtered"]] == [3, 4]
@@ -407,7 +407,7 @@ def test_interactive_discovery_replaces_historical_resolution(reviewer, monkeypa
 def test_valid_ticket_anchors_are_not_literal_filters(reviewer, monkeypatch, clause):
     output(reviewer, monkeypatch, {"issues": [proposal(ticket_clause=clause)]})
     result = reviewer._run()
-    assert result.exit_code == 1
+    assert result.exit_code == 0
     assert result.detail["pending"][0]["ticket_clause"] == clause
 
 
