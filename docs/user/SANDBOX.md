@@ -82,8 +82,9 @@ previous values until you apply the change. Use the first case that applies:
 
 - **After an EDA Grant change** (`booley eda grant add` or `revoke`): Booley
   withdraws the Sandbox's issuance, so the running Sandbox can't be refreshed. Stop
-  any VS Code Sandbox through its owning app, then on the host run
-  `booley session down`, `booley init --seed`, and `booley session up`.
+  any VS Code Sandbox through its owning app. If you manage the image yourself,
+  rebuild or pull it. Then on the host run `booley session down`,
+  `booley init --seed`, and `booley session up`.
 - **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
   then **Dev Containers: Rebuild Container**.
 - **An image you manage yourself:** rebuild or pull it, then run
@@ -92,9 +93,8 @@ previous values until you apply the change. Use the first case that applies:
   `booley session refresh`.
 - **Otherwise (headless Sandbox):** run `booley session refresh`.
 
-When `booley init` or Sandbox validation refuses because the issuance changed,
-its message names the case that applies. Switching `egress` has its own steps,
-described under [Host configuration](#host-configuration-configtoml).
+When `booley init` or Sandbox validation refuses a running Sandbox, its message
+names the case that applies.
 
 ## Agent CLI logins in the Sandbox
 
@@ -217,8 +217,8 @@ either case. `booley bootstrap --check-only --egress unproxied` reports the
 pending change without writing it. After switching `egress` by any route, also
 apply it in each Project: headless, run `booley session down`,
 `booley init --seed`, and `booley session up`; in VS Code, run
-`booley init --seed`, then **Dev Containers: Rebuild Container**. Until then the running Sandbox keeps its previous
-mode, and host-side Doctor warns about it; see
+`booley init --seed`, then **Dev Containers: Rebuild Container**. Until then
+the running Sandbox keeps its previous mode, and host-side Doctor warns about it; see
 [TROUBLESHOOTING](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
 
 ## Project settings (`[sandbox]`)
@@ -263,8 +263,8 @@ The Sandbox carries Booley's own `booley-*` skills. Set
 personal skills from `~/.claude/skills` (Claude Code) and `~/.agents/skills`
 (Codex). Each is mounted read-only; symlinked skills work. Booley's built-in
 skills win a name clash, and so does `~/.claude/skills` over
-`~/.agents/skills`. Rerun `booley init --seed` after adding or removing a
-skill.
+`~/.agents/skills`. After adding or removing a skill, apply the change as
+[Applying Sandbox changes](#applying-sandbox-changes) describes.
 
 ### Python dependencies (`[sandbox].pip_requirements`)
 

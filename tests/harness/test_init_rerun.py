@@ -392,7 +392,7 @@ class TestFullInitRerun:
 
         assert init_cmd._print_summary(ctx) == 2
         output = capsys.readouterr().out
-        assert "could not reconcile stopped Sandbox" in output
+        assert "could not reconcile the Sandbox" in output
         assert "this project is ready" not in output
 
     def test_foreign_root_guidance_blocks_before_any_filesystem_mutation(self, repo: Path):

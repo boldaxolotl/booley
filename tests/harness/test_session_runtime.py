@@ -1267,6 +1267,34 @@ class TestInitReconciliation:
         assert "retry `booley init`" not in message
         remove.assert_not_called()
 
+    def test_stale_running_runtime_names_refresh_when_issuance_stands(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a withdrawn issuance the refusal names `session refresh`, as validation does."""
+        from booley.runtime import runtime_context, session_issuance
+
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        monkeypatch.setattr(
+            session_issuance,
+            "load_issued_snapshot",
+            lambda _root: SimpleNamespace(license_profile=None),
+        )
+        monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
+        monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
+        monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
+        state = _refresh_state(running=True)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            pytest.raises(sr.SessionError) as refusal,
+        ):
+            sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+
+        message = str(refusal.value)
+        assert message.endswith("run `booley session refresh` on the host")
+        assert "retry `booley init`" not in message
+
     def test_other_project_session_blocks_relay_mutation(self, workspace: Path) -> None:
         state = _refresh_state(running=False)
         with (
