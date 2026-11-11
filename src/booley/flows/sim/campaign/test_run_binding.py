@@ -36,12 +36,12 @@ def observation_test_runs(
     """
     runs = cast(tuple[Mapping[str, object], ...], item["test_runs"])
     unnamed = runs[0] if len(runs) == 1 and runs[0]["test"] is None else None
-    selector = cast(str, cast(Mapping[str, object], item["target"])["selector"])
     taken: dict[object, int] = {}
     bound: list[tuple[str, str]] = []
     for observation in observations:
         test = observation["test"]
         if unnamed is not None and test is not None:
+            selector = cast(str, cast(Mapping[str, object], item["target"])["selector"])
             run = discovered_test_run(
                 cast(str, test), test_run_from_document(unnamed), target=selector
             )

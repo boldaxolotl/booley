@@ -20,7 +20,7 @@ import pytest
 from booley.flows.base import SubprocessResult
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.request import SimRequest
-from booley.runtime.endpoint_execution import EXIT_FAILURE
+from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_FAILURE
 from tests.flows.sim.campaign_boundary import Launch, run_campaign_sim
 from tests.flows.sim.test_flow import (
     SimulateFlow,
@@ -226,9 +226,6 @@ def test_executing_the_rerun_command_of_the_unnamed_invocation_reproduces_it(
     assert rerun in again.report_text
 
 
-_FAILING_PRE_SIM = {".booley/booley.toml": '[flows.sim]\npre_run_commands = ["exit 3"]\n'}
-
-
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
 @pytest.mark.parametrize("stage", ["pre-sim", "build"])
 def test_an_unnamed_invocation_that_fails_before_the_simulator_is_named_by_its_test_run(
@@ -248,8 +245,10 @@ def test_an_unnamed_invocation_that_fails_before_the_simulator_is_named_by_its_t
         registry=_UNNAMED,
         extra_files={".booley/booley.toml": config},
         build=SubprocessResult(returncode=1, stdout="build broke\n") if stage == "build" else None,
-        exit_code=2 if stage == "build" else EXIT_FAILURE,
+        exit_code=EXIT_ERROR if stage == "build" else EXIT_FAILURE,
     )
     assert runs == ["<default>@9"]
     assert launches == []
-    assert _rerun_line(outcome.report_text) in (None, "booley flow sim --target lite --seed 9")
+    # A pre-sim failure is graded fail and offers the rerun; a build error offers none.
+    expected_rerun = "booley flow sim --target lite --seed 9" if stage == "pre-sim" else None
+    assert _rerun_line(outcome.report_text) == expected_rerun

@@ -64,7 +64,8 @@ def test_results_facts_and_reports_bind_the_unnamed_invocations_own_result_to_it
 
     engine = _observed_test_run(name, _HANDLE, (unnamed,))
     ((bound_name, bound_fingerprint),) = observation_test_runs(_item(unnamed), ({"test": name},))
-    observation = {"work_item_id": "w", "target": _TARGET, "test": name, "test_run": "sim@9"}
+    # "test_run" names no recorded run, so the report must bind through the Test name.
+    observation = {"work_item_id": "w", "target": _TARGET, "test": name, "test_run": "unrecorded"}
     report = _observed_run(observation, {("w", unnamed.name): unnamed, ("w", ""): unnamed})
 
     assert engine is unnamed and report is unnamed

@@ -1318,6 +1318,8 @@ def _blocked_shared_result(
     elif names:
         identities = names
     else:
+        # The default selection's name is the Target selector; Test Run binding
+        # (discovered_test_run) maps it back to the unnamed invocation.
         target = cast(Mapping[str, object], request.manifest.document["target"])
         identities = (cast(str, target["selector"]),)
     observations = []
