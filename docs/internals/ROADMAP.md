@@ -117,7 +117,7 @@ mutation` Booley Flow.
 ## Firmware Reviewer
 
 **Planned.** The RTL and testbench Reviewers read firmware as context but
-report no findings in it ([ADR 0087](../adr/0087-review-commits-outside-measurement.md)).
+report no findings in it ([ADR 0091](../adr/0091-review-commits-outside-measurement.md)).
 A firmware Reviewer would review firmware sources in their own right, for
 example driver code against the register map and the spec, and would become a
 `fw` role that Targets can declare reviews for.
