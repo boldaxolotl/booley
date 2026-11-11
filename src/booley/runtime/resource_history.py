@@ -71,7 +71,7 @@ def _retained(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
-    """Add *records* under the history lock and publish the bounded result."""
+    """Add *records* under the history lock and publish the retained result."""
     path = history_path(booley_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_suffix(".lock").open("a+", encoding="utf-8") as handle:
