@@ -183,6 +183,7 @@ def _run_probe(
     command, environment = prepare_codex_text_only(
         [*command, "-"], params, environment, auth_mode="gateway" if gateway else "auto"
     )
+    # Unbounded child: the child needs stdin data (input=)
     return subprocess.run(
         command,
         input=params.prompt,

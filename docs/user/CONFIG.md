@@ -157,10 +157,10 @@ Without `clis`, the Project uses only the default CLI. `clis` also decides
 which logins the Sandbox receives, see
 [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
 Without `default`, the
-first entry of `clis` is the default. `provider` is the older name for
-`default` and still works; `booley init` asks for it (default `claude`) and
-keeps your answer on re-runs, and `booley init --provider codex` sets it
-without the prompt. Each Specialist runs on the Agent CLI its model needs, so
+first entry of `clis` is the default. `booley init` asks for the default CLI
+(`claude` if you just press Enter), records it as `default`, and keeps your
+answer on re-runs; `booley init --provider codex` sets it without the prompt.
+`provider` is the older name for `default` and still works. Each Specialist runs on the Agent CLI its model needs, so
 list a second CLI only when a [`[models]`](#model-selection-models) entry asks
 for it.
 
@@ -308,9 +308,10 @@ gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
 ```
 
 `booley worktree gc` removes worktrees whose last use is older than this age,
-keeping any that `booley worktree rm` would refuse (default `"7d"`). The
-setting is read from the main checkout's `.booley/booley.toml`; a worktree's own
-copy is ignored. `booley worktree gc --older-than AGE` overrides it. See
+keeping any that `booley worktree rm` would refuse (default `"7d"`). Every
+`booley chat` launch runs the same cleanup with this age. The setting is read
+from the main checkout's `.booley/booley.toml`; a worktree's own copy is
+ignored. `booley worktree gc --older-than AGE` overrides it. See
 [Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
 
 ## Feedback (`[feedback]`)

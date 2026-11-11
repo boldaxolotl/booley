@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 from tests.bwave.native_binary import require_exact_binary
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support.test_profiles import native_test_binary, native_test_problem
 from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
@@ -54,7 +54,7 @@ def _write_project(root: Path, *, stealth: bool = False) -> None:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-    subprocess.run(["git", "init", "-q"], cwd=root, timeout=10, capture_output=True, check=True)
+    run_bounded_child(["git", "init", "-q"], cwd=root, timeout=10, check=True)
     if stealth:
         # The layout `booley init` leaves behind: the Booley Directory is hidden
         # from the host repository and FuseSoC skips worktree copies.
@@ -72,7 +72,7 @@ def _write_project(root: Path, *, stealth: bool = False) -> None:
             "scaffold",
         ],
     ):
-        subprocess.run(["git", *args], cwd=root, timeout=10, capture_output=True, check=True)
+        run_bounded_child(["git", *args], cwd=root, timeout=10, check=True)
 
 
 def _assert_coverage(reports: Path, detail: dict) -> None:
@@ -136,10 +136,8 @@ def _assert_trace(tmp_path, reports, scaffold_native_binary):
     stores = list((reports / "sim/1").rglob("*.fst"))
     assert stores, "current invocation must retain a queryable Trace Artifact"
     for store in stores:
-        query = subprocess.run(
+        query = run_bounded_child(
             [str(scaffold_native_binary), "list", str(store), "--format", "json"],
-            capture_output=True,
-            text=True,
             timeout=15,
             check=True,
         )
@@ -151,8 +149,8 @@ def test_real_stealth_scaffold_simulation(tmp_path, monkeypatch, scaffold_native
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     _write_project(tmp_path, stealth=True)
-    tracked = subprocess.run(
-        ["git", "ls-files"], cwd=tmp_path, capture_output=True, text=True, check=True, timeout=10
+    tracked = run_bounded_child(
+        ["git", "ls-files"], cwd=tmp_path, timeout=10, check=True
     ).stdout.split()
     assert not [path for path in tracked if path.endswith(".core")]
     reports = tmp_path / "reports"
