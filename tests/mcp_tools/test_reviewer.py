@@ -2754,7 +2754,7 @@ class TestCleanModeInitial:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.criterion_met is False
         assert result.criterion_key == "review_rtl_bugs_clean"
         assert result.detail["verify_attempts"] == 0
@@ -2780,7 +2780,7 @@ class TestCleanModeInitial:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.criterion_met is False
         assert len(result.detail["pending"]) == 1
 
@@ -2863,7 +2863,7 @@ class TestCleanModeVerify:
         result = endpoint._run()
 
         assert mock_agent.call_count == 1
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.criterion_met is False
         assert result.detail["pending"][0]["summary"] == "New final-state issue"
 
@@ -3051,7 +3051,7 @@ class TestCleanModeVerify:
         _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.criterion_met is False
         assert result.detail["verify_attempts"] == 1
         assert result.detail["issues"] == 1
@@ -3135,7 +3135,7 @@ class TestCleanModeVerify:
         _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.criterion_met is False
         assert result.detail["pending"][0]["status"] == "still_present"
         assert result.detail["resolved"] == []
@@ -3178,7 +3178,7 @@ class TestCleanModeVerify:
         _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert mock_agent.call_count == 0
         assert "2 verify attempts exhausted" in result.report_text
 
@@ -3227,7 +3227,7 @@ class TestCleanModeVerify:
         _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.criterion_met is False
         assert result.detail["issues"] == 2
         assert result.detail["verify_attempts"] == 1
@@ -3295,7 +3295,7 @@ class TestCleanModeVerify:
 
         # All three demoted to still_present → gate fails, met=False.
         assert result.criterion_met is False
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert len(result.detail["pending"]) == 3
         assert result.detail["resolved"] == []
         assert all(p["status"] == "still_present" for p in result.detail["pending"])
@@ -3413,7 +3413,7 @@ class TestCleanReviewImpasse:
         _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "without creating an automatic waiver" in result.report_text
         assert mock_agent.call_count == 0
         detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_clean"].detail
