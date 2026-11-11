@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- New `booley coverage uncovered <coverage.json>` lists every uncovered scored
+  point of one retained coverage run as `source:line  metric  detail  hierarchy`,
+  sorted by source, line, and metric, with a summary count and the number of
+  waived points left out. `--metric` and `--source` narrow the list. It works
+  on the host and in the Sandbox, and the coverage guide uses it instead of the
+  `jq` recipes.
 - `booley flow sim --mode elab-only-standalone` now probes each module with the
   simulator of the Targets that use it: Icarus for an Icarus Target, Verilator
   for a Verilator Target, and both for a module shared by the two (a

@@ -28,6 +28,7 @@ requires the Sandbox.
 |---------|----------|---------|
 | `booley` | either | Host: help; Sandbox: open the configured Developer Agent CLI |
 | `booley cheat` | either | List sections; use section flags or `--all` to print the reference |
+| `booley coverage` | either | List uncovered coverage points of a finished coverage run |
 | `booley doctor` | either | Check project, Sandbox, and toolchain health |
 | `booley help` | either | Show top-level help, same as `booley --help` |
 | `booley init` | either | Initialize the Project; scaffold, reseed, and image work are host-only |
