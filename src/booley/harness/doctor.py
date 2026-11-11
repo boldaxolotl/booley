@@ -3191,7 +3191,7 @@ def _agent_app_installed(provider: str) -> bool:
 def _provider_not_installed_reason(provider: str, *, is_default: bool = True) -> str:
     """Explain an unchecked auth audit: the selected provider is absent here."""
     if is_default:
-        return f"the configured [agent] provider ({provider}) is not installed on this host"
+        return f"the configured [agent] default ({provider}) is not installed on this host"
     return f"the allowed Agent CLI ({provider}) is not installed on this host"
 
 

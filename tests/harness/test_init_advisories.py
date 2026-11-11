@@ -259,7 +259,7 @@ class TestAdvisorySendOff:
         toml.write_text(
             init_cmd._insert_agent_fields(
                 toml.read_text(encoding="utf-8"),
-                {"provider": "claude", "auth": "subscription"},
+                {"default": "claude", "auth": "subscription"},
             ),
             encoding="utf-8",
         )

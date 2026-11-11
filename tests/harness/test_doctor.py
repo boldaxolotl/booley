@@ -8231,7 +8231,7 @@ def test_mixed_lint_doctor_rejects_but_keeps_inventory(tmp_path, eda_tool):
             "FAIL",
         ),
         ('[feedback]\nmode = "off"\n', "[feedback].mode", "delete [feedback].mode", "FAIL"),
-        ('[interactive]\napp = "codex"\n', "[interactive].app", "[agent].provider", "FAIL"),
+        ('[interactive]\napp = "codex"\n', "[interactive].app", "[agent].default", "FAIL"),
     ],
 )
 def test_doctor_renders_removed_documentation_item_with_fix(
