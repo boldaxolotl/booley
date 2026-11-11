@@ -9,6 +9,15 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- A second `booley chat` while the main checkout is in use now starts in its
+  own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
+  and prints a line saying where it works. The first session and a lone
+  session run in the main checkout as before. `booley chat --new-worktree`
+  always uses a worktree, `booley chat --here` always uses the main checkout,
+  and `[chat] worktree = "auto" | "always" | "never"` sets the default
+  (`auto`). Run from inside an existing worktree, `booley chat` starts there.
+  A plain `claude` tab or VS Code panel does not hold the main checkout, so it
+  is noticed only on a best-effort basis.
 - `booley init` now runs inside a hand-written Sandbox (such as a Codespace)
   and performs Project Initialization only, so a spec can call it from
   `onCreateCommand` on every create: guidance links, Dashboard task, Git

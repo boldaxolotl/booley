@@ -237,8 +237,6 @@ class _Created:
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
     """Dispatch ``new``, ``list`` or ``rm``; ``new`` keeps registration atomic with directory migration."""
-    from booley.core.layout_lock import layout_gate
-
     if args.worktree_command == "list":
         from booley.harness import worktree_list
 
@@ -248,35 +246,55 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
 
         return worktree_rm.run(args, project_root)
 
+    created = _create(project_root, args.name)
+    if created is None:
+        return 1
+    print(created.worktree)
+    print(_ready_notice(args.name, paired=created.paired), file=sys.stderr)
+    return 0
+
+
+def create_worktree(project_root: Path, name: str) -> Path | None:
+    """Create worktree *name* exactly as ``booley worktree new`` does; return its path.
+
+    ``None`` means the creation failed after its error was printed and everything it
+    made was rolled back. Nothing is written to stdout.
+    """
+    created = _create(project_root, name)
+    return None if created is None else created.worktree
+
+
+def _create(project_root: Path, name: str) -> _Created | None:
+    """Create and set up a worktree atomically; ``None`` after a printed, rolled-back failure."""
+    from booley.core.layout_lock import layout_gate
+
     try:
         worktree_booley_dir(project_root)
     except (BooleyDirOutsideCheckoutError, BooleyDirMismatchError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+        return None
     with layout_gate(project_root):
-        created = _run_current(args, project_root)
+        created = _run_current(name, project_root)
     if isinstance(created, int):
-        return created
+        return None
     # The post-setup hook can take minutes, so it runs after the gate is released.
-    return _finish_setup(args.name, project_root, created)
+    return created if _finish_setup(name, project_root, created) == 0 else None
 
 
-def _run_current(args: argparse.Namespace, project_root: Path) -> _Created | int:
+def _run_current(name: str, project_root: Path) -> _Created | int:
     """Create the outer and paired checkouts atomically; print removal steps on failure."""
-    worktree = worktree_path(project_root, args.name)
+    worktree = worktree_path(project_root, name)
     created = False
     pairing: ProjectPairing | None = None
     source = None
     new_branch: NewBranch | None = None
     try:
         source = project_pairing_source(project_root)
-        validate_project_pairing(source, args.name)
-        new_branch = _new_branch_start(project_root, args.name)
-        _create_outer(
-            args.name, project_root, paired_project=source is not None, new_branch=new_branch
-        )
+        validate_project_pairing(source, name)
+        new_branch = _new_branch_start(project_root, name)
+        _create_outer(name, project_root, paired_project=source is not None, new_branch=new_branch)
         created = True
-        pairing = pair_project_worktree(project_root, worktree, args.name, source=source)
+        pairing = pair_project_worktree(project_root, worktree, name, source=source)
         if pairing is not None and pairing.left_out and source is not None:
             print(_left_out_warning(pairing.left_out, source), file=sys.stderr)
         print("Filling git submodules from the main checkout...", file=sys.stderr)
@@ -286,14 +304,14 @@ def _run_current(args: argparse.Namespace, project_root: Path) -> _Created | int
             _rollback_creation(
                 project_root,
                 worktree,
-                args.name,
+                name,
                 exc,
                 source if pairing is not None else None,
                 new_branch=new_branch,
             )
         if not isinstance(exc, _REPORTED_FAILURES):
             raise
-        return _report_failure(project_root, worktree, args.name, exc, source)
+        return _report_failure(project_root, worktree, name, exc, source)
     return _Created(worktree, source, paired=pairing is not None, new_branch=new_branch)
 
 
@@ -319,8 +337,6 @@ def _finish_setup(name: str, project_root: Path, created: _Created) -> int:
         stamp_worktree(resolve_common_booley_dir(project_root), name)
     except OSError as exc:
         print(f"WARNING: could not record the last-used time of {name}: {exc}", file=sys.stderr)
-    print(created.worktree)
-    print(_ready_notice(name, paired=created.paired), file=sys.stderr)
     return 0
 
 
