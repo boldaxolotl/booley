@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,6 +15,7 @@ from tests.diagnostic_helpers import (
     _record_report,
 )
 from tests.harness.test_doctor import _write_project
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -191,11 +191,10 @@ _SCAFFOLD_CHECK = "stealth.scaffold-core-tracked"
 
 def _commit_all(root: Path) -> None:
     for args in (["init", "-q"], ["add", "-f", "."], ["commit", "-qm", "scaffold"]):
-        subprocess.run(
+        run_bounded_child(
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
             cwd=root,
             check=True,
-            capture_output=True,
             timeout=10,
         )
 

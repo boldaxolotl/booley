@@ -102,6 +102,7 @@ if KIND == "claude":  # what the MCP server's registry row would be
     sessions = BOOLEY_DIR / "runtime" / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     (sessions / hook._signal_filename(key)).write_text("{}")
+# Kept on subprocess.run: inside generated agent source run outside pytest
 hook_run = subprocess.run(
     [os.environ["AGENT_HOOK_PYTHON"], "-I", "-c", os.environ["AGENT_HOOK_PROGRAM"],
      os.environ["AGENT_HOOK"], KIND, str(BOOLEY_DIR)],
@@ -576,6 +577,7 @@ class _Scene:
             _kill_group(group)
         for process in self.processes:
             _kill_group(process.pid)
+            # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
             process.wait(timeout=_WAIT_SECONDS)
             for pipe in (process.stdin, process.stdout, process.stderr):
                 if pipe is not None:
@@ -814,6 +816,7 @@ def test_exit_status_propagates_without_a_terminal(scene: _Scene) -> None:
 
     process.stdin.write(b"done\n")
     process.stdin.flush()
+    # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
     assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
 
 
@@ -849,6 +852,7 @@ def test_fake_agent_counts_a_signal_caught_before_its_input_wait(scene: _Scene) 
 
     process.stdin.write(b"done\n")
     process.stdin.flush()
+    # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
     assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
 
 
@@ -1109,6 +1113,7 @@ def test_launch_window_interrupt_without_a_terminal(scene: _Scene, at: str) -> N
     )
     scene.processes.append(process)
     assert process.stderr is not None
+    # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
     returncode = process.wait(timeout=_WAIT_SECONDS)
     assert returncode == -signal.SIGINT, f"expected death by SIGINT, got exit status {returncode}"
     assert "Traceback" not in process.stderr.read().decode(errors="replace")
