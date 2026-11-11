@@ -555,8 +555,9 @@ def _pyproject_names(table: str) -> set[str]:
 
 
 def _requirement_name(requirement: str) -> str:
-    """Return the lower-cased distribution name of a PEP 508 requirement string."""
-    return re.split(r"[^A-Za-z0-9._-]", requirement, maxsplit=1)[0].lower()
+    """Return the PEP 503 normalized distribution name of a PEP 508 requirement string."""
+    name = re.split(r"[^A-Za-z0-9._-]", requirement, maxsplit=1)[0]
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def test_shared_pins_share_one_group() -> None:
@@ -681,6 +682,10 @@ def test_repeated_pin_is_reported() -> None:
         "pyproject.toml writes pyright 2 times",
         "pyproject.toml writes ruff 2 times",
     ]
+    spelled = project.replace('pyright==2"]\ndev', 'foo_bar==1"]\ndev').replace(
+        'dev = ["ruff==1", "pyright==2"]', 'dev = ["foo-bar==1"]'
+    )
+    assert _repeated_pins("pyproject.toml", spelled) == ["pyproject.toml writes foo-bar 2 times"]
     composed = project.replace('dev = ["ruff==1", "pyright==2"]', 'dev = ["demo[quality]"]')
     assert _repeated_pins("pyproject.toml", composed) == []
     assert _repeated_pins("requirements-x.txt", "a==1\nA==2\nb==3\n") == [
@@ -697,7 +702,7 @@ _HOLD_COMMENT = re.compile(r"\bhold (\d\S*?)\.?(?:\s|$)", re.IGNORECASE)
 
 
 def _holds(text: str) -> dict[str, str]:
-    """Map each held name to its version, read from the pyproject comments above pins."""
+    """Map each held name to its version, read from the comments above pins."""
     holds: dict[str, str] = {}
     block: list[str] = []
     for line in text.splitlines():
@@ -705,7 +710,8 @@ def _holds(text: str) -> dict[str, str]:
         if stripped.startswith("#"):
             block.append(stripped.lstrip("# ").strip())
             continue
-        pin = re.fullmatch(r'"([A-Za-z0-9._-]+)==([^"\s]+)",?', stripped)
+        # A quoted pyproject entry (`"name==1",`) or a bare requirements line (`name==1`).
+        pin = re.fullmatch(r'"?([A-Za-z0-9][A-Za-z0-9._-]*)==([^"\s]+?)"?,?', stripped)
         found = _HOLD_COMMENT.search(" ".join(block))
         if found and pin:
             assert pin[2] == found[1], (
@@ -752,7 +758,9 @@ def _hold_disagreements(text: str, rules: list[dict[str, Any]]) -> list[str]:
 
 def test_version_holds_agree_with_renovate_rules() -> None:
     """AC3/AC5: every hold recorded beside a pin is a Renovate restriction, and no other exists."""
-    assert _hold_disagreements(_text("pyproject.toml"), _rules()) == []
+    # Every manifest Renovate updates, so a hold in a requirements file is checked too.
+    manifests = "\n".join(_text(path) for path in _SINGLE_PIN_MANIFESTS)
+    assert _hold_disagreements(manifests, _rules()) == []
     for name in _holds(_text("pyproject.toml")):
         dep = _Dep(name, "pyproject.toml", "pypi", "poetry", "project.optional-dependencies")
         resolved = _resolve(dep)
@@ -794,6 +802,12 @@ _FIXTURE_RULE = {
             [_FIXTURE_RULE],
             ["coverage is held at 7.17.1 in a comment and 7.17.0 in a rule"],
             id="comment-version-differs-from-rule",
+        ),
+        pytest.param(
+            "# Upstream bug; hold 7.17.0 until fixed.\ncoverage==7.17.0\n",
+            [],
+            ["coverage is held only in a comment"],
+            id="requirements-file-comment-without-rule",
         ),
         pytest.param(
             "    # The pair holds them equal.\n" + _FIXTURE_PIN,

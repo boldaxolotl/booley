@@ -588,7 +588,7 @@ def _extra_requirements(
                 f"the {extra} extra of pyproject.toml has a self-reference {requirement!r} "
                 "with a version or marker; use the bare `<project>[extras]` form"
             )
-        for name in (item.strip() for item in parsed[2].split(",")):
+        for name in (_normalized_name(item.strip()) for item in parsed[2].split(",")):
             if name not in extras:
                 raise ReadinessUsageError(
                     f"the {extra} extra of pyproject.toml references unknown extra {name!r}"

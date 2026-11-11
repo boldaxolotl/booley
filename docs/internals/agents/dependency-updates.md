@@ -94,7 +94,7 @@ An OpenROAD PR is a human job (`ready-for-human`). Same items as its
 3. A literal copy of the pin elsewhere needs a custom manager, or a
    `prBodyNotes` entry when no rewrite can reach it. A manifest writes each pin
    once: Renovate tracks one copy of a name per file, so extras that need the
-   same pin compose by self-reference (`dev = ["booley-rtl[test,quality]"]`),
+   same pin compose by self-reference (`dev = ["booley-rtl[test,quality,mutation]"]`),
    never by repeating it. `test_manifests_write_each_pin_once` enforces this.
 4. Assign a group rule in `packageRules`, and keep its exact-name selectors in
    step with `tests/ci/test_renovate_config.py`.

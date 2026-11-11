@@ -263,7 +263,7 @@ def test_self_reference_cycles_terminate_and_unknown_extras_fail(tmp_path):
     test = [f"{name}==1" for name in _RUNNER_NAMES]
     _write_project(
         tmp_path,
-        [*test, "demo[parser]"],
+        [*test, "demo[Parser]"],
         ["ruff==2", "pyright==3"],
         extras={"parser": ["pyslang==2", "Demo[test]"]},
     )
