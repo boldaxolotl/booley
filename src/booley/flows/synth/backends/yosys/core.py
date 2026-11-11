@@ -820,9 +820,9 @@ def synth_timing_config(
         utilization_pct=utilization,
         repair_timing=repair,
         placement_density=None if legacy_utilization or ppa is None else ppa.placement_density,
-        repair_hold=ppa.repair_hold if ppa else False,
-        gate_cloning=ppa.gate_cloning if ppa else False,
-        setup_margin_ns=ppa.setup_margin_ns if ppa else 0.0,
-        repair_tns_percent=ppa.repair_tns_percent if ppa else None,
+        repair_hold=ppa.repair_hold if ppa is not None else False,
+        gate_cloning=ppa.gate_cloning if ppa is not None else False,
+        setup_margin_ns=ppa.setup_margin_ns if ppa is not None else 0.0,
+        repair_tns_percent=ppa.repair_tns_percent if ppa is not None else None,
         report_paths=report_paths,
     )

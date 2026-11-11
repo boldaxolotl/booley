@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.criteria.templates import TargetPair
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.fpga.implementation_report import build_fpga_implementation_report
@@ -430,7 +429,6 @@ def _pair_plan(flow: str) -> SimpleNamespace:
         flow=flow,
         baseline=SimpleNamespace(selector="old", identity="acme:lib:dut:1#old"),
         candidate=SimpleNamespace(selector="new", identity="acme:lib:dut:1#new"),
-        evidence_pair=lambda: TargetPair("old", "new"),
     )
 
 

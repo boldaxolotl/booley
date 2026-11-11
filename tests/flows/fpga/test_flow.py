@@ -847,7 +847,7 @@ class TestFpgaResolution:
         assert "CFG_DEFAULT" in recipe.defines  # vlogdefine, default true
         assert recipe.vlogparams == {"WIDTH": ParameterValue("int", "8")}
         # Part and XDC both come from the Target and reach
-        # build_fpga_edam as a one-element list.
+        # build_fpga_edam through the resolved recipe.
         assert recipe.part == "xc7a200tfbg484-1"
         # Compare in POSIX form so Windows backslashes don't fail the suffix test.
         xdc = [Path(p).as_posix() for p in recipe.xdc_files]
