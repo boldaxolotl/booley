@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The `sim` result card now names each Test Run that did not pass with its log
+  (`log:`) and, when it ran with `--trace`, its waveform (`waveform:`); a
+  `--trace` run lists its passing Test Runs with their waveform too.
+  `simulation.json` `tests[]` rows and the MCP result carry `log` and `trace`
+  paths for every Test Run (`null` when absent), so nobody searches the
+  Campaign's work items for them.
 - A failed Simulation run of a Target without registered Tests is now listed as
   `<default>` (`<default>@N` when seeded) in `simulation.json` and the "Test
   Runs" lines, and its rerun command is `booley flow sim --target <name>

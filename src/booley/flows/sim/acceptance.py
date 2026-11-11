@@ -34,6 +34,7 @@ from booley.flows.sim.campaign import (
     encode_artifact_reference,
 )
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
+from booley.flows.sim.campaign.test_run_files import campaign_test_run_files
 from booley.flows.sim.campaign.test_run_report import evidence_test_run_rows
 from booley.flows.sim.campaign_reports import (
     simulation_booley_dir,
@@ -508,7 +509,7 @@ def _campaign_projection(
         "target_identity": f"{outcome.target['vlnv']}#{outcome.target['name']}",
         "passed": outcome.aggregate_grade == "pass",
         "inconclusive": outcome.aggregate_grade == "inconclusive",
-        "tests": _campaign_test_projections(outcome, test_runs),
+        "tests": _campaign_test_projections(outcome, test_runs, target_directory),
         "test_runs": test_runs,
         "campaign_id": campaign_id,
         "campaign_manifest": _artifact_document(
@@ -530,13 +531,17 @@ def _campaign_projection(
 
 
 def _campaign_test_projections(
-    outcome: CampaignOutcome, test_runs: list[dict[str, object]]
+    outcome: CampaignOutcome, test_runs: list[dict[str, object]], target_directory: Path
 ) -> list[dict[str, object]]:
     """One row per observation, with the Test Run it observed when recorded.
 
     *test_runs* is either empty (facts that name no Test Runs) or aligned
-    with the observations.
+    with the observations. Each row names the Test Run's ``log`` and ``trace``
+    files relative to *target_directory* (the directory of ``simulation.json``),
+    ``None`` where a file does not exist. They stay out of the ``test_runs``
+    rows, which rerun matching reads.
     """
+    files = campaign_test_run_files(outcome)
     runs: list[dict[str, object] | None] = (
         list(test_runs) if test_runs else [None] * len(outcome.observations)
     )
@@ -551,8 +556,9 @@ def _campaign_test_projections(
             "execution": observation["execution"],
             "failure_kind": observation["failure_class"] or "",
             "error_tail": _observation_error_tail(observation),
+            **found.relative_to(target_directory),
         }
-        for observation, run in zip(outcome.observations, runs, strict=True)
+        for observation, run, found in zip(outcome.observations, runs, files, strict=True)
     ]
 
 
