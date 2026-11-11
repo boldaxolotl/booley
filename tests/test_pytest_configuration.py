@@ -535,7 +535,7 @@ def test_riscv_image_lane_is_path_gated() -> None:
 
 
 def test_matrix_uses_test_only_dependencies() -> None:
-    """Compatibility legs do not install linting or mutation-only packages."""
+    """Compatibility legs do not install linting-only packages."""
     workflow = _test_workflow()
     install_step = next(
         step

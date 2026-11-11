@@ -1,6 +1,6 @@
 # Scheduled whole-module mutation testing of Booley's Python code
 
-Booley does not run a scheduled mutation campaign over its own Python code.
+Booley does not run scheduled mutation testing over its own Python code.
 The weekly mutmut campaign over the harness setup package was removed
 (#3404).
 
@@ -22,6 +22,6 @@ high-stakes module, is open for a future proposal.
 
 ## Prior requests
 
-- #2970: scheduled mutation campaign overran its time budget, which exposed
+- #2970: scheduled mutmut job overran its time budget, which exposed
   the cost
 - #3404: removal of the campaign
