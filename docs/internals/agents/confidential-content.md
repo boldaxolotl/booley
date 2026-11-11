@@ -103,8 +103,10 @@ and term id, never the term); it never skips a check silently.
   non-outside PR also has (found in the open pull request list through the
   workflow token) is enforced like maintainer work; a failed lookup enforces too,
   and the scan prints a `NOTE`. A closed PR, or a maintainer PR opened while the
-  outside scan runs, is not seen; the candidate scan still enforces its commits
-  before anything merges.
+  outside scan runs, is not seen: that maintainer PR's own run sets the status,
+  and its commits are enforced when it is queued itself, or fall under the
+  residuals below when they ride inside the outside PR. The outside PR is scanned
+  with its own title, body, and head ref, not the other PR's.
 - **Mergify candidates.** A candidate is a same-repository PR opened by the
   Mergify bot (user ID `37929162`, type `Bot`) from a `mergify/merge-queue/`
   branch. The scanner walks its first-parent chain down to the PR base. For each
@@ -140,7 +142,9 @@ and term id, never the term); it never skips a check silently.
   term fails once queued. A `Merge of #N` commit is always enforced, so an outside
   PR whose term file also changed on the base side fails in the candidate's
   combined diff until the contributor merges or rebases `main` themselves.
-  A maintainer's edit to an outside PR's title or body is advisory (a
+  In a candidate that merges an outside PR first, stacked on a maintainer PR
+  merged second, the maintainer's commits fall in the outside PR's range and are
+  advisory unless allowlisted. A maintainer's edit to an outside PR's title or body is advisory (a
   term match is still commented and labelled); agents publish PR text through
   `publish-pr`, which enforces.
 

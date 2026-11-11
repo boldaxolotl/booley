@@ -2040,10 +2040,13 @@ def test_workflow_pr_scan_trusts_base_tip_only_for_main() -> None:
 # --- Advisory scans for outside PRs and Mergify candidates (issue #3331) ------
 
 WORKFLOW = SCANNER.parent.parent / "workflows/confidential-content.yml"
-POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="fake gh and the scan step need POSIX")
+POSIX_ONLY = pytest.mark.skipif(
+    os.name == "nt" or shutil.which("jq") is None,
+    reason="the fake gh runs the real jq selector, and the scan step needs bash",
+)
 MERGIFY_USER = {"id": 37929162, "type": "Bot"}
 _FAKE_GH_SCRIPT = """\
-import json, os, sys
+import json, os, subprocess, sys
 
 state = os.environ["FAKE_GH_DIR"]
 arguments = sys.argv[1:]
@@ -2076,23 +2079,24 @@ if "--method" in arguments:
 if "--paginate" in arguments:
     selector = arguments[arguments.index("--jq") + 1]
     endpoint = arguments[arguments.index("--paginate") + 1]
+    record(method="GET", endpoint=endpoint, jq=selector)
     if "/pulls?" in endpoint:
-        record(method="GET", endpoint=endpoint, jq=selector)
         if os.path.exists(os.path.join(state, "fail-pulls-lookup")):
             sys.exit(1)
-        pulls = os.path.join(state, "open-pulls.jsonl")
-        sys.stdout.write(open(pulls, encoding="utf-8").read() if os.path.exists(pulls) else "")
-        sys.exit(0)
-    path = os.path.join(state, "comments.json")
-    comments = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
-    record(method="GET", endpoint=arguments[arguments.index("--paginate") + 1], jq=selector)
-    # Stand in for the production selector's projection; filtering is the code under test.
-    for comment in comments:
-        row = [comment["user"]["login"], comment["user"]["type"], comment["body"]]
-        # Real gh prints @json output raw, so U+2028 stays unescaped.
-        print(json.dumps(row, ensure_ascii=False))
+        if "state=open" not in endpoint:
+            sys.exit(2)  # only open pull requests share a head commit with live work
+        name = "open-pulls.json"
+    else:
+        name = "comments.json"
+    path = os.path.join(state, name)
+    page = open(path, encoding="utf-8").read() if os.path.exists(path) else "[]"
+    # gh applies the --jq selector to each page of the full API response: run the real jq.
+    jq = subprocess.run(["jq", "-r", selector], input=page, capture_output=True, text=True)
+    if jq.returncode:
+        sys.exit(1)
+    sys.stdout.write(jq.stdout)
     raw = os.path.join(state, "comments.raw")
-    if os.path.exists(raw):
+    if "/pulls?" not in endpoint and os.path.exists(raw):
         sys.stdout.write(open(raw, encoding="utf-8").read())
     sys.exit(0)
 endpoint = arguments[0]
@@ -2141,8 +2145,8 @@ class _FakeGh:
         failure.unlink(missing_ok=True)
         if None in pulls:
             failure.write_text("", encoding="utf-8")
-        lines = "".join(json.dumps(pull) + "\n" for pull in pulls if pull is not None)
-        (self.state / "open-pulls.jsonl").write_text(lines, encoding="utf-8", newline="\n")
+        page = json.dumps([pull for pull in pulls if pull is not None])
+        (self.state / "open-pulls.json").write_text(page, encoding="utf-8", newline="\n")
 
     def serve_raw_comments(self, text: str) -> None:
         (self.state / "comments.raw").write_text(text, encoding="utf-8", newline="\n")
@@ -2381,11 +2385,15 @@ def test_pr_scan_step_posts_unless_the_bot_posted_this_set(tmp_path: Path, case:
 
 
 def _open_pull(*, head: str, head_repo_id: int, association: str) -> dict:
-    """An open pull request as the list projection returns it; base repository is 1."""
+    """An open pull request in the shape of GitHub's list response; the base repository is 1."""
     return {
+        "number": 9,
+        "state": "open",
+        "title": "work",
+        "user": {"login": "someone", "type": "User"},
         "author_association": association,
-        "head": {"sha": head, "repo": {"id": head_repo_id}},
-        "base": {"repo": {"id": 1}},
+        "head": {"ref": "topic", "sha": head, "repo": {"id": head_repo_id, "name": "booley"}},
+        "base": {"ref": "main", "sha": "b" * 40, "repo": {"id": 1, "name": "booley"}},
     }
 
 
@@ -2437,7 +2445,7 @@ def test_outside_pr_sharing_its_head_commit_with_other_work_stays_enforced(
 
 
 @POSIX_ONLY
-@pytest.mark.parametrize("raw", ["not json\n", "null\n"])
+@pytest.mark.parametrize("raw", ["not json\n", "null\n", '["github-actions[bot]", "Bot", 5]\n'])
 def test_pr_scan_step_fails_on_a_malformed_comment_lookup(tmp_path: Path, raw: str) -> None:
     repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
     gh = _FakeGh(tmp_path)

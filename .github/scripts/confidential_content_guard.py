@@ -1340,10 +1340,9 @@ def _advisory_posted(full_name: str, number: int, marker: str) -> bool:
         "advisory lookup",
     )
     for row in _json_lines(output, "advisory lookup"):
-        try:
-            login, account_type, body = cast("list[str]", row)
-        except (ValueError, TypeError) as exc:
-            raise GuardError("the GitHub advisory lookup returned an invalid record") from exc
+        if not isinstance(row, list) or len(row) != 3 or not all(isinstance(x, str) for x in row):
+            raise GuardError("the GitHub advisory lookup returned an invalid record")
+        login, account_type, body = cast("list[str]", row)
         if (
             login == _BOT_LOGIN
             and account_type == "Bot"
