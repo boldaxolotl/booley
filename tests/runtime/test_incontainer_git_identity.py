@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import incontainer_git_identity as identity_setup
 from booley.runtime.incontainer_git_identity import (
@@ -19,14 +20,7 @@ from booley.runtime.incontainer_git_identity import (
 
 
 def _git(path: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(path), *args],
-        capture_output=True,
-        check=True,
-        env=env,
-        text=True,
-        timeout=10,
-    )
+    result = run_bounded_child(["git", "-C", str(path), *args], timeout=10, env=env, check=True)
     return result.stdout.strip()
 
 
@@ -36,23 +30,11 @@ def test_explicit_ticket_identity_overrides_copied_global_config(tmp_path: Path)
     workspace.mkdir()
     booley_dir.mkdir()
     global_config = tmp_path / "global.gitconfig"
-    subprocess.run(
-        ["git", "config", "--file", str(global_config), "user.name", "Host Alias"],
-        check=True,
-        timeout=10,
-    )
-    subprocess.run(
-        [
-            "git",
-            "config",
-            "--file",
-            str(global_config),
-            "user.email",
-            "host-identity.invalid",
-        ],
-        check=True,
-        timeout=10,
-    )
+    for key, value in (("user.name", "Host Alias"), ("user.email", "host-identity.invalid")):
+        configured = run_bounded_child(
+            ["git", "config", "--file", str(global_config), key, value], timeout=10
+        )
+        assert configured.returncode == 0, configured.stderr
     (booley_dir / "booley.toml").write_text(
         '[agent.git]\nname = "Expected Developer"\nemail = "developer-identity.invalid"\n',
         encoding="utf-8",
@@ -75,13 +57,13 @@ def test_explicit_ticket_identity_overrides_copied_global_config(tmp_path: Path)
 
     assert _git(workspace, "config", "user.name", env=env) == "Host Alias"
 
-    subprocess.run(
+    applied = run_bounded_child(
         [sys.executable, "-m", "booley.runtime.incontainer_git_identity", "--ticket"],
         cwd=workspace,
         env=env,
-        check=True,
         timeout=10,
     )
+    assert applied.returncode == 0, applied.stderr
     (workspace / "change.txt").write_text("change\n", encoding="utf-8")
     _git(workspace, "add", "change.txt", env=env)
     _git(workspace, "-c", "commit.gpgSign=false", "commit", "-q", "-m", "change", env=env)
@@ -213,7 +195,7 @@ def test_failed_publication_does_not_enable_worktree_config(tmp_path: Path) -> N
             GitIdentity("Expected Developer", "developer-identity.invalid"),
         )
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             "git",
             "config",
@@ -222,9 +204,6 @@ def test_failed_publication_does_not_enable_worktree_config(tmp_path: Path) -> N
             "--get",
             "extensions.worktreeConfig",
         ],
-        capture_output=True,
-        check=False,
-        text=True,
         timeout=10,
     )
     assert result.returncode == 1
@@ -388,13 +367,10 @@ def test_stale_image_missing_cleanup_module_cannot_apply_identity(tmp_path):
         if not key.startswith(("COV_CORE_", "COVERAGE_PROCESS_")) and key != "COVERAGE_FILE"
     }
     environment["PYTHONPATH"] = str(old_source)
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-m", "booley.runtime.incontainer_git_identity_cleanup"],
         cwd=workspace,
         env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
         timeout=10,
     )
     assert result.returncode != 0
@@ -474,13 +450,13 @@ def test_sandbox_identity_preserves_host_and_waiver_guard(tmp_path, monkeypatch)
     )
     spec = build_spec(app="codex", image="test", booley_dir_source=str(project))
     sandbox = {**env, **spec["containerEnv"]}
-    subprocess.run(
+    applied = run_bounded_child(
         [sys.executable, *git_identity_command().split()[1:]],
         cwd=workspace,
         env=sandbox,
-        check=True,
         timeout=10,
     )
+    assert applied.returncode == 0, applied.stderr
     assert _git(workspace, "config", "user.name", env=env) == "Human"
     for commit_env, expected in (
         (env, "Human <human@example.invalid>"),

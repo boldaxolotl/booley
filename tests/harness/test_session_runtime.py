@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, NoReturn
 from unittest.mock import Mock, patch
 
 import pytest
@@ -1240,18 +1240,60 @@ class TestInitReconciliation:
         assert not changed
         remove.assert_not_called()
 
-    def test_stale_running_runtime_requires_shutdown(self, workspace: Path) -> None:
+    def test_stale_running_runtime_names_grant_change_remedy(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal names the workflow Sandbox validation prints after a Grant change."""
+        from booley.runtime import runtime_context, session_issuance
+
+        def withdrawn(_root: Path) -> NoReturn:
+            raise session_issuance.IssuanceUnavailableError("withdrawn")
+
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        monkeypatch.setattr(session_issuance, "load_issued_snapshot", withdrawn)
         state = _refresh_state(running=True)
         with (
             patch.object(sr, "_strict_refresh_container", return_value=state),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
             patch.object(sr, "_refresh_candidate_matches", return_value=False),
             patch.object(sr, "_remove_stopped_session_container") as remove,
-            pytest.raises(sr.SessionError, match=r"running.*older host issuance"),
+            pytest.raises(sr.SessionError) as refusal,
         ):
             sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
 
+        message = str(refusal.value)
+        assert "older host issuance; stop any VS Code Sandbox through its owning app" in message
+        assert "`booley session down`, `booley init --seed`, and `booley session up`" in message
+        assert "retry `booley init`" not in message
         remove.assert_not_called()
+
+    def test_stale_running_runtime_names_refresh_when_issuance_stands(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a withdrawn issuance the refusal names `session refresh`, as validation does."""
+        from booley.runtime import runtime_context, session_issuance
+
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        monkeypatch.setattr(
+            session_issuance,
+            "load_issued_snapshot",
+            lambda _root: SimpleNamespace(license_profile=None),
+        )
+        monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
+        monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
+        monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
+        state = _refresh_state(running=True)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            pytest.raises(sr.SessionError) as refusal,
+        ):
+            sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
+
+        message = str(refusal.value)
+        assert message.endswith("run `booley session refresh` on the host")
+        assert "retry `booley init`" not in message
 
     def test_other_project_session_blocks_relay_mutation(self, workspace: Path) -> None:
         state = _refresh_state(running=False)
@@ -3146,6 +3188,59 @@ class TestDownAndStatus:
         with pytest.raises(sr.SessionError, match="VS Code owns"):
             sr.down(workspace)
 
+    @pytest.mark.parametrize("running", [True, False], ids=["running", "stopped-container"])
+    def test_down_runs_before_stop_then_stops(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, running: bool
+    ) -> None:
+        from booley.runtime import session_admission
+
+        events: list[str] = []
+        item = SimpleNamespace(container_id="sandbox-id", name="sb", running=True, vscode=False)
+        found = (item,) if running else ()
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: found
+        )
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        monkeypatch.setattr(
+            sr,
+            "_run",
+            lambda argv, **_kwargs: (
+                events.append(" ".join(argv[:2])) or subprocess.CompletedProcess(argv, 0, "", "")
+            ),
+        )
+
+        result = sr.down(workspace, before_stop=lambda sandbox: events.append(f"hook {sandbox}"))
+
+        assert result.headless is True
+        assert events == [f"hook {item if running else None}", "docker stop", "docker rm"]
+
+    @pytest.mark.parametrize("case", ["no-container", "vscode-owned"])
+    def test_down_skips_before_stop_when_it_will_not_stop(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, case: str
+    ) -> None:
+        from booley.runtime import session_admission
+
+        found = (
+            (SimpleNamespace(container_id="id", name="ed", running=True, vscode=True),)
+            if case == "vscode-owned"
+            else ()
+        )
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: found
+        )
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        hook = Mock()
+
+        if case == "vscode-owned":
+            with pytest.raises(sr.SessionError, match="VS Code owns"):
+                sr.down(workspace, before_stop=hook)
+        else:
+            assert not sr.down(workspace, before_stop=hook)
+
+        hook.assert_not_called()
+
     @pytest.mark.parametrize("failure", ["stop", "rm"])
     def test_down_reports_headless_docker_failure(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch, failure: str
@@ -4046,7 +4141,7 @@ class TestSessionRefresh:
         from booley.harness import doctor as doctor_module
         from booley.harness.booley import _build_parser
 
-        monkeypatch.setattr(sr, "down", lambda _root: sr.DownResult(headless=True))
+        monkeypatch.setattr(sr, "down", lambda _root, **_kwargs: sr.DownResult(headless=True))
         monkeypatch.setattr(sr, "session_container_name", lambda _root: "session")
         down_args = _build_parser().parse_args(["session", "down"])
         assert booley._cmd_session(down_args, tmp_path) == 0

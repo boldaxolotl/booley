@@ -30,21 +30,43 @@ def _command(executable: Path) -> tuple[str, list[str], list[str]]:
     return node, [node, str(shim)], [str(executable), "--no-daemon"]
 
 
-def command(project_root: Path) -> tuple[str, list[str]]:
-    """Prepare naming best-effort; unsupported launchers retain normal startup."""
+class NamingUnsupportedError(ValueError):
+    """This host or Codex install cannot carry a Booley tab handle; plain Codex still starts."""
+
+
+def _named_command(project_root: Path, wait_s: float | None) -> tuple[str, list[str], str]:
+    """Reserve the handle and build the named command; raise when naming is unavailable."""
+    if not sys.platform.startswith("linux"):
+        raise NamingUnsupportedError("Codex tab handles need Linux")
+    installed = shutil.which("codex")
+    if installed is None:
+        raise NamingUnsupportedError("codex was not found on PATH")
+    # Discover support before reserving a handle that cannot appear on the tab.
+    program, before, after = _command(Path(installed).resolve())
+    identity = capture_process_identity(os.getpid())
+    if identity is None:
+        raise ValueError("launch process identity is unavailable")
+    handle = reserve_codex_chat(resolve_common_booley_dir(project_root), identity, wait_s=wait_s)
+    return program, [*before, handle, *after], handle
+
+
+def command(
+    project_root: Path, *, wait_s: float | None = None, strict: bool = False
+) -> tuple[str, list[str], str | None]:
+    """Return the program, its argv and the reserved handle (``None`` when unnamed).
+
+    Naming is best effort: an unsupported launcher retains normal startup and an error
+    adds a NOTE. With *strict*, every reason the handle cannot be reserved is raised
+    instead, for a caller that cannot start without one. *wait_s* bounds the wait for
+    the Session writer lock.
+    """
     try:
-        if not sys.platform.startswith("linux"):
-            return "codex", ["codex"]
-        installed = shutil.which("codex")
-        if installed is None:
-            return "codex", ["codex"]
-        # Discover support before reserving a handle that cannot appear on the tab.
-        program, before, after = _command(Path(installed).resolve())
-        identity = capture_process_identity(os.getpid())
-        if identity is None:
-            raise ValueError("launch process identity is unavailable")
-        handle = reserve_codex_chat(resolve_common_booley_dir(project_root), identity)
-        return program, [*before, handle, *after]
+        return _named_command(project_root, wait_s)
+    except NamingUnsupportedError:
+        if strict:
+            raise
     except (OSError, ValueError, RuntimeError) as exc:
+        if strict:
+            raise
         print(f"NOTE: Codex tab handle is unavailable: {exc}", file=sys.stderr)
-        return "codex", ["codex"]
+    return "codex", ["codex"], None

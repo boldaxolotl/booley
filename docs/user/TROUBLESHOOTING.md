@@ -218,10 +218,18 @@ once so it gets the new credential. Billing choices are in
 
 ### Two Developer Agents keep clobbering each other's edits
 
-They share one worktree. Give each agent that edits code its own: ask the agent
-to create a worktree (`booley worktree new <name>` in the Sandbox), then start
-Goal Mode there with `/booley-goal`. The Dashboard warns about a shared
-worktree but doesn't separate the agents.
+They share one worktree. Sessions started with `booley chat` get their own
+automatically: while the main checkout is in use, the next one starts in a
+worktree `s<N>`. A plain `claude` tab or VS Code panel started before any
+Booley tool call is not counted, so it may still share the main checkout. Start
+those in a worktree: ask the agent to create one (`booley worktree new <name>`
+in the Sandbox), then start Goal Mode there with `/booley-goal`. The Dashboard
+warns about a shared worktree but doesn't separate the agents.
+
+If `booley chat` keeps opening worktrees because a Codex session ended without
+notice, Booley counts the main checkout as in use until that session goes quiet
+(`[goals] quiet_after`, two hours by default). Run `booley chat --here` to use
+the main checkout now.
 
 ### Worktrees show as `prunable` on the host
 
@@ -415,6 +423,55 @@ into your repository as a `.core`, or drop it. Often the testbench already
 guards its use with an `ifdef` or defines the module itself; check before you
 remove it.
 
+### Every simulation test comes back INCONCLUSIVE
+
+Every Test Run of an HDL testbench reads `INCONCLUSIVE`, `booley flow sim`
+exits `1`, and each Test Run's log contains a line such as
+`Verilator sim INCONCLUSIVE (rc=0, no sentinel)`.
+
+Booley grades an HDL testbench by a pass or fail message it prints, a
+[sentinel](https://booley.dev/docs/flow-sim/#passfail-sentinels-and-cycle-counts).
+A run is inconclusive when the simulator exits with code `0` but its output
+holds no pass or fail sentinel and no error or assertion message. The
+defaults are `[SIM_RESULT] PASSED` and `[SIM_RESULT] FAILED`;
+`pass_sentinels` and `fail_sentinels` under `[flows.sim]` each replace their
+default, and when a pass and a fail sentinel both appear the test fails. A
+nonzero exit code without a sentinel is a failure, not inconclusive.
+
+To check:
+
+- Run `booley doctor`. It warns `sim.pass-sentinel-missing` when none of a
+  sim Target's testbench files contains the pass sentinel literally. It
+  skips Cocotb Targets, which take their verdict from cocotb, and with your
+  own `pass_sentinels` it only adds a note, because the testbench may build
+  the message at run time. If the warning says the testbench fileset is
+  Python, the Target is missing `cocotb_module`; see
+  [Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+- Open the Test Run's log (`…/evidence/*-run.log`, see
+  [Reading results](https://booley.dev/docs/flow-sim/#reading-results)) and
+  search it for the sentinel. A testbench that ends on a bare `$finish`
+  prints none.
+
+To fix it, do one of these:
+
+- Print the sentinel at the end of the test, for example
+  `$display("[SIM_RESULT] PASSED");` or `$display("[SIM_RESULT] FAILED");`.
+  Doctor's warning points to a fuller example.
+- Declare the messages your testbench already prints as `pass_sentinels`
+  and `fail_sentinels` under `[flows.sim]`.
+
+If you ran with `--trace`, a test that would have passed is reported
+inconclusive when the traced run produces no waveform Booley can read. This
+is the exception to the missing-sentinel cause: the log still prints the pass
+sentinel and a `PASSED` line, usually followed by an `ERROR:` line that says
+why no waveform was kept. Fix the cause, often `trace_args` or `trace_files`
+(see [Waveforms](https://booley.dev/docs/flow-sim/#waveforms)), or rerun
+without `--trace`. A failure or timeout keeps its verdict.
+
+A Cocotb Target uses no sentinels: its Test Run is inconclusive when cocotb's
+result file is missing or doesn't report that test as passed or failed, and
+its log contains `cocotb sim INCONCLUSIVE (<reason>)`.
+
 ### Simulation stalls at time zero without results
 
 A cocotb run builds, loads and logs, but simulation time stays at `0.00 ns`
@@ -568,7 +625,8 @@ units. In the `.core`, list those headers first in the fileset.
 Run `booley doctor` on the host, then `booley doctor --deep` in the Sandbox.
 Check that the Project has a Grant, that the registered installation is still
 a Linux x86-64 Vivado 2025.2, and that Doctor reports no devcontainer drift.
-Fix the host side first, then reseed the Sandbox with `booley init --seed`.
+Fix the host side first, then apply it as [Applying Sandbox
+changes](SANDBOX.md#applying-sandbox-changes) describes.
 `booley eda installation list`, `booley eda license list` and `booley projects`
 show the current records.
 

@@ -1746,3 +1746,54 @@ def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifes
         (target.handle,),
         (ValidatedTargetBinding(node, root.resolve(), target.handle),),
     )
+
+
+@dataclass(frozen=True)
+class CoverageInvocation:
+    """One completed coverage run in the embedded layout the Simulation Flow writes."""
+
+    reports: Path
+    target: Path
+    storage: Path
+
+    @property
+    def public(self) -> Path:
+        """The Target's ``coverage.json`` reference."""
+        return self.target / "coverage.json"
+
+    @property
+    def campaign_path(self) -> Path:
+        """The Coverage Campaign the reference selects, in its nested directory."""
+        return self.storage / "coverage.json"
+
+    @property
+    def simulation(self) -> Path:
+        """The Simulation projection beside the reference."""
+        return self.target / "simulation.json"
+
+
+def coverage_invocation(tmp_path, monkeypatch, *, prepare=None) -> CoverageInvocation:
+    """Run a coverage Simulation Flow over ``tmp_path`` and return its invocation layout.
+
+    ``prepare(tmp_path)`` writes the project; the default is the two-test counter project.
+    """
+    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_coverage_invocation import project
+    from tests.flows.sim.test_coverage_transaction import NativeExecution
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    (prepare or project)(tmp_path)
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n', encoding="utf-8")
+    reports = tmp_path / "reports"
+    flow = SimulateFlow(
+        coverage_execution=lambda _handle, _options, _cmds, _access: NativeExecution()
+    )
+    request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+    assert flow.execute(request).exit_code == 0
+    target = reports / "sim/1/targets/sim_0"
+    storage = resolve_coverage_campaign_reference(target / "coverage.json").campaign_path.parent
+    return CoverageInvocation(reports, target, storage)

@@ -951,7 +951,10 @@ Structured campaign output reports `grade`, `complete`, aggregate
 `observation_counts`, and a maximum-32 `observations` preview. Every preview
 entry retains nullable `test`, `execution`, nullable `failure_class` (`design` or
 `infrastructure`), `functional`, `assertions`, `assertion_count`, nullable
-`cycle_count`, and bounded `detail`; `observation_total` and
+`cycle_count`, bounded `detail`, and `log` and `trace` (the Test Run's simulator
+log and waveform as POSIX paths relative to the directory of the campaign's
+`artifacts.simulation` reference, `null` when the file does not exist);
+`observation_total` and
 `observations_truncated` disclose whether the preview is complete. The full
 `report.json.cycle_counts` mapping (see
 [FLOW_REPORTS.md](FLOW_REPORTS.md)) is dropped from inline output before the

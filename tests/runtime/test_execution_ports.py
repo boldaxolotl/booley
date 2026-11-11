@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
 import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+
+from tests.subprocess_budget import run_bounded_child
 
 from booley.core.models import AgentArtifactPaths, AgentCallParams
 from booley.runtime import _claude_backend as claude
@@ -130,13 +131,9 @@ def test_runtime_import_and_artifact_use_never_load_ticket_board(tmp_path):
         assert not any(name.startswith("booley.ticket_board") for name in sys.modules)
     """)
     source = Path(__file__).resolve().parents[2] / "src"
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-c", script, str(tmp_path)],
         env={**os.environ, "PYTHONPATH": str(source)},
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

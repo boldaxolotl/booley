@@ -32,10 +32,15 @@ def _codex_process(proc_root: Path, pid: int) -> tuple[str, bool]:
     return executable, argv[1:2] != [b"app-server"]
 
 
-def reserve_codex_chat(booley_dir: Path, identity: ProcessIdentity) -> str:
-    """Reserve the tab's handle and mark this process as a Booley Codex launch."""
+def reserve_codex_chat(
+    booley_dir: Path, identity: ProcessIdentity, *, wait_s: float | None = None
+) -> str:
+    """Reserve the tab's handle and mark this process as a Booley Codex launch.
+
+    *wait_s* bounds the wait for the Session writer lock; ``None`` fails on contention.
+    """
     key = process_session_key(identity)
-    with session_writer(booley_dir):
+    with session_writer(booley_dir, wait_s=wait_s):
         store = HandleStore(booley_dir)
         handles = store.load()
         label = handles.reserve(key, "S", predecessors=("chat:codex:" + key,))

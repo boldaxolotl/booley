@@ -13,6 +13,21 @@ Packaged release history starts at 0.2.7. For older changes, see
   the older name `provider`, and the `--provider` conflict error names
   `[agent] default`. An existing `provider` key is kept as written and still
   works.
+- The `sim` result card now names each Test Run that did not pass with its log
+  (`log:`) and, when it ran with `--trace`, its waveform (`waveform:`); a
+  `--trace` run lists its passing Test Runs with their waveform too.
+  `simulation.json` `tests[]` rows and the MCP result carry `log` and `trace`
+  paths for every Test Run (`null` when absent), so nobody searches the
+  Campaign's work items for them.
+- A second `booley chat` while the main checkout is in use now starts in its
+  own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
+  and prints a line saying where it works. The first session and a lone
+  session run in the main checkout as before. `booley chat --new-worktree`
+  always uses a worktree, `booley chat --here` always uses the main checkout,
+  and `[chat] worktree = "auto" | "always" | "never"` sets the default
+  (`auto`). Run from inside an existing worktree, `booley chat` starts there.
+  A plain `claude` tab or VS Code panel does not hold the main checkout, so it
+  is noticed only on a best-effort basis.
 - New `booley coverage uncovered <coverage.json>` lists every uncovered scored
   point of one retained coverage run as `source:line  metric  detail  hierarchy`,
   sorted by source, line, and metric, with a summary count and the number of

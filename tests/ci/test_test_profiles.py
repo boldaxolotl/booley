@@ -9,6 +9,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.dev_support import agent_readiness as readiness
 from booley.dev_support import test_profiles as profiles
@@ -140,7 +141,7 @@ def _run_suite(
     )
     env = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT)])
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -152,10 +153,7 @@ def _run_suite(
         ],
         cwd=tmp_path,
         env=env,
-        capture_output=True,
-        text=True,
-        timeout=90,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

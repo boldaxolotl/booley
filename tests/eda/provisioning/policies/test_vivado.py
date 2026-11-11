@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import subprocess
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.eda.provisioning.policies import vivado
 
@@ -124,14 +124,7 @@ def _run_wrapper(wrapper: Path, inherited: str | None = "/caller/libs", *args: s
     environment["LD_PRELOAD"] = "/caller/preload"
     if inherited is not None:
         environment["LD_LIBRARY_PATH"] = inherited
-    return subprocess.run(
-        [str(wrapper), *args],
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
+    return run_bounded_child([str(wrapper), *args], env=environment, timeout=10)
 
 
 def test_wrapper_adds_highest_bundled_ubuntu_library(
