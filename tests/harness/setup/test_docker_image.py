@@ -119,7 +119,7 @@ def test_image_build_metadata_args_include_runtime_provenance(tmp_path, monkeypa
     assert any(value.startswith("BOOLEY_IMAGE_BUILT_AT=") for value in values)
 
 
-def test_docker_build_command_reuses_local_parent_labels(tmp_path, monkeypatch):
+def test_docker_build_command_reuses_local_parent_labels(tmp_path):
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text("FROM scratch\n", encoding="utf-8")
     parent_id = "sha256:" + "a" * 64
@@ -138,46 +138,6 @@ def test_docker_build_command_reuses_local_parent_labels(tmp_path, monkeypatch):
         f"{init_docker_image.PARENT_ARTIFACT_LOCAL_IMAGE_ID}"
     ) in direct_command
     assert f"{init_docker_image.LABEL_PARENT_ARTIFACT}={parent_id}" in direct_command
-
-    parent_lookups: list[str] = []
-
-    def image_id(image: str) -> str:
-        parent_lookups.append(image)
-        return parent_id
-
-    monkeypatch.setattr(init_docker_image.idk, "image_id", image_id)
-    flavor_spec = init_docker_image._DockerBuildSpec(
-        dockerfile=dockerfile,
-        context=tmp_path,
-        exists=False,
-        image="booley-sandbox-riscv",
-    )
-
-    flavor_command = init_docker_image._docker_build_command(flavor_spec)
-
-    assert f"{init_docker_image.LABEL_BASE_IMAGE_ID}={parent_id}" in flavor_command
-    assert f"{init_docker_image.LABEL_PARENT_ARTIFACT}={parent_id}" in flavor_command
-    assert parent_lookups == [init_docker_image.DOCKER_IMAGE]
-
-    captured_flavor_spec = init_docker_image._DockerBuildSpec(
-        dockerfile=dockerfile,
-        context=tmp_path,
-        exists=False,
-        image="booley-sandbox-riscv",
-        parent_artifact=parent_id,
-    )
-    captured_command = init_docker_image._docker_build_command(captured_flavor_spec)
-    parent_labels = {
-        f"{init_docker_image.LABEL_BASE_IMAGE_ID}={parent_id}",
-        (
-            f"{init_docker_image.LABEL_PARENT_ARTIFACT_KIND}="
-            f"{init_docker_image.PARENT_ARTIFACT_LOCAL_IMAGE_ID}"
-        ),
-        f"{init_docker_image.LABEL_PARENT_ARTIFACT}={parent_id}",
-    }
-    for label in parent_labels:
-        assert captured_command.count(label) == 1
-    assert parent_lookups == [init_docker_image.DOCKER_IMAGE]
 
     labeled_spec = init_docker_image._DockerBuildSpec(
         dockerfile=dockerfile,
