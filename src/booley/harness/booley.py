@@ -6,6 +6,7 @@ Subcommands:
     chat      Open the Project's default (or --cli chosen) Agent CLI
     worktree  Create, list, remove, or clean up linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
+    coverage  List uncovered coverage points of a finished coverage run
     doctor    Run environment health checks
     bootstrap Prepare Project-independent host resources
     init      Initialize a Project
@@ -37,6 +38,7 @@ from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
 from booley.harness import (
     cheatsheet,
+    coverage_cli,
     feedback_view,
     projects_view,
     resources_cli,
@@ -68,6 +70,7 @@ if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
+    from booley.runtime.session_admission import Sandbox
 
 # --- Constants ---
 
@@ -92,6 +95,7 @@ COMMAND_LOCATIONS = {
     "chat": CommandLocation.SESSION_RUNTIME,
     "worktree": CommandLocation.SESSION_RUNTIME,
     "cheat": CommandLocation.EITHER,
+    "coverage": CommandLocation.EITHER,
     "doctor": CommandLocation.EITHER,
     "bootstrap": CommandLocation.HOST,
     "init": CommandLocation.EITHER,
@@ -132,6 +136,7 @@ COMMAND_PROJECT_BINDINGS = {
     "chat": ProjectBinding.REQUIRED,
     "worktree": ProjectBinding.REQUIRED,
     "cheat": ProjectBinding.OPTIONAL,
+    "coverage": ProjectBinding.INDEPENDENT,
     "doctor": ProjectBinding.REQUIRED,
     "bootstrap": ProjectBinding.INDEPENDENT,
     "init": ProjectBinding.REQUIRED,
@@ -946,6 +951,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_specialist_subparser(sub)
     _add_targets_subparser(sub)
     resources_cli.add_subparser(sub)
+    coverage_cli.add_subparser(sub)
 
     # Skill adapters stay registered; top-level help advertises human commands only.
     feedback_cli.add_subparser(sub)
@@ -1480,10 +1486,18 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     )
 
 
+def _warn_standalone_jobs(sandbox: Sandbox | None) -> None:
+    """Tell the user which Standalone Jobs die with the Sandbox about to be stopped."""
+    from booley.harness.sandbox_stop_warning import standalone_job_warnings
+
+    for line in standalone_job_warnings(sandbox):
+        print(line, file=sys.stderr)
+
+
 def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime import session_runtime as sr
 
-    result = sr.down(project_root)
+    result = sr.down(project_root, before_stop=_warn_standalone_jobs)
     if result:
         details = []
         if result.headless:
@@ -1919,6 +1933,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "session": _cmd_session,
     "targets": _cmd_targets,
     "resources": resources_cli.run,
+    "coverage": coverage_cli.run,
     "worktree": run_worktree,
     "goal": _cmd_goal,
     "dashboard": _cmd_dashboard,
