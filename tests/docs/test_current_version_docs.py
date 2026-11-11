@@ -284,14 +284,18 @@ def test_public_documents_and_help_use_canonical_developer_agent_term() -> None:
         for path in document_paths(ROOT)
     }
     documents.update(cli_help())
+    # Generic phrases the maintainer retained, each about agents in general, not a
+    # synonym for Booley's Developer Agent.
+    generic_phrases = {
+        "docs/user/USAGE.md": "You don't need any experience\nwith AI coding agents to follow it.",
+        "README.md": "A general-purpose coding agent knows little about EDA tools,",
+    }
     failures = []
     for name, text in documents.items():
         prose = "\n".join(line for line in text.splitlines() if not line.startswith("_Avoid_"))
-        if name == "docs/user/USAGE.md":
-            # The maintainer retained this generic introduction, not a Booley actor synonym.
-            introduction = "You don't need any experience\nwith AI coding agents to follow it."
-            assert prose.count(introduction) == 1
-            prose = prose.replace(introduction, "", 1)
+        if name in generic_phrases:
+            assert prose.count(generic_phrases[name]) == 1, name
+            prose = prose.replace(generic_phrases[name], "", 1)
         for match in rejected.finditer(prose):
             failures.append(f"{name}: {match.group()}")
     assert not failures, "\n".join(failures)

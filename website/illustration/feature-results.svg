@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="fd" viewBox="0 0 440 196" role="img" aria-label="Two paths from the EDA tool to you. Without Booley: project-specific glue scripts, written by you or the agent, can be wrong; then the agent reads the logs and reports, and can misread or skip important detail. With Booley: Booley runs the tool and extracts the numbers, so the agent sees the same numbers; the commit carries them, marked Measured: tests failed 0, area 58.2 kGE within 60, coverage 93% against 90%.">
+<rect class="bx" x="0.5" y="0.5" width="55" height="195"/>
+<text class="t" x="28" y="92" text-anchor="middle">EDA tool</text>
+<text class="s" x="28" y="106" text-anchor="middle">simulator,</text>
+<text class="s" x="28" y="118" text-anchor="middle">synthesis</text>
+<rect class="bx" x="391.5" y="0.5" width="48" height="195"/>
+<text class="t" x="415.5" y="102" text-anchor="middle">You</text>
+<rect class="lane" x="70" y="0" width="308" height="94" rx="3"/>
+<text class="cap" x="78" y="13">WITHOUT BOOLEY</text>
+<path class="ln" d="M56 47H66"/><path class="ah" d="M70 47l-7 -3.5v7z"/>
+<path class="ln" d="M378 47H387"/><path class="ah" d="M391 47l-7 -3.5v7z"/>
+<path class="ln" d="M216 54H228"/><path class="ah" d="M232 54l-7 -3.5v7z"/>
+<rect class="lane" x="70" y="102" width="308" height="94" rx="3"/>
+<text class="cap" x="78" y="115">WITH BOOLEY</text>
+<path class="ln" d="M56 149H66"/><path class="ah" d="M70 149l-7 -3.5v7z"/>
+<path class="ln" d="M378 149H387"/><path class="ah" d="M391 149l-7 -3.5v7z"/>
+<path class="ln" d="M216 156H228"/><path class="ah" d="M232 156l-7 -3.5v7z"/>
+<rect class="bx fault" x="77.5" y="20.5" width="138" height="68"/>
+<text class="t" x="146.5" y="36" text-anchor="middle">Project-specific</text>
+<text class="t" x="146.5" y="49" text-anchor="middle">glue scripts</text>
+<text class="s" x="146.5" y="62" text-anchor="middle">by you or the agent</text>
+<text class="em fault" x="146.5" y="78" text-anchor="middle">can be wrong</text>
+<rect class="bx fault" x="232.5" y="20.5" width="138" height="68"/>
+<text class="t" x="301.5" y="36" text-anchor="middle">Agent reads logs, reports</text>
+<text class="s" x="301.5" y="50" text-anchor="middle">“All tests pass!”</text>
+<text class="em fault" x="301.5" y="66" text-anchor="middle">can misread or skip</text>
+<text class="em fault" x="301.5" y="78" text-anchor="middle">important detail</text>
+<rect class="bx ok" x="78" y="123" width="137" height="67"/>
+<text class="mark" x="146.5" y="140" text-anchor="middle">BOOLEY</text>
+<text class="s" x="146.5" y="154" text-anchor="middle">runs the tool,</text>
+<text class="s" x="146.5" y="166" text-anchor="middle">extracts the numbers</text>
+<text class="em ok" x="146.5" y="181" text-anchor="middle">agent sees the same numbers</text>
+<rect class="bx" x="232.5" y="122.5" width="138" height="68"/>
+<text class="sha" x="240" y="137">3f9c2a1</text>
+<rect class="badge" x="296.5" y="128.5" width="67" height="12"/>
+<path class="tick ok" d="M300 135.5l2.6 2.6l5 -6"/>
+<text class="badge-t" x="311" y="138">MEASURED</text>
+<text class="row" x="240" y="155">Tests failed</text>
+<text class="num" x="349" y="155" text-anchor="end">0</text>
+<path class="tick ok" d="M353 151.5l2.6 2.6l5 -6"/>
+<text class="row" x="240" y="168">Area ≤ 60 kGE</text>
+<text class="num" x="349" y="168" text-anchor="end">58.2</text>
+<path class="tick ok" d="M353 164.5l2.6 2.6l5 -6"/>
+<text class="row" x="240" y="181">Coverage ≥ 90%</text>
+<text class="num" x="349" y="181" text-anchor="end">93%</text>
+<path class="tick ok" d="M353 177.5l2.6 2.6l5 -6"/>
+</svg>

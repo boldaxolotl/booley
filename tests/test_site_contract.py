@@ -13,9 +13,6 @@ import importlib.util
 import re
 from pathlib import Path
 
-from booley.goals.model import parse_goal_args
-from booley.goals.presentation import goal_presentation
-from booley.goals.translate import translate_goals
 from booley.runtime.docs_links import SITE_URL
 from tests.docs.test_links import _destination_failure, _repository_path
 
@@ -45,36 +42,45 @@ def _site_section(section_id: str) -> str:
     return SITE[start.end() : end if end != -1 else len(SITE)]
 
 
+def _readme_feature_cards() -> list[tuple[str, list[str]]]:
+    """Return each README "What it does" card as (title, paragraphs), images skipped."""
+    section = README.split("## What it does\n", 1)[1].split("\n## ", 1)[0]
+    cards = []
+    for card in section.split("\n### ")[1:]:
+        title, body = card.split("\n", 1)
+        blocks = [block.strip() for block in body.split("\n\n")]
+        cards.append((_plain(title), [_plain(b) for b in blocks if b and not b.startswith("<")]))
+    return cards
+
+
+def _site_feature_cards() -> list[tuple[str, list[str]]]:
+    """Return each home-page feature card as (title, paragraphs)."""
+    cards = re.findall(
+        r'<div class="feat__txt">\s*<h3>(.*?)</h3>(.*?)</div>', _site_section("features"), re.S
+    )
+    return [
+        (_plain(title), [_plain(p) for p in re.findall(r"<p>(.*?)</p>", body, re.S)])
+        for title, body in cards
+    ]
+
+
 def test_features_match_the_readme_word_for_word():
-    """One canonical feature list: the README's "What it does" is the site's Features."""
-    readme_section = README.split("## What it does\n", 1)[1].strip().split("\n\n", 1)[0]
-    readme_features = [_plain(line[2:]) for line in readme_section.splitlines()]
-    site_features = [
-        _plain(f"{name}: {text}")
-        for name, text in re.findall(
-            r"<h3>(.*?)</h3>\s*<p>(.*?)</p>", _site_section("features"), re.S
-        )
-    ]
+    """One canonical feature list: the README's "What it does" cards are the site's Features."""
+    site_cards = _site_feature_cards()
 
-    assert site_features
-    assert readme_features == site_features
+    assert len(site_cards) == 3
+    assert all(len(paragraphs) == 3 for _, paragraphs in site_cards)
+    assert _readme_feature_cards() == site_cards
 
 
-def test_inline_goal_examples_match_the_real_goal_presentation():
-    """The advertised examples must match validated Goals' public notation."""
-    examples = [
-        {
-            "family": "SYNTH",
-            "target": "synth_fifo",
-            "thresholds": {"area_increase_at_most": "10%"},
-        },
-        {"family": "COVERAGE", "target": "sim_fifo", "tests": "all", "metrics": {"line": 90}},
-    ]
-    translation = translate_goals(parse_goal_args(examples))
-    assert translation.warnings == ()
+def test_every_feature_card_shows_its_diagram_on_the_site_and_in_the_readme():
+    """The home page inlines each diagram; the README shows its light and dark copies."""
     features = _site_section("features")
-    for goal in translation.goals:
-        assert f"<code>{goal_presentation(goal).text}</code>" in features
+    readme_section = README.split("## What it does\n", 1)[1].split("\n## ", 1)[0]
+    for name in ("feature-tools", "feature-parallel", "feature-results"):
+        assert f'--8<-- "{name}.svg"' in features
+        assert f'srcset="{SITE_URL}docs/assets/{name}-dark.svg"' in readme_section
+        assert f'src="{SITE_URL}docs/assets/{name}-light.svg"' in readme_section
 
 
 def test_quick_start_commands_match_the_install_guide_block():
@@ -141,6 +147,10 @@ def test_generated_illustration_is_up_to_date():
     assert build.FIGURE_OUT.read_text(encoding="utf-8") == build.figure_html()
     assert build.CSS_OUT.read_text(encoding="utf-8") == build.css_text()
     assert build.ARCHITECTURE_OUT.read_text(encoding="utf-8") == build.architecture_svg()
+    for name in build.FEATURE_DIAGRAMS:
+        for theme in build.THEME_RULES:
+            generated = build.feature_out(name, theme).read_text(encoding="utf-8")
+            assert generated == build.feature_svg(name, theme), (name, theme)
     assert '--8<-- "ide-figure.html"' in SITE
 
 
@@ -181,6 +191,7 @@ def test_colours_are_theme_tokens_only():
     colour_attribute = re.compile(r'\b(fill|stroke|stop-color|color|style)="([^"]*)"')
     markup = [*WEBSITE.glob("snippets/*.html"), *WEBSITE.glob("overrides/*.html")]
     markup += [*WEBSITE.glob("illustration/*.html"), *WEBSITE.glob("docs/**/*.md")]
+    markup += [*WEBSITE.glob("illustration/feature-*.svg")]
     for path in sorted(markup):
         for name, value in colour_attribute.findall(path.read_text(encoding="utf-8")):
             if re.search(_COLOUR, value):
@@ -240,6 +251,8 @@ _TEXT_PAIRS = [
     ("--paper", "--ink-2"),
     ("--paper", "--ink"),
     ("--quote-ink", "--paper"),
+    ("--review", "--paper"),
+    ("--fault", "--paper"),
     ("--series-on-dark", "--series-build"),
     ("--series-on-dark", "--series-hung"),
     ("--series-on-light", "--series-obs"),

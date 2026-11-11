@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="fd" viewBox="0 0 440 222" role="img" aria-label="Inside the Sandbox container, each agent has its own worktree holding its branch and commits: Agent 1 on fifo-depth is running synth, Agent 2 on uart-parity is running sim, Agent 3 on alu-timing is done. From the Sandbox only the LLM provider is reachable; the internet and the rest of your machine are blocked. You review the finished work and merge it into main.">
+<rect class="sand" x="70.5" y="34.5" width="302" height="134" rx="3"/>
+<text class="cap" x="79" y="49">SANDBOX</text>
+<text class="s" x="364" y="49" text-anchor="end">one worktree per agent</text>
+<path class="ln ok" d="M104 34V12"/><path class="ah ok" d="M104 6l-3.5 7h7z"/>
+<text class="e ok" x="112" y="17">LLM provider</text>
+<path class="ln fault" d="M196 34V20M189 20H203"/>
+<text class="e fault" x="208" y="23">internet</text>
+<path class="ln fault" d="M262 34V20M255 20H269"/>
+<text class="e fault" x="274" y="23">rest of your machine</text>
+<path class="ln" d="M8 196H432"/>
+<circle class="dot" cx="22" cy="196" r="3.4"/><circle class="dot" cx="44" cy="196" r="3.4"/>
+<rect class="tree" x="82.5" y="57.5" width="278" height="30" rx="3"/>
+<text class="br" x="100" y="68">fifo-depth</text>
+<path class="ln" d="M44 196C66 196 64 77 92 77H184"/>
+<circle class="dot" cx="120" cy="77" r="3.4"/>
+<circle class="dot" cx="152" cy="77" r="3.4"/>
+<circle class="dot" cx="184" cy="77" r="3.4"/>
+<g class="bot" transform="translate(236 64) scale(0.470588)"><path d="M17 3v5"/><circle cx="17" cy="3" r="1.4"/><rect x="6" y="8" width="22" height="18" rx="4"/><circle class="eye" cx="13" cy="16" r="2"/><circle class="eye" cx="21" cy="16" r="2"/><path d="M13 21h8"/><path d="M3 15v5M31 15v5"/></g>
+<text x="257" y="76"><tspan class="who">Agent 1</tspan><tspan class="state" dx="5">running synth</tspan></text>
+<rect class="tree" x="82.5" y="93.5" width="278" height="30" rx="3"/>
+<text class="br" x="100" y="104">uart-parity</text>
+<path class="ln" d="M44 196C66 196 64 113 92 113H152"/>
+<circle class="dot" cx="120" cy="113" r="3.4"/>
+<circle class="dot" cx="152" cy="113" r="3.4"/>
+<g class="bot" transform="translate(236 100) scale(0.470588)"><path d="M17 3v5"/><circle cx="17" cy="3" r="1.4"/><rect x="6" y="8" width="22" height="18" rx="4"/><circle class="eye" cx="13" cy="16" r="2"/><circle class="eye" cx="21" cy="16" r="2"/><path d="M13 21h8"/><path d="M3 15v5M31 15v5"/></g>
+<text x="257" y="112"><tspan class="who">Agent 2</tspan><tspan class="state" dx="5">running sim</tspan></text>
+<rect class="tree done" x="82.5" y="129.5" width="278" height="30" rx="3"/>
+<text class="br" x="100" y="140">alu-timing</text>
+<path class="ln" d="M44 196C66 196 64 149 92 149H184"/>
+<circle class="dot" cx="120" cy="149" r="3.4"/>
+<circle class="dot" cx="152" cy="149" r="3.4"/>
+<circle class="dot" cx="184" cy="149" r="3.4"/>
+<g class="bot" transform="translate(236 136) scale(0.470588)"><path d="M17 3v5"/><circle cx="17" cy="3" r="1.4"/><rect x="6" y="8" width="22" height="18" rx="4"/><circle class="eye" cx="13" cy="16" r="2"/><circle class="eye" cx="21" cy="16" r="2"/><path d="M13 21h8"/><path d="M3 15v5M31 15v5"/></g>
+<text x="257" y="148"><tspan class="who">Agent 3</tspan><tspan class="state done" dx="5">done</tspan></text>
+<path class="ln ok merge" d="M184 149C214 149 236 196 300 196H398"/>
+<circle class="mrg" cx="398" cy="196" r="5.2"/>
+<text class="who" x="8" y="215">main</text>
+<text x="432" y="215" text-anchor="end"><tspan class="who">You</tspan> review and merge</text>
+</svg>
