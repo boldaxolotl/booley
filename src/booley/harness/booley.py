@@ -956,8 +956,8 @@ def _add_utility_subparsers(sub) -> None:
         const="never",
         default=None,
         help=(
-            "Start in the main checkout even if another session uses it "
-            "(overrides [chat] worktree for this launch)"
+            "Start in the main checkout even if another session uses it; from inside a "
+            "linked worktree, stay there (overrides [chat] worktree for this launch)"
         ),
     )
     _add_cheat_subparser(sub)
@@ -1246,10 +1246,10 @@ def _chat_option_width(tail: list[str], position: int) -> int:
 def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], list[str]]:
     """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
 
-    Booley keeps `-C`/`--project`, `--cli`, `--new-worktree` and `--here` only while they lead the tail. Everything after
-    them goes to the agent CLI untouched, with one leading `--` dropped so
-    `booley chat -- --help` forwards `--help`. A leading `-h`/`--help` stays
-    Booley's: the whole argv goes to argparse, which prints the `chat` help.
+    Booley keeps `-C`/`--project`, `--cli`, `--new-worktree` and `--here` only while they
+    lead the tail. Everything after them goes to the agent CLI untouched, with one leading
+    `--` dropped so `booley chat -- --help` forwards `--help`. A leading `-h`/`--help`
+    stays Booley's: the whole argv goes to argparse, which prints the `chat` help.
     """
     tail = argv[command_index + 1 :]
     own_end = 0

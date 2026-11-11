@@ -8,6 +8,7 @@ import functools
 import os
 import shutil
 import signal
+import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -108,7 +109,7 @@ class _NoHandleError(Exception):
 
 
 class _SetupInterruptedError(Exception):
-    """SIGHUP or SIGTERM arrived while the worktree was being set up."""
+    """SIGINT, SIGHUP or SIGTERM arrived while the worktree was being set up."""
 
     def __init__(self, signum: int) -> None:
         super().__init__(f"signal {signum}")
@@ -117,12 +118,18 @@ class _SetupInterruptedError(Exception):
 
 @contextlib.contextmanager
 def _signals_interrupt_setup() -> Iterator[None]:
-    """Turn SIGHUP/SIGTERM into an exception so worktree setup rolls back, then restore them."""
+    """Turn SIGINT/SIGHUP/SIGTERM into an exception so worktree setup rolls back, then restore.
+
+    The first signal ignores all three until the context exits: a second Ctrl-C or the
+    SIGHUP a closing terminal sends twice must not abort the rollback it triggered.
+    """
+    signals = (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)
 
     def interrupt(signum: int, _frame: object) -> None:
+        for number in signals:
+            signal.signal(number, signal.SIG_IGN)
         raise _SetupInterruptedError(signum)
 
-    signals = (signal.SIGHUP, signal.SIGTERM)
     previous = {number: signal.signal(number, interrupt) for number in signals}
     try:
         yield
@@ -149,6 +156,33 @@ def _agent_command(
     return provider, [provider], None
 
 
+def _interrupted_notice(project_root: Path, name: str) -> str:
+    """Say what an interrupted setup left: nothing, or the removal steps for what survived.
+
+    A signal that lands while the creation script runs kills it before it can undo its
+    work, so the claim that nothing remains is checked, not assumed.
+    """
+    worktree = worktree_cmd.worktree_path(project_root, name)
+    branch = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project_root),
+            "show-ref",
+            "--verify",
+            "--quiet",
+            f"refs/heads/booley/{name}",
+        ],
+        check=False,
+    )
+    if not worktree.exists() and branch.returncode != 0:
+        return f"Worktree setup interrupted; {name} was rolled back."
+    return (
+        f"Worktree setup interrupted; {name} may be left behind.\n"
+        f"{worktree_cmd.worktree_removal_instructions(project_root, worktree, name)}"
+    )
+
+
 def _enter_worktree(project_root: Path, handle: str, reason: str | None) -> int | None:
     """Create the worktree named after *handle*, announce it and move there.
 
@@ -160,7 +194,7 @@ def _enter_worktree(project_root: Path, handle: str, reason: str | None) -> int 
             worktree = worktree_cmd.create_worktree(project_root, name)
     except (KeyboardInterrupt, _SetupInterruptedError) as exc:
         signum = exc.signum if isinstance(exc, _SetupInterruptedError) else signal.SIGINT
-        print(f"Worktree setup interrupted; {name} was rolled back.", file=sys.stderr)
+        print(_interrupted_notice(project_root, name), file=sys.stderr)
         return 128 + int(signum)
     if worktree is None:
         return 1
@@ -204,6 +238,10 @@ def _launch(provider: str, project_root: Path, agent_args: list[str], placement:
         return _cli_not_found(provider)
     except OSError as exc:
         print(f"ERROR: could not launch agent CLI '{provider}': {exc}", file=sys.stderr)
+    except KeyboardInterrupt:
+        # Ctrl-C while waiting for the Session writer lock: one line, no traceback.
+        print("Launch interrupted.", file=sys.stderr)
+        return 128 + int(signal.SIGINT)
     return 2
 
 

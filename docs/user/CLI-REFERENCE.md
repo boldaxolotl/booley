@@ -56,7 +56,7 @@ Initialization only; a Booley-issued Sandbox refuses it. See
 booley                            # open the Developer Agent (same as booley chat)
 booley chat --cli codex           # open another Agent CLI your Project allows
 booley chat --new-worktree        # start in a new worktree s<N> even if the main checkout is free
-booley chat --here                # start in the main checkout even if it is in use
+booley chat --here                # start in the main checkout even if it is in use (in a linked worktree: stay there)
 booley chat --resume <id>         # Claude: arguments after chat and its options go to the agent CLI
 booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)

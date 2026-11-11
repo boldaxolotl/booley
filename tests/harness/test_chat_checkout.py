@@ -421,7 +421,7 @@ def test_invalid_worktree_knob_stops_the_launch(project, monkeypatch, capsys):
     )
 
 
-@pytest.mark.parametrize("interrupt", ["SIGTERM", "SIGHUP", "KeyboardInterrupt"])
+@pytest.mark.parametrize("interrupt", ["SIGINT", "SIGTERM", "SIGHUP", "KeyboardInterrupt"])
 def test_interrupt_during_worktree_setup_reports_one_line_and_restores_signals(
     project, monkeypatch, capsys, interrupt
 ):
@@ -434,7 +434,7 @@ def test_interrupt_during_worktree_setup_reports_one_line_and_restores_signals(
         raise AssertionError("the signal did not interrupt the setup")
 
     monkeypatch.setattr(worktree_cmd, "create_worktree", interrupted)
-    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    before = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
 
     started = _start(project, monkeypatch, capsys, flag="always")
 
@@ -442,6 +442,53 @@ def test_interrupt_during_worktree_setup_reports_one_line_and_restores_signals(
     assert started.code == 128 + int(number)
     assert started.stderr == "Worktree setup interrupted; s1 was rolled back.\n"
     assert {s: signal.getsignal(s) for s in before} == before
+
+
+def test_a_second_signal_cannot_abort_the_rollback(project, monkeypatch, capsys):
+    # Bug caught: a second Ctrl-C or SIGHUP (a closing terminal sends two) lands in the
+    # rollback the first one started, and stops it half done.
+    def interrupted(_project, _name):
+        try:
+            signal.raise_signal(signal.SIGHUP)
+        finally:
+            signal.raise_signal(signal.SIGTERM)
+            signal.raise_signal(signal.SIGINT)
+
+    monkeypatch.setattr(worktree_cmd, "create_worktree", interrupted)
+
+    started = _start(project, monkeypatch, capsys, flag="always")
+
+    assert started.code == 128 + int(signal.SIGHUP)
+
+
+def test_an_interrupt_that_leaves_the_worktree_behind_says_so(project, monkeypatch, capsys):
+    # Bug caught: "was rolled back" printed after a signal killed the creation script before
+    # it could undo its work, leaving s1 and its branch for the user to find.
+    def interrupted(root, name):
+        worktree_cmd.worktree_path(root, name).mkdir(parents=True)
+        signal.raise_signal(signal.SIGHUP)
+
+    monkeypatch.setattr(worktree_cmd, "create_worktree", interrupted)
+
+    started = _start(project, monkeypatch, capsys, flag="always")
+
+    assert started.code == 128 + int(signal.SIGHUP)
+    assert "s1 may be left behind" in started.stderr
+    assert "was rolled back" not in started.stderr
+    assert "branch -D booley/s1" in started.stderr
+
+
+def test_ctrl_c_while_reserving_the_handle_prints_one_line(project, monkeypatch, capsys):
+    # Bug caught: Ctrl-C during the wait for the Session writer lock dumping a traceback.
+    def interrupted(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(chat_cmd, "_agent_command", interrupted)
+
+    started = _start(project, monkeypatch, capsys)
+
+    assert started.code == 128 + int(signal.SIGINT)
+    assert started.stderr == "Launch interrupted.\n"
 
 
 def test_a_launcher_that_cannot_carry_a_handle_refuses_a_worktree(project, monkeypatch, capsys):
