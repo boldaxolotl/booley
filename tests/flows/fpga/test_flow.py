@@ -18,9 +18,9 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.evidence.fields import (
     BASELINE_REF_PARAM,
+    BASELINE_TARGET_PARAM,
     RECIPE_FINGERPRINT_PARAM,
     RECIPE_SNAPSHOT_PARAM,
 )

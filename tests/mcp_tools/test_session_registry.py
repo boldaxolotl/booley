@@ -455,7 +455,7 @@ async def test_first_call_without_workdir_never_associates_server_cwd(registry, 
 
 
 def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
-    from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     work = tmp_path / "work"
     git = work / ".git"
@@ -477,7 +477,7 @@ def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
 
 @pytest.mark.asyncio
 async def test_busy_fallback_uses_same_worktree_key_and_namespace(tmp_path, monkeypatch):
-    from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     git = tmp_path / ".git"
     (git / REPOSITORY_ID_FILE).parent.mkdir(parents=True)
@@ -545,7 +545,7 @@ async def test_pruning_does_not_block_request_attribution(registry, monkeypatch)
 
 
 def test_fallback_row_migration_preserves_started_time_and_one_visible_row(tmp_path):
-    from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     work = tmp_path / "work"
     git = work / ".git"

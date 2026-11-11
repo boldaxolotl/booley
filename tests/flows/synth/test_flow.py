@@ -26,7 +26,7 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.evidence.recipe import implementation_comparison_basis
 from booley.evidence.timing import make_clock_timing
 from booley.flows import artifacts
