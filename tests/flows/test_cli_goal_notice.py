@@ -1,14 +1,18 @@
 """Human CLI admission discloses Goal recording without changing Goal authority."""
 
+import argparse
 import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from booley.flows.cli_selection import CliInvocation
 from booley.flows.lint.flow import LintFlow
 from booley.goals.model import GoalState
 from booley.goals.store import GoalStore
+from booley.harness.booley import _invoke_endpoint
+from booley.harness.cli_goal_notice import warn_cli_goal_recording
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.specialists.reviewer import ReviewerSpecialist
 from tests.flows.invocation_doubles import replace_run
@@ -62,13 +66,79 @@ def test_active_cli_warns_without_writing_goal(
         argv.append("--diagnostic")
     before = _snapshot(goal_mode.control / "goals")
     metadata = _snapshot(goal_mode.main / ".git")
-    result = endpoint.execute_cli(argv)
-    assert result.exit_code == 0
+    # The advisory belongs to the `booley` command composition, not to Flow code.
+    assert _invoke_endpoint(endpoint, argv, argparse.Namespace()) == 0
     output = capsys.readouterr()
     assert f"not recorded for active Goal {goal_mode.record.id}" in output.err
     assert "MCP calls with work_dir" in output.err
     assert _snapshot(goal_mode.control / "goals") == before
     assert _snapshot(goal_mode.main / ".git") == metadata
+
+
+@pytest.mark.parametrize(
+    ("endpoint_kind", "mode"),
+    [
+        ("builtin", "human"),
+        ("specialist", "human"),
+        ("builtin", "transport"),
+        ("specialist", "transport"),
+        ("builtin", "bound"),
+        ("specialist", "bound"),
+    ],
+    ids=[
+        "builtin-human",
+        "specialist-human",
+        "builtin-transport",
+        "specialist-transport",
+        "builtin-bound",
+        "specialist-bound",
+    ],
+)
+def test_supplied_advisory_follows_admission_conditions(
+    goal_mode, monkeypatch, endpoint_kind, mode
+):
+    """Flow code calls the supplied advisory only for human, unbound runs, with the work_dir."""
+    from booley.goals.flow_execution import GoalFlowExecution
+    from booley.runtime import runtime_context
+    from tests.goals.conftest import bind
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    calls: list[Path] = []
+    transport = mode == "transport"
+    # Human rows select the worktree through a relative selector from a nested cwd, so only
+    # the normalized selection equals the worktree; transport parsers take --work-dir.
+    if transport:
+        selector = ["--work-dir", str(goal_mode.worktree)]
+    else:
+        selector = ["-C", ".." if mode == "human" else str(goal_mode.worktree)]
+    if mode == "human":
+        nested = goal_mode.worktree / "nested"
+        nested.mkdir()
+        monkeypatch.chdir(nested)
+    adapter = None
+    if endpoint_kind == "builtin":
+        endpoint = LintFlow()
+        replace_run(monkeypatch, endpoint, EndpointOutcome)
+        argv = [*selector, "--target", "top", "--quiet"]
+        if mode == "bound":
+            adapter = GoalFlowExecution(bind(goal_mode))
+    else:
+        endpoint = ReviewerSpecialist()
+        argv = [*selector, "--category", "rtl", "--focus", "bugs", "--scope", "rtl.v"]
+        if mode == "bound":
+            endpoint._acceptance_recorder = GoalFlowExecution(bind(goal_mode))
+    endpoint._cli_invocation = CliInvocation(
+        transport=transport, goal_recording_advisory=calls.append
+    )
+    if endpoint_kind == "specialist":
+        # Specialists admit the advisory while parsing; a Goal-bound recorder's state-file
+        # checks belong to later preparation, which this test does not exercise.
+        endpoint.parse_args(argv)
+    elif adapter is None:
+        assert endpoint.execute_cli(argv).exit_code == 0
+    else:
+        assert endpoint.execute_cli(argv, adapter=adapter).exit_code == 0
+    assert calls == ([goal_mode.worktree.resolve()] if mode == "human" else [])
 
 
 def test_unbound_cli_report_omits_goal_headline(goal_mode, monkeypatch):
@@ -100,12 +170,14 @@ def test_sibling_and_finished_goal_do_not_warn(goal_mode, monkeypatch, capsys):
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     flow = LintFlow()
     replace_run(monkeypatch, flow, EndpointOutcome)
-    flow.execute_cli(["-C", str(goal_mode.main), "--target", "top", "--quiet"])
+    argv = ["-C", str(goal_mode.main), "--target", "top", "--quiet"]
+    _invoke_endpoint(flow, argv, argparse.Namespace())
     assert "not recorded for active Goal" not in capsys.readouterr().err
     store = GoalStore(goal_mode.control)
     with store.record_lock(goal_mode.record.id) as lock:
         store.save(lock, replace(store.load(goal_mode.record.id), state=GoalState.ABANDONED))
-    flow.execute_cli(["-C", str(goal_mode.worktree), "--target", "top", "--quiet"])
+    argv = ["-C", str(goal_mode.worktree), "--target", "top", "--quiet"]
+    _invoke_endpoint(flow, argv, argparse.Namespace())
     assert "not recorded for active Goal" not in capsys.readouterr().err
 
 
@@ -121,7 +193,10 @@ def test_normalized_module_selection_warns(goal_mode, monkeypatch, capsys, selec
     args = ["--category", "rtl", "--focus", "bugs", "--scope", "rtl.v"]
     if selection == "project":
         args += ["--project", str(goal_mode.worktree)]
-    ReviewerSpecialist().parse_args(args)
+    endpoint = ReviewerSpecialist()
+    # The Harness composition supplies the advisory with the invocation.
+    endpoint._cli_invocation = CliInvocation(goal_recording_advisory=warn_cli_goal_recording)
+    endpoint.parse_args(args)
     assert goal_mode.record.id in capsys.readouterr().err
 
 
@@ -172,8 +247,8 @@ def test_store_selection_matches_actual_worktree(
 @pytest.mark.parametrize("damage", ["corrupt", "identity"])
 def test_lookup_failures_are_read_only_advisories(goal_mode, capsys, damage):
     from booley.goals.paths import record_paths
-    from booley.goals.store import REPOSITORY_ID_FILE
     from booley.harness.cli_goal_notice import warn_cli_goal_recording
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     if damage == "corrupt":
         record_paths(goal_mode.control, goal_mode.record.id).record_file.write_text("broken")
@@ -199,10 +274,17 @@ def test_notice_precedes_preparation_rejection(goal_mode, monkeypatch, capsys):
     from booley.runtime import runtime_context
 
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    result = ReviewerSpecialist().execute_cli(
-        ["-C", str(goal_mode.worktree), "--category", "rtl", "--focus", "bugs", "--scope", "rtl.v"]
-    )
-    assert result.exit_code == 2
+    argv = [
+        "-C",
+        str(goal_mode.worktree),
+        "--category",
+        "rtl",
+        "--focus",
+        "bugs",
+        "--scope",
+        "rtl.v",
+    ]
+    assert _invoke_endpoint(ReviewerSpecialist(), argv, argparse.Namespace()) == 2
     assert goal_mode.record.id in capsys.readouterr().err
 
 
@@ -351,8 +433,8 @@ def test_foreign_store_does_not_require_identity_for_unrelated_checkout(
 def test_malformed_identity_is_not_a_foreign_store(goal_mode, capsys):
     import shutil
 
-    from booley.goals.store import REPOSITORY_ID_FILE
     from booley.harness.cli_goal_notice import warn_cli_goal_recording
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     shutil.rmtree(goal_mode.control / "goals")
     (goal_mode.main / ".git" / REPOSITORY_ID_FILE).write_text("malformed")

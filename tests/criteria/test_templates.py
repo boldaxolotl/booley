@@ -9,7 +9,6 @@ from booley.criteria.templates import (
     CriteriaTemplate,
     CriterionDef,
     CriterionSpec,
-    TargetPair,
     _param_base_metric,
     _split_clock_scope,
     _validate_criterion_params,
@@ -18,6 +17,7 @@ from booley.criteria.templates import (
     load_project_criteria,
     parse_target_pair,
 )
+from booley.targets.domain import TargetPair
 
 
 class TestCriterionSpec:
@@ -771,6 +771,12 @@ class TestCriterionEligibility:
         tools = {"fpga_core": "verilator", "synth_core": "vivado"}
         out = expand_criteria_defs(defs, ["fpga_core", "synth_core"], tools)
         assert set(out) == {"fpga_impl_ok_fpga_core"}
+
+    def test_bare_fpga_target_keeps_fpga_criterion(self):
+        """A bare `fpga` is not conventional but still carries FPGA intent."""
+        defs = [_per_config_def("sim_pass"), _per_config_def("fpga_impl_ok")]
+        out = expand_criteria_defs(defs, ["fpga"], {"fpga": "verilator"})
+        assert set(out) == {"fpga_impl_ok_fpga"}
 
     def test_unknown_tool_is_not_filtered(self):
         """A config whose tool is None (pre-migration) keeps every criterion."""

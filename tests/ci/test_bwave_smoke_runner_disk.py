@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 
@@ -31,14 +32,14 @@ _FAKE_TIMEOUT = '#!/usr/bin/env bash\nshift\nexec "$@"\n'
 _FAKE_DOCKER = "#!/usr/bin/env bash\necho 'docker unavailable' >&2\nexit 1\n"
 
 
-def _steps() -> list[dict]:
+def _steps(job: str = "bwave-smoke") -> list[dict]:
     workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
-    return workflow["jobs"]["bwave-smoke"]["steps"]
+    return workflow["jobs"][job]["steps"]
 
 
 def _index(steps: list[dict], name: str) -> int:
     matches = [i for i, step in enumerate(steps) if step.get("name") == name]
-    assert matches, f"bwave-smoke has no step named {name!r}"
+    assert matches, f"job has no step named {name!r}"
     return matches[0]
 
 
@@ -50,8 +51,11 @@ def _builds_image(step: dict) -> bool:
     )
 
 
-def test_runner_disk_is_freed_before_image_builds() -> None:
-    steps = _steps()
+# riscv-image builds the standard substrate and the RISC-V image on its own
+# runner, so it needs the same space.
+@pytest.mark.parametrize("job", ["bwave-smoke", "riscv-image"])
+def test_runner_disk_is_freed_before_image_builds(job: str) -> None:
+    steps = _steps(job)
     free = _index(steps, _FREE_STEP)
     step = steps[free]
 
@@ -61,7 +65,7 @@ def test_runner_disk_is_freed_before_image_builds() -> None:
     assert "run" not in step
     assert "if" not in step, "the disk-freeing step must run on every lane"
     builds = [i for i, other in enumerate(steps) if _builds_image(other)]
-    assert builds, "expected image-building steps in bwave-smoke"
+    assert builds, f"expected image-building steps in {job}"
     assert free < min(builds)
     assert free < _index(steps, "Start test-phase duration clock")
 
@@ -87,7 +91,7 @@ def _run_report(tmp_path: Path, runner_temp: Path) -> subprocess.CompletedProces
         fake = bin_dir / name
         fake.write_text(body, encoding="utf-8")
         fake.chmod(0o755)
-    return subprocess.run(
+    return run_bounded_child(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
         env={
             # BASH_ENV would make a non-interactive bash source a host file.
@@ -95,10 +99,7 @@ def _run_report(tmp_path: Path, runner_temp: Path) -> subprocess.CompletedProces
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "RUNNER_TEMP": str(runner_temp),
         },
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=60,
     )
 
 
@@ -115,18 +116,7 @@ def test_disk_report_after_validations_never_fails(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "bwave-smoke/verilator" in result.stdout
     assert "bwave-smoke/openroad" in result.stdout
-    # The RISC-V evidence directory is absent on this lane: it is filtered out
-    # rather than handed to du, which would fail on it.
-    assert "riscv-image-evidence" not in result.stdout + result.stderr
     assert "No such file" not in result.stderr
-
-    # The RISC-V lane: its evidence directory is reported as well.
-    (runner_temp / "riscv-image-evidence").mkdir()
-    second = tmp_path / "second"
-    second.mkdir()
-    result = _run_report(second, runner_temp)
-    assert result.returncode == 0, result.stderr
-    assert "riscv-image-evidence" in result.stdout
 
     # The group may never have started: no scratch directory, still exit 0 and
     # no du call on an empty list.

@@ -25,13 +25,13 @@ from booley.flows.base import SubprocessResult
 from booley.flows.sim import build_reuse
 from booley.flows.sim.build_session import simulation_build_slot
 from booley.flows.sim.execution import (
-    NamedTests,
     SimulationExecution,
     SimulationOptions,
     SimulationTargetOutcome,
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.prepared_group import run_prepared_group
 
 pytestmark = pytest.mark.skipif(
@@ -242,15 +242,15 @@ def _write_core(project: Path, *, options: str) -> None:
     )
 
 
-def _isolate_native_cores(project: Path) -> None:
-    """Move the Project's core into ``.booley/cores/`` and isolate native cores (plain layout)."""
+def _isolate_native_cores(project: Path, core: str = "demo.core") -> None:
+    """Move the Project's *core* into ``.booley/cores/`` and isolate native cores (plain layout)."""
     booley = project / ".booley"
     (booley / "booley.toml").write_text(
         "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
     )
     (booley / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
     (booley / "cores").mkdir()
-    (project / "demo.core").rename(booley / "cores" / "demo.core")
+    (project / core).rename(booley / "cores" / core)
 
 
 def _edit_keeping_mtime(path: Path, text: str) -> None:
@@ -318,19 +318,12 @@ def _run(
     *,
     test: str = "smoke",
     options: SimulationOptions | None = None,
-    legacy_run: bool = False,
 ) -> SimulationTargetOutcome:
-    """Launch one test; ``legacy_run`` keeps run()-only behavior (Pre-Sim) on ``run()``.
-
-    The flag goes away with the engine-deletion part of #2337.
-    """
+    """Launch one test through the prepared ordinary group path."""
     handle = _select(project)
     execution = SimulationExecution(
         invoke=recorder, options=options or SimulationOptions(timeout_ms=10_000)
     )
-    if legacy_run:
-        # Pre-Sim Commands fire only inside run(); that behavior stays there.
-        return execution.run(handle, NamedTests((test,)))
     return run_prepared_group(execution, handle, (test,))
 
 
@@ -455,35 +448,6 @@ def test_corrupt_retained_generation_forces_fresh_build(verilator_env: Path, tam
     assert "STALE" not in recorder.launches[1]
 
 
-def test_pre_sim_output_in_run_cwd_keeps_reuse(verilator_env: Path) -> None:
-    (verilator_env / ".booley" / "booley.toml").write_text(
-        '[flows.sim]\npre_run_commands = ["printf fw > \\"$BOOLEY_RUN_CWD/firmware.hex\\""]\n',
-        encoding="utf-8",
-    )
-    recorder = _Recorder(verilator_env)
-    _assert_passed(_run(verilator_env, recorder, legacy_run=True))
-    second = _run(verilator_env, recorder, legacy_run=True)
-    _assert_passed(second)
-    assert recorder.builds == 1
-    assert second.builds[0].ran is False
-    assert second.builds[0].cache_decision.startswith("hit;")
-
-
-@pytest.mark.parametrize("name", ["firmware.hex", ".booley-adapter-x.json", ".a-x.json"])
-def test_pre_sim_output_in_build_root_forces_rebuild(verilator_env: Path, name: str) -> None:
-    """Any write into the generation counts, even under a Booley-reserved name."""
-    (verilator_env / ".booley" / "booley.toml").write_text(
-        f'[flows.sim]\npre_run_commands = ["printf fw > \\"$BOOLEY_BUILD_ROOT/{name}\\""]\n',
-        encoding="utf-8",
-    )
-    recorder = _Recorder(verilator_env)
-    _assert_passed(_run(verilator_env, recorder, legacy_run=True))
-    second = _run(verilator_env, recorder, legacy_run=True)
-    _assert_passed(second)
-    assert recorder.builds == 2
-    assert second.builds[0].ran is True
-
-
 def test_object_without_dependency_record_is_never_reused(verilator_env: Path) -> None:
     _edit_keeping_mtime(
         verilator_env / "rtl" / "tb.sv",
@@ -570,4 +534,6 @@ def test_native_fst_trace_mode_survives_a_reuse_hit(verilator_env: Path) -> None
     assert second.builds[0].ran is False
     assert second.builds[0].cache_decision.startswith("hit;")
     assert len(recorder.launch_commands) == 2
-    assert all("--trace-mode native_fst" in command for command in recorder.launch_commands)
+    assert all(
+        launched_work(command).trace_mode == "native_fst" for command in recorder.launch_commands
+    )

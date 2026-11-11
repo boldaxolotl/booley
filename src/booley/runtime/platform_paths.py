@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from booley.runtime.process_group import (
@@ -84,6 +85,23 @@ def host_path_from_docker_mount(value: str) -> Path | None:
 # Use native Windows path so Path.exists() works under both MSYS2 and
 # native Python (bash-style /c/... only resolves inside MSYS2 shell).
 _MSYS2_CARGO = Path("C:/msys64/mingw64/bin/cargo.exe") if IS_WINDOWS else Path("/nonexistent")
+
+
+def same_host_path(left: str | os.PathLike[str], right: str | os.PathLike[str]) -> bool:
+    """Whether two host paths name the same location.
+
+    Spelling decides first under the host's own rule: ``os.path.normcase`` folds case and
+    separators only on Windows, so on Linux ``/u/Proj`` and ``/u/proj`` are different paths.
+    Otherwise an alias (symlink, 8.3 name, case-insensitive volume) counts only when both
+    paths exist and are the same file, so on a case-insensitive volume such as default macOS
+    APFS the case variants of one directory are one location.
+    """
+    if os.path.normcase(left) == os.path.normcase(right):
+        return True
+    try:
+        return Path(left).samefile(right)
+    except (OSError, ValueError):  # missing path, or a NUL byte in a Docker label
+        return False
 
 
 def venv_python(venv_dir: Path) -> Path:
@@ -167,13 +185,21 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
 _KILL_DRAIN_TIMEOUT_S = 5
 
 
-def run_captured_bounded(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+def run_captured_bounded(
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run *argv* capturing text output; never wait unboundedly on a timeout.
 
     Unlike ``subprocess.run(..., timeout=...)``, which kills only the direct
     child and (on Windows) then waits for the output pipes to reach EOF with no
     limit, this starts the child in its own process group, kills the whole tree
     on timeout and abandons pipes a surviving descendant still holds.
+    *cwd* and *env* are the child's working directory and complete environment;
+    ``None`` inherits the caller's.
 
     Returns the ``CompletedProcess`` for any exit status (never raises on a
     non-zero exit). Raises ``subprocess.TimeoutExpired`` after *timeout*
@@ -190,6 +216,8 @@ def run_captured_bounded(argv: list[str], *, timeout: float) -> subprocess.Compl
         text=True,
         encoding="utf-8",
         errors="replace",
+        cwd=cwd,
+        env=env,
         **popen_new_group_kwargs(),
     )
     try:

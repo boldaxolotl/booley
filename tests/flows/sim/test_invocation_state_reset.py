@@ -117,7 +117,6 @@ def test_tool_identity_does_not_leak_between_invocations(tmp_path, monkeypatch):
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim"])
     assert flow._eda_tool is None
     assert flow._eda_tools == {"sim": None}
-    assert flow._target_eda_tools == {"sim": None}
 
 
 def test_simulation_outcomes_belong_to_simulation_flow(tmp_path, monkeypatch):
@@ -134,3 +133,39 @@ def test_simulation_outcomes_belong_to_simulation_flow(tmp_path, monkeypatch):
     flow._start_invocation(StandaloneFlowExecution())
     assert flow._simulation_campaign_outcomes == ()
     assert flow._simulation_acceptance_outcomes == ()
+
+
+def test_build_timeout_is_resolved_again_for_the_next_invocation(tmp_path, monkeypatch):
+    """A reused Flow object keeps no build budget from the previous request."""
+    config = tmp_path / ".booley" / "booley.toml"
+    config.parent.mkdir()
+    config.write_text("[flows.sim]\nbuild_timeout_ms = 111000\n", encoding="utf-8")
+    flow = _flow(tmp_path, monkeypatch)
+    assert flow._effective_build_timeout_ms() == 111_000
+
+    config.write_text("[flows.sim]\nbuild_timeout_ms = 222000\n", encoding="utf-8")
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim"])
+
+    assert flow._effective_build_timeout_ms() == 222_000
+
+
+# Flow state set while preparing a request: a stale value, and what the next invocation starts with.
+_STALE_STATE = {
+    "_resume_coverage_plan": (object(), None),
+    "_coverage_prepared": (object(), None),
+    "_resolved_build_timeout_ms": (5, None),
+    "_target_handles": ({"sim": object()}, {}),
+    "_current_published_pre_sim_keys": ({("a", "b", "c", 1)}, set()),
+    "_standalone_plan_recipe": (object(), None),
+}
+
+
+@pytest.mark.parametrize("name", _STALE_STATE)
+def test_flow_state_restarts_with_each_invocation(tmp_path, monkeypatch, name):
+    stale, fresh = _STALE_STATE[name]
+    flow = _flow(tmp_path, monkeypatch)
+    setattr(flow, name, stale)
+
+    flow._start_invocation(StandaloneFlowExecution())
+
+    assert getattr(flow, name) == fresh

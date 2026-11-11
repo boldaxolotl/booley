@@ -18,8 +18,16 @@ import pytest
 from booley.harness import booley as tlr
 from booley.runtime import health
 from booley.runtime.booley_dir import reset_cache
+from tests.subprocess_budget import run_bounded_child
 
 TICKETS_REL = Path(".booley") / "tickets"
+
+
+@pytest.fixture(autouse=True)
+def _outside_any_job(monkeypatch):
+    """CLI dispatch tests never record a Standalone Job into a real Project (e.g. inside a Sandbox)."""
+    for name in ("BOOLEY_DIR", "BOOLEY_RUN_ID", "_BOOLEY_CLI_INVOCATION_ORIGIN"):
+        monkeypatch.delenv(name, raising=False)
 
 
 # ===========================================================================
@@ -267,6 +275,18 @@ def test_bootstrap_parser_exposes_qa_selection_flags(flag, attribute):
 
     assert getattr(args, attribute) is True
     assert args.force is True
+
+
+def test_bootstrap_parser_accepts_egress_mode(capsys):
+    parser = tlr._build_parser()
+
+    assert parser.parse_args(["bootstrap", "--egress", "unproxied"]).egress == "unproxied"
+    assert parser.parse_args(["bootstrap", "--check-only", "--egress", "proxy"]).egress == "proxy"
+    assert parser.parse_args(["bootstrap"]).egress is None
+    with pytest.raises(SystemExit) as raised:
+        parser.parse_args(["bootstrap", "--egress", "open"])
+    assert raised.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
@@ -813,8 +833,6 @@ class TestVersionCommitDate:
         assert tlr._version_string() == f"booley {__version__} (abc1234, 2026-10-26)"
 
     def test_dirty_checkout_shows_dirty_commit_and_date(self, tmp_path, monkeypatch):
-        import subprocess
-
         from booley import __version__
         from booley.runtime.version_attribution import VersionOrigin
 
@@ -822,12 +840,9 @@ class TestVersionCommitDate:
         repo.mkdir()
 
         def git(*args, **env):
-            return subprocess.run(
+            return run_bounded_child(
                 ["git", "-C", str(repo), *args],
                 check=True,
-                capture_output=True,
-                text=True,
-                timeout=60,
                 # Ignore the developer's global git config (signing, hooks).
                 env={
                     **os.environ,
@@ -938,15 +953,25 @@ class TestEnforceVenue:
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # must not raise
 
-    def test_host_only_init_refused_in_container(self, monkeypatch, capsys):
-        """`booley init` builds the container boundary -> refused inside it."""
+    def test_init_in_container_follows_sandbox_kind(self, tmp_path, monkeypatch, capsys):
+        """`init` is never venue-refused; a Booley-issued Sandbox refuses it itself."""
+        import argparse
+
+        from booley.harness import init_cmd
+        from booley.runtime import runtime_context
+
+        cases = (
+            ("/work/.devcontainer", "cannot run inside a Booley-issued Sandbox"),
+            ("/mnt", "`booley init --seed` is host-side setup"),
+        )
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-        with pytest.raises(SystemExit) as exc:
-            tlr._enforce_runtime_location("init")
-        assert exc.value.code == 2
-        err = capsys.readouterr().err
-        assert "booley init" in err
-        assert "HOST terminal" in err
+        for mount_point, message in cases:
+            mountinfo = tmp_path / "mountinfo"
+            mountinfo.write_text(f"1 0 0:1 / {mount_point} rw - ext4 /dev/x rw\n")
+            monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
+            tlr._enforce_runtime_location("init")  # must not raise
+            assert init_cmd.run_init(argparse.Namespace(seed=True), tmp_path) == 2
+            assert message in capsys.readouterr().err
 
     def test_init_allowed_on_host(self, monkeypatch):
         with _host_venue(monkeypatch):
@@ -1104,7 +1129,7 @@ class _FakeFlow:
 
 def _unknown_flow_error(name: str) -> str:
     """The stderr text for an unknown Flow: plain heading and table, never styled."""
-    from booley.harness.terminal_table import render_table
+    from booley.presentation.terminal_table import render_table
 
     table = "\n".join(render_table(["Name", "Description"], [["fakeflow", "A fake Flow"]]))
     return f"ERROR: {name!r} is not a flow for booley flow.\n\nAvailable Flows\n{table}\n"
@@ -1168,9 +1193,9 @@ class TestCmdFlow:
 
     @pytest.mark.parametrize("kind", ["flow", "specialist"])
     def test_bare_listing_is_a_header_table(self, kind, monkeypatch, capsys):
-        from booley.harness import colors
-        from booley.harness.terminal_table import render_table
         from booley.mcp.registry import McpToolInfo
+        from booley.presentation import colors
+        from booley.presentation.terminal_table import render_table
 
         monkeypatch.setattr(colors, "COLORS_ENABLED", False)
         infos = [
@@ -1256,6 +1281,8 @@ class TestCmdFlow:
         help_text = tlr._build_parser().format_help()
         assert "flow" in help_text
         assert "Run a Booley Flow directly" in help_text
+        # Collapse whitespace so argparse wrapping cannot split the example.
+        assert "--target lint_soc" in " ".join(help_text.split())
 
 
 class TestEndpointResolution:
@@ -1667,6 +1694,8 @@ def test_host_commands_use_persistent_venv_identity(tmp_path, monkeypatch, comma
         "abc123",
         "f" * 64,
     )
+    # `init` is dual: its installation check applies on the host only.
+    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(host_install.sys, "prefix", "/home/user/venv")
     monkeypatch.setattr(host_install.sys, "base_prefix", "/usr")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

@@ -10,8 +10,38 @@ import pytest
 
 from booley.flows.synth import timing as synth_timing
 from booley.flows.synth.backends.openroad import reporting as openroad_reporting
+from booley.flows.synth.backends.pipeline import SynthSpec
+from booley.flows.synth.mode import SynthMode
+from booley.flows.synth.timing import StaTimingConfig
 from tests.conftest import symlink_or_skip
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+
+
+def _spec(
+    *,
+    liberty: Path = Path("/pdk/lib.lib"),
+    design_name: str = "dut",
+    frontend: str = "sv2v",
+    flatten: bool = False,
+    **overrides,
+) -> SynthSpec:
+    """Build a SynthSpec with inert defaults; tests override only what matters."""
+    fields = {
+        "design_name": design_name,
+        "sources": (),
+        "inc_dirs": (),
+        "defines": (),
+        "params": {},
+        "liberty": liberty,
+        "liberty_found": True,
+        "flatten": flatten,
+        "abc_recipe": None,
+        "frontend": frontend,
+        "timing": StaTimingConfig(mode=SynthMode.LOGICAL),
+    }
+    fields.update(overrides)
+    return SynthSpec(**fields)
+
 
 # ---------------------------------------------------------------------------
 # resolve_liberty
@@ -63,13 +93,10 @@ class TestNangateAbcPolicy:
         from booley.flows.synth.backends.yosys import core as syn_core
 
         return syn_core._build_yosys_script(
-            [Path("/work/dut.v")],
-            "dut",
-            liberty,
-            Path("/work/out"),
-            False,
-            None,
-            None,
+            _spec(liberty=liberty),
+            sources=[Path("/work/dut.v")],
+            inc_dirs=[],
+            work_dir=Path("/work/out"),
         )
 
     @pytest.mark.parametrize(
@@ -115,13 +142,10 @@ class TestFinalCheckImportIsolation:
         source = tmp_path / "dut.v"
         source.write_text(rtl, encoding="utf-8")
         script = syn_core._build_yosys_script(
-            [source],
-            "dut",
-            TestFinalCheckImportIsolation._liberty(tmp_path),
-            tmp_path,
-            False,
-            None,
-            None,
+            _spec(liberty=TestFinalCheckImportIsolation._liberty(tmp_path)),
+            sources=[source],
+            inc_dirs=[],
+            work_dir=tmp_path,
         )
         script_path = tmp_path / "synth.ys"
         script_path.write_text("\n".join(script.split("; ")) + "\n", encoding="utf-8")
@@ -924,14 +948,71 @@ class TestSynthTimingConfigModes:
 
     def test_cli_overrides_win(self, monkeypatch):
         from booley.flows.synth.backends.yosys import core as syn_core
+        from booley.flows.synth.timing import OpenRoadPpaSettings
 
         self._with_timing(
             monkeypatch,
             {"utilization_pct": 55, "repair_timing": True},
         )
-        cfg = syn_core.synth_timing_config(utilization_pct=70.0, repair_timing=False)
+        cfg = syn_core.synth_timing_config(
+            ppa=OpenRoadPpaSettings(
+                utilization_pct=70.0, placement_density=0.7, repair_setup=False
+            )
+        )
         assert cfg.utilization_pct == 70.0
         assert cfg.repair_timing is False
+
+    def test_ppa_settings_drive_openroad_knobs(self, monkeypatch):
+        from booley.flows.synth.backends.yosys import core as syn_core
+        from booley.flows.synth.timing import OpenRoadPpaSettings
+
+        # TOML values must lose to explicit ppa when the legacy fallbacks are off.
+        self._with_timing(monkeypatch, {"utilization_pct": 55, "repair_timing": True})
+        ppa = OpenRoadPpaSettings(
+            utilization_pct=63.0,
+            placement_density=0.72,
+            repair_setup=False,
+            repair_hold=True,
+            gate_cloning=True,
+            setup_margin_ns=0.15,
+            repair_tns_percent=80.0,
+        )
+        cfg = syn_core.synth_timing_config(
+            ppa=ppa, legacy_utilization_fallback=False, legacy_repair_fallback=False
+        )
+        assert cfg.utilization_pct == 63.0
+        assert cfg.repair_timing is False
+        assert cfg.placement_density == 0.72
+        assert cfg.repair_hold is True
+        assert cfg.gate_cloning is True
+        assert cfg.setup_margin_ns == 0.15
+        assert cfg.repair_tns_percent == 80.0
+
+    @pytest.mark.parametrize(
+        ("toml", "utilization", "repair"),
+        [
+            ({}, 40.0, True),
+            ({"utilization_pct": 55, "repair_timing": False}, 55.0, False),
+        ],
+    )
+    def test_omitted_ppa_matches_all_none_call(self, monkeypatch, toml, utilization, repair):
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        self._with_timing(monkeypatch, toml)
+        expected = StaTimingConfig(
+            mode=syn_core.synth_timing_config().mode,
+            sdc=(),
+            utilization_pct=utilization,
+            repair_timing=repair,
+            placement_density=None,
+            repair_hold=False,
+            gate_cloning=False,
+            setup_margin_ns=0.0,
+            repair_tns_percent=None,
+            report_paths=syn_core.DEFAULT_TIMING_REPORT_PATHS,
+        )
+        assert syn_core.synth_timing_config(ppa=None) == expected
+        assert syn_core.synth_timing_config() == expected
 
     def test_non_bool_repair_timing_raises(self, monkeypatch):
         from booley.flows.synth.backends.yosys import core as syn_core
@@ -1099,19 +1180,14 @@ class TestFormalCellRemoval:
     """
 
     @staticmethod
-    def _script(frontend: str, **kw) -> str:
+    def _script(frontend: str) -> str:
         from booley.flows.synth.backends.yosys import core as syn_core
 
         return syn_core._build_yosys_script(
-            [Path("/work/a.sv")],
-            "dut",
-            Path("/pdk/lib.lib"),
-            Path("/work/out"),
-            False,
-            None,
-            None,
-            frontend=frontend,
-            **kw,
+            _spec(frontend=frontend),
+            sources=[Path("/work/a.sv")],
+            inc_dirs=[],
+            work_dir=Path("/work/out"),
         )
 
     def test_slang_script_removes_formal_cells(self):
@@ -1316,12 +1392,14 @@ def test_1095_text_scan_preserves_path_adapter(tmp_path, text):
 
 def test_declared_string_receiver_and_numeric_arguments_stay_distinct(tmp_path):
     from booley.flows.synth.backends.yosys import core as syn_core
-    from booley.flows.target_parameters import ParameterValue
+    from booley.flows.target_parameters import ParameterValue, sv_byte_string_literal
 
-    parameters = {"NAME": ParameterValue("str", 'a" b\\c; d'), "N": "12", "B": "1", "R": "1.25"}
+    raw_name = 'a" b\\c; d'
+    parameters = {"NAME": ParameterValue("str", raw_name), "N": "12", "B": "1", "R": "1.25"}
     slang = syn_core._slang_read_command([tmp_path / "top.sv"], "top", [], [], parameters)
     assert "-G N=12 -G B=1 -G R=1.25" in slang
-    assert 'NAME="' in slang
+    # Pin the escaped form: a readable literal would let "; " split the script.
+    assert f"-G NAME={sv_byte_string_literal(raw_name)}" in slang
     commands = syn_core._rtl_frontend_commands(
         [tmp_path / "top.v"],
         "top",
@@ -1331,6 +1409,6 @@ def test_declared_string_receiver_and_numeric_arguments_stay_distinct(tmp_path):
         params=parameters,
         slang_options=[],
     )
-    assert "-set N 12 -set B 1 -set R 1.25" in commands[1]
+    assert "-set N 12 -set B 1 -set R 1.25" in commands
     # The string travels as its UTF-8 bytes in one sized hex literal.
-    assert "-set NAME 72'h612220625c633b2064" in commands[1]
+    assert "-set NAME 72'h612220625c633b2064" in commands

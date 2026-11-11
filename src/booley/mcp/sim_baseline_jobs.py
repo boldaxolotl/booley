@@ -11,8 +11,8 @@ import os
 import signal
 import subprocess
 import sys
-import threading
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -30,42 +30,15 @@ from booley.goals.sim_baseline_store import (
     request_path,
     write_document,
 )
-from booley.runtime import job_records
+from booley.runtime import detached_job, job_records
+from booley.runtime.detached_job import worker_command
 from booley.runtime.handles import register_job
 from booley.runtime.pid import capture_process_identity, is_pid_alive
-from booley.runtime.process_group import new_group_kwargs
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
 BASELINE_TIMEOUT_S = 3900
 Launch = Callable[[Path, dict[str, Any]], None]
-
-
-def baseline_environment() -> dict[str, str]:
-    """Keep EDA provisioning but remove candidate evidence and execution routing."""
-    excluded = {
-        "BOOLEY_GOAL_FILE",
-        "BOOLEY_GOAL_RUN_BINDING",
-        "BOOLEY_STATE_FILE",
-        "BOOLEY_SLUG",
-        "BOOLEY_LOGS_DIR",
-        "BOOLEY_RUNTIME_DIR",
-        "BOOLEY_RUN_ID",
-        "BOOLEY_WORKTREE",
-        "BOOLEY_EXECUTION_ID",
-        # Would link the supervisor's slot claim to the launching session's
-        # execution and get it reaped when that session ends, mid-measurement.
-        "BOOLEY_RUNTIME_EXECUTION_ID",
-        "BOOLEY_TICKET_FILE",
-        "BOOLEY_DIR",
-        "BOOLEY_CONTROL_PROJECT_ROOT",
-    }
-    return {key: value for key, value in os.environ.items() if key not in excluded}
-
-
-def _supervisor_command(path: Path) -> list[str]:
-    """The supervisor argv; recorded in the Job record and used to spawn it."""
-    return [sys.executable, "-m", "booley.mcp.sim_baseline_jobs", str(path)]
 
 
 def _publish_job_record(
@@ -81,7 +54,7 @@ def _publish_job_record(
         family.endpoint,
         utc_now_rfc3339(),
         BASELINE_TIMEOUT_S,
-        argv=_supervisor_command(path),
+        argv=worker_command("goal-baseline", str(path)),
         work_dir=request["record"]["worktree_path"],
         session_key=request["record"]["session_key"],
     )
@@ -96,55 +69,34 @@ def _publish_job_record(
 
 
 def launch_baseline(path: Path, request: dict[str, Any]) -> None:
-    """Spawn the supervisor; it owns PID stamping, watchdog and terminal publication.
+    """Spawn the generic detached worker; it owns PID stamping and terminal publication.
 
     The scheduler has already published the Job record (:func:`_publish_job_record`).
     """
-    command = _supervisor_command(path)
-    environment = baseline_environment()
-    source = str(Path(__file__).resolve().parents[2])
-    environment["PYTHONPATH"] = os.pathsep.join(
-        filter(None, (source, environment.get("PYTHONPATH")))
+    detached_job.spawn(
+        worker_command("goal-baseline", str(path)),
+        path.parent / "job.log",
+        jobs_root=Path(request["jobs_root"]),
+        run_id=request["job_id"],
+        on_unstarted=partial(_publish_unstarted, path),
     )
-    with (path.parent / "job.log").open("ab") as log:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            env=environment,
-            **new_group_kwargs(),
-        )
-    # The supervisor stamps itself; the parent must never overwrite a terminal record.
-    threading.Thread(
-        target=_reap_unstarted, args=(process, path), daemon=True, name="sim-baseline-reaper"
-    ).start()
 
 
-def _reap_unstarted(process: subprocess.Popen[Any], path: Path) -> None:
-    """Publish startup errors immediately after the child exits, without PID write races."""
-    code = process.wait()
-    try:
-        request = read_document(path, None)
-        jobs = Path(request["jobs_root"])
-        job = job_records.read_record(request["job_id"], jobs)
-        if job is not None and job.pid is None and job.status == job_records.STATUS_RUNNING:
-            job.status, job.exit_code, job.ended_at = (
-                job_records.STATUS_FAILED,
-                code,
-                utc_now_rfc3339(),
-            )
-            job_records.write_record(job, jobs)
-            write_document(
-                path,
-                request
-                | {
-                    "status": "unavailable",
-                    "reason": f"baseline worker exited before initialization (exit {code}); see job.log",
-                },
-            )
-    except (OSError, ValueError, KeyError):
-        logger.warning("Baseline Job startup result could not be published at %s", path)
+def _publish_unstarted(path: Path, code: int) -> None:
+    """Publish the request's final state for a worker that exited before initializing.
+
+    Lands before the Job record turns terminal, the order
+    :func:`booley.goals.sim_baseline_store.settle_request` relies on.
+    """
+    request = read_document(path, None)
+    write_document(
+        path,
+        request
+        | {
+            "status": "unavailable",
+            "reason": f"baseline worker exited before initialization (exit {code}); see job.log",
+        },
+    )
 
 
 def schedule_sim_baselines(
@@ -240,12 +192,13 @@ def _reconcile_request(path: Path) -> None:
     """An interrupted Job is unavailable; reap only its proven, idle scratch checkout."""
     request = read_document(path, None)
     job = job_records.read_record(request["job_id"], Path(request["jobs_root"]))
-    if job is not None and job_records.is_active(job, is_pid_alive):
-        return
-    if request["status"] == "pending":
+    request, interrupted = sim_baseline_store.settle_request(
+        request, job, lambda: read_document(path, None)
+    )
+    if interrupted:
         request = request | {
             "status": "unavailable",
-            "reason": "baseline Job interrupted or unavailable",
+            "reason": sim_baseline_store.INTERRUPTED_REASON,
         }
         write_document(path, request)
     if job is not None and job.pid is not None and not is_pid_alive(job.pid):
@@ -269,14 +222,13 @@ def _cancel(_signal: int, _frame: object) -> None:
     raise BaselineCancelled("baseline Job cancelled")
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Supervise one immutable request independently of the MCP server lifetime."""
+def supervise(path: Path) -> int:
+    """Supervise one immutable request independently of the MCP server lifetime.
+
+    Run by the generic detached worker (``goal-baseline`` kind).
+    """
     from booley.mcp.sim_baseline_execution import run_baseline
 
-    args = sys.argv[1:] if argv is None else argv
-    if len(args) != 1:
-        return 2
-    path = Path(args[0])
     request = read_document(path, None)
     jobs = Path(request["jobs_root"])
     job = job_records.read_record(request["job_id"], jobs)
@@ -289,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
     job.process_identity = None if identity is None else identity.to_payload()
     job_records.write_record(job, jobs)
     signal.signal(signal.SIGTERM, _cancel)
+    # Terminal order: the request's final state is written first and the Job
+    # record last (in ``finally``). ``settle_request`` readers depend on it.
     try:
         results = run_baseline(path, request)
         if results and all(row["grade"] == "unavailable" for row in results):
@@ -322,7 +276,3 @@ def main(argv: list[str] | None = None) -> int:
         job.ended_at = utc_now_rfc3339()
         job_records.write_record(job, jobs)
     return job.exit_code or 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

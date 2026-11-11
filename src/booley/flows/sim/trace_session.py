@@ -7,9 +7,11 @@ import os
 import shutil
 import stat
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 
 from booley.bwave.waveform_store import (
     ConversionResult,
@@ -83,6 +85,10 @@ class TraceSession:
         # Stall-kill state — set by start_monitor when it escalates to a kill.
         self._stall_killed = False
         self._stall_message: str | None = None
+        # Stall-monitor lifetime: start_monitor keeps each thread (the main trace plus one
+        # per declared stream), stop_monitor ends them all.
+        self._monitor_stop = threading.Event()
+        self._monitor_threads: list[threading.Thread] = []
         # One monotonic deadline bounds every post-run conversion of the attempt.
         self._conversion_deadline: float | None = None
         # Once postprocess ran, find() must not convert the same VCD a second time.
@@ -113,6 +119,16 @@ class TraceSession:
     def stall_message(self) -> str | None:
         """Human-readable description of the stall kill, if one occurred."""
         return self._stall_message
+
+    @property
+    def work_dir(self) -> Path:
+        """The attempt's managed simulation directory."""
+        return self._work_dir
+
+    @property
+    def trace_scope(self) -> str | None:
+        """Hierarchy scope the attempt's conversions keep."""
+        return self._trace_scope
 
     @property
     def cache_dir(self) -> Path:
@@ -334,7 +350,7 @@ class TraceSession:
         if result.conversion is not None:
             self._record_conversion("vcd_convert", result.conversion)
             if result.conversion.success:
-                selected = self._publish_bwave(result.selected) if result.selected else None
+                selected = self.publish_bwave(result.selected) if result.selected else None
         return selected or result.selected
 
     def inspect(self, path: Path | None) -> TraceInspection:
@@ -455,7 +471,7 @@ class TraceSession:
                 print(f"[bwave] stderr: {result.detail}")
         status = "success" if result and result.success else "no_artifact"
         if status == "success":
-            self._publish_bwave(self.bwave_path)
+            self.publish_bwave(self.bwave_path)
         return_code = result.attempts[-1].return_code if result and result.attempts else None
         self.record_attempt("fifo_cleanup", status, return_code=return_code)
 
@@ -466,6 +482,7 @@ class TraceSession:
         stall_timeout: float = 30.0,
         poll_interval: float = 2.0,
         kill_after_stalls: int = 3,
+        spare_simulator: bool = False,
     ) -> None:
         """Start a daemon thread that watches trace-store growth and kills on stall.
 
@@ -476,15 +493,41 @@ class TraceSession:
         `bwave_proc`, and records the event on the TraceSession so callers
         can surface a clear "trace pipeline stalled" error instead of riding
         the outer job timeout out.
-        """
-        import threading
 
-        t = threading.Thread(
+        With *spare_simulator* (a declared-file stream the testbench owns) a
+        window only counts while the pipe holds unread bytes, a stall kills
+        just the converter, and a converter that exits while the simulator
+        lives has its input drained so the writer never blocks.
+
+        The caller must pair this with :meth:`stop_monitor` once the run is over;
+        a monitor started after a stop ends at once.
+        """
+        thread = threading.Thread(
             target=self._monitor_stalls,
-            args=(bwave_proc, sim_proc, stall_timeout, poll_interval, kill_after_stalls),
+            args=(
+                bwave_proc,
+                sim_proc,
+                stall_timeout,
+                poll_interval,
+                kill_after_stalls,
+                spare_simulator,
+            ),
             daemon=True,
         )
-        t.start()
+        self._monitor_threads.append(thread)
+        thread.start()
+
+    def stop_monitor(self) -> None:
+        """Wake every stall monitor, then wait until their threads have ended.
+
+        Idempotent, and does nothing when no monitor was started. A stall kill
+        already in flight finishes first, so no kill outlives the run. The wait
+        is deliberately unbounded: the kill path is bounded (about 10 s on
+        POSIX, about 30 s on Windows, where each ``taskkill`` may take 10 s).
+        """
+        self._monitor_stop.set()
+        for thread in self._monitor_threads:
+            thread.join()
 
     def _monitor_stalls(
         self,
@@ -493,27 +536,27 @@ class TraceSession:
         stall_timeout: float,
         poll_interval: float,
         kill_after_stalls: int,
+        spare_simulator: bool = False,
     ) -> None:
-        import time
-
         last_size = -1
         stall_start: float | None = None
         stall_count = 0
         while sim_proc.poll() is None and bwave_proc.poll() is None:
-            time.sleep(poll_interval)
+            if self._monitor_stop.wait(poll_interval):
+                return
             size = bwave_proc.progress_size()
-            if size != last_size:
+            if size != last_size or (spare_simulator and bwave_proc.backlog() == 0):
                 last_size, stall_start, stall_count = size, None, 0
                 continue
             if stall_start is None:
-                stall_start = time.monotonic()
+                stall_start = monotonic()
                 continue
-            if time.monotonic() - stall_start < stall_timeout:
+            if monotonic() - stall_start < stall_timeout:
                 continue
             stall_count += 1
             stalled_for = stall_timeout * stall_count
             self._log_stall_window(
-                self.bwave_path,
+                bwave_proc.store_path,
                 size,
                 stalled_for,
                 stall_count,
@@ -522,9 +565,16 @@ class TraceSession:
                 bwave_proc,
             )
             if stall_count >= kill_after_stalls:
-                self._kill_stalled_pipeline(size, stalled_for, sim_proc, bwave_proc)
-                return
+                if spare_simulator:
+                    self.record_event("declared_stream_stalled", f"no read for {stalled_for:.0f}s")
+                    bwave_proc.kill()
+                else:
+                    self._kill_stalled_pipeline(size, stalled_for, sim_proc, bwave_proc)
+                    return
+                break
             stall_start = None
+        if spare_simulator and sim_proc.poll() is None:
+            bwave_proc.discard_input()
 
     def _log_stall_window(
         self,
@@ -594,7 +644,12 @@ class TraceSession:
 
     def start_conversion_budget(self, timeout_s: float) -> None:
         """Fix the one deadline that bounds every post-run conversion of this attempt."""
-        self._conversion_deadline = time.monotonic() + timeout_s
+        self._conversion_deadline = monotonic() + timeout_s
+
+    def budget_remaining_s(self) -> float:
+        """Seconds left of the conversion budget (0 once spent or never started)."""
+        deadline = self._conversion_deadline
+        return 0.0 if deadline is None else max(0.0, deadline - monotonic())
 
     def postprocess(self, vcd_path: Path) -> None:
         """Windows/fallback: convert VCD file → .fst after sim completes."""
@@ -620,7 +675,7 @@ class TraceSession:
                     "raise [flows.sim].trace_convert_timeout_ms"
                 )
             if success:
-                self._publish_bwave(self.bwave_path)
+                self.publish_bwave(self.bwave_path)
             elif result.detail:
                 (vcd_path.parent / "trace.fst.stderr").write_text(
                     result.detail + "\n", encoding="utf-8"
@@ -633,7 +688,7 @@ class TraceSession:
     def _budget_spent(self) -> bool:
         """True once the attempt's conversion deadline has passed."""
         deadline = self._conversion_deadline
-        return deadline is not None and time.monotonic() >= deadline
+        return deadline is not None and monotonic() >= deadline
 
     def _settle_postprocess_artifacts(self, vcd_path: Path, *, success: bool) -> None:
         """Keep raw fallback artifacts inside the managed simulation directory."""
@@ -654,7 +709,7 @@ class TraceSession:
             self.persisted_stderr_path.unlink(missing_ok=True)
             shutil.move(source_stderr, self.persisted_stderr_path)
 
-    def _publish_bwave(self, trace_path: Path) -> Path | None:
+    def publish_bwave(self, trace_path: Path) -> Path | None:
         """Copy a valid cached store beside sim artifacts for later lookup."""
         if (
             trace_path.suffix != ".fst"

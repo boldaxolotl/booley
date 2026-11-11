@@ -5,6 +5,8 @@ Host validation may create/lock the private authority store when EDA is active.
 In-runtime validation probes mounted Vivado (90s), without host authority access.
 A CLI timeout does not itself prove remote container cleanup. Live execution
 must independently validate authority; a diagnostic report grants no authority.
+It also owns the host-side Interactive Git inspection (`info/exclude` entries and
+tracked `.interactive_logs`) through bounded `git rev-parse` / `git ls-files` probes.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
@@ -48,6 +51,16 @@ from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
+from booley.runtime.git import _git_common_dir, stealth_exclude_names
+from booley.runtime.platform_paths import same_host_path
+
+
+@dataclass(frozen=True, slots=True)
+class InteractiveGitRequest:
+    """Inputs needed to inspect Git state that Interactive Mode depends on."""
+
+    project_root: Path
+    booley_dir: Path
 
 
 @dataclass(frozen=True)
@@ -104,6 +117,14 @@ def inspect_runtime(request: RuntimeInspectionRequest) -> RuntimeInspectionResul
     return RuntimeInspectionResult(configuration.report(), issuance.report())
 
 
+def inspect_interactive_git(request: InteractiveGitRequest) -> DiagnosticReport:
+    """Inspect Git excludes and tracked scratch for Interactive Mode; never repairs."""
+    report = Findings()
+    _check_devcontainer_excludes(request.project_root, report)
+    _check_interactive_logs_tracked(request.booley_dir, report)
+    return report.report()
+
+
 def inspect_retained_resources(project_root: Path, docker_exe: str | None) -> DiagnosticReport:
     """Observe persistent volumes and image keepers without deleting resources."""
     report = Findings()
@@ -132,7 +153,7 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
 
     *request.image* is the project-resolved ``[sandbox].image``; the spec's own
     ``image`` must match it, else the Sandbox runs a stale image.
-    *request.declared_provider* is the project's *explicit* ``[agent] provider`` and
+    *request.declared_provider* is the project's *explicit* ``[agent] default`` and
     *request.declared_clis* its explicit ``[agent] clis`` (``None`` = undeclared); the
     spec's recorded Agent CLI set must match them. Beyond those preconditions the spec
     is compared against a rebuild of what ``booley init`` would write now.
@@ -187,9 +208,9 @@ def _provider_current(
             request,
             report,
             f"devcontainer.json BOOLEY_AGENT_APP 'auto' may resolve to an app other than "
-            f"[agent] provider '{pinned}': without that app's credential the session "
+            f"the [agent] default '{pinned}': without that app's credential the session "
             f"registers the other app while Specialists still use '{pinned}'; remove "
-            f"[agent] provider or set BOOLEY_AGENT_APP to '{pinned}'",
+            f"[agent] default (or its older name provider) or set BOOLEY_AGENT_APP to '{pinned}'",
         )
         return True
     return _cli_set_current(request, spec, spec_app, report)
@@ -535,8 +556,8 @@ def _accepted_booley_dir(value: str, project_root: Path) -> bool:
 
     Accepted spellings are the image alias ``/booley-project`` and the ``.booley``
     entry directly under the inspected Project Root, either one resolving to an
-    existing directory. The entry may be a symlink; only its parent is resolved,
-    so the comparison tolerates aliased Project Root spellings. Paths alone
+    existing directory. The entry may be a symlink; its parent must be the same
+    location as the Project Root, so aliased Project Root spellings are tolerated. Paths alone
     decide: ambient platform variables such as ``CODESPACES`` are spoofable
     (ADR 0077) and never widen the rule.
     """
@@ -548,10 +569,7 @@ def _accepted_booley_dir(value: str, project_root: Path) -> bool:
         return False  # relative spellings depend on cwd; dangling entries are not directories
     if selected.name != BOOLEY_DIR_NAME:
         return False
-    try:
-        return selected.parent.resolve(strict=True) == project_root.resolve(strict=True)
-    except (OSError, RuntimeError):
-        return False  # unresolvable parent or Project Root cannot prove identity
+    return same_host_path(selected.parent, project_root)
 
 
 def _check_booley_dir_identity(project_root: Path, report: Findings) -> None:
@@ -834,7 +852,14 @@ def _check_issued_image_keepers(
     if not docker_exe:
         report.skip("issued image-keeper check skipped - runtime unavailable")
         return
-    tags = idk.issued_image_tags()
+    try:
+        tags = idk.issued_image_tags()
+    except RuntimeError as exc:
+        report.fail(
+            f"could not list issued Sandbox Image keepers: {exc}",
+            "check that Docker is running and responsive, then rerun booley doctor",
+        )
+        return
     if not tags:
         report.pass_("no retained Sandbox Image keepers")
         return
@@ -853,3 +878,56 @@ def _check_issued_image_keepers(
         )
         for tag in others:
             report.detail(f"    {tag}")
+
+
+def _check_devcontainer_excludes(project_root: Path, report: Findings) -> None:
+    """ADR 0018: Booley files hidden via the honored info/exclude (not .gitignore)."""
+    common = _git_common_dir(project_root)
+    exclude = (common / "info" / "exclude") if common else None
+    body = exclude.read_text(encoding="utf-8") if exclude and exclude.is_file() else ""
+    required = (
+        (".devcontainer", *stealth_exclude_names(project_root))
+        if stealth_enabled(project_root)
+        else (".devcontainer",)
+    )
+    missing = [name for name in required if f"/{name}" not in body]
+    if not missing:
+        report.pass_("Booley files excluded from git (info/exclude)")
+        return
+    for entry in missing:
+        report.warn(
+            f"git info/exclude missing Booley entry: {entry}",
+            check_id="project.git-excludes-missing",
+            subject=entry,
+        )
+
+
+def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
+    """Fail when ephemeral .interactive_logs/ scratch is committed to git.
+
+    Tracked scratch is laid down read-protected on fresh clones and makes the
+    in-container MCP server fail with an opaque PermissionError. The gitignore
+    check alone does not catch an already-poisoned repository.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--", ".interactive_logs"],
+            cwd=booley_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return
+    if result.returncode != 0:
+        return
+    tracked = [line for line in result.stdout.splitlines() if line.strip()]
+    if tracked:
+        report.fail(
+            f".interactive_logs/ has {len(tracked)} tracked file(s); committed "
+            "scratch breaks fresh clones in the sandbox",
+            "git rm -r --cached .interactive_logs && commit the removal",
+        )
+    else:
+        report.pass_(".interactive_logs/ is not tracked in git")

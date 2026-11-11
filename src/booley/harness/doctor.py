@@ -8,7 +8,6 @@ Flow dry-runs. ``--deep`` adds real first-Target EDA smoke checks.
 from __future__ import annotations
 
 import argparse
-import ast
 import contextlib
 import functools
 import hashlib
@@ -21,12 +20,12 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from time import time as wall_clock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -43,6 +42,7 @@ from booley.audit import (
 from booley.audit.diagnostic_results import (
     DiagnosticFinding,
     DiagnosticReport,
+    Findings,
     Severity,
 )
 from booley.audit.doctor_waivers import (
@@ -57,31 +57,29 @@ from booley.config.gateway import (
     GATEWAY_AUTH,
     GATEWAY_EFFORT_ENV,
     GATEWAY_MODEL_ENV,
+    HIDDEN_GATEWAY_ENV,
     GatewayConfigError,
     gateway_model_pin_from_env,
     gateway_settings_from_env,
 )
 from booley.config.jobs import parse_caps
 from booley.config.project_config import (
-    TESTS_SECTION_KEYS,
     lookup_target_section,
     normalize_tests_toml,
 )
-from booley.config.tests_toml_rules import TEST_NAME_RULES
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
     require_bool,
-    require_bool_value,
     require_dict,
     require_int,
     require_list,
-    require_opt_str,
     require_str,
 )
-from booley.flows import execution
+from booley.flows import execution, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
     DEFAULT_SIM_TIMEOUT_MS,
@@ -91,8 +89,7 @@ from booley.flows.sim.config import (
     resolve_run_cwd,
     resolve_trace_files,
 )
-from booley.flows.simulator_family import normalize_eda_tool
-from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
+from booley.flows.target_test_plan_inspection import TargetTestPlanInspectionRequest
 from booley.flows.test_runs import parse_test_selector
 from booley.fusesoc import (
     core_security,
@@ -111,24 +108,12 @@ from booley.harness import (
     doctor_sim_dump as sim_dump,
 )
 from booley.harness import terminal_status as ts
-from booley.harness.colors import bold, bold_green, bold_red, dim, yellow
 from booley.harness.setup import readiness
 from booley.harness.setup.common import info
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
-from booley.harness.setup.line_endings import (
-    LineEndingActionKind,
-    LineEndingActionState,
-    LineEndingMode,
-    LineEndingObservation,
-    LineEndingObservationCode,
-    LineEndingStatus,
-    RepositoryLineEndingReport,
-    line_ending_repository_display,
-    reconcile_project_line_endings,
-    unknown_attributes_policy_details,
-)
 from booley.harness.setup.readiness import ProjectAudit
-from booley.harness.terminal_table import render_table
+from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
+from booley.presentation.terminal_table import render_table
 from booley.runtime import (
     auth_token,
     doctor_stamp,
@@ -159,12 +144,13 @@ from booley.runtime.booley_dir import (
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
-from booley.runtime.git import _git_common_dir, stealth_exclude_names
 from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
+from booley.runtime.resource_history import DOCTOR_RUN_ENV
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
+from booley.runtime.worktree_evidence import untracked_common_paths
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
@@ -177,11 +163,7 @@ from booley.targets.domain import (
     flow_can_drive,
 )
 from booley.targets.flow_names import config_section
-from booley.targets.selection import (
-    TargetSectionConflictError,
-    section_key_names,
-    target_section_key,
-)
+from booley.targets.selection import TargetSectionConflictError
 
 if TYPE_CHECKING:
     from booley.config.agent import AgentSettings, DeclaredAgent
@@ -204,8 +186,6 @@ _SIM_DEEP_FINALIZE_MARGIN_S = 30
 # The three core Flow tables remain required project configuration. FPGA is an
 # optional axis: plain Doctor covers it when configured or selected by Target
 # metadata, while deep Doctor deliberately stops short of implementation.
-# Doctor line label for the `bwave gui` Viewer Bridge probe.
-_VIEWER_BRIDGE_DESCRIPTION = "Viewer Bridge answers in the attached VS Code window (`bwave gui`)"
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
 _DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
@@ -281,6 +261,7 @@ _CORE_RESOLVE_TIMEOUT_S = 600
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
 Warn = Callable[..., None]
+Diagnostics = Callable[[DiagnosticReport], None]
 
 
 @dataclass
@@ -526,10 +507,9 @@ class _Reporter:
                     ),
                     finding.fix,
                 )
-            if self.verbose:
-                for detail in report.details:
-                    if detail.after_finding == index:
-                        info(detail.message)
+            for detail in report.details:
+                if detail.after_finding == index and (self.verbose or not detail.verbose_only):
+                    info(detail.message)
 
     def pass_(self, msg: str) -> None:
         assert self.findings is not None
@@ -880,7 +860,7 @@ def run_doctor_result(
 
     summary = None
     if deep:
-        summary = _run_deep_phase(project, docker_exe, flow_runtime, verbose, reporter)
+        summary = _run_deep_phase(project, docker_exe, flow_runtime, reporter)
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
@@ -1017,13 +997,10 @@ def _run_project_phase(
     _check_worktree_booley_pairing(project_root, reporter)
     _check_common_state_in_worktrees(project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
-    _check_line_endings(
-        project_root,
-        reporter.pass_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
-        booley_dir=booley_dir,
+    reporter.diagnostics(
+        readiness.inspect_line_endings(
+            readiness.LineEndingInspectionRequest(project_root, booley_dir)
+        )
     )
     if project is not None:
         _check_worktree_core_shadow_guard(
@@ -1180,7 +1157,7 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
         ):
             continue
         try:
-            untracked = _untracked_common_paths(entry.path, booley_dir)
+            untracked = untracked_common_paths(entry.path, booley_dir)
         except FileNotFoundError:
             continue  # A baseline worktree removed while scanning.
         except subprocess.CalledProcessError as exc:
@@ -1196,49 +1173,6 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
             _warn_common_state_in_worktree(booley_dir, untracked, reporter)
     if not warned:
         reporter.pass_(f"no Common Booley State in {scanned} worktree Booley Directories")
-
-
-def _untracked_common_paths(worktree: Path, booley_dir: Path) -> list[str]:
-    """Return the Common Booley State paths in *booley_dir* that Git does not track.
-
-    Raises:
-        OSError: the directory cannot be walked.
-        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
-        ValueError: Git printed a path name that is not valid UTF-8.
-    """
-    from booley.core.booley_dir_parts import BooleyDirClass, iter_booley_dir
-
-    common = [
-        path
-        for path, booley_class in iter_booley_dir(booley_dir)
-        if booley_class is BooleyDirClass.COMMON
-    ]
-    if not common:
-        return []
-    tracked = _tracked_booley_paths(worktree, booley_dir)
-    return [path for path in common if not _is_tracked(path, tracked)]
-
-
-def _tracked_booley_paths(worktree: Path, booley_dir: Path) -> set[str]:
-    """Return Git-tracked paths under *booley_dir*, relative to it and ``/``-separated.
-
-    Raises:
-        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
-    """
-    own_repository = (booley_dir / ".git").exists()
-    cwd = booley_dir if own_repository else worktree
-    relative = booley_dir.relative_to(worktree).as_posix()
-    args = ["ls-files", "-z"] if own_repository else ["ls-files", "-z", "--", relative]
-    result = project_repositories.run_git(cwd, *args)
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, args, stderr=result.stderr)
-    prefix = "" if own_repository else f"{relative}/"
-    return {name.removeprefix(prefix) for name in result.stdout.split("\0") if name}
-
-
-def _is_tracked(path: str, tracked: set[str]) -> bool:
-    """Return whether *path*, or any file below it, is in *tracked*."""
-    return path in tracked or any(name.startswith(f"{path}/") for name in tracked)
 
 
 def _warn_common_state_in_worktree(
@@ -1435,12 +1369,12 @@ def _run_flow_and_core_phase(
         _run_flow_audit(
             project,
             flow_runtime,
-            verbose,
             reporter.pass_,
             reporter.note_,
             reporter.warn_,
             reporter.skip_,
             reporter.fail_,
+            _diagnostics=reporter.diagnostics,
         )
     progress("FuseSoC .core audit")
     _section("FuseSoC .core checks")
@@ -1453,6 +1387,7 @@ def _run_flow_and_core_phase(
             reporter.warn_,
             reporter.skip_,
             reporter.fail_,
+            _diagnostics=reporter.diagnostics,
             _note=reporter.note_,
             _detail=info if verbose else None,
         )
@@ -1462,7 +1397,6 @@ def _run_deep_phase(
     project: ProjectAudit | None,
     docker_exe: str | None,
     flow_runtime: _DoctorFlowRuntime | None,
-    verbose: bool,
     reporter: _Reporter,
 ) -> doctor_deep.DeepAttemptSummary:
     _section("Deep checks")
@@ -1478,11 +1412,11 @@ def _run_deep_phase(
     _run_deep_checks(
         project,
         flow_runtime,
-        verbose,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
+        _diagnostics=reporter.diagnostics,
         completeness=tracker,
     )
     _run_core_resolve_checks(
@@ -1652,164 +1586,6 @@ def _check_worktree_prune_guard(
     )
 
 
-def _line_ending_observation(
-    report: RepositoryLineEndingReport,
-    *codes: LineEndingObservationCode,
-) -> LineEndingObservation | None:
-    return next(
-        (observation for observation in report.observations if observation.code in codes),
-        None,
-    )
-
-
-def _report_unreadable_line_endings(
-    report: RepositoryLineEndingReport,
-    identity: str,
-    _warn: Check,
-) -> bool:
-    observation = _line_ending_observation(
-        report,
-        LineEndingObservationCode.AUTOCRLF_UNREADABLE,
-        LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE,
-        LineEndingObservationCode.EOL_SCAN_UNREADABLE,
-        LineEndingObservationCode.STATUS_UNREADABLE,
-        LineEndingObservationCode.CANDIDATE_UNSAFE,
-    )
-    if observation is None:
-        return False
-    messages = {
-        LineEndingObservationCode.AUTOCRLF_UNREADABLE: "could not read core.autocrlf as a Git Boolean",
-        LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE: "could not read repo-local core.autocrlf",
-        LineEndingObservationCode.EOL_SCAN_UNREADABLE: "could not read `git ls-files --eol`",
-    }
-    detail = messages.get(observation.code, observation.detail or "inspection was incomplete")
-    emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=report.repository.role)
-    emit(f"line endings: {identity}: {detail}")
-    return True
-
-
-def _report_attributes_policy_risk(report, identity: str, _warn: Check) -> bool:
-    policy_risk = _line_ending_observation(
-        report,
-        LineEndingObservationCode.LOCAL_POLICY_MISSING,
-        LineEndingObservationCode.LEAKED_ROOT_POLICY,
-        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
-    )
-    if policy_risk is not None:
-        emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=report.repository.role)
-        emit(
-            f"{identity}: {policy_risk.detail}",
-            "inspect attributes policy, then re-run booley init",
-        )
-        return True
-    return _report_unreadable_line_endings(report, identity, _warn)
-
-
-def _report_attributes_migration(report, identity: str, _warn: Check) -> bool:
-    if any(
-        action.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES
-        and action.state is LineEndingActionState.PLANNED
-        for action in report.actions
-    ):
-        emit = _warning_sink(_warn, "git.line-ending-migration", subject=report.repository.role)
-        emit(
-            f"{identity}: repository-local line-ending default awaits Stealth opt-out migration",
-            "booley init   (migrates the local default to the root attributes policy)",
-        )
-        return True
-    return False
-
-
-def _report_repository_line_endings(
-    report: RepositoryLineEndingReport,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    repository = report.repository
-    identity = line_ending_repository_display(repository.role, repository.root)
-    unknown = _report_unknown_attributes_policy(report, identity, _warn)
-    crlf = _line_ending_observation(report, LineEndingObservationCode.CRLF_MISMATCH)
-    if crlf is not None:
-        _fail(
-            f"{identity}: {crlf.count} tracked file(s) are checked out with CRLF — the "
-            "Sandbox sees every one as modified, which breaks the dirty-tree check, "
-            "protected inputs, and worktrees",
-            "booley init   (automatically repairs a clean tree; commit or stash first)",
-        )
-        return
-    risk = _line_ending_observation(
-        report,
-        LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE,
-        LineEndingObservationCode.AUTOCRLF_NOT_PINNED,
-    )
-    if risk is not None:
-        if risk.code is LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE:
-            message = "core.autocrlf=true — the tree is LF today, but the next clone or checkout will re-create it with CRLF and break Goal Mode"
-        else:
-            message = "core.autocrlf is not set locally — the effective value is false today, but a global config change can re-create CRLF checkouts"
-        emit = _warning_sink(_warn, "git.autocrlf-risk", subject=repository.role)
-        emit(
-            f"{identity}: {message}",
-            f"git -C {repository.root} config --local core.autocrlf false   (or re-run `booley init`)",
-        )
-        return
-    if _report_attributes_policy_risk(report, identity, _warn):
-        return
-    stale = _line_ending_observation(report, LineEndingObservationCode.STALE_INDEX)
-    if stale is not None:
-        _fail(
-            f"{identity}: tracked files have stale Git index metadata after line-ending repair — status reports modifications although staged and unstaged diffs are empty",
-            "booley init   (refreshes the affected tracked index entries)",
-        )
-        return
-    if _report_attributes_migration(report, identity, _warn):
-        return
-    if unknown:
-        return
-    _pass(f"{identity}: working tree is container-safe (no CRLF checkouts, autocrlf off)")
-
-
-def _report_unknown_attributes_policy(
-    report: RepositoryLineEndingReport, identity: str, _warn: Check
-) -> bool:
-    details = unknown_attributes_policy_details(report)
-    if not details:
-        return False
-    emit = _warning_sink(_warn, "git.attributes-policy-unknown", subject=report.repository.role)
-    emit(
-        f"{identity}: attributes policy inspection incomplete: {'; '.join(details)}",
-        "preserve existing attributes and worktree registrations; inspect the policy at its source",
-    )
-    return True
-
-
-def _check_line_endings(
-    project_root: Path,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
-    *,
-    booley_dir: Path | None = None,
-) -> None:
-    """Map the shared read-only line-ending report into Doctor findings."""
-    report = reconcile_project_line_endings(
-        project_root,
-        booley_dir,
-        mode=LineEndingMode.INSPECT,
-    )
-    if report.status is LineEndingStatus.NOT_APPLICABLE:
-        _skip("line endings: Project Root is not a git repo")
-        return
-    for repository in report.repositories:
-        _report_repository_line_endings(repository, _pass, _warn, _fail)
-    for failure in report.discovery_failures:
-        display = line_ending_repository_display(failure.role, failure.candidate)
-        emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=failure.role)
-        emit(f"line endings: could not inspect {display}: {failure.detail}")
-
-
 def _check_worktree_core_shadow_guard(
     booley_dir: Path,
     _pass: Check,
@@ -1850,12 +1626,12 @@ def _check_worktree_core_shadow_guard(
         _warn(
             f".booley/FUSESOC_IGNORE missing and {len(shadow_cores)} "
             "worktree .core copy/copies can shadow the source at the Project Root in "
-            "FuseSoC's --cores-root scan; run `booley init` to add the marker"
+            f"FuseSoC's --cores-root scan; run {runtime_context.booley_init_hint(code=True)} to add the marker"
         )
     else:
         _warn(
             ".booley/FUSESOC_IGNORE missing; a future worktree's "
-            ".core could shadow the source at the Project Root — run `booley init`"
+            f".core could shadow the source at the Project Root — run {runtime_context.booley_init_hint(code=True)}"
         )
 
 
@@ -2122,6 +1898,36 @@ def _check_image_bakes_runtime_marker(
         _warn(f"{sandbox_image} does not bake BOOLEY_CONTAINER=1 — {_RUNTIME_MARKER_FIX}")
 
 
+# Shown wherever a Claude session cannot grade the gateway it was deliberately kept from.
+_HIDDEN_GATEWAY_NOTE = (
+    "Codex gateway settings are hidden from Claude sessions; "
+    "run `booley doctor` from a VS Code terminal to check them"
+)
+
+
+def _gateway_hidden_here() -> bool:
+    """Whether this process is a Claude session with the gateway settings scrubbed."""
+    return os.environ.get(HIDDEN_GATEWAY_ENV) == "1"
+
+
+def _probe_runs_on_hidden_gateway(project: ProjectAudit) -> bool:
+    """Whether the internal model's Agent CLI is Codex on the gateway, hidden from this session."""
+    from booley.config.agent import BackendConfigError, load_agent_settings
+
+    if not _gateway_hidden_here():
+        return False
+    try:
+        settings = load_agent_settings(project.project_root, booley_dir=project.booley_dir)
+        cli = settings.cli_for_model_id(settings.internal_model())
+    except (
+        ValueError,
+        OSError,
+        BackendConfigError,
+    ):  # an unreadable config is graded by its own check
+        return False
+    return cli == auth_token.APP_CODEX and settings.auth_for(cli) == GATEWAY_AUTH
+
+
 def _run_developer_probe(
     project: ProjectAudit,
     _pass: Check,
@@ -2169,12 +1975,15 @@ def _run_developer_probe(
             _fail(str(record.error), _MODEL_REFUSAL_FIX)
             return record
         if getattr(exc, "agent_failure", False):
-            _fail(
-                f"Specialist provider probe could not complete a trivial call — every "
-                f"Specialist using this provider will fail the same way at launch: {exc}",
-                "check agent auth at THIS Sandbox location (booley auth, or claude login + "
-                "container recreate); see the harness log for the provider's error",
-            )
+            if _probe_runs_on_hidden_gateway(project):
+                _skip(_HIDDEN_GATEWAY_NOTE)  # this session cannot reach the gateway by design
+            else:
+                _fail(
+                    f"Specialist provider probe could not complete a trivial call — every "
+                    f"Specialist using this provider will fail the same way at launch: {exc}",
+                    "check agent auth at THIS Sandbox location (booley auth, or claude login + "
+                    "container recreate); see the harness log for the provider's error",
+                )
             return record
         _skip(
             f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
@@ -2723,7 +2532,7 @@ def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
     error = hooks_error()
     if error:
         _warning_sink(_warn, "sandbox.activity-hooks-unavailable")(
-            f"Dashboard session activity will show as unknown: {error}; "
+            f"Dashboard session activity or worktree conversation records are unavailable: {error}; "
             "rebuild the sandbox image, then rebuild/reopen the Sandbox"
         )
         return
@@ -2929,7 +2738,9 @@ def _run_container_tool_checks(
 
     # Conditional (ADR 0034 / F1): only a project with a Cocotb Target needs
     # cocotb in the image — the vanilla SV project is never faulted for it.
-    if _project_has_cocotb_target(project):
+    if project is not None and cocotb_target_checks.project_has_cocotb_target(
+        project.project_root
+    ):
         _container_check(
             "cocotb in container (a Cocotb Target exists)",
             ["cocotb-config", "--version"],
@@ -3005,10 +2816,17 @@ def _run_mcp_checks(
         expected_spec=_expected_interactive_spec(project.project_root),
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
-    _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
-    _check_interactive_logs_tracked(project.booley_dir, reporter.pass_, reporter.fail_)
+    reporter.diagnostics(
+        inspection.inspect_interactive_git(
+            inspection.InteractiveGitRequest(project.project_root, project.booley_dir)
+        )
+    )
     _run_agent_credential_checks(project, reporter)
-    _check_viewer_bridge(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
+    reporter.diagnostics(
+        vaporview.inspect_viewer_bridge(
+            vaporview.ViewerBridgeRequest(project.project_root, docker_exe)
+        )
+    )
     reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))
 
     if not docker_exe:
@@ -3081,6 +2899,10 @@ def _check_cli_credentials(
     """
     required = is_default or runs_specialist
     auth_policy = _configured_auth_policy(project, cli)
+    if auth_policy == GATEWAY_AUTH and _gateway_hidden_here():
+        # A Claude session has no gateway values by design; only a shell that kept them can grade it.
+        reporter.note_(_HIDDEN_GATEWAY_NOTE)
+        return
     if auth_policy == GATEWAY_AUTH:
         # Under BOOLEY_AGENT_APP=auto the policy comes from the start's choice record.
         _check_gateway_auth(cli, reporter, chosen_by_auto=auto_choice is not None or not required)
@@ -3187,7 +3009,8 @@ def _warn_ignored_gateway_handoff(reporter: _Reporter) -> None:
             warning(
                 "agent.credential-policy",
                 "BOOLEY_PRIMARY_AUTH=gateway is honored only inside a Sandbox that sets it "
-                "(for example a Codespace); Booley-issued Sandboxes use booley.toml",
+                "(for example a Codespace); a Booley-issued Sandbox forwards the gateway "
+                'for [agent.auth] codex = "gateway" instead',
             )
         )
 
@@ -3254,69 +3077,6 @@ def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: b
                 reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
             return
     reporter.pass_(f"Codex auth: the gateway at {settings.url} ({settings.token_source})")
-
-
-def _check_interactive_logs_tracked(
-    booley_dir: Path,
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Fail when ephemeral .interactive_logs/ scratch is committed to git.
-
-    Tracked scratch is laid down read-protected on fresh clones and makes the
-    in-container MCP server fail with an opaque PermissionError. The gitignore
-    check alone does not catch an already-poisoned repository.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--", ".interactive_logs"],
-            cwd=booley_dir,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return
-    if result.returncode != 0:
-        return
-    tracked = [line for line in result.stdout.splitlines() if line.strip()]
-    if tracked:
-        _fail(
-            f".interactive_logs/ has {len(tracked)} tracked file(s); committed "
-            "scratch breaks fresh clones in the sandbox",
-            "git rm -r --cached .interactive_logs && commit the removal",
-        )
-    else:
-        _pass(".interactive_logs/ is not tracked in git")
-
-
-def _check_devcontainer_excludes(
-    project_root: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """ADR 0018: Booley files hidden via the honored info/exclude (not .gitignore)."""
-    common = _git_common_dir(project_root)
-    exclude = (common / "info" / "exclude") if common else None
-    body = exclude.read_text(encoding="utf-8") if exclude and exclude.is_file() else ""
-    from booley.commit_policy import stealth_enabled
-
-    required = (
-        (".devcontainer", *stealth_exclude_names(project_root))
-        if stealth_enabled(project_root)
-        else (".devcontainer",)
-    )
-    missing = [name for name in required if f"/{name}" not in body]
-    if missing:
-        for entry in missing:
-            _warning_sink(
-                _warn,
-                "project.git-excludes-missing",
-                subject=entry,
-            )(f"git info/exclude missing Booley entry: {entry}")
-    else:
-        _pass("Booley files excluded from git (info/exclude)")
 
 
 def _declared_agent(project: ProjectAudit | None) -> DeclaredAgent | None:
@@ -3431,7 +3191,7 @@ def _agent_app_installed(provider: str) -> bool:
 def _provider_not_installed_reason(provider: str, *, is_default: bool = True) -> str:
     """Explain an unchecked auth audit: the selected provider is absent here."""
     if is_default:
-        return f"the configured [agent] provider ({provider}) is not installed on this host"
+        return f"the configured [agent] default ({provider}) is not installed on this host"
     return f"the allowed Agent CLI ({provider}) is not installed on this host"
 
 
@@ -3693,7 +3453,7 @@ def _check_subscription_creds_health(
     if policy == "api_key":
         return
 
-    now = time.time()
+    now = wall_clock()
     creds_path = auth_token.subscription_creds_path(app)
     expiry = _claude_creds_expiry(creds_path)
     if expiry is not None and expiry <= now:
@@ -3747,309 +3507,6 @@ def _check_subscription_creds_health(
             "recreate the container to re-bind the current host file — or store a "
             f"rotation-free credential: booley auth --cli {app}",
         )
-
-
-# Recovery when no attached window's bridge answers. The Booley workspace
-# extension starts the Viewer Bridge when a window loads; an extension host
-# that predates a spec refresh (or a spec that predates the bridge) has none.
-_BRIDGE_RELOAD_FIX = (
-    "run 'Developer: Reload Window' in the attached VS Code window so the Booley "
-    "extension starts its Viewer Bridge; if Doctor also reports devcontainer drift, "
-    "refresh the Sandbox so its spec installs the Booley Sandbox Integration extension"
-)
-
-_BRIDGE_MISSING_EXTENSION_FIX = vaporview.install_guidance()
-_BRIDGE_UNKNOWN_EXTENSION_FIX = (
-    "could not determine whether VaporView is installed; verify it in the attached "
-    "remote window, then install it if absent or run 'Developer: Reload Window' if present"
-)
-
-_VAPORVIEW_STATE_PROBE_SOURCE = (
-    "import sys;from pathlib import Path;"
-    "from booley.runtime.vaporview import ExtensionState,probe_home;"
-    "s=probe_home(Path.home());"
-    "sys.exit(0 if s is ExtensionState.INSTALLED else 3 if s is ExtensionState.MISSING else 4)"
-)
-
-# Prints the live VaporView versions as JSON; exit 4 means the registry could
-# not be read. An older in-container Booley without installed_versions fails the
-# import, which the runner also treats as unknown.
-_VAPORVIEW_VERSIONS_PROBE_SOURCE = (
-    "import json,sys;from pathlib import Path;"
-    "from booley.runtime.vaporview import installed_versions;"
-    "v=installed_versions(Path.home());"
-    "print(json.dumps(v)) if v is not None else sys.exit(4)"
-)
-
-# Prints every live bridge's VaporView report as JSON. An in-container Booley
-# without the bridge client fails the import, which the runner treats as
-# "probe could not run" rather than as a dark window.
-_VIEWER_BRIDGE_PROBE_SOURCE = (
-    "import json;from booley.bwave.vaporview_bridge import doctor_summary;"
-    "print(json.dumps(doctor_summary()))"
-)
-
-# Exit 0 when a VS Code extension host process runs, 3 when none does. Any
-# other exit (an interpreter error, a missing python3) stays "unknown", so a
-# broken probe can never pass for "no window attached".
-_VSCODE_EXTENSION_HOST_PROBE_SOURCE = """\
-import sys
-from pathlib import Path
-
-marker = b"bootstrap-fork\\x00--type=extensionHost"
-attached = False
-for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
-    try:
-        attached = marker in cmdline.read_bytes()
-    except OSError:
-        continue
-    if attached:
-        break
-sys.exit(0 if attached else 3)
-"""
-
-
-def _vscode_extension_host_running(argv_prefix: list[str]) -> bool | None:
-    """True/False when a live VS Code extension host can be detected, else None."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VSCODE_EXTENSION_HOST_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode == 0:
-        return True
-    if result.returncode == 3:
-        return False
-    return None
-
-
-def _vaporview_extension_state(argv_prefix: list[str]) -> vaporview.ExtensionState:
-    """Probe the remote extension registry; unexpected failures remain unknown."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VAPORVIEW_STATE_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return vaporview.ExtensionState.UNKNOWN
-    if result.returncode == 0:
-        return vaporview.ExtensionState.INSTALLED
-    if result.returncode == 3:
-        return vaporview.ExtensionState.MISSING
-    return vaporview.ExtensionState.UNKNOWN
-
-
-def _vaporview_installed_versions(argv_prefix: list[str]) -> list[str] | None:
-    """Live VaporView versions in the remote registry, or None when unknown."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VAPORVIEW_VERSIONS_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        versions = json.loads(result.stdout)
-    except ValueError:
-        return None
-    if not is_str_list(versions):
-        return None
-    return versions
-
-
-def _vaporview_version_fix() -> str:
-    """Recovery for an installed VaporView build other than the verified one."""
-    return (
-        "in the attached remote window's terminal run "
-        f"`code --install-extension {vaporview.BUNDLED_VSIX}`, then "
-        "'Developer: Reload Window'; for a lasting fix refresh the Sandbox so "
-        "its generated spec installs the bundled verified build"
-    )
-
-
-def _check_vaporview_version(
-    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
-) -> None:
-    """Report whether the attached window runs the VaporView build Booley verified.
-
-    The bridge answers for any VaporView build, but Booley's compatibility
-    patch and its readback rules are verified against exactly one; only the
-    installed version separates them.
-    """
-    description = f"VaporView version is the verified {vaporview.VERIFIED_VERSION}"
-    versions = _vaporview_installed_versions(argv_prefix)
-    if versions is None:
-        _skip(f"{description} - version probe could not run{where}")
-        return
-    if not versions:
-        # Absence is reported by the bridge check with install guidance.
-        _skip(f"{description} - VaporView not installed{where}")
-        return
-    other = [version for version in versions if version != vaporview.VERIFIED_VERSION]
-    if not other:
-        _pass(description)
-        return
-    _fail(
-        f"VaporView {', '.join(other)} is installed{where}; Booley verifies only "
-        f"{vaporview.VERIFIED_VERSION}",
-        _vaporview_version_fix(),
-    )
-
-
-def _viewer_bridges(argv_prefix: list[str]) -> list[dict] | None:
-    """Live bridge reports (``vaporview``/``error``), or None when the probe failed."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VIEWER_BRIDGE_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        report = require_dict(json.loads(result.stdout), field="bridge probe")
-        entries = require_list(report.get("bridges"), field="bridge probe bridges")
-        return [_bridge_entry(require_dict(item, field="bridge entry")) for item in entries]
-    except (ValueError, BoundaryError):
-        return None
-
-
-def _bridge_entry(entry: dict) -> dict:
-    """Validate one bridge report; ``trusted`` is None when the bridge omits it."""
-    trusted = entry.get("trusted")
-    return {
-        "vaporview": require_opt_str(entry, "vaporview"),
-        "error": require_opt_str(entry, "error"),
-        "trusted": None if trusted is None else require_bool_value(trusted, field="trusted"),
-    }
-
-
-def _bridge_dark_fix(argv_prefix: list[str], state: vaporview.ExtensionState | None = None) -> str:
-    """Choose recovery from an authoritative remote extension observation.
-
-    ``state`` is a registry observation the caller already made; None probes.
-    """
-    state = _vaporview_extension_state(argv_prefix) if state is None else state
-    if state is vaporview.ExtensionState.MISSING:
-        return "VaporView extension is not installed. " + _BRIDGE_MISSING_EXTENSION_FIX
-    if state is vaporview.ExtensionState.UNKNOWN:
-        return _BRIDGE_UNKNOWN_EXTENSION_FIX
-    return _BRIDGE_RELOAD_FIX
-
-
-def _report_viewer_bridges(
-    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
-) -> None:
-    """Turn the bridge inventory into one pass/skip/fail line."""
-    description = _VIEWER_BRIDGE_DESCRIPTION
-    bridges = _viewer_bridges(argv_prefix)
-    if bridges is None:
-        _skip(f"{description} - probe could not run{where}")
-        return
-    if not bridges:
-        _fail(f"{description}: no window answered{where}", _bridge_dark_fix(argv_prefix))
-        return
-    # Restricted Mode disables VaporView, so a window that reports itself
-    # untrusted cannot show it: that is waiting for the user, not a fault.
-    broken = [entry for entry in bridges if entry["vaporview"] is None]
-    waiting = [entry for entry in broken if entry["trusted"] is False]
-    state = _vaporview_extension_state(argv_prefix) if waiting else None
-    # The registry does not depend on trust, so a really absent VaporView
-    # (MISSING) is never hidden behind a window that is not yet trusted.
-    if state is vaporview.ExtensionState.MISSING:
-        waiting = []
-    if len(broken) > len(waiting):
-        reasons = "; ".join(sorted({entry["error"] or "no detail" for entry in broken}))
-        _fail(
-            f"{description}: {len(broken)} of {len(bridges)} window(s){where} report no "
-            f"usable VaporView ({reasons})",
-            _bridge_dark_fix(argv_prefix, state),
-        )
-        return
-    _report_waiting_for_trust(description, len(bridges), len(waiting), where, _pass, _skip)
-
-
-def _report_waiting_for_trust(
-    description: str, windows: int, waiting: int, where: str, _pass: Check, _skip: Check
-) -> None:
-    """Pass or skip a bridge inventory in which no window is broken."""
-    if not waiting:
-        count = f" ({windows} windows)" if windows > 1 else ""
-        _pass(f"{description}{count}")
-    elif waiting < windows:
-        _pass(f"{description} ({windows} windows; {waiting} waiting for workspace trust)")
-    else:
-        _skip(
-            f"{description} - VaporView waits for workspace trust in {waiting} "
-            f"window(s){where}; trust the folder, then run `booley doctor`"
-        )
-
-
-def _check_viewer_bridge(
-    project: ProjectAudit,
-    docker_exe: str | None,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Live probe: does an attached window's Viewer Bridge answer, with VaporView ready?
-
-    The spec check (:func:`_check_devcontainer_spec`) is static — it proves the
-    devcontainer *asks* for the viewer and the Booley Sandbox Integration extension, never that a
-    window is running them. Without this probe the failure surfaces only when
-    a human runs `bwave gui` in a Doctor-clean project.
-
-    From the host, scope the probe to a VS Code-created devcontainer: a headless
-    `booley session up` container has no extension host by design. From inside a
-    runtime, probe its own socket directory because Docker metadata is
-    unavailable there.
-    """
-    from booley.runtime import runtime_context
-
-    description = _VIEWER_BRIDGE_DESCRIPTION
-    if runtime_context.inside_session_runtime():
-        if _vscode_extension_host_running([]) is False:
-            _skip(f"{description} - no VS Code extension host attached")
-            return
-        _check_vaporview_version([], "", _pass, _skip, _fail)
-        _report_viewer_bridges([], "", _pass, _skip, _fail)
-        return
-
-    if not docker_exe:
-        _skip(f"{description} - container runtime unavailable")
-        return
-    try:
-        container = session_runtime.vscode_session_container(project.project_root)
-    except session_runtime.SessionError as exc:
-        _fail(f"{description} - {exc}", "resolve the Sandbox inventory before retrying")
-        return
-    if container is None:
-        _skip(f"{description} - no VS Code devcontainer running for this project")
-        return
-    argv_prefix = [docker_exe, "exec", container]
-    if _vscode_extension_host_running(argv_prefix) is False:
-        _skip(f"{description} - no VS Code extension host attached in '{container}'")
-        return
-    where = f" in '{container}'"
-    _check_vaporview_version(argv_prefix, where, _pass, _skip, _fail)
-    _report_viewer_bridges(argv_prefix, where, _pass, _skip, _fail)
 
 
 def _run_mcp_probe(
@@ -4331,7 +3788,7 @@ def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> No
     if not gitignore.is_file():
         _warn(
             ".booley/.gitignore missing; transient Booley state may be tracked",
-            "booley init",
+            runtime_context.booley_init_hint(),
         )
         return
     try:
@@ -4343,7 +3800,7 @@ def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> No
     if missing:
         _warn(
             f".booley/.gitignore is missing {len(missing)} pattern(s): {', '.join(missing)}",
-            "booley init",
+            runtime_context.booley_init_hint(),
         )
         return
     _pass("transient Booley state is gitignored")
@@ -4353,13 +3810,20 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
     """Inspect durable inputs in their owning repositories, separately from outer history."""
     from booley.commit_policy import stealth_enabled
     from booley.runtime.project_trackability import (
-        FIX,
+        STEALTH_UNSET,
+        STEALTH_UNSET_FIX,
+        fix,
         history_probe,
         inspect_project_trackability,
+        unrecorded_stealth_exclusions,
     )
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
+    for name in unrecorded_stealth_exclusions(root, booley_dir):
+        _warning_sink(_warn, "stealth.enabled-unset", subject=name)(
+            STEALTH_UNSET.format(name=name), STEALTH_UNSET_FIX
+        )
     inspection = inspect_project_trackability(root, booley_dir)
     probe = history_probe(root)
     for group in inspection.ignored:
@@ -4367,7 +3831,7 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
         if group.history and probe is not None and probe in group.paths:
             continue
         check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
-        _warning_sink(_warn, check_id, subject=group.subject)(group.message, FIX)
+        _warning_sink(_warn, check_id, subject=group.subject)(group.message, fix())
     for error in inspection.errors:
         _warning_sink(_warn, "project.trackability-inspection", subject="inspection-incomplete")(
             error, "repair repository access and rerun booley doctor"
@@ -4674,12 +4138,13 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
 def _run_flow_audit(
     project: ProjectAudit,
     flow_runtime: _DoctorFlowRuntime,
-    verbose: bool,
     _pass: Check,
     _note: Check,
     _warn: Check,
     _skip: Check,
     _fail: Fail,
+    *,
+    _diagnostics: Diagnostics,
 ) -> None:
     """Validate enabled Flows and run Sandbox dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
@@ -4735,7 +4200,7 @@ def _run_flow_audit(
                     f"{rejected_core.name}; see the .core schema FAIL under FuseSoC .core checks"
                 )
                 continue
-            _run_flow_check(
+            outcome = _run_flow_check(
                 project,
                 flow_name,
                 target=target,
@@ -4743,12 +4208,8 @@ def _run_flow_audit(
                 flow_runtime=flow_runtime,
                 # The fusesoc roots scan alone can exceed 60s on large repos.
                 timeout_s=_configured_timeout_s(project, flow_name, _DRY_RUN_TIMEOUT_S),
-                verbose=verbose,
-                _pass=_pass,
-                _warn=_warn,
-                _skip=_skip,
-                _fail=_fail,
             )
+            _diagnostics(outcome.report)
 
 
 def _rejected_target_core(
@@ -5309,6 +4770,7 @@ class _CoreAuditContext:
 def _check_target_metadata(
     audit: _CoreAuditContext,
     refs: dict[str, TargetHandle],
+    diagnostics: Diagnostics,
 ) -> None:
     """Check Target declarations that do not need source partitions."""
     _check_doctor_target_compatibility(audit.root, audit.pass_, audit.fail)
@@ -5322,7 +4784,13 @@ def _check_target_metadata(
     _check_target_flow_option_defines(audit.root, audit.fail)
     _check_yosys_targets_have_arch(audit.root, refs, audit.pass_, audit.warn)
     _check_sim_traceable(audit.root, refs, audit.pass_, audit.warn)
-    _check_cocotb_targets(audit.project, refs, audit.pass_, audit.warn, audit.skip, audit.fail)
+    diagnostics(
+        cocotb_target_checks.inspect_cocotb_targets(
+            cocotb_target_checks.CocotbTargetRequest(
+                tuple(refs.values()), _load_tests_toml_normalized(audit.project)
+            )
+        )
+    )
 
 
 def _check_target_flow_option_defines(root: Path, _fail: Fail) -> None:
@@ -5498,6 +4966,7 @@ def _run_core_audit(
     _skip: Check,
     _fail: Fail,
     *,
+    _diagnostics: Diagnostics,
     _note: Check | None = None,
     _detail: Check | None = None,
 ) -> None:
@@ -5511,12 +4980,16 @@ def _run_core_audit(
     catalog, refs = catalog_and_refs
     if refs:
         inputs = _CoreAuditInputs(catalog, refs)
-        _check_target_metadata(audit, refs)
+        _check_target_metadata(audit, refs, _diagnostics)
         _check_target_sources(audit, refs, inputs)
         _check_core_repository_hygiene(audit)
     _run_core_security_audit(audit, refs)
-    _audit_tests_toml(project, _pass, _skip, _fail)
-    _audit_native_dependencies(project, _pass, _warn)
+    _diagnostics(
+        target_test_plan_inspection.inspect_target_test_plans(
+            TargetTestPlanInspectionRequest(project.project_root, project.booley_dir)
+        )
+    )
+    _diagnostics(pi.inspect_native_dependencies(_native_dependency_request(project)))
 
 
 def _check_sim_target_tb_staging(
@@ -5737,7 +5210,7 @@ def _check_target_naming(
     reads in ``--target``, ``sim_pass_<target>``, and ``tests.toml`` keys. See
     :mod:`booley.targets.target_naming` for the rule.
 
-    WARN, never FAIL, and only for owned cores (:func:`_owned_core_files`): a
+    A note, never a failure, and only for owned cores (:func:`_owned_core_files`): a
     non-conforming name still runs, and renaming a vendored upstream Target is
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
@@ -5761,7 +5234,9 @@ def _check_target_naming(
         _pass("Target names follow the <axis>_<subject> convention")
         return
     for name, ref in offenders:
-        suggestion = target_naming.suggest_name(name, doctor_axes.get(name))
+        # The core name backs a bare axis (``sim`` -> ``sim_<core name>``).
+        core_name = ref.vlnv.split(":")[:3][-1]
+        suggestion = target_naming.suggest_name(name, doctor_axes.get(name), subject=core_name)
         fix = (
             f"rename it '{suggestion}'"
             if suggestion
@@ -6630,28 +6105,11 @@ def _project_write_scope(root: Path) -> list[str]:
     return sorted(dirs)
 
 
-def _project_has_cocotb_target(project: ProjectAudit | None) -> bool:
-    """True when any selectable Target declares a ``cocotb_module`` (ADR 0034).
-
-    Cheap ``.core`` YAML read; gates the conditional cocotb doctor checks so a
-    plain-SV project is never faulted for a capability it doesn't use. The
-    container checks also run without a project audit (``project is None``) —
-    no project, no Cocotb Target.
-    """
-    if project is None:
-        return False
-    try:
-        handles = TargetCatalog.build(project.project_root).list()
-    except FuseSocError:
-        return False
-    return any(handle.cocotb_module for handle in handles)
-
-
 def _load_tests_toml_normalized(project: ProjectAudit) -> dict[str, dict]:
     """The normalized tests.toml sections, or empty when absent/invalid.
 
-    Invalidity is _audit_tests_toml's finding, not this reader's — the cocotb
-    checks just degrade to the no-tests view.
+    Invalidity is reported by ``target_test_plan_inspection``, not this reader — the
+    cocotb owner's request just degrades to the no-tests view.
     """
     tests_path = project.booley_dir / "tests.toml"
     if not tests_path.exists():
@@ -6661,304 +6119,6 @@ def _load_tests_toml_normalized(project: ProjectAudit) -> dict[str, dict]:
             return normalize_tests_toml(tomllib.load(f))
     except (OSError, ValueError, tomllib.TOMLDecodeError):
         return {}
-
-
-def _cocotb_module_file(
-    ref: TargetRef | TargetHandle,
-    module: str,
-) -> tuple[Path, bool] | None:
-    """Locate the Target's cocotb module file among its filesets.
-
-    Matches a fileset entry whose ``copyto`` destination or source basename is
-    ``<module>.py``. Returns ``(source path, fileset tb-tagged)`` or ``None``.
-    """
-    try:
-        doc = fusesoc_registry.read_core(ref.core_file)
-    except fusesoc_registry.FuseSocError:
-        return None
-    targets = doc.get("targets") or {}
-    target_def = targets.get(ref.name) if isinstance(targets, dict) else None
-    if not isinstance(target_def, dict):
-        return None
-    filesets = doc.get("filesets") or {}
-    want = f"{module}.py"
-    for fs_name in fusesoc_registry.target_fileset_names(target_def):
-        fileset = filesets.get(fs_name)
-        if not isinstance(fileset, dict):
-            continue
-        tags = fileset.get("tags") or []
-        tagged = isinstance(tags, list) and "tb" in tags
-        for entry in fileset.get("files") or []:
-            if isinstance(entry, str):
-                path, attrs = entry, {}
-            elif isinstance(entry, dict) and len(entry) == 1:
-                path, attrs = next(iter(entry.items()))
-                attrs = attrs if isinstance(attrs, dict) else {}
-            else:
-                continue
-            copyto = str(attrs.get("copyto", ""))
-            if Path(str(path)).name == want or copyto == want or copyto.endswith(f"/{want}"):
-                return ref.core_file.parent / str(path), tagged
-    return None
-
-
-# A cocotb module can generate rendered test IDs at import time through legacy
-# ``TestFactory`` or cocotb 2's ``@cocotb.parametrize`` decorator. Those IDs
-# are registered at import time. Static inspection must never execute a module.
-
-
-def _cocotb_symbol(node: ast.expr, aliases: dict[str, str]) -> str:
-    """Resolve source-visible import aliases for a decorator or factory call."""
-    if isinstance(node, ast.Call):
-        return _cocotb_symbol(node.func, aliases)
-    if isinstance(node, ast.Name):
-        return aliases.get(node.id, node.id)
-    if isinstance(node, ast.Attribute):
-        return f"{_cocotb_symbol(node.value, aliases)}.{node.attr}"
-    return ""
-
-
-def _cocotb_imports(tree: ast.Module) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                aliases[alias.asname or alias.name.split(".")[0]] = (
-                    alias.name if alias.asname else alias.name.split(".")[0]
-                )
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            for alias in node.names:
-                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-    return aliases
-
-
-def _cocotb_source_names(tree: ast.Module) -> tuple[set[str], set[str], bool]:
-    """Identify plain test functions and known generating bases, conservatively."""
-    aliases = _cocotb_imports(tree)
-    plain: set[str] = set()
-    bases: set[str] = set()
-    generated = False
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        symbol = _cocotb_symbol(node.func, aliases)
-        if symbol.rsplit(".", 1)[-1] in {"TestFactory", "generate_tests", "parametrize"}:
-            generated = True
-        if symbol.rsplit(".", 1)[-1] == "TestFactory":
-            arguments = node.args[:1] + [
-                kw.value for kw in node.keywords if kw.arg == "test_function"
-            ]
-            bases.update(arg.id for arg in arguments if isinstance(arg, ast.Name))
-        if symbol == "cocotb.test" and any(kw.arg == "name" for kw in node.keywords):
-            generated = True
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        decorators = {_cocotb_symbol(dec, aliases) for dec in node.decorator_list}
-        if "cocotb.parametrize" in decorators:
-            bases.add(node.name)
-        elif decorators == {"cocotb.test"}:
-            plain.add(node.name)
-    return plain - bases, bases, generated
-
-
-def _check_cocotb_test_names(
-    source: Path,
-    module: str,
-    target: str,
-    declared: list[str],
-    _pass: Check,
-    _warn: Fail,
-    _skip: Check,
-) -> None:
-    """Report only the name claims static source can support."""
-    try:
-        tree = ast.parse(source.read_text(encoding="utf-8", errors="replace"))
-        plain, bases, generated = _cocotb_source_names(tree)
-    except (OSError, SyntaxError, ValueError, RecursionError):
-        _skip(
-            f"cocotb Target '{target}': tests.toml names cannot be verified statically — "
-            f"{module}.py could not be read or parsed; check results.xml at run time"
-        )
-        return
-    if generated:
-        base_names = [name for name in declared if name in bases]
-        explanation = (
-            f"; generating function name(s): {', '.join(base_names)} — cocotb reports "
-            "rendered IDs, which may differ from these base names"
-            if base_names
-            else ""
-        )
-        _skip(
-            f"cocotb Target '{target}': {len(declared)} tests.toml name(s) "
-            f"cannot be verified statically: {', '.join(declared)} — {module}.py uses "
-            "factory/parameterized test generation or renamed test IDs; "
-            f"the names are checked against results.xml at run time{explanation}"
-        )
-        return
-    missing = [name for name in declared if name not in plain]
-    if missing:
-        _warning_sink(_warn, "cocotb.test-name-missing", subject=target)(
-            f"cocotb Target '{target}': tests.toml names not found as "
-            f"functions decorated with @cocotb.test in {module}.py: {', '.join(missing)} "
-            "(static, advisory)",
-            "check the names against the @cocotb.test functions — a "
-            "mismatch surfaces at run time as inconclusive",
-        )
-    else:
-        _pass(f"cocotb Target '{target}' tests.toml names all present in {module}.py")
-
-
-def _check_cocotb_targets(
-    project: ProjectAudit,
-    refs: dict[str, TargetRef | TargetHandle],
-    _pass: Check,
-    _warn: Fail,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Conditional Cocotb Target checks (ADR 0034 / F1).
-
-    Fires only when a Target declares ``flow_options.cocotb_module``:
-
-    * a tests.toml plusarg ``select`` template on it is a config
-      contradiction (selection is the ``COCOTB_TEST_FILTER`` env var) — FAIL;
-    * the module file should exist in the Target's filesets and its fileset
-      be tagged ``tb`` (Source Isolation) — advisory WARN;
-    * plain test functions support advisory static name checks. Generating
-      modules defer every registered name, including generating base names,
-      to results.xml at run time (decision 7).
-    """
-    cocotb_refs = {n: r for n, r in refs.items() if r.cocotb_module}
-    if not cocotb_refs:
-        return
-    sections = _load_tests_toml_normalized(project)
-    for name, ref in sorted(cocotb_refs.items()):
-        module = ref.cocotb_module or ""
-        try:
-            section = lookup_target_section(sections, f"{ref.vlnv}#{ref.name}") or {}
-        except TargetSectionConflictError:
-            continue  # the section-key audit reports the duplicate keys
-        if "select" in section:
-            _fail(
-                f"cocotb Target '{name}' declares a tests.toml `select` plusarg template",
-                "remove `select` — cocotb test selection is the "
-                "COCOTB_TEST_FILTER env var built from the `tests` list "
-                "(ADR 0034)",
-            )
-        found = _cocotb_module_file(ref, module)
-        if found is None:
-            _warning_sink(_warn, "cocotb.module-file-missing", subject=name)(
-                f"cocotb Target '{name}': no fileset file matches its "
-                f"cocotb_module '{module}' ({module}.py)",
-                f"add the Python testbench to a tagged fileset with copyto: {module}.py",
-            )
-            continue
-        source, tagged = found
-        if not tagged:
-            _warning_sink(_warn, "cocotb.tb-tag-missing", subject=name)(
-                f"cocotb Target '{name}': the fileset carrying {module}.py "
-                "is not tagged tags:[tb]",
-                "tag it so Source Isolation partitions RTL vs TB "
-                "(ADR 0022 dec 13 / ADR 0034 dec 4)",
-            )
-        if not source.is_file():
-            _warning_sink(_warn, "cocotb.module-file-missing", subject=name)(
-                f"cocotb Target '{name}': module file {source} not found on disk",
-                "author the Python testbench (or fix the fileset path)",
-            )
-            continue
-        _pass(f"cocotb Target '{name}' module file present ({module}.py)")
-        declared = section.get("tests") or []
-        if declared:
-            _check_cocotb_test_names(source, module, name, declared, _pass, _warn, _skip)
-
-
-#: Native headers whose development package the base sandbox does NOT carry,
-#: mapped to the Debian package that provides them. Requirements baking is
-#: Python-only, so a DPI/testbench C++ file that includes one of these compiles
-#: nowhere until the project image installs it — Ibex's `dpi_memutil.cc`
-#: includes <libelf.h> and its Verilator target links -lelf, and the derived
-#: image shipped only the runtime `libelf.so.1` (F-9). Keep this list to
-#: headers genuinely absent from the base image; a false warning here costs
-#: more trust than the missing hint it replaces.
-_NATIVE_HEADER_PACKAGES = {
-    "libelf.h": "libelf-dev",
-    "gelf.h": "libelf-dev",
-    "elfutils/libdw.h": "libdw-dev",
-    "png.h": "libpng-dev",
-    "jpeglib.h": "libjpeg-dev",
-    "curl/curl.h": "libcurl4-openssl-dev",
-    "ssl/ssl.h": "libssl-dev",
-    "openssl/ssl.h": "libssl-dev",
-    "xml2/libxml/parser.h": "libxml2-dev",
-    "libxml/parser.h": "libxml2-dev",
-    "sqlite3.h": "libsqlite3-dev",
-    "boost/version.hpp": "libboost-dev",
-    "gmp.h": "libgmp-dev",
-    "mpfr.h": "libmpfr-dev",
-    "ncurses.h": "libncurses-dev",
-    "systemc.h": "libsystemc-dev",
-}
-
-_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
-
-_C_FAMILY_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
-
-#: Cap on files read for the include scan. The check is an advisory hint, not
-#: an audit; a monorepo with thousands of C++ files must not make doctor slow.
-_NATIVE_SCAN_FILE_CAP = 400
-
-
-def _dockerfile_declares_native_package(dockerfile: Path, package: str) -> bool:
-    """Return whether an apt install command in *dockerfile* names *package*.
-
-    Project-owned images are the documented remedy for native headers. Doctor
-    runs inside the Sandbox too, where Docker is deliberately absent,
-    so the hand-authored Dockerfile is the portable evidence available on both
-    venues. Ignore comments and require the package to occur as an install
-    argument, not merely elsewhere in the file.
-    """
-    try:
-        text = dockerfile.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    uncommented = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
-    joined = re.sub(r"\\\s*\n", " ", uncommented)
-    for match in re.finditer(r"(?:apt-get|apt)\s+install\b([^;&\n]*)", joined):
-        if package in re.findall(r"[A-Za-z0-9.+:-]+", match.group(1)):
-            return True
-    return False
-
-
-def _report_native_dependencies(
-    project: ProjectAudit,
-    needed: dict[str, set[str]],
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Report curated native packages, honoring the project image recipe."""
-    dockerfile = project.common_booley_dir / "docker" / "Dockerfile"
-    declared = {
-        package for package in needed if _dockerfile_declares_native_package(dockerfile, package)
-    }
-    if declared:
-        _pass(
-            "native build dependencies declared in project Dockerfile: "
-            + ", ".join(sorted(declared))
-        )
-    for package, users in sorted(needed.items()):
-        if package in declared:
-            continue
-        where = ", ".join(sorted(users)[:3])
-        more = f" (+{len(users) - 3} more)" if len(users) > 3 else ""
-        _warning_sink(_warn, "sandbox.native-dependency-missing", subject=package)(
-            f"C/C++ sources need the native package '{package}' ({where}{more}), "
-            "which the base sandbox image does not carry. Baking Python "
-            "requirements cannot pull in native deps — add it to "
-            ".booley/docker/Dockerfile and rebuild, or the simulation "
-            "build will fail on a missing header/library"
-        )
 
 
 def _native_dependency_sources(project: ProjectAudit) -> list[str]:
@@ -6983,168 +6143,13 @@ def _native_dependency_sources(project: ProjectAudit) -> list[str]:
     return sources
 
 
-def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check) -> None:
-    """Warn when a Target's C/C++ sources need a native package the image lacks.
-
-    ``booley init`` bakes the listed Python requirements only, so a native
-    build dependency is invisible to it: the project image is built, the flow
-    resolves, and the failure surfaces as a compile/link error deep inside a
-    simulation build. Naming the package at setup time is much cheaper than
-    debugging a missing header later.
-
-    Advisory by design — this is a curated header list, not a resolver, so it
-    can only be a hint. It never fails the gate.
-    """
-    root = project.project_root
-    sources = _native_dependency_sources(project)
-
-    needed: dict[str, set[str]] = {}
-    scanned = 0
-    for rel in dict.fromkeys(sources):
-        if Path(rel).suffix.lower() not in _C_FAMILY_SUFFIXES:
-            continue
-        if scanned >= _NATIVE_SCAN_FILE_CAP:
-            break
-        try:
-            text = (root / rel).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        scanned += 1
-        for header in _INCLUDE_RE.findall(text):
-            package = _NATIVE_HEADER_PACKAGES.get(header)
-            if package:
-                needed.setdefault(package, set()).add(rel)
-
-    if not scanned:
-        return  # no C/C++ in the selected Targets — nothing this check applies to
-    if not needed:
-        _pass(f"no known-missing native build dependencies in {scanned} C/C++ source(s)")
-        return
-    _report_native_dependencies(project, needed, _pass, _warn)
-
-
-def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: Fail) -> None:
-    """Validate the project's ``tests.toml``: section keys, Test names, selectors."""
-    tests_path = project.booley_dir / "tests.toml"
-    if not tests_path.exists():
-        _skip("tests.toml not present (each sim Target runs its testbench's default test)")
-        return
-    try:
-        with tests_path.open("rb") as f:
-            raw = tomllib.load(f)
-        sections = normalize_tests_toml(raw)
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        _fail(
-            f"tests.toml invalid: {exc}",
-            "fix the tests.toml entry named above (a Target section holds only "
-            f"{', '.join(TESTS_SECTION_KEYS)}; {TEST_NAME_RULES})",
-        )
-        return
-    _pass(
-        "tests.toml valid (section keys, Test names, Test Variants, select and seed "
-        "templates well-formed)"
+def _native_dependency_request(project: ProjectAudit) -> pi.NativeDependencyRequest:
+    """Build the Project image owner's request from Doctor's selected Targets."""
+    return pi.NativeDependencyRequest(
+        project_root=project.project_root,
+        sources=tuple(_native_dependency_sources(project)),
+        dockerfile=project.common_booley_dir / "docker" / "Dockerfile",
     )
-    _audit_tests_toml_targets(project, sections, _fail)
-    _audit_test_run_plans(project, sections, _pass, _fail)
-
-
-def _audit_test_run_plans(
-    project: ProjectAudit, sections: dict, _pass: Check, _fail: Fail
-) -> None:
-    """Check each sim Target can apply what tests.toml declares for it (ADR 0072).
-
-    These are the checks the loader cannot make without the resolved ``.core``
-    Target: a Test Variant that overrides a Target plusarg, arguments or a
-    ``seed`` template on a Cocotb Target, ``default_seed`` on a Target that
-    cannot be seeded. A Target that passes gets one line naming how its Test
-    Runs are seeded; "unseeded" is a fact about the Target, not a problem.
-    """
-    try:
-        catalog = TargetCatalog.build(project.project_root)
-        handles = catalog.list(for_flow="sim")
-    except FuseSocError:
-        return  # enumeration failure is already reported by the structural audit
-    for handle in handles:
-        try:
-            inspection = catalog.inspect(handle)
-        except FuseSocError:
-            continue  # the resolve check reports a Target that does not inspect
-        adapter = (
-            "cocotb"
-            if inspection.flow_options.get("cocotb_module")
-            else _eda_family(inspection.eda_tool)
-        )
-        plusargs = [
-            str(name)
-            for name, spec in inspection.parameters.items()
-            if isinstance(spec, Mapping) and spec.get("paramtype") == "plusarg"
-        ]
-        try:
-            section = lookup_target_section(sections, handle.identity)
-        except TargetSectionConflictError:
-            continue  # the section-key audit reports the duplicate keys once
-        try:
-            plan = build_target_test_plan(
-                handle.selector,
-                section,
-                adapter=adapter,
-                target_plusargs=plusargs,
-            )
-        except ValueError as exc:
-            _fail(
-                f"tests.toml cannot apply to Target '{handle.selector}': {exc}",
-                "fix the tests.toml entry named above",
-            )
-            continue
-        _pass(_test_run_plan_line(handle.selector, plan))
-
-
-def _eda_family(eda_tool: str | None) -> str:
-    """The simulator family of a Target, or its raw tool name when unknown."""
-    try:
-        return normalize_eda_tool(eda_tool)
-    except ValueError:
-        return str(eda_tool or "")
-
-
-def _test_run_plan_line(selector: str, plan: TargetTestPlan) -> str:
-    """One PASS line: how *selector*'s Test Runs are seeded."""
-    if not plan.mechanism.seeded:
-        return f"Target '{selector}' Test Runs are unseeded ({plan.unseeded_cause()})"
-    return (
-        f"Target '{selector}' Test Runs are seeded through {plan.mechanism.describe()} "
-        f"(Default Seed {plan.default_seed})"
-    )
-
-
-def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail) -> None:
-    """Check every tests.toml section key names one Target, and no Target has two.
-
-    A key naming no Target is dead config that looks live: the lookup misses,
-    no selector reaches the binary, and the testbench runs its *default* test
-    to a green PASS. Two keys naming one Target make the choice of section
-    ambiguous. Both use the lookup rule the Simulation Flow uses.
-    """
-    try:
-        handles = TargetCatalog.build(project.project_root).list()
-    except FuseSocError:
-        return  # enumeration failure is already reported by the structural audit
-    if not handles:
-        return
-    for key in sections:
-        if not any(
-            section_key_names(key, handle.identity) or key == handle.name for handle in handles
-        ):
-            _fail(
-                f"tests.toml section [{key}] names no declared .core Target",
-                "fix the section key (a dead key runs the testbench's default "
-                "test and reports a false PASS)",
-            )
-    for handle in handles:
-        try:
-            target_section_key(sections, handle.identity)
-        except TargetSectionConflictError as exc:
-            _fail(str(exc), "keep one tests.toml section per Target")
 
 
 def _report_core_resolve(
@@ -7452,12 +6457,12 @@ def _run_core_resolve_in_docker(
 def _run_deep_checks(
     project: ProjectAudit,
     flow_runtime: _DoctorFlowRuntime,
-    verbose: bool,
     _pass: Check,
     _warn: Check,
     _skip: Check,
     _fail: Fail,
     *,
+    _diagnostics: Diagnostics,
     completeness: doctor_deep.DeepCheckTracker | None = None,
 ) -> None:
     """Run the real EDA smoke matrix selected by ``.core`` metadata."""
@@ -7479,20 +6484,20 @@ def _run_deep_checks(
             )
             identifier = f"{flow_name}.smoke.{hashlib.sha256(target.encode()).hexdigest()[:16]}"
             tracker.require(identifier)
-            completed = _run_flow_check(
+            outcome = _run_flow_check(
                 project,
                 flow_name,
                 target=target,
                 dry_run=False,
                 flow_runtime=flow_runtime,
                 timeout_s=timeout_s,
-                verbose=verbose,
-                _pass=_pass,
-                _warn=_warn,
-                _skip=_skip,
-                _fail=_fail,
             )
-            tracker.completed(identifier, completed)
+            _diagnostics(outcome.report)
+            if flow_name == "synth" and outcome.process is not None:
+                _record_synth_memory_calibration(
+                    project, target, _flow_report_dir(project), _pass, _warn
+                )
+            tracker.completed(identifier, outcome.completed)
     _run_fpga_impl_deep_notice(project, _skip)
     _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail, completeness=tracker)
 
@@ -7698,6 +6703,8 @@ def _doctor_subprocess_env(project: ProjectAudit) -> dict[str, str]:
 
     env["BOOLEY_DIR"] = str(project.booley_dir)
     env[INVOCATION_ORIGIN_ENV] = "transport"
+    # Flow runs Doctor starts must not write Resource History records.
+    env[DOCTOR_RUN_ENV] = "1"
     return env
 
 
@@ -8027,9 +7034,9 @@ def _run_flow_check_subprocess(
     timeout_s: int,
     label: str,
     report_dir: Path,
-    _fail: Fail,
-) -> subprocess.CompletedProcess | None:
-    """Run *cmd* for a Flow check; ``None`` means a FAIL was already reported."""
+    findings: Findings,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run *cmd* for a Flow check; ``None`` means a FAIL was already recorded."""
     env = _doctor_subprocess_env(project)
     try:
         return subprocess.run(
@@ -8042,52 +7049,20 @@ def _run_flow_check_subprocess(
             check=False,
         )
     except subprocess.TimeoutExpired:
-        _fail(
+        findings.fail(
             f"{label} timed out after {timeout_s}s",
             f"see {_display_report_dir(project, report_dir)}",
         )
         return None
     except OSError as exc:
-        _fail(
+        findings.fail(
             f"{label} failed to start: {exc}",
             f"see {_display_report_dir(project, report_dir)}",
         )
         return None
 
 
-def _interpret_flow_check_result(
-    project: ProjectAudit,
-    flow_name: str,
-    result: subprocess.CompletedProcess,
-    *,
-    target: str,
-    dry_run: bool,
-    verbose: bool,
-    label: str,
-    report_dir: Path,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Translate a Flow check's subprocess result into a PASS/WARN/SKIP/FAIL."""
-    _report_flow_check_result(
-        project,
-        flow_name,
-        result,
-        target=target,
-        dry_run=dry_run,
-        label=label,
-        report_dir=report_dir,
-        verbose=verbose,
-        _pass=_pass,
-        _warn=_warn,
-        _skip=_skip,
-        _fail=_fail,
-    )
-
-
-def _report_flow_check_result(
+def _grade_flow_check_result(
     project: ProjectAudit,
     flow_name: str,
     result: subprocess.CompletedProcess[str],
@@ -8096,13 +7071,9 @@ def _report_flow_check_result(
     dry_run: bool,
     label: str,
     report_dir: Path,
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
+    findings: Findings,
 ) -> None:
-    """Turn a finished Flow run into a doctor verdict.
+    """Turn a finished Flow run into a doctor verdict recorded in *findings*.
 
     The one question this smoke check exists to answer is "can this Flow run
     against this project at all" — so a *graded* nonzero exit is not
@@ -8110,27 +7081,23 @@ def _report_flow_check_result(
     """
     synth_error = _synth_deep_report_error(flow_name, target, dry_run, report_dir)
     if result.returncode == 0 and synth_error:
-        _fail(
+        findings.fail(
             f"{label} produced incomplete synthesis evidence: {synth_error}",
             f"see {_display_report_dir(project, report_dir)}",
         )
     elif _is_synth_warning_verdict(flow_name, dry_run, result):
-        _warn(
-            warning(
-                "flow.synth-deep-warning",
-                f"{label} returned a WARN verdict",
-                subject=target,
-            ),
+        findings.warn(
+            f"{label} returned a WARN verdict",
             f"run `booley flow synth --target {target}` and resolve its reported findings",
+            check_id="flow.synth-deep-warning",
+            subject=target,
         )
-        if verbose:
-            _print_output_excerpt(result)
+        _record_output_excerpt(findings, result)
     elif result.returncode == 0:
-        _pass(f"{label} passed")
-        if verbose:
-            _print_output_excerpt(result, max_lines=1)
+        findings.pass_(f"{label} passed")
+        _record_output_excerpt(findings, result, max_lines=1)
     elif _is_simulate_tb_top_skip(project, flow_name, dry_run, result):
-        _skip(
+        findings.skip(
             f"{label} skipped - tb_top is resolved at runtime "
             "(no static tb_top in the first config)"
         )
@@ -8141,18 +7108,30 @@ def _report_flow_check_result(
         # — the FAIL block would literally embed "RESULT: WARN (58 warnings)" —
         # which says nothing about whether lint is wired up correctly, the only
         # question this smoke check exists to answer.
-        _pass(
+        findings.pass_(
             f"{label} ran end-to-end; the design has lint findings "
             f"(exit {_TOOL_EXIT_DESIGN_FAIL} = WARN), which belong to `booley lint`"
         )
-        if verbose:
-            _print_output_excerpt(result)
+        _record_output_excerpt(findings, result)
     else:
-        _fail(
+        findings.fail(
             f"{label} failed with exit {result.returncode}",
             f"see {_display_report_dir(project, report_dir)}",
         )
-        _print_output_excerpt(result)
+        # A failure's excerpt is the evidence the reader needs: shown always.
+        _record_output_excerpt(findings, result, verbose_only=False)
+
+
+def _record_output_excerpt(
+    findings: Findings,
+    result: subprocess.CompletedProcess[str],
+    *,
+    max_lines: int = 8,
+    verbose_only: bool = True,
+) -> None:
+    """Attach the informative slice of *result*'s output to the last finding."""
+    for line in _output_excerpt_lines(result.stderr or result.stdout or "", max_lines):
+        findings.detail(line, verbose_only=verbose_only)
 
 
 def _synth_deep_report_error(flow_name: str, target: str, dry_run: bool, report_dir: Path) -> str:
@@ -8212,11 +7191,16 @@ def _is_lint_findings_exit(
     )
 
 
+def _flow_report_dir(project: ProjectAudit) -> Path:
+    """Directory holding the reports of Doctor's Flow checks."""
+    return project.booley_dir / DOCTOR_TMP_DIR / "flow-reports"
+
+
 def _prepare_flow_report_dir(
     project: ProjectAudit, flow_name: str, target: str, dry_run: bool
 ) -> Path:
     """Create the Doctor report directory and remove stale synth evidence."""
-    report_dir = project.booley_dir / DOCTOR_TMP_DIR / "flow-reports"
+    report_dir = _flow_report_dir(project)
     report_dir.mkdir(parents=True, exist_ok=True)
     if flow_name != "synth" or dry_run:
         return report_dir
@@ -8234,12 +7218,11 @@ def _doctor_flow_command(
     target: str,
     dry_run: bool,
     label: str,
-    _skip: Check,
-    _fail: Fail,
+    findings: Findings,
 ) -> list[str] | None:
-    """Build a Flow command or report why the issued Sandbox cannot run it."""
+    """Build a Flow command or record why the issued Sandbox cannot run it."""
     if not flow_runtime.available:
-        _skip(f"{label} skipped - '{_CONTAINER_CLI}' runtime not available")
+        findings.skip(f"{label} skipped - '{_CONTAINER_CLI}' runtime not available")
         return None
     try:
         return _flow_command(
@@ -8250,7 +7233,7 @@ def _doctor_flow_command(
             flow_runtime=flow_runtime,
         )
     except session_runtime.SessionError as exc:
-        _fail(
+        findings.fail(
             f"{label} could not enter the Sandbox: {exc}",
             _sandbox_failure_remedy(exc),
         )
@@ -8272,6 +7255,17 @@ def _is_synth_warning_verdict(
     )
 
 
+@dataclass(frozen=True)
+class _FlowCheckOutcome:
+    """Findings and run facts from one Doctor Flow check."""
+
+    report: DiagnosticReport
+    # None: the command was not launched, timed out, or failed to start.
+    process: subprocess.CompletedProcess[str] | None
+    # The Flow ran and was not the stateless sim dry-run tb_top skip.
+    completed: bool
+
+
 def _run_flow_check(
     project: ProjectAudit,
     flow_name: str,
@@ -8280,18 +7274,13 @@ def _run_flow_check(
     dry_run: bool,
     flow_runtime: _DoctorFlowRuntime,
     timeout_s: int,
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> bool:
+) -> _FlowCheckOutcome:
+    """Run one Flow smoke check and return its graded report."""
+    findings = Findings()
     label = f"{flow_name} {'dry-run' if dry_run else 'deep check'} [{target}]"
-    cmd = _doctor_flow_command(
-        project, flow_runtime, flow_name, target, dry_run, label, _skip, _fail
-    )
+    cmd = _doctor_flow_command(project, flow_runtime, flow_name, target, dry_run, label, findings)
     if cmd is None:
-        return False
+        return _FlowCheckOutcome(findings.report(), None, completed=False)
     report_dir = _prepare_flow_report_dir(project, flow_name, target, dry_run)
     result = _run_flow_check_subprocess(
         project,
@@ -8299,28 +7288,25 @@ def _run_flow_check(
         timeout_s=timeout_s,
         label=label,
         report_dir=report_dir,
-        _fail=_fail,
+        findings=findings,
     )
     if result is None:
-        return False
-    _interpret_flow_check_result(
+        return _FlowCheckOutcome(findings.report(), None, completed=False)
+    _grade_flow_check_result(
         project,
         flow_name,
         result,
         target=target,
         dry_run=dry_run,
-        verbose=verbose,
         label=label,
         report_dir=report_dir,
-        _pass=_pass,
-        _warn=_warn,
-        _skip=_skip,
-        _fail=_fail,
+        findings=findings,
     )
-    if flow_name == "synth" and not dry_run:
-        _record_synth_memory_calibration(project, target, report_dir, _pass, _warn)
-
-    return not _is_simulate_tb_top_skip(project, flow_name, dry_run, result)
+    return _FlowCheckOutcome(
+        findings.report(),
+        result,
+        completed=not _is_simulate_tb_top_skip(project, flow_name, dry_run, result),
+    )
 
 
 def _record_synth_memory_calibration(
@@ -8388,7 +7374,7 @@ def _is_simulate_tb_top_skip(
     needle = "--tb-top is required"
     if needle in f"{result.stderr or ''}\n{result.stdout or ''}":
         return True
-    report = project.booley_dir / DOCTOR_TMP_DIR / "flow-reports" / f"{flow_name}.json"
+    report = _flow_report_dir(project) / f"{flow_name}.json"
     try:
         payload = json.loads(report.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -8480,7 +7466,7 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
             with tests_path.open("rb") as f:
                 sections = normalize_tests_toml(tomllib.load(f))
         except (OSError, ValueError, tomllib.TOMLDecodeError):
-            sections = {}  # _audit_tests_toml already reported the breakage
+            sections = {}  # target_test_plan_inspection already reported the breakage
         try:
             handle = TargetCatalog.build(project.project_root).select(target, for_flow="sim")
             section = lookup_target_section(sections, handle.identity)
@@ -8569,6 +7555,7 @@ def _flow_command(
 
     command_env = dict.fromkeys(_PROJECT_CONTEXT_ENV, "")
     command_env[INVOCATION_ORIGIN_ENV] = "transport"
+    command_env[DOCTOR_RUN_ENV] = "1"
     if doctor_selftest_kind is not None:
         command_env[selftest_overlay.INTERNAL_KIND_ENV] = doctor_selftest_kind
     return flow_runtime.command(inner, env=command_env)
@@ -8684,19 +7671,19 @@ _OUTPUT_ERROR_MARKERS = (
 )
 
 
-def _print_text_excerpt(text: str, max_lines: int = 8) -> None:
-    """Print the informative slice of multi-line command output (indented).
+def _output_excerpt_lines(text: str, max_lines: int = 8) -> list[str]:
+    """Return the informative slice of multi-line command output (indented).
 
     A first-line-only excerpt truncated multi-line diagnostics — notably a
     fusesoc parse error whose reason (``... must be array``) lands on the *next*
-    line. When any line looks like an error, print from the first such line
+    line. When any line looks like an error, take from the first such line
     through the line after the last one (to catch the trailing reason); otherwise
     fall back to the head of the output. Capped at *max_lines* with a "… N more"
     note so the report dir is still the full record.
     """
     lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
     if not lines:
-        return
+        return []
     flagged = [
         i for i, ln in enumerate(lines) if any(m in ln.lower() for m in _OUTPUT_ERROR_MARKERS)
     ]
@@ -8704,11 +7691,17 @@ def _print_text_excerpt(text: str, max_lines: int = 8) -> None:
         selected = lines[flagged[0] : flagged[-1] + 2][:max_lines]
     else:
         selected = lines[:max_lines]
-    for ln in selected:
-        info(f"    {ln}")
+    excerpt = [f"    {ln}" for ln in selected]
     hidden = len(lines) - len(selected)
     if hidden > 0:
-        info(f"    … ({hidden} more line(s); see the report dir)")
+        excerpt.append(f"    … ({hidden} more line(s); see the report dir)")
+    return excerpt
+
+
+def _print_text_excerpt(text: str, max_lines: int = 8) -> None:
+    """Print :func:`_output_excerpt_lines` of *text*."""
+    for line in _output_excerpt_lines(text, max_lines):
+        info(line)
 
 
 def _print_output_excerpt(result: subprocess.CompletedProcess[str], max_lines: int = 8) -> None:

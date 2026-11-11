@@ -14,7 +14,9 @@ from pathlib import Path
 
 from booley.harness.dashboard import view_probe
 from booley.harness.dashboard.app import DashboardApp
+from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.model import DashboardReader
+from booley.harness.dashboard.targets import TargetsReader
 from booley.mcp.session_registry import namespace
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.dashboard_tasks import attach_blocker
@@ -191,8 +193,13 @@ def _run_view(root: Path, owner: socket.socket) -> None:
     try:
         restore = _label_terminal()
         try:
-            reader = DashboardReader(root, resolve_common_booley_dir(root)).read
-            DashboardApp(reader, view_state=state).run()
+            booley_dir = resolve_common_booley_dir(root)
+            DashboardApp(
+                DashboardReader(root, booley_dir).read,
+                view_state=state,
+                targets=TargetsReader(root),
+                launcher=Launcher(booley_dir),
+            ).run()
         finally:
             restore()
     finally:

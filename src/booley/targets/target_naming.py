@@ -22,6 +22,10 @@ Prefix, not suffix, because ``booley targets`` sorts entries by name within a
 core group (:mod:`booley.targets.target_surface`) — a leading axis renders the listing
 pre-grouped by Flow, and makes ``--target sim_<TAB>`` a useful completion.
 
+A bare axis token (``sim``) still maps to its Flow (:func:`axis_of`), so Flow
+intent and Criteria selection keep working, but it is *not* conventional: with
+no subject it says nothing about which design it drives.
+
 This module states the rule and nothing else: :mod:`booley.harness.doctor` is
 where a violation becomes a (non-fatal) finding, and only for Booley-authored
 cores — a vendored upstream ``.core`` must stay byte-identical to upstream, so
@@ -71,8 +75,9 @@ FUSESOC_RESERVED: frozenset[str] = frozenset({"default"})
 def axis_of(name: str) -> str | None:
     """The axis *name* declares, or ``None`` when it declares none.
 
-    A bare axis token (``lint``) counts: a single-Target axis has nothing to
-    disambiguate, and ``--target lint`` reads fine.
+    A bare axis token (``lint``) still names its axis, because Flow intent and
+    Criteria selection depend on it; it just breaks the naming convention
+    (see :func:`is_conventional`).
     """
     for axis in TARGET_AXES:
         if name == axis or name.startswith(f"{axis}_"):
@@ -98,7 +103,7 @@ def is_conventional(name: str) -> bool:
     """True when *name* satisfies the convention (or is FuseSoC-reserved)."""
     if name in FUSESOC_RESERVED:
         return True
-    return axis_of(name) is not None and bool(_NAME_RE.match(name))
+    return name not in TARGET_AXES and axis_of(name) is not None and bool(_NAME_RE.match(name))
 
 
 def violation(name: str) -> str | None:
@@ -110,6 +115,8 @@ def violation(name: str) -> str | None:
         return None
     if not _NAME_RE.match(name):
         return "not lowercase_snake_case"
+    if name in TARGET_AXES:
+        return "bare axis; add a subject"
     return f"no axis prefix ({'/'.join(TARGET_AXES)})"
 
 
@@ -147,18 +154,30 @@ def _strip_leading_legacy_axis(subject: str, axis: str) -> str:
     return subject
 
 
-def suggest_name(name: str, axis: str | None = None) -> str | None:
+def _sanitize_subject(raw: str) -> str:
+    """Lowercase *raw* and fold anything outside ``[a-z0-9_]`` into ``_``."""
+    return re.sub(r"[^a-z0-9_]+", "_", raw.lower()).strip("_")
+
+
+def suggest_name(name: str, axis: str | None = None, *, subject: str | None = None) -> str | None:
     """A conformant rename for *name*, or ``None`` when none can be inferred.
 
     *axis* pins the answer when the caller knows it (from Doctor metadata,
     say); otherwise the trailing legacy axis word decides. Returns
     ``None`` rather than guessing when neither source names an axis — a bad
     suggestion costs more than no suggestion.
+
+    *subject* is the fallback when *name* itself carries none (a bare axis such
+    as ``sim``): typically the core name, giving ``sim_<core name>``. It is only
+    sanitized, never legacy-stripped, so the suggestion stays literally
+    ``<axis>_<subject>``. A bare axis with no fallback subject yields ``None``.
     """
-    subject, legacy_axis = strip_legacy_axis(name)
+    name_subject, legacy_axis = strip_legacy_axis(name)
     axis = axis or legacy_axis
     if axis not in TARGET_AXES:
         return None
-    subject = re.sub(r"[^a-z0-9_]+", "_", subject.lower()).strip("_")
-    subject = _strip_leading_legacy_axis(subject, axis)
-    return f"{axis}_{subject}" if subject else axis
+    name_subject = _strip_leading_legacy_axis(_sanitize_subject(name_subject), axis)
+    if name_subject:
+        return f"{axis}_{name_subject}"
+    fallback = _sanitize_subject(subject) if subject else ""
+    return f"{axis}_{fallback}" if fallback else None

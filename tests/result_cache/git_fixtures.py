@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +11,7 @@ import pytest
 
 from booley.core.booley_dir import reset_cache
 from booley.runtime.git_environment import REPOSITORY_SELECTION_VARIABLES
+from tests.subprocess_budget import run_bounded_child
 
 BOOLEY_FILES = {
     "booley.toml": 'name = "x"\n',
@@ -78,13 +78,11 @@ def all_cases(cases: Iterable[Any]) -> Callable[[Callable[..., None]], Callable[
 
 def git(cwd: Path, *args: str) -> str:
     """Run Git in *cwd* (file-protocol submodules allowed) and return stripped stdout."""
-    result = subprocess.run(
-        ["git", "-c", "protocol.file.allow=always", *args],
+    result = run_bounded_child(
+        # No detached auto-maintenance: it holds objects/maintenance.lock while tests rmtree.
+        ["git", "-c", "protocol.file.allow=always", "-c", "maintenance.auto=false", *args],
         cwd=cwd,
-        capture_output=True,
-        text=True,
         check=True,
-        timeout=60,
     )
     return result.stdout.strip()
 

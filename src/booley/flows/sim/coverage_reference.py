@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import uuid
 from collections.abc import Mapping
@@ -11,17 +9,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from booley.core.boundary import BoundaryError, require_dict, require_int, require_str_value
+from booley.core.boundary import BoundaryError, require_int, require_str_value
 from booley.flows.artifact_durability import durable_create
+from booley.flows.sim.campaign_files import (
+    canonical_json,
+    parse_json_object,
+    read_bounded,
+)
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V5,
     MAX_MANIFEST_BYTES,
     LoadedCoverageCampaign,
     load_coverage_campaign_bytes,
 )
-from booley.flows.sim.coverage_json import REFERENCE_JSON, content_digest, freeze_coverage_mapping
+from booley.flows.sim.coverage_json import content_digest, freeze_coverage_mapping
 from booley.runtime.booley_dir import crossed_booley_dir_entry
-from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
@@ -39,13 +41,13 @@ class CoverageCampaignReferenceError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class CoverageCampaignReference:
-    """Validated immutable Coverage Campaign reference document."""
+    """Immutable Coverage Campaign reference document.
+
+    ``decode_coverage_campaign_reference`` validates bytes;
+    ``build_coverage_campaign_reference`` constructs one from values Booley owns.
+    """
 
     document: Mapping[str, object]
-
-    def __post_init__(self) -> None:
-        decoded = decode_coverage_campaign_reference(REFERENCE_JSON.encode(self.document))
-        object.__setattr__(self, "document", decoded.document)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,29 +62,16 @@ class ResolvedCoverageCampaign:
 
 def encode_coverage_campaign_reference(value: CoverageCampaignReference) -> bytes:
     """Encode one exact canonical reference."""
-    if type(value) is not CoverageCampaignReference:
-        raise CoverageCampaignReferenceError("expected CoverageCampaignReference")
-    raw = REFERENCE_JSON.encode(value.document)
-    decode_coverage_campaign_reference(raw)
-    return raw
+    return canonical_json(value.document)
 
 
 def decode_coverage_campaign_reference(raw: bytes) -> CoverageCampaignReference:
     """Decode bounded canonical bytes and reject every schema contradiction."""
     if not raw or len(raw) > MAX_REFERENCE_BYTES:
         raise CoverageCampaignReferenceError("Coverage Campaign reference exceeds size limit")
-    try:
-        value = require_dict(json.loads(raw))
-    except (UnicodeDecodeError, json.JSONDecodeError, BoundaryError) as exc:
-        raise CoverageCampaignReferenceError(
-            "Coverage Campaign reference is not valid JSON"
-        ) from exc
-    if REFERENCE_JSON.encode(value) != raw:
-        raise CoverageCampaignReferenceError("Coverage Campaign reference is not canonical JSON")
+    value = parse_json_object(raw, error=CoverageCampaignReferenceError, canonical=True)
     _validate_reference(value)
-    instance = object.__new__(CoverageCampaignReference)
-    object.__setattr__(instance, "document", freeze_coverage_mapping(value))
-    return instance
+    return CoverageCampaignReference(freeze_coverage_mapping(value))
 
 
 def publish_coverage_campaign_reference(
@@ -93,9 +82,12 @@ def publish_coverage_campaign_reference(
     try:
         durable_create(path, raw)
     except FileExistsError:
-        descriptor = open_regular_nofollow(path, booley_dir=crossed_booley_dir_entry(path))
-        with os.fdopen(descriptor, "rb") as stream:
-            existing = stream.read(MAX_REFERENCE_BYTES + 1)
+        existing = read_bounded(
+            path,
+            limit=MAX_REFERENCE_BYTES,
+            error=CoverageCampaignReferenceError,
+            booley_dir=crossed_booley_dir_entry(path),
+        )
         decoded = decode_coverage_campaign_reference(existing)
         if existing != raw:
             raise CoverageCampaignReferenceError(
@@ -111,7 +103,12 @@ def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
         absolute = canonical_project_alias_path(path.absolute())
     except ValueError as exc:
         raise CoverageCampaignReferenceError(str(exc)) from exc
-    raw = _read_regular(absolute, "Coverage Campaign reference", MAX_REFERENCE_BYTES)
+    raw = read_bounded(
+        absolute,
+        limit=MAX_REFERENCE_BYTES,
+        error=CoverageCampaignReferenceError,
+        booley_dir=crossed_booley_dir_entry(absolute),
+    )
     return _resolve_coverage_campaign_reference_bytes(absolute, raw)
 
 
@@ -124,7 +121,12 @@ def _resolve_coverage_campaign_reference_bytes(
     nested = cast(Mapping[str, object], document["coverage_campaign"])
     target_root = absolute.parent
     campaign_path = _contained_relative(target_root, cast(str, nested["path"]))
-    campaign_raw = _read_regular(campaign_path, "nested Coverage Campaign", MAX_MANIFEST_BYTES)
+    campaign_raw = read_bounded(
+        campaign_path,
+        limit=MAX_MANIFEST_BYTES,
+        error=CoverageCampaignReferenceError,
+        booley_dir=crossed_booley_dir_entry(campaign_path),
+    )
     if len(campaign_raw) != nested["bytes"] or content_digest(campaign_raw) != nested["sha256"]:
         raise CoverageCampaignReferenceError(
             "nested Coverage Campaign bytes disagree with reference"
@@ -195,7 +197,12 @@ def resolve_persisted_coverage_campaign_reference(
         "coverage_campaign_reference.nested_campaign_sha256",
     )
     public_path = _contained_relative(reports_root.absolute(), relative)
-    raw = _read_regular(public_path, "Coverage Campaign reference", MAX_REFERENCE_BYTES)
+    raw = read_bounded(
+        public_path,
+        limit=MAX_REFERENCE_BYTES,
+        error=CoverageCampaignReferenceError,
+        booley_dir=crossed_booley_dir_entry(public_path),
+    )
     if len(raw) != expected_bytes or content_digest(raw) != persisted["sha256"]:
         raise CoverageCampaignReferenceError(
             "persisted Coverage Campaign reference bytes disagree with acceptance state"
@@ -223,28 +230,35 @@ def build_coverage_campaign_reference(
     coverage_campaign_path: Path,
 ) -> CoverageCampaignReference:
     """Construct a reference from an already committed nested Coverage Campaign."""
-    raw = _read_regular(coverage_campaign_path, "nested Coverage Campaign", MAX_MANIFEST_BYTES)
+    raw = read_bounded(
+        coverage_campaign_path,
+        limit=MAX_MANIFEST_BYTES,
+        error=CoverageCampaignReferenceError,
+        booley_dir=crossed_booley_dir_entry(coverage_campaign_path),
+    )
     loaded = load_coverage_campaign_bytes(coverage_campaign_path, raw)
     relative = coverage_campaign_path.relative_to(origin_target_directory).as_posix()
     return CoverageCampaignReference(
-        {
-            "$schema": REFERENCE_SCHEMA,
-            "simulation_campaign_id": simulation_campaign_id,
-            "simulation_manifest_sha256": simulation_manifest_sha256,
-            "target": {"identity": target_identity, "selector": target_selector},
-            "origin_invocation_id": origin_invocation_id,
-            "producer_invocation_id": producer_invocation_id,
-            "simulation_work_item_id": simulation_work_item_id,
-            "simulation_attempt_id": simulation_attempt_id,
-            "coverage_campaign": {
-                "path_base": "origin_target",
-                "path": relative,
-                "bytes": len(raw),
-                "sha256": content_digest(raw),
-                "campaign_id": loaded.campaign.campaign_id,
-                "schema": loaded.summary.source_schema,
-            },
-        }
+        freeze_coverage_mapping(
+            {
+                "$schema": REFERENCE_SCHEMA,
+                "simulation_campaign_id": simulation_campaign_id,
+                "simulation_manifest_sha256": simulation_manifest_sha256,
+                "target": {"identity": target_identity, "selector": target_selector},
+                "origin_invocation_id": origin_invocation_id,
+                "producer_invocation_id": producer_invocation_id,
+                "simulation_work_item_id": simulation_work_item_id,
+                "simulation_attempt_id": simulation_attempt_id,
+                "coverage_campaign": {
+                    "path_base": "origin_target",
+                    "path": relative,
+                    "bytes": len(raw),
+                    "sha256": content_digest(raw),
+                    "campaign_id": loaded.campaign.campaign_id,
+                    "schema": loaded.summary.source_schema,
+                },
+            }
+        )
     )
 
 
@@ -279,7 +293,17 @@ def authenticate_coverage_campaign_owner(
     target = cast(Mapping[str, str], manifest.document["target"])
     result = authenticated.result
     evidence = cast(tuple[Mapping[str, object], ...], result.document["evidence"])
-    nested_evidence = [item for item in evidence if item["kind"] == "coverage_campaign_manifest"]
+    try:
+        # The result decoder checks only the document boundary (#1744).
+        nested_evidence = [
+            (item["bytes"], item["sha256"], Path(cast(str, item["path"])).parts)
+            for item in evidence
+            if item["kind"] == "coverage_campaign_manifest"
+        ]
+    except (KeyError, TypeError) as exc:
+        raise CoverageCampaignReferenceError(
+            "enclosing Simulation result evidence is malformed"
+        ) from exc
     if (
         manifest.document["campaign_id"] != document["simulation_campaign_id"]
         or authenticated.manifest_sha256 != document["simulation_manifest_sha256"]
@@ -288,11 +312,8 @@ def authenticate_coverage_campaign_owner(
         != cast(Mapping[str, str], document["target"])["identity"]
         or result.document["attempt_id"] != document["simulation_attempt_id"]
         or result.document["producer_invocation_id"] != document["producer_invocation_id"]
-        or len(nested_evidence) != 1
-        or nested_evidence[0]["bytes"] != nested["bytes"]
-        or nested_evidence[0]["sha256"] != nested["sha256"]
-        or Path(cast(str, nested_evidence[0]["path"])).parts
-        != Path(cast(str, nested["path"])).parts[5:]
+        or nested_evidence
+        != [(nested["bytes"], nested["sha256"], Path(cast(str, nested["path"])).parts[5:])]
     ):
         raise CoverageCampaignReferenceError(
             "enclosing Simulation Campaign disagrees with reference"
@@ -428,18 +449,6 @@ def _contained_relative(root: Path, relative: str) -> Path:
                 "Coverage Campaign reference path contains a link"
             )
     return path
-
-
-def _read_regular(path: Path, label: str, maximum: int) -> bytes:
-    try:
-        descriptor = open_regular_nofollow(path, booley_dir=crossed_booley_dir_entry(path))
-        with os.fdopen(descriptor, "rb") as stream:
-            raw = stream.read(maximum + 1)
-    except OSError as exc:
-        raise CoverageCampaignReferenceError(f"{label} is not a regular file: {path}") from exc
-    if len(raw) > maximum:
-        raise CoverageCampaignReferenceError(f"{label} exceeds size limit")
-    return raw
 
 
 __all__ = [

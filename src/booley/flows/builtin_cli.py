@@ -75,7 +75,14 @@ def _cli_flag(field: str) -> str:
     return "--" + field.replace("_", "-")
 
 
-def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocation):
+def prepare_request(
+    flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocation
+) -> tuple[FlowRequest, bool]:
+    """Parse *argv* into the typed request and the ``--quiet`` choice; changes no environment.
+
+    ``parser.error`` exits with argparse's usage text on a bad argument; the
+    Dashboard's argument check relies on this being the shell's own parse.
+    """
     from booley.flows.cli_selection import normalize_endpoint_args
 
     parser = build_cli_parser(flow, invocation)
@@ -90,6 +97,11 @@ def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocat
         parser.error(exc.describe(_cli_flag))
     except ValueError as exc:
         parser.error(str(exc))
+    return request, quiet
+
+
+def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocation):
+    request, quiet = prepare_request(flow, argv, invocation)
     apply_environment(request, flow.endpoint_kind)
     return request, quiet
 
@@ -109,10 +121,12 @@ def execute_cli(
     invocation = CliInvocation.of(flow)
     request, quiet = _parse_cli(flow, argv, invocation)
     flow._start_invocation(adapter or StandaloneFlowExecution(), request)
-    if not invocation.transport and not flow._acceptance_recorder.acceptance_identity():
-        from booley.harness.cli_goal_notice import warn_cli_goal_recording
-
-        warn_cli_goal_recording(request.work_dir)
+    if (
+        not invocation.transport
+        and not flow._acceptance_recorder.acceptance_identity()
+        and invocation.goal_recording_advisory is not None
+    ):
+        invocation.goal_recording_advisory(request.work_dir)
     flow._raw_argv = argv if argv is not None else sys.argv[1:]
     flow._console_publication_requested = True
     if (

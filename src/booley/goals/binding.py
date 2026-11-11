@@ -30,13 +30,19 @@ from booley.core.boundary import (
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
 from booley.goals.generated_artifacts import goal_target_surface
-from booley.goals.model import GoalRecord, GoalRecordFormatError, GoalState, WorktreeIdentity
+from booley.goals.model import (
+    GoalRecord,
+    GoalRecordFormatError,
+    GoalState,
+    worktree_identity_from_json,
+)
 from booley.goals.paths import GoalIdError, record_paths, validate_goal_id
 from booley.goals.proposals import ProposalError
 from booley.goals.protected_inputs import ProtectedPath, ProtectedSnapshot, check_goal_inputs
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.target_surface import TargetSurfaceError
 from booley.goals.test_run_freezing import ensure_test_run_resolutions
+from booley.runtime.worktree_identity import WorktreeIdentity
 from booley.targets.domain import FuseSocError
 
 BINDING_SCHEMA = "booley.goal-run-binding/v1"
@@ -167,7 +173,7 @@ def _parse_binding(raw: object) -> GoalRunBinding:
         booley_dir=Path(require_str_value(mapping["booley_dir"], field="booley_dir")),
         record_id=validate_goal_id(require_str_value(mapping["record_id"], field="record_id")),
         record_revision=_positive_int(mapping["record_revision"], "record_revision"),
-        worktree=WorktreeIdentity.from_json(mapping["worktree"], where="worktree"),
+        worktree=worktree_identity_from_json(mapping["worktree"], where="worktree"),
         worktree_root=Path(require_str_value(mapping["worktree_root"], field="worktree_root")),
         goal_branch=require_str_value(mapping["goal_branch"], field="goal_branch"),
         invocation_id=require_str_value(mapping["invocation_id"], field="invocation_id"),

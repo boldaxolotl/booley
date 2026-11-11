@@ -9,10 +9,10 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 import sys
 import tomllib
 import zipfile
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -25,8 +25,9 @@ from tests.sidecar_image_helpers import (
     SIDECAR_BOOKWORM_BASE,
     SIDECAR_DOCKER_CLI,
 )
+from tests.subprocess_budget import run_bounded_child
 
-from booley.runtime import dockerfile_syntax
+from booley.runtime import dockerfile_syntax, docs_links
 from booley.runtime.dockerfile_syntax import logical_instructions
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
@@ -75,6 +76,7 @@ def test_base_python_installs_take_exact_pins_only_from_requirements_file() -> N
         installed.update(token for token in tokens if re.fullmatch(r"[a-z][a-z0-9-]*", token))
 
     assert installed == set(pins)
+    assert "pyslang" in installed  # ADR 0088: the image installs the Mutant generator parser
 
 
 def test_base_edalize_fusesoc_pins_match_project_metadata() -> None:
@@ -89,6 +91,18 @@ def test_base_edalize_fusesoc_pins_match_project_metadata() -> None:
     for name in ("edalize", "fusesoc"):
         assert name in pins, f"{name} missing from base-python-requirements.txt"
         assert pins[name] == exact.get(name), name
+
+
+def test_base_pyslang_pin_matches_optional_dependency_group() -> None:
+    """ADR 0088: the Sandbox image and the extras install one pyslang, never the host."""
+    pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+    extras = project["optional-dependencies"]
+
+    assert "pyslang" in pins
+    for extra in ("hdl-parser", "test", "dev"):
+        assert f"pyslang=={pins['pyslang']}" in extras[extra], extra
+    assert not any(item.startswith("pyslang") for item in project["dependencies"])
 
 
 def test_supported_tools_doc_lists_base_cocotb_pins() -> None:
@@ -699,13 +713,10 @@ def test_bundled_vsix_install_rejects_bad_payload(tmp_path: Path, name: str, cas
     body = body.replace("/tmp/", f"{tmp_path}/").replace("/usr/local", str(root / "usr/local"))
     # Substitute the network download only; run the shipped verification commands.
     curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; cp "$FIXTURE" "$1"; }; '
-    result = subprocess.run(
+    result = run_bounded_child(
         ["sh", "-c", curl + body],
         env=environment,
-        capture_output=True,
-        text=True,
         timeout=20,
-        check=False,
     )
     installed = list((root / "usr/local/libexec/booley").glob("*.vsix"))
     assert (result.returncode == 0) == (case == "good"), result.stderr
@@ -760,12 +771,9 @@ def test_agent_cli_versions_are_written_only_in_their_manifest() -> None:
         version = manifest["dependencies"][name]
         # Digit boundaries stop a version from matching inside a longer one.
         pattern = rf"(^|[^0-9.]){re.escape(version)}([^0-9]|$)"
-        result = subprocess.run(
+        result = run_bounded_child(
             ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"],
-            capture_output=True,
-            text=True,
             timeout=20,
-            check=False,
         )
         assert result.returncode in (0, 1), result.stderr
         found = result.stdout.splitlines()
@@ -806,13 +814,10 @@ def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(tmp_pat
             stub = bin_dir / name
             stub.write_text(f"#!/bin/sh\necho '{output}'\n", encoding="utf-8")
             stub.chmod(0o755)
-        return subprocess.run(
+        return run_bounded_child(
             ["sh", "-c", checks[0].replace(manifest_path, str(manifest))],
             env=env,
-            capture_output=True,
-            text=True,
             timeout=20,
-            check=False,
         ).returncode
 
     assert exit_code("9.9.9", "8.8.8") == 0
@@ -1329,7 +1334,7 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
 
 def test_candidate_ci_runs_pinned_ibex_demo_offline() -> None:
     jobs = _workflow(".github/workflows/test.yml")["jobs"]
-    smoke_job = jobs["bwave-smoke"]
+    smoke_job = jobs["riscv-image"]
     checkout = _named_step(smoke_job, "Prepare exact reviewed Ibex candidate")
     lint_command = _named_step(smoke_job, "Run pinned Ibex lint demo")["run"]
     command_argv = shlex.split(lint_command)
@@ -1450,13 +1455,10 @@ def test_riscv_document_install_rejects_wrong_checksums(
     ).replace("/opt/riscv-docs", str(tmp_path / "docs"))
     # Substitute network downloads only; execute the shipped checksum and index commands.
     curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; printf fixture > "$1"; }; '
-    result = subprocess.run(
+    result = run_bounded_child(
         ["sh", "-c", curl + install],
         env=environment,
-        capture_output=True,
-        text=True,
         timeout=10,
-        check=False,
     )
     assert (result.returncode != 0) == (bad_hash is not None), result.stderr
     assert (tmp_path / "docs" / "INDEX.md").exists() == (bad_hash is None)
@@ -1481,3 +1483,46 @@ def test_agent_policy_probe_derives_node_and_npm_from_the_packaged_recipe() -> N
         dockerfile_syntax.argument_default(base, "NODE_VERSION"),
         dockerfile_syntax.argument_default(base, "NPM_VERSION"),
     )
+
+
+def _wheel_install_stages() -> dict[str, tuple]:
+    """Return ``{Dockerfile name: instructions of its stage that pip-installs $WHEEL}``."""
+    stages: dict[str, tuple] = {}
+    for dockerfile in sorted(_DOCKER_DIR.glob("Dockerfile*")):
+        instructions = logical_instructions(dockerfile.read_text(encoding="utf-8"))
+        starts = [n for n, i in enumerate(instructions) if i.keyword == "FROM"] + [
+            len(instructions)
+        ]
+        for begin, end in pairwise(starts):
+            stage = instructions[begin:end]
+            if any(
+                i.keyword == "RUN" and "pip install" in i.value and '"$WHEEL"' in i.value
+                for i in stage
+            ):
+                stages[dockerfile.name] = stage
+    return stages
+
+
+def test_every_wheel_install_stage_links_the_fixed_docs_path() -> None:
+    stages = _wheel_install_stages()
+    assert set(stages) == {"Dockerfile", "Dockerfile.wheel"}
+    for name, stage in stages.items():
+        install = next(n for n, i in enumerate(stage) if '"$WHEEL"' in i.value)
+        links = [
+            n
+            for n, i in enumerate(stage)
+            if n > install
+            and i.keyword == "RUN"
+            and f'ln -sfn "$DOCS_DIR" {docs_links.SANDBOX_DOCS_DIR}' in i.value
+            and "from booley.runtime.paths import user_docs_dir" in i.value
+        ]
+        assert len(links) == 1, name
+        user = [i.value for i in stage[: links[0]] if i.keyword == "USER"][-1]
+        assert user == "root", f"{name}: /booley-docs must be linked as root, not {user}"
+
+
+def test_cheatsheet_names_the_fixed_docs_path_once_in_its_sandbox_section() -> None:
+    cheatsheet = Path("src/booley/data/cheatsheet.md").read_text(encoding="utf-8")
+    section = cheatsheet.split("### Sandbox & Docker", 1)[1].split("\n### ", 1)[0]
+
+    assert section.count(f"{docs_links.SANDBOX_DOCS_DIR}/") == 1

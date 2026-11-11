@@ -30,10 +30,9 @@ from booley.flows.eda_failures import (
     new_attempt_token,
     render_failure_marker,
 )
-from booley.flows.job_resources import resource_phase
+from booley.flows.job_resources import resolved_source_bytes, resource_phase
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
-from booley.flows.parameter_transport import normalize_resolved_parameters
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -605,7 +604,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
             build_root=build_root,
             library_plan=fusesoc_registry.build_library_plan(target.project_root, build_root),
         )
-        normalize_resolved_parameters(resolved)
         declared_family = _lint_eda_tool_family(target.eda_tool)
         configured_family = _lint_eda_tool_family(resolved.configured_eda_tool)
         if declared_family != configured_family:
@@ -625,9 +623,11 @@ class LintFlow(BuiltinFlow[LintRequest]):
         )
         return _PreparedLintCommand(["sh", "-c", script], resolved, token)
 
-    def _run_linter(self, selector: str, cmd: list[str]) -> SubprocessResult:
+    def _run_linter(
+        self, selector: str, cmd: list[str], source_bytes: int | None
+    ) -> SubprocessResult:
         """Run one Target's linter under its resource-history label."""
-        with resource_phase(selector, "lint"):
+        with resource_phase(selector, "lint", source_bytes=source_bytes):
             return self._execute_boundary(cmd)
 
     def _dry_run_command(self, target: TargetHandle) -> list[str]:
@@ -798,7 +798,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         from booley.flows.terminal_progress import announce_unit
 
         announce_unit("checking", target=selector)
-        proc = self._run_linter(selector, cmd)
+        proc = self._run_linter(selector, cmd, resolved_source_bytes(prepared.resolved))
         result.duration_s = time.monotonic() - start
         result.returncode = proc.returncode
 

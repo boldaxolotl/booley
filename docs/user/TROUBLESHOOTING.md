@@ -66,11 +66,14 @@ refusing Sandbox preparation: generated bind source for <target> is missing: <so
 Restore that folder. If you removed it on purpose, run `booley init --seed` on
 the host and reopen the container.
 
-When the container's mounts are out of date, Booley recreates the container.
-Mounted folders and named volumes survive; anything written only inside the
-container is lost. If Booley says a headless Sandbox is running, run
-`booley session down` first. If it refuses because the container is still
-running or is ambiguous, stop and remove that container yourself, then reopen.
+When a stopped container's mounts are out of date, Booley recreates the
+container. Mounted folders and named volumes survive; anything written only
+inside the container is lost. If Booley says a headless Sandbox is running, run
+`booley session down` first. A running container whose Booley Directory mounts
+are outdated, including any from before Booley 0.3.0, is refused, not migrated:
+close VS Code, stop and remove that container, run `booley init --seed` on the
+host, then reopen. If Booley calls the container ambiguous, inspect it and
+remove it yourself if it is yours.
 
 ### `booley` is missing from `/mcp` in Claude Code or Codex
 
@@ -130,7 +133,7 @@ It doesn't open when:
 - your user setting `task.allowAutomaticTasks` is `"off"`, or the Project's
   `.vscode/settings.json` sets it to `"off"`;
 - you removed or edited the Dashboard task in `.vscode/tasks.json`, or Git
-  tracks that file. To restore a removed task, set `[sandbox].dashboard = false`, run `booley init` on the host, set it
+  tracks that file. To restore a removed task, set `[sandbox].dashboard = false`, run `booley init` (on the host, or in a hand-written Sandbox such as a Codespace; a Booley-issued Sandbox needs the host), set it
   back to `true` and run `booley init` again;
 - the window isn't a Dev Containers or Codespaces window, the folder isn't a
   Git repository, or the window is not trusted yet;
@@ -215,17 +218,26 @@ once so it gets the new credential. Billing choices are in
 
 ### Two Developer Agents keep clobbering each other's edits
 
-They share one worktree. Give each agent that edits code its own: ask the agent
-to create a worktree (`booley worktree new <name>` in the Sandbox), then start
-Goal Mode there with `/booley-goal`. The Dashboard warns about a shared
-worktree but doesn't separate the agents.
+They share one worktree. Sessions started with `booley chat` get their own
+automatically: while the main checkout is in use, the next one starts in a
+worktree `s<N>`. A plain `claude` tab or VS Code panel started before any
+Booley tool call is not counted, so it may still share the main checkout. Start
+those in a worktree: ask the agent to create one (`booley worktree new <name>`
+in the Sandbox), then start Goal Mode there with `/booley-goal`. The Dashboard
+warns about a shared worktree but doesn't separate the agents.
+
+If `booley chat` keeps opening worktrees because a Codex session ended without
+notice, Booley counts the main checkout as in use until that session goes quiet
+(`[goals] quiet_after`, two hours by default). Run `booley chat --here` to use
+the main checkout now.
 
 ### Worktrees show as `prunable` on the host
 
 A worktree created in the Sandbox can sit at a container path the host can't
 reach, so host Git marks it `prunable`. Don't prune them from the host. Run Git worktree
-commands inside the Sandbox, and remove a worktree as the
-[CLI reference](https://booley.dev/docs/cli-reference/#worktrees) describes.
+commands inside the Sandbox, and remove a worktree with
+`booley worktree rm <name>` (see the
+[CLI reference](https://booley.dev/docs/cli-reference/#worktrees)).
 
 ### `booley worktree new` fails in the post-setup hook
 
@@ -233,14 +245,26 @@ commands inside the Sandbox, and remove a worktree as the
 ERROR: post-setup hook failed (rc=3); log: .../.booley/worktrees/.logs/<name>.log
 ```
 
-Booley removed the worktree and its `booley-worktree/<name>` branch, so nothing
-is left to clean up, unless the error also says `outer rollback failed`. Read
-the log the error names for the hook's output. Fix
-`.booley/hooks/post-setup.*`, commit the fix if your Booley Directory is its own
-Git repository (a Paired Checkout starts from its last commit), and run the
-command again. The same cleanup follows a failed submodule fill.
+Booley removed the worktree and its `booley/<name>` branch, so nothing is left
+to clean up, unless the error also says `outer rollback failed` or the hook
+committed on `booley/<name>`, which Booley keeps. Read the log the error names
+for the hook's output. Fix `.booley/hooks/post-setup.*` and run the command
+again. The same cleanup follows a failed submodule fill.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+Booley also removed the `booley-worktree/<name>` branch. Commit the hook fix in
+the Booley Directory's own repository before you retry: the worktree's Paired
+Checkout starts from that repository's last commit. See
+[Stealth Mode](https://booley.dev/docs/stealth/).
+
+</details>
 
 ### A new worktree lacks my uncommitted `.booley` changes
+
+This happens only in [Stealth Mode](https://booley.dev/docs/stealth/), where
+the Booley Directory is its own Git repository.
 
 `booley worktree new` warned that files were left out. A Paired Checkout starts
 from the last commit of your Booley Directory's repository, so uncommitted and
@@ -254,8 +278,9 @@ $ git checkout -- .booley/booley.toml
 error: pathspec '.booley/booley.toml' did not match any file(s) known to git
 ```
 
-In [Stealth Mode](https://booley.dev/docs/stealth/), the default, your RTL
-repository ignores `.booley/`, so its Git commands can't see `booley.toml`,
+This happens in [Stealth Mode](https://booley.dev/docs/stealth/), or in a
+Project set up while Stealth was the default (Doctor then warns
+`stealth.enabled-unset`): your RTL repository ignores `.booley/`, so its Git commands can't see `booley.toml`,
 `tests.toml`, Goalsets or `.core` files there. If `.booley/` is its own Git
 repository, run Git there:
 
@@ -283,6 +308,28 @@ A stopped Sandbox refuses to start after the switch; run
 `booley init --seed` and start it again. To keep one Sandbox in the other mode
 on purpose, waive `host.sandbox-egress-mismatch` with `subject` set to its
 Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waivers-doctor-waiverstoml).
+
+### Doctor reports a Session store file named for another Project Root
+
+Doctor fails with `Session store check: ... identity mismatch: <file> is not
+named for the Project Root it holds (<root>)`, and `booley session` commands
+refuse with the same message. Booley keeps one private file per Project for
+Sandbox issuance, pending editor starts, pending refreshes, and pending
+invalidations, and it names each file after its Project Root. A file with the
+wrong name is never trusted. Remove the file the message names, then reissue
+the Sandbox spec on the host:
+
+```bash
+booley init --seed --project <root>
+```
+
+After upgrading on Windows, Booley names a Project Root without regard to case.
+Files written by earlier releases are not migrated, so each Project needs this
+once. Doctor names one file per store, so rerun it until it passes. Removing a
+pending refresh file drops its rollback snapshot and its parked prior Sandbox;
+removing a pending invalidation file skips its cleanup of the Project's FlexNet
+relay containers and networks, which then need removing by hand in Docker.
+`init --seed` regenerates the spec.
 
 ### Doctor reports that devcontainer.json differs
 
@@ -376,15 +423,92 @@ into your repository as a `.core`, or drop it. Often the testbench already
 guards its use with an `ifdef` or defines the module itself; check before you
 remove it.
 
+### Every simulation test comes back INCONCLUSIVE
+
+Every Test Run of an HDL testbench reads `INCONCLUSIVE`, `booley flow sim`
+exits `1`, and each Test Run's log contains a line such as
+`Verilator sim INCONCLUSIVE (rc=0, no sentinel)`.
+
+Booley grades an HDL testbench by a pass or fail message it prints, a
+[sentinel](https://booley.dev/docs/flow-sim/#passfail-sentinels-and-cycle-counts).
+A run is inconclusive when the simulator exits with code `0` but its output
+holds no pass or fail sentinel and no error or assertion message. The
+defaults are `[SIM_RESULT] PASSED` and `[SIM_RESULT] FAILED`;
+`pass_sentinels` and `fail_sentinels` under `[flows.sim]` each replace their
+default, and when a pass and a fail sentinel both appear the test fails. A
+nonzero exit code without a sentinel is a failure, not inconclusive.
+
+To check:
+
+- Run `booley doctor`. It warns `sim.pass-sentinel-missing` when none of a
+  sim Target's testbench files contains the pass sentinel literally. It
+  skips Cocotb Targets, which take their verdict from cocotb, and with your
+  own `pass_sentinels` it only adds a note, because the testbench may build
+  the message at run time. If the warning says the testbench fileset is
+  Python, the Target is missing `cocotb_module`; see
+  [Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+- Open the Test Run's log (`…/evidence/*-run.log`, see
+  [Reading results](https://booley.dev/docs/flow-sim/#reading-results)) and
+  search it for the sentinel. A testbench that ends on a bare `$finish`
+  prints none.
+
+To fix it, do one of these:
+
+- Print the sentinel at the end of the test, for example
+  `$display("[SIM_RESULT] PASSED");` or `$display("[SIM_RESULT] FAILED");`.
+  Doctor's warning points to a fuller example.
+- Declare the messages your testbench already prints as `pass_sentinels`
+  and `fail_sentinels` under `[flows.sim]`.
+
+If you ran with `--trace`, a test that would have passed is reported
+inconclusive when the traced run produces no waveform Booley can read. This
+is the exception to the missing-sentinel cause: the log still prints the pass
+sentinel and a `PASSED` line, usually followed by an `ERROR:` line that says
+why no waveform was kept. Fix the cause, often `trace_args` or `trace_files`
+(see [Waveforms](https://booley.dev/docs/flow-sim/#waveforms)), or rerun
+without `--trace`. A failure or timeout keeps its verdict.
+
+A Cocotb Target uses no sentinels: its Test Run is inconclusive when cocotb's
+result file is missing or doesn't report that test as passed or failed, and
+its log contains `cocotb sim INCONCLUSIVE (<reason>)`.
+
 ### Simulation stalls at time zero without results
 
-An older cocotb release pinned by your project can be incompatible with the
-image's Verilator 5, even though cocotb itself installs fine. It builds and starts, but simulation time stays at `0.00 ns` until
-the run times out, with no `results.xml`. No Python pin fixes it. Port the
-testbench to the image's cocotb 2.x (`cocotb.fork` becomes
-`cocotb.start_soon`, plus a few import moves), or build a project image with a
-matching Verilator. Image versions are in
+A cocotb run builds, loads and logs, but simulation time stays at `0.00 ns`
+and no `results.xml` appears. After `sim_time_grace_s` seconds at exactly
+`0.00 ns` (180 by default), Booley stops the run with an `ERROR` verdict and
+this message in the run log:
+
+```text
+ERROR: simulation killed: simulator time never advanced past 0.00 ns in 180s of wall clock.
+```
+
+followed by the likely cause. The watchdog starts counting at cocotb's first
+log line, and a run whose clock moved past zero is never stopped by it. If
+your testbench spends minutes in Python setup before the first clock edge,
+raise `[flows.sim].sim_time_grace_s`; `0` turns the watchdog off, and the
+run then waits for `timeout_ms`.
+
+The usual cause is a cocotb release your project pins that doesn't work with
+the image's Verilator 5, even though cocotb itself installs fine. No older
+cocotb pin fixes it. Compare `cocotb-config --version` with the simulator's
+version, then port the testbench to the image's cocotb 2.x (`cocotb.fork`
+becomes `cocotb.start_soon`, plus a few import moves), or build a project
+image with a matching Verilator. Image versions are in
 [Supported EDA tools](https://booley.dev/docs/supported-eda-tools/#versions-in-the-sandbox-image).
+
+### A streamed `--trace` dump produces a trace incident
+
+A `sim --trace` run converts a declared `.vcd` while the test runs, so the
+testbench must not seek in, read back, or reopen that dump. If it does, the
+trace incident names B-Wave's error. Write the dump once, front to back, or
+dump FST instead.
+
+### A run without `--trace` hangs after Booley was killed during a traced run
+
+If Booley was killed hard during a `--trace` run, a leftover file at the
+declared trace path can make the next run without `--trace` hang while it
+writes there. The next `--trace` run removes the file, or delete it yourself.
 
 ### Verilator reports timing or enum errors
 
@@ -398,6 +522,38 @@ matching Verilator. Image versions are in
 A waiver must name the code Verilator prints in `%Error-<CODE>` or
 `%Warning-<CODE>`. Verilator 5 reports width problems as `WIDTHTRUNC` and
 `WIDTHEXPAND`, so `-Wno-WIDTH` may not silence them.
+
+### ccache settings are ignored or rebuilds miss the cache
+
+Booley compiles Verilator builds through the Project's compiler cache (see
+[Verilator builds](https://booley.dev/docs/flow-sim/#verilator-builds)).
+While the cache is in use, Booley sets `OBJCACHE`, `CCACHE_DIR`,
+`CCACHE_MAXSIZE`, `CCACHE_COMPILERCHECK` and `CCACHE_BASEDIR` for each
+build. These replace the same variables from your shell and from the
+Target's [`env`](https://booley.dev/docs/tests/#per-target-environment-env);
+for a Target `env` value that differs, Booley logs
+`Target compiler-cache setting <NAME> yields to Booley's value`. When the
+cache is disabled or its root is unset, Booley sets only `OBJCACHE`, to
+empty. When ccache is missing or its storage can't be created, the other
+values stay set but `OBJCACHE` is emptied, so ccache isn't used.
+
+Only an assignment in the Target's `make_options` beats Booley, because
+Make command-line variables override the environment. Two of them cost you:
+
+- **`USER_CPPFLAGS=...`** replaces the debug-prefix map Booley appends to
+  `USER_CPPFLAGS`, so a build with debug info (`-g`) misses the cache each
+  time its build directory changes. Set extra flags in the Target `env`'s
+  `USER_CPPFLAGS`, which Booley keeps, or pass them with Verilator's
+  `-CFLAGS`.
+- **Any `OBJCACHE` assignment**, including `OBJCACHE=` to skip ccache, also
+  turns off [build reuse](https://booley.dev/docs/flow-sim/#build-reuse), so
+  every run rebuilds. To stop using the cache, set `enabled = false` under
+  `[flows.sim.compiler_cache]` instead.
+
+If the build warns `Verilator compiler cache unavailable: <reason>;
+compiling uncached`, fix the named reason: ccache missing from the build
+`PATH`, cache storage Booley can't create, or an unset cache root (run
+`booley session refresh` on the host).
 
 ### Pre-Sim Commands fail with `Syntax error: Bad fd number`
 
@@ -469,7 +625,8 @@ units. In the `.core`, list those headers first in the fileset.
 Run `booley doctor` on the host, then `booley doctor --deep` in the Sandbox.
 Check that the Project has a Grant, that the registered installation is still
 a Linux x86-64 Vivado 2025.2, and that Doctor reports no devcontainer drift.
-Fix the host side first, then reseed the Sandbox with `booley init --seed`.
+Fix the host side first, then apply it as [Applying Sandbox
+changes](SANDBOX.md#applying-sandbox-changes) describes.
 `booley eda installation list`, `booley eda license list` and `booley projects`
 show the current records.
 
@@ -502,9 +659,17 @@ and [Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-re
 Never delete a lock file to get past a message, and keep any empty
 `.pruned-N` folders: they reserve used run numbers.
 
-The Coverage Analyst gives report-only analysis, without Waiver Candidates, in
-Stealth Mode Projects and when the Target's sources changed since the Campaign
-ran. The Campaign's measured result stays the same.
+The Coverage Analyst gives report-only analysis, without Waiver Candidates,
+when the Target's sources changed since the Campaign ran. The Campaign's
+measured result stays the same.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The Coverage Analyst always gives report-only analysis, without Waiver
+Candidates. See [Stealth Mode](https://booley.dev/docs/stealth/).
+
+</details>
 
 Coverage needs a Verilator simulation Target. Coverage controls such as reset
 and hooks go in the Target's `flow_options.booley.coverage`. When evaluation is

@@ -9,8 +9,9 @@ This skill owns Booley setup from **Step 0 (plan)** through **Step 7 (cleanup)**
 plus an **optional post-gate Step 5 (parity)** for projects that want their
 Booley results cross-checked against the repo's native build system.
 The parts outside it are installation and Host Bootstrap in
-[the install guide](https://booley.dev/docs/install/), followed by
-Project Initialization with `booley init` in `docs/user/SETUP.md`. Host
+the install guide at https://booley.dev/docs/install/ (host doc, not shipped),
+followed by Project Initialization with `booley init` in SETUP.md (host doc,
+not shipped). Host
 Bootstrap deploys this skill; Project Initialization records the Project's
 agent provider and authentication policy before this design-aware work begins.
 
@@ -84,7 +85,10 @@ where setup stands:
   - **`complete`** → nothing to do; tell the user and offer the step selector
     for re-runs.
 - **`new`** (or `greenfield`) → **greenfield mode** for a from-scratch
-  (`init --scaffold`) project — read `steps/new-greenfield.md` and follow it.
+  project — read `steps/new-greenfield.md` and follow it. It starts on the
+  **host** after plain `booley init`: the skill asks the design choices and
+  runs `booley init --scaffold` itself, then hands into the container for the
+  shared steps.
 - **A step selector** (a number `0`–`7`, or a name like `plan`, `doctor`,
   `project-config`, `agents-md`, `parity`, `findings`, `cleanup`) → run **only that step**,
   then stop. Use this
@@ -95,7 +99,8 @@ where setup stands:
 ## Host or container?
 
 Steps 0–1 run on the **host** — the plan is written before the devcontainer
-exists. Steps 2–4 run **inside the Sandbox**: the per-folder
+exists. Greenfield mode's grill and `booley init --scaffold` are host steps
+too. Steps 2–4 run **inside the Sandbox**: the per-folder
 devcontainer entered via **Reopen in Container** in VS Code, or
 `booley session up` headlessly. There, each step edits files in the
 worktree and runs the `booley` CLI in a container terminal; the sandbox
@@ -105,10 +110,16 @@ the rest of the line to it verbatim). `booley goal`, `booley dashboard`, and
 `booley doctor` are container commands here. Use `--quiet` for captured Flow
 reproduction output: direct shell calls otherwise add live stderr progress and
 an observation transcript. Human live-output options are documented in
-`docs/user/FLOW_REFERENCE.md` → “Live progress and logs”.
+`/booley-docs/FLOW_REFERENCE.md` → “Live progress and logs”.
+
+The Sandbox ships offline copies of the user docs cited here at `/booley-docs/`;
+that path does not exist on the host, where you read the same pages matching the
+installed version: the GitHub release tag `v<booley --version>`, folder `docs/user/`.
+The docs site (https://booley.dev/docs/, one page per doc name) shows the latest
+release, so use it only when its version equals the installed one.
 
 The CLIs fail fast on the wrong side, each naming the fix: `booley init`
-refuses in-container; the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses
+refuses inside a Booley-issued Sandbox (a hand-written Sandbox runs Project Initialization only); the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses
 on the host. To check explicitly: `/.dockerenv` exists only in the container.
 `SETUP-PLAN.md` carries the full context across the boundary — a fresh
 in-container session just re-invokes this skill and phase detection resumes
@@ -235,22 +246,32 @@ plain-English reason it matters.
    the placeholder `booley.toml`, then re-run `booley init` (idempotent) so it
    builds/pulls the planned image and re-seeds the devcontainer config. Skip
    entirely when the plan keeps the base image.
-2. **Commercial EDA authority · host.** Only if row 14 selects
+2. **Stealth footprint · host.** Only if row 16 keeps `.booley/` hidden
+   (including hybrid) with row 20 `enabled = true`. A fresh `booley init` records no Stealth choice
+   (missing key = off), so it neither hid `.booley/` nor gave it a repo. Write
+   the plan's `[stealth]` block into `.booley/booley.toml` now (Step 2 keeps
+   it). Undo init's non-Stealth line-ending edit: delete the root
+   `.gitattributes` if `git status` shows it untracked and it holds only
+   `* text=auto eol=lf`, otherwise remove just that added first line. Then
+   re-run `booley init`: it adds `/.booley` to `.git/info/exclude`, creates
+   the inner repo, keeps the line-ending rule repository-local, and activates
+   the commit-msg and pre-push hooks.
+3. **Commercial EDA authority · host.** Only if row 14 selects
    host-provisioned EDA: perform Step 2's
    [host-authority bootstrap](steps/2-project-config.md#host-authority-bootstrap)
    before creating the licensed/mounted Sandbox. This writes the planned
    `[eda.<kind>]` request, registers the installation, adds the exact Project
    Grant, reseeds the issued specification, and runs host Doctor. Skip when
    every selected EDA tool is image-provisioned.
-3. **Enter the Sandbox** (Reopen in Container, or
+4. **Enter the Sandbox** (Reopen in Container, or
    `booley session up --rebuild`).
-4. **Steps 2 → 4 in order**, per the plan: finish config, AGENTS.md, then the doctor
+5. **Steps 2 → 4 in order**, per the plan: finish config, AGENTS.md, then the doctor
    gate.
-5. After the Step 4 gate is green, set `status: complete` and write the final
+6. After the Step 4 gate is green, set `status: complete` and write the final
    report: what was built, the §3 deviation log, and (unattended) the
    `review`-flagged decisions the user should audit. Flow claims follow the
    Delivered Flow results contract below and appear after Step 6 renders the report.
-6. **Step 5 — parity · optional.** Only if the plan's row 18 selects an oracle
+7. **Step 5 — parity · optional.** Only if the plan's row 18 selects an oracle
    (≠ `none`): run `steps/5-parity.md` after the gate to diff Booley against the
    repo's native flow where the EDA tools match. It produces
    `.booley/PARITY-REPORT.md` and a note in the final report; it never
@@ -258,10 +279,10 @@ plain-English reason it matters.
    of real Booley findings in the whole run — a number that differs from the
    native flow's is about as unambiguous as evidence gets — so log every
    discrepancy with `booley feedback add`, not just the ones you can explain.
-7. **Step 6 — findings.** Always: `steps/6-findings.md` triages the log, writes
+8. **Step 6 — findings.** Always: `steps/6-findings.md` triages the log, writes
    `.booley/SETUP-REPORT.md`, and creates a redacted export only when the
    user explicitly requests one. Post-gate and non-blocking.
-8. **Step 7 — cleanup.** Always: `steps/7-cleanup.md` previews and applies the
+9. **Step 7 — cleanup.** Always: `steps/7-cleanup.md` previews and applies the
    approved retention mode after the report exists. It removes only the
    current run's marked scratch root, materializes structured Feedback
    attachments before deletion, and does nothing for a plan without a run ID.
@@ -369,9 +390,10 @@ wants you to break these; it doesn't.
 The steps author the config files; they do **not** re-explain every field.
 When a step needs the meaning of a `booley.toml` section, a `.core`
 fileset/target, `tests.toml`, sentinels, or an advanced setup, it links to
-the Booley user docs: `CONFIG.md` for Project-wide `booley.toml` settings,
-`TARGETS.md` for `.core` files, `TESTS.md` for `tests.toml`, the per-Flow pages
-(`FLOW-SIM.md` for sentinels), and `SANDBOX.md` for the Sandbox image. Bundled templates live at this skill's root:
+the Booley user docs: `/booley-docs/CONFIG.md` for Project-wide `booley.toml`
+settings, `/booley-docs/TARGETS.md` for `.core` files, `/booley-docs/TESTS.md`
+for `tests.toml`, the per-Flow pages (`/booley-docs/FLOW-SIM.md` for sentinels),
+and `/booley-docs/SANDBOX.md` for the Sandbox image. Bundled templates live at this skill's root:
 `../SETUP_PLAN_TEMPLATE.md`, `../BOOLEY_TEMPLATE.toml`,
 `../TESTS_TEMPLATE.toml`, `../CORE_TEMPLATE.yaml`, `../AGENTS_TEMPLATE.md`
 (paths relative to the step files in `steps/`).

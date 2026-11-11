@@ -1,9 +1,10 @@
 """Measure one Job command's resources and add them to the resource history.
 
 Every local Flow command is sampled while it runs: process-tree RSS, the size
-of the command's own temporary directory (``TMPDIR``, which lives on the
-Sandbox's tmpfs and is charged to the container's memory limit), CPU time,
-wall-clock time and the container's cgroup memory. Measurement only observes:
+of the command's own temporary directory (``TMPDIR``), CPU time, wall-clock
+time and the container's cgroup memory. TMPDIR counts toward peak memory only
+when it is on tmpfs (its pages are charged to the container's memory limit);
+the temporary-file peak is always recorded on its own. Measurement only observes:
 it never changes a Job's verdict, scheduling or exit code, and a value that
 could not be measured is recorded as absent (``None``), never as zero.
 """
@@ -20,12 +21,15 @@ from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.runtime import job_slots
 from booley.runtime.pid import is_pid_alive
-from booley.runtime.resource_history import append_records
+from booley.runtime.resource_history import DOCTOR_RUN_ENV, append_records
 from booley.runtime.timefmt import utc_now_rfc3339
+
+if TYPE_CHECKING:
+    from booley.fusesoc.fusesoc_registry import ResolvedTarget
 
 logger = logging.getLogger(__name__)
 
@@ -51,17 +55,43 @@ class ResourceLabel:
 
     target: str
     phase: str
+    # Test Variant names (``test`` for the default Variant, ``test+variant``
+    # otherwise); seeds are never part of the key.
     tests: tuple[str, ...] = ()
     # Process name -> phase, for one command that runs several phases.
     split: Mapping[str, str] | None = None
+    # Size of the Target's source files; recorded as data, not part of the key.
+    source_bytes: int | None = None
 
 
 _label: ContextVar[ResourceLabel | None] = ContextVar("booley_resource_label", default=None)
 
 
-def label_commands(target: str, phase: str, *, tests: tuple[str, ...] = ()) -> None:
+def label_commands(
+    target: str,
+    phase: str,
+    *,
+    tests: tuple[str, ...] = (),
+    source_bytes: int | None = None,
+) -> None:
     """Label the following commands in this context (one lifecycle stage)."""
-    _label.set(ResourceLabel(target, phase, tuple(tests)))
+    _label.set(ResourceLabel(target, phase, tuple(tests), source_bytes=source_bytes))
+
+
+def resolved_source_bytes(resolved: ResolvedTarget) -> int | None:
+    """Total size in bytes of the Target's distinct resolved source files.
+
+    A snapshot taken when the Target is resolved (before any Pre-Sim Command),
+    kept as analysis data and never as a key. ``None`` (unknown, never ``0``)
+    when the Target has no files or any file cannot be read.
+    """
+    paths = {entry.absolute(resolved.build_root) for entry in resolved.files}
+    if not paths:
+        return None
+    try:
+        return sum(path.stat().st_size for path in paths)
+    except OSError:
+        return None
 
 
 def clear_label() -> None:
@@ -71,10 +101,14 @@ def clear_label() -> None:
 
 @contextlib.contextmanager
 def resource_phase(
-    target: str, phase: str, *, split: Mapping[str, str] | None = None
+    target: str,
+    phase: str,
+    *,
+    split: Mapping[str, str] | None = None,
+    source_bytes: int | None = None,
 ) -> Iterator[None]:
     """Label the commands run inside the block."""
-    token = _label.set(ResourceLabel(target, phase, split=split))
+    token = _label.set(ResourceLabel(target, phase, split=split, source_bytes=source_bytes))
     try:
         yield
     finally:
@@ -148,7 +182,8 @@ def process_tree(root_pid: int) -> dict[int, _Proc] | None:
 
     The direct child is often ``make`` or ``sh`` while the memory lives in
     tool grandchildren, so the whole tree is summed. Linux exposes the
-    descendants through ``task/<pid>/children`` without psutil.
+    descendants through ``task/<tid>/children`` of every thread (a child
+    belongs to the thread that forked it) without psutil.
     """
     if not Path("/proc").is_dir():
         return None
@@ -160,13 +195,45 @@ def process_tree(root_pid: int) -> dict[int, _Proc] | None:
         if pid in seen:
             continue
         seen.add(pid)
-        with contextlib.suppress(OSError, ValueError):
-            children = Path(f"/proc/{pid}/task/{pid}/children").read_text(encoding="utf-8")
-            pending.extend(int(token) for token in children.split())
+        with contextlib.suppress(OSError):
+            for task in Path(f"/proc/{pid}/task").iterdir():
+                # A thread can exit between the listing and the read.
+                with contextlib.suppress(OSError, ValueError):
+                    children = (task / "children").read_text(encoding="utf-8")
+                    pending.extend(int(token) for token in children.split())
         proc = _read_proc(pid)
         if proc is not None:
             found[pid] = proc
     return found
+
+
+_MOUNTINFO = Path("/proc/self/mountinfo")
+
+
+def tmpdir_in_memory(path: Path) -> bool:
+    """Whether *path* lives on tmpfs, by its longest enclosing mount point.
+
+    Unreadable mount information (no ``/proc``) is ``False``: nothing is
+    measured there anyway.
+    """
+    target = path.resolve()
+    try:
+        lines = _MOUNTINFO.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    best_length = -1
+    in_memory = False
+    for line in lines:
+        before, _, after = line.partition(" - ")
+        fields = before.split()
+        if len(fields) < 5 or not after:
+            continue
+        mount_point = Path(fields[4].replace("\\040", " "))
+        # ``>=``: on equal mount points the later (overmounting) line wins.
+        if target.is_relative_to(mount_point) and len(mount_point.parts) >= best_length:
+            best_length = len(mount_point.parts)
+            in_memory = after.split()[0] == "tmpfs"
+    return in_memory
 
 
 def directory_bytes(root: Path) -> int:
@@ -208,15 +275,23 @@ class Usage:
     last_seen: float | None = None
     ticks: dict[int, tuple[int, int]] = field(default_factory=dict)
 
-    def add(self, now: float, procs: dict[int, _Proc] | None, tmp: int, growth: int | None):
+    def add(
+        self,
+        now: float,
+        procs: dict[int, _Proc] | None,
+        tmp: int,
+        growth: int | None,
+        tmp_in_memory: bool,
+    ):
         """Fold one sample in; *procs* is ``None`` when RSS cannot be read."""
         self.peak_tmp = _peak(self.peak_tmp, tmp)
         self.container_peak = _peak(self.container_peak, growth)
         if procs is None:
             return
         rss = sum(proc.rss_bytes for proc in procs.values())
-        # An empty tree (the command already exited) still counts its TMPDIR files.
-        self.peak_memory = _peak(self.peak_memory, rss + tmp)
+        # An empty tree (the command already exited) still counts its TMPDIR files
+        # when they are tmpfs pages.
+        self.peak_memory = _peak(self.peak_memory, rss + (tmp if tmp_in_memory else 0))
         if procs:
             self.peak_rss = _peak(self.peak_rss, rss)
             self.first_seen = now if self.first_seen is None else self.first_seen
@@ -309,6 +384,7 @@ class JobResourceMonitor:
 
     def __init__(self, split: Mapping[str, str] | None = None, *, interval_s: float = 0.25):
         self.tmp_dir = Path(tempfile.mkdtemp(prefix="booley-job-"))
+        self._tmp_in_memory = tmpdir_in_memory(self.tmp_dir)
         self._split = split or {}
         self._interval_s = interval_s
         self._overall = Usage()
@@ -374,7 +450,7 @@ class JobResourceMonitor:
         if container is not None and self._container_start is not None:
             growth = max(0, container - self._container_start)
         with self._lock:
-            self._overall.add(now, procs, tmp, growth)
+            self._overall.add(now, procs, tmp, growth, self._tmp_in_memory)
             for phase in set(self._split.values()):
                 members = {
                     pid: proc
@@ -382,7 +458,9 @@ class JobResourceMonitor:
                     if self._split.get(proc.comm) == phase
                 }
                 if members:
-                    self._phases.setdefault(phase, Usage()).add(now, members, tmp, growth)
+                    self._phases.setdefault(phase, Usage()).add(
+                        now, members, tmp, growth, self._tmp_in_memory
+                    )
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval_s):
@@ -423,9 +501,12 @@ def history_records(
         (name, u, u.seen_s(), u.sampled_cpu_s()) for name, u in sorted(measurement.phases.items())
     ]
     tests = ",".join(label.tests)
+    # Absent when unknown, never zero.
+    size = {} if label.source_bytes is None else {"source_bytes": label.source_bytes}
     return [
         {
             **common,
+            **size,
             "key": {
                 "target": label.target,
                 "phase": phase,
@@ -452,7 +533,13 @@ def record_command(
     measurement: JobMeasurement,
     result: Any,
 ) -> None:
-    """Append the command's records to the Project history; never raise."""
+    """Append the command's records to the Project history; never raise.
+
+    Flow runs that Doctor starts (self-tests, smoke and deep checks) write
+    nothing: they would pollute the Project's real keys.
+    """
+    if os.environ.get(DOCTOR_RUN_ENV):
+        return
     from booley.runtime.booley_dir import resolve_common_booley_dir
 
     try:

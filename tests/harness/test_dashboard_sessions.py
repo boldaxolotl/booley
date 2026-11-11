@@ -436,7 +436,7 @@ async def test_sessions_tab_shows_needs_you_count():
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         bar = app.query_one(TopBar)
-        assert bar.render().plain.split("│")[0].strip() == "Sessions 2◆  Jobs"
+        assert bar.render().plain.split("│")[0].strip() == "Sessions 2◆  Jobs  Targets"
         await pilot.press("right")  # the count follows the user into the Jobs window
         assert app.window == "jobs"
         assert "Sessions 2◆" in bar.render().plain
@@ -444,7 +444,7 @@ async def test_sessions_tab_shows_needs_you_count():
         current["snapshot"] = world({}, count=3)
         await app.refresh_snapshot()
         await pilot.pause()
-        assert bar.render().plain.split("│")[0].strip() == "Sessions  Jobs"
+        assert bar.render().plain.split("│")[0].strip() == "Sessions  Jobs  Targets"
 
 
 # --- AC10 --------------------------------------------------------------------

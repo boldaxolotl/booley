@@ -48,7 +48,10 @@ class JobObserver:
         cache.begin()
         tokens = self._observe_slots()
         records, diagnostics = _snapshot_records(roots, self._validate_record)
-        rows = [_project_job(root, rec, tokens, self._proc_root, cache) for root, rec in records]
+        rows = [
+            _project_job(root, rec, tokens, self._proc_root, cache, self._validate_record)
+            for root, rec in records
+        ]
         diagnostics.extend(cache.diagnostics)
         diagnostics.extend(_ambiguous_ids(rows))
         snapshot = ObservationSnapshot(tuple(rows), tuple(diagnostics))
@@ -182,18 +185,30 @@ def _project_job(
     tokens: list[job_slots.SlotToken],
     proc_root: Path,
     cache: JobArtifactCache,
+    validate_record: RecordValidator | None,
 ) -> JobObservation:
-    artifact = cache.find(root, rec.endpoint, rec.run_id, "report")
+    state = _state(rec, tokens, proc_root)
+    if state == "orphaned":
+        # The record was read before its owner finished: it may have written its
+        # terminal record and exited since, so show that outcome, not a false orphan.
+        current = _read_job(root / f"{rec.run_id}.json", validate_record)
+        if current is not None and current.status != job_records.STATUS_RUNNING:
+            rec, state = current, _state(current, tokens, proc_root)
+    reports_parent = None if rec.report_root is None else Path(rec.report_root)
+    artifact = cache.find(root, rec.endpoint, rec.run_id, "report", reports_parent=reports_parent)
     report, report_path = (None, None) if artifact is None else artifact
-    progress = cache.find(root, rec.endpoint, rec.run_id, "progress")
+    progress = cache.find(
+        root, rec.endpoint, rec.run_id, "progress", reports_parent=reports_parent
+    )
     stage = _reported_stage(None if progress is None else progress[0])
     artifacts = available_paths(
-        report or {}, (root.parent, Path(rec.work_dir) if rec.work_dir else root)
+        report or {},
+        (reports_parent or root.parent, Path(rec.work_dir) if rec.work_dir else root),
     )
     return JobObservation(
         root,
         rec,
-        _state(rec, tokens, proc_root),
+        state,
         report,
         report_path,
         stage,

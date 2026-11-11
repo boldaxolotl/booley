@@ -12,7 +12,7 @@ from booley.criteria.presentation import CriterionPresentation
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns, SeedGroup
 from booley.flows.sim.execution import DefaultSelection, SelectedTestRuns
-from booley.flows.sim.flow import SimulateFlow, _resolve_sim_campaign_work_units
+from booley.flows.sim.flow import SimulateFlow, resolve_sim_campaign_work_units
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import UnseededTargetError, build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
@@ -216,113 +216,6 @@ def test_outside_goal_mode_nothing_is_called_diagnostic(tmp_path, monkeypatch):
     assert "diagnostic_test_runs" not in result.detail
 
 
-def test_direct_recording_gives_a_test_goal_only_its_matching_runs(tmp_path, monkeypatch):
-    """Outside a campaign too, a Goal that names a selector takes just its frozen runs."""
-    from unittest.mock import MagicMock
-
-    from booley.flows.sim.flow import TargetResult, TestResult
-
-    pinned = GoalTestRuns(
-        "sim_pass_sim_run_x_s9", "simulation", "sim", (_run("stress", "soak", 9),)
-    )
-    flow = _goal_flow(tmp_path, monkeypatch, _frozen(_SUITE, pinned, _SEEDS))
-    flow.set_criterion = MagicMock()
-
-    def result(run, passed: bool) -> TestResult:
-        return TestResult(name=run.test, passed=passed, test_run=run)
-
-    target = TargetResult(
-        target="sim",
-        passed=False,
-        tests=[result(pinned.runs[0], True), result(_run("stress", "short", 1), False)],
-    )
-    flow._record_test_goal_criteria(target)
-
-    # The suite Goal is recorded under ``sim_pass_sim`` elsewhere, and no frozen
-    # seed of the multi-seed Goal ran: only the pinned Goal gets a change.
-    flow.set_criterion.assert_called_once()
-    assert flow.set_criterion.call_args.args == ("sim_pass_sim_run_x_s9", True)
-    detail = flow.set_criterion.call_args.kwargs["detail"]
-    assert [row["name"] for row in detail["test_runs"]] == ["stress+soak@9"]
-    assert (detail["tests_passed"], detail["tests_total"]) == (1, 1)
-
-    standalone = _flow(tmp_path, monkeypatch)
-    standalone.set_criterion = MagicMock()
-    standalone._record_test_goal_criteria(target)
-    standalone.set_criterion.assert_not_called()
-
-
-def _cycle_goal_flow(tmp_path, monkeypatch, goal: GoalTestRuns) -> SimulateFlow:
-    from types import SimpleNamespace
-    from unittest.mock import MagicMock
-
-    flow = _goal_flow(tmp_path, monkeypatch, _frozen(goal))
-    flow.args.state_file = "state.json"
-    entry = SimpleNamespace(params={"target": "sim", "test": "stress", "cycle_count_max": 900})
-    flow._state = SimpleNamespace(criteria={goal.key: entry})
-    flow.set_criterion = MagicMock()
-    return flow
-
-
-def test_direct_cycle_count_goal_is_graded_from_its_frozen_run_not_the_bare_test(
-    tmp_path, monkeypatch
-):
-    """A fast default-seed run of the Test never lends its Cycle Count to the pinned Goal."""
-    from booley.flows.sim.flow import TargetResult, TestResult
-
-    pinned = _run("stress", "short", 7)
-    goal = GoalTestRuns("cycle_count_sim_x", "cycle_count", "sim", (pinned,))
-
-    def result(run, cycles: int) -> TestResult:
-        return TestResult(
-            name=run.test, passed=True, cycles=cycles, cycle_status="observed", test_run=run
-        )
-
-    # Only the default-seed run ran: no evidence for the Goal at all.
-    flow = _cycle_goal_flow(tmp_path, monkeypatch, goal)
-    default = TargetResult(
-        target="sim", passed=True, tests=[result(_run("stress", "short", 1), 9)]
-    )
-    flow._record_cycle_count_criteria(default)
-    flow.set_criterion.assert_not_called()
-
-    # Several Test Runs of the Test ran: the Goal is graded from its frozen one.
-    both = TargetResult(
-        target="sim",
-        passed=True,
-        tests=[result(pinned, 1500), result(_run("stress", "short", 1), 9)],
-    )
-    flow._record_cycle_count_criteria(both)
-    flow.set_criterion.assert_called_once()
-    detail = flow.set_criterion.call_args.kwargs["detail"]
-    assert detail["cycles"] == 1500
-    assert [row["name"] for row in detail["test_runs"]] == ["stress+short@7"]
-
-
-def test_direct_recording_enters_a_coverage_goals_matching_failure_as_outcomes_only(
-    tmp_path, monkeypatch
-):
-    from unittest.mock import MagicMock
-
-    from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY
-    from booley.flows.sim.flow import TargetResult, TestResult
-
-    run = _run("stress", "soak", 5)
-    goal = GoalTestRuns("coverage_sim", "coverage", "sim", (run,))
-    flow = _goal_flow(tmp_path, monkeypatch, _frozen(goal))
-    flow.set_criterion = MagicMock()
-    failed = TestResult(name="stress", passed=False, test_run=run)
-    flow._record_test_goal_criteria(TargetResult(target="sim", passed=False, tests=[failed]))
-
-    flow.set_criterion.assert_called_once()
-    assert flow.set_criterion.call_args.args == ("coverage_sim", False)
-    detail = flow.set_criterion.call_args.kwargs["detail"]
-    assert detail[OUTCOMES_ONLY_DETAIL_KEY] is True
-    assert [(row["name"], row["grade"]) for row in detail["test_runs"]] == [
-        ("stress+soak@5", "fail")
-    ]
-
-
 def test_a_goal_written_with_the_target_identity_is_not_listed_as_diagnostic(
     tmp_path, monkeypatch
 ):
@@ -378,44 +271,6 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
     _flow(tmp_path, monkeypatch)._manifest_publisher([])(manifest)
 
 
-def test_direct_cycle_count_goal_compares_with_the_baseline_of_its_frozen_run(
-    tmp_path, monkeypatch
-):
-    """Baseline-relative: the baseline observation is of the Goal's frozen Test Run too."""
-    from booley.flows.sim.flow import TargetResult, TestResult
-
-    pinned, default = _run("stress", "short", 7), _run("stress", "short", 1)
-    goal = GoalTestRuns("cycle_count_sim_x", "cycle_count", "sim", (pinned,))
-    flow = _cycle_goal_flow(tmp_path, monkeypatch, goal)
-    flow._state.criteria[goal.key].params = {
-        "target": "sim",
-        "test": "stress",
-        "cycle_count_reduce_at_least": "5%",
-    }
-
-    def result(run, cycles: int) -> TestResult:
-        return TestResult(
-            name=run.test, passed=True, cycles=cycles, cycle_status="observed", test_run=run
-        )
-
-    # On the baseline the default-seed run is slow and the pinned one is not: only the
-    # pinned run may be compared with the candidate's pinned run.
-    flow._baseline_results = {
-        "sim": TargetResult(
-            target="sim", passed=True, tests=[result(default, 9000), result(pinned, 100)]
-        )
-    }
-    candidate = TargetResult(
-        target="sim", passed=True, tests=[result(default, 10), result(pinned, 99)]
-    )
-    flow._record_cycle_count_criteria(candidate)
-
-    flow.set_criterion.assert_called_once()
-    assert flow.set_criterion.call_args.args[0] == goal.key
-    detail = flow.set_criterion.call_args.kwargs["detail"]
-    assert (detail["cycles"], detail["baseline_cycles"]) == (99, 100)
-
-
 def test_a_diagnostic_run_names_the_goals_whose_frozen_runs_it_ran(tmp_path, monkeypatch):
     """``--diagnostic`` records nothing: the report says whose frozen runs ran and failed."""
     flow = _goal_flow(tmp_path, monkeypatch, _frozen(_SUITE), "--diagnostic")
@@ -458,4 +313,4 @@ def test_two_keys_for_one_target_refuse_the_run_naming_both(tmp_path):
     assert refusal is not None and refusal.exit_code == EXIT_ERROR
     assert "[vendor:b:y#sim] and [y#sim]" in refusal.report_text
     # The watchdog sizing preflight must not raise: the child Flow reports the refusal.
-    assert _resolve_sim_campaign_work_units(tmp_path, "y#sim") == 1
+    assert resolve_sim_campaign_work_units(tmp_path, "y#sim") == 1

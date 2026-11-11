@@ -11,8 +11,9 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from booley.core.progress_shape import TERMINAL_PHASES
 from booley.flows.job_resources import label_commands
-from booley.flows.progress_lifecycle import TERMINAL_PHASES, write_progress_json
+from booley.flows.progress_lifecycle import write_progress_json
 from booley.flows.run_log import RunLogIdentity, current_run_token
 from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -218,11 +219,22 @@ def observe_stage(
     attempt_token: str = "",
     log: RunLogIdentity | None = None,
     tests: tuple[str, ...] = (),
+    history_tests: tuple[str, ...] | None = None,
+    source_bytes: int | None = None,
 ) -> None:
-    """Publish one real lifecycle transition, never infer a verdict."""
+    """Publish one real lifecycle transition, never infer a verdict.
+
+    *history_tests* are the Resource History names (Test Variants); they
+    default to *tests*, which keep driving progress.
+    """
     if stage not in _STAGES:
         raise ValueError(f"invalid Simulation observation stage: {stage}")
-    label_commands(target, _RESOURCE_PHASES[stage], tests=tests)
+    label_commands(
+        target,
+        _RESOURCE_PHASES[stage],
+        tests=tests if history_tests is None else history_tests,
+        source_bytes=source_bytes,
+    )
     sink = _sink.get()
     if sink is None:
         return

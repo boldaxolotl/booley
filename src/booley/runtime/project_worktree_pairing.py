@@ -97,7 +97,7 @@ def _refuse_registered(source: Path, nested: Path) -> None:
             raise ProjectPairingError(
                 f"the Booley Directory's repository already registers a checkout at {nested}; "
                 "in the same Sandbox, preserve needed work and evidence first "
-                "(see docs/user/CLI-REFERENCE.md), then remove it with "
+                "as described in CLI-REFERENCE.md (host doc, not shipped), then remove it with "
                 f"`git -C {shlex.quote(str(source.resolve()))} worktree remove "
                 f"{shlex.quote(str(target))}`; inspect locks before unlocking or forcing removal"
             )
@@ -153,7 +153,12 @@ def _configure_checkout(source: Path, nested: Path) -> None:
     apply_git_identity(nested, load_git_identity(source))
 
 
-def _remove_registration(repository: Path, worktree: Path) -> None:
+def remove_worktree_registration(repository: Path, worktree: Path) -> None:
+    """Remove *worktree* from *repository*: its files and its own administrative entry.
+
+    Idempotent: a worktree that is already gone is a no-op, and one whose
+    directory is gone loses only its entry. Locks do not stop it.
+    """
     result = run_git(repository, "worktree", "remove", "--force", "--force", str(worktree))
     if not result.returncode:
         return
@@ -185,7 +190,7 @@ def _rollback_pair(source: Path, nested: Path, branch: str, base: str) -> None:
     interrupted add can leave it behind. The locked pre-check proved the branch
     absent, so a branch still at *base* is this run's; a moved one is kept.
     """
-    _remove_registration(source, nested)
+    remove_worktree_registration(source, nested)
     tip = run_git(source, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
     if tip.returncode == 0 and tip.stdout.strip() == base:
         _require_git(source, "branch", "-D", branch)
@@ -253,9 +258,28 @@ def rollback_project_pairing(source: Path, worktree: Path, name: str) -> None:
         run_git(source, "config", "--unset", key)
 
 
+def detach_checkout(checkout: Path) -> None:
+    """Drop a checkout's ``.git`` pointer so that an interrupted removal leaves it broken.
+
+    Git deletes files in directory order: a worktree it cut short could still look
+    intact, with its deleted files counted as uncommitted changes.
+    """
+    pointer = checkout / ".git"
+    if pointer.is_file():
+        pointer.unlink()
+
+
+def remove_paired_checkout(source: Path, worktree: Path) -> None:
+    """Remove *worktree*'s Paired Checkout from *source*; its branch stays."""
+    with _project_lock(source):
+        nested = own_booley_dir(worktree)
+        detach_checkout(nested)
+        remove_worktree_registration(source, nested)
+
+
 def rollback_outer_worktree(project_root: Path, worktree: Path) -> None:
     """Remove the newly created outer checkout after paired rollback completes."""
-    _remove_registration(project_root, worktree)
+    remove_worktree_registration(project_root, worktree)
 
 
 def validate_project_pairing(source: Path | None, name: str) -> None:
@@ -283,7 +307,7 @@ def worktree_removal_instructions(
         f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
         "These are Sandbox paths; do not paste them into a host terminal.",
         "First preserve needed evidence and other ignored/untracked files outside "
-        "this worktree (see docs/user/CLI-REFERENCE.md).",
+        "this worktree, as described in CLI-REFERENCE.md (host doc, not shipped).",
         "Then clean dirty/untracked files, including a Snapshot's copied files; "
         "inspect locks before unlocking or forcing removal.",
         "Git refuses to remove a worktree that holds populated submodules without "
@@ -303,6 +327,12 @@ def worktree_removal_instructions(
         steps.append(
             "Optional, to reuse the name, delete the Project branch after preserving its commits: "
             f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
+        )
+    if "--" not in name:
+        # A <branch>--<description> name checks out an existing branch and creates none.
+        steps.append(
+            "Optional, to reuse the name, delete the worktree's branch after preserving its "
+            f"commits: git -C {quote(root)} branch -D {shlex.quote(f'booley/{name}')}"
         )
     return "\n".join(steps)
 

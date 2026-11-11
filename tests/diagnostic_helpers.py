@@ -98,8 +98,10 @@ class _Rec:
         _require_doctor_warning(m)
         self.events.append(("warn", m))
 
-    def n(self, m: str) -> None:
+    def n(self, m: str, fix: str = "") -> None:
         self.events.append(("note", m))
+        if fix:
+            self.fix_hints.append(fix)
 
     def s(self, m: str) -> None:
         self.events.append(("skip", m))
@@ -108,6 +110,12 @@ class _Rec:
         self.events.append(("fail", m))
         if fix:
             self.fix_hints.append(fix)
+
+    def d(self, report) -> None:
+        """Record an owner's ``DiagnosticReport`` as the reporter's diagnostics path does."""
+        _record_report(
+            report, passed=self.p, warned=self.w, skipped=self.s, failed=self.f, noted=self.n
+        )
 
     def fails(self) -> list[str]:
         return [m for lvl, m in self.events if lvl == "fail"]
@@ -146,6 +154,7 @@ def _issued_runtime_state(tmp_path: Path):
         relay_image_id=None,
         validator_sha256="d" * 64,
         file_sha256="c" * 64,
+        project_data_source=str(tmp_path / ".booley"),
     )
     spec = {
         "image": image,

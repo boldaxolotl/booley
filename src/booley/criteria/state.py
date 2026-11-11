@@ -2,7 +2,7 @@
 
 Each criterion is either unmet (absent/false) or met (true). The developer
 agent invokes Flows and Specialists that set criteria; the harness reads the state file on exit
-to decide ticket disposition.
+to decide Goal disposition.
 
 Atomic writes use .tmp -> os.replace() for crash safety.
 """
@@ -23,7 +23,6 @@ from typing import Any, Protocol, runtime_checkable
 from booley.core.boundary import BoundaryError, require_dict, require_list
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.cycle_count import build_cycle_comparison
-from booley.criteria.templates import BASELINE_TARGET_PARAM
 
 # Threshold-evaluator helpers — re-exported for backward compatibility and also
 # used directly by DevelopmentState's delta-check methods below.
@@ -40,6 +39,7 @@ from booley.evidence.fields import (
     BASELINE_REF_DETAIL,
     BASELINE_REF_PARAM,
     BASELINE_TARGET_DETAIL,
+    BASELINE_TARGET_PARAM,
     CANDIDATE_TARGET_DETAIL,
     RECIPE_FINGERPRINT_DETAIL,
     RECIPE_FINGERPRINT_PARAM,
@@ -419,7 +419,7 @@ class DevelopmentState:
 
     slug: str = ""
     ticket_type: str = ""
-    # Ticket runs seal their criteria at intake. In strict mode, endpoint
+    # Goal runs seal their criteria at intake. In strict mode, endpoint
     # results may update only those declared keys (or their aliases); silently
     # inventing an optional key can otherwise hide a wrong-Target invocation.
     # Standalone/human mode keeps the historical permissive behaviour.
@@ -681,7 +681,7 @@ class DevelopmentState:
             return changes
 
         # Single-target fallback: "sim_pass_default" → "sim_pass" when
-        # the ticket declared a flat scalar criterion and only one target exists.
+        # the Goal declared a flat scalar criterion and only one target exists.
         last_us = key.rfind("_")
         if last_us > 0:
             base_key = key[:last_us]
@@ -701,7 +701,7 @@ class DevelopmentState:
             )
             return []
 
-        # A Flow reported a criterion the ticket never declared (e.g. a bare
+        # A Flow reported a criterion the Goal never declared (e.g. a bare
         # `simulate` run during setup/onboarding, where no `sim_pass_*` criterion
         # exists yet). Auto-creating it as optional is the intended, benign
         # behaviour — not a misconfiguration — so this stays at debug level to
@@ -780,7 +780,7 @@ class DevelopmentState:
             entry.ever_failed = True
         entry.updated_at = now
         if detail:
-            # One Flow result can fan out to several atomic Ticket criteria.
+            # One Flow result can fan out to several atomic Goal criteria.
             # Threshold evaluation writes criterion-specific checks into detail.
             entry.detail = dict(detail)
 

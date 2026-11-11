@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,7 +38,9 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.test_verilator_build_reuse_engine import _edit_keeping_mtime
 from tests.flows.test_isolated_build_headers import real_fusesoc  # noqa: F401  (fixture)
+from tests.subprocess_budget import run_bounded_child
 
 pytest.importorskip("fusesoc")
 pytest.importorskip("edalize")
@@ -278,14 +279,7 @@ def test_isolated_sim_tool_error_names_unlisted_header(tmp_path: Path, tool: str
         '`include "unlisted.vh"\nmodule top; endmodule\n', encoding="utf-8"
     )
     prepared = _prepare(root, "sim_verilator" if tool == "verilator" else "sim_icarus")
-    result = subprocess.run(
-        list(prepared.make_argv),
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+    result = run_bounded_child(list(prepared.make_argv), cwd=root)
     assert result.returncode != 0
     assert "unlisted.vh" in result.stdout + result.stderr
 
@@ -359,6 +353,25 @@ def test_isolated_icarus_reuse_key_is_stable_and_follows_edits(
     top.write_text("module top; // edited\nendmodule\n", encoding="utf-8")
     edited = _icarus_key(_prepare(root, "sim_icarus", name="g3"), root)
     assert edited not in (None, first)
+
+
+@icarus_reuse_posix_only
+@pytest.mark.usefixtures("real_fusesoc")
+def test_isolated_icarus_listed_header_edit_changes_or_declines_the_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Editing a listed header never leaves an isolated Icarus build with the same reuse key.
+
+    The key may decline (``None``) because recipes that use includes are not
+    keyed today; the invariant holds if a later change keys them safely.
+    """
+    _stub_icarus_identity(monkeypatch)
+    root = _write_project(tmp_path / "proj")
+    first = _icarus_key(_prepare(root, "sim_icarus", name="g1"), root)
+    # Keep the old mtime so only the header bytes can move the key.
+    _edit_keeping_mtime(root / "rtl" / "inc" / "listed.vh", "// listed v2\n")
+    second = _icarus_key(_prepare(root, "sim_icarus", name="g2"), root)
+    assert first is None or first != second
 
 
 @pytest.mark.usefixtures("real_fusesoc")

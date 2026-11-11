@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import tomllib
@@ -13,6 +12,7 @@ from types import ModuleType
 import pytest
 
 from booley.runtime.mcp_config import _warning_preference, generate_codex_config
+from tests.subprocess_budget import run_bounded_child
 
 WARNING_KEY = "suppress_unstable_features_warning"
 INSTALL_ERROR = r"installation.*tomlkit>=0\.15\.2.*TOML1\.1"
@@ -94,12 +94,8 @@ except RuntimeError as error:
 else:
     raise AssertionError("Codex route accepted a missing tomlkit")
 """
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
         env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), "HOME": str(tmp_path)},
     )
     assert result.returncode == 0, result.stdout + result.stderr

@@ -25,6 +25,7 @@ pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
 
 def _git(root: Path, *args: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
+    # Kept on subprocess.run: needs stdin (`hash-object --stdin`) and binary output.
     return subprocess.run(
         ["git", "-C", str(root), *args],
         input=input_bytes,
@@ -621,19 +622,17 @@ def _disable_stealth(root: Path) -> None:
     (data / "booley.toml").write_text("[stealth]\nenabled = false\n")
 
 
-def _stealth_repo(root: Path, *, enabled: bool | None = True) -> Path:
+def _stealth_repo(root: Path, *, enabled: bool = True) -> Path:
     _init(root)
     _commit_file(root, ".gitignore", b".booley/\n")
     data = root / ".booley"
     data.mkdir(exist_ok=True)
-    setting = "" if enabled is None else f"enabled = {str(enabled).lower()}\n"
-    (data / "booley.toml").write_text("[stealth]\n" + setting)
+    (data / "booley.toml").write_text(f"[stealth]\nenabled = {str(enabled).lower()}\n")
     return data
 
 
-@pytest.mark.parametrize("enabled", [True, None])
-def test_pinned_stealth_missing_policy_is_repaired_idempotently(tmp_path: Path, enabled):
-    data = _stealth_repo(tmp_path, enabled=enabled)
+def test_pinned_stealth_missing_policy_is_repaired_idempotently(tmp_path: Path):
+    data = _stealth_repo(tmp_path, enabled=True)
     config, index = tmp_path / ".git/config", _index_path(tmp_path)
     before = {path: _snapshot(path) for path in (config, index)}
     report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.INSPECT)
@@ -1681,3 +1680,50 @@ def test_local_publication_preserves_post_stage_changes(tmp_path, monkeypatch, r
     assert report.status is LineEndingStatus.UNSAFE
     assert attrs.read_bytes() == intervening
     assert not list(attrs.parent.glob(".booley-eol-*"))
+
+
+def _local_autocrlf(root: Path) -> str:
+    return os.fsdecode(_git(root, "config", "--local", "--get", "core.autocrlf").stdout).strip()
+
+
+def test_settings_repair_pins_autocrlf_and_attributes_on_a_tree_without_crlf(tmp_path: Path):
+    _init(tmp_path, autocrlf="true")
+    _commit_file(tmp_path, "a.v", b"module a;\nendmodule\n")
+    (tmp_path / ".booley").mkdir()  # Stealth keeps the attributes default repository-local
+    (tmp_path / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR_SETTINGS)
+
+    completed = {
+        action.kind
+        for repository in report.repositories
+        for action in repository.actions
+        if action.state is LineEndingActionState.COMPLETED
+    }
+    assert completed == {
+        LineEndingActionKind.PIN_AUTOCRLF,
+        LineEndingActionKind.PUBLISH_ATTRIBUTES,
+    }
+    assert _local_autocrlf(tmp_path) == "false"
+    assert GITATTRIBUTES_RULE in (tmp_path / ".git" / "info" / "attributes").read_text(
+        encoding="utf-8"
+    )
+    assert not (tmp_path / ".gitattributes").exists()
+
+
+def test_settings_repair_leaves_crlf_checkouts_and_their_settings_alone(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    before = (tmp_path / "a.v").read_bytes()
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR_SETTINGS)
+
+    (repository,) = report.repositories
+    assert {(action.kind, action.state) for action in repository.actions} == {
+        (LineEndingActionKind.PIN_AUTOCRLF, LineEndingActionState.PLANNED),
+        (LineEndingActionKind.NORMALIZE_FILES, LineEndingActionState.PLANNED),
+        (LineEndingActionKind.PUBLISH_ATTRIBUTES, LineEndingActionState.PLANNED),
+    }
+    assert report.status is LineEndingStatus.UNSAFE
+    assert (tmp_path / "a.v").read_bytes() == before
+    assert _local_autocrlf(tmp_path) == "true"
+    assert not (tmp_path / ".git" / "info" / "attributes").exists()

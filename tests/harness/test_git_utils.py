@@ -27,7 +27,7 @@ from booley.runtime.git import (
     is_linked_worktree,
 )
 from tests.conftest import symlink_or_skip
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 # ---------------------------------------------------------------------------
 # Helpers — tiny git repo factory
@@ -36,31 +36,16 @@ from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 def _init_repo(path: Path) -> Path:
     """Create a bare-minimum git repo with one commit. Returns its repository root."""
-    subprocess.run(
-        ["git", "init", str(path)], capture_output=True, check=True, timeout=SUBPROCESS_TIMEOUT_S
+    run_bounded_child(["git", "init", str(path)], check=True)
+    run_bounded_child(
+        ["git", "-C", str(path), "config", "user.email", "test@test.com"], check=True
     )
-    subprocess.run(
-        ["git", "-C", str(path), "config", "user.email", "test@test.com"],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    subprocess.run(
-        ["git", "-C", str(path), "config", "user.name", "Test"],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "-C", str(path), "config", "user.name", "Test"], check=True)
     # Initial commit so HEAD exists
     (path / "init.txt").write_text("init", encoding="utf-8")
-    subprocess.run(
-        ["git", "-C", str(path), "add", "init.txt"],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "-C", str(path), "add", "init.txt"], check=True)
     # A detached maintenance process would race later byte-for-byte repository snapshots.
-    subprocess.run(
+    run_bounded_child(
         [
             "git",
             "-c",
@@ -73,20 +58,15 @@ def _init_repo(path: Path) -> Path:
             "-m",
             "init",
         ],
-        capture_output=True,
         check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return path
 
 
 def _make_worktree(repo: Path, wt_path: Path, branch: str = "test-branch") -> Path:
     """Create a linked worktree (has .git file, not .git directory)."""
-    subprocess.run(
-        ["git", "-C", str(repo), "worktree", "add", str(wt_path), "-b", branch],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
+    run_bounded_child(
+        ["git", "-C", str(repo), "worktree", "add", str(wt_path), "-b", branch], check=True
     )
     return wt_path
 
@@ -359,12 +339,7 @@ class TestCommitScopeIntegration:
 
 def _is_ignored(wt: Path, rel: str) -> bool:
     """True if git treats *rel* under *wt* as ignored/excluded."""
-    result = subprocess.run(
-        ["git", "-C", str(wt), "check-ignore", "-q", rel],
-        capture_output=True,
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    result = run_bounded_child(["git", "-C", str(wt), "check-ignore", "-q", rel], check=False)
     return result.returncode == 0
 
 
@@ -520,3 +495,68 @@ def test_git_run_stale_lock_retry_keeps_intended_repository(tmp_path, monkeypatc
     assert before == {
         str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
     }
+
+
+def test_remove_git_excludes_keeps_other_entries(tmp_path):
+    """Only the named lines go; the header and sibling entries stay."""
+    from booley.runtime.git import git_exclude_entries, remove_git_excludes
+
+    repo = _init_repo(tmp_path / "repo")
+    add_git_excludes(repo, [".devcontainer", ".booley", ".claude"])
+    exclude = repo / ".git" / "info" / "exclude"
+
+    assert git_exclude_entries(repo, [".booley", ".missing"]) == ("/.booley",)
+    remove_git_excludes(repo, ["/.booley"])
+
+    body = exclude.read_text(encoding="utf-8")
+    assert BOOLEY_EXCLUDE_HEADER in body
+    assert "/.booley" not in body.splitlines()
+    assert {"/.devcontainer", "/.claude"} <= set(body.splitlines())
+    assert git_exclude_entries(repo, [".booley"]) == ()
+    before = exclude.read_bytes()
+    remove_git_excludes(repo, ["/.booley"])  # nothing left to remove: no rewrite
+    assert exclude.read_bytes() == before
+
+
+def test_git_exclude_helpers_without_git_or_exclude_file(tmp_path):
+    """Outside a repository, or with no exclude file, both helpers are no-ops."""
+    from booley.runtime.git import git_exclude_entries, remove_git_excludes
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert git_exclude_entries(plain, [".booley"]) == ()
+    remove_git_excludes(plain, ["/.booley"])
+
+    repo = _init_repo(tmp_path / "repo")
+    exclude = repo / ".git" / "info" / "exclude"
+    exclude.unlink()
+    assert git_exclude_entries(repo, [".booley"]) == ()
+    remove_git_excludes(repo, ["/.booley"])
+    assert not exclude.exists()
+
+
+def test_remove_git_excludes_refuses_symlinked_exclude(tmp_path):
+    from booley.runtime.git import remove_git_excludes
+
+    repo = _init_repo(tmp_path / "repo")
+    add_git_excludes(repo, [".booley"])
+    exclude = repo / ".git" / "info" / "exclude"
+    destination = tmp_path / "outside-exclude"
+    destination.write_bytes(exclude.read_bytes())
+    exclude.unlink()
+    symlink_or_skip(exclude, destination)
+    before = destination.read_bytes()
+
+    with pytest.raises(OSError, match="symlink"):
+        remove_git_excludes(repo, ["/.booley"])
+
+    assert destination.read_bytes() == before
+
+
+def test_git_exclude_entries_ignores_an_undecodable_exclude_file(tmp_path):
+    """A non-UTF-8 info/exclude holds no removable footprint: no crash, no entries."""
+    from booley.runtime.git import git_exclude_entries
+
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".git" / "info" / "exclude").write_bytes(b"/.booley\n\xff\xfe\n")
+    assert git_exclude_entries(repo, [".booley"]) == ()

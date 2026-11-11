@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, TypeVar
 
 import pytest
@@ -18,7 +19,8 @@ from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
 from booley.flows.sim.build import BuildOutcome
-from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow
+from booley.flows.sim.coverage_campaign import CoverageRollup
+from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow, _campaign_report_lines
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -361,3 +363,138 @@ def test_target_omission_rule_matches_usage_and_reference() -> None:
             )
         ), "documented Target omission rule missing"
     assert "Every run needs `--target`" not in REFERENCE.read_text(encoding="utf-8")
+
+
+_DOC_REPORTS_ROOT = "/work/.booley/flow-reports"
+_CARD_PATH_LABELS = ("manifest", "report", "coverage campaign")
+
+
+def _text_blocks(page: str) -> list[str]:
+    """The bodies of the ``text`` fences in a user-doc page."""
+    return re.findall(r"```text\n(.*?)```", _reference_text(USER_DOCS / page), re.DOTALL)
+
+
+def _as_documented(lines: list[str], root: Path) -> list[str]:
+    """Show the card's paths as the docs do: rooted at ``/work/.booley/flow-reports``."""
+    shown: list[str] = []
+    for line in lines:
+        label, _, value = line.strip().partition(": ")
+        if label in _CARD_PATH_LABELS:
+            relative = Path(value).relative_to(root.resolve()).as_posix()
+            shown.append(f"  {label}: {_DOC_REPORTS_ROOT}/{relative}")
+        else:
+            shown.append(line)
+    return shown
+
+
+def _rollup(metric: str, covered: int, eligible: int) -> CoverageRollup:
+    return CoverageRollup(
+        metric=metric,
+        semantics="booley.coverage-semantics/v1",
+        total_points=eligible,
+        eligible_points=eligible,
+        covered_points=covered,
+        waived_points=0,
+        percent=round(covered * 100 / eligible, 2),
+    )
+
+
+def test_coverage_card_example_matches_rendered_card(tmp_path: Path) -> None:
+    root = tmp_path / "flow-reports"
+    campaign = SimpleNamespace(
+        collection={"status": "complete", "diagnostics": ()},
+        evaluation={
+            "status": "pass",
+            "diagnostics": (),
+            "metrics": (),
+            "thresholds": {"branch": 80},
+        },
+        rollups=(
+            _rollup("line", 923, 1000),
+            _rollup("branch", 81, 100),
+            _rollup("toggle", 642, 1000),
+        ),
+        source_closure={},
+        findings=(),
+    )
+    outcome = SimpleNamespace(
+        target={"selector": "sim_soc"},
+        manifest_path=root / "sim/12/targets/sim_soc/campaign/manifest.json",
+        aggregate_grade="pass",
+        coverage_reference=object(),
+        observations=(),
+        acceptance_facts=SimpleNamespace(document={"campaign_id": "…"}),
+    )
+
+    rendered = _campaign_report_lines(
+        (outcome,),
+        {"sim_soc": campaign},
+        trailing_lines=None,
+        report_path=root / "sim/12/report.json",
+    )[0].splitlines()
+
+    documented = next(
+        block for block in _text_blocks("COVERAGE.md") if "coverage campaign:" in block
+    )
+    assert _as_documented(rendered, root) == documented.splitlines()
+
+
+def test_sim_card_examples_name_the_run_report(tmp_path: Path) -> None:
+    root = tmp_path / "flow-reports"
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(report_dir=root, dry_run=False)
+    flow._reserved_invocation_dir = root / "sim/12"
+    with flow.publication_resources:
+        destination = flow._report_destination()
+    assert destination == (root / "sim/12/report.json").resolve()
+    expected = _as_documented([f"  report: {destination}"], root)[0]
+
+    cards = [
+        line
+        for page in FLOW_PAGES["sim"]
+        for block in _text_blocks(page)
+        for line in block.splitlines()
+        if line.startswith("  report:")
+    ]
+    assert cards
+    assert set(cards) == {expected}
+
+
+_CARD_ROW = re.compile(r"^    (PASS|FAIL|ERROR|INCONCLUSIVE)\s")
+_CARD_LOG = re.compile(
+    r"^      log: /work/\.booley/flow-reports/sim/\d+/targets/\w+/campaign/work-items/"
+    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-run\.log$"
+)
+_CARD_WAVEFORM = re.compile(
+    r"^      waveform: /work/\.booley/flow-reports/sim/\d+/targets/\w+/campaign/work-items/"
+    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-[^/\s]+\.fst$"
+)
+
+
+def test_sim_reading_results_example_shows_evidence_paths_without_a_search_recipe() -> None:
+    page = _reference_text(USER_DOCS / "FLOW-SIM.md")
+    section = page.split("\n## Reading results\n", 1)[1].split("\n## ", 1)[0]
+
+    graded = ""
+    logs: list[str] = []
+    waveforms: list[str] = []
+    for line in section.splitlines():
+        row = _CARD_ROW.match(line)
+        if row:
+            graded = row.group(1)
+        elif line.startswith("      log:"):
+            # Only a Test Run that did not pass names its log, under its own row.
+            assert _CARD_LOG.match(line), line
+            assert graded not in {"", "PASS"}, line
+            logs.append(graded)
+        elif line.startswith("      waveform:"):
+            assert _CARD_WAVEFORM.match(line), line
+            assert graded, line
+            waveforms.append(graded)
+
+    assert logs == ["FAIL"]
+    assert "PASS" in waveforms
+    # The card names the files; the guide teaches no hunt through the work items.
+    assert "grep" not in section
+    assert "work-items/*" not in section
+    assert "result.json" not in section

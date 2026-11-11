@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import os
-import stat
 import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import cast
 
 from booley.flows.artifact_durability import durable_create
+from booley.flows.sim.campaign_files import read_bounded
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
@@ -22,10 +22,13 @@ from booley.runtime.execution_records import (
     request_cancellation,
 )
 from booley.runtime.execution_recovery import recover_execution
-from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
-from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
+from .codec import (
+    SimulationCampaignIntegrityError,
+    canonical_json_bytes,
+    reads_campaign_records,
+)
 from .model import SimulationCampaignManifest
 from .planning import manifest_digest
 from .run_directory import (
@@ -161,13 +164,13 @@ class ChildExecutionRegistry:
     def cancel(self, execution_id: ExecutionId) -> bool:
         paths = execution_paths(execution_id, booley_dir=self._project_data)
         request_cancellation(paths, reason="campaign_cancelled")
-        deadline = time.monotonic() + 5.0
+        deadline = monotonic() + 5.0
         while True:
             with self._record_lock(execution_id):
                 recovered = recover_execution(execution_id, booley_dir=self._project_data)
             if recovered:
                 return True
-            if time.monotonic() >= deadline:
+            if monotonic() >= deadline:
                 return False
             time.sleep(0.05)
 
@@ -227,7 +230,13 @@ def _terminal_record(cause: str) -> dict[str, object]:
 
 def _publish_or_verify(path: Path, raw: bytes, *, booley_dir: Path | None = None) -> None:
     if path.exists():
-        current = _read_protocol_bytes(path, "child protocol record", booley_dir=booley_dir)
+        current = read_bounded(
+            path,
+            limit=_PROTOCOL_RECORD_LIMIT,
+            error=SimulationCampaignIntegrityError,
+            booley_dir=booley_dir,
+            single_link=True,
+        )
         if current != raw:
             raise SimulationCampaignIntegrityError(
                 f"child protocol record disagrees with durable identity: {path}"
@@ -236,43 +245,22 @@ def _publish_or_verify(path: Path, raw: bytes, *, booley_dir: Path | None = None
     try:
         durable_create(path, raw)
     except FileExistsError:
-        if _read_protocol_bytes(path, "child protocol record", booley_dir=booley_dir) != raw:
+        if (
+            read_bounded(
+                path,
+                limit=_PROTOCOL_RECORD_LIMIT,
+                error=SimulationCampaignIntegrityError,
+                booley_dir=booley_dir,
+                single_link=True,
+            )
+            != raw
+        ):
             raise SimulationCampaignIntegrityError(
                 f"child protocol publication raced with different bytes: {path}"
             ) from None
 
 
-def _read_protocol_bytes(path: Path, label: str, *, booley_dir: Path | None = None) -> bytes:
-    try:
-        descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
-    except OSError as exc:
-        raise SimulationCampaignIntegrityError(
-            f"{label} is not a link-free regular file: {path}"
-        ) from exc
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise SimulationCampaignIntegrityError(
-                f"{label} is not a singly linked regular file: {path}"
-            )
-        if info.st_size > _PROTOCOL_RECORD_LIMIT:
-            raise SimulationCampaignIntegrityError(f"{label} exceeds size limit: {path}")
-        raw = bytearray()
-        while len(raw) <= _PROTOCOL_RECORD_LIMIT:
-            chunk = os.read(
-                descriptor,
-                min(64 * 1024, _PROTOCOL_RECORD_LIMIT + 1 - len(raw)),
-            )
-            if not chunk:
-                break
-            raw.extend(chunk)
-        if len(raw) != info.st_size:
-            raise SimulationCampaignIntegrityError(f"{label} changed while reading: {path}")
-        return bytes(raw)
-    finally:
-        os.close(descriptor)
-
-
+@reads_campaign_records
 def recover_interrupted_attempts(
     manifest: SimulationCampaignManifest,
     attempts: Mapping[str, Mapping[str, object]],

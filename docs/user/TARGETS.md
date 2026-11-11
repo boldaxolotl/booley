@@ -105,8 +105,8 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 | `cSource`, `cppSource` | C/C++ sources of a Verilator simulation harness. |
 | `veribleLintRules` | Verible rules file; at most one per Target. |
 | `veribleLintWaiver` | Verible waiver files; see the [Verible recipe](#verible-lint-target). |
-| `SDC` | ASIC timing constraints (uppercase); see [ASIC synthesis](FLOW-SYNTH.md#configuration-flowssynth). |
-| `xdc` | Vivado constraints, named `*.xdc`; see [FPGA implementation](FLOW-FPGA.md#configuration-flowsfpga). |
+| `SDC` | ASIC timing constraints (uppercase); see the [Synthesis recipe](#synthesis-target). |
+| `xdc` | Vivado constraints; see the [FPGA recipe](#fpga-target). |
 | `user` | Firmware, vectors, cocotb Python modules; `copyto:` sets where they land. |
 
 - Give headers (`.vh`, `.svh`) the same type as their sources and mark them
@@ -114,8 +114,9 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 - Keep `SDC` and `xdc` files out of `tags: [tb]` filesets.
 - Use the unversioned `verilogSource` and `systemVerilogSource`. Coverage and
   build reuse don't recognize version-suffixed names.
-- The fpga Flow ignores declared types and goes by filename: give FPGA RTL a
-  lowercase `.v` or `.sv` suffix, and constraints an `.xdc` suffix.
+- The fpga Flow picks RTL by filename, not declared type: give FPGA RTL a
+  lowercase `.v` or `.sv` suffix. Its constraints come only from
+  `file_type: xdc` files.
 - SystemC, UHDM, VHDL, and Tcl filesets have no supported path through the
   built-in Flows; see the [EDA-tool matrix](SUPPORTED-EDA-TOOLS.md).
 
@@ -133,9 +134,12 @@ runs them:
 
 The prefix matters for synth and fpga: both use FuseSoC's `generic` flow, so
 the `synth_`/`fpga_` prefix decides which Flow runs the Target. Without a
-prefix, a Target whose tool is `vivado` counts as fpga. A bare `lint` is fine when
-there is only one lint Target. Doctor notes names that break the rule. Vendored
-upstream cores keep their own names.
+prefix, a Target whose tool is `vivado` counts as fpga. Every Target needs a
+subject after the axis, even when it is the only one. A bare `lint` still runs
+and keeps its axis, but breaks the convention. For the Targets Doctor runs (and
+any in a stealth core), it notes names that break the rule and suggests
+`<axis>_<core name>` for a bare axis (`lint_soc` for a core named `soc`).
+Vendored upstream cores keep their own names.
 
 Add a `default:` Target only when another core depends on this one. Booley
 doesn't list it as a Target you can run.
@@ -143,6 +147,8 @@ doesn't list it as a Target you can run.
 A lint Target needs `flow: lint` and `flow_options.tool` set to `verilator` or
 `verible` (`veriblelint` also works). Other tools don't show up in `booley targets --for lint`.
 For Python testbenches, see [Cocotb Targets](#cocotb-targets-python-testbenches).
+A synth Target sets `flow: generic` and `tool: yosys`, an fpga Target
+`flow: generic` and `tool: vivado`; see the recipes below.
 
 #### Verilator lint Target
 
@@ -211,6 +217,87 @@ targets:
 
 Use at most one rules file; waiver files are optional. For what lint reports,
 see [Lint](FLOW-LINT.md).
+
+#### Synthesis Target
+
+A synthesis Target selects the RTL plus an SDC timing-constraints fileset. The
+`flow_options` after `arch` are optional and shown with their defaults:
+
+```yaml
+CAPI=2:
+name: acme:ip:core:1.0
+filesets:
+  rtl:
+    files: [rtl/core.sv]
+    file_type: systemVerilogSource
+  timing_constraints:
+    files:
+      - constraints/core.sdc: {file_type: SDC}
+targets:
+  synth_core:
+    flow: generic
+    flow_options:
+      tool: yosys
+      arch: xilinx               # required by Edalize; Booley ignores it
+      synth_mode: physical       # physical (default) | logical
+      ppa_profile: balanced      # compact | balanced (default) | max_frequency
+      flatten: true              # default true
+      frontend: sv2v             # sv2v (default) | slang
+      # slang_options: [--single-unit]   # raw options for the slang frontend
+      # advanced_settings_yosys: {abc_recipe: balanced}   # expert settings nest here
+      # advanced_settings_openroad: {utilization_pct: 50}  # physical mode only
+    filesets: [rtl, timing_constraints]
+    toplevel: core
+```
+
+- The SDC fileset (`file_type: SDC`, uppercase) must create a clock and is
+  required in physical mode; a `synth_mode: logical` Target needs none. See
+  [Timing constraints](FLOW-SYNTH.md#timing-constraints) and
+  [Fast logical estimates](FLOW-SYNTH.md#fast-logical-estimates).
+- `slang_options` is a non-empty list passed to the `slang` frontend
+  unchanged.
+- Expert `advanced_settings_yosys` and `advanced_settings_openroad` settings
+  are described under
+  [Optimization profiles](FLOW-SYNTH.md#optimization-profiles).
+- To keep a large RAM from distorting results, swap in a Memory Timing
+  Surrogate with a define and a synthesis-only fileset, not a Target option;
+  see [Large memories](FLOW-SYNTH.md#large-memories).
+
+#### FPGA Target
+
+An FPGA Target selects the RTL plus an XDC constraints fileset for one part:
+
+```yaml
+CAPI=2:
+name: acme:soc:top:1.0
+filesets:
+  rtl:
+    files: [rtl/top.sv]
+    file_type: systemVerilogSource
+  fpga_constraints:
+    files:
+      - constraints/top.xdc: {file_type: xdc}
+targets:
+  fpga_soc:
+    flow: generic
+    flow_options:
+      tool: vivado
+      part: xc7a100tcsg324-1     # required
+      ppa_profile: balanced      # compact | balanced (default) | max_frequency
+      out_of_context: false      # default false
+    filesets: [rtl, fpga_constraints]
+    toplevel: top
+```
+
+- The `xdc` fileset is required and is the only constraint source. The XDC
+  must `create_clock`; without one the run ends in `ERROR`
+  ([Reading results](FLOW-FPGA.md#reading-results)).
+- `part` is required. `out_of_context: true` builds a block without I/O
+  buffers ([Out-of-context builds](FLOW-FPGA.md#out-of-context-builds)). For
+  `ppa_profile`, see [Optimization profiles](FLOW-FPGA.md#optimization-profiles).
+- Keep `tool: vivado`; other `flow_options`, such as `synth` or `pnr`, do not
+  change the build. An unprefixed vendored Target still counts as fpga when
+  its tool is `vivado`.
 
 ## Cocotb Targets (Python testbenches)
 
@@ -288,15 +375,21 @@ How it differs from an SV Target:
   every affected path. Put a `FUSESOC_IGNORE` in the directory holding the
   link. It hides all cores below it, so don't place it where wanted cores
   live. Commit the marker if you can: an uncommitted one in a subdirectory
-  doesn't reach Goal or baseline worktrees. To
-  leave a vendored repository untouched, use
-  [Stealth Mode](STEALTH.md) with `ignore_native_cores = true`
-  and keep your own cores in `.booley/cores/`.
+  doesn't reach Goal or baseline worktrees.
 - **Many cores in one repo** (ibex ships 208) need no extra configuration. Many
   cores may each have a Target called `lint` or `sim`; Booley asks you to
   pick only when a bare name is ambiguous, and you then name it as
   `vendor:library:name:version#target`.
 - **Git submodules** work, with one setup step; see [Submodules](#submodules).
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+To leave a vendored repository untouched, set `ignore_native_cores = true` and
+keep your own cores in `.booley/cores/`: Booley then ignores every other
+`.core` file. See [STEALTH.md](STEALTH.md#what-changes).
+
+</details>
 
 ### Submodules
 
@@ -309,9 +402,18 @@ Run this once on the host:
 
 ```bash
 git submodule update --init --recursive
-# If .booley is its own Git repository:
+```
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+`.booley` is its own Git repository, so initialize its submodules too:
+
+```bash
 git -C .booley submodule update --init --recursive
 ```
+
+</details>
 
 Each submodule must be present, clean, and have its full history (not a
 shallow clone) before a Goal or baseline run starts. Otherwise the run stops
@@ -336,9 +438,15 @@ paths = ["deps/bus_pkg", "deps/axi_verif"]
 
 Without `paths`, every top-level submodule is copied; `paths = []` copies
 none. Unlisted submodules appear as empty directories in the worktree.
-Submodules nested inside a listed one are always copied. The list applies to
-the outer repository only: when `.booley` is its own Git repository, all of
-its submodules are always copied.
+Submodules nested inside a listed one are always copied.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The list applies to the RTL repository only: every submodule of the `.booley`
+repository is always copied.
+
+</details>
 
 ---
 

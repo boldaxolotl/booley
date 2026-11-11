@@ -47,7 +47,7 @@ from booley.flows.test_runs import build_test_run, test_run_document
 from booley.targets.catalog import TargetCatalog
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 __all__ = ["project_alias"]
 
@@ -607,7 +607,7 @@ def test_resume_reads_through_the_booley_dir_entry(
     )
 
     if spelling == "below":
-        with pytest.raises(SimulationCampaignIntegrityError, match="cannot read resume manifest"):
+        with pytest.raises(SimulationCampaignIntegrityError, match="not a regular file"):
             validate_resume_manifest(lexical, project_root=project)
         return
     validated = validate_resume_manifest(
@@ -893,8 +893,8 @@ def test_serial_result_classifies_simulator_crash_as_design_failure() -> None:
         crashed=True,
         reason="terminated by signal 11",
     )
-    observation = serial_execution._observation(test)
-    assert serial_execution._settled_state([observation]) == "crash"
+    observation = serial_execution.observation_document(test)
+    assert serial_execution.settled_state([observation]) == "crash"
     assert observation["execution"] == "crash"
     assert observation["failure_class"] == "design"
     assert observation["functional"] == "not_observed"
@@ -923,14 +923,7 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
     )
 
     root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
-    current = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    ).stdout.strip()
+    current = run_bounded_child(["git", "rev-parse", "HEAD"], cwd=root, check=True).stdout.strip()
     _candidate, store, _baseline, baseline_store = _linked_campaign_stores(
         tmp_path, topology_revisions=(current, revision)
     )
@@ -1128,13 +1121,13 @@ def test_parameter_diagnostics_preserve_values_and_absence(old_parameters, new_p
 
 
 def test_runtime_declarations_are_aligned_by_destination():
-    from booley.flows.sim.campaign.planning import canonical_sha256
+    from booley.flows.sim.campaign_files import document_digest
 
     old, new = _diagnostic_document(), _diagnostic_document()
     for document, source in ((old, "old/data.bin"), (new, "new/data.bin")):
         declaration = {"destination": "input/data.bin", "source_artifact_path": source}
         document["workload"]["runtime_inputs"] = [
-            {**declaration, "declaration_id": canonical_sha256(declaration)}
+            {**declaration, "declaration_id": document_digest(declaration)}
         ]
     diagnostic = _project_diagnostics(old, new)
     assert diagnostic.mismatch_summary == ("runtime input changed: input/data.bin",)
@@ -1264,14 +1257,14 @@ def test_unrecognized_identity_changes_remain_visible(field):
 def test_runtime_declaration_list_changes_use_destination_identity(
     old_destinations, new_destinations, line
 ):
-    from booley.flows.sim.campaign.planning import canonical_sha256
+    from booley.flows.sim.campaign_files import document_digest
 
     old, new = _diagnostic_document(), _diagnostic_document()
     for document, destinations in ((old, old_destinations), (new, new_destinations)):
         declarations = []
         for destination in destinations:
             declaration = {"destination": destination, "source_artifact_path": destination}
-            declarations.append({**declaration, "declaration_id": canonical_sha256(declaration)})
+            declarations.append({**declaration, "declaration_id": document_digest(declaration)})
         document["workload"]["runtime_inputs"] = declarations
     diagnostic = _project_diagnostics(old, new)
     assert diagnostic.mismatch_summary == (line,)

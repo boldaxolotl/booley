@@ -28,11 +28,11 @@ import contextlib
 import json
 import logging
 import os
-import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from time import time as wall_clock
 from typing import Any
 
 from booley.core.boundary import (
@@ -114,6 +114,9 @@ class JobRecord:
     # that owner first read the final result; None for records that predate them.
     owner: str | None = None
     read_at: str | None = None
+    # Directory holding this Job's ``flow-reports/`` and ``mcp-tool-reports/`` when it is
+    # not the records root's parent (a Standalone Job's records live elsewhere).
+    report_root: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -137,11 +140,21 @@ def _validate_envelope(data: dict[str, Any]) -> None:
     schema = data.get("schema", 1)
     if require_int(schema, field="Job schema") <= 0:
         raise BoundaryError("Job schema must be positive")
-    for key in ("work_dir", "session_key"):
+    for key in ("work_dir", "session_key", "report_root"):
         if data.get(key) is not None:
             require_str(data, key)
     if data.get("binding") is not None:
         require_dict(data["binding"], field="Job binding")
+
+
+def target_arg(argv: list[str]) -> str | None:
+    """Read the producer's Target once, without inventing one for legacy records."""
+    for index, word in enumerate(argv):
+        if word == "--target":
+            return argv[index + 1] if index + 1 < len(argv) else None
+        if word.startswith("--target="):
+            return word.removeprefix("--target=")
+    return None
 
 
 def terminal_status(exit_code: int, timed_out: bool) -> str:
@@ -160,6 +173,15 @@ def make_run_id(endpoint: str, started_compact: str, counter: int) -> str:
 
 def _record_path(run_id: str, root: Path | None) -> Path | None:
     return (root / f"{run_id}.json") if root is not None else None
+
+
+def job_log_path(run_id: str, root: Path | None) -> Path | None:
+    """Location of a Job's combined-output ``job.log``, beside its flat record.
+
+    ``<root>/<run_id>/job.log``: a per-Job directory that every ``*.json``
+    reader of the jobs root ignores. ``None`` without a root, like a record.
+    """
+    return (root / run_id / "job.log") if root is not None else None
 
 
 def write_record_strict(rec: JobRecord, root: Path | None) -> None:
@@ -269,7 +291,7 @@ def parse_stamp(stamp: object) -> float | None:
         return None
 
 
-def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
+def validate_record(record: JobRecord, *, now: float | None = None) -> None:
     data = require_dict(record.to_dict(), field="Job record")
     _validate_envelope(data)
     require_str(data, "run_id")
@@ -293,7 +315,7 @@ def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
     started_at = parse_stamp(record.started_at)
     if started_at is None:
         raise BoundaryError("Job started_at must be an RFC 3339 timestamp")
-    current = time.time() if now is None else now
+    current = wall_clock() if now is None else now
     if started_at > current + MAX_CLOCK_SKEW_SECONDS:
         raise BoundaryError("Job started_at is in the future")
     if record.run_started_at is not None:
@@ -317,7 +339,7 @@ def strict_records(root: Path | None) -> list[JobRecord]:
             record = read_record(path.stem, root)
             if record is None:
                 raise BoundaryError("record is unreadable")
-            _validate_record(record)
+            validate_record(record)
         except (BoundaryError, JobRecordError, OSError, TypeError, ValueError) as exc:
             malformed.append(f"{path.name}: {exc}")
         else:
@@ -388,7 +410,7 @@ def derive_status(
     # pre-stamp behavior, and the PID/argv guards still apply.
     started = parse_stamp(rec.run_started_at) or parse_stamp(rec.started_at)
     if started is not None and isinstance(rec.timeout_s, (int, float)):
-        current = time.time() if now is None else now
+        current = wall_clock() if now is None else now
         if current > started + rec.timeout_s + DEADLINE_SLACK_SECONDS:
             return STATUS_FAILED
 
@@ -412,5 +434,5 @@ def is_active(
     if derive_status(rec, is_pid_alive, now=now) == STATUS_RUNNING:
         return True
     started = parse_stamp(rec.started_at)
-    current = time.time() if now is None else now
+    current = wall_clock() if now is None else now
     return rec.pid is None and started is not None and current - started < SPAWN_GRACE_SECONDS

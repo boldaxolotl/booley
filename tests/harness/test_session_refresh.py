@@ -15,7 +15,7 @@ from booley.harness import session_refresh as harness_refresh
 from booley.runtime import session_refresh
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import LifecycleResult, Status
-from booley.runtime.session_issuance import Issuance
+from booley.runtime.session_issuance import STAMP_VERSION, Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.runtime import test_session_issuance as issuance_fixtures
@@ -61,7 +61,7 @@ def _issuance(root: Path, image_id: str = "sha256:prior") -> Issuance:
     project = root.resolve()
     identity = hashlib.sha256(str(project).encode()).hexdigest()
     return Issuance(
-        4,
+        STAMP_VERSION,
         str(project),
         "a" * 64,
         image_id,
@@ -403,7 +403,7 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         result = images.prepare(project_root, verbose=verbose)
         result = images.commit()
         images.reissue(project_root, result.selected_id, verbose=verbose)
-        return result
+        return session_refresh.RefreshResult(result, "kept", None, "container-new")
 
     with (
         patch.object(
@@ -441,10 +441,20 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
             ),
         ),
         patch.object(harness_refresh.runtime_refresh, "refresh", side_effect=drive_runtime),
+        patch.object(
+            harness_refresh.init_cmd,
+            "_sandbox_git_version",
+            side_effect=lambda image_id: events.append(("git-version", image_id)) or (2, 50, 0),
+        ),
+        patch.object(
+            harness_refresh.init_cmd,
+            "reinitialize_project",
+            side_effect=lambda root, facts: events.append(("reinitialize", root, facts)) or [],
+        ),
     ):
         result = harness_refresh.refresh(tmp_path, verbose=True)
 
-    assert result == session_refresh.RefreshImage(
+    assert result.image == session_refresh.RefreshImage(
         "booley-sandbox",
         "sha256:fresh",
         "payload-123",
@@ -466,6 +476,8 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         ("prepare", tmp_path, True),
         ("commit", prepared),
         ("reissue", tmp_path, "sha256:fresh", True),
+        ("git-version", "sha256:fresh"),
+        ("reinitialize", tmp_path, harness_refresh.init_cmd.ProjectFacts((2, 50, 0))),
     ]
 
 
@@ -802,9 +814,7 @@ def test_new_journal_document_has_no_phase(tmp_path, monkeypatch):
 
     session_refresh._write_journal(journal)
 
-    path = session_refresh._journal_store().root / session_refresh._journal_name(
-        tmp_path.resolve()
-    )
+    path = session_refresh.journal_store().path(str(tmp_path.resolve()))
     document = json.loads(path.read_text(encoding="utf-8"))
     assert document["version"] == 2
     assert "phase" not in document

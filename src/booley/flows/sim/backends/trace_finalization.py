@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 from booley.bwave.waveform_store import StreamingConversion
-from booley.core.boundary import parse_positive_int_arg
 from booley.flows.sim.adapter_transport import (
     AdapterTraceResult,
     AdapterTransportIdentity,
@@ -20,34 +18,23 @@ from booley.flows.sim.backends.shared import (
     RunTermination,
     ambiguous_trace_reason,
 )
-from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 
 
 def _missing_trace_reason(current: CurrentRunTraces) -> str:
     """Explain why no current trace artifact could be retained."""
     reason = "trace requested but no fresh .fst store or convertible .vcd was produced"
     if current.patterns:
-        return reason + (
+        reason += (
             " (no fresh, nonempty file matching [flows.sim].trace_files "
             f"{list(current.patterns)} was produced by the current run)"
         )
+        return "; ".join((reason, *current.stream_failures))
     if current.roots:
         return reason + (
             " (a testbench writing its dump under its own name needs "
             "[flows.sim].trace_files to declare it)"
         )
     return reason
-
-
-def add_trace_convert_timeout_argument(parser: argparse.ArgumentParser) -> None:
-    """Register ``--trace-convert-timeout``, the attempt's conversion budget in seconds."""
-    parser.add_argument(
-        "--trace-convert-timeout",
-        type=parse_positive_int_arg,
-        default=DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
-        dest="trace_convert_timeout",
-        help="budget for every post-run trace conversion of this run (seconds)",
-    )
 
 
 _PENDING_DETAIL = "trace conversion had not finished when the adapter stopped"
@@ -107,6 +94,7 @@ def finalize_trace(
     session.start_conversion_budget(convert_timeout_s)
     if publish_pending is not None:
         publish_pending(AdapterTraceResult("incident", detail=_PENDING_DETAIL))
+    current.finish_streams()
     if raw_vcd is not None:
         session.postprocess(raw_vcd)
     selection = current.select()

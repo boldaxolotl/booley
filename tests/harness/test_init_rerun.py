@@ -24,6 +24,7 @@ import re
 import stat
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,11 +40,12 @@ from booley.runtime import project_image as pi
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.git import add_git_excludes
 from booley.runtime.image_lifecycle import LifecycleResult
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 from tests.conftest import symlink_or_skip
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
@@ -96,9 +98,7 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     """A scratch git repo with isolated HOME and no docker/vscode/systemctl."""
     root = tmp_path / "proj"
     root.mkdir()
-    subprocess.run(
-        ["git", "init", str(root)], capture_output=True, check=True, timeout=SUBPROCESS_TIMEOUT_S
-    )
+    run_bounded_child(["git", "init", str(root)], check=True)
 
     home = tmp_path / "home"
     home.mkdir()
@@ -133,8 +133,9 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
         lambda *_args, **_kwargs: current_image,
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.image_id_strict",
+        "booley.runtime.interactive_docker.image_id",
         lambda _image: None,
     )
     monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
@@ -177,9 +178,11 @@ def _current_nonstealth_init(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 @pytest.mark.timeout(120)
 def test_every_path_init_creates_is_classified(repo):
-    """Every file and empty directory of a full (default, Stealth) init has a Booley State part."""
+    """Every file and empty directory of a full Stealth init has a Booley State part."""
     from booley.core.booley_dir_parts import booley_dir_part
 
+    (repo / ".booley").mkdir()
+    (repo / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")  # adds inner .git
     assert _run_full_init(repo) == 0
     booley = repo / ".booley"
     created = [
@@ -190,6 +193,54 @@ def test_every_path_init_creates_is_classified(repo):
     assert created, "init created nothing under the Booley Directory"
     for path in created:
         booley_dir_part(path.relative_to(booley))
+
+
+def _info_exclude(repo: Path) -> list[str]:
+    return (repo / ".git/info/exclude").read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.timeout(120)
+def test_fresh_init_without_stealth_choice_keeps_booley_dir_trackable(repo):
+    """The init skeleton has no ``[stealth] enabled``, so init must not hide `.booley`."""
+    assert _run_full_init(repo) == 0
+
+    assert not (repo / ".booley/.git").exists()
+    assert "/.booley" not in _info_exclude(repo)
+
+
+@pytest.mark.timeout(120)
+def test_hidden_setup_choice_hides_booley_dir_on_init_rerun(repo):
+    """Setup's hidden answer writes ``enabled = true``; the next init applies it.
+
+    The fresh non-Stealth init published an untracked root `.gitattributes`; the
+    booley-setup skill removes it before rerunning init, as mirrored here.
+    """
+    assert _run_full_init(repo) == 0
+    config = repo / ".booley/booley.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "\n[stealth]\nenabled = true\n", encoding="utf-8"
+    )
+    (repo / ".gitattributes").unlink()
+
+    assert _run_full_init(repo) == 0
+
+    assert (repo / ".booley/.git").is_dir()
+    assert "/.booley" in _info_exclude(repo)
+
+
+@pytest.mark.timeout(120)
+def test_init_names_unrecorded_stealth_choice_of_hidden_booley_dir(repo, capsys):
+    """A Project hidden while Stealth defaulted on, with no `enabled` key, gets the fix."""
+    (repo / ".booley").mkdir()
+    (repo / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")
+    assert _run_full_init(repo) == 0
+    (repo / ".booley/booley.toml").write_text("# key predates the explicit choice\n")
+    capsys.readouterr()
+
+    assert _run_full_init(repo) == 0
+
+    output = capsys.readouterr().out
+    assert "hides /.booley" in output and "[stealth] enabled = true" in output
 
 
 @pytest.mark.timeout(120)
@@ -339,8 +390,33 @@ class TestFullInitRerun:
 
         assert init_cmd._print_summary(ctx) == 2
         output = capsys.readouterr().out
-        assert "could not reconcile stopped Sandbox" in output
+        assert "could not reconcile the Sandbox" in output
         assert "this project is ready" not in output
+
+    def test_runtime_inspection_failure_makes_init_incomplete(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A refusal while inspecting the Sandbox uses the same prefix as the apply path."""
+        _run_full_init(repo)
+        capsys.readouterr()
+        ctx = InitContext(project_root=repo)
+        with patch.object(
+            sr,
+            "plan_stopped_headless_runtime_reconciliation",
+            side_effect=sr.SessionError("run `booley session refresh` on the host"),
+        ):
+            init_cmd._step_interactive(
+                ctx,
+                nangate_pdk_root=repo.parent / "pdk",
+                agent_app="none",
+            )
+        ctx.record("advisories", "ok", "configured")
+
+        assert init_cmd._print_summary(ctx) == 2
+        output = capsys.readouterr().out
+        assert (
+            "could not reconcile the Sandbox: run `booley session refresh` on the host" in output
+        )
 
     def test_foreign_root_guidance_blocks_before_any_filesystem_mutation(self, repo: Path):
         booley_dir = repo / ".booley"
@@ -566,15 +642,13 @@ class TestProjectGitignoreBackfill:
 
     def test_live_ticket_state_is_ignored_and_ticket_history_is_tracked(self, tmp_path: Path):
         # ADR 0065: the board and state records are working state; history is committed.
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+        run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
         init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
 
         def ignored(path: str) -> bool:
-            result = subprocess.run(
+            result = run_bounded_child(
                 ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "-q", path],
                 cwd=tmp_path,
-                check=False,
-                timeout=30,
             )
             return result.returncode == 0
 
@@ -586,15 +660,13 @@ class TestProjectGitignoreBackfill:
     def test_goal_records_are_ignored_and_goal_history_is_tracked(self, tmp_path: Path):
         # ADR 0067: Goal Record directories and Goal locks are local working
         # state; the committed Goal summaries under goals/history/ are not.
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+        run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
         init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
 
         def ignored(path: str) -> bool:
-            result = subprocess.run(
+            result = run_bounded_child(
                 ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "-q", path],
                 cwd=tmp_path,
-                check=False,
-                timeout=30,
             )
             return result.returncode == 0
 
@@ -631,18 +703,6 @@ class TestProjectGitignoreBackfill:
 # ---------------------------------------------------------------------------
 # Windows filesystem evidence for #609 (runs in the Windows CI shards)
 # ---------------------------------------------------------------------------
-
-
-def _git(repository: Path, *args: str) -> str:
-    """Run one Git command in *repository* and return its stdout."""
-    result = subprocess.run(
-        ["git", "-C", str(repository), *args],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
-    )
-    return result.stdout
 
 
 def _crlf_project_data(booley_dir: Path) -> list[str]:
@@ -706,7 +766,7 @@ def _check_only(root: Path) -> int:
 
 
 _GUIDANCE = b"# Guidance\n\nUse LF.\n"
-_AGENT_TABLE = b'[agent]\nprovider = "claude"\nauth = "subscription"\n'
+_AGENT_TABLE = b'[agent]\ndefault = "claude"\nauth = "subscription"\n'
 _CONFIG_WITHOUT_AGENT = b"# user config\n[flows.sim]\nenabled = true\n"
 
 
@@ -953,7 +1013,6 @@ def _assert_backfill_report(output: str, missing: list[str]) -> None:
         in output
     )
     assert "would add FUSESOC_IGNORE" in output
-    assert "would `git init -b" in output
 
 
 def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> None:
@@ -969,22 +1028,13 @@ def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> N
     assert set(ignore.splitlines()) - set("# custom ignore\ntmp/\n".splitlines()) == set(
         missing
     ) | {"", "# Added by booley init — transient Booley state."}
+    # The skeleton records no Stealth choice, so no inner repository is created.
     assert {p.name for p in target.iterdir()} == {
-        ".git",
         ".gitignore",
         "booley.toml",
         "tests.toml",
         "FUSESOC_IGNORE",
     }
-    outer = subprocess.check_output(
-        ["git", "-C", str(repo), "symbolic-ref", "HEAD"], timeout=SUBPROCESS_TIMEOUT_S
-    )
-    assert (
-        subprocess.check_output(
-            ["git", "-C", str(target), "symbolic-ref", "HEAD"], timeout=SUBPROCESS_TIMEOUT_S
-        )
-        == outer
-    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
@@ -1098,10 +1148,8 @@ def test_booley_dir_check_full_init_reports_backfills_without_mutation(repo, mon
     assert _complete_snapshot(repo) == before
 
 
-def _managed_git(root: Path, *args: str) -> bytes:
-    return subprocess.run(
-        ["git", "-C", str(root), *args], capture_output=True, check=True, timeout=10
-    ).stdout
+def _managed_git(root: Path, *args: str) -> str:
+    return run_bounded_child(["git", "-C", str(root), *args], check=True, timeout=10).stdout
 
 
 def test_initial_authored_scaffolding_remains_uncommitted(repo):
@@ -1111,7 +1159,7 @@ def test_initial_authored_scaffolding_remains_uncommitted(repo):
     assert (data / "booley.toml").is_file()
     assert _managed_git(repo, "ls-files", "--stage", "-z") == before
     assert not _managed_git(data, "ls-files", "--stage", "-z")
-    assert b"booley.toml" in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
+    assert "booley.toml" in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
 
 
 # Windows CI measured 36.0s; 120s preserves the required timeout headroom.
@@ -1142,11 +1190,13 @@ def test_managed_bundle_publication_leaves_versioned_project_clean(repo, topolog
     assert _run_full_init(repo) == 0
     assert bundle.is_file()
     assert _managed_git(data, "check-ignore", "--no-index", str(bundle))
-    assert _managed_git(owner, "status", "--porcelain", "--untracked-files=all") == b""
+    assert _managed_git(owner, "status", "--porcelain", "--untracked-files=all") == ""
     assert _managed_git(owner, "ls-files", "--stage", "-z") == index
 
 
 def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
+    (repo / ".booley").mkdir()
+    (repo / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")  # inner repo
     assert _run_full_init(repo) == 0
     data = repo / ".booley"
     ignore = data / ".gitignore"
@@ -1169,8 +1219,8 @@ def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
     repaired = ignore.read_text()
     assert repaired.startswith(stale)
     assert repaired.count(".managed/\n") == 1
-    assert b".managed" not in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
-    assert b" M .gitignore" in _managed_git(data, "status", "--porcelain")
+    assert ".managed" not in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
+    assert " M .gitignore" in _managed_git(data, "status", "--porcelain")
     init_cmd._step_booley_dir(InitContext(project_root=repo))
     assert ignore.read_text() == repaired
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
@@ -1280,8 +1330,10 @@ def test_check_only_scaffold_reports_prospective_greenfield_route(repo, monkeypa
 
     output = capsys.readouterr().out
     assert "After applying the scaffold" in output, "planned scaffold needs prospective advice"
-    assert "Reopen in Container" in output
-    assert "/booley-setup new" in output
+    assert "/booley-setup new` in your agent chat here on the host" in output
+    advice = output[output.index("After applying the scaffold") :]
+    assert advice.index("/booley-setup new") < advice.index("Reopen in Container")
+    assert 'choose "Reopen in Container"' not in output
     assert "Scaffolded starter project" not in output
     assert "plan phase, here on the host" not in output
     assert "Checked initialization: pending or unresolved" in output.splitlines()[-1]
@@ -1308,6 +1360,7 @@ def test_check_only_early_failures_end_with_matching_verdict(repo, monkeypatch, 
 def test_check_only_unavailable_inner_git_branch_is_unresolved(repo, monkeypatch, capsys):
     target = repo / ".booley"
     target.mkdir(mode=0o700)
+    (target / "booley.toml").write_text("[stealth]\nenabled = true\n")
     monkeypatch.setattr(
         init_cmd.project_repositories,
         "inspect_symbolic_branch",
@@ -1356,16 +1409,270 @@ def test_legacy_init_modes_never_backfill_origin(repo, monkeypatch, capsys):
             setattr(args, mode, True)
         assert init_cmd.run_init(args, repo) == 0
         assert config.read_text(encoding="utf-8") == original
-        assert "/booley-setup new" not in capsys.readouterr().out
+        # A legacy header without the origin marker never gets the scaffold send-off.
+        output = capsys.readouterr().out
+        assert "Scaffolded starter project" not in output
+        assert "if it ran this scaffold" not in output
 
 
-def test_completed_port_init_still_refuses_scaffold(repo, monkeypatch):
+def _git(root: Path, *args: str) -> str:
+    """Run one Git command with a fixed identity and no detached auto-maintenance.
+
+    ``git commit`` may spawn ``maintenance run --auto`` in the background; it
+    creates and removes ``.git/objects/maintenance.lock`` at an arbitrary time,
+    which flakes any test that snapshots the tree around a later call.
+    """
+    result = run_bounded_child(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
+            *args,
+        ],
+        cwd=root,
+        check=True,
+    )
+    return result.stdout
+
+
+def _plain_init_with_legacy_hidden_layout(repo: Path) -> None:
+    """A completed plain init carrying an older Booley's hidden layout.
+
+    Plain init no longer hides `.booley/` (Stealth is off without an explicit
+    key), but a Project initialized before that change still has the empty inner
+    repository and the `/.booley` exclusion. Recreate that footprint by hand.
+    """
+    assert _run_full_init(repo) == 0
+    assert not (repo / ".booley/.git").exists(), "plain init must not create an inner repo"
+    _git(repo / ".booley", "init", "-q")
+    add_git_excludes(repo, [".booley"])
+    assert "/.booley" in _exclude_lines(repo)
+
+
+def _exclude_lines(repo: Path) -> list[str]:
+    return (repo / ".git/info/exclude").read_text(encoding="utf-8").splitlines()
+
+
+def _after_init_scaffold_args(**overrides):
+    """Scaffold args as `/booley-setup new` passes them: no provider or auth."""
+    args = _scaffold_args()
+    args.provider = None
+    args.auth = None
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
+
+
+def _never_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the run interactive and fail the test on any prompt."""
+    real_context = init_cmd._init_context
+
+    def interactive_context(args, project_root):
+        ctx = real_context(args, project_root)
+        ctx.interactive = True
+        return ctx
+
+    def no_prompt(*_args, **_kwargs):
+        raise AssertionError("scaffold after plain init prompted the user")
+
+    monkeypatch.setattr(init_cmd, "_init_context", interactive_context)
+    monkeypatch.setattr("builtins.input", no_prompt)
+
+
+def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys):
+    from booley.harness import doctor
+
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_legacy_hidden_layout(repo)
+    config = repo / ".booley/booley.toml"
+    assert "[agent]" in config.read_text(encoding="utf-8")
+    _never_prompt(monkeypatch)
+    capsys.readouterr()
+
+    # A check-only pass reports the removal and changes nothing.
+    before = _filesystem_snapshot(repo)
+    check = _after_init_scaffold_args(check_only=True)
+    assert init_cmd.run_init(check, repo) == 1
+    output = capsys.readouterr().out
+    assert "would remove empty inner git repository" in output
+    assert "would remove /.booley from git info/exclude" in output
+    assert _filesystem_snapshot(repo) == before
+    assert (repo / ".booley/.git").is_dir()
+
+    reset_cache()
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 0
+
+    text = config.read_text(encoding="utf-8")
+    parsed = tomllib.loads(text)
+    assert parsed["agent"] == {"default": "claude", "auth": "subscription"}, "[agent] kept"
+    assert parsed["stealth"]["enabled"] is False
+    assert "# booley-init-origin: scaffold" in text
+    assert not (repo / ".booley/.git").exists(), "no inner repository for an open scaffold"
+    assert "/.booley" not in _exclude_lines(repo)
+    assert "?? .booley/" in _git(repo, "status", "--porcelain"), "`.booley/` must be trackable"
+    assert (repo / "rtl/starter.sv").is_file()
+
+    # The result passes the same Doctor core audit as a fresh scaffold.
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "scaffold")
+    project = doctor.ProjectAudit(
+        repo,
+        repo / ".booley",
+        parsed,
+        tomllib.loads((repo / ".booley/tests.toml").read_text(encoding="utf-8")),
+        "sim",
+    )
+    reporter = doctor._Reporter.create()
+    doctor._run_core_audit(
+        project,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        _diagnostics=reporter.diagnostics,
+        _note=reporter.note_,
+    )
+    assert not [
+        (f.check_id, f.subject, f.message)
+        for f in reporter.result(0).findings
+        if f.severity in {"warn", "fail"}
+    ]
+
+
+def test_stealth_scaffold_after_plain_init_keeps_hidden_layout(repo, monkeypatch):
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_legacy_hidden_layout(repo)
+    _never_prompt(monkeypatch)
+    # The setup skill undoes plain init's untracked root `.gitattributes` before
+    # a `--stealth` scaffold, as its Stealth footprint step describes.
+    (repo / ".gitattributes").unlink()
+
+    reset_cache()
+    assert init_cmd.run_init(_after_init_scaffold_args(stealth=True), repo) == 0
+
+    parsed = tomllib.loads((repo / ".booley/booley.toml").read_text(encoding="utf-8"))
+    assert parsed["agent"] == {"default": "claude", "auth": "subscription"}
+    assert parsed["stealth"]["enabled"] is True
+    assert (repo / ".booley/.git").is_dir(), "Stealth keeps the inner repository"
+    assert "/.booley" in _exclude_lines(repo)
+    assert (repo / ".booley/cores/starter.core").is_file()
+
+
+def test_scaffold_refuses_inner_repo_with_commits(repo, monkeypatch, capsys):
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_legacy_hidden_layout(repo)
+    inner = repo / ".booley"
+    _git(inner, "add", "booley.toml")
+    _git(inner, "commit", "-qm", "history")
+    capsys.readouterr()
+    before = _filesystem_snapshot(repo)
+
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+
+    output = capsys.readouterr().out
+    assert "own git repository with history" in output
+    assert "--stealth" in output, "the refusal says how to resolve it"
+    assert _filesystem_snapshot(repo) == before, "a refused scaffold changes nothing"
+    assert "/.booley" in _exclude_lines(repo)
+
+
+def test_scaffold_refuses_symlinked_inner_git(repo, monkeypatch, capsys, tmp_path):
+    """A symlinked `.booley/.git` cannot be removed with rmtree: refuse before any change."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_legacy_hidden_layout(repo)
+    real_git = tmp_path / "elsewhere.git"
+    (repo / ".booley/.git").rename(real_git)
+    symlink_or_skip(repo / ".booley/.git", real_git)
+    capsys.readouterr()
+    before = _filesystem_snapshot(repo)
+
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+
+    assert "own git repository with history" in capsys.readouterr().out
+    assert _filesystem_snapshot(repo) == before
+    assert "/.booley" in _exclude_lines(repo)
+
+
+def test_scaffold_removal_failure_keeps_the_exclusion(repo, monkeypatch, capsys):
+    """If the inner repository cannot be removed, the exclusion stays and the run stops."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_legacy_hidden_layout(repo)
+
+    def failing_rmtree(path, *args, **kwargs):
+        raise OSError("simulated rmtree failure")
+
+    monkeypatch.setattr("booley.harness.setup.scaffold.shutil.rmtree", failing_rmtree)
+    capsys.readouterr()
+
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+
+    assert "could not remove the hidden layout" in capsys.readouterr().out
+    assert "/.booley" in _exclude_lines(repo)
+    assert (repo / ".booley/.git").is_dir()
+
+
+def test_scaffold_leaves_symlinked_booley_footprint(repo, monkeypatch, capsys, tmp_path):
+    """A symlinked `.booley` with a hidden footprint is left alone with a warning."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_legacy_hidden_layout(repo)
+    real = tmp_path / "pinned"
+    (repo / ".booley").rename(real)
+    symlink_or_skip(repo / ".booley", real)
+    capsys.readouterr()
+
+    init_cmd.run_init(_after_init_scaffold_args(), repo)
+
+    assert "is a symlink; leaving its hidden layout as is" in capsys.readouterr().out
+    assert (real / ".git").is_dir()
+    assert "/.booley" in _exclude_lines(repo)
+
+
+def test_scaffold_ownership_conflict_keeps_hidden_layout(repo, monkeypatch, capsys):
+    """Refusals precede the destructive step: a blocked write leaves the footprint."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_legacy_hidden_layout(repo)
+    constraints = repo / "constraints"
+    constraints.mkdir()
+    sdc = constraints / "starter.sdc"
+    sdc.write_text("# user-owned\n", encoding="utf-8")
+    _git(repo, "add", "constraints/starter.sdc")
+    capsys.readouterr()
+
+    args = _after_init_scaffold_args(asic=True)
+    assert init_cmd.run_init(args, repo) == 2
+
+    assert "user-owned path" in capsys.readouterr().out
+    assert (repo / ".booley/.git").is_dir()
+    assert "/.booley" in _exclude_lines(repo)
+    assert sdc.read_text(encoding="utf-8") == "# user-owned\n"
+
+
+def test_scaffold_after_init_refuses_rtl_and_other_config(repo, monkeypatch):
     _current_auth_and_image(monkeypatch)
     assert _run_full_init(repo) == 0
     config = repo / ".booley/booley.toml"
-    original = config.read_bytes()
-    assert init_cmd.run_init(_scaffold_args(), repo) == 2
-    assert config.read_bytes() == original
+
+    # The generated config holds non-ASCII comments: write it back as UTF-8
+    # (Windows defaults to cp1252) and keep "\n" line endings.
+    config.write_text(
+        config.read_text(encoding="utf-8") + '\n[project]\nname = "x"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    authored = config.read_bytes()
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+    assert config.read_bytes() == authored
+
+    config.write_bytes(authored.split(b"\n[project]")[0])
+    (repo / "top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+    assert not (repo / "tb").exists()
 
 
 def test_init_origin_ignores_external_booley_dir(repo, monkeypatch):
@@ -1440,12 +1747,7 @@ def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path,
     """Stealth init hides both `.booley` and the relocated Booley Directory."""
     root = tmp_path / "proj"
     root.mkdir()
-    subprocess.run(
-        ["git", "init", "-q", str(root)],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", "-q", str(root)], check=True)
     (root / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
     project = root / "tools" / "booley"
     project.mkdir(parents=True)
@@ -1462,3 +1764,113 @@ def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path,
     assert "/.booley" in exclude
     assert "/tools/booley" in exclude
     reset_cache()
+
+
+EXPECTED_FRESH_INIT = (
+    [
+        "Host Bootstrap",
+        "Booley Directory",
+        "agent provider and authentication policy",
+        "stealth core projections",
+        "Goalsets",
+        "Sandbox Image lifecycle",
+        "project Git-hook bundle",
+        "worktree prune guard",
+        "worktree link policy",
+        "line endings",
+        "guidance links",
+        "Interactive Mode (Reopen in Container)",
+        "Project Inventory",
+        "post-setup advisories",
+    ],
+    [
+        ("booley_dir", "current"),
+        ("agent_config", "ok"),
+        ("core_projections", "ok"),
+        ("goalsets", "ok"),
+        ("auth", "skip"),
+        ("docker_image", "current"),
+        ("git_hooks", "skip"),
+        ("project_git_hooks", "ok"),
+        ("worktree_prune_guard", "ok"),
+        ("worktree_link_policy", "warn"),
+        ("line_endings", "ok"),
+        ("guidance_links", "ok"),
+        ("interactive", "ok"),
+        ("project_inventory", "ok"),
+        ("advisories", "ok"),
+    ],
+)
+
+EXPECTED_RERUN_INIT = (
+    [
+        "Host Bootstrap",
+        "Booley Directory",
+        "agent provider and authentication policy",
+        "stealth core projections",
+        "Goalsets",
+        "Sandbox Image lifecycle",
+        "project Git-hook bundle",
+        "worktree prune guard",
+        "worktree link policy",
+        "line endings",
+        "guidance links",
+        "Interactive Mode (Reopen in Container)",
+        "Project Inventory",
+        "post-setup advisories",
+    ],
+    [
+        ("booley_dir", "current"),
+        ("agent_config", "skip"),
+        ("core_projections", "ok"),
+        ("goalsets", "current"),
+        ("auth", "skip"),
+        ("docker_image", "current"),
+        ("git_hooks", "skip"),
+        ("project_git_hooks", "current"),
+        ("worktree_prune_guard", "current"),
+        ("worktree_link_policy", "current"),
+        ("line_endings", "ok"),
+        ("guidance_links", "ok"),
+        ("interactive", "current"),
+        ("project_inventory", "ok"),
+        ("advisories", "ok"),
+    ],
+)
+
+
+def _init_banners_and_results(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Run full init once; return its step banner titles and ``(record, status)`` pairs."""
+    summaries: list[InitContext] = []
+    real_summary = init_cmd._print_summary
+
+    def capture_summary(ctx: InitContext) -> int:
+        summaries.append(ctx)
+        return real_summary(ctx)
+
+    monkeypatch.setattr(init_cmd, "_print_summary", capture_summary)
+    assert _run_full_init(repo) == 0
+    banners = re.findall(r"^Step \d+ — (.*)$", capsys.readouterr().out, re.MULTILINE)
+    (ctx,) = summaries
+    return banners, [(result.name, result.status) for result in ctx.results]
+
+
+def test_full_init_output_order_is_unchanged(repo, monkeypatch, capsys):
+    """Host init keeps its public step order and summary records (ADR 0085 refactor guard).
+
+    The literal sequences were captured from ``main`` before Project Initialization was
+    extracted; a step that is dropped, duplicated or reordered changes them.
+    """
+    _current_auth_and_image(monkeypatch)
+    (repo / ".booley").mkdir()
+    (repo / ".booley" / "AGENTS.md").write_text("# Project guide\n", encoding="utf-8")
+    # The captured sequences are a Stealth Project's (no Project trackability step).
+    (repo / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
+
+    fresh = _init_banners_and_results(repo, monkeypatch, capsys)
+    rerun = _init_banners_and_results(repo, monkeypatch, capsys)
+
+    assert fresh == EXPECTED_FRESH_INIT
+    assert rerun == EXPECTED_RERUN_INIT

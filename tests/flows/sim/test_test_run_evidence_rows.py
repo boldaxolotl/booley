@@ -14,6 +14,7 @@ from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY, FrozenTestRu
 from booley.flows.sim.acceptance import (
     SimulationAcceptanceCoordinator,
     _campaign_projection,
+    _OutcomeEvidence,
 )
 from booley.flows.sim.campaign import AcceptanceFacts, decode_simulation_projection
 from booley.flows.sim.campaign.codec import (
@@ -68,7 +69,7 @@ def test_evidence_rows_refuse_a_manifest_the_facts_do_not_name(tmp_path: Path):
 
 def test_projection_v3_carries_a_row_per_test_run_and_decodes(tmp_path: Path):
     outcome = _outcome(tmp_path, _RESET, _COUNT)
-    projection = _campaign_projection(outcome)
+    projection = _campaign_projection(_OutcomeEvidence(outcome))
 
     assert projection["$schema"] == "booley.simulation-projection/v3"
     assert projection["test_runs"] == _rows(_RESET, _COUNT, classified=False)
@@ -85,7 +86,7 @@ def test_projection_v3_carries_a_row_per_test_run_and_decodes(tmp_path: Path):
 
 
 def _v3_document(tmp_path: Path) -> dict:
-    projection = _campaign_projection(_outcome(tmp_path, _RESET))
+    projection = _campaign_projection(_OutcomeEvidence(_outcome(tmp_path, _RESET)))
     return json.loads(json.dumps({**projection, "complete": True}))
 
 
@@ -129,7 +130,7 @@ def test_simulation_and_cycle_criterion_detail_name_their_test_runs(tmp_path: Pa
     outcome = _outcome(tmp_path, _RESET, _COUNT)
     state = _state(tmp_path, outcome, cycle_test="count")
 
-    changes = SimulationAcceptanceCoordinator._derive_changes(outcome, state)
+    changes = SimulationAcceptanceCoordinator._derive_changes(_OutcomeEvidence(outcome), state)
 
     detail = {change.key: change.detail for change in changes}
     simulation = detail[f"sim_pass_{outcome.target['name']}"]
@@ -146,14 +147,14 @@ def test_criterion_detail_rows_come_from_the_authenticated_manifest(tmp_path: Pa
     state = _state(tmp_path, outcome)
     outcome.manifest_path.write_bytes(b"{}\n")
     with pytest.raises(SimulationCampaignIntegrityError):
-        SimulationAcceptanceCoordinator._derive_changes(outcome, state)
+        SimulationAcceptanceCoordinator._derive_changes(_OutcomeEvidence(outcome), state)
 
 
 def test_outside_goal_mode_a_test_with_several_test_runs_judges_no_criterion(tmp_path: Path):
     """A Criterion names a Test; several Test Runs of it leave nothing single to judge."""
     outcome = _outcome(tmp_path, _RESET, _SOAK, _FAULT)
     state = _state(tmp_path, outcome)
-    assert SimulationAcceptanceCoordinator._derive_changes(outcome, state) == []
+    assert SimulationAcceptanceCoordinator._derive_changes(_OutcomeEvidence(outcome), state) == []
 
 
 # --- Inside Goal Mode: evidence matches frozen Test Runs (ADR 0072) ---------------------
@@ -165,7 +166,9 @@ def _goal(outcome, key: str, *runs, kind: str = "simulation", **extra) -> GoalTe
 
 def _goal_changes(outcome, state, *goals: GoalTestRuns):
     frozen = FrozenTestRuns(tuple(goals))
-    return SimulationAcceptanceCoordinator._derive_changes(outcome, state, frozen=frozen)
+    return SimulationAcceptanceCoordinator._derive_changes(
+        _OutcomeEvidence(outcome), state, frozen=frozen
+    )
 
 
 def _graded(monkeypatch, grades: dict[str, str]) -> None:
@@ -273,17 +276,15 @@ def test_an_incomplete_campaign_still_records_its_matching_failure(tmp_path):
     assert change.met is False and change.detail["test_runs"] == _rows(_RESET)
 
 
-def test_facts_that_name_no_test_runs_have_no_rows(tmp_path: Path):
+def test_evidence_rows_refuse_an_observation_whose_fingerprint_is_not_recorded(tmp_path: Path):
     outcome = _outcome(tmp_path, _RESET)
     document = dict(outcome.acceptance_facts.document)
-    document["$schema"] = "booley.simulation-acceptance-facts/v1"
     document["observations"] = [
-        {
-            key: value
-            for key, value in observation.items()
-            if key not in {"test_run", "test_run_fingerprint"}
-        }
+        {**observation, "test_run_fingerprint": "sha256:" + "0" * 64}
         for observation in document["observations"]
     ]
-    older = replace(outcome, acceptance_facts=AcceptanceFacts(document))
-    assert evidence_test_run_rows(older) == []
+    forged = replace(outcome, acceptance_facts=AcceptanceFacts(document))
+    with pytest.raises(
+        SimulationCampaignIntegrityError, match="no recorded Test Run with its fingerprint"
+    ):
+        evidence_test_run_rows(forged)

@@ -13,7 +13,6 @@ from booley.flows.sim import coverage_reference
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaignValidationError,
     DurableTargetIdentity,
-    decode_coverage_campaign,
 )
 from booley.flows.sim.coverage_campaign_store import (
     publish_coverage_campaign,
@@ -31,6 +30,7 @@ from booley.flows.sim.coverage_reference import (
 )
 from tests.flows.sim.coverage_campaign_test_support import (
     corrupt_campaign_with_duplicate_negative_point,
+    decode_document,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
@@ -55,7 +55,7 @@ def _nested_campaign(origin_target: Path, *, attempt_id: str = _SIMULATION_ATTEM
         / "attempts"
         / f"0001-{attempt_id}"
     )
-    campaign = decode_coverage_campaign(_valid_document(), DurableTargetIdentity(_TARGET_IDENTITY))
+    campaign = decode_document(_valid_document(), DurableTargetIdentity(_TARGET_IDENTITY))
     return publish_coverage_campaign(attempt / "coverage-campaign", campaign).campaign
 
 
@@ -119,6 +119,23 @@ def test_reference_codec_round_trips_exact_canonical_immutable_document(tmp_path
         decoded.document["origin_invocation_id"] = 99  # type: ignore[index]
     with pytest.raises(TypeError):
         decoded.document["target"]["identity"] = "substitute"  # type: ignore[index]
+
+
+def test_building_and_encoding_a_built_reference_never_decodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reference Booley built from its own values is encoded without re-validation."""
+    target = tmp_path / "targets" / _TARGET_SELECTOR
+    nested = _nested_campaign(target)
+
+    def refuse(_raw: bytes) -> CoverageCampaignReference:
+        raise AssertionError("a Booley-built reference was decoded")
+
+    monkeypatch.setattr(coverage_reference, "decode_coverage_campaign_reference", refuse)
+
+    value = _reference(target, nested)
+
+    assert encode_coverage_campaign_reference(value).endswith(b"\n")
 
 
 @pytest.mark.parametrize(
@@ -297,19 +314,6 @@ def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path)
     message = str(caught.value)
     assert "COV_POINT_ID_DUPLICATE at /points/1/id" in message
     assert "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset" in message
-
-
-def test_reference_rejects_score_bearing_invalid_nested_campaign(tmp_path: Path) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
-    manifest = json.loads(nested.read_text())
-    manifest["collection"]["status"] = "collector_error"
-    manifest["normalization"]["status"] = "partial"
-    manifest["scoring"] = {"status": "invalid", "reason": "collector_error"}
-    nested.write_text(json.dumps(manifest))
-
-    with pytest.raises(CoverageCampaignValidationError, match="COV_INVALID_SCORING_ROLLUPS"):
-        _reference(target, nested)
 
 
 def test_resolver_decodes_authenticated_reference_bytes_during_path_swap(

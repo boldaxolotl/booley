@@ -4,8 +4,9 @@
 Subcommands:
     goal      Work with Goal Records and evidence
     chat      Open the Project's default (or --cli chosen) Agent CLI
-    worktree  Create a linked worktree with paired or snapshot Project inputs
+    worktree  Create, list, remove, or clean up linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
+    coverage  List uncovered coverage points of a finished coverage run
     doctor    Run environment health checks
     bootstrap Prepare Project-independent host resources
     init      Initialize a Project
@@ -32,11 +33,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from booley.config.agent import AGENT_CLIS
+from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
 from booley.harness import (
     cheatsheet,
-    colors,
+    coverage_cli,
     feedback_view,
     projects_view,
     resources_cli,
@@ -53,9 +55,10 @@ from booley.harness.render_md import render
 from booley.harness.setup import cleanup_cli
 from booley.harness.setup.common import configure_progress_output
 from booley.harness.terminal_status import MAX_WIDTH, section_header
-from booley.harness.terminal_table import render_table, width_budget
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table, width_budget
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import own_booley_dir
@@ -67,6 +70,7 @@ if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
+    from booley.runtime.session_admission import Sandbox
 
 # --- Constants ---
 
@@ -91,9 +95,10 @@ COMMAND_LOCATIONS = {
     "chat": CommandLocation.SESSION_RUNTIME,
     "worktree": CommandLocation.SESSION_RUNTIME,
     "cheat": CommandLocation.EITHER,
+    "coverage": CommandLocation.EITHER,
     "doctor": CommandLocation.EITHER,
     "bootstrap": CommandLocation.HOST,
-    "init": CommandLocation.HOST,
+    "init": CommandLocation.EITHER,
     "eda": CommandLocation.HOST,
     "auth": CommandLocation.HOST,
     "session": CommandLocation.HOST,
@@ -131,6 +136,7 @@ COMMAND_PROJECT_BINDINGS = {
     "chat": ProjectBinding.REQUIRED,
     "worktree": ProjectBinding.REQUIRED,
     "cheat": ProjectBinding.OPTIONAL,
+    "coverage": ProjectBinding.INDEPENDENT,
     "doctor": ProjectBinding.REQUIRED,
     "bootstrap": ProjectBinding.INDEPENDENT,
     "init": ProjectBinding.REQUIRED,
@@ -432,6 +438,7 @@ def _outer_endpoint_selection(args: argparse.Namespace) -> bool:
 
 def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
     from booley.flows.cli_selection import CliInvocation
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
     from booley.harness.endpoint_help import supports_shared_cli
 
     selected = getattr(args, "_cli_endpoint_project", None)
@@ -444,7 +451,10 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
             file=sys.stderr,
         )
         return 2
-    endpoint._cli_invocation = CliInvocation(project=selected)
+    # Flow code must not import Harness, so the command layer supplies the human advisory.
+    endpoint._cli_invocation = CliInvocation(
+        project=selected, goal_recording_advisory=warn_cli_goal_recording
+    )
     return endpoint.main(argv, **kwargs)
 
 
@@ -518,7 +528,13 @@ def _build_parser() -> argparse.ArgumentParser:
     add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
     _add_goal_subparser(sub)
-    dashboard = sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
+    dashboard = sub.add_parser(
+        "dashboard",
+        help="Open the Sandbox Dashboard",
+        description=(
+            "Open the Sandbox Dashboard: sessions, Jobs and Targets, and Run to start a Booley Flow"
+        ),
+    )
     attach = dashboard.add_mutually_exclusive_group()
     attach.add_argument("--attach-policy", action="store_true", help=argparse.SUPPRESS)
     attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
@@ -650,8 +666,9 @@ def _add_init_scaffold_arguments(init_p) -> None:
         "--scaffold",
         metavar="IP_NAME",
         help="Scaffold a new IP from scratch in a fresh repo: starter RTL, testbench, "
-        ".core, and populated config, then run the regular init steps. Interactive "
-        "wizard on a TTY; the flags below preset/replace its answers",
+        ".core, and populated config, then run the regular init steps. Asks nothing: "
+        "a missing flag below takes the default init reports, and `/booley-setup new` "
+        "runs this with your answers. May follow a plain `booley init`",
     )
     init_p.add_argument(
         "--sim-eda-tool",
@@ -696,7 +713,15 @@ def _add_init_scaffold_arguments(init_p) -> None:
 
 def _add_init_subparser(sub) -> None:
     """Add project initialization and Sandbox seeding."""
-    init_p = sub.add_parser("init", help="Set up a new Booley project")
+    init_p = sub.add_parser(
+        "init",
+        help="Set up a Booley project (in a Sandbox: Project files only)",
+        description="Set up a Booley project. On the host this is full setup. Inside a "
+        "hand-written Sandbox (for example a Codespace) it runs Project Initialization "
+        "only: guidance links, Dashboard task, git settings and line endings. It is "
+        "idempotent, so a spec can call it from onCreateCommand. A Booley-issued "
+        "Sandbox refuses it; run it on the host.",
+    )
     init_p.add_argument(
         "--check-only", action="store_true", help="Run health checks without modifying anything"
     )
@@ -764,6 +789,11 @@ def _add_bootstrap_subparser(sub) -> None:
         action="store_true",
         help="Update Host Bootstrap after upgrading Booley",
     )
+    parser.add_argument(
+        "--egress",
+        choices=EGRESS_MODES,
+        help="Record the Sandbox egress mode in the host config, then bootstrap under it",
+    )
     qa_skills = parser.add_mutually_exclusive_group()
     qa_skills.add_argument(
         "--with-qa-skills",
@@ -784,7 +814,7 @@ def _add_flow_subparser(sub) -> None:
     """Add direct Flow execution."""
     flow_p = sub.add_parser(
         "flow",
-        help="Run a Booley Flow directly (e.g. `booley flow lint --target lint`)",
+        help="Run a Booley Flow directly (e.g. `booley flow lint --target lint_soc`)",
     )
     flow_p.add_argument(
         "endpoint_name",
@@ -858,7 +888,8 @@ def _add_session_subparser(sub) -> None:
     add_project_root_alias(prepare_p, "_cli_project_session_prepare")
     session_sub.add_parser(
         "refresh",
-        help="Rebuild the configured image from current Booley sources and recreate the session",
+        help="Rebuild the configured image from current Booley sources, recreate the session "
+        "and re-apply Project Initialization without rewriting tracked files",
     )
 
 
@@ -894,14 +925,19 @@ def _add_utility_subparsers(sub) -> None:
         description=(
             "Open an interactive Agent CLI for this Project: its default, or the one --cli names."
         ),
-        usage="%(prog)s [-h] [-C PATH | --project PATH] [--cli {claude,codex}] [--] [ARGS ...]",
+        usage=(
+            "%(prog)s [-h] [-C PATH | --project PATH] [--cli {claude,codex}] "
+            "[--new-worktree | --here] [--] [ARGS ...]"
+        ),
         epilog=(
             "Arguments after `chat` and its own options are passed unchanged to the "
             "Agent CLI, after Booley's own launch arguments, for example "
-            "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex). "
-            "Booley reads -h/--help, -C/--project and --cli only before any other "
-            "argument. Put `--` first to forward them to the agent: "
-            "`booley chat -- --help`."
+            "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); "
+            "a resumed conversation reopens in the worktree it ran in. "
+            "Booley reads -h/--help, -C/--project, --cli, --new-worktree and --here only "
+            "before any other argument. Put `--` first to forward them to the agent: "
+            "`booley chat -- --help`. Claude Code's own `--worktree` is not Booley's and "
+            "goes to the agent."
         ),
     )
     chat_p.add_argument(
@@ -911,6 +947,29 @@ def _add_utility_subparsers(sub) -> None:
         help=(
             "Agent CLI to open; must be listed in booley.toml [agent] clis "
             "(default: the Project's default Agent CLI)"
+        ),
+    )
+    placement = chat_p.add_mutually_exclusive_group()
+    placement.add_argument(
+        "--new-worktree",
+        dest="chat_worktree",
+        action="store_const",
+        const="always",
+        default=None,
+        help=(
+            "Start in a new worktree `s<N>` even if the main checkout is free "
+            "(overrides [chat] worktree for this launch)"
+        ),
+    )
+    placement.add_argument(
+        "--here",
+        dest="chat_worktree",
+        action="store_const",
+        const="never",
+        default=None,
+        help=(
+            "Start in the main checkout even if another session uses it; from inside a "
+            "linked worktree, stay there (overrides [chat] worktree for this launch)"
         ),
     )
     _add_cheat_subparser(sub)
@@ -926,6 +985,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_specialist_subparser(sub)
     _add_targets_subparser(sub)
     resources_cli.add_subparser(sub)
+    coverage_cli.add_subparser(sub)
 
     # Skill adapters stay registered; top-level help advertises human commands only.
     feedback_cli.add_subparser(sub)
@@ -1178,7 +1238,10 @@ def _argv_command_index(argv: list[str], globals_parser: argparse.ArgumentParser
 
 
 def _chat_option_width(tail: list[str], position: int) -> int:
-    """Return how many tokens Booley's own `chat` option (-C/--project, --cli) takes at `position`."""
+    """Return how many tokens Booley's own `chat` option takes at `position`.
+
+    Those are -C/--project, --cli, --new-worktree and --here.
+    """
     if position >= len(tail):
         return 0
     token = tail[position]
@@ -1186,6 +1249,8 @@ def _chat_option_width(tail: list[str], position: int) -> int:
         return 2 if position + 1 < len(tail) else 1
     if token == "--cli":
         return 2 if position + 1 < len(tail) else 1
+    if token in ("--new-worktree", "--here"):
+        return 1
     if token.startswith(("--project=", "--cli=")) or (token.startswith("-C") and len(token) > 2):
         return 1
     return 0
@@ -1194,10 +1259,10 @@ def _chat_option_width(tail: list[str], position: int) -> int:
 def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], list[str]]:
     """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
 
-    Booley keeps `-C`/`--project` and `--cli` only while they lead the tail. Everything after
-    them goes to the agent CLI untouched, with one leading `--` dropped so
-    `booley chat -- --help` forwards `--help`. A leading `-h`/`--help` stays
-    Booley's: the whole argv goes to argparse, which prints the `chat` help.
+    Booley keeps `-C`/`--project`, `--cli`, `--new-worktree` and `--here` only while they
+    lead the tail. Everything after them goes to the agent CLI untouched, with one leading
+    `--` dropped so `booley chat -- --help` forwards `--help`. A leading `-h`/`--help`
+    stays Booley's: the whole argv goes to argparse, which prints the `chat` help.
     """
     tail = argv[command_index + 1 :]
     own_end = 0
@@ -1460,10 +1525,18 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     )
 
 
+def _warn_standalone_jobs(sandbox: Sandbox | None) -> None:
+    """Tell the user which Standalone Jobs die with the Sandbox about to be stopped."""
+    from booley.harness.sandbox_stop_warning import standalone_job_warnings
+
+    for line in standalone_job_warnings(sandbox):
+        print(line, file=sys.stderr)
+
+
 def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime import session_runtime as sr
 
-    result = sr.down(project_root)
+    result = sr.down(project_root, before_stop=_warn_standalone_jobs)
     if result:
         details = []
         if result.headless:
@@ -1568,7 +1641,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     try:
         load_agent_settings(project_root)
     except (OSError, ValueError, RuntimeError) as exc:
-        # RuntimeError covers BackendConfigError (invalid [agent] provider /
+        # RuntimeError covers BackendConfigError (invalid [agent] default /
         # sandbox mode) — mirror doctor, which warns-and-defaults rather than
         # tracebacking a `booley shell` on a fixable toml typo.
         print(
@@ -1665,22 +1738,14 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     return None
 
 
-def _flow_blurb(description: str) -> str:
-    """Return the first sentence of a Flow description, on one line.
-
-    Endpoint descriptions can run to paragraphs; the listing shows the lead
-    sentence whole. Width fitting belongs to the table (TTY only), so piped
-    output is never cut mid-sentence.
-    """
-    return " ".join(description.split()).split(". ", maxsplit=1)[0].strip()
-
-
 def _flow_listing(flows: list[McpToolInfo]) -> str:
     """Render available Flows for the CLI."""
+    from booley.mcp.registry import flow_blurb
+
     if not flows:
         return "  (none discovered)"
     rows = [
-        [colors.accent(flow.name), _flow_blurb(flow.description)]
+        [colors.accent(flow.name), flow_blurb(flow.description)]
         for flow in sorted(flows, key=lambda item: item.name)
     ]
     return "\n".join(render_table(["Name", "Description"], rows, width=width_budget()))
@@ -1724,8 +1789,13 @@ def _endpoint_help_candidate(args: argparse.Namespace) -> bool:
     )
 
 
-def _dispatch_endpoint(args, info: McpToolInfo, *, flow: bool) -> int:
-    """Dispatch a Flow or Specialist through its execution adapter."""
+def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: bool) -> int:
+    """Dispatch a Flow or Specialist through its execution adapter.
+
+    A shell run is a Standalone Job: it gets a Job record and a ``job.log`` copy of its output.
+    """
+    from booley.harness.standalone_job import StandaloneJob
+
     try:
         endpoint_cls = _load_mcp_tool_class(info)
     except Exception as exc:  # noqa: BLE001 — report failures at the Project plugin boundary
@@ -1740,27 +1810,41 @@ def _dispatch_endpoint(args, info: McpToolInfo, *, flow: bool) -> int:
     argv = list(getattr(args, "endpoint_args", []) or [])
     if argv and argv[0] == "--":
         argv = argv[1:]
-    endpoint = endpoint_cls()
-    if _endpoint_help_candidate(args):
-        from booley.harness.endpoint_help import supports_shared_cli, try_render_help
+    # Prepared before the endpoint exists: it reads BOOLEY_RUN_ID as its invocation identity.
+    job = StandaloneJob.prepare(project_root, args.command, info.name, argv)
+    try:
+        endpoint = endpoint_cls()
+        if _endpoint_help_candidate(args):
+            from booley.harness.endpoint_help import supports_shared_cli, try_render_help
 
-        if supports_shared_cli(endpoint):
-            try_render_help(endpoint, argv, getattr(args, "_cli_endpoint_project", None))
-        elif not runtime_context.inside_session_runtime():
-            print(
-                "ERROR: host help requires the shared CLI; inspect this custom command inside the Sandbox.",
-                file=sys.stderr,
-            )
-            return 2
-        _enforce_runtime_location(args.command)
-        runtime_context.ensure_proxy_env()
-    return _invoke_endpoint(endpoint, argv, args)
+            if supports_shared_cli(endpoint):
+                try_render_help(endpoint, argv, getattr(args, "_cli_endpoint_project", None))
+            elif not runtime_context.inside_session_runtime():
+                print(
+                    "ERROR: host help requires the shared CLI; inspect this custom command inside the Sandbox.",
+                    file=sys.stderr,
+                )
+                return 2
+            # A custom endpoint prints its own help: not a run.
+            elif job is not None:
+                job.discard()
+                job = None
+            _enforce_runtime_location(args.command)
+            runtime_context.ensure_proxy_env()
+        if job is None:
+            return _invoke_endpoint(endpoint, argv, args)
+        return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
+    finally:
+        if job is not None:
+            job.discard()
 
 
 def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     """Run a deterministic Flow through its existing entry point."""
     info = _select_endpoint(args, _discover_project_mcp_tools(project_root), "flow")
-    return info if isinstance(info, int) else _dispatch_endpoint(args, info, flow=True)
+    return (
+        info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root, flow=True)
+    )
 
 
 def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
@@ -1780,7 +1864,9 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
         flow_config=flows,
     )
     info = _select_endpoint(args, endpoints, "specialist")
-    return info if isinstance(info, int) else _dispatch_endpoint(args, info, flow=False)
+    return (
+        info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root, flow=False)
+    )
 
 
 def _target_detail_payload(
@@ -1878,6 +1964,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "session": _cmd_session,
     "targets": _cmd_targets,
     "resources": resources_cli.run,
+    "coverage": coverage_cli.run,
     "worktree": run_worktree,
     "goal": _cmd_goal,
     "dashboard": _cmd_dashboard,
@@ -1943,8 +2030,10 @@ _CONTAINER_ONLY_COMMANDS = frozenset(
     for command, location in COMMAND_LOCATIONS.items()
     if location is CommandLocation.SESSION_RUNTIME
 )
-# `session` drives the Sandbox from outside it: like `init` it needs host
-# Docker, and the sandbox has none (ADR 0016).
+# `session` drives the Sandbox from outside it: it needs host Docker, and the
+# sandbox has none (ADR 0016). `init` is dual: on the host it is full Project
+# setup; in a hand-written Sandbox it runs Project Initialization only, and a
+# Booley-issued Sandbox refuses it (see `init_cmd.run_sandbox_init`).
 _HOST_ONLY_COMMANDS = frozenset(
     command for command, location in COMMAND_LOCATIONS.items() if location is CommandLocation.HOST
 )
@@ -1979,7 +2068,10 @@ def _enforce_runtime_location(command: str | None) -> None:
 
 def _host_install_authority_error(command: str | None) -> str | None:
     """Reject host lifecycle commands imported from a noncanonical installation."""
-    if command not in _HOST_ONLY_COMMANDS or command == "bootstrap":
+    host_install_governed = command in _HOST_ONLY_COMMANDS or (
+        command == "init" and not runtime_context.inside_session_runtime()
+    )
+    if not host_install_governed or command == "bootstrap":
         return None
     from booley.runtime.host_install import host_install_error
     from booley.runtime.paths import skills_dir
@@ -2047,7 +2139,7 @@ def _require_command_project(command: str, project_root: Path) -> None:
         present = True
     if not present:
         raise ProjectRequiredError(
-            "not a Booley Project; cd into one or run `booley init` on the host."
+            f"not a Booley Project; cd into one or run {runtime_context.booley_init_hint(code=True)}."
         )
 
 
@@ -2103,7 +2195,8 @@ def _auth_project_root(args: argparse.Namespace) -> Path | None:
         # A linked worktree needs the Project Root, not `booley init`.
         raise ProjectRootDiscoveryError(
             linked_auth_error(root)
-            or "not a Booley Project; cd into one or run `booley init` on the host."
+            or "not a Booley Project; cd into one or run "
+            f"{runtime_context.booley_init_hint(code=True)}."
         )
     return None
 

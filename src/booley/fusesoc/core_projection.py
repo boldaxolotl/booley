@@ -44,10 +44,8 @@ class ProjectionResult:
 def projection_enabled(project_root: Path | str) -> bool:
     """Whether explicit stealth mode enables root-level core projections.
 
-    The old missing-key fallback remains valid for commit-message sanitation,
-    but a filesystem projection requires the project's explicit consent.
-    New setups always persist ``enabled``, so this also provides a safe legacy
-    boundary for projects using ADR 0036 resolution symlinks.
+    Like every Stealth consumer, a filesystem projection requires
+    ``[stealth] enabled = true``; a missing key means off.
     """
     stealth = _stealth_config(project_root)
     return stealth.get("enabled") is True
@@ -197,20 +195,50 @@ def projection_issues(project_root: Path | str) -> tuple[str, ...]:
     """Describe missing, stale, foreign, or disabled projections without writes."""
     root = Path(project_root)
     expected = _expected_projections(root) if projection_enabled(root) else {}
-    issues: list[str] = []
-    for destination, content in expected.items():
-        if not destination.exists():
-            issues.append(f"missing {destination.name}")
-            continue
-        if not _is_owned_projection(destination):
-            issues.append(f"foreign file blocks {destination.name}")
-            continue
-        if destination.read_text(encoding="utf-8") != content:
-            issues.append(f"stale {destination.name}")
+    issues = _projection_drift(expected)
     for candidate in root.glob(PROJECTED_CORE_GLOB):
         if candidate not in expected and _is_owned_projection(candidate):
             issues.append(f"stale {candidate.name}")
     return tuple(sorted(issues))
+
+
+def registry_issues(project_root: Path | str) -> tuple[str, ...]:
+    """Describe what :func:`reconcile_isolated_registry` would change, without writes.
+
+    Empty unless stealth resolution excludes native cores, the only case that
+    uses the private registry.
+    """
+    root = Path(project_root)
+    if not native_cores_ignored(root):
+        return ()
+    registry = isolated_registry_root(root)
+    if not registry.is_dir():
+        return ("missing private registry",)
+    expected = _expected_isolated_cores(root)
+    issues = _projection_drift(expected)
+    issues += [
+        f"stale {candidate.name}"
+        if _is_owned_projection(candidate)
+        else f"foreign {candidate.name}"
+        for candidate in registry.glob("*.core")
+        if candidate not in expected
+    ]
+    if (registry / "FUSESOC_IGNORE").exists():
+        issues.append("FUSESOC_IGNORE blocks the private registry")
+    return tuple(sorted(issues))
+
+
+def _projection_drift(expected: Mapping[Path, str]) -> list[str]:
+    """Expected projections that are missing, foreign or stale on disk."""
+    issues: list[str] = []
+    for destination, content in expected.items():
+        if not destination.exists():
+            issues.append(f"missing {destination.name}")
+        elif not _is_owned_projection(destination):
+            issues.append(f"foreign file blocks {destination.name}")
+        elif destination.read_text(encoding="utf-8") != content:
+            issues.append(f"stale {destination.name}")
+    return issues
 
 
 def _expected_projections(root: Path) -> dict[Path, str]:

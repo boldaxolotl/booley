@@ -75,13 +75,18 @@ test = [
     # (tests expecting 130 get 1); hold 7.17.0 until upstream is fixed.
     "coverage==7.17.0",
     "diff-cover==10.6.0",
+    # The Mutant generator tests parse real Verilog (kept equal to hdl-parser).
+    "pyslang==12.1.0",
+]
+# Mutant generator parser (ADR 0088). Installed in the Sandbox image; the host
+# does not need it. Exact pin, held equal to base-python-requirements.txt by
+# tests/docker/test_sandbox_dockerfile.py.
+hdl-parser = [
+    "pyslang==12.1.0",
 ]
 quality = [
     "pyright==1.1.414",
     "ruff==0.17.2",
-]
-mutation = [
-    "mutmut==3.8.1",
 ]
 dev = [
     # The repository-owned confidential vocabulary uses AES-GCM in its local
@@ -111,7 +116,8 @@ dev = [
     # the quality extra repeats these pins for a smaller hosted install.
     "diff-cover==10.6.0",
     "pyright==1.1.414",
-    "mutmut==3.8.1",
+    # Mutant generator parser (kept equal to the hdl-parser extra).
+    "pyslang==12.1.0",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
@@ -273,10 +279,13 @@ asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 strict_config = true
 strict_markers = true
+# Explicit --basetemp runs otherwise keep every passing test's tmp_path.
+tmp_path_retention_policy = "failed"
 markers = [
     "string_parameter_eda: actual string parameter receiver acceptance",
     "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
+    "sandbox_only: exercises only code that runs in the Sandbox; skipped on Windows (see .github/ci/README.md#sandbox-only-tests)",
 ]
 filterwarnings = [
     "error",
@@ -299,7 +308,8 @@ filterwarnings = [
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 source = ["booley"]
-omit = ["tests/*"]
+# Goal Mode source is not measured while its tests are not collected: see tests/conftest.py.
+omit = ["tests/*", "*/booley/goals/*"]
 branch = true
 # Raw shard artifacts are reported from a different runner. Canonical relative
 # paths also fold subprocess imports from temporary source checkouts back onto
@@ -339,6 +349,8 @@ include = [
     "src/booley/specialists/coverage_analysis_schema.py",
     "src/booley/flows/sim/coverage_analysis_input.py",
     "src/booley/flows/sim/coverage_evidence.py",
+    "src/booley/flows/sim/coverage_point_query.py",
+    "src/booley/harness/coverage_cli.py",
     "src/booley/mcp/coverage_evidence.py",
     "src/booley/specialists/coverage_input.py",
     "src/booley/specialists/coverage_analyst.py",

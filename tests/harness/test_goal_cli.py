@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.harness import colors
 from booley.harness.booley import _cmd_goal
+from booley.presentation import colors
 from tests.goals.conftest import (  # noqa: F401 — fixtures shared with Goal integration tests
     goal_mode,
     layout,
@@ -444,7 +444,8 @@ def test_no_occupying_goal_bytes(
 def test_goal_status_error_bytes(goal_mode, tmp_path, monkeypatch, capsys, error):  # noqa: F811 — shared fixture
     from booley.goals.paths import record_paths
     from booley.goals.status import status_views
-    from booley.goals.store import REPOSITORY_ID_FILE, GoalStore, GoalStoreError
+    from booley.goals.store import GoalStore, GoalStoreError
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
     from tests.goals.conftest import git
 
     location = goal_mode.worktree

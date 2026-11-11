@@ -81,6 +81,10 @@
   "reviewer": {
     "additionalProperties": false,
     "properties": {
+      "base": {
+        "description": "Review only the --scope files changed since the merge-base of COMMIT and HEAD, uncommitted changes included; problems already present before the change are reported as non-blocking pre-existing observations",
+        "type": "string"
+      },
       "category": {
         "description": "Review category: rtl or tb",
         "enum": [
@@ -99,6 +103,15 @@
         "description": "Validate inputs and preview planned work without invoking Specialists or EDA tools",
         "type": "boolean"
       },
+      "fail_on": {
+        "description": "Exit with failure when an open finding is at or above this severity; without it a completed review exits 0.",
+        "enum": [
+          "critical",
+          "major",
+          "minor"
+        ],
+        "type": "string"
+      },
       "focus": {
         "description": "Review focus category. RTL: bugs, code_style, optimization, protocol, security, spec. TB: quality.",
         "type": "string"
@@ -108,7 +121,11 @@
         "type": "string"
       },
       "spec": {
-        "description": "Path to the specification the review checks. Required for spec-focused reviews; pass the Project specification path.",
+        "description": "Path to the specification the review checks. Required for spec-focused reviews unless --spec-text is given; pass the Project specification path.",
+        "type": "string"
+      },
+      "spec_text": {
+        "description": "Specification text the review checks, instead of a --spec file.",
         "type": "string"
       },
       "steer": {

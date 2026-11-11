@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 _CPP_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
 _HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
+
+# Booley already treats ``fw/`` as the firmware directory (always an RTL prefix).
+FIRMWARE_DIR = "fw"
 
 
 class ReviewContractError(ValueError):
@@ -47,11 +50,11 @@ class ReviewScopeContract:
 
     def is_cocotb_file(self, path: str) -> bool:
         """Return whether *path* is a Python testbench in this scope."""
-        return _normalize(path) in self.cocotb_files
+        return normalize_scope_path(path) in self.cocotb_files
 
     def contains_file(self, path: str) -> bool:
         """Return whether *path* is one of the explicitly scoped sources."""
-        normalized = _normalize(path)
+        normalized = normalize_scope_path(path)
         return (
             normalized in self.cocotb_files
             or normalized in self.hdl_files
@@ -59,7 +62,8 @@ class ReviewScopeContract:
         )
 
 
-def _normalize(path: str) -> str:
+def normalize_scope_path(path: str) -> str:
+    """Return *path* with ``/`` separators and no leading ``./``."""
     value = path.replace("\\", "/").removeprefix("./")
     return str(PurePosixPath(value))
 
@@ -75,7 +79,7 @@ def resolve_review_scope(
     support: set[str] = set()
     unsupported: list[str] = []
     for raw_path in scope:
-        path = _normalize(raw_path)
+        path = normalize_scope_path(raw_path)
         suffix = PurePosixPath(path).suffix.lower()
         if suffix == ".py" and category == "tb":
             cocotb.add(path)
@@ -95,8 +99,24 @@ def resolve_review_scope(
                 if category == "tb"
                 else ""
             )
-            + "; see docs/user/CLI-REFERENCE.md. Goal Mode also accepts explicitly scoped support files."
+            + "; see CLI-REFERENCE.md (host doc, not shipped). Goal Mode also accepts explicitly scoped support files."
         )
     return ReviewScopeContract(
         frozenset(cocotb), frozenset(hdl), frozenset(support | set(unsupported))
     )
+
+
+def is_firmware_path(work_dir: Path | str, path: Path | str) -> bool:
+    """Whether *path* is firmware: a non-HDL file under the project's ``fw/`` directory.
+
+    HDL under ``fw/`` stays RTL so Specialist Source Isolation still hides it from
+    the testbench Reviewer. Absolute, ``./``, ``..`` and symlinked spellings
+    resolve to one project-relative path; outside-project paths are never firmware.
+    """
+    from booley.fusesoc.fusesoc_registry import canonical_project_path
+
+    relative = PurePosixPath(canonical_project_path(work_dir, path))
+    # Any HDL suffix keeps a file RTL, as Source Isolation's source detection does, so
+    # backups such as ``rom.sv.orig`` or ``rom.sv~`` never become firmware.
+    hdl_named = any(suffix.lower().rstrip("~") in _HDL_SUFFIXES for suffix in relative.suffixes)
+    return not relative.is_absolute() and relative.parts[:1] == (FIRMWARE_DIR,) and not hdl_named

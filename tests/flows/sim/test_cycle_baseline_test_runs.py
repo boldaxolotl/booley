@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -116,9 +117,6 @@ def test_a_baseline_test_the_candidate_does_not_run_is_never_resolved_from_the_b
     with flow._baseline_checkout(tmp_path / "baseline", links, "a" * 40) as baseline:
         assert Path(flow.args.work_dir) == tmp_path / "baseline"
         assert [run.name for run in baseline.runs_of("sim")] == ["stress+soak@9"]
-        assert flow._role_selection("sim", _MAP, "baseline") == SelectedTestRuns(
-            baseline.runs_of("sim")
-        )
 
     assert Path(flow.args.work_dir) == tmp_path
     assert dict(baseline.refusals) == {
@@ -226,6 +224,7 @@ def test_a_baseline_that_owns_an_option_of_the_test_run_refuses_it():
 
 def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, monkeypatch):
     """A baseline that cannot run the Test Run gets no campaign and no prerequisite."""
+    from booley.flows.sim.flow import OrdinaryCampaignPlanning, PlannedTarget
     from booley.flows.target_test_plan import build_target_test_plan
     from booley.targets.catalog import TargetCatalog
     from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
@@ -246,9 +245,21 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
     monkeypatch.setattr(
         flow, "_planned_baseline_request", lambda *_args: pytest.fail("baseline was planned")
     )
+    monkeypatch.setattr(flow, "_simulation_execution", MagicMock)
+    tests = {"sim_core": ["coremark"]}
     try:
+        baselines, errors = flow._plan_baseline_targets(["sim_core"], tests)
+        # The decision refuses the only link, so no baseline Target runs.
+        assert errors == []
+        assert baselines is not None
+        assert baselines.targets == ()
+        planning = OrdinaryCampaignPlanning(
+            (PlannedTarget("sim_core", flow._target_handles["sim_core"], MagicMock()),),
+            baselines,
+            tests,
+        )
         requests, prerequisites = flow._plan_campaign_baselines(
-            tmp_path / "invocation", None, ["sim_core"], {"sim_core": ["coremark"]}
+            tmp_path / "invocation", None, planning
         )
     finally:
         flow.publication_resources.close()
@@ -271,7 +282,7 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
 def test_campaign_criterion_names_why_the_comparison_is_inconclusive(tmp_path: Path):
     from booley.criteria.state import DevelopmentState
     from booley.criteria.templates import cycle_count_criterion_key
-    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator
+    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator, _OutcomeEvidence
     from booley.flows.test_runs import build_test_run
     from tests.flows.sim.test_campaign_test_runs import _hdl_plan, _run_campaign
 
@@ -289,7 +300,9 @@ def test_campaign_criterion_names_why_the_comparison_is_inconclusive(tmp_path: P
     state.init_criteria({key: True}, criterion_params={key: params}, strict=True)
 
     def detail(refusals):
-        (change,) = SimulationAcceptanceCoordinator._derive_changes(outcome, state, refusals)
+        (change,) = SimulationAcceptanceCoordinator._derive_changes(
+            _OutcomeEvidence(outcome), state, refusals
+        )
         return change.met, change.detail
 
     assert detail({(selector, "count@1"): "baseline revision abc cannot apply the seed"}) == (
@@ -323,11 +336,15 @@ def test_a_cocotb_baseline_without_a_registry_discovers_the_test():
 
 
 def _baseline_fact(
-    test_run: str | None, fingerprint: str = "sha256:" + "9" * 64, *, selector: str = "ref"
+    test_run: str, fingerprint: str = "sha256:" + "9" * 64, *, selector: str = "ref"
 ) -> dict:
-    cycle: dict[str, object] = {"test": "stress", "cycle_count": 100, "unit": "cycles"}
-    if test_run is not None:
-        cycle |= {"test_run": test_run, "test_run_fingerprint": fingerprint}
+    cycle: dict[str, object] = {
+        "test": "stress",
+        "test_run": test_run,
+        "test_run_fingerprint": fingerprint,
+        "cycle_count": 100,
+        "unit": "cycles",
+    }
     target = {"role": "cycle_count_baseline", "selector": selector}
     target |= {"vlnv": "local:lib:core:1", "name": selector}
     return {
@@ -360,21 +377,6 @@ def test_a_criterion_binds_only_the_baseline_observation_of_the_candidates_test_
     assert _bound_baseline((changed_inputs,), params, "stress", current) == (None, "mismatched")
     # No candidate observation: nothing to compare, so nothing binds.
     assert _bound_baseline((same,), params, "stress", None) == (None, "mismatched")
-
-
-def test_facts_older_than_test_runs_still_bind_by_test():
-    from booley.flows.sim.acceptance import _bound_baseline
-
-    params = {"test": "stress", "_baseline_target": "ref", "cycle_count_increase_at_most": 5}
-    legacy = _baseline_fact(None)
-    assert _bound_baseline((legacy,), params, "stress", {"test": "stress"})[1] == "observed"
-    # A candidate observation that names its Test Run needs a baseline that does too.
-    named = {
-        "test": "stress",
-        "test_run": "stress@1",
-        "test_run_fingerprint": "sha256:" + "9" * 64,
-    }
-    assert _bound_baseline((legacy,), params, "stress", named) == (None, "mismatched")
 
 
 def test_prerequisite_facts_carry_the_baseline_work_items_test_run():

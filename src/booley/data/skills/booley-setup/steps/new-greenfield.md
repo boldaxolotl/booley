@@ -4,6 +4,15 @@
 > (or `greenfield`): a project **born with Booley** (`booley init --scaffold`),
 > not a port of existing RTL. It replaces the plan phase (Steps 0–1) with a
 > lightweight grill; the shared Steps 3–4 and report-writing Step 6 run at the end.
+>
+> **Run it on the host, after plain `booley init`.** The grill and the
+> `booley init --scaffold` run happen there; only the shared steps after the
+> scaffold need the container. If you are invoked inside the container on a repo
+> that is not yet scaffolded, stop and tell the user to run `/booley-setup new`
+> on the host (`booley init` refuses in the container).
+>
+> **Check first:** when `SETUP-PLAN.md` is approved with `scaffold: applied`, skip
+> the grill below and take that branch at the end of this file.
 
 In the initial scaffold, every flow is green by construction, including
 conventional simulation and lint fail-path fixtures that let deep Doctor prove known-bad inputs fail, so there is
@@ -28,6 +37,8 @@ and a plain-English reason. Use the same format for every question:
 
 The grill covers:
 
+- the IP name for `booley init --scaffold <name>` (lowercase `[a-z][a-z0-9_]*`;
+  recommend the folder name when it is a valid name);
 - which flows to enable (ASIC synthesis? FPGA, and the part?);
 - when ASIC synthesis is enabled, synthesis mode: `physical` (recommended default,
   Yosys + OpenROAD with constrained timing and SDC) or `logical` (Yosys mapped
@@ -52,16 +63,34 @@ to confirm it. Do not write config or scaffold the project before confirmation.
 Then record the answers in a minimal `SETUP-PLAN.md` (decision sheet + approval
 only):
 
+- **`SETUP-PLAN.md` approved with `scaffold: applied`** (checked first): the
+  grill and scaffold already ran on the host. Do not re-grill; continue with
+  Step 3 (optional), Step 4, Step 6 and Step 7 as below.
 - **Repo not yet scaffolded** (no `.core`, no RTL): run
-  `booley init --scaffold <name>` on the host with the flags matching the
-  answers (`--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`, `--asic`/`--no-asic`,
-  `--synth-mode logical|physical`, `--fpga-part`), plus `--stealth` when the user
+  `booley init --scaffold <name>` on the host, passing **every** answer as a flag
+  (`booley init --scaffold` asks nothing and defaults a missing flag):
+  `--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`, `--asic`/`--no-asic`,
+  `--synth-mode logical|physical` (only with ASIC), `--fpga-part <part>` (only
+  when FPGA is on), plus `--stealth` when the user
   confirmed Yes/hidden in the grill (it writes `enabled = true` and puts the
   scaffold cores under `.booley/cores/`); unattended setup omits it, since
   row 20 keeps `enabled = false` there. Omit `--synth-mode` when
-  ASIC is disabled: an explicit mode with `--no-asic` is rejected. After a
+  ASIC is disabled: an explicit mode with `--no-asic` is rejected. Do not pass
+  `--provider` or `--auth`: plain `booley init` already recorded `[agent]`, and
+  the scaffold keeps it without asking again. Without `--stealth`, the scaffold
+  also removes an empty inner `.booley` repository and `/.booley` git exclusion
+  that an older plain init may have set up; if it refuses because that inner
+  repository has commits, show the user its message (rerun with `--stealth`, or
+  move the history away) and change nothing yourself. Before a `--stealth`
+  scaffold over an earlier plain init, undo that init's non-Stealth line-ending
+  edit as `SKILL.md`'s Stealth footprint step describes; the scaffold's init
+  then hides `.booley/` and creates its repository. After a
   `--stealth` scaffold, commit `.booley/` in its own repository before the
   Doctor gate, or `project.core-file-untracked` blocks it.
+
+  When the scaffold succeeds, record `scaffold: applied` and the exact command in
+  `SETUP-PLAN.md` §3. Then tell the user to **Reopen in Container** and re-invoke
+  `/booley-setup new` there; that session takes the first branch above.
 - **Already scaffolded** (populated `.booley/` and a `.core`): don't
   re-ask what the scaffold already fixed — read the choices from the config,
   confirm them in the grill message as `pre-set`, and record them in SETUP-PLAN.
@@ -74,7 +103,7 @@ only):
 - **Repo has existing RTL/`.core` but isn't scaffolded**: it's a port — run
   the normal plan phase instead of guessing.
 
-Then **Reopen in Container** and run **Step 3 (optional — offer it) and Step 4
+Then, in the container, run **Step 3 (optional — offer it) and Step 4
 (the doctor gate)**. Use plain `booley doctor` while fixing the scaffold, then
 follow Step 4's single final deep gate over the settled files; this summary does
 not schedule an additional run. Do **not** declare the project ready until both

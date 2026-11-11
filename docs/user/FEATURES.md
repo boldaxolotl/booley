@@ -28,7 +28,7 @@ New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, T
 A Booley Flow (`sim`, `lint`, `synth`, `fpga`) looks the same no matter which Developer Agent calls it or which EDA tool runs underneath.
 
 - **Claude Code or Codex.** Booley exposes its Flows as MCP tools, which both Claude Code and Codex call natively. Switch Developer Agents and the Flows, Targets, and results stay the same ([details](#llm-backend-selection)).
-- **Same call and result format, whichever EDA tool.** `sim` takes the same call and reports its verdict in the same normalized format whether the Target uses Verilator or Icarus; `lint` does the same for Verilator and Verible. The verdict itself comes from the tool the Target names, so two tools can still disagree on the same design. The tool can come from the Sandbox Image or from a licensed install on the host ([SANDBOX.md](SANDBOX.md#commercial-eda-provisioning)); the Developer Agent drives it the same way.
+- **Same call and result format, whichever EDA tool.** `sim` takes the same call and reports its verdict in the same normalized format whether the Target uses Verilator or Icarus; `lint` does the same for Verilator and Verible. The verdict itself comes from the tool the Target names, so two tools can still disagree on the same design. Open-source tools ship in the Sandbox Image, and Vivado comes from a licensed install on a Linux x86-64 host ([SANDBOX.md](SANDBOX.md#commercial-eda-provisioning)); the Developer Agent drives it the same way.
 - **Clear results instead of raw logs.** Every Flow returns a definite verdict, keeping failures, timeouts, inconclusive runs, and setup errors distinct, along with structured lint findings or synthesis metrics. Logs, waveforms, and reports land in predictable places. The Developer Agent acts on a clear result instead of guessing from noisy EDA output, and Goal Mode can trust that result as evidence.
 
 The [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.md) lists which EDA tools each Flow supports.
@@ -73,7 +73,7 @@ Specialists (the Reviewer, Mutation Tester, and Coverage Analyst) are separate L
 A Developer Agent could spawn its own subagent, but then it writes the brief, decides what the subagent sees, and reads back a free-form reply. Specialists close those gaps:
 
 - **Booley writes the brief** from expert-written guides. In Goal Mode the Developer Agent can't add its own framing, so it can't steer the verdict.
-- **Each side is judged against the spec, not against the other side.** The RTL and the testbench should be independent readings of the spec. A testbench Reviewer that could read the RTL would check the tests against what the RTL does, not what the spec requires, and miss bugs where both sides share the same misreading. So the testbench Reviewer sees only the testbench and the spec, and the RTL Reviewer doesn't see the testbench.
+- **Each side is judged against the spec, not against the other side.** The RTL and the testbench should be independent readings of the spec. A testbench Reviewer that could read the RTL would check the tests against what the RTL does, not what the spec requires, and miss bugs where both sides share the same misreading. So the testbench Reviewer sees only the testbench and the spec (plus firmware, as read-only context, outside Goal Mode), and the RTL Reviewer doesn't see the testbench.
 - **Results count.** Findings come back in a structured form Booley validates, and in Goal Mode they are evidence that can meet a review Goal.
 
 ## Waveform-Based Debug
@@ -112,7 +112,7 @@ To attach waivers to a lint Target, see the
 
 ## LLM Backend Selection
 
-Booley works with either Developer Agent client: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic). Pick one per project via `booley.toml [agent] provider`; the Developer Agent and every Specialist then run on that single provider. Each platform brings its own agentic runtime, MCP tool integration, and execution model, which Booley drives through a unified interface.
+Booley works with either Developer Agent client: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic). `booley.toml [agent] default` picks the one the Developer Agent runs on, and `[agent] clis` can list both so a Specialist runs on the other CLI when its model needs it ([details](CONFIG.md#agent-clis-agent)). Each platform brings its own agentic runtime, MCP tool integration, and execution model, which Booley drives through a unified interface.
 
 Both backends support **subscription-based auth** alongside API billing: a Claude Pro/Max subscription (Claude Code) or a ChatGPT/Codex subscription (Codex CLI). That means you can run Booley on an existing subscription instead of paying per-token API costs, which matters for a token-hungry workflow like RTL development. See [Sign-in and billing](SETUP.md#sign-in-and-billing) for details.
 

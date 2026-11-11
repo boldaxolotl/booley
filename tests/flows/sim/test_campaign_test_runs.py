@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -242,7 +241,7 @@ def _run_campaign(tmp_path: Path, plan):
         NewCampaignRunRequest,
         SimulationCampaign,
     )
-    from tests.flows.sim.test_campaign_phase6 import _admission, _NoEdaExecutor
+    from tests.flows.sim.campaign_test_support import _admission, _NoEdaExecutor
 
     return SimulationCampaign(_NoEdaExecutor()).run(
         NewCampaignRunRequest(
@@ -290,14 +289,15 @@ def test_unnamed_invocation_observation_is_named_by_its_test_run(tmp_path: Path)
 def test_tests_an_unfiltered_cocotb_batch_discovered_carry_its_seed():
     from booley.flows.sim.campaign.test_run_binding import observation_test_runs
 
-    item = {"test_runs": (test_run_document(build_test_run(None, seed=9)),)}
+    target = {"selector": "sim"}
+    item = {"target": target, "test_runs": (test_run_document(build_test_run(None, seed=9)),)}
     observed = ({"test": "found_b"}, {"test": "found_a"})
     fingerprint = build_test_run(None).fingerprint
     assert observation_test_runs(item, observed) == (
         ("found_b@9", fingerprint),
         ("found_a@9", fingerprint),
     )
-    unseeded = {"test_runs": (test_run_document(build_test_run(None)),)}
+    unseeded = {"target": target, "test_runs": (test_run_document(build_test_run(None)),)}
     assert [name for name, _ in observation_test_runs(unseeded, observed)] == [
         "found_b",
         "found_a",
@@ -307,7 +307,7 @@ def test_tests_an_unfiltered_cocotb_batch_discovered_carry_its_seed():
 def test_an_observation_without_a_test_run_in_its_work_item_is_refused():
     from booley.flows.sim.campaign.test_run_binding import observation_test_runs
 
-    item = {"test_runs": (test_run_document(_SOAK),)}
+    item = {"target": {"selector": "sim"}, "test_runs": (test_run_document(_SOAK),)}
     with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
         observation_test_runs(item, ({"test": "reset"},))
     with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
@@ -350,8 +350,8 @@ def _stored_result(tmp_path: Path):
     from booley.flows.sim.campaign import CampaignPolicy, NewCampaignRunRequest, SimulationCampaign
     from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
     from booley.flows.sim.campaign.store import CampaignStore
+    from tests.flows.sim.campaign_test_support import _admission, _plan
     from tests.flows.sim.test_campaign_characterization import _NoVerdictExecution
-    from tests.flows.sim.test_campaign_phase5_adversarial import _plan, _unmanaged
 
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
     execution = _NoVerdictExecution(eda_tool="verilator", cocotb=True)
@@ -362,7 +362,7 @@ def _stored_result(tmp_path: Path):
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     store = CampaignStore(invocation / "targets/sim/campaign")
@@ -406,15 +406,6 @@ def test_result_v3_round_trips(tmp_path: Path):
 @pytest.mark.parametrize(
     ("alter", "message"),
     [
-        (lambda document: document["observations"][0].pop("test_run"), "exact fields"),
-        (lambda document: document["observations"][0].update(test_run=""), "test_run"),
-        (lambda document: document["observations"][0].update(test_run=7), "test_run"),
-        (
-            lambda document: document["observations"].append(
-                copy.deepcopy(document["observations"][0])
-            ),
-            "observation test names must be unique",
-        ),
         (lambda document: document.update({"$schema": "booley.simulation-result/v4"}), "schema"),
     ],
 )

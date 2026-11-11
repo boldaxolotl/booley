@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 CONFIGURED_TOML = """\
 [project]
@@ -142,12 +142,7 @@ PUBLISHED_ORIGIN = "https://github.com/boldaxolotl/booley-prj-picorv32.git"
 
 def _git(repo: Path, *args: str) -> None:
     identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
-    subprocess.run(
-        ["git", "-C", str(repo), *identity, *args],
-        check=True,
-        capture_output=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "-C", str(repo), *identity, *args], check=True)
 
 
 def _publish(project: Path, origin: str, toml: str, *, fetched: bool = True) -> None:
@@ -264,7 +259,7 @@ class TestAdvisorySendOff:
         toml.write_text(
             init_cmd._insert_agent_fields(
                 toml.read_text(encoding="utf-8"),
-                {"provider": "claude", "auth": "subscription"},
+                {"default": "claude", "auth": "subscription"},
             ),
             encoding="utf-8",
         )
@@ -389,8 +384,14 @@ class TestAdvisorySendOff:
 
         init_cmd._step_advisories(ctx)
 
-        assert "Scaffolded starter project" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "Scaffolded starter project" in out
         assert ctx.results[-1].detail == "scaffold"
+        # Host first: the skill runs here, and it says when to Reopen in Container.
+        assert "`/booley-setup new` in your agent chat here on the host" in out
+        assert "tells you when to Reopen in Container" in out
+        assert out.index("/booley-setup new") < out.index("Reopen in Container")
+        assert 'choose "Reopen in Container"' not in out
 
     def test_seed_run_does_not_claim_unfinished_skills(self, capsys):
         """`--seed` prints no advisories, so there is nothing "above" to finish."""
@@ -470,8 +471,8 @@ def test_init_guidance_does_not_offer_retired_notifications(project, capsys, con
 
 
 def test_summary_rows_use_the_shared_status_glyphs(project, monkeypatch, capsys):
-    from booley.harness import colors
     from booley.harness import terminal_status as ts
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     ctx = InitContext(project_root=project)
@@ -559,3 +560,24 @@ def test_unrecorded_legacy_projects_keep_generic_advice(project, capsys):
                 assert "plan phase" in output
             assert (project / ".booley/booley.toml").read_bytes() == before
             (project / ".booley/AGENTS.md").unlink(missing_ok=True)
+
+
+def test_plain_init_without_rtl_suggests_new_ip_setup(project, capsys):
+    """No RTL or `.core`: a new IP starts with `/booley-setup new` on the host."""
+    (project / ".booley" / "booley.toml").write_text(
+        init_cmd.BOOLEY_TOML_SKELETON, encoding="utf-8"
+    )
+    ctx = InitContext(project_root=project)
+
+    init_cmd._step_advisories(ctx)
+    assert init_cmd._print_summary(ctx) == 0
+
+    out = capsys.readouterr().out
+    assert next(r for r in ctx.results if r.name == "advisories").detail == "new-ip"
+    assert "No RTL or `.core` files found" in out
+    assert "run `/booley-setup new` in your" in out
+    assert "here on the host" in out
+    assert "New IP: run `/booley-setup new`" in out
+    # The port checklist still follows, unchanged.
+    assert "Step 0, the plan phase" in out
+    assert 'choose "Reopen in Container"' not in out

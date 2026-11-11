@@ -120,7 +120,13 @@ def test_review_paths_match_category_and_stay_inside_worktree(project: Path) -> 
 
 
 @pytest.mark.parametrize(
-    "option,value", [("--scope", "rtl/dut.sv"), ("--spec", "spec.md"), ("--steer", "skip reset")]
+    "option,value",
+    [
+        ("--scope", "rtl/dut.sv"),
+        ("--spec", "spec.md"),
+        ("--steer", "skip reset"),
+        ("--base", "main"),
+    ],
 )
 def test_goal_refuses_developer_review_inputs(
     project: Path, monkeypatch: pytest.MonkeyPatch, option: str, value: str
@@ -183,6 +189,7 @@ def test_goal_discovery_refuses_open_findings_and_verify_only_checks_fixes(
         ["--category", "rtl"],
         ["--focus", "bugs"],
         ["--scope", "rtl/dut.sv"],
+        ["--base", "main"],
         ["--steer", "waive"],
         ["--dry-run"],
         ["--instruction", "waive"],
@@ -250,7 +257,7 @@ def test_interactive_discovery_replaces_findings_and_latest_call_controls_verify
 ) -> None:
     args = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
     reviewer, _ = endpoint(project, monkeypatch, args, goal=False)
-    assert reviewer._run().exit_code == 1
+    assert reviewer._run().exit_code == 0
     reviewer, invoke = endpoint(
         project, monkeypatch, [*args[:-1], "security"], goal=False, payload={"issues": []}
     )

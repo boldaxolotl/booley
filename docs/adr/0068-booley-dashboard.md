@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration; amended 2026-11-08: readable process keys; amended 2026-11-08: unseen Dashboards and the open command, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; Read-only superseded for human launches by ADR 0086, 2026-10-28; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration; amended 2026-11-08: readable process keys; amended 2026-11-08: unseen Dashboards and the open command, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -8,6 +8,10 @@ in one Sandbox, so the human needs one place to see all of them. The Booley
 Dashboard is a read-only terminal view, one per Sandbox, opened by
 `booley dashboard`. The Console retires; its Textual code may be reused.
 The overview stays concise; session, Goal, and Job details have separate views.
+
+Amended by [ADR 0092](0092-measure-commits-against-target-metrics.md): when
+Goal Mode is removed, the Goal status summary, Goal views and Goal-change
+proposals below are replaced by one session-row line about Measured Commits.
 
 ## Decisions
 
@@ -328,12 +332,16 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   through process attribution so registration can migrate a previous thread row
   and establish handle aliases. Historical allocations are never renumbered.
   Migration retains the predecessor's worktree when a call omits `work_dir`.
-  A thread-ownership alias redirects delayed peerless observations only while
-  that marked process is proven running in the same namespace; cached outcomes
-  are normalized again before observer ordering.
+  No alias records thread ownership. A late peerless completion that began
+  before tab ownership lands on the thread row until that thread's next
+  attributed call folds it into the tab, or quiet expiry removes it. Until then
+  its own response may carry a false shared-worktree warning and the Dashboard
+  may show two rows with the tab's handle.
   Marked process rows follow process liveness rather than thread quiet expiry.
 - **Activity boundaries.** The lifecycle hook uses the same process identity
-  and validates the same handle-map contract as the registry. Only the main
+  and reads the handle map with a bounded, stricter parse than `HandleStore`
+  and a marker exists only where `HandleStore` accepted the map. A map the
+  hook cannot read keeps thread attribution. Only the main
   conversation's events update that tab's activity. A separately launched inner
   Codex CLI, such as `codex exec`, retains its own thread attribution and cannot
   update the outer tab's signal. The nearest CLI must belong to the marked
@@ -363,6 +371,17 @@ Field use showed the overview was hard to scan: each session was one long `·`-j
 - **Session detail.** Goals use one column, still grouped by status. Only the session's unfinished Jobs are listed there; its finished Jobs are reached through the Jobs window's owner filter.
 - **Jobs filters.** Running (queued or running), Finished (newest 50) and All. The owner filter cycles All, each session handle, and Standalone, and the Jobs window always opens on All. An empty list says why it is empty and which filter shows something.
 - **Doctor freshness.** A due result reads ` · recheck due`, in the attention color, instead of ` · stale`.
+
+## Amendments (2026-10-28)
+
+### 2026-10-28: Human launches (ADR 0086)
+
+[ADR 0086](0086-launch-flows-and-specialists-from-the-dashboard.md) lets the
+human launch Booley Flows and built-in Specialists from the Dashboard as
+Standalone Jobs, and adds a Targets window. This supersedes the **Read-only**
+bullet for those launches only. Goal-change approvals stay with chat,
+abandoning stays on the CLI, and the Dashboard still never cancels, retries,
+or otherwise changes a Job it did not start.
 
 ## Amendments (2026-10-29)
 
@@ -452,3 +471,22 @@ Consequences:
 
 - A non-routed call from a session that was routed before, for example after its worktree was deleted or when the peer lookup fails for one call, keeps the row's previous checkout under the 2026-10-15 rule "Migration retains the predecessor's worktree when a call omits `work_dir`", until registry maintenance prunes the row.
 - The peer lookup moves onto the request path of every call without `work_dir`, including poll and status loops. For Codex the owner walk runs twice per call (routing, then attribution). There is no cache.
+
+## Amendments (2026-11-10): Handles follow worktrees, conversation records (#2610)
+
+An interactive worktree is named after its session's handle (ADR 0082): `S3` works in `worktrees/s3`. The 2026-10-29 Handle pruning amendment let a handle go while its worktree lived and restart numbering at 1 after a full prune, so a new session could be handed `S3` while `worktrees/s3` or `booley/s3` still existed. This amendment supersedes two rules of that amendment and adds the conversation records ADR 0082 Resume needs.
+
+- **Session entries (supersedes "Session entries" above).** An entry, with all its aliases, also stays while an entry named `worktrees/s<N>` exists in the Main Booley Directory for the entry's handle `S<N>`. Any directory entry counts, even one Git does not register, so a half-created worktree keeps its name. Once the worktree is removed, the next prune frees the handle unless another rule keeps it. A label that is not `S<N>` has no worktree.
+- **Numbering (supersedes "Numbering" above).** A map left with no entries still restarts at 1, but allocation, whether after a restart or not, skips every `S<N>` whose worktree `worktrees/s<N>` exists (any directory entry), or whose branch `booley/s<N>` (RTL repository) or `booley-worktree/s<N>` (Versioned Booley Directory) exists, or any branch below either name (Git refuses `booley/s3` while `booley/s3/x` exists). The branches of both repositories are read lazily, at most two Git calls per allocation, with a 5 s limit and `GIT_OPTIONAL_LOCKS=0`. A Git failure (a repository Git cannot read, Git missing, timeout) is logged as `Git branch list unavailable`, and allocation then skips only numbers whose worktree directory exists: allocation never fails because Git is unavailable. Every Session allocation path loads the map through this rule; Job maps are unaffected. Handle numbers can therefore have gaps.
+- **Conversation records.** The session-activity hook script also handles `SessionStart`, for Claude Code (`startup`, `resume`, `clear`, `compact`) and Codex. It writes no activity signal. When the payload's `cwd` is inside an interactive worktree it writes `worktrees/.conversations/<sha256(client + ":" + conversation id)>.json` in the Main Booley Directory (Common Booley State) with `schema`, `client`, `conversation_id` (Claude `session_id`, Codex thread id), `cwd`, `worktree` (name), `handle`, `process_key`, `at` (UTC RFC 3339), and `git_stamp` (`st_mtime_ns` of the worktree's `.git` file). `booley chat` reads them to resume a conversation in its worktree (#2614, ADR 0082 Resume).
+  - **Inside a worktree.** The hook's rule is the registered linked worktree of `interactive_worktree_name`: the first component below `worktrees/` matches the worktree-name pattern and `worktrees/<name>/.git` is a file. A start in the main checkout, a subdirectory outside `worktrees/`, or without a usable absolute `cwd` writes no record and removes the conversation's existing record, so a conversation started in `s3` and resumed in the main checkout stops naming `s3`. A later start of the same conversation otherwise replaces the record, so it names the worktree last used. A conversation without a record resumes in the main checkout (ADR 0082 Resume). A Codex subagent (`agent_id` set) records nothing.
+  - **Process key and handle.** Claude Code: the `CLAUDE_PID` ancestor when it is one, else the nearest ancestor whose command is `claude`. Codex: the marked `booley chat` owner, else `null`, because ordinary Codex keeps thread identity (2026-10-15) and its nearest Codex ancestor may be a daemon that belongs to no tab. `handle` is the label the Session handle map gives that key (for Codex also `codex:<thread>`), else `null`; an unreadable map still leaves the record written.
+  - **Retention.** A record lives while its worktree directory exists. The store holds at most 4096 records. At that bound the hook first removes records whose worktree directory is gone, then, if none was removed, refuses the new record with a stderr note (the hook still exits 0). Rewriting an existing record is always allowed. Files the hook cannot read as a record are never removed. Storage reached through a symlink is refused.
+  - **Same-name worktrees.** A record names its worktree by name only. A worktree of the same name can be created only after the old one and both its branches are gone, so a reader treats a worktree whose `.git` file has an `st_mtime_ns` other than the record's `git_stamp` as a different worktree and ignores the record. The comparison is for equality within one filesystem, so it needs no clock agreement.
+  - **Doctor.** The activity-hook check now requires a `SessionStart` hook in both client policies and warns until the Sandbox Image is rebuilt.
+
+Consequences:
+
+- Images built before this change record no conversations; Doctor warns (`sandbox.activity-hooks-unavailable`) until they are rebuilt.
+- A handle number whose worktree or branch was left behind stays unused until that worktree and both branches are removed.
+- A removed worktree keeps its records until the store reaches the bound; they are inert because the worktree is gone.

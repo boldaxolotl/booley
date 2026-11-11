@@ -290,8 +290,9 @@ def test_spec_from_declared_goal_is_resolved_by_specialist(layout):
 
 
 def test_module_entrypoint_defines_dispatch_before_main(goal_mode):
-    import subprocess
     import sys
+
+    from tests.subprocess_budget import run_bounded_child
 
     # Execute the actual module entrypoint in another interpreter. Replace only
     # the outer event loop so the test checks definitions before service startup.
@@ -310,14 +311,7 @@ runpy.run_module("booley.mcp.server", run_name="__main__")
     env = dict(os.environ)
     env.pop("CLAUDECODE", None)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    result = run_bounded_child([sys.executable, "-c", script], env=env, timeout=20)
     assert result.returncode == 0, result.stderr
 
 
@@ -623,14 +617,14 @@ def test_non_git_ordinary_directory_is_not_bound_to_an_unrelated_goal(goal_mode,
 
 
 def test_goal_path_with_missing_git_metadata_refuses(goal_mode, monkeypatch):
-    from booley.goals import store as store_module
     from booley.goals.store import WorktreeIdentityError
+    from booley.runtime import worktree_identity as identity_module
     from booley.runtime.project_repositories import GitDirectoryInspectionError
 
     def missing(_path):
         raise GitDirectoryInspectionError("worktree metadata missing")
 
-    monkeypatch.setattr(store_module, "git_directories", missing)
+    monkeypatch.setattr(identity_module, "git_directories", missing)
     with pytest.raises(WorktreeIdentityError, match="metadata missing"):
         resolve_call_context({"work_dir": str(goal_mode.worktree)})
 

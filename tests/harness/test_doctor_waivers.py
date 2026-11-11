@@ -8,7 +8,8 @@ from booley.audit.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
-from booley.harness import colors, doctor
+from booley.harness import doctor
+from booley.presentation import colors
 
 
 def _write(tmp_path, body: str) -> None:
@@ -173,6 +174,9 @@ def test_reporter_dedupes_one_subject_but_not_another(capsys):
 
 def test_subject_waiver_does_not_hide_sibling_finding(tmp_path, capsys):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    # Stealth requires both entries, so each subject yields its own finding.
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
     _write(
         tmp_path,
         """
@@ -180,13 +184,17 @@ version = 1
 [[waiver]]
 check = "project.git-excludes-missing"
 subject = ".booley"
-reason = "The project uses the approved open footprint."
+reason = "The project hides .booley another way."
 permanent = true
 """,
     )
     reporter = doctor._Reporter.create(load_doctor_waivers(tmp_path))
 
-    doctor._check_devcontainer_excludes(tmp_path, reporter.pass_, reporter.warn_)
+    reporter.diagnostics(
+        doctor.inspection.inspect_interactive_git(
+            doctor.inspection.InteractiveGitRequest(tmp_path, tmp_path)
+        )
+    )
 
     output = colors.strip_ansi(capsys.readouterr().out)
     assert "  !  git info/exclude missing Booley entry: .devcontainer" in output

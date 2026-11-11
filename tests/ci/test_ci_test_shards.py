@@ -23,6 +23,15 @@ from ci_test_shards import (
 )
 
 
+@pytest.mark.parametrize("model", ["linux-test-timings.json", "windows-test-timings.json"])
+def test_timing_models_list_no_goal_mode_tests(model: str) -> None:
+    """CI never runs Goal Mode unit tests (#3329), so the shard models carry no entry for them."""
+    timings = load_timings(_ROOT / ".github/ci" / model)
+
+    assert timings.tests
+    assert [name for name in timings.tests if name.startswith("tests/goals/")] == []
+
+
 def test_longest_processing_time_balances_known_slow_tests() -> None:
     nodeids = ("test::slow", "test::medium", "test::fast-a", "test::fast-b")
     timings = TimingModel(
@@ -43,6 +52,18 @@ def test_unknown_tests_are_included_deterministically() -> None:
 
     assert first == second
     assert {nodeid for shard in first for nodeid in shard} == set(nodeids)
+
+
+def test_skipped_nodes_add_no_shard_load() -> None:
+    """A skipped node does no work, so its recorded duration must not push real work aside."""
+    nodeids = ("t::slow", "t::fast", "t::skip-a", "t::skip-b")
+    timings = TimingModel(
+        default_seconds=1.0, tests={"t::slow": 9.0, "t::skip-a": 50.0, "t::skip-b": 40.0}
+    )
+
+    shards = assign_shards(nodeids, 2, timings, skipped={"t::skip-a", "t::skip-b"})
+
+    assert shards == (("t::skip-a", "t::slow"), ("t::fast", "t::skip-b"))
 
 
 def test_duplicate_collected_nodeids_fail_loudly() -> None:

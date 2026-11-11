@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -19,8 +20,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[5] / "src"))
 from booley.flows import edam as edam_layer
 from booley.flows.fpga.backends.vivado import edam as fpga_edam
 from booley.flows.fpga.profiles import VIVADO_PROFILES
+from booley.flows.run_evidence import FlowSourceEvidence
+
+if TYPE_CHECKING:
+    from booley.flows.fpga.recipe import ResolvedFpgaRecipe
 
 _FIXTURES = Path(__file__).resolve().parents[4] / "fixtures" / "vivado_reports"
+
+
+def _recipe(**overrides) -> ResolvedFpgaRecipe:
+    """Build a ResolvedFpgaRecipe; only EDAM-relevant fields matter, rest are placeholders."""
+    from booley.flows.fpga.recipe import ResolvedFpgaRecipe
+
+    fields = {
+        "target": "cfg",
+        "resolved": None,
+        "part": "xc7a35tcpg236-1",
+        "top": "dut_top",
+        "xdc_files": (),
+        "sv_files": (),
+        "v_files": (),
+        "include_dirs": (),
+        "defines": (),
+        "vlogparams": {},
+        "out_of_context": False,
+        "ppa_profile": VIVADO_PROFILES["balanced"],
+        "recipe_snapshot": {},
+        "recipe_fingerprint": "",
+        "source_evidence": FlowSourceEvidence("rev", "sha"),
+    }
+    fields.update(overrides)
+    return ResolvedFpgaRecipe(**fields)
 
 
 class TestParseFpgaReports:
@@ -240,22 +270,25 @@ class TestExtractTimingSafety:
 
 
 class TestBuildFpgaEdam:
-    def _edam(self, root: Path, **overrides):
-        kwargs = {
-            "name": "fpga_cfgA",
-            "toplevel": "dut_top",
+    def _edam(self, root: Path, *, extra_eda_tool_options=None, **recipe_overrides):
+        recipe_fields = {
+            "top": "dut_top",
             "part": "xcvu9p-flga2104-2-i",
-            "sv_files": [root / "rtl" / "a.sv", root / "rtl" / "b.sv"],
-            "v_files": [root / "rtl" / "legacy.v"],
-            "include_dirs": [root / "rtl" / "include"],
-            "xdc_files": [root / "constr" / "pins.xdc"],
-            "defines": ["SYNTH", "WIDTH=32"],
+            "sv_files": (root / "rtl" / "a.sv", root / "rtl" / "b.sv"),
+            "v_files": (root / "rtl" / "legacy.v",),
+            "include_dirs": (root / "rtl" / "include",),
+            "xdc_files": (root / "constr" / "pins.xdc",),
+            "defines": ("SYNTH", "WIDTH=32"),
             "vlogparams": {"DEPTH": 16},
-            "workspace_root": root,
-            "work_root": root / ".booley" / ".runtime" / "edalize" / "fpga" / "cfgA",
         }
-        kwargs.update(overrides)
-        return fpga_edam.build_fpga_edam(**kwargs)
+        recipe_fields.update(recipe_overrides)
+        return fpga_edam.build_fpga_edam(
+            _recipe(**recipe_fields),
+            name="fpga_cfgA",
+            workspace_root=root,
+            work_root=root / ".booley" / ".runtime" / "edalize" / "fpga" / "cfgA",
+            extra_eda_tool_options=extra_eda_tool_options,
+        )
 
     def test_flow_options_carry_eda_tool_and_part(self, tmp_path: Path):
         edam = self._edam(tmp_path)
@@ -301,7 +334,7 @@ class TestBuildFpgaEdam:
 
     def test_file_outside_workspace_rejected(self, tmp_path: Path):
         with pytest.raises(edam_layer.EdamSecurityError):
-            self._edam(tmp_path, sv_files=[Path("/etc/passwd")])
+            self._edam(tmp_path, sv_files=(Path("/etc/passwd"),))
 
 
 class TestRunCommand:
@@ -327,15 +360,15 @@ class TestConfigure:
         (root / "constr" / "pins.xdc").write_text("# constraints\n")
         work_root = root / ".booley" / ".runtime" / "edalize" / "fpga" / "cfgA"
         edam = fpga_edam.build_fpga_edam(
+            _recipe(
+                top="dut_top",
+                part="xcvu9p-flga2104-2-i",
+                sv_files=(root / "rtl" / "a.sv",),
+                xdc_files=(root / "constr" / "pins.xdc",),
+                defines=("SYNTH",),
+                vlogparams={"WIDTH": 8, "FLAG": True},
+            ),
             name="fpga_cfgA",
-            toplevel="dut_top",
-            part="xcvu9p-flga2104-2-i",
-            sv_files=[root / "rtl" / "a.sv"],
-            v_files=[],
-            include_dirs=[],
-            xdc_files=[root / "constr" / "pins.xdc"],
-            defines=["SYNTH"],
-            vlogparams={"WIDTH": 8, "FLAG": True},
             workspace_root=root,
             work_root=work_root,
         )
@@ -393,24 +426,3 @@ class TestConfigure:
                 "fpga_cfgA",
                 {"WIDTH": 8},
             )
-
-
-@pytest.mark.parametrize("datatype", ["str", "file"])
-def test_declared_vivado_strings_are_rejected_before_materialization(tmp_path, datatype):
-    from booley.flows.target_parameters import ParameterValue
-
-    with pytest.raises(ValueError, match="Vivado does not support string/file"):
-        fpga_edam.build_fpga_edam(
-            name="proof",
-            toplevel="top",
-            part="xc7a35tcpg236-1",
-            sv_files=[],
-            v_files=[],
-            include_dirs=[],
-            xdc_files=[],
-            defines=[],
-            vlogparams={"NAME": ParameterValue(datatype, "123")},
-            workspace_root=tmp_path,
-            work_root=tmp_path / "build",
-        )
-    assert not (tmp_path / "build").exists()

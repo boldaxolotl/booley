@@ -38,43 +38,9 @@ def test_planning_reports_the_unresolvable_target_by_name(tmp_path, monkeypatch)
     monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
     monkeypatch.setattr(flow, "_target_handle", lambda _target: SimpleNamespace())
 
-    units, errors = flow._plan_simulation_targets(
-        ["sim"], dict(_MAP), role="ordinary", revision=None
-    )
+    planned, errors = flow._preview_targets(["sim"], dict(_MAP))
 
-    assert (units, errors) == ([], ["sim: no core declares Target 'sim'"])
-    assert flow._test_runs.planned_groups == {}
-
-
-def test_a_work_unit_whose_target_plan_fails_is_a_planning_error(tmp_path, monkeypatch):
-    """The unit is not quietly named by bare Tests, which would merge its Test Runs."""
-    flow = _flow(tmp_path, monkeypatch, "--test", "stress@x2")
-    runs = flow._resolve_test_runs("sim", _MAP)
-    preview = SimpleNamespace(
-        groups=(("stress",), ("stress",)),
-        run_groups=((runs[0],), (runs[1],)),
-        commands=(("sim",), ("sim",)),
-    )
-    monkeypatch.setattr(
-        flow, "_simulation_execution", lambda: SimpleNamespace(preview=lambda *_args: preview)
-    )
-    monkeypatch.setattr(flow, "_target_handle", lambda _target: SimpleNamespace())
-
-    def work_unit(target, _preview, group, _command, _role, _revision, unit_runs):
-        return flow._unit_scope(target, group, unit_runs)
-
-    monkeypatch.setattr(flow, "_simulation_work_unit", work_unit)
-    units, errors = flow._plan_simulation_targets(
-        ["sim"], dict(_MAP), role="ordinary", revision=None
-    )
-    assert errors == []
-    assert units == [(runs[0].name,), (runs[1].name,)]
-
-    _unresolvable(flow, monkeypatch)
-    units, errors = flow._plan_simulation_targets(
-        ["sim"], dict(_MAP), role="ordinary", revision=None
-    )
-    assert (units, errors) == ([], ["sim: no core declares Target 'sim'"])
+    assert (planned, errors) == ([], ["sim: no core declares Target 'sim'"])
 
 
 def test_labels_fall_back_to_registered_test_names(tmp_path, monkeypatch):

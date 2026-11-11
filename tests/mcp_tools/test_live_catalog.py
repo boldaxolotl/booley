@@ -492,15 +492,12 @@ _KILL_LANDS_SECONDS = 5
 
 def assert_worker_pid_stopped(pid):
     import csv
-    import subprocess
+
+    from tests.subprocess_budget import run_bounded_child
 
     if os.name == "nt":
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
+        result = run_bounded_child(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], timeout=10, check=True
         )
         assert all(len(row) < 2 or row[1] != pid for row in csv.reader(result.stdout.splitlines()))
     else:

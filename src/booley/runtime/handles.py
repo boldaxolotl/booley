@@ -5,7 +5,7 @@ import logging
 import re
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +15,7 @@ from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.filesystem_utils import open_with_sharing_retry
 from booley.runtime.job_records import STATUS_RUNNING, JobRecord, parse_stamp
 from booley.runtime.safe_storage import refuse_symlinks
+from booley.runtime.worktree_usage import session_number_taken
 
 logger = logging.getLogger(__name__)
 MAX_MAP_BYTES = 16 * 1024 * 1024
@@ -49,6 +50,12 @@ class HandleMap:
     entries: dict[str, str] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     next_number: int = 1
+    # Session maps only: numbers a worktree or branch occupies are never allocated.
+    number_taken: Callable[[int], bool] | None = field(default=None, compare=False, repr=False)
+
+    def stored(self) -> dict[str, object]:
+        """The persisted fields; the allocation predicate never reaches storage."""
+        return {"entries": self.entries, "aliases": self.aliases, "next_number": self.next_number}
 
     def labels(self) -> dict[str, str]:
         entries = self.entries
@@ -66,6 +73,8 @@ class HandleMap:
                     target = self.aliases[key] = prior
                     break
             else:
+                while self.number_taken is not None and self.number_taken(self.next_number):
+                    self.next_number += 1
                 self.entries[key] = f"{prefix}{self.next_number}"
                 self.next_number += 1
         for old in predecessors:
@@ -74,11 +83,18 @@ class HandleMap:
         return self.entries[target]
 
     def drop(self, keys: set[str]) -> None:
-        """Remove *keys* and every alias pointing at them; an empty map restarts numbering."""
+        """Remove *keys* and every alias pointing at them; an empty map restarts numbering.
+
+        An alias of a removed alias goes too: the Codex ownership marker of a resumed tab
+        points at the tab's own key, which is itself an alias of the first tab's entry.
+        """
         for key in keys:
             self.entries.pop(key, None)
+        removed = {name for name, target in self.aliases.items() if target in keys}
         self.aliases = {
-            name: target for name, target in self.aliases.items() if target not in keys
+            name: target
+            for name, target in self.aliases.items()
+            if target not in keys and target not in removed
         }
         if not self.entries:
             self.aliases.clear()
@@ -132,8 +148,9 @@ class HandleStore:
 
     def load(self) -> HandleMap:
         refuse_symlinks(self.path, booley_dir=self.booley_dir)
+        taken = None if self.jobs else session_number_taken(self.booley_dir)
         if not self.path.exists():
-            return HandleMap()
+            return HandleMap(number_taken=taken)
         with open_with_sharing_retry(lambda: self.path.open("rb"), self.path) as stream:
             raw = stream.read(MAX_MAP_BYTES + 1)
         if len(raw) > MAX_MAP_BYTES:
@@ -148,22 +165,30 @@ class HandleStore:
             (int(m[0]) for v in entries.values() if (m := re.search(r"[0-9]+$", v))), default=0
         )
         counter = max(1, require_int(data.get("next_number"), field="handle counter"), highest + 1)
-        return HandleMap(entries, aliases, counter)
+        return HandleMap(entries, aliases, counter, taken)
 
     def save(self, handles: HandleMap) -> None:
         refuse_symlinks(self.path, booley_dir=self.booley_dir)
-        payload = (json.dumps({"schema": 1, **asdict(handles)}, sort_keys=True) + "\n").encode()
+        payload = (json.dumps({"schema": 1, **handles.stored()}, sort_keys=True) + "\n").encode()
         if len(payload) > MAX_MAP_BYTES:
             raise ValueError("handle map exceeds 16 MiB")
         atomic_replace_bytes(self.path, payload)
 
-    def reserve(self, key: str, prefix: str, *, predecessors: tuple[str, ...] = ()) -> str:
+    def reserve(
+        self,
+        key: str,
+        prefix: str,
+        *,
+        predecessors: tuple[str, ...] = (),
+        wait_s: float | None = None,
+    ) -> str:
         root = self.root if self.jobs else self.root.parent
-        with _writer(root, wait_s=1 if self.jobs else None, booley_dir=self.booley_dir):
+        wait = 1 if self.jobs else wait_s
+        with _writer(root, wait_s=wait, booley_dir=self.booley_dir):
             handles = self.load()
-            before = asdict(handles)
+            before = json.dumps(handles.stored(), sort_keys=True)
             label = handles.reserve(key, prefix, predecessors=predecessors)
-            if asdict(handles) != before:
+            if json.dumps(handles.stored(), sort_keys=True) != before:
                 self.save(handles)
             return label
 
@@ -205,12 +230,25 @@ def _writer(root: Path, *, wait_s: float | None, booley_dir: Path) -> Iterator[N
             release_file_lock(handle)
 
 
-def session_writer(booley_dir: Path) -> AbstractContextManager[None]:
-    return _writer(booley_dir / "runtime/sessions", wait_s=None, booley_dir=booley_dir)
+def session_writer(
+    booley_dir: Path, *, wait_s: float | None = None
+) -> AbstractContextManager[None]:
+    """The Session writer lock; *wait_s* bounds the wait, ``None`` fails on first contention."""
+    return _writer(booley_dir / "runtime/sessions", wait_s=wait_s, booley_dir=booley_dir)
 
 
-def reserve_session_handle(booley_dir: Path, key: str) -> str:
-    return HandleStore(booley_dir).reserve(key, "S")
+def reserve_session_handle(
+    booley_dir: Path,
+    key: str,
+    *,
+    wait_s: float | None = None,
+    predecessors: tuple[str, ...] = (),
+) -> str:
+    """Reserve the Session handle for *key*, waiting up to *wait_s* for the writer lock.
+
+    *key* keeps the handle of the first of *predecessors* that has one (a resumed tab).
+    """
+    return HandleStore(booley_dir).reserve(key, "S", wait_s=wait_s, predecessors=predecessors)
 
 
 def register_job(

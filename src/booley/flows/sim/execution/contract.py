@@ -170,7 +170,6 @@ class SimulationTargetOutcome:
     elapsed_s: float
     tests: tuple[SimulationTestOutcome, ...]
     builds: tuple[BuildOutcome, ...] = ()
-    pre_sim_runs: tuple[PreSimEvidence, ...] = ()
     artifacts: tuple[SimulationArtifactEvidence, ...] = ()
     diagnostics: tuple[str, ...] = ()
     infrastructure_failure: SimulationInfrastructureFailure | None = None

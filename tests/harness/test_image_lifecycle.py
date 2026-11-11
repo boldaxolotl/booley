@@ -13,14 +13,16 @@ import pytest
 import booley
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import image_lifecycle as lifecycle
-from booley.runtime import project_image
+from booley.runtime import interactive_docker, project_image
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
     DockerBuildPlan,
     DockerBuildRequest,
 )
+from booley.runtime.image_identity import ImageMetadata
 from tests.conftest import symlink_or_skip
 from tests.harness.booley_dir_support import select_booley_dir
+from tests.subprocess_budget import run_bounded_child
 
 _ACTUAL_ALIAS_PROBE = lifecycle.project_image.project_data_alias_capable
 
@@ -40,18 +42,24 @@ class FakeDocker:
         self.registry_identities: dict[str, tuple[str, ...]] = {}
         self.used_image_ids: frozenset[str] = frozenset()
         self.mutations: list[tuple[str, ...]] = []
+        # Every ``(method, reference)`` read of an image, for call-count assertions.
+        self.reads: list[tuple[str, str]] = []
 
     def image_id(self, image: str) -> str | None:
+        self.reads.append(("image_id", image))
         record = self.images.get(image)
         return record[0] if record else None
 
-    def label(self, image: str, name: str) -> str | None:
+    def inspect(self, image: str) -> ImageMetadata | None:
+        self.reads.append(("inspect", image))
         record = self.images.get(image) or next(
             (row for row in self.images.values() if row[0] == image), None
         )
-        return record[1].get(name) if record else None
+        if record is None:
+            return None
+        return ImageMetadata(image, record[0], dict(record[1]), {}, self._layers(image))
 
-    def image_layers(self, image: str) -> tuple[str, ...]:
+    def _layers(self, image: str) -> tuple[str, ...]:
         chain = []
         seen = set()
         for _ in range(len(self.images) + 1):
@@ -235,6 +243,48 @@ def test_host_capacity_requests_use_local_build_projection(
     assert observed[0][1]["rebuild_runtime_base"] is True
 
 
+def test_host_capacity_requests_reports_inspect_failure_as_lifecycle_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unanswerable runtime-base lookup is a lifecycle error, not a silent rebuild plan."""
+    from booley.harness.setup import docker_image
+
+    docker_dir = tmp_path / "docker"
+    docker_dir.mkdir()
+    (docker_dir / "Dockerfile.base").write_bytes(b"FROM scratch\n")
+    (docker_dir / "Dockerfile").write_bytes(b"FROM booley-runtime-base\n")
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", object)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "reconcile",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lifecycle.Status.STALE),
+    )
+    monkeypatch.setattr(booley, "version_attribution", SimpleNamespace(source_root=tmp_path))
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(docker_image, "_image_build_fingerprint", lambda _root: "fingerprint")
+    monkeypatch.setattr(
+        docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base="contract"),
+    )
+
+    def docker_missing(*_args: object, **_kwargs: object) -> object:
+        raise FileNotFoundError("docker")
+
+    # Fail every Docker seam (the shared helper and raw subprocess); an empty PATH
+    # does not hide `docker` on Windows.
+    monkeypatch.setattr(docker_image.subprocess, "run", docker_missing)
+    monkeypatch.setattr(interactive_docker, "_run_docker", docker_missing)
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inspect Docker image"):
+        harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE)
+
+
 def test_reconcile_planned_commits_prepared_graph(monkeypatch: pytest.MonkeyPatch) -> None:
     scope = SimpleNamespace(project_root=Path("/chip"))
     planned = SimpleNamespace(nodes=(SimpleNamespace(role=lifecycle.ImageRole.WHEEL_OVERLAY),))
@@ -358,7 +408,7 @@ def test_legacy_host_adapter_passes_complete_plan_to_local_base_build(
     base = DockerBuildRequest("base", lifecycle.BASE_IMAGE)
     proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
     plan = DockerBuildPlan((base, proxy))
-    observed = []
+    observed: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr(
         booley,
         "version_attribution",
@@ -367,7 +417,7 @@ def test_legacy_host_adapter_passes_complete_plan_to_local_base_build(
     monkeypatch.setattr(
         docker_image,
         "_step_docker_image",
-        lambda *_args, **kwargs: observed.append(kwargs["capacity_plan"]),
+        lambda *args, **kwargs: observed.append((args, kwargs)),
     )
     adapter = harness_lifecycle._LegacyBuildAdapter(
         tmp_path,
@@ -376,9 +426,14 @@ def test_legacy_host_adapter_passes_complete_plan_to_local_base_build(
         capacity_plan=plan,
     )
 
-    adapter._build_base(SimpleNamespace(reference=lifecycle.BASE_IMAGE), SimpleNamespace())
+    context = SimpleNamespace()
+    adapter._build_base(SimpleNamespace(reference=lifecycle.BASE_IMAGE), context)
 
-    assert observed == [plan]
+    assert len(observed) == 1
+    args, kwargs = observed[0]
+    # The setup step takes only the context positionally: no image argument.
+    assert args == (context,)
+    assert kwargs["capacity_plan"] == plan
 
 
 class FakeBuilder:
@@ -450,7 +505,7 @@ class TransactionBuilder:
             lifecycle.ImageRole.PROJECT_OVERLAY,
         }:
             labels[lifecycle.LABEL_WHEEL_SHA256] = (
-                self.docker.label(parent_reference, lifecycle.LABEL_WHEEL_SHA256) or ""
+                self.docker.images[parent_reference][1].get(lifecycle.LABEL_WHEEL_SHA256) or ""
             )
         self.docker.images[candidate_reference] = (image_id, labels)
         self.built.append((node.role, parent_id))
@@ -752,9 +807,6 @@ def test_incremental_adapter_build_inputs_cover_each_image_role(
     (build_root / "dist").mkdir(parents=True)
     wheel = build_root / "dist" / "booley_rtl-0.2.6.whl"
     wheel.write_bytes(b"wheel")
-    monkeypatch.setattr(
-        docker_image, "_runtime_base_build_metadata_args", lambda _root, _contract: ()
-    )
     monkeypatch.setattr(docker_image, "_image_build_metadata_args", lambda _root: ())
     monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
@@ -1007,26 +1059,125 @@ def test_runtime_graph_rejects_missing_wheel_and_user_owned_project_recipe(
 def test_runtime_plan_rejects_wrong_scope_and_external_image(tmp_path: Path) -> None:
     docker = FakeDocker({})
     with pytest.raises(TypeError, match="ProjectImageScope"):
-        lifecycle.plan(lifecycle.HostImageScope(), docker=docker)
+        lifecycle.plan(object(), docker=docker)  # type: ignore[arg-type]
     with pytest.raises(lifecycle.ImageLifecycleError, match="externally managed"):
         lifecycle.plan(
             lifecycle.ProjectImageScope(_project(tmp_path, "acme/custom")), docker=docker
         )
 
 
-def test_runtime_reconcile_rejects_project_scope_like_any_unsupported_scope(
+class _CandidateBuilder(FakeBuilder):
+    """Builder that returns its result under a separate candidate reference."""
+
+    def build(self, node, *, force: bool, source: lifecycle.ArtifactSource) -> str:
+        super().build(node, force=force, source=source)
+        candidate = f"candidate-{node.reference}"
+        _id, labels = self.docker.images.pop(node.reference)
+        self.docker.images[candidate] = (f"sha256:{0xCA:064x}", labels)
+        return candidate
+
+
+def _installed_project_graph(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Project images converge through plan/prepare/commit, never runtime reconcile()."""
+) -> tuple[FakeDocker, lifecycle.LifecyclePlan]:
+    """A current Project graph in a fake Docker, plus the plan that produced it."""
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
-    messages: list[str] = []
-    for scope in (lifecycle.ProjectImageScope(_project(tmp_path)), object()):
-        with pytest.raises(TypeError) as raised:
-            lifecycle.reconcile(scope, lifecycle.Intent.CHECK, docker=docker)  # type: ignore[arg-type]
-        messages.append(str(raised.value))
+    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(_project(tmp_path)), docker=docker)
+    _install_planned_graph(docker, planned.nodes)
+    return docker, planned
 
-    assert messages[0] == messages[1]
+
+def _check_planned_reason(docker: FakeDocker, planned: lifecycle.LifecyclePlan) -> str:
+    node = planned.nodes[-1]
+    assert lifecycle._planned_reason(node, docker, parent_invalid=False) is None
+    return node.reference
+
+
+def _check_inspect_nodes(docker: FakeDocker, planned: lifecycle.LifecyclePlan) -> str:
+    # The schema-two substrate node is checked for staleness.
+    node = planned.nodes[1]
+    stale, last_id = lifecycle._inspect_nodes(
+        (node,), docker, (lifecycle.ArtifactSource.LOCAL_BUILD,)
+    )
+    assert stale == ()
+    assert last_id == docker.images[node.reference][0]
+    return node.reference
+
+
+def _check_planned_result(docker: FakeDocker, planned: lifecycle.LifecyclePlan) -> str:
+    result = lifecycle.planned_result(planned, docker)
+    assert result.selected_id is not None
+    return planned.steps[-1].source_reference or planned.selected_reference
+
+
+def _check_verify_prepared(docker: FakeDocker, planned: lifecycle.LifecyclePlan) -> str:
+    node = planned.nodes[-1]
+    parent_id = docker.image_id(node.parent)
+    docker.reads.clear()
+    prepared = lifecycle._verify_prepared_image(node, node.reference, parent_id, docker)
+    assert prepared.image_id == docker.images[node.reference][0]
+    return node.reference
+
+
+def _check_mutate_adopts_candidate(docker: FakeDocker, planned: lifecycle.LifecyclePlan) -> str:
+    node = replace(planned.nodes[-1], effective_inputs="changed-inputs")
+    changed = lifecycle._mutate(
+        "scope",
+        (node,),
+        lifecycle.Intent.ENSURE,
+        docker,
+        _CandidateBuilder(docker),
+        shipped_sources=(lifecycle.ArtifactSource.LOCAL_BUILD,),
+    )
+    assert changed == (node.reference,)
+    return f"candidate-{node.reference}"
+
+
+def test_per_image_check_inspects_checked_image_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checks = (
+        _check_planned_reason,
+        _check_inspect_nodes,
+        _check_planned_result,
+        _check_verify_prepared,
+        _check_mutate_adopts_candidate,
+    )
+    for check in checks:
+        docker, planned = _installed_project_graph(tmp_path / check.__name__, monkeypatch)
+        docker.reads.clear()
+
+        checked = check(docker, planned)
+
+        # Reads of other images (parent, runtime base) are separate and not counted.
+        reads = [read for read in docker.reads if read[1] == checked]
+        assert reads == [("inspect", checked)], check.__name__
+
+
+def test_host_check_inspects_base_image_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    docker = FakeDocker({lifecycle.BASE_IMAGE: ("sha256:" + "a" * 64, {})})
+    _wire(monkeypatch, docker)
+    docker.reads.clear()
+
+    result = lifecycle.reconcile(lifecycle.Intent.CHECK)
+
+    assert result.selected_id == "sha256:" + "a" * 64
+    reads = [read for read in docker.reads if read[1] == lifecycle.BASE_IMAGE]
+    assert reads == [("inspect", lifecycle.BASE_IMAGE)]
+
+
+def test_descends_from_needs_both_images_and_a_nonempty_layer_prefix() -> None:
+    def image(*layers: str) -> ImageMetadata:
+        return ImageMetadata("ref", "sha256:id", {}, {}, layers)
+
+    assert lifecycle.descends_from(image("a"), image("a", "b"))
+    assert not lifecycle.descends_from(image("a", "b"), image("a"))
+    assert not lifecycle.descends_from(image("a"), image("x", "b"))
+    assert not lifecycle.descends_from(image(), image("a"))
+    assert not lifecycle.descends_from(None, image("a"))
+    assert not lifecycle.descends_from(image("a"), None)
 
 
 def test_runtime_provenance_and_prepared_candidate_validation(tmp_path: Path) -> None:
@@ -1044,14 +1195,20 @@ def test_runtime_provenance_and_prepared_candidate_validation(tmp_path: Path) ->
             "candidate": ("sha256:" + "a" * 64, labels),
         }
     )
-    assert lifecycle._node_provenance_reason(node, docker) is None
+    assert lifecycle._node_provenance_reason(node, docker.inspect(node.reference)) is None
     docker.images["candidate"][1][lifecycle.LABEL_RECIPE_FINGERPRINT] = "changed"
-    assert lifecycle._node_provenance_reason(node, docker).code == "recipe-changed"
+    assert (
+        lifecycle._node_provenance_reason(node, docker.inspect(node.reference)).code
+        == "recipe-changed"
+    )
     docker.images["candidate"][1][lifecycle.LABEL_RECIPE_FINGERPRINT] = (
         node.build.recipe_fingerprint
     )
     docker.images["candidate"][1].pop(lifecycle.LABEL_WHEEL_SHA256)
-    assert lifecycle._node_provenance_reason(node, docker).code == "inputs-changed"
+    assert (
+        lifecycle._node_provenance_reason(node, docker.inspect(node.reference)).code
+        == "inputs-changed"
+    )
     with pytest.raises(lifecycle.ImageLifecycleError, match="no wheel SHA"):
         lifecycle._verify_prepared_image(node, "candidate", None, docker)
     with pytest.raises(lifecycle.ImageLifecycleError, match="disappeared"):
@@ -1078,6 +1235,78 @@ def test_runtime_release_parent_validation_and_adapter_guards(
     monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: None)
     with pytest.raises(lifecycle.ImageLifecycleError, match="wheel-source fingerprint"):
         lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
+
+
+# Selection fingerprints the release path produced when it repeated the image
+# chain by hand, for the fixture in ``_release_recipes`` below. Never recompute.
+_PRE_CHANGE_RELEASE_FINGERPRINTS = {
+    "booley-sandbox": "8e3626aec0404786a141cb691f924a4a9f3cadc74ab80122596f0951ec96f9b6",
+    "booley-sandbox-riscv": "04bc281c2e53e83b0a1f94ce35d22fae0f6d0b9d2e218276342803f28da8f95a",
+}
+
+
+def _release_recipes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> lifecycle.ImageBuildContracts:
+    """Shipped recipe files whose body names the file, with fixed build contracts."""
+    for name in (
+        "Dockerfile.base",
+        "Dockerfile.substrate",
+        "Dockerfile.riscv",
+        "Dockerfile.wheel",
+    ):
+        (tmp_path / name).write_text(f"FROM scratch\n# {name}\n", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: tmp_path)
+    return lifecycle.ImageBuildContracts("runtime-contract", "standard-contract")
+
+
+def test_release_selection_fingerprint_is_pinned_to_pre_change_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contracts = _release_recipes(tmp_path, monkeypatch)
+
+    assert {
+        selected: lifecycle._release_selection_fingerprint(selected, contracts)
+        for selected in _PRE_CHANGE_RELEASE_FINGERPRINTS
+    } == _PRE_CHANGE_RELEASE_FINGERPRINTS
+
+
+def test_release_selection_fingerprint_follows_source_graph_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contracts = _release_recipes(tmp_path, monkeypatch)
+    before = lifecycle._release_selection_fingerprint("booley-sandbox", contracts)
+    source_graph_base = lifecycle._source_graph_base
+
+    def changed_runtime(observed: lifecycle.ImageBuildContracts, docker_dir: Path):
+        runtime, standard = source_graph_base(observed, docker_dir)
+        return replace(runtime, effective_inputs="another-runtime-input"), standard
+
+    monkeypatch.setattr(lifecycle, "_source_graph_base", changed_runtime)
+
+    assert lifecycle._release_selection_fingerprint("booley-sandbox", contracts) != before
+
+
+@pytest.mark.parametrize("intent", [lifecycle.Intent.CHECK, lifecycle.Intent.ENSURE])
+def test_host_reconcile_of_distribution_without_contract_metadata_is_refused(
+    monkeypatch: pytest.MonkeyPatch, intent: lifecycle.Intent
+) -> None:
+    from booley.runtime.version_attribution import VersionOrigin
+
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        SimpleNamespace(origin=VersionOrigin.DISTRIBUTION, source_root=None),
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "expected_image_build_contracts",
+        lambda _attribution: (_ for _ in ()).throw(lifecycle.ImageBuildContractMetadataError("x")),
+    )
+
+    with pytest.raises(lifecycle.InstalledImageContractError):
+        harness_lifecycle.reconcile(intent)
 
 
 def test_published_release_without_selection_label_still_verifies(
@@ -1358,7 +1587,6 @@ def _labels(*, payload: str, recipe: str, parent: str | None = None) -> dict[str
     values = {
         lifecycle.LABEL_SCHEMA: lifecycle.PROVENANCE_SCHEMA,
         lifecycle.LABEL_PAYLOAD_FINGERPRINT: payload,
-        lifecycle.LEGACY_FINGERPRINT_LABEL: payload,
         lifecycle.LABEL_RECIPE_FINGERPRINT: recipe,
         lifecycle.LABEL_VERSION: "0.2.6",
         lifecycle.LABEL_BUILD_ORIGIN: "local",
@@ -1388,7 +1616,6 @@ def _registry_labels(
     node: lifecycle.ImageNode,
     parent: str,
     *,
-    legacy: bool = False,
     overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:
     labels = dict(node.expected_labels)
@@ -1400,9 +1627,6 @@ def _registry_labels(
             **(overrides or {}),
         }
     )
-    if legacy:
-        labels[lifecycle.LABEL_SCHEMA] = lifecycle.LEGACY_PROVENANCE_SCHEMA
-        labels.pop(lifecycle.LABEL_PARENT_ARTIFACT_KIND)
     return labels
 
 
@@ -1423,7 +1647,7 @@ def _stage_registry_candidate(
     return reference
 
 
-def test_host_scope_never_reads_project_configuration(monkeypatch):
+def test_host_reconcile_never_reads_project_configuration(monkeypatch):
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
     monkeypatch.setattr(
@@ -1432,10 +1656,37 @@ def test_host_scope_never_reads_project_configuration(monkeypatch):
         lambda _root: (_ for _ in ()).throw(AssertionError("Project config read")),
     )
 
-    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+    result = lifecycle.reconcile(lifecycle.Intent.CHECK)
 
     assert result.selected_reference == lifecycle.BASE_IMAGE
     assert result.status is lifecycle.Status.STALE
+
+
+@pytest.mark.parametrize("schema", ["1", None], ids=["schema-1", "no-schema"])
+def test_host_base_without_current_provenance_schema_is_stale_and_rebuilt(
+    monkeypatch: pytest.MonkeyPatch, schema: str | None
+) -> None:
+    """Pre-0.3.0 schema one and schema-less base images are no longer migrated."""
+    payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", "payload-new")
+    labels = _local_build_labels(lifecycle._base_node(payload), "sha256:" + "9" * 64)
+    if schema is None:
+        del labels[lifecycle.LABEL_SCHEMA]
+        labels["booley.build-fingerprint"] = "payload-new"
+    else:
+        labels[lifecycle.LABEL_SCHEMA] = schema
+    docker = FakeDocker({lifecycle.BASE_IMAGE: ("sha256:" + "a" * 64, labels)})
+    builder = _wire(monkeypatch, docker)
+
+    checked = lifecycle.reconcile(lifecycle.Intent.CHECK)
+
+    assert checked.status is lifecycle.Status.STALE
+    assert [item.code for item in checked.diagnostics] == ["stale"]
+    assert lifecycle.BASE_IMAGE in checked.diagnostics[0].message
+    assert not builder.built
+
+    lifecycle.reconcile(lifecycle.Intent.ENSURE)
+
+    assert builder.built == [lifecycle.BASE_IMAGE]
 
 
 def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
@@ -1455,7 +1706,6 @@ def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
     builder = _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.ENSURE,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
@@ -1485,7 +1735,6 @@ def test_host_check_reports_release_cleanup_without_mutating(
     _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.CHECK,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
@@ -1505,7 +1754,7 @@ def test_host_ensure_retains_release_image_required_by_container(
     docker.used_image_ids = frozenset({prior_id})
     _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert result.cleanup.retained_required == (prior_release,)
     assert docker.image_id(prior_release) == prior_id
@@ -1526,7 +1775,7 @@ def test_host_cleanup_refuses_reference_that_changed_after_inventory(
     _wire(monkeypatch, docker)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="refused to clean changed"):
-        lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+        lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert not any(mutation == ("remove_tag", release) for mutation in docker.mutations)
 
@@ -1546,7 +1795,7 @@ def test_host_cleanup_failure_does_not_roll_back_reconciled_base(
     builder = _wire(monkeypatch, docker)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="cleanup denied"):
-        lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+        lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert builder.built == [lifecycle.BASE_IMAGE]
     assert docker.image_id(lifecycle.BASE_IMAGE) is not None
@@ -1710,10 +1959,10 @@ def test_source_policy_replaces_current_registry_base(monkeypatch: pytest.Monkey
     docker = FakeDocker({lifecycle.BASE_IMAGE: _current_registry_base()})
     builder = _wire(monkeypatch, docker)
 
-    lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+    lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert builder.built == [lifecycle.BASE_IMAGE]
-    assert docker.label(lifecycle.BASE_IMAGE, lifecycle.LABEL_BUILD_ORIGIN) == "local"
+    assert docker.images[lifecycle.BASE_IMAGE][1][lifecycle.LABEL_BUILD_ORIGIN] == "local"
 
 
 @pytest.mark.parametrize(
@@ -1768,7 +2017,7 @@ def test_check_reports_selected_artifact_source_without_mutation(
     if origin == "distribution":
         _wire_official_release(monkeypatch, docker)
 
-    result = harness_lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+    result = harness_lifecycle.reconcile(lifecycle.Intent.CHECK)
 
     assert result.status is lifecycle.Status.STALE
     assert expected_action in result.diagnostics[0].message
@@ -1808,7 +2057,6 @@ def test_wrong_verified_pull_falls_back_to_exact_local_build(
     builder = PullThenLocalBuilder(docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.ENSURE,
         docker=docker,
         builder=builder,
@@ -1820,7 +2068,7 @@ def test_wrong_verified_pull_falls_back_to_exact_local_build(
         lifecycle.ArtifactSource.LOCAL_BUILD,
     ]
     assert result.status is lifecycle.Status.CHANGED
-    assert docker.label(lifecycle.BASE_IMAGE, lifecycle.LABEL_BUILD_ORIGIN) == "local"
+    assert docker.images[lifecycle.BASE_IMAGE][1][lifecycle.LABEL_BUILD_ORIGIN] == "local"
     assert docker.image_id(release) is None
     assert ("tag", "sha256:" + "a" * 64, lifecycle.BASE_IMAGE) not in docker.mutations
 
@@ -1851,7 +2099,6 @@ def test_verified_pull_is_validated_before_canonical_adoption(
     _wire(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.ENSURE,
         docker=docker,
         builder=StagedPullBuilder(docker),
@@ -1894,7 +2141,6 @@ def test_pull_and_local_fallback_failure_restore_prior_tag(
 
     with pytest.raises(lifecycle.ImageLifecycleError) as error:
         lifecycle.reconcile(
-            lifecycle.HostImageScope(),
             lifecycle.Intent.ENSURE,
             docker=docker,
             builder=FailedRecoveryBuilder(docker),
@@ -1906,17 +2152,6 @@ def test_pull_and_local_fallback_failure_restore_prior_tag(
     assert docker.image_id(lifecycle.BASE_IMAGE) == prior_id
     assert ("tag", "sha256:" + "a" * 64, lifecycle.BASE_IMAGE) not in docker.mutations
     assert not any(reference.startswith("booley-lifecycle-backup-") for reference in docker.images)
-
-
-def _wire_source_chain(
-    root: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[FakeDocker, list[tuple[str, str]], list[str]]:
-    docker_dir = _set_source_installation(tmp_path, monkeypatch)
-    docker, pulls = _wire_source_docker(docker_dir, monkeypatch)
-    builds = _wire_source_builds(root, docker, monkeypatch)
-    return docker, pulls, builds
 
 
 def _set_source_installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -1974,57 +2209,6 @@ def _wire_source_docker(
     return docker, pulls
 
 
-def _wire_source_builds(
-    root: Path,
-    docker: FakeDocker,
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[str]:
-    from booley.harness.setup import docker_image as init_docker_image
-
-    builds: list[str] = []
-
-    def stamp_local(node: lifecycle.ImageNode, image_id: str) -> None:
-        labels = dict(node.expected_labels)
-        labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
-        labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
-        if node.reference == lifecycle.BASE_IMAGE:
-            labels[lifecycle.LABEL_PARENT_ARTIFACT] = (
-                docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or ""
-            )
-        docker.images[node.reference] = (image_id, labels)
-
-    def build_base(
-        context,
-        _docker_dir,
-        _exists,
-        _fingerprint,
-        *,
-        rebuild_runtime_base=False,
-        **_kwargs,
-    ) -> None:
-        del rebuild_runtime_base
-        payload = lifecycle.PayloadProvenance(
-            lifecycle.PROVENANCE_SCHEMA,
-            "0.2.6",
-            "payload-new",
-        )
-        stamp_local(lifecycle._base_node(payload), "sha256:" + "b" * 64)
-        context.record("docker_image", "ok", "built")
-        builds.append(lifecycle.BASE_IMAGE)
-
-    def build_flavor(
-        context, image: str, _recipe: Path, _exists: bool, _fingerprint: str | None
-    ) -> bool:
-        stamp_local(lifecycle._nodes(root, image, docker)[-1], "sha256:" + "c" * 64)
-        context.record("project_image", "ok", f"flavor {image} built")
-        builds.append(image)
-        return True
-
-    monkeypatch.setattr(init_docker_image, "_docker_local_build", build_base)
-    monkeypatch.setattr(init_docker_image, "_flavor_build", build_flavor)
-    return builds
-
-
 def _install_stale_outer_base(docker: FakeDocker) -> None:
     payload = lifecycle.PayloadProvenance(
         lifecycle.PROVENANCE_SCHEMA,
@@ -2041,29 +2225,26 @@ def _install_stale_outer_base(docker: FakeDocker) -> None:
 
 
 @pytest.mark.parametrize(
-    ("scope_kind", "intent", "expected"),
+    ("intent", "expected"),
     [
-        ("host", lifecycle.Intent.ENSURE, False),
-        ("host", lifecycle.Intent.REFRESH, True),
-        ("project", lifecycle.Intent.REFRESH, False),
+        (lifecycle.Intent.ENSURE, False),
+        (lifecycle.Intent.REFRESH, True),
     ],
 )
 def test_source_reconcile_separates_outer_replacement_from_runtime_base_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    scope_kind: str,
     intent: lifecycle.Intent,
     expected: bool,
 ) -> None:
     from booley.harness.setup import docker_image as init_docker_image
 
-    root = _project(tmp_path)
     docker_dir = _set_source_installation(tmp_path, monkeypatch)
     docker, _pulls = _wire_source_docker(docker_dir, monkeypatch)
     _install_stale_outer_base(docker)
     calls: list[tuple[bool, bool]] = []
 
-    def build_base(context, _selected, *, rebuild_runtime_base, **_kwargs) -> None:
+    def build_base(context, *, rebuild_runtime_base, **_kwargs) -> None:
         calls.append((context.force, rebuild_runtime_base))
         payload = lifecycle.PayloadProvenance(
             lifecycle.PROVENANCE_SCHEMA,
@@ -2078,21 +2259,9 @@ def test_source_reconcile_separates_outer_replacement_from_runtime_base_refresh(
         context.record("docker_image", "ok", "built")
 
     monkeypatch.setattr(init_docker_image, "_step_docker_image", build_base)
-    scope = (
-        lifecycle.HostImageScope() if scope_kind == "host" else lifecycle.ProjectImageScope(root)
-    )
+    harness_lifecycle.reconcile(intent)
 
-    if scope_kind == "project":
-        monkeypatch.setattr(
-            harness_lifecycle,
-            "prepare",
-            lambda observed, **_kw: lifecycle.prepare(
-                observed, docker=docker, builder=TransactionBuilder(docker)
-            ),
-        )
-    harness_lifecycle.reconcile(scope, intent)
-
-    assert calls == ([(True, expected)] if scope_kind == "host" else [])
+    assert calls == [(True, expected)]
 
 
 def _extracted_build_recorder(docker: FakeDocker, calls: list[tuple]):
@@ -2120,20 +2289,6 @@ def _extracted_build_recorder(docker: FakeDocker, calls: list[tuple]):
         context.record("docker_image", "ok", "built")
 
     return build_base
-
-
-def _install_current_legacy_base(docker: FakeDocker) -> str:
-    payload = lifecycle.PayloadProvenance(
-        lifecycle.PROVENANCE_SCHEMA,
-        "0.2.6",
-        "payload-new",
-    )
-    node = lifecycle._base_node(payload)
-    parent_id = docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or ""
-    labels = _local_build_labels(node, parent_id)
-    image_id = "sha256:" + "b" * 64
-    docker.images[lifecycle.BASE_IMAGE] = (image_id, labels)
-    return image_id
 
 
 def _local_build_labels(node: lifecycle.ImageNode, parent_id: str) -> dict[str, str]:
@@ -2233,9 +2388,7 @@ def test_packaged_refresh_uses_pull_capable_builder(
     root = _project(tmp_path)
     docker_dir = tmp_path / "installed" / "src" / "booley" / "data" / "docker"
     docker_dir.mkdir(parents=True)
-    recipe = docker_dir / (
-        "Dockerfile" if reference == lifecycle.BASE_IMAGE else "Dockerfile.riscv"
-    )
+    recipe = docker_dir / "Dockerfile"
     recipe.write_text("FROM scratch\n", encoding="utf-8")
     monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
     pulls: list[tuple[str, str]] = []
@@ -2250,11 +2403,6 @@ def test_packaged_refresh_uses_pull_capable_builder(
         init_docker_image,
         "_step_docker_image",
         lambda *_args, **_kwargs: pytest.fail("packaged refresh attempted a source build"),
-    )
-    monkeypatch.setattr(
-        init_docker_image,
-        "ensure_flavor_image",
-        lambda *_args, **_kwargs: pytest.fail("packaged refresh attempted a flavor build"),
     )
     node = lifecycle.ImageNode(
         reference,
@@ -2272,14 +2420,14 @@ def test_packaged_refresh_uses_pull_capable_builder(
     assert pulls == [("0.2.6", reference)]
 
 
-def test_docker_inspect_daemon_failure_is_not_an_absent_image(
+def test_docker_image_id_daemon_failure_is_not_an_absent_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        lifecycle.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 125, stdout="", stderr="Cannot connect to the Docker daemon"
+        lifecycle.interactive_docker,
+        "_run_docker",
+        lambda args, **_kwargs: subprocess.CompletedProcess(
+            args, 125, stdout="", stderr="Cannot connect to the Docker daemon"
         ),
     )
 
@@ -2287,52 +2435,19 @@ def test_docker_inspect_daemon_failure_is_not_an_absent_image(
         lifecycle._DockerCli().image_id("booley-sandbox")
 
 
-def test_docker_label_daemon_failure_is_not_an_absent_label(
+def test_docker_inspect_daemon_failure_is_not_an_absent_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        lifecycle.subprocess,
-        "run",
+        interactive_docker,
+        "_run_docker",
         lambda *_args, **_kwargs: subprocess.CompletedProcess(
             [], 125, stdout="", stderr="Cannot connect to the Docker daemon"
         ),
     )
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="Docker daemon"):
-        lifecycle._DockerCli().label("booley-sandbox", lifecycle.LABEL_SCHEMA)
-
-
-@pytest.mark.parametrize("layers", [None, "layer", [1], {"layer": "id"}])
-def test_docker_layer_inventory_rejects_invalid_metadata(
-    monkeypatch: pytest.MonkeyPatch, layers: object
-) -> None:
-    monkeypatch.setattr(
-        lifecycle.project_image,
-        "inspect_layout_image",
-        lambda _image: {"RootFS": {"Layers": layers}},
-    )
-    with pytest.raises(lifecycle.ImageLifecycleError, match="invalid filesystem layers"):
-        lifecycle._DockerCli().image_layers("candidate")
-
-
-def test_docker_layer_inventory_preserves_inspection_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_inspection(_image: str) -> dict:
-        raise RuntimeError("Docker daemon unavailable")
-
-    monkeypatch.setattr(lifecycle.project_image, "inspect_layout_image", fail_inspection)
-    with pytest.raises(lifecycle.ImageLifecycleError, match="Docker daemon unavailable"):
-        lifecycle._DockerCli().image_layers("candidate")
-
-
-def test_docker_layer_inventory_retains_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        lifecycle.project_image,
-        "inspect_layout_image",
-        lambda _image: {"RootFS": {"Layers": ["base", "overlay"]}},
-    )
-    assert lifecycle._DockerCli().image_layers("candidate") == ("base", "overlay")
+        lifecycle._DockerCli().inspect("booley-sandbox")
 
 
 def test_docker_repo_digests_are_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2594,13 +2709,9 @@ class _ParserBackedDocker(FakeDocker):
         self._reject_untagged(image)
         return super().image_id(image)
 
-    def label(self, image: str, name: str) -> str | None:
+    def inspect(self, image: str) -> ImageMetadata | None:
         self._reject_untagged(image)
-        return super().label(image, name)
-
-    def image_layers(self, image: str) -> tuple[str, ...]:
-        self._reject_untagged(image)
-        return super().image_layers(image)
+        return super().inspect(image)
 
     def repo_digests(self, image: str) -> tuple[str, ...]:
         self._reject_untagged(image)
@@ -2640,7 +2751,7 @@ def test_host_ensure_retains_in_use_release_tag_whose_only_alias_is_digest_only(
     docker.used_image_ids = frozenset({prior_id})
     _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert result.cleanup.retained_required == (prior_release,)
     assert docker.image_id(prior_release) == prior_id
@@ -2786,25 +2897,27 @@ def test_project_recipe_fingerprint_includes_arbitrary_context_files(tmp_path: P
     assert before != after
 
 
-def test_docker_cli_preserves_label_and_mutation_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_docker_cli_preserves_label_and_mutation_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cli = lifecycle._DockerCli()
 
     monkeypatch.setattr(
-        lifecycle.subprocess,
-        "run",
+        interactive_docker,
+        "_run_docker",
         lambda *_args, **_kwargs: subprocess.CompletedProcess(
             [], 1, stdout="", stderr="No such image: absent"
         ),
     )
-    assert cli.label("absent", lifecycle.LABEL_SCHEMA) is None
+    assert cli.inspect("absent") is None
 
-    monkeypatch.setattr(
-        lifecycle.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("docker unavailable")),
-    )
-    with pytest.raises(lifecycle.ImageLifecycleError, match="inspect Docker label"):
-        cli.label("image", lifecycle.LABEL_SCHEMA)
+    def docker_unavailable(*_args: object, **_kwargs: object) -> None:
+        raise OSError("docker unavailable")
+
+    monkeypatch.setattr(interactive_docker, "_run_docker", docker_unavailable)
+    monkeypatch.setattr(lifecycle.subprocess, "run", docker_unavailable)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inspect Docker image"):
+        cli.inspect("image")
     with pytest.raises(lifecycle.ImageLifecycleError, match="retain image"):
         cli.tag("source", "target")
     with pytest.raises(lifecycle.ImageLifecycleError, match="remove retained tag"):
@@ -2866,7 +2979,7 @@ def test_local_builder_reports_step_failure(
         lifecycle.BuildProvenance("recipe", None),
     )
 
-    def fail_step(context, _reference, **_kwargs) -> None:
+    def fail_step(context, **_kwargs) -> None:
         context.results.append(SimpleNamespace(status="err", detail="base build failed"))
 
     monkeypatch.setattr(init_docker_image, "_step_docker_image", fail_step)
@@ -3006,9 +3119,15 @@ def test_runtime_identity_and_ancestry_edge_guards(tmp_path: Path) -> None:
     labels = dict(node.expected_labels)
     labels[lifecycle.LABEL_BUILD_ORIGIN] = "registry"
     docker = FakeDocker({node.reference: ("sha256:" + "a" * 64, labels)})
-    assert lifecycle._node_provenance_reason(node, docker).code == "wrong-origin"
+    assert (
+        lifecycle._node_provenance_reason(node, docker.inspect(node.reference)).code
+        == "wrong-origin"
+    )
     child = replace(node, parent="missing-parent")
-    assert lifecycle._node_ancestry_reason(child, docker).code == "parent-changed"
+    assert (
+        lifecycle._node_ancestry_reason(child, docker.inspect(child.reference), docker).code
+        == "parent-changed"
+    )
 
 
 def _unexpected_call(*_args, **_kwargs):
@@ -3560,7 +3679,6 @@ def test_official_host_check_accepts_the_published_release_image(
     _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.CHECK,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
@@ -3579,7 +3697,6 @@ def test_official_host_check_rejects_a_release_for_other_wheel_sources(
     _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.CHECK,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
@@ -3596,7 +3713,6 @@ def test_official_host_bootstrap_pulls_and_verifies_the_published_release_image(
     puller = PublishedReleasePuller(docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.ENSURE,
         docker=docker,
         builder=puller,
@@ -3873,7 +3989,7 @@ def test_runtime_image_stamp_recovery_reaches_consumers(
     else:
         with pytest.raises(lifecycle.ImageLifecycleError) as caught:
             if consumer == "host":
-                harness_lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+                harness_lifecycle.reconcile(lifecycle.Intent.ENSURE)
             elif consumer == "refresh":
                 init_cmd.prepare_runtime_image(tmp_path)
             else:
@@ -3972,7 +4088,7 @@ def test_owned_gc_docker_calls_do_not_scale_with_unrelated_inventory(
     docker.images.update({f"other-{image[-8:]}:latest": (image, {}) for image in foreign})
     docker.used_image_ids = frozenset(foreign)
     calls = []
-    for name in ("image_id", "label", "image_layers", "repo_digests", "container_image_ids"):
+    for name in ("image_id", "inspect", "repo_digests", "container_image_ids"):
         monkeypatch.setattr(docker, name, lambda *_args, name=name: calls.append(name) or ())
     for name in ("image_ids", "image_references", "remove_tag"):
         method = getattr(docker, name)
@@ -4008,12 +4124,8 @@ assert session_refresh.pending_refresh_projects() == ()
 assert lifecycle.cleanup_owned_images(Path(PROJECT), docker=Docker()) == ()
 """
     code = f"IMAGE={image!r}\nSECOND={second!r}\nPROJECT={str(tmp_path)!r}\n" + code
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
         env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2] / "src")},
     )
     assert result.returncode == 0, result.stderr
@@ -4049,22 +4161,20 @@ def test_cached_candidate_bytes_are_not_new_transaction_ownership(tmp_path, monk
 
 @pytest.mark.parametrize(
     "schema,expected",
-    [(lifecycle.PROVENANCE_SCHEMA, "topology-changed"), ("legacy", "legacy-migration")],
+    [
+        (lifecycle.PROVENANCE_SCHEMA, "topology-changed"),
+        ("legacy", "legacy-migration"),
+        ("1", "legacy-migration"),
+        (None, "legacy-migration"),
+    ],
 )
 def test_manual_overlay_role_transition_is_not_legacy_schema_migration(schema, expected):
     node = SimpleNamespace(reference="project", role=lifecycle.ImageRole.PROJECT_OVERLAY)
-    docker = FakeDocker(
-        {
-            "project": (
-                "sha256:prior",
-                {
-                    lifecycle.LABEL_SCHEMA: schema,
-                    lifecycle.LABEL_ARTIFACT_ROLE: lifecycle.ImageRole.WHEEL_OVERLAY.value,
-                },
-            )
-        }
-    )
-    assert lifecycle._node_provenance_reason(node, docker).code == expected
+    labels = {lifecycle.LABEL_ARTIFACT_ROLE: lifecycle.ImageRole.WHEEL_OVERLAY.value}
+    if schema is not None:
+        labels[lifecycle.LABEL_SCHEMA] = schema
+    docker = FakeDocker({"project": ("sha256:prior", labels)})
+    assert lifecycle._node_provenance_reason(node, docker.inspect(node.reference)).code == expected
 
 
 @pytest.mark.parametrize("reassigned", [False, True])

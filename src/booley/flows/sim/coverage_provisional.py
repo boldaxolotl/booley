@@ -15,14 +15,14 @@ zero-hit RTL point of this exact Campaign and its source still matches.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from fractions import Fraction
+from dataclasses import dataclass
 from typing import Literal, cast
 
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     CoveragePoint,
     DurableTargetIdentity,
+    apply_point_dispositions,
 )
 from booley.flows.sim.coverage_json import (
     FrozenJson,
@@ -30,12 +30,11 @@ from booley.flows.sim.coverage_json import (
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_policy import (
-    _METRIC_ORDER,
     CoverageCriterion,
-    CoverageThreshold,
-    _derive_rollup,
-    _metric_result,
+    coverage_threshold,
+    score_thresholds,
 )
+from booley.flows.sim.coverage_waivers import WaivablePointProblem, waivable_point_problem
 
 # Leave-one-out "needed" labelling is O(candidates x points); keep it bounded.
 MAX_PROVISIONAL_CANDIDATES = 512
@@ -118,21 +117,23 @@ def _binding_problem(
     return None
 
 
+_POINT_SCREENS: Mapping[WaivablePointProblem, str] = {
+    "missing": "Candidate does not name exactly one Coverage Point.",
+    "ambiguous": "Candidate does not name exactly one Coverage Point.",
+    "source": "Candidate source differs from the point's RTL source.",
+    "ineligible": "Point is not an eligible scored point.",
+    "hit": "Point has observed hits; it is not waivable as uncovered.",
+}
+
+
 def _point_problem(
     candidate: ProvisionalCandidate, points: Mapping[str, list[CoveragePoint]]
 ) -> tuple[CandidateStatus, str] | None:
     """Check that the candidate names one eligible, zero-hit point of its source."""
-    matches = points.get(candidate.point_id, [])
-    if len(matches) != 1:
-        return "invalid", "Candidate does not name exactly one Coverage Point."
-    point = matches[0]
-    if point.identity.location.get("source") != candidate.source:
-        return "invalid", "Candidate source differs from the point's RTL source."
-    if point.disposition.get("kind") != "eligible":
-        return "invalid", "Point is not an eligible scored point."
-    if sum(point.hits_by_run.values()) > 0:
-        return "invalid", "Point has observed hits; it is not waivable as uncovered."
-    return None
+    problem = waivable_point_problem(
+        points.get(candidate.point_id, []), {candidate.source}, zero_hits=True
+    )
+    return None if problem is None else ("invalid", _POINT_SCREENS[problem])
 
 
 def _screen_one(
@@ -153,24 +154,18 @@ def _screen_one(
 def _apply_candidates(
     campaign: CoverageCampaign, usable: Mapping[str, ProvisionalCandidate]
 ) -> CoverageCampaign:
-    points = tuple(
-        replace(
-            point,
-            disposition=freeze_coverage_mapping(
-                {
-                    "kind": "waived",
-                    "reason": usable[point.id].reason,
-                    "candidate_id": usable[point.id].candidate_id,
-                    "provisional": True,
-                }
-            ),
-        )
-        if point.id in usable
-        else point
-        for point in campaign.points
+    return apply_point_dispositions(
+        campaign,
+        {
+            point_id: {
+                "kind": "waived",
+                "reason": candidate.reason,
+                "candidate_id": candidate.candidate_id,
+                "provisional": True,
+            }
+            for point_id, candidate in usable.items()
+        },
     )
-    rollups = tuple(_derive_rollup(rollup, points) for rollup in campaign.rollups)
-    return replace(campaign, points=points, rollups=rollups)
 
 
 def _provisional_evaluation(
@@ -181,38 +176,27 @@ def _provisional_evaluation(
     """Score the strict evaluation's thresholds with the usable candidates waived."""
     strict = coverage_mapping_document(campaign.evaluation)
     waived = _apply_candidates(campaign, usable)
-    by_metric = {rollup.metric: rollup for rollup in waived.rollups}
-    diagnostics: list[dict[str, str]] = []
-    metrics: list[dict[str, object]] = []
-    for threshold in sorted(
-        criterion.thresholds, key=lambda item: _METRIC_ORDER.index(item.metric)
-    ):
-        rollup = by_metric.get(threshold.metric)
-        if rollup is None or rollup.eligible_points == 0:
-            diagnostics.append(
-                {
-                    "code": "COV_EVAL_EMPTY_DENOMINATOR",
-                    "pointer": "/rollups",
-                    "message": f"Candidates leave no eligible points: {threshold.metric}.",
-                }
-            )
-            continue
-        metrics.append(_metric_result(rollup, threshold))
-    if diagnostics:
-        status = "blocked"
-    else:
-        status = "pass" if all(item["verdict"] == "pass" for item in metrics) else "fail"
+    score = score_thresholds(waived.rollups, criterion.thresholds)
+    diagnostics = [
+        {
+            "code": "COV_EVAL_EMPTY_DENOMINATOR",
+            "pointer": "/rollups",
+            "message": f"Candidates leave no eligible points: {metric}.",
+        }
+        for metric in score.empty
+    ]
     return {
         **strict,
-        "status": status,
-        "metrics": metrics,
+        "status": "blocked" if diagnostics else score.status,
+        "metrics": list(score.metrics),
         "diagnostics": diagnostics,
         "provisional": True,
         "candidate_ids": sorted(item.candidate_id for item in usable.values()),
     }
 
 
-def _metric_verdicts(evaluation: Mapping[str, object]) -> dict[str, object]:
+def metric_verdicts(evaluation: Mapping[str, object]) -> dict[str, object]:
+    """Each scored metric of a Booley-built *evaluation* with its verdict."""
     metrics = cast(list[dict[str, object]], evaluation["metrics"])
     return {str(row["metric"]): row["verdict"] for row in metrics}
 
@@ -229,13 +213,13 @@ def _needed(
     unrelated failing metric must not hide that a candidate is needed.
     """
     passing = {
-        metric for metric, verdict in _metric_verdicts(evaluation).items() if verdict == "pass"
+        metric for metric, verdict in metric_verdicts(evaluation).items() if verdict == "pass"
     }
     needed = set()
     for point_id, candidate in usable.items():
         remaining = {key: item for key, item in usable.items() if key != point_id}
         without = _provisional_evaluation(campaign, criterion, remaining)
-        verdicts = _metric_verdicts(without)
+        verdicts = metric_verdicts(without)
         if any(verdicts.get(metric) != "pass" for metric in passing):
             needed.add(candidate.candidate_id)
     return frozenset(needed)
@@ -305,28 +289,22 @@ def criterion_from_evaluation(campaign: CoverageCampaign) -> CoverageCriterion:
     """Rebuild the Coverage Criterion a scored strict evaluation was computed with.
 
     Thresholds persist as exact ints or shortest-repr floats of authored decimal
-    minima, so ``Fraction(str(value))`` restores the authored value.
+    minima, so ``coverage_threshold`` restores the authored value. Criterion
+    construction rejects a stored value that is out of range or malformed.
     """
     evaluation = campaign.evaluation
-    thresholds = evaluation.get("thresholds")
-    suite = evaluation.get("suite")
-    if evaluation.get("status") not in {"pass", "fail"} or not isinstance(thresholds, Mapping):
+    if evaluation["status"] not in {"pass", "fail"}:
         raise ProvisionalCoverageError("Campaign has no scored strict coverage evaluation")
-    if not isinstance(suite, Mapping) or not isinstance(suite.get("required"), tuple):
-        raise ProvisionalCoverageError("Campaign evaluation has no required test suite")
-    try:
-        rebuilt = tuple(
-            CoverageThreshold(str(metric), Fraction(str(minimum)))
-            for metric, minimum in thresholds.items()
-            if isinstance(minimum, int | float) and not isinstance(minimum, bool)
-        )
-    except (ValueError, ZeroDivisionError) as exc:
-        raise ProvisionalCoverageError(f"Campaign threshold is malformed: {exc}") from exc
-    if len(rebuilt) != len(thresholds) or not rebuilt:
-        raise ProvisionalCoverageError("Campaign thresholds are malformed")
+    thresholds = cast(Mapping[str, int | float], evaluation["thresholds"])
+    suite = cast(Mapping[str, tuple[str, ...]], evaluation["suite"])
+    stored = [(str(metric), minimum) for metric, minimum in thresholds.items()]
     required = tuple(str(item) for item in suite["required"])
     tests = None if sorted(required) == sorted(campaign.declared_tests) else required
-    return CoverageCriterion(DurableTargetIdentity(campaign.target.identity), rebuilt, tests)
+    try:
+        rebuilt = tuple(coverage_threshold(metric, minimum) for metric, minimum in stored)
+        return CoverageCriterion(DurableTargetIdentity(campaign.target.identity), rebuilt, tests)
+    except ValueError as exc:
+        raise ProvisionalCoverageError(f"Campaign threshold is malformed: {exc}") from exc
 
 
 def _sorted(screens: list[CandidateScreen]) -> tuple[CandidateScreen, ...]:
@@ -341,4 +319,5 @@ __all__ = [
     "ProvisionalVerdict",
     "criterion_from_evaluation",
     "evaluate_provisional_coverage",
+    "metric_verdicts",
 ]

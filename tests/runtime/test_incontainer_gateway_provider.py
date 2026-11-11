@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tomllib
 from contextlib import contextmanager
@@ -12,6 +11,7 @@ from pathlib import Path
 import pytest
 import tomli
 from tests.gateway_command_support import count_runs, write_token_command
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import auth_token
 from booley.runtime import incontainer_setup as reg
@@ -222,14 +222,11 @@ def test_interactive_auth_command_prints_a_freshly_claimed_token(
     monkeypatch.setenv("PYTHONPATH", str(_SRC))
 
     def run_helper() -> str:
-        result = subprocess.run(
+        result = run_bounded_child(
             [auth["command"], *auth["args"]],
             cwd=auth["cwd"],
             env=dict(os.environ),
-            capture_output=True,
-            text=True,
             check=True,
-            timeout=60,
         )
         return result.stdout
 

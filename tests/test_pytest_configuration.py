@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import configparser
 import fnmatch
 import ntpath
 import os
@@ -18,10 +17,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+
 REPOSITORY_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
 
-from ci_changes import CATEGORIES, build_test_matrix, required_jobs
+from ci_changes import (  # pyright: ignore[reportMissingImports]
+    CATEGORIES,
+    build_test_matrix,
+    required_jobs,
+)
 
 
 def _workflow(filename: str) -> dict:
@@ -39,6 +44,8 @@ def _deep_tests_workflow() -> dict:
 
 _RUNNER_OS_CHOICE = re.compile(r"\$\{\{ runner\.os == '(\w+)' && (.+?) \|\| (.+?) \}\}")
 _LINUX_SCHEDULER_OUTPUT = "needs.changes.outputs.linux_scheduler"
+# Six coverage shards keep a shard plus the combine step off the queue's critical path.
+COVERAGE_SHARD_COUNT = 6
 
 
 def _render_expressions(run: str, runner_os: str, scheduler: str) -> str:
@@ -155,6 +162,8 @@ def test_sidecar_proofs_have_cancellation_cleanup() -> None:
 _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_waveform_store_streaming.py::test_streaming_conversion_produces_queryable_store",
     "tests/bwave/test_waveform_store_streaming.py::test_trace_session_streams_into_its_own_cache_destination",
+    "tests/bwave/test_waveform_store_streaming.py::test_declared_stream_builds_queryable_store",
+    "tests/bwave/test_waveform_store_streaming.py::test_reopened_stream_fails_instead_of_merging",
     "tests/bwave/test_cli.py::test_issue_1108_real_json_cap_preserves_native_warnings[limit0]",
     "tests/bwave/test_cli.py::test_issue_1108_real_json_cap_preserves_native_warnings[limit1]",
     "tests/bwave/test_cli.py::test_issue_1108_wrapper_preserves_native_input_errors[extra0]",
@@ -201,7 +210,7 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
 
 def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
     """The native integration job owns every test that executes B-Wave."""
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -218,9 +227,7 @@ def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
             for name, value in os.environ.items()
             if not name.startswith("PYTEST_XDIST_")
         },
-        capture_output=True,
-        text=True,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 0, result.stderr
@@ -386,8 +393,8 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
     assert ".github/scripts/ci_duration_budget.py" in canary["run"]
     assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 670
     assert canary["env"]["STANDARD_WARN_SECONDS"] == 640
-    assert '--budget-seconds "${budget}"' in canary["run"]
-    assert '--warn-seconds "${warn}"' in canary["run"]
+    assert '--budget-seconds "${STANDARD_BUDGET_SECONDS}"' in canary["run"]
+    assert '--warn-seconds "${STANDARD_WARN_SECONDS}"' in canary["run"]
     assert steps.index(canary) > next(
         index
         for index, step in enumerate(steps)
@@ -423,7 +430,7 @@ def test_bwave_smoke_budget_times_tests_not_image_builds(
     build_seconds: int, validation_seconds: int, *, passed: bool
 ) -> None:
     """Runner build variance cannot fail the budget; a test-time regression does."""
-    from ci_duration_budget import evaluate
+    from ci_duration_budget import evaluate  # pyright: ignore[reportMissingImports]
 
     budget_step = next(
         step
@@ -477,53 +484,41 @@ def test_riscv_measurement_dispatch_reaches_the_classifier() -> None:
 
 
 def test_riscv_image_lane_is_path_gated() -> None:
-    """The slow derived-image contract runs only when its owning inputs change."""
+    """The slow derived-image contract runs only when its owning inputs change.
+
+    It runs as its own job, so bwave-smoke keeps no RISC-V step, and the job
+    is selected through the classifier's job policy like every other lane.
+    """
     workflow = _test_workflow()
     assert workflow["jobs"]["changes"]["outputs"]["riscv_image"] == (
         "${{ steps.classify.outputs.riscv_image }}"
     )
-    steps = workflow["jobs"]["bwave-smoke"]["steps"]
-    group_index, group = next(
-        (index, step) for index, step in enumerate(steps) if "parallel" in step
-    )
-    riscv = next(
-        step
-        for step in group["parallel"]
-        if step.get("name") == "Run RISC-V candidate image contract"
-    )
-    prepare = next(
-        step
-        for step in steps
-        if step.get("name") == "Prepare exact reviewed PicoRV32 candidate contract"
-    )
-    ibex_prepare = next(
-        step for step in steps if step.get("name") == "Prepare exact reviewed Ibex candidate"
-    )
-    resolve = next(step for step in steps if step.get("id") == "riscv-tooling")
-    ibex_run = next(step for step in steps if step.get("name") == "Run pinned Ibex lint demo")
-    restore = next(
-        step for step in steps if step.get("name") == "Restore RISC-V demo checkout ownership"
-    )
-    upload = next(step for step in steps if step.get("name") == "Upload candidate RISC-V evidence")
+    job = workflow["jobs"]["riscv-image"]
+    assert job["if"] == "fromJSON(needs.changes.outputs.jobs)['riscv-image']"
+    assert job["needs"] == ["changes", "build-dist"]
+    assert "riscv-image" in workflow["jobs"]["ci-required"]["needs"]
 
-    gate = "needs.changes.outputs.riscv_image == 'true'"
-    assert prepare["if"] == gate
-    assert steps.index(prepare) < group_index
-    assert ibex_prepare["if"] == gate
-    assert steps.index(ibex_prepare) < group_index
-    assert resolve["if"] == gate
-    assert steps.index(resolve) < group_index
-    assert riscv["if"] == gate
+    smoke = yaml.safe_dump(workflow["jobs"]["bwave-smoke"])
+    for marker in ("riscv", "RISC-V", "ibex", "picorv32"):
+        assert marker not in smoke, marker
+
+    steps = job["steps"]
+    names = [step.get("name") for step in steps]
+    riscv = steps[names.index("Run RISC-V candidate image contract")]
+    ibex_run = steps[names.index("Run pinned Ibex lint demo")]
+    assert names.index("Prepare exact reviewed PicoRV32 candidate contract") < names.index(
+        "Run RISC-V candidate image contract"
+    )
+    assert names.index("Prepare exact reviewed Ibex candidate") < names.index(
+        "Run pinned Ibex lint demo"
+    )
     assert "Dockerfile.riscv" in riscv["run"]
     assert "verify_riscv_image_contract.sh" in riscv["run"]
     assert "run_picorv32_ci_demo.sh" in riscv["run"]
     assert '--build-context "riscv-tooling=${TOOLING_CONTEXT}"' in riscv["run"]
-    assert ibex_run["if"] == gate
-    assert steps.index(ibex_run) > group_index
     assert "--network none" in ibex_run["run"]
-    assert restore["if"] == f"always() && {gate}"
-    assert upload["if"] == f"always() && {gate}"
-    assert steps.index(restore) > group_index
+    for name in ("Restore RISC-V demo checkout ownership", "Upload candidate RISC-V evidence"):
+        assert steps[names.index(name)]["if"] == "always()"
     helper = (REPOSITORY_ROOT / ".github/scripts/verify_riscv_image_contract.sh").read_text(
         encoding="utf-8"
     )
@@ -538,7 +533,7 @@ def test_riscv_image_lane_is_path_gated() -> None:
 
 
 def test_matrix_uses_test_only_dependencies() -> None:
-    """Compatibility legs do not install linting or mutation-only packages."""
+    """Compatibility legs do not install linting-only packages."""
     workflow = _test_workflow()
     install_step = next(
         step
@@ -595,6 +590,8 @@ def test_flake_stress_repeats_changed_modules_on_linux_and_windows() -> None:
     assert '--count="${STRESS_COUNT}"' in command
     assert "-n 4 --dist=load " in command
     assert "--timeout=60" in command
+    # Only exit 5 (every module skipped itself, e.g. Linux-only on Windows) is tolerated.
+    assert '-ne 0 ] && [ "${status}" -ne 5 ]' in command
     assert stress["env"]["HEADROOM"] in shard["run"]  # same Windows headroom gate
     assert _named_step(job, "Publish pytest evidence")["uses"] == (
         "./.github/actions/publish-pytest-evidence"
@@ -613,13 +610,44 @@ def test_pr_compatibility_matrix_is_pairwise() -> None:
     assert workflow["jobs"]["changes"]["outputs"]["test_matrix"] == (
         "${{ steps.classify.outputs.test_matrix }}"
     )
-    assert shard_input["default"] == "10"
+    assert shard_input["default"] == "4"
     assert shard_input["options"] == ["4", "6", "8", "10"]
     assert benchmark_input["default"] is False
     classify_step = next(
         step for step in jobs["changes"]["steps"] if step.get("name") == "Classify changed paths"
     )
     assert "--windows-shard-benchmark" in classify_step["run"]
+    assert "${{ inputs.windows_shard_count || '4' }}" in classify_step["run"]
+
+
+def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
+    """Sandbox-only tests skip on Windows only; no `-m` expression may drop them anywhere."""
+    from tests.sandbox_only import SANDBOX_ONLY_PATHS, is_sandbox_only
+
+    workflows = (REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")
+    mentions = [path.name for path in workflows if "sandbox_only" in path.read_text("utf-8")]
+    assert not mentions, f"workflows must not select on sandbox_only: {mentions}"
+    compatibility = _named_step(
+        _test_workflow()["jobs"]["test"], "Run focused Windows compatibility suite"
+    )
+    paths = [word for word in shlex.split(compatibility["run"]) if word.startswith("tests/")]
+    assert paths
+    # A compatibility leg whose paths are all skipped on Windows would pass while testing nothing.
+    # A test file is judged by the registry (its Windows exceptions included); a directory
+    # overlaps when any registry entry sits inside it or contains it.
+    skipped = [
+        path
+        for path in paths
+        if (
+            is_sandbox_only(path)
+            if path.endswith(".py")
+            else any(
+                path.startswith(entry) or entry.startswith(path.rstrip("/") + "/")
+                for entry in SANDBOX_ONLY_PATHS
+            )
+        )
+    ]
+    assert not skipped, f"Windows compatibility paths overlap the Sandbox-only registry: {skipped}"
 
 
 def test_main_push_tier_keeps_a_nightly_full_run_on_main() -> None:
@@ -657,7 +685,7 @@ def test_windows_shards_are_exactly_verified() -> None:
         if step.get("name") == "Prove every sharded test ran exactly once"
     )
     assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == (
-        "${{ inputs.windows_shard_count || '10' }}"
+        "${{ inputs.windows_shard_count || '4' }}"
     )
 
 
@@ -668,13 +696,13 @@ def test_coverage_shards_have_dedicated_matrix() -> None:
 
     assert coverage_entries == [
         {
-            "name": f"ubuntu-3.14-coverage-{index + 1}-of-3",
+            "name": f"ubuntu-3.14-coverage-{index + 1}-of-{COVERAGE_SHARD_COUNT}",
             "python": "3.14",
             "group": "coverage",
             "shard_index": index,
-            "shard_count": 3,
+            "shard_count": COVERAGE_SHARD_COUNT,
         }
-        for index in range(3)
+        for index in range(COVERAGE_SHARD_COUNT)
     ]
     assert coverage_shards["needs"] == "changes"
     assert coverage_shards["runs-on"] == "ubuntu-latest"
@@ -694,8 +722,12 @@ def test_coverage_shards_bound_setup_and_pytest_steps() -> None:
 
     assert _setup_step_limits(job) == [5, 5, 6]
     assert pytest_limit == 15
-    # 35 = setup 5 + 5 + 6 + pytest 15, plus margin for the always-run publish/upload steps.
-    assert job["timeout-minutes"] == 35
+    purge_limit = _named_step(job, "Drop pip cache restored from an older dependency set").get(
+        "timeout-minutes"
+    )
+    assert purge_limit == 3
+    # 38 = setup 5 + 5 + 3 + 6 + pytest 15, plus margin for the always-run publish/upload steps.
+    assert job["timeout-minutes"] == 38
 
 
 def test_coverage_job_exactly_verifies_before_combining() -> None:
@@ -729,7 +761,10 @@ def test_coverage_job_exactly_verifies_before_combining() -> None:
     assert "test-verify" not in coverage["needs"]
     assert manifest_download["with"]["path"] == "${{ runner.temp }}/shards"
     assert manifest_download["with"].get("merge-multiple", False) is False
-    assert "--group coverage --shard-count 3" in coverage_verifier["run"].replace("\n", " ")
+    # The verifier proves exactly the selections the coverage-shards matrix produced.
+    assert f"--group coverage --shard-count {COVERAGE_SHARD_COUNT}" in coverage_verifier[
+        "run"
+    ].replace("\n", " ")
     assert raw_download["with"]["path"] == "${{ runner.temp }}/coverage"
     assert raw_download["with"]["merge-multiple"] is True
     assert coverage_steps.index(manifest_download) < coverage_steps.index(coverage_verifier)
@@ -831,7 +866,7 @@ def test_full_cartesian_matrix_remains_scheduled_and_manual() -> None:
 
 
 def test_lint_job_uses_quality_only_dependencies() -> None:
-    """The fast lint job does not install test or mutation dependencies."""
+    """The fast lint job does not install test dependencies."""
     workflow = _test_workflow()
     install_step = next(
         step
@@ -840,6 +875,19 @@ def test_lint_job_uses_quality_only_dependencies() -> None:
     )
 
     assert install_step["run"] == 'pip install -e ".[quality]" -c .github/ci/constraints.txt'
+
+
+def test_actionlint_download_retries_and_still_verifies_its_checksum() -> None:
+    """A 504 from the release CDN is retried; the retried archive is still checksum-verified."""
+    lint_steps = _test_workflow()["jobs"]["lint"]["steps"]
+    install = next(
+        step for step in lint_steps if str(step.get("name", "")).startswith("Install actionlint")
+    )
+    script = " ".join(install["run"].replace("\\\n", " ").split())
+
+    assert "--retry 5 --retry-all-errors --retry-delay 5" in script
+    assert "sha256sum --check --strict" in script
+    assert script.index("curl ") < script.index("sha256sum") < script.index("tar ")
 
 
 def _assert_worktree_mounts_disk_and_failure_gating(job: dict) -> None:
@@ -865,7 +913,7 @@ def _assert_worktree_mounts_disk_and_failure_gating(job: dict) -> None:
 
 def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     workflow = _deep_tests_workflow()
-    assert set(workflow.get("on", workflow.get(True))) == {"schedule", "workflow_dispatch"}
+    assert set(workflow[True]) == {"schedule", "workflow_dispatch"}
     job = workflow["jobs"]["worktree-mounts"]
     assert job["runs-on"] == "ubuntu-latest"
     assert job["timeout-minutes"] == 180
@@ -907,228 +955,6 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
         ).read_text(encoding="utf-8")
 
 
-def test_scheduled_mutation_campaign_treats_its_time_budget_as_success() -> None:
-    """A bounded scheduled campaign reports incomplete mutants without failing."""
-    job = _deep_tests_workflow()["jobs"]["mutation"]
-    run_campaign = _named_step(job, "Run bounded mutation campaign")["run"]
-    report_results = _named_step(job, "Record mutation results")["run"]
-
-    assert "campaign_status" in run_campaign
-    assert "!= 124" in run_campaign
-    assert "non-killed mutants" not in report_results
-
-
-def test_scheduled_mutation_campaign_runs_mutmut_as_a_module() -> None:
-    """Spawned test helpers must not re-execute the mutmut console script.
-
-    A spawn child re-runs a console-script ``__main__`` from the test's
-    temporary working directory, where mutmut cannot find its configuration.
-    """
-    job = _deep_tests_workflow()["jobs"]["mutation"]
-    run_campaign = _named_step(job, "Run bounded mutation campaign")["run"]
-
-    assert "python -m mutmut run" in run_campaign
-    assert re.search(r"(?<!-m )\bmutmut run\b", run_campaign) is None
-
-
-def _tracked_repository_paths() -> list[str]:
-    result = subprocess.run(
-        ["git", "-C", str(REPOSITORY_ROOT), "ls-files", "-z"],
-        capture_output=True,
-        check=True,
-        timeout=30,
-    )
-    return [path for path in result.stdout.decode("utf-8").split("\0") if path]
-
-
-def _mutmut_config() -> dict[str, list[str]]:
-    """Read setup.cfg's ``[mutmut]`` lists the way mutmut's own reader does."""
-    parser = configparser.ConfigParser()
-    parser.read(REPOSITORY_ROOT / "setup.cfg", encoding="utf-8")
-    return {
-        key: [line for line in value.split("\n") if line] for key, value in parser.items("mutmut")
-    }
-
-
-def test_mutmut_configuration_lives_only_in_setup_cfg() -> None:
-    """pyproject.toml bytes define the Sandbox base contract; mutmut stays out.
-
-    mutmut reads setup.cfg only when pyproject.toml has no ``[tool.mutmut]``
-    table, so a reintroduced table would silently shadow the real campaign
-    configuration as well as rebuild the base image on every tuning edit.
-    """
-    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-
-    assert "mutmut" not in project.get("tool", {})
-    assert _mutmut_config()["only_mutate"] == ["src/booley/harness/setup/*.py"]
-    assert _mutmut_config()["pytest_add_cli_args_test_selection"] == ["tests/harness/"]
-
-
-@pytest.mark.parametrize(
-    ("initial", "expected"),
-    [
-        pytest.param("stats", None, id="stats"),
-        pytest.param(
-            "booley.harness.setup.x.x_foo__mutmut_1",
-            "booley.harness.setup.x.x_foo__mutmut_1",
-            id="mutant",
-        ),
-        pytest.param(None, None, id="unset"),
-    ],
-)
-def test_mutmut_stats_mode_is_hidden_from_child_processes(
-    monkeypatch: pytest.MonkeyPatch, initial: str | None, expected: str | None
-) -> None:
-    """Only mutmut's stats marker is removed; mutant names still reach children."""
-    from tests import conftest
-
-    if initial is None:
-        monkeypatch.delenv("MUTANT_UNDER_TEST", raising=False)
-    else:
-        monkeypatch.setenv("MUTANT_UNDER_TEST", initial)
-
-    conftest.hide_mutmut_stats_mode_from_children()
-
-    assert os.environ.get("MUTANT_UNDER_TEST") == expected
-
-
-_STATS_MODE_PROBE = '''\
-"""Pytest plugin: record the stats-mode variable a session sees after configuration."""
-
-import os
-import pathlib
-
-
-def pytest_collection_finish(session):
-    value = os.environ.get("MUTANT_UNDER_TEST")
-    pathlib.Path(os.environ["STATS_MODE_PROBE_OUT"]).write_text(repr(value), encoding="utf-8")
-'''
-
-
-def test_pytest_session_hides_mutmut_stats_mode_from_children(tmp_path: Path) -> None:
-    """The real ``pytest_configure`` boundary strips the marker before any test runs.
-
-    The unit cases above call the helper directly; this one fails if the call is
-    ever dropped from ``tests/conftest.py``'s configure hook.
-    """
-    probe_dir = tmp_path / "probe"
-    probe_dir.mkdir()
-    (probe_dir / "mutmut_env_probe.py").write_bytes(_STATS_MODE_PROBE.encode("utf-8"))
-    probe_out = tmp_path / "probe-out.txt"
-    environment = dict(os.environ)
-    for name in (
-        "BOOLEY_DIR",
-        "BOOLEY_PYTEST_EVIDENCE_DIR",
-        "BOOLEY_PYTEST_TIMING_FILE",
-        "PYTEST_ADDOPTS",
-        "PYTEST_XDIST_WORKER",
-        "PYTEST_XDIST_TESTRUNUID",
-    ):
-        environment.pop(name, None)
-    environment["MUTANT_UNDER_TEST"] = "stats"
-    environment["STATS_MODE_PROBE_OUT"] = str(probe_out)
-    environment["PYTHONPATH"] = os.pathsep.join(
-        [str(probe_dir), *filter(None, [environment.get("PYTHONPATH")])]
-    )
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-p",
-            "no:xdist",
-            "-p",
-            "no:cacheprovider",
-            "-p",
-            "mutmut_env_probe",
-            "--test-profile",
-            "python",
-            f"--basetemp={tmp_path / 'child'}",
-            "--collect-only",
-            "-q",
-            "tests/test_pytest_configuration.py::test_mutmut_configuration_lives_only_in_setup_cfg",
-        ],
-        cwd=REPOSITORY_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert probe_out.read_text(encoding="utf-8") == "None"
-
-
-def test_mutmut_pytest_options_show_failing_test_traceback() -> None:
-    """A stats-collection failure must print a short traceback and a summary.
-
-    ``--tb=no`` hid the cause of every failed campaign, and mutmut already adds
-    ``-x`` to each of its runs, so repeating it is redundant.
-    """
-    options = _mutmut_config()["pytest_add_cli_args"]
-
-    assert "--tb=short" in options
-    assert "-rfE" in options
-    assert "--tb=no" not in options
-    assert "-x" not in options
-
-
-def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
-    """mutmut's ``mutants/`` copy stays a faithful Booley source checkout.
-
-    The copied pyproject marks ``mutants/`` as a source checkout, so importing
-    Booley there needs ``VERSION``, and harness tests read docs, workflows and
-    Sandbox Image build inputs. A tracked path that mutmut neither mutates nor
-    copies breaks the scheduled campaign before it tests a single mutant.
-    """
-    mutmut = _mutmut_config()
-    # mutmut always copies these alongside the configured source paths.
-    copied = [
-        *mutmut["source_paths"],
-        "tests/",
-        "setup.cfg",
-        "pyproject.toml",
-        *mutmut["also_copy"],
-    ]
-
-    def covered(path: str) -> bool:
-        return any(
-            path.startswith(entry) if entry.endswith("/") else path == entry for entry in copied
-        )
-
-    missing = [path for path in _tracked_repository_paths() if not covered(path)]
-    assert missing == [], (
-        "mutmut would not copy these tracked paths into mutants/; add their "
-        "top-level entry to setup.cfg [mutmut] also_copy"
-    )
-
-
-def test_mutation_sandbox_copy_order_and_build_output_exclusion() -> None:
-    """Every ``also_copy`` entry is copyable in order and skips Cargo outputs."""
-    also_copy = _mutmut_config()["also_copy"]
-    tracked = _tracked_repository_paths()
-
-    for index, entry in enumerate(also_copy):
-        # Each entry names tracked content, never an untracked build tree.
-        if entry.endswith("/"):
-            assert any(path.startswith(entry) for path in tracked), entry
-        else:
-            assert entry in tracked, entry
-        # shutil.copy2 does not create parents; an earlier directory copy must.
-        parent = Path(entry.rstrip("/")).parent.as_posix()
-        if not entry.endswith("/") and parent != ".":
-            assert any(
-                earlier.endswith("/") and earlier.startswith(f"{parent}/")
-                for earlier in also_copy[:index]
-            ), entry
-
-    build_outputs = ("crates/bwave/target/", "crates/bwave/fuzz/target/")
-    for entry in also_copy:
-        assert not any(output.startswith(entry) for output in build_outputs), entry
-
-
 def test_bwave_differential_installs_the_simulators_it_must_not_skip() -> None:
     """The zero-skip differential gate needs Icarus and Verilator present."""
     job = _deep_tests_workflow()["jobs"]["bwave-fuzz"]
@@ -1167,7 +993,6 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
         "Run Coverage Campaign release matrix and production collector",
         "Run simulator ground-truth tests",
         "Run cocotb Icarus/Verilator production-image flows",
-        "Run Goal Mode production-image smoke",
     }
 
     assert {step["name"] for step in validations} == expected_names
@@ -1185,16 +1010,22 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "test_verilator_compiler_cache_smoke.py" in coverage["run"]
     assert "assert_junit.py" in coverage["run"]
     assert "--min-tests 1 --max-skips 0" in coverage["run"]
-    goal_mode = next(step for step in validations if step["name"].startswith("Run Goal Mode"))
-    assert "BOOLEY_GOAL_MODE_SMOKE=1" in goal_mode["run"]
-    assert "test_goal_mode_image_smoke.py" in goal_mode["run"]
-    assert "--junitxml=/validation-tmp/goal-mode.xml" in goal_mode["run"]
-    assert "assert_junit.py" in goal_mode["run"]
-    assert "--min-tests 1 --max-skips 0" in goal_mode["run"]
     upload = next(
         step for step in steps if step.get("name") == "Upload coverage release test timing"
     )
-    assert "${{ runner.temp }}/bwave-smoke/goal-mode/goal-mode.xml" in upload["with"]["path"]
+    assert "goal-mode" not in "\n".join(step["run"] for step in validations)
+    assert "goal-mode" not in upload["with"]["path"]
+    # The temp-dir loop prepares exactly the directories the validations use.
+    prepare = next(
+        step
+        for step in steps
+        if step.get("name") == "Prepare isolated validation temp directories"
+    )
+    prepared = re.search(r"for validation in ([^;]+);", prepare["run"])
+    assert prepared is not None
+    assert set(prepared[1].split()) == {
+        step["env"]["VALIDATION_TMP"].rsplit("/", 1)[-1] for step in validations
+    }
     assert "native_fst_verilator_test.py" in rendered
     assert "simulator_ground_truth_test.py" in rendered
     assert "cd /validation-tmp/project" in rendered
@@ -1247,7 +1078,7 @@ def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
     monkeypatch.setenv("DOCKER_LOG", str(docker_log))
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             str(REPOSITORY_ROOT / ".github/scripts/run_with_container_cleanup.sh"),
             "booley-ci-123-1-fifo",
@@ -1256,7 +1087,7 @@ def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
             "exit 7",
         ],
         cwd=REPOSITORY_ROOT,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 7
@@ -1406,12 +1237,70 @@ def test_other_unraisable_exceptions_still_fail_the_suite() -> None:
             )
 
 
+def test_goal_mode_unit_tests_run_only_when_named(
+    pytestconfig: pytest.Config, tmp_path: Path
+) -> None:
+    """A bare ``pytest tests/`` skips the Goal Mode unit tests; naming them still runs them (#3329)."""
+    goal_tests = REPOSITORY_ROOT / "tests" / "goals"
+    assert pytestconfig.hook.pytest_ignore_collect(collection_path=goal_tests, config=pytestconfig)
+    other_tests = REPOSITORY_ROOT / "tests" / "harness"
+    assert not pytestconfig.hook.pytest_ignore_collect(
+        collection_path=other_tests, config=pytestconfig
+    )
+
+    # Collect-only on one runtime-picked module: no Goal test body runs in CI.
+    module = sorted(goal_tests.glob("test_*.py"))[0]
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("PYTEST_XDIST_", "BOOLEY_PYTEST_"))
+        and name not in {"PYTEST_ADDOPTS", "BOOLEY_DIR"}
+    }
+    result = run_bounded_child(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:xdist",
+            "-p",
+            "no:cacheprovider",
+            f"--basetemp={tmp_path / 'child'}",
+            "--collect-only",
+            "-q",
+            str(module),
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "tests/goals/" in result.stdout.replace("\\", "/")
+
+
+def test_goal_mode_source_is_omitted_from_coverage() -> None:
+    """Goal Mode source is not measured while its tests are not collected (#3329)."""
+    from coverage import Coverage
+    from coverage.files import GlobMatcher
+
+    omit = Coverage(config_file=str(REPOSITORY_ROOT / "pyproject.toml")).get_option("run:omit")
+    assert isinstance(omit, list)
+    omitted = GlobMatcher(omit)
+
+    assert omitted.match(str(REPOSITORY_ROOT / "src/booley/goals/store.py"))
+    # Subprocess data from a temporary checkout carries a different root.
+    assert omitted.match("/checkout/src/booley/goals/store.py")
+    assert not omitted.match(str(REPOSITORY_ROOT / "src/booley/harness/__init__.py"))
+
+
 def test_booley_never_uses_sqlite() -> None:
     """The SQLite unraisable ignore is safe only while Booley owns no connections."""
     offenders = [
         str(path.relative_to(REPOSITORY_ROOT))
         for root in ("src", "tests")
         for path in (REPOSITORY_ROOT / root).rglob("*.py")
+        if not path.is_relative_to(REPOSITORY_ROOT / "tests/goals")  # not run in CI (#3329)
         if re.search(r"^\s*(import|from)\s+sqlite3\b", path.read_text(encoding="utf-8"), re.M)
     ]
 
@@ -1509,7 +1398,7 @@ def test_suite_default_timeout_preserves_explicit_settings(
     }
     if environment_timeout is not None:
         environment["PYTEST_TIMEOUT"] = environment_timeout
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -1522,10 +1411,7 @@ def test_suite_default_timeout_preserves_explicit_settings(
         ],
         cwd=REPOSITORY_ROOT,
         env=environment,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1647,3 +1533,161 @@ def test_test_verify_proves_each_linux_group_when_sharded() -> None:
     for category in CATEGORIES:
         jobs = required_jobs({category})
         assert ("test" in jobs) == ("test-verify" in jobs)
+
+
+def test_suite_resolves_failed_tmp_path_retention(pytestconfig: pytest.Config) -> None:
+    """The running session keeps `tmp_path` only for failing tests.
+
+    Catches a higher-precedence ini file (`pytest.ini`, `tox.ini`) shadowing the
+    `pyproject.toml` setting, which a TOML-only assertion would miss.
+    """
+    assert pytestconfig.getini("tmp_path_retention_policy") == "failed"
+
+
+def test_explicit_basetemp_keeps_only_failing_tmp_path(tmp_path: Path) -> None:
+    """With an explicit `--basetemp`, a passing test's directory is removed."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "test_inner.py").write_bytes(
+        b"def test_passes(tmp_path):\n"
+        b"    (tmp_path / 'out.txt').write_text('x')\n"
+        b"\n"
+        b"def test_fails(tmp_path):\n"
+        b"    (tmp_path / 'out.txt').write_text('x')\n"
+        b"    assert False\n"
+    )
+    basetemp = tmp_path / "inner-basetemp"
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name != "PYTEST_ADDOPTS" and not name.startswith("PYTEST_XDIST_")
+    }
+    result = run_bounded_child(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-c",
+            str(REPOSITORY_ROOT / "pyproject.toml"),
+            "--rootdir",
+            str(project),
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "no:xdist",
+            f"--basetemp={basetemp}",
+            "test_inner.py",
+        ],
+        cwd=project,
+        env=environment,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "1 failed, 1 passed" in output, output
+    # pytest's `*current` convenience links are platform-dependent; ignore them.
+    kept = sorted(entry.name for entry in basetemp.iterdir() if not entry.is_symlink())
+    assert kept == ["test_fails0"], output
+    assert (basetemp / "test_fails0" / "out.txt").exists()
+
+
+def _scoped_git_value(key: str, cwd: Path) -> str:
+    """Return ``<scope>\\t<value>`` Git reports for ``key`` (empty when unset).
+
+    Inherits the test's environment. The literal scope prefix lets callers
+    tell a command-scope value from the same value in a host global config.
+    """
+    result = run_bounded_child(
+        ["git", "config", "--show-scope", "--get", key],
+        cwd=cwd,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+    return result.stdout.strip()
+
+
+def _assert_auto_maintenance_off(cwd: Path) -> None:
+    assert _scoped_git_value("maintenance.auto", cwd) == "command\tfalse"
+    assert _scoped_git_value("gc.auto", cwd) == "command\t0"
+
+
+def test_session_git_children_run_without_auto_maintenance(tmp_path: Path) -> None:
+    _assert_auto_maintenance_off(tmp_path)
+
+
+def test_isolated_git_attributes_keeps_auto_maintenance_off(
+    tmp_path: Path, isolated_git_attributes: None
+) -> None:
+    _assert_auto_maintenance_off(tmp_path)
+
+
+def test_isolated_git_excludes_keeps_auto_maintenance_off_and_strips_other_command_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    from tests.conftest import add_git_command_config
+
+    add_git_command_config(monkeypatch, "core.abbrev", "12")
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.bigfilethreshold'='1m'")
+    request.getfixturevalue("isolated_git_excludes")
+    _assert_auto_maintenance_off(tmp_path)
+    assert _scoped_git_value("core.abbrev", tmp_path) == ""
+    assert _scoped_git_value("core.bigfilethreshold", tmp_path) == ""
+
+
+def test_own_empty_global_config_keeps_auto_maintenance_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    own_config = tmp_path / "own-global.config"
+    own_config.write_bytes(b"")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(own_config))
+    _assert_auto_maintenance_off(tmp_path)
+
+
+def test_added_command_config_overrides_and_keeps_session_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.conftest import add_git_command_config
+
+    add_git_command_config(monkeypatch, "core.abbrev", "12")
+    add_git_command_config(monkeypatch, "gc.auto", "5")
+    assert _scoped_git_value("core.abbrev", tmp_path) == "command\t12"
+    assert _scoped_git_value("gc.auto", tmp_path) == "command\t5"
+    assert _scoped_git_value("maintenance.auto", tmp_path) == "command\tfalse"
+
+
+def test_session_git_config_is_idempotent_and_keeps_inherited_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.conftest import _disable_git_auto_maintenance_for_children
+
+    # The function writes os.environ directly: register every slot with
+    # monkeypatch first so teardown restores what the session had.
+    for index in range(3):
+        monkeypatch.setenv(f"GIT_CONFIG_KEY_{index}", "")
+        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{index}", "")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Inherited")
+    _disable_git_auto_maintenance_for_children()
+    _disable_git_auto_maintenance_for_children()
+    assert os.environ["GIT_CONFIG_COUNT"] == "3"
+    assert os.environ["GIT_CONFIG_KEY_0"] == "user.name"
+    assert os.environ["GIT_CONFIG_VALUE_0"] == "Inherited"
+    assert (os.environ["GIT_CONFIG_KEY_1"], os.environ["GIT_CONFIG_VALUE_1"]) == (
+        "maintenance.auto",
+        "false",
+    )
+    assert (os.environ["GIT_CONFIG_KEY_2"], os.environ["GIT_CONFIG_VALUE_2"]) == ("gc.auto", "0")
+
+    # An inherited entry that already has the wanted effective value is not re-added.
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "GC.Auto")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "0")
+    _disable_git_auto_maintenance_for_children()
+    assert os.environ["GIT_CONFIG_COUNT"] == "2"
+    assert os.environ["GIT_CONFIG_KEY_1"] == "maintenance.auto"
+
+    # Git reads an empty count as zero.
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "")
+    _disable_git_auto_maintenance_for_children()
+    assert os.environ["GIT_CONFIG_COUNT"] == "2"

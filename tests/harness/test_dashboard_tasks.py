@@ -10,10 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from booley.runtime import dashboard_tasks as tasks
-from booley.runtime import devcontainer, session_issuance
+from booley.runtime import devcontainer, runtime_context, session_issuance
 from booley.runtime.jsonc import Document
 from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
+from tests.subprocess_budget import run_bounded_child
 
 _REAL_TASK_FILE_TRACKED = tasks._task_file_tracked
 
@@ -30,9 +31,6 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "git_directories", lambda _: SimpleNamespace(common_dir=common))
     monkeypatch.setattr(tasks, "_task_file_tracked", lambda _: False)
     monkeypatch.setattr(session_issuance, "stamp_path_for_identity", lambda _: root / "stamp.json")
-    monkeypatch.setattr(
-        session_issuance, "_legacy_stamp_path", lambda _: root / "legacy-stamp.json"
-    )
     return SimpleNamespace(
         root=root, data=data, exclude=common / "info/exclude", file=root / ".vscode/tasks.json"
     )
@@ -650,9 +648,7 @@ def test_tracked_task_file_is_preserved_with_informational_notice(
     tmp_path, monkeypatch, owned, disabled
 ):
     def git(*args):
-        result = subprocess.run(
-            ["git", *args], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=True
-        )
+        result = run_bounded_child(["git", *args], cwd=tmp_path, check=True)
         return result.stdout
 
     git("init", "-q")
@@ -853,3 +849,29 @@ def test_dominant_newline_legacy_task_update_restores_exact_bytes(project, monke
     tasks.reconcile(project.root, project.data)
     assert project.file.read_bytes() == original
     assert project.exclude.read_bytes() == exclude
+
+
+def test_attach_refusal_names_where_to_run_init(project, monkeypatch):
+    wording = {
+        "HOST": "run booley init",
+        "HAND_WRITTEN_SANDBOX": "run booley init in this Sandbox",
+        "ISSUED_SANDBOX": "run booley init on the host",
+    }
+    tasks.reconcile(project.root, project.data)
+    ownership = project.data / "runtime/dashboard-task.json"
+    owned = ownership.read_bytes()
+    for name, where in wording.items():
+        kind = runtime_context.RuntimeLocation[name]
+        monkeypatch.setattr(runtime_context, "runtime_location", lambda kind=kind: kind)
+
+        ownership.write_text('{"schema": 99}')  # unsupported ownership record
+        with pytest.raises(ValueError, match=where):
+            tasks.attach_blocker(project.root, project.data)
+
+        ownership.unlink()  # a task file nobody owns
+        assert where in tasks.attach_blocker(project.root, project.data)
+
+        ownership.write_bytes(owned)  # an owned task whose definition has moved on
+        with monkeypatch.context() as newer:
+            newer.setattr(tasks, "TASK", {**tasks.TASK, "runOptions": {"runOn": "folderOpen"}})
+            assert where in tasks.attach_blocker(project.root, project.data)

@@ -19,7 +19,7 @@ except ModuleNotFoundError:
 
 
 from booley.core.models import AgentResult
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
 from booley.runtime.agent_errors import (
     AgentProviderError,
@@ -31,6 +31,7 @@ from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.coverage_campaign_test_support import (
     corrupt_campaign_with_duplicate_negative_point,
+    decode_document,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
@@ -44,9 +45,7 @@ def sandbox_execution(monkeypatch):
 
 def persist_campaign(root: Path):
     document = _valid_document()
-    campaign = decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
     target_dir = root / "reports/sim/12/targets/sim_counter"
     path = publish_coverage_campaign(target_dir, campaign).campaign
     (target_dir / "simulation.json").write_text(
@@ -143,7 +142,6 @@ def _successful_claude_query(options_seen):
 def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path:
     from booley.flows.sim.coverage_campaign import (
         DurableTargetIdentity,
-        decode_coverage_campaign,
         encode_coverage_point_id,
     )
     from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
@@ -166,9 +164,7 @@ def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path
         eligible_points=point_count,
         covered_points=point_count,
     )
-    campaign = decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
     target_dir = root / "reports/sim/12/targets/sim_counter"
     paths = publish_coverage_campaign(target_dir, campaign)
     (target_dir / "simulation.json").write_text(
@@ -238,9 +234,7 @@ def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
     document["collection"]["status"] = "collector_error"
     document["normalization"]["status"] = "partial"
     document["rollups"] = []
-    campaign = decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
     target_dir = tmp_path / "reports/sim/12/targets/sim_counter"
     path = publish_coverage_campaign(target_dir, campaign).campaign
     model = Model()
@@ -783,21 +777,21 @@ def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
     assert "point_ids must contain canonical Coverage Point IDs" in result.outcome.report_text
 
 
-def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path):
+def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path, monkeypatch):
     from booley.flows.sim.campaign_retention import prune_invocation, prune_native_payload
-    from tests.flows.sim.test_campaign_retention import campaign
+    from tests.flows.sim.campaign_test_support import coverage_invocation
 
-    outcome = campaign(tmp_path)
+    run = coverage_invocation(tmp_path, monkeypatch)
     analyst = CoverageAnalystSpecialist(model=Model())
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(outcome.campaign_path)])
-    before = analyst.coverage_analyst(outcome.campaign_path).to_dict()
+    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(run.public)])
+    before = analyst.coverage_analyst(run.public).to_dict()
     prune_native_payload(tmp_path / "reports", 1, "sim_0")
-    after = analyst.coverage_analyst(outcome.campaign_path).to_dict()
+    after = analyst.coverage_analyst(run.public).to_dict()
     assert after == before
     assert after["source_access"] == "verified"
     prune_invocation(tmp_path / "reports", 1)
     with pytest.raises(CoverageAnalysisError, match="fully pruned"):
-        analyst.coverage_analyst(outcome.campaign_path)
+        analyst.coverage_analyst(run.public)
 
 
 def test_relative_campaign_resolves_against_selected_work_dir(tmp_path):
@@ -855,10 +849,10 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
 
 
 def test_in_memory_composition_stages_v2_evidence_for_the_scoped_tool(monkeypatch):
-    from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+    from booley.flows.sim.coverage_campaign import DurableTargetIdentity
     from booley.specialists.coverage_analyst import analyze_coverage_campaign
 
-    campaign = decode_coverage_campaign(
+    campaign = decode_document(
         _valid_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
     )
     staged_paths = []

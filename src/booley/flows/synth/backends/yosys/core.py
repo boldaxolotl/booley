@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
@@ -42,6 +44,7 @@ from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.timing import (
     DEFAULT_STA_UTILIZATION_PCT,
     DEFAULT_TIMING_REPORT_PATHS,
+    OpenRoadPpaSettings,
     StaTimingConfig,
     detect_clock_port,
 )
@@ -52,6 +55,11 @@ from booley.flows.target_parameters import (
 )
 from booley.runtime.shared_infra import resolve_project_root
 from booley.targets.parameter_integrity import enabled_define_names
+
+if TYPE_CHECKING:
+    # Type-only: pipeline imports this module at runtime, so a runtime import
+    # here would be circular.
+    from booley.flows.synth.backends.pipeline import SynthSpec
 
 # Public surface of this facade (defined here + re-exported above). Listing the
 # re-exports keeps them from tripping the unused-import (F401) linter while
@@ -132,7 +140,7 @@ def _parameter_guard_commands(
     design_name: str,
     work_dir: Path,
     defines: list[str],
-) -> list[str]:
+) -> str:
     """Emit the effective-param artifact and fail on enabled-but-zero collisions."""
     artifact = _quote_yosys_path(work_dir / effective_params_filename(design_name))
     commands: list[str] = []
@@ -143,7 +151,7 @@ def _parameter_guard_commands(
         pattern = rf"parameter \\{escaped} (0|[0-9]+'s?0+)[[:space:]]*$"
         commands.extend((f'logger -warn "{pattern}"', f'logger -werror "{pattern}"'))
     commands.append(f"tee -o {artifact} dump -n {design_name}")
-    return commands
+    return "; ".join(commands)
 
 
 def sv2v_argv(
@@ -248,16 +256,13 @@ def resolve_slang_options(
     return list(slang_options)
 
 
-def _slang_parameter(value: str | ParameterValue) -> str:
-    if isinstance(value, ParameterValue):
-        return sv_byte_string_literal(value.value) if value.is_string else value.value
-    return value
-
-
-def _chparam_parameter(value: str | ParameterValue) -> str:
-    if isinstance(value, ParameterValue):
-        return packed_string_constant(value.value) if value.is_string else value.value
-    return value
+def _string_parameter(value: str | ParameterValue, encode: Callable[[str], str]) -> str:
+    """Encode a declared string for one receiver; other values pass through unchanged."""
+    return (
+        encode(value.value)
+        if isinstance(value, ParameterValue) and value.is_string
+        else str(value)
+    )
 
 
 def _slang_read_command(
@@ -289,7 +294,10 @@ def _slang_read_command(
     opts += [f"-I {q(d)}" for d in inc_dirs]
     opts += [f"-D {d}" for d in defines]
     if params:
-        opts += [f"-G {name}={_slang_parameter(value)}" for name, value in params.items()]
+        opts += [
+            f"-G {name}={_string_parameter(value, sv_byte_string_literal)}"
+            for name, value in params.items()
+        ]
     opts += slang_options or []
     files_str = " ".join(q(f) for f in source_files)
     return f"read_slang {' '.join(opts)} {files_str}"
@@ -304,7 +312,7 @@ def _rtl_frontend_commands(
     defines: list[str],
     params: dict[str, str | ParameterValue] | None,
     slang_options: list[str] | None,
-) -> list[str]:
+) -> str:
     """Read RTL and prepare the selected top for synthesis tech-mapping.
 
     This is the synthesis RTL frontend: source ingestion, hierarchy selection,
@@ -326,39 +334,35 @@ def _rtl_frontend_commands(
         # harmless. ``chformal -remove`` runs right after ``proc`` (which lowers
         # the last procedural assertions into cells) and before ``opt``/
         # ``techmap`` — see FORMAL_CELL_TYPES for why it is slang-only.
-        commands = [read_src, f"hierarchy -check -top {design_name}", "proc", CHFORMAL_REMOVE]
+        hls = f"hierarchy -check -top {design_name}; proc; {CHFORMAL_REMOVE}"
     else:
-        commands = [f"read_verilog {q(f)}" for f in source_files]
+        read_src = "; ".join(f"read_verilog {q(f)}" for f in source_files)
+        chparam_cmd = ""
         if params:
             set_args = " ".join(
-                f"-set {name} {_chparam_parameter(value)}" for name, value in params.items()
+                f"-set {name} {_string_parameter(value, packed_string_constant)}"
+                for name, value in params.items()
             )
-            commands.append(f"chparam {set_args} {design_name}")
-        commands.extend([f"hierarchy -libdir ./ -check -top {design_name}", "proc"])
-    return commands
+            chparam_cmd = f"chparam {set_args} {design_name}; "
+        hls = f"{chparam_cmd}hierarchy -libdir ./ -check -top {design_name}; proc"
+    return f"{read_src}; {hls}"
 
 
 def _build_yosys_script(
-    source_files: list[Path],
-    design_name: str,
-    liberty: Path,
-    work_dir: Path,
-    flatten: bool,
-    params: dict[str, str | ParameterValue] | None,
-    abc_recipe: str | None,
-    frontend: str = "sv2v",
-    inc_dirs: list[Path] | None = None,
-    defines: list[str] | None = None,
-    slang_options: list[str] | None = None,
-    generic_abc_before_mapping: bool = False,
-    abc_script: str | None = None,
-    abc_delay_ps: int | None = None,
+    spec: SynthSpec,
     *,
-    command_sequence: bool = False,
-) -> str | list[str]:
-    """Build the Yosys synthesis command script string.
+    sources: list[Path],
+    inc_dirs: list[Path],
+    work_dir: Path,
+) -> str:
+    """Build the Yosys synthesis command script string for *spec*.
 
-    *frontend* selects how the RTL enters Yosys — see
+    The caller supplies only what it computes: *sources* and *inc_dirs* as the
+    script should name them (build-dir-relative, or the sv2v output) and
+    *work_dir*, the directory netlist and stat paths are rooted in. Every recipe
+    knob comes from *spec*.
+
+    ``spec.frontend`` selects how the RTL enters Yosys — see
     :func:`_rtl_frontend_commands`, which builds the shared read-design prefix.
     The tech-mapping tail (dfflibmap → ABC → stat) added here is identical for
     both frontends.
@@ -375,21 +379,24 @@ def _build_yosys_script(
     mapping pass below. ``generic_abc_before_mapping`` is an expert escape
     hatch that restores the generic pre-mapping ABC pass.
     """
+    design_name = spec.design_name
+    liberty = spec.liberty
+    defines = list(spec.defines)
     q = _quote_yosys_path
     lib_path = q(liberty)
     out_dir = str(work_dir).replace("\\", "/")
 
     # Step 1 + 2: read RTL and prepare the selected top for synthesis.
     hls = _rtl_frontend_commands(
-        source_files,
+        sources,
         design_name,
-        frontend=frontend,
-        inc_dirs=inc_dirs or [],
-        defines=defines or [],
-        params=params,
-        slang_options=slang_options,
+        frontend=spec.frontend,
+        inc_dirs=inc_dirs,
+        defines=defines,
+        params=spec.params,
+        slang_options=list(spec.slang_options),
     )
-    parameter_guard = _parameter_guard_commands(design_name, work_dir, defines or [])
+    parameter_guard = _parameter_guard_commands(design_name, work_dir, defines)
 
     # Step 3: coarse- and fine-grain synthesis. ``synth`` runs its own
     # ``opt``/``memory``/``fsm``/``techmap`` internally, so nothing is hand-run
@@ -403,9 +410,9 @@ def _build_yosys_script(
     # dfflibmap perturbed the design enough to add 5.95 kGE, and nothing
     # consumed the file it produced.
     synth = f"synth -top {design_name}"
-    if not generic_abc_before_mapping:
+    if not spec.generic_abc_before_mapping:
         synth += " -noabc"
-    if flatten:
+    if spec.flatten:
         synth += " -flatten"
 
     # Step 4: DFF library mapping
@@ -416,10 +423,10 @@ def _build_yosys_script(
         lib_path,
         out_dir,
         design_name,
-        abc_recipe,
+        spec.abc_recipe,
         dont_use=abc_dont_use_cells(liberty),
-        abc_script=abc_script,
-        abc_delay_ps=abc_delay_ps,
+        abc_script=spec.abc_script,
+        abc_delay_ps=spec.abc_delay_ps,
     )
 
     # Step 6: run one structural check on the final mapped netlist. Mapping
@@ -434,12 +441,13 @@ def _build_yosys_script(
     # duplicating it in yosys.log. The completed final check supplies authoritative
     # structural counts; earlier-only loops remain advisory.
     check_out = q(out_dir + "/check_" + design_name + ".txt")
-    final_check = [
-        "select -assert-none =A:booley_check_library=1",
-        "read_liberty -lib -nooverwrite -setattr booley_check_library " + lib_path,
-        f"tee -q -o {check_out} check",
-        "delete =A:booley_check_library=1",
-    ]
+    final_check = (
+        "select -assert-none =A:booley_check_library=1; "
+        "read_liberty -lib -nooverwrite -setattr booley_check_library "
+        f"{lib_path}; "
+        f"tee -q -o {check_out} check; "
+        "delete =A:booley_check_library=1"
+    )
 
     # Step 7: Write final netlists and statistics. The sta_* netlist keeps
     # OpenROAD on a plain structural dialect while the regular netlist preserves
@@ -447,25 +455,14 @@ def _build_yosys_script(
     synth_out = q(out_dir + "/synth_" + design_name + ".v")
     sta_out = q(out_dir + "/sta_" + design_name + ".v")
     stat_out = q(out_dir + "/stat_" + design_name + ".txt")
-    wout = [
-        f"write_verilog {synth_out}",
-        "setundef -zero",
-        "splitnets",
-        "clean",
-        f"write_verilog -noattr -noexpr -nohex -nodec {sta_out}",
-        f"tee -o {stat_out} stat -liberty {lib_path}",
-    ]
-    commands = [
-        *hls,
-        *parameter_guard,
-        synth,
-        dfflibmap,
-        abc.removesuffix("; opt"),
-        "opt",
-        *final_check,
-        *wout,
-    ]
-    return commands if command_sequence else "; ".join(commands)
+    wout = (
+        f"write_verilog {synth_out}; "
+        "setundef -zero; splitnets; clean; "
+        f"write_verilog -noattr -noexpr -nohex -nodec {sta_out}; "
+        f"tee -o {stat_out} stat -liberty {lib_path}"
+    )
+
+    return f"{hls}; {parameter_guard}; {synth}; {dfflibmap}; {abc}; {final_check}; {wout}"
 
 
 def _build_abc_command(
@@ -746,17 +743,34 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
     return resolved_sdc
 
 
+def _resolve_utilization_and_repair(
+    timing: dict,
+    ppa: OpenRoadPpaSettings | None,
+    *,
+    legacy_utilization: bool,
+    legacy_repair: bool,
+) -> tuple[float, bool]:
+    """Pick utilization and setup repair: legacy TOML, else *ppa*, else defaults."""
+    if legacy_utilization:
+        utilization = _toml_float(timing, "utilization_pct", DEFAULT_STA_UTILIZATION_PCT)
+    elif ppa is not None:
+        utilization = float(ppa.utilization_pct)
+    else:
+        utilization = DEFAULT_STA_UTILIZATION_PCT
+    if legacy_repair:
+        repair = _toml_bool(timing, "repair_timing", True)
+    elif ppa is not None:
+        repair = ppa.repair_setup
+    else:
+        repair = True
+    return utilization, repair
+
+
 def synth_timing_config(
     *,
     mode: str | SynthMode | None = None,
     sdc: list[str] | None = None,
-    utilization_pct: float | None = None,
-    repair_timing: bool | None = None,
-    placement_density: float | None = None,
-    repair_hold: bool = False,
-    gate_cloning: bool = False,
-    setup_margin_ns: float = 0.0,
-    repair_tns_percent: float | None = None,
+    ppa: OpenRoadPpaSettings | None = None,
     report_paths: int = DEFAULT_TIMING_REPORT_PATHS,
     legacy_utilization_fallback: bool | None = None,
     legacy_repair_fallback: bool | None = None,
@@ -773,6 +787,11 @@ def synth_timing_config(
     ``file_type: SDC`` fileset. Physical synthesis requires at least one such
     file; logical synthesis does not.
 
+    *ppa* carries the resolved OpenROAD placement and repair controls
+    (``repair_setup`` becomes the config's ``repair_timing``). ``None`` means
+    no controls were given: utilization, setup repair and the other knobs take
+    their defaults.
+
     *project_root* pins the booley.toml lookup and relative-SDC resolution to
     an explicit worktree (in-process configure, ADR 0037 §8); ``None`` resolves
     the active checkout lazily.
@@ -780,39 +799,30 @@ def synth_timing_config(
     The two ``legacy_*_fallback`` controls preserve standalone callers that
     historically sourced utilization and setup repair from
     ``[flows.synth.timing]``. ``None`` keeps the old direct-call rule: use TOML
-    only when the corresponding argument is absent. The profile-aware Booley Flow
-    passes ``False`` by forwarding an explicit profile.
+    only when *ppa* is absent. The profile-aware Booley Flow passes ``False``
+    by forwarding an explicit profile.
     """
     timing = _load_and_validate_timing_config(project_root)
     resolved_mode = _resolve_synth_mode(mode)
     resolved_sdc = _resolve_sta_sdc_paths(sdc, project_root)
     if legacy_utilization_fallback is None:
-        legacy_utilization_fallback = utilization_pct is None
+        legacy_utilization_fallback = ppa is None
     if legacy_repair_fallback is None:
-        legacy_repair_fallback = repair_timing is None
+        legacy_repair_fallback = ppa is None
     legacy_utilization = legacy_utilization_fallback and "utilization_pct" in timing
     legacy_repair = legacy_repair_fallback and "repair_timing" in timing
-    if legacy_utilization:
-        resolved_utilization = _toml_float(timing, "utilization_pct", DEFAULT_STA_UTILIZATION_PCT)
-    elif utilization_pct is not None:
-        resolved_utilization = float(utilization_pct)
-    else:
-        resolved_utilization = DEFAULT_STA_UTILIZATION_PCT
-    if legacy_repair:
-        resolved_repair = _toml_bool(timing, "repair_timing", True)
-    elif repair_timing is not None:
-        resolved_repair = repair_timing
-    else:
-        resolved_repair = True
+    utilization, repair = _resolve_utilization_and_repair(
+        timing, ppa, legacy_utilization=legacy_utilization, legacy_repair=legacy_repair
+    )
     return StaTimingConfig(
         mode=resolved_mode,
         sdc=tuple(resolved_sdc),
-        utilization_pct=resolved_utilization,
-        repair_timing=resolved_repair,
-        placement_density=None if legacy_utilization else placement_density,
-        repair_hold=repair_hold,
-        gate_cloning=gate_cloning,
-        setup_margin_ns=setup_margin_ns,
-        repair_tns_percent=repair_tns_percent,
+        utilization_pct=utilization,
+        repair_timing=repair,
+        placement_density=None if legacy_utilization or ppa is None else ppa.placement_density,
+        repair_hold=ppa.repair_hold if ppa is not None else False,
+        gate_cloning=ppa.gate_cloning if ppa is not None else False,
+        setup_margin_ns=ppa.setup_margin_ns if ppa is not None else 0.0,
+        repair_tns_percent=ppa.repair_tns_percent if ppa is not None else None,
         report_paths=report_paths,
     )

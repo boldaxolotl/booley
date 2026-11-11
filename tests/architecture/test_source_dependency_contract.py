@@ -12,6 +12,7 @@ from tests.architecture.import_graph import (
     SourceTreeAnalysis,
     analyze_imports,
     analyze_source_tree,
+    mutual_package_pairs,
 )
 
 _SOURCE_ROOT = Path(__file__).parents[2] / "src" / "booley"
@@ -48,6 +49,14 @@ def test_production_source_dependencies_obey_approved_contract(
     problems = evaluate_contract(dependencies, BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
 
     assert not problems, "Source dependency contract failures:\n" + format_problems(problems)
+    # Flows reach Harness only through what the command layer supplies (#3062).
+    assert ("booley.flows", "booley.harness") not in mutual_package_pairs(dependencies)
+    assert not [
+        dependency
+        for dependency in dependencies
+        if dependency.source.startswith("booley.flows")
+        and dependency.target.startswith("booley.harness")
+    ]
 
 
 def test_job_and_report_owners_have_no_dependency_path_to_mcp_adapter(
@@ -455,28 +464,83 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
     assert "booley.flows.execution" in report
 
 
-@pytest.mark.parametrize("owner", ["host_diagnostics", "setup.readiness"])
-@pytest.mark.parametrize("target", ["doctor", "init_cmd", "booley", "colors", "setup.common"])
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "harness.host_diagnostics",
+        "harness.setup.readiness",
+        "runtime.inspection",
+        "flows.sim.backends.cocotb_target_checks",
+        "runtime.vaporview",
+        "flows.target_test_plan_inspection",
+        "runtime.project_image",
+    ],
+)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "harness.doctor",
+        "harness.init_cmd",
+        "harness.booley",
+        "presentation.colors",
+        "harness.setup.common",
+    ],
+)
 @pytest.mark.parametrize("location", ["ordinary", "deferred", "type-only"])
 def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     tmp_path, owner, target, location
 ):
     root = tmp_path / "booley"
-    for package in (root, root / "harness", root / "harness" / "setup"):
+    for package in (
+        root,
+        root / "flows",
+        root / "harness",
+        root / "harness" / "setup",
+        root / "flows",
+        root / "flows" / "sim",
+        root / "flows" / "sim" / "backends",
+        root / "presentation",
+        root / "runtime",
+    ):
         package.mkdir(exist_ok=True)
         (package / "__init__.py").touch()
-    statement = f"import booley.harness.{target}\n"
+    statement = f"import booley.{target}\n"
     if location == "deferred":
         statement = "def helper():\n    " + statement
     elif location == "type-only":
         statement = "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    " + statement
-    (root / "harness" / (target.replace(".", "/") + ".py")).write_text("value = 1\n")
-    (root / "harness" / (owner.replace(".", "/") + ".py")).write_text(statement)
+    (root / (target.replace(".", "/") + ".py")).write_text("value = 1\n")
+    (root / (owner.replace(".", "/") + ".py")).write_text(statement)
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
     report = format_problems(problems)
     assert "D26" in report
-    assert f"booley.harness.{owner}" in report
-    assert f"booley.harness.{target}" in report
+    assert f"booley.{owner}" in report
+    assert f"booley.{target}" in report
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import booley.harness.cli_goal_notice\n",
+        "def helper():\n    from booley.harness import cli_goal_notice\n",
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n    from booley.harness.cli_goal_notice import warn_cli_goal_recording\n",
+    ],
+    ids=["ordinary", "deferred", "type-only"],
+)
+def test_flow_harness_rule_catches_all_static_import_locations(tmp_path, statement):
+    root = tmp_path / "booley"
+    for package in (root, root / "flows", root / "harness"):
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "harness" / "cli_goal_notice.py").write_text("def warn_cli_goal_recording(): pass\n")
+    (root / "flows" / "rogue.py").write_text(statement)
+
+    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    report = format_problems(problems)
+    assert "D39" in report
+    assert "booley.flows.rogue" in report
+    assert "booley.harness.cli_goal_notice" in report
 
 
 def test_shared_health_has_no_transitive_command_or_sdk_dependency(

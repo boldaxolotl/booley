@@ -1,5 +1,11 @@
 # Make the Review Goal the whole review contract
 
+Status: accepted; the Goal-owned review contract is superseded by
+[ADR 0091](0091-review-commits-outside-measurement.md) when Goal Mode is
+removed, and a review then stops being part of the acceptance gate
+([ADR 0092](0092-measure-commits-against-target-metrics.md)). `--verify` and
+`--waive` stay.
+
 A Reviewer should judge the Developer Agent's work independently. Caller-selected
 scope, specification and steering made Goal Mode reviews depend on the Developer
 Agent's choices. Contract changes restarted discovery and carried unchecked open

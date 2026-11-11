@@ -123,11 +123,3 @@ def test_missing_record_defers_source_policy_failure_to_publication(goal_mode):
     changes = state.set_criterion(LINT_KEY, True, detail={"warnings": 0})
     with pytest.raises(EvidenceDiscarded, match="record cannot be read"):
         adapter.record_changes(state, changes, invocation_id="ignored", producer="lint")
-
-
-def test_goal_caller_supplies_done_approval_policy_without_shared_goal_dependency(goal_mode):
-    from booley.flows.execution_persistence import done_findings_require_approval_for
-    from booley.mcp.unbound_recorder import UnboundAcceptanceRecorder
-
-    assert not done_findings_require_approval_for(GoalFlowExecution(bind(goal_mode)))
-    assert not done_findings_require_approval_for(UnboundAcceptanceRecorder())

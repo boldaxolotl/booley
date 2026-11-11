@@ -178,8 +178,8 @@ def test_invalid_advisory_unicode_cannot_gate_lifecycle(tmp_path):
 
 
 def test_entry_warning_excludes_its_own_observation(tmp_path):
-    from booley.goals.model import WorktreeIdentity
     from booley.mcp.goal_tools import _entry_environment
+    from booley.runtime.worktree_identity import WorktreeIdentity
 
     context = McpRequestContext(
         attribution=Attribution("codex:one", "thread", "/fixture", "wt"),
@@ -328,7 +328,7 @@ async def test_running_goal_poll_is_goal_aware_and_keeps_progress_payload(
     tmp_path, monkeypatch, adopted
 ):
     from booley.goals.binding import GoalRunBinding
-    from booley.goals.model import WorktreeIdentity
+    from booley.runtime.worktree_identity import WorktreeIdentity
 
     binding = GoalRunBinding(
         tmp_path,
@@ -349,7 +349,7 @@ async def test_running_goal_poll_is_goal_aware_and_keeps_progress_payload(
     )
     monkeypatch.setattr(server, "_job_record", lambda _: record)
     monkeypatch.setattr(server, "is_pid_alive", lambda _: True)
-    monkeypatch.setattr(server.jobrec.time, "time", lambda: 1791453601)
+    monkeypatch.setattr(server.jobrec, "wall_clock", lambda: 1791453601)
     monkeypatch.setattr(server, "_format_job_running_poll", lambda *_: "RUNNING: sim")
     monkeypatch.setattr(server, "_running_progress", lambda _: {"run_id": "run"})
 

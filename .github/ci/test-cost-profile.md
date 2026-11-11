@@ -378,6 +378,9 @@ What the measurements show:
 
 ## Optimization candidates
 
+C1-C4 are withdrawn (#3329): Goal Mode unit tests no longer run in CI, so their
+savings no longer apply. Their baselines stay as history.
+
 Each candidate is written so it can be pasted into an issue. The baseline is
 the table above; each saving is an **estimate** with the stated reasoning, not
 a measurement. The bound table converts an assumed family saving into a job
@@ -439,6 +442,7 @@ family saving applied to the baseline medians):
 
 ### C1. Cut redundant git launches in `tests/goals/test_finish.py`
 
+- **Status.** Withdrawn (#3329): not run in CI.
 - **Baseline.** Windows 1,317.4 s (1,245.6-1,454.0) = setup 152.3 + call 1,163.2
   + teardown 0.0; 7.4% of a slowest Windows shard. Ubuntu 3.11 106.8 s,
   Ubuntu 3.14 93.1 s, coverage 147.8 s. 54 nodes, 54 using `layout`.
@@ -462,6 +466,7 @@ family saving applied to the baseline medians):
 
 ### C2. Cut redundant git launches in `tests/goals/test_generated_inputs.py`
 
+- **Status.** Withdrawn (#3329): not run in CI.
 - **Baseline.** Windows 1,151.4 s (1,053.2-1,301.7) = setup 24.3 + call 1,126.7;
   Ubuntu 3.11 101.7 s, 3.14 86.3 s, coverage 140.2 s. 61 nodes via `layout`.
   Setup is small here (24 s), so the cost is in the call phase.
@@ -475,6 +480,7 @@ family saving applied to the baseline medians):
 
 ### C3. Cut redundant git launches in `tests/goals/test_r1_lifecycle.py`
 
+- **Status.** Withdrawn (#3329): not run in CI.
 - **Baseline.** Windows 994.0 s (924.3-1,035.6) = setup 204.7 + call 791.7;
   Ubuntu 3.11 88.5 s, 3.14 77.7 s, coverage 128.6 s. 46 nodes.
 - **Expected.** 30-50% of the launch-bound nodes; this family also writes
@@ -489,6 +495,7 @@ family saving applied to the baseline medians):
 
 ### C4. Cut redundant git launches in `tests/goals/test_finish_authority.py`
 
+- **Status.** Withdrawn (#3329): not run in CI.
 - **Baseline.** Windows 966.1 s (887.0-1,038.9) = setup 295.6 + call 666.5;
   Ubuntu 3.11 81.8 s, 3.14 71.4 s, coverage 119.4 s. 48 nodes. Setup is 31%
   of the Windows family, so a cheaper `layout`/enter step helps this family

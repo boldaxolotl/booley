@@ -17,7 +17,7 @@ each entry's _Avoid_ terms as rejected synonyms rather than loose alternatives.
 ### Lifecycle
 
 How a host and codebase become ready for Booley work. **Host Bootstrap** prepares
-reusable host capabilities, **Project Initialization** creates one **Project**,
+reusable host capabilities, **Project Initialization** reconciles one **Project**'s files,
 and **Project Setup** adapts that Project to its design.
 
 **Host Bootstrap**:
@@ -25,7 +25,7 @@ Idempotent, Project-independent preparation of the host environment and the curr
 _Avoid_: Project bootstrap, machine setup, installation
 
 **Project Initialization**:
-Idempotent mechanical creation and reconciliation of Booley state and Sandbox infrastructure for one codebase, making it a **Project** without interpreting its design.
+Idempotent, location-neutral reconciliation of one codebase's Project files (the Booley Directory, Git integration, guidance links, core projections and the Dashboard task), making it a **Project** without interpreting its design. It needs no Docker, host credentials or **Sandbox Issuance**. Host `booley init` runs it with Sandbox Image preparation alongside, then adds Sandbox Issuance, which owns the Dashboard task on that path. `booley init` in a hand-written Sandbox runs it alone; a Booley-issued Sandbox refuses it.
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 
 **Project Setup**:
@@ -151,19 +151,39 @@ The exact FlexNet server identifier advertised by the license manager and mapped
 _Avoid_: server hostname, DNS name, upstream address
 
 **Job**:
-A background run of a Booley Flow or Specialist, tracked by a `run_id` through the submit → poll contract from submission to a terminal result. A Job that starts immediately and finishes quickly completes inline, reading like a synchronous call; one that waits for a slot surfaces a QUEUED state first and can be withdrawn by `run_id` while it waits.
+A run of a Booley Flow or Specialist, tracked by a Job record and its `run_id` from submission to a terminal result. A Developer Agent's Job goes through the submit → poll contract: one that starts immediately and finishes quickly completes inline, reading like a synchronous call; one that waits for a slot surfaces a QUEUED state first and can be withdrawn by `run_id` while it waits. A human's Job runs in the foreground of a Sandbox shell or detached from the Booley Dashboard.
 _Avoid_: task, process, async call
+
+**Standalone Job**:
+A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It takes Job slots like any other Job, writes `job.log`, and never records, satisfies, or invalidates Goal evidence.
+_Avoid_: human run, dashboard job, manual job
 
 **Job Class**:
 The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of other requester roles; unknown persisted roles retain a fallback priority.
 _Avoid_: tier, weight, pool, semaphore
+
+**Resource History**:
+The per-**Project** record of each Job phase's measured peak memory, CPU time and wall-clock time, from which Booley estimates what the next run of that phase will need.
+_Avoid_: telemetry, metrics, profile
+
+**Memory Budget**:
+The part of a **Sandbox**'s memory that Booley may hand out to running Jobs: the Sandbox's memory limit minus a reserve for the Developer Agent and Booley's own processes.
+_Avoid_: memory limit (the Sandbox's hard limit), capacity, quota
+
+**Memory Reservation**:
+The share of the **Memory Budget** a running Job holds: the estimated peak of its largest remaining phase. It shrinks as phases finish and never grows.
+_Avoid_: slot, allocation, lease
+
+**Seat Cap**:
+The number of Jobs that may use one licensed EDA tool at the same time, declared by the **Project**.
+_Avoid_: licence budget, seat pool, license count
 
 ### Configuration
 
 The design-description primitives Booley references but does not own. **Target** is the load-bearing one: almost every other entry binds to a Target by name.
 
 **Project**:
-A codebase initialized with `booley init`, with a **Booley Directory** for its configuration and state.
+A codebase on which Project Initialization has run, with a **Booley Directory** for its configuration and state.
 _Avoid_: repo, workspace
 
 **Booley Directory**:
@@ -262,16 +282,32 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional LLM-powered capability the **Developer Agent** invokes with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [CLI-REFERENCE.md](user/CLI-REFERENCE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered capability the **Developer Agent** invokes with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [CLI-REFERENCE.md](user/CLI-REFERENCE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline. Mutation testing is the **Mutation Flow**, a Booley Flow, not a Specialist.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
-When a **Specialist** reviews or mutates one side of the design, the other side's source is hidden from it. This is a non-negotiable Specialist context boundary that preserves independent readings of the functional spec: a Specialist judging one side of the RTL/testbench divide runs with the opposite side's sources hidden. Reviewers see only their own category's sources; the **Mutation Tester** designs RTL mutations without reading the testbench, so surviving mutants (injected bugs the testbench fails to catch) measure real testbench quality rather than mutations tailored to dodge it. Diagnostic and integration Specialists may read both when their task requires cross-checking RTL/TB agreement.
+When a **Specialist** reviews one side of the design, the other side's source is hidden from it. This is a non-negotiable Specialist context boundary that preserves independent readings of the functional spec: a Specialist judging one side of the RTL/testbench divide runs with the opposite side's sources hidden. Reviewers see only their own category's sources. Diagnostic and integration Specialists may read both when their task requires cross-checking RTL/TB agreement. Firmware belongs to neither side: every Reviewer may read it, and none reports findings in it.
 _Avoid_: optional blindness, reviewer independence
 
 **Custom Flow**:
 A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence for declared Goals. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
 _Avoid_: Custom Tool, plugin, user tool, project tool
+
+**Mutation Flow**:
+The Booley Flow that measures how well a Target's tests catch injected RTL bugs. It injects **Mutants** into the Target's own RTL with the fixed **Mutation Operators**, runs the Target's tests against each, and reports how many are detected. The same sources and settings always produce the same Mutants, so scores are reproducible and comparable across runs; no LLM is involved.
+_Avoid_: Mutation Tester, mutation Specialist, fault injection
+
+**Mutant**:
+One seeded source change with a stable ID, judged detected or not detected by the Target's tests. Its ID comes from the change itself, so it survives unrelated edits. A Mutant that changes no observable behavior (an equivalent Mutant) can never be detected.
+_Avoid_: mutation (for one change), variant, fault
+
+**Mutation Operator**:
+One rule in Booley's fixed table that turns a source site into Mutants, such as swapping a relational operator or deleting an assignment. Projects cannot add or disable operators.
+_Avoid_: mutator, mutation rule
+
+**Mutation Campaign**:
+One **Mutation Flow** run on one **Target**: each selected **Mutant** is judged against the Target's selected tests, and the run reports how many are detected.
+_Avoid_: mutation run, mutation session
 
 ### Simulation evidence
 
@@ -291,12 +327,12 @@ _Avoid_: simulator default seed, random seed
 One **Test Variant** simulated with one seed, written `test+variant@seed`: `test@seed` for a **Test** without Variants, and without `@seed` on a Target that cannot apply seeds. It is the unit that simulation evidence records and that Goals name; a multi-seed Goal (`test+variant@xN`) names N Test Runs whose seeds are drawn at random once and frozen with the Goal. Only a Test Run that exactly matches a Goal's resolved form counts toward that Goal; every other Test Run is diagnostic.
 _Avoid_: run (bare), iteration, seed run, QA Run
 
-**Simulation Campaign**:
-The durable execution record for one immutable, exact simulation workload on one **Target**. A Simulation Campaign may span multiple Simulation Flow invocations through explicit resume and records the strict aggregate outcome of all selected work. It is distinct from a [**Coverage Campaign**](../src/booley/flows/sim/GLOSSARY.md), which records native RTL coverage for one Target and one Simulation Flow invocation; a coverage-collecting Simulation Campaign may contain a separate Coverage Campaign as evidence for an attempt.
-_Avoid_: Campaign, regression run, test batch, Coverage Campaign
+**Simulation Record**:
+The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**. An explicit resume continues the same Simulation Record in a later invocation, and the record holds the strict aggregate outcome of all selected work. A coverage-collecting Simulation Record may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md) for an attempt. Code, messages, persisted formats, and docs outside the glossaries still say "campaign" until the rename in [#2711](https://github.com/boldaxolotl/booley/issues/2711) lands; Goal-side names (the Goal Record's campaign accounting and the `campaign` criterion freshness category) are left to the redesign in [#3045](https://github.com/boldaxolotl/booley/issues/3045), which replaced #2811 and may remove them.
+_Avoid_: Simulation Campaign, campaign, regression run, test batch
 
 **Simulator Bundle**:
-An authenticated simulator executable and its supporting build outputs, built for a declared build variant of one **Simulation Campaign**. Its scope is either shared by compatible work items in that Simulation Campaign or private to one simulation attempt; it is not a cross-campaign cache.
+An authenticated simulator executable and its supporting build outputs, built for a declared build variant of one **Simulation Record**. Its scope is either shared by compatible work items in that Simulation Record or private to one simulation attempt; it is not a cross-record cache.
 _Avoid_: binary cache, global build cache, simulator image
 
 **Trace Artifact**:
@@ -314,7 +350,7 @@ _Avoid_: regex, marker, exit-code-only verdict
 ### Presentation
 
 **Booley Dashboard**:
-The read-only terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, and health signals in that Sandbox.
+The terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, Targets, and health signals in that Sandbox, from which a human can also launch Booley Flows and built-in Specialists as Standalone Jobs.
 _Avoid_: control room, console, monitor
 
 **Session activity**:
@@ -335,6 +371,42 @@ _Avoid_: cycle budget, synthesis criterion, benchmark score
 The per-Project store, in the **Main Booley Directory**, of graded `sim`, `synth`, and `fpga` passes, their metrics and text reports, from runs at a **clean commit** that stayed clean until the run ended. Any such run stores; `booley ci` also fills it on purpose by running a named set of Criteria at a chosen commit in throwaway checkouts. A stored result is served in place of a fresh run only when its Result Key matches. The key covers: the tracked bytes of the RTL repository and of the Booley Directory's repository, `booley.toml` minus its verdict-neutral sections, the resolved Target Test Plan, non-Booley ignored files, the Target and its resolved EDAM, the keyed environment, Booley's build, the Sandbox Image, any mounted EDA tool's manifest, and a Booley-generated identity of the same host. A hit is labelled as cached with its producing run. Sampled re-runs check hits, and a mismatch disables the cache for the Project. It stores results, never builds; that is what distinguishes it from a **Simulator Bundle** and from the compiler cache.
 _Avoid_: build cache, global build cache, binary cache, memoization
 
+**Metric-Driven Development**:
+Accepting work by measuring a commit against the **Target Metrics** its Project declares, in place of approving a list of criteria for each task. Adoption is optional: a Project that declares no metrics is unaffected.
+_Avoid_: Sign-off, sign-off flow, acceptance mode
+
+**Target Metrics**:
+The metrics a Target declares for its Booley Flows in `metrics.toml`. Each is **enforced** (it has an absolute bound that must be met) or **tracked** (reported; its value never blocks).
+_Avoid_: Criteria, Goals, thresholds, KPIs
+
+**Measurement Run**:
+One stored run of `booley measure` over every Target that declares metrics. It belongs to the Git tree it measured, not to a commit, so a rewrite that leaves the files identical reuses it.
+_Avoid_: Sign-off run, Result Cache entry, CI run
+
+**Measured Commit**:
+A commit whose tree's latest full **Measurement Run** met every enforced Target Metric and produced no error. Locally it is advisory; a run in CI is the trusted one.
+_Avoid_: signed-off commit, passing commit, green commit
+
+**Measurement Report**:
+The report of one **Measurement Run** as seen from one commit and its **Base**: each metric's value, bound and verdict, and what changed since the Base, the rules included.
+_Avoid_: Sign-off Report, Review Package, Goal status
+
+**Base**:
+The commit a measured or reviewed commit is compared with: by default its merge-base with the default branch. A stored Measurement Run of the Base is optional; it adds deltas to the Measurement Report and never decides a verdict.
+_Avoid_: baseline (a Booley Flow's `--baseline` compares one Target with another revision), reference commit
+
+**Declared Review**:
+A Reviewer focus that a Target declares in `reviews.toml` for one source role (RTL or testbench), optionally narrowed to matching files, with the spec it reviews against and the severity at which findings must be resolved.
+_Avoid_: review kind, review type, Review Goal
+
+**Review Run**:
+One stored run of a commit's Declared Reviews: either the discovery pass over the changes since the **Base**, or the verify pass that re-checks that discovery's open findings on a later commit.
+_Avoid_: review session, review receipt
+
+**Reviewed Commit**:
+A commit on which a verify Review Run left no finding open at or above its Declared Reviews' threshold. It records what happened on that commit, is not reproducible, and never gates CI; it is independent of the commit being a **Measured Commit**.
+_Avoid_: approved commit, signed-off commit, clean review
+
 **Escalation**:
 A signal that a decision exceeds the current authority level and must move from Specialist to Developer Agent to Human.
 _Avoid_: spec gap, blocker, impediment
@@ -347,6 +419,8 @@ You will not need these unless you are reading older work records, code, or docs
 - **Ticket Preflight** → **Goal entry refusals** and **Doctor** "Project checks": The old Ticket-intake gate is retired; entry enforces Goal worktree and input requirements, while Doctor diagnoses shared Project machinery. They are separate checks, not a one-for-one reproduction of Ticket Preflight.
 - **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the Goal Record, evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code.
 - **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Goals, Jobs, and health across the Sandbox.
+- **Simulation Campaign** → **Simulation Record**: Renamed; code, messages, persisted formats, and docs keep "campaign" until #2711 lands, and older ADRs keep it as historical records (see ADR 0090).
+- **Coverage Campaign** → [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md): Renamed on the same terms.
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.
 - **"agent"**: Name the **Developer Agent** in full at its first mention in a document or section, and in every sentence that discusses it alongside a **Specialist**. After that first mention, "the agent" is an allowed short form within the same section when no Specialist is a possible referent. Never use "agent" for a Specialist.

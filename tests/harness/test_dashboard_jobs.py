@@ -8,7 +8,7 @@ import os
 import pytest
 
 from booley.goals.store import GoalStore
-from booley.harness.dashboard.app import job_detail
+from booley.harness.dashboard.app import job_detail, job_paths
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
 from booley.mcp import (
@@ -16,16 +16,26 @@ from booley.mcp import (
 )
 from booley.runtime import job_records
 from booley.runtime.pid import ProcessIdentity
+from tests.conftest import symlink_or_skip
+from tests.goals import conftest as goal_fixtures
 from tests.goals.conftest import INPUT_PATHS
+
+layout = goal_fixtures.layout
 
 
 def snapshot_jobs(
-    booley_dir, *, interactive_root=None, slots_root=None, proc_root=None, reader=None
+    booley_dir,
+    *,
+    interactive_root=None,
+    slots_root=None,
+    proc_root=None,
+    reader=None,
+    now=None,
 ):
     options = {} if proc_root is None else {"proc_root": proc_root}
     reader = reader or JobReader(booley_dir, slots_root=slots_root, **options)
     records = GoalStore(booley_dir).list_records().records
-    return reader.read(records, interactive_root=interactive_root)
+    return reader.read(records, interactive_root=interactive_root, now=now)
 
 
 def files(root):
@@ -305,11 +315,7 @@ def test_sandbox_capacity_is_explicit_in_resource_projection(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("stage", [None, "simulation"])
-def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(
-    tmp_path, monkeypatch, stage
-):
-    import time
-
+def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(tmp_path, stage):
     from booley.flows.progress_lifecycle import progress_document
     from booley.runtime.pid import capture_process_identity
     from tests.mcp_tools.test_session_registry import _fake_process
@@ -347,16 +353,16 @@ def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(
     )
     progress.write_text(json.dumps(document))
     before = files(tmp_path)
-    monkeypatch.setattr(time, "time", lambda: 1791453605)
-    view = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
-    text = job_detail(view)
+    now = 1791453605
+    view = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc, now=now).jobs[0]
+    text = job_detail(view, now=now)
     assert "elapsed 5s" in text
     assert f"Stage: {stage}" in text if stage else "Stage:" not in text
     assert "EDA tool: icarus" in text
     assert files(tmp_path) == before
     (work / "fixture.core").unlink()
-    missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
-    assert "EDA tool:" not in job_detail(missing)
+    missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc, now=now).jobs[0]
+    assert "EDA tool:" not in job_detail(missing, now=now)
 
 
 def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
@@ -708,3 +714,116 @@ def test_zero_resource_measurements_are_recorded(tmp_path):
     )
     assert "CPU time: 0s" in text
     assert "Peak memory (largest process): 0 MiB" in text
+
+
+def test_job_detail_read_latency_unread_and_legacy():
+    from pathlib import Path
+
+    from booley.harness.dashboard.app import job_detail
+    from booley.harness.dashboard.jobs import JobView
+    from booley.runtime.timefmt import format_clock
+
+    def detail(state, **fields):
+        record = rec(status="done", **fields)
+        return job_detail(JobView(Path("/jobs"), record, state))
+
+    finished = {"ended_at": "2026-10-08T10:01:00Z", "owner": "mcp-stdio:one"}
+    # (a) The first-read time and how long the result waited after the Job ended.
+    read_at = "2026-10-08T10:03:10Z"
+    assert f"Read: {format_clock(read_at)} · 2m 10s after end" in detail(
+        "completed", **finished, read_at=read_at
+    )
+    # (b) A finished, owned, unread Job says so, orphaned ones included.
+    assert "Read: unread" in detail("completed", **finished)
+    assert "Read: unread" in detail("orphaned", **finished)
+    # (c) A record without an owner invents no latency, and (d) neither does a running Job.
+    assert "Read:" not in detail("completed", ended_at=finished["ended_at"])
+    assert "Read:" not in detail("running", owner="mcp-stdio:one")
+    # (e) A read without an end time shows the clock only.
+    clock_only = detail("completed", owner="mcp-stdio:one", read_at=read_at)
+    assert f"Read: {format_clock(read_at)}" in clock_only
+    assert "after end" not in clock_only
+    # A read stamped before the end clamps to zero rather than going negative.
+    assert "· 0s after end" in detail(
+        "completed", ended_at="2026-10-08T10:05:00Z", owner="o", read_at=read_at
+    )
+
+
+def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
+    """A shell Flow run shows in the Dashboard with its ``job.log`` and its own report."""
+    from booley.flows.lint.flow import LintFlow
+    from booley.harness import booley as cli
+    from booley.mcp.registry import McpToolInfo
+    from booley.runtime import runtime_context
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from tests.flows.invocation_doubles import replace_run
+
+    def make_lint():
+        flow = LintFlow()
+        replace_run(monkeypatch, flow, EndpointOutcome)
+        return flow
+
+    info = McpToolInfo(name="lint", path="lint.py", description="lint", kind="flow")
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(cli, "_discover_project_mcp_tools", lambda _root: [info])
+    monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: make_lint)
+    monkeypatch.delenv("BOOLEY_RUN_ID", raising=False)
+    monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
+    parser = cli._build_parser()
+    args = cli._normalize_args(
+        parser,
+        parser.parse_args(
+            ["flow", "lint", "-C", str(layout.worktree), "--target", "top", "--quiet"]
+        ),
+    )
+
+    assert cli._cmd_flow(args, layout.worktree) == 0
+
+    capsys.readouterr()
+    (view,) = snapshot_jobs(layout.control).jobs
+    assert view.record.session_key is None
+    assert view.state == "completed"
+    log = layout.control / ".interactive_logs/standalone" / view.record.run_id / "job.log"
+    assert view.report is not None  # found under the checkout's reports, by the run's own id
+    detail = job_detail(view)
+    assert f"Log:\n{log}" in detail
+    assert f"Report:\n{view.report_path}" in detail
+    assert job_paths(view) == (str(log), str(view.report_path))
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--target", "top"], "top"),
+        (["--target=top#sim"], "top#sim"),
+        (["--target"], None),
+        (["lint", "--report-dir", "x"], None),
+    ],
+)
+def test_target_arg_reads_both_spellings(argv, expected):
+    assert job_records.target_arg(argv) == expected
+
+
+def test_job_detail_links_job_log(tmp_path):
+    root = tmp_path / "logs/.runtime/jobs"
+    job_records.write_record(rec(status="done", exit_code=0), root)
+    log = root / "one" / "job.log"
+    log.parent.mkdir()
+    log.write_bytes(b"full output\n")
+    view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
+    assert view.log_path == str(log)
+    assert f"Log:\n{log}" in job_detail(view)
+    assert str(log) in job_paths(view)
+
+
+def test_symlinked_job_log_is_not_linked(tmp_path):
+    root = tmp_path / "logs/.runtime/jobs"
+    job_records.write_record(rec(status="done", exit_code=0), root)
+    target = tmp_path / "elsewhere.log"
+    target.write_bytes(b"secret\n")
+    (root / "one").mkdir()
+    symlink_or_skip(root / "one" / "job.log", target)
+    view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
+    assert view.log_path == ""
+    assert "Log:" not in job_detail(view)
+    assert str(root / "one" / "job.log") not in job_paths(view)

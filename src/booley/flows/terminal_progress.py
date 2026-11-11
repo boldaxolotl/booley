@@ -27,7 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, NamedTuple, TextIO
 
-from booley.harness.colors import accent, amber, dim
+from booley.presentation.colors import accent, amber, dim
+from booley.presentation.job_log_stream import JobLogStream
 from booley.runtime.booley_dir import runtime_dir
 from booley.runtime.timefmt import format_age, format_duration, utc_now_rfc3339
 
@@ -337,7 +338,8 @@ class TerminalProgress:
             self.close()
             _CURRENT.reset(token)
 
-    def _write(self, text: str) -> None:
+    def _write(self, text: str, *, frame: bool = False) -> None:
+        """Write to the human terminal. *frame* marks live-region redraws, which are not history."""
         try:
             try:
                 fd = self.stream.fileno()
@@ -349,6 +351,9 @@ class TerminalProgress:
                 and (os.isatty(fd) or stat.S_ISFIFO(os.fstat(fd).st_mode))
             ):
                 self._write_ready_fd(fd, text)
+                # Raw fd writes bypass a Standalone Job's tee: copy what the human keeps.
+                if isinstance(self.stream, JobLogStream) and not frame:
+                    self.stream.log_only(text)
             else:
                 self.stream.write(text)
                 self.stream.flush()
@@ -746,7 +751,7 @@ class TerminalProgress:
                 *(fit_width(_human(sanitize(line)), budget) for line in self.tail),
                 *self._lane_rows(open_lanes, now, budget),
             ][: max(1, height - 1)]
-            self._write("\n".join(rows) + "\n")
+            self._write("\n".join(rows) + "\n", frame=True)
             self.rows = len(rows)
             self.last_render = now
         elif not self.compact and now - self.last_record >= 5:
@@ -819,7 +824,7 @@ class TerminalProgress:
 
     def _clear(self) -> None:
         if self.rows:
-            self._write(f"\x1b[{self.rows}A\x1b[J")
+            self._write(f"\x1b[{self.rows}A\x1b[J", frame=True)
             self.rows = 0
 
     def _poll(self) -> None:

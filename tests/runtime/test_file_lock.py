@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.file_lock_probe import invocation_lock_paths
+from tests.subprocess_budget import run_bounded_child
 
 from booley.core import file_lock
 
@@ -129,7 +130,7 @@ def test_wait_timeout_reports_contention(monkeypatch: pytest.MonkeyPatch) -> Non
     monotonic = iter((0.0, 0.0, 0.0))
     reports: list[bool] = []
     monkeypatch.setattr(file_lock, "acquire_file_lock", contend)
-    monkeypatch.setattr(file_lock.time, "monotonic", lambda: next(monotonic))
+    monkeypatch.setattr(file_lock, "monotonic", lambda: next(monotonic))
 
     with pytest.raises(file_lock.LockTimeoutError, match="remained busy"):
         file_lock.wait_for_file_lock(
@@ -167,7 +168,6 @@ def test_windows_preserved_empty_lock_uses_byte_zero_without_padding(monkeypatch
 
 
 def test_preserved_empty_lock_contends_across_processes(tmp_path):
-    import subprocess
     from pathlib import Path
 
     path = tmp_path / "existing.lock"
@@ -194,9 +194,9 @@ with open(sys.argv[1], 'r+') as handle:
     ]
     with path.open("r+") as handle:
         file_lock.wait_for_file_lock(handle, timeout_s=0, preserve_contents=True)
-        blocked = subprocess.run(command, capture_output=True, text=True, check=True, timeout=20)
+        blocked = run_bounded_child(command, check=True, timeout=20)
         assert blocked.stdout.strip() == "busy"
         file_lock.release_file_lock(handle)
-    available = subprocess.run(command, capture_output=True, text=True, check=True, timeout=20)
+    available = run_bounded_child(command, check=True, timeout=20)
     assert available.stdout.strip() == "acquired"
     assert path.read_bytes() == b""

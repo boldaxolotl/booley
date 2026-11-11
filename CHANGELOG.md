@@ -9,6 +9,98 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
+  as a Standalone Job: choose the worktree, the Flow, and its arguments, check
+  the equivalent shell command, then submit or copy it. The Jobs window opens
+  with the new Job selected. The Dashboard is no longer read-only.
+- Job resource history keeps the newest 20 runs per Target, Job phase, flags,
+  and Test Run with no overall cap, and deletes a group that has had no run in
+  90 days. Peak memory now includes processes forked by any thread of a Job
+  command, and counts the Job's temporary files only when `TMPDIR` is on
+  tmpfs (they are still recorded as the temporary-file peak); earlier runs
+  keep their earlier peak.
+- A failed test function that a Cocotb Target without registered Tests discovered
+  now gets one `booley flow sim --target <name> --seed N` command that reruns the
+  whole batch, instead of a `--test=<name>@N` command that Booley refused with
+  exit 2.
+- `booley init` now records the default Agent CLI as `[agent] default` instead of
+  the older name `provider`, and the `--provider` conflict error names
+  `[agent] default`. An existing `provider` key is kept as written and still
+  works.
+- `booley resources` now keeps each Test Variant of a simulation apart
+  (`tests=first+slow`; the default Variant keeps the bare Test name, and the
+  seeds of one Variant share an entry). Flow runs that `booley doctor` starts
+  are no longer recorded, and each record stores the size of the Target's
+  source files when it is known.
+- The `sim` result card now names each Test Run that did not pass with its log
+  (`log:`) and, when it ran with `--trace`, its waveform (`waveform:`); a
+  `--trace` run lists its passing Test Runs with their waveform too.
+  `simulation.json` `tests[]` rows and the MCP result carry `log` and `trace`
+  paths for every Test Run (`null` when absent), so nobody searches the
+  Campaign's work items for them.
+- A second `booley chat` while the main checkout is in use now starts in its
+  own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
+  and prints a line saying where it works. The first session and a lone
+  session run in the main checkout as before. `booley chat --new-worktree`
+  always uses a worktree, `booley chat --here` always uses the main checkout,
+  and `[chat] worktree = "auto" | "always" | "never"` sets the default
+  (`auto`). Run from inside an existing worktree, `booley chat` starts there.
+  A plain `claude` tab or VS Code panel does not hold the main checkout, so it
+  is noticed only on a best-effort basis.
+- New `booley coverage uncovered <coverage.json>` lists every uncovered scored
+  point of one retained coverage run as `source:line  metric  detail  hierarchy`,
+  sorted by source, line, and metric, with a summary count and the number of
+  waived points left out. `--metric` and `--source` narrow the list. It works
+  on the host and in the Sandbox, and the coverage guide uses it instead of the
+  `jq` recipes.
+- `booley flow sim --mode elab-only-standalone` now probes each module with the
+  simulator of the Targets that use it: Icarus for an Icarus Target, Verilator
+  for a Verilator Target, and both for a module shared by the two (a
+  mixed-simulator project can take up to twice as long). A parse error from the
+  Target's own compiler is now a design failure instead of "ungraded"; an
+  Icarus-only project is probed with Icarus even when Verilator is installed. The
+  `[flows.sim].standalone_frontend` key is retired: every Flow refuses to run
+  while it is set, so delete it.
+- A failed Simulation run of a Target without registered Tests is now listed as
+  `<default>` (`<default>@N` when seeded) in `simulation.json` and the "Test
+  Runs" lines, and its rerun command is `booley flow sim --target <name>
+  [--seed N]` instead of an unrunnable `--test=<name>@N`.
+- `[flows.sim].output_dir` is retired. It has had no effect; Doctor now warns
+  `config.flow-key-retired` while it is set. Delete it. `[flows.synth].output_dir`
+  is unchanged.
+- `booley init` now runs inside a hand-written Sandbox (such as a Codespace)
+  and performs Project Initialization only, so a spec can call it from
+  `onCreateCommand` on every create: guidance links, Dashboard task, Git
+  settings, and line endings, with no Docker or image work. It is idempotent
+  and exits 0 when nothing changes. A Booley-issued Sandbox still refuses it
+  and names the host command. The Dashboard attach refusal and Doctor hints
+  now say where to run `booley init`.
+- Stealth Mode is now off unless `.booley/booley.toml` sets
+  `[stealth] enabled = true`; a missing key means off. A fresh `booley init`
+  no longer hides `.booley/` or gives it its own repository before setup
+  records your choice; the booley-setup skill's hidden answer does both. A
+  Project set up earlier whose `booley.toml` has no `enabled` key has left
+  Stealth: commit messages are no longer cleaned and pushes are no longer
+  checked. `booley init` and Doctor warn `stealth.enabled-unset` while
+  `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
+  `enabled = false` to confirm it is off. A `booley.toml` that can't be read
+  keeps Stealth on. Unattended setup now keeps `.booley/` in your repository
+  instead of hiding it.
+- String parameters now reach Verilator and Icarus through Edalize's own
+  quoting again, narrowing the 0.4.0 note that `str` and `file` vlogparams reach
+  them as strings. Plain values such as `MAC` work; values with quotes,
+  backslashes or whitespace, are not supported there. `default: ""` string
+  parameters are dropped by FuseSoC again in every flow: Yosys (slang) and sv2v
+  use the module's own HDL default for them, and the Vivado refusal does not
+  fire for them. Non-empty Yosys (slang), sv2v and Vivado behavior is unchanged.
+- `booley bootstrap --egress proxy|unproxied` records `[sandbox] egress` in the
+  host config, creating the file if needed and changing nothing else in it, then
+  bootstraps under that mode. `--check-only` reports the pending change without
+  writing it, and running Sandboxes still on the old mode are named with their
+  recreate steps.
+- A fresh Sandbox no longer shows Claude Code's auto-mode default nudge on the
+  first chat: registration marks it as seen (`hasSeenAutoDefaultNudge`), with or
+  without a credential, and keeps any value already in `~/.claude.json`.
 - `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
   limit is gone. Post-run VCD-to-FST conversion now has its own
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)
@@ -17,6 +109,64 @@ Packaged release history starts at 0.2.7. For older changes, see
   timed-out conversion reports a trace incident: a failing simulation stays
   failed, a passing one is reported inconclusive, and neither is `timeout`.
   Icarus no longer reports an unconverted raw VCD as a waveform.
+- A new IP now follows the same sequence as a port: `booley init`, then
+  `/booley-setup new` on the host. `/booley-setup new` asks the design choices
+  and writes the starter project with your answers, without prompting again. It
+  now also works after a completed plain `booley init`: it keeps the `[agent]`
+  settings, and unless you choose Stealth it removes an empty inner `.booley`
+  repository and `/.booley` git exclusion left by an older `booley init`, or
+  refuses (changing nothing) when that repository has commits. Plain `booley init` in a repo with no RTL now suggests
+  `/booley-setup new`.
+- `booley init --scaffold` now names Targets `<axis>_<ip>` (`sim_<ip>`,
+  `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`) with a matching `tests.toml` section.
+  Doctor notes a Target it runs (or one in a stealth core) named just `sim`,
+  `lint`, `synth`, or `fpga` and suggests `<axis>_<core name>`.
+- A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
+  with its points now loads with values recomputed from the points instead of
+  failing. A forged pass/fail on a blocked or not-requested evaluation or one
+  that cannot be re-scored (no thresholds, invalid thresholds or a missing
+  rollup) is still refused (`COV_EVALUATION_MISMATCH`), as is an incomplete
+  collection (`COV_INCOMPLETE_EVALUATED`); an unknown threshold metric or
+  malformed or repeated metric rows are refused with the field codes. The
+  load no longer cross-checks collection state, selected tests against runs,
+  or native-format and unknown-record consistency; those fields load as stored.
+- `sim --trace` now converts a declared `trace_files` entry that is a literal
+  relative `.vcd` path inside the run directory while the test runs, so the
+  waveform is ready at run end and no VCD is left on disk. Other entries still
+  convert after the run. `bwave build` now fails on a VCD holding a second
+  header instead of merging the dumps.
+- Doctor now scans the per-Project Session stores on the host and fails when a
+  file is not named for the Project Root it holds, naming the file and its
+  repair. On Windows the stores now name a Project Root without regard to
+  case, so Sandbox issuance, pending refresh, and pending invalidation files
+  written by earlier releases are not migrated: each fails closed until it is
+  removed, naming the file. Remove it, then run
+  `booley init --seed --project <root>` on the host to reissue the Sandbox
+  spec. Linux and macOS file names do not change.
+- A Sandbox that Booley issues now accepts `[agent.auth] codex = "gateway"`. It
+  forwards the gateway settings from your shell for Codex only, and hides them
+  from Claude sessions. Start VS Code from a shell that exports them (see
+  "Codex through a model gateway" in `docs/user/SANDBOX.md`).
+- Booley no longer migrates Sandbox state from releases before 0.3.0. The
+  host-issued Sandbox spec stamp format version is bumped, so every spec issued
+  by an earlier release is rejected as stale. Stamps at the old
+  `eda/session-specs` location, specs that use the old registrar module or the
+  `--project-root` initialize command, and stamps without a Booley Directory
+  layout are rejected the same way. Doctor names the repair: run
+  `booley init --seed` on the host.
+
+  Finish or recover any interrupted `booley session refresh` before upgrading,
+  because its journal cannot be resumed after the upgrade. If you already
+  upgraded, every lifecycle command fails closed naming the journal file:
+  remove it, then run `booley init --seed --project <root>` on the host.
+
+  A Sandbox Image without the current provenance schema is stale and is rebuilt
+  or re-pulled.
+
+  `booley session prepare` now refuses, rather than stops and removes, a running
+  VS Code container whose Booley Directory mounts are outdated, including any
+  from before 0.3.0. Close VS Code, stop and remove that container, run
+  `booley init --seed`, then reopen the folder in the container.
 
 ## 0.4.0 - 04 NOV 2026
 

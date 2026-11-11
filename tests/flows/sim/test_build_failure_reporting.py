@@ -1,7 +1,7 @@
 """Build timeout/OOM evidence must reach the agent-visible report (issue #882).
 
 Every consumer of an infrastructure build outcome (campaign Build Result,
-typed campaign error, endpoint report, legacy report, coverage build) must lead
+typed campaign error, endpoint report, coverage build) must lead
 with the actionable reason and a bounded, marker-free output tail.
 """
 
@@ -31,12 +31,12 @@ from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution import SimulationOptions
-from booley.flows.sim.flow import MissingExecutableError, SimulateFlow
+from booley.flows.sim.flow import OrdinaryCampaignPlanning, SimulateFlow
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.mcp.base import EXIT_ERROR
 from tests.flows.sim import test_campaign_crash_matrix as crash_matrix
-from tests.flows.sim.test_campaign_crash_matrix import _admission
-from tests.flows.sim.test_campaign_phase5_adversarial import (
+from tests.flows.sim.campaign_test_support import (
+    _admission,
     _FailedCoverageBuild,
     _run_coverage_campaign,
 )
@@ -219,8 +219,8 @@ def _run_private_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcom
 
 
 def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome):
-    from tests.flows.sim.test_campaign_phase3 import _handle as shared_handle
-    from tests.flows.sim.test_campaign_phase3 import _named_manifest
+    from tests.flows.sim.campaign_test_support import _handle as shared_handle
+    from tests.flows.sim.campaign_test_support import _named_manifest
 
     plan = create_simulation_campaign_plan(_named_manifest(("tail", "quick")))
     project = tmp_path / "project"
@@ -299,7 +299,10 @@ def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
         patch.object(SimulateFlow, "_candidate_campaign_requests", return_value=[]),
         patch.object(SimulateFlow, "_publish_and_run_campaign_requests", side_effect=error),
     ):
-        endpoint = flow._run_ordinary_campaigns(["sim"], {"sim": []}, _admission())
+        endpoint = flow._execute_campaign(
+            _admission(),
+            flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {"sim": []})),
+        )
 
     assert endpoint.exit_code == EXIT_ERROR
     first_line = endpoint.report_text.splitlines()[0]
@@ -308,22 +311,6 @@ def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
     assert endpoint.detail["build_stage"]["timed_out"] is True
     assert LAST_LINE in endpoint.report_text
     assert HEAD_LINE not in endpoint.report_text
-
-
-def test_legacy_build_infrastructure_result_uses_shared_tail(capsys) -> None:
-    outcome = classify_build_outcome(
-        _timed_out_result("BOOLEY_BUILD_STAGE token=stale rc=0\n" + _long_output()),
-        "abc123",
-        timeout_s=600,
-    )
-    error = build_module.SimulationBuildInfrastructureError("sim", outcome)
-
-    result = SimulateFlow._build_infrastructure_result(error)
-
-    assert TIMEOUT_REASON in result.report_text.splitlines()[0]
-    assert "BOOLEY_BUILD_STAGE" not in result.report_text
-    assert LAST_LINE in result.report_text
-    capsys.readouterr()
 
 
 def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -360,9 +347,8 @@ def test_coverage_build_timeout_reports_not_run_infrastructure_error(
         CoverageInvocationRequest,
         prepare_coverage_invocation,
     )
-    from booley.flows.sim.coverage_transaction import run_coverage_target
     from tests.flows.sim.test_coverage_invocation import project
-    from tests.flows.sim.test_coverage_transaction import NativeExecution, Progress
+    from tests.flows.sim.test_coverage_transaction import NativeExecution, run_target
 
     # Separate roots: both fixtures write the same FuseSoC core.
     (tmp_path / "adapter").mkdir()
@@ -377,7 +363,7 @@ def test_coverage_build_timeout_reports_not_run_infrastructure_error(
         def build(self, request):
             return timed_out
 
-    outcome = run_coverage_target(plan, TimedOut(), Progress())
+    outcome = run_target(plan, TimedOut())
 
     assert outcome.exit_code == 2
     assert outcome.detail["passed"] is None
@@ -443,10 +429,6 @@ def test_prepared_build_failure_reports_missing_executable(tmp_path: Path) -> No
         )
         assert outcome.infrastructure_failure is not None
         assert outcome.infrastructure_failure.missing_executable == "verilator"
-        # Legacy Flow projection; the Flow-deletion part drops only these lines.
-        with pytest.raises(MissingExecutableError) as caught:
-            SimulateFlow()._project_execution_outcome(outcome)
-        assert caught.value.binary == "verilator"
 
 
 def test_build_report_fits_codec_detail_ceiling() -> None:
@@ -547,16 +529,16 @@ def test_build_owned_loader_startup_is_infrastructure(executable):
     assert "libx.so" in outcome.reason
 
 
-@pytest.mark.parametrize("sharing", [False, True])
+@pytest.mark.parametrize("access", ["legacy-per-test", "immutable"])
 def test_large_batch_build_failure_publishes_bounded_terminal_result(
-    tmp_path, monkeypatch, sharing
+    tmp_path, monkeypatch, access
 ) -> None:
     from dataclasses import replace
 
-    from tests.flows.sim.test_campaign_phase5_adversarial import _plan
+    from tests.flows.sim.campaign_test_support import _plan
 
     names = tuple(f"test_{index}" for index in range(1000))
-    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names)
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names, access=access)
     outcome = _engine_timeout_outcome(tmp_path / "engine")
     assert outcome.infrastructure_failure is not None
     outcome = replace(
@@ -566,7 +548,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     )
     from booley.flows.sim.execution.contract import SimulationTestOutcome
 
-    if not sharing:
+    if access == "legacy-per-test":
         outcome = replace(
             outcome,
             tests=tuple(
@@ -584,9 +566,6 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
         def ordinary_group(self, _handle, _names, _test_runs=None):
             yield _InfrastructureGroup(root, outcome)
 
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.serial_execution._sharing_eligible", lambda _request: sharing
-    )
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,
         execution_factory=lambda _options: Execution(),
@@ -612,7 +591,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
     assert endpoint.detail["build_stage"]["timed_out"] is True
     assert "compiler failed:" in campaign.observations[0]["detail"]["reason"]
-    if not sharing:
+    if access == "legacy-per-test":
         assert "tail sentinel" in campaign.observations[0]["detail"]["reason"]
 
 
@@ -644,35 +623,3 @@ def test_escaped_build_metadata_stays_within_canonical_detail_budget(
     assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES
     assert detail["build_stage"]["timed_out"] is True
     assert store.scan().interrupted == ()
-
-
-def test_parameter_record_failure_is_a_preparation_diagnostic(tmp_path, monkeypatch):
-    from booley.flows.sim.build import SimulationBuildPreparationError, prepare_simulation_build
-
-    resolved = SimpleNamespace(
-        name="sim",
-        toplevel="top",
-        build_root=tmp_path,
-        configured_eda_tool="verilator",
-        parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": "MAC"}},
-    )
-    monkeypatch.setattr(
-        build_module,
-        "_simulation_recipe_inputs",
-        lambda *_args, **_kwargs: (tmp_path, SimpleNamespace(), ()),
-    )
-
-    monkeypatch.setattr(
-        build_module.fusesoc_registry,
-        "resolve_target_handle",
-        lambda *_args, **_kwargs: resolved,
-    )
-    monkeypatch.setattr(
-        build_module,
-        "_verilator_cache_environment",
-        lambda *_args: pytest.fail("invalid record reached cache capture"),
-    )
-    with pytest.raises(
-        SimulationBuildPreparationError, match=r"parameter transport.*missing or ambiguous"
-    ):
-        prepare_simulation_build(SimpleNamespace(selector="sim"), build_root=tmp_path)

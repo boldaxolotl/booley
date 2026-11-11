@@ -27,7 +27,9 @@ def observation_test_runs(
     The n-th observation of a Test is the n-th Test Run of that Test in the
     work item; an observation without a Test is the item as a whole and takes
     its first Test Run. A Test that an unfiltered Cocotb batch discovered ran
-    under the batch's unnamed invocation and is named with its seed.
+    under the batch's unnamed invocation and is named with its seed; the
+    invocation's own result (named after the Target selector) is that
+    invocation's Test Run.
 
     Raises :class:`SimulationCampaignIntegrityError` when an observation has
     no Test Run in its work item.
@@ -39,7 +41,10 @@ def observation_test_runs(
     for observation in observations:
         test = observation["test"]
         if unnamed is not None and test is not None:
-            run = discovered_test_run(cast(str, test), test_run_from_document(unnamed))
+            selector = cast(str, cast(Mapping[str, object], item["target"])["selector"])
+            run = discovered_test_run(
+                cast(str, test), test_run_from_document(unnamed), target=selector
+            )
             bound.append((run.name, run.fingerprint))
             continue
         matching = [run for run in runs if test is None or run["test"] == test]

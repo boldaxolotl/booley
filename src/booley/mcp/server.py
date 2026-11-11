@@ -23,7 +23,6 @@ import asyncio
 import collections
 import contextlib
 import hashlib
-import itertools
 import json
 import logging
 import os
@@ -101,6 +100,7 @@ from booley.mcp.goal_tools import (
     dispatch_goal_tool,
 )
 from booley.mcp.job_lifecycle import JobLifecycle, JobPoll, JobResult, OwnedPoll, _poll_status
+from booley.mcp.job_notice import UnreadNotice, target_label
 from booley.mcp.job_ownership import Caller
 from booley.mcp.live_catalog import (
     LiveCatalog,
@@ -139,6 +139,7 @@ from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
+from booley.runtime.worktree_usage import record_worktree_use
 
 if TYPE_CHECKING:
     from mcp.server.context import ServerRequestContext
@@ -553,6 +554,7 @@ async def _run_subprocess(
     env: dict[str, str] | None = None,
     is_queued: Callable[[], bool] | None = None,
     on_first_active: Callable[[], None] | None = None,
+    log_path: Path | None = None,
 ) -> tuple[int, str, str, bool]:
     """Delegate process supervision with adapter-configured diagnostic timings."""
     return await endpoint_process._run_subprocess(
@@ -564,6 +566,7 @@ async def _run_subprocess(
         on_first_active=on_first_active,
         watchdog_tick=endpoint_process._WATCHDOG_TICK_SECONDS,
         cancel_grace=endpoint_process.CANCEL_GRACE_SECONDS,
+        log_path=log_path,
     )
 
 
@@ -1149,24 +1152,13 @@ def _render_job_poll(
     return _running_poll_content(state.run_id, caller)
 
 
-def _target_label(argv: list[str]) -> str:
-    """The Targets a Job was started with, for listings; ``default`` when none were named."""
-    targets = [value for flag, value in itertools.pairwise(argv) if flag == "--target"] + [
-        arg.partition("=")[2] for arg in argv if arg.startswith("--target=")
-    ]
-    return ", ".join(targets) or "default"
-
-
 def _job_listing(outcome: OwnedPoll) -> str:
     """Trailing block naming the caller's other Jobs; empty when there are none."""
 
     def line(rec: jobrec.JobRecord, state: str) -> str:
-        return f"- {rec.run_id}: {rec.endpoint}, Target {_target_label(rec.argv)}, {state}"
+        return f"- {rec.run_id}: {rec.endpoint}, Target {target_label(rec.argv)}, {state}"
 
     sections = []
-    if outcome.unread:
-        lines = [line(rec, rec.status) for rec in outcome.unread]
-        sections.append("Also finished, not yet read:\n" + "\n".join(lines))
     if outcome.running:
         lines = [line(rec, job_results._phase_for_record(rec)) for rec in outcome.running]
         sections.append("Still running:\n" + "\n".join(lines))
@@ -1592,13 +1584,13 @@ def _sim_mcp_tool_timeout_seconds(
         resolve_sim_build_timeout_ms,
         resolve_sim_trace_convert_timeout_ms,
     )
-    from booley.flows.sim.flow import _resolve_sim_campaign_work_units, _resolve_sim_timeout_ms
+    from booley.flows.sim.flow import resolve_sim_campaign_work_units, resolve_sim_timeout_ms
     from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
 
     work_dir = context.work_dir
     requested = requested_timeout_ms(arguments)
     if requested is None:
-        timeout_ms = _resolve_sim_timeout_ms(work_dir)
+        timeout_ms = resolve_sim_timeout_ms(work_dir)
     else:
         timeout_ms = resolve_timeout_ms("sim", None, requested)
     build_timeout_ms = resolve_sim_build_timeout_ms(work_dir)
@@ -1612,7 +1604,7 @@ def _sim_mcp_tool_timeout_seconds(
         work_units = (
             1
             if arguments.get("resume_from") is not None
-            else _resolve_sim_campaign_work_units(
+            else resolve_sim_campaign_work_units(
                 work_dir,
                 raw_target,
                 arguments.get("test"),
@@ -1841,6 +1833,30 @@ async def _dispatch_special_mcp_tool(
     return None
 
 
+def _stamp_worktree_use(
+    arguments: Mapping[str, Any], request_context: McpRequestContext | None
+) -> None:
+    """Record a call's interactive worktree as just used (``booley worktree list``).
+
+    The checkout is the call's ``work_dir`` (explicit or routed) or, for tools
+    without one, the caller's routed checkout. The stamp is bookkeeping, not
+    admission, so an unreadable layout never fails the call.
+    """
+    work_dir = arguments.get("work_dir")
+    if isinstance(work_dir, str) and work_dir:
+        checkout = Path(work_dir)
+    elif request_context is not None:
+        checkout = request_context.checkout
+    else:
+        checkout = None
+    if checkout is None:
+        return
+    try:
+        record_worktree_use(checkout, resolve_common_booley_dir())
+    except (SourceCheckoutProjectError, BooleyLayoutError, OSError, ValueError):
+        logger.debug("Could not stamp worktree use for %s", checkout, exc_info=True)
+
+
 async def _dispatch_application_tool(
     name: str,
     arguments: dict[str, Any],
@@ -1853,6 +1869,7 @@ async def _dispatch_application_tool(
     server_identity: str | None = None,
 ) -> McpToolContent | McpInputRequired:
     """Dispatch one validated application call to its concrete endpoint."""
+    _stamp_worktree_use(arguments, request_context)
     caller = (
         None
         if server_identity is None
@@ -1933,12 +1950,21 @@ def _build_mcp_application(
             request_context=context,
         )
 
+    notice = UnreadNotice(jobs)
+
+    def append_unread_notice(
+        payload: McpToolPayload, context: McpRequestContext
+    ) -> McpToolPayload:
+        """End every tool response with the caller's finished-but-unread Jobs."""
+        return notice.append(payload, job_ownership.caller_for(server_identity, context))
+
     application = McpApplication(
         catalog.visible_definitions(_exposure(), mcp_tools),
         dispatch=dispatch,
         canonicalize=canonical,
         on_discovery_error=discovery_errors.append,
         request_dispatch=request_dispatch,
+        finalize=append_unread_notice,
     )
     status_mcp_tool_names.extend(
         tool.name for tool in application.list_tools() if tool.name in mcp_tool_index
@@ -2075,6 +2101,8 @@ async def _call_application_tool(
                     await _record_presence(observer, request.attribution, params.name, "cancelled")
             raise
         payload = await _observe_tool_completion(payload, request, params.name, observer)
+        # Last, so the notice ends the response, after any shared-worktree warning.
+        payload = application.finalize(payload, request)
         return _sdk_tool_result(payload)
     except UnknownMcpToolError as exc:
         if observer is not None:

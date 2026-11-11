@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support.commit_msg_hook import AttributionPolicyError, main, sanitize_message
 
@@ -19,9 +19,15 @@ def test_default_generated_footer_is_preserved_verbatim(tmp_path: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _project_hook_has_no_ambient_source_policy():
-    """Unit-test the vendored Project hook, not this source checkout's role."""
-    with patch("validate_commit_msg._current_repo_root", return_value=None):
+def _project_hook_has_no_ambient_source_policy(tmp_path_factory):
+    """Unit-test the vendored Project hook, not this source checkout's role.
+
+    The hook acts only in Stealth Mode, so the default Project enables it explicitly.
+    """
+    project_root = tmp_path_factory.mktemp("stealth-project")
+    (project_root / ".booley").mkdir()
+    (project_root / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    with patch("validate_commit_msg._current_repo_root", return_value=project_root):
         yield
 
 
@@ -334,7 +340,7 @@ class TestMain:
         config = project_root / ".booley" / "booley.toml"
         config.parent.mkdir(parents=True)
         config.write_text(
-            '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
+            '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n',
             encoding="utf-8",
         )
         msg_file = tmp_path / "COMMIT_EDITMSG"
@@ -405,7 +411,8 @@ class TestMain:
             "[tool.booley]\nsource_checkout = true\n",
             encoding="utf-8",
         )
-        subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10)
+        init = run_bounded_child(["git", "init", "-q", str(root)], timeout=10)
+        assert init.returncode == 0, init.stderr
         support = Path(__file__).resolve().parents[2] / "src" / "booley" / "dev_support"
         for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
             shutil.copy2(support / name, hooks / name)
@@ -421,12 +428,9 @@ class TestMain:
         original = "docs: explain Booley architecture\n"
         message.write_text(original, encoding="utf-8")
 
-        result = subprocess.run(
+        result = run_bounded_child(
             [sys.executable, "-S", str(hooks / "commit_msg_hook.py"), str(message)],
             cwd=root,
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=10,
         )
 

@@ -13,12 +13,14 @@ import json
 import os
 import shutil
 import stat
+import struct
 import subprocess
 import tempfile
-import time
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from time import monotonic
 from typing import IO
 
 from booley.bwave.contract import BWaveListMetadata, decode_list_metadata
@@ -259,7 +261,7 @@ def _build_timeout_s(deadline: float | None) -> float:
     """Seconds the next build may run: what is left of the budget, else the fixed limit."""
     if deadline is None:
         return _BWAVE_BUILD_TIMEOUT_SECONDS
-    return deadline - time.monotonic()
+    return deadline - monotonic()
 
 
 def _conversion_scopes(scope: str | None, allow_fallback: bool) -> list[str | None]:
@@ -379,6 +381,7 @@ class StreamingConversion:
         store_path: Path,
         stderr_path: Path,
         scope: str | None,
+        fifo_identity: tuple[int, int],
     ) -> None:
         self._process = process
         self._keepalive_fd: int | None = keepalive_fd
@@ -386,6 +389,13 @@ class StreamingConversion:
         self.store_path = store_path
         self.stderr_path = stderr_path
         self._scope = scope
+        # ``(st_dev, st_ino)`` of the pipe this conversion created: only a path
+        # that still has this identity is ours to remove (a testbench may have
+        # replaced it).
+        self.fifo_identity = fifo_identity
+        self._input_lock = threading.Lock()
+        self._drain_stop = threading.Event()
+        self._drain: threading.Thread | None = None
 
     @property
     def pid(self) -> int:
@@ -418,14 +428,64 @@ class StreamingConversion:
         with contextlib.suppress(OSError):
             self._process.kill()
 
-    def finish(self) -> ConversionResult:
-        """Close the keepalive, wait with kill escalation, and remove FIFO state."""
-        if self._keepalive_fd is not None:
-            os.close(self._keepalive_fd)
-            self._keepalive_fd = None
+    def backlog(self) -> int:
+        """Bytes a writer queued in the pipe that B-Wave has not read yet."""
+        import fcntl
+        import termios
+
+        with self._input_lock:
+            if self._keepalive_fd is None:
+                return 0
+            try:
+                packed = fcntl.ioctl(self._keepalive_fd, termios.FIONREAD, struct.pack("i", 0))
+            except OSError:
+                return 0
+        return int(struct.unpack("i", packed)[0])
+
+    def discard_input(self) -> None:
+        """Read and drop what writers send, so a dead converter never blocks them."""
+        with self._input_lock:
+            if self._keepalive_fd is None or self._drain is not None:
+                return
+            self._drain = threading.Thread(
+                target=self._drain_pipe, args=(self._keepalive_fd,), daemon=True
+            )
+            self._drain.start()
+
+    def _drain_pipe(self, fd: int) -> None:
+        import select
+
+        while not self._drain_stop.is_set():
+            if select.select([fd], [], [], 0.1)[0]:
+                with contextlib.suppress(OSError):
+                    os.read(fd, 1 << 16)
+
+    def close_input(self) -> None:
+        """Stop any drain, close the keepalive so B-Wave sees EOF, and remove our pipe."""
+        with self._input_lock:
+            self._drain_stop.set()
+            if self._drain is not None:
+                self._drain.join()
+            if self._keepalive_fd is not None:
+                os.close(self._keepalive_fd)
+                self._keepalive_fd = None
+        self._remove_fifo_if_ours()
+
+    def _remove_fifo_if_ours(self) -> None:
+        """Unlink the pipe unless it was unlinked or replaced since ``mkfifo``."""
+        try:
+            status = self.fifo_path.lstat()
+        except OSError:
+            return
+        if stat.S_ISFIFO(status.st_mode) and (status.st_dev, status.st_ino) == self.fifo_identity:
+            self.fifo_path.unlink(missing_ok=True)
+
+    def finish(self, timeout_s: float = _BWAVE_EXIT_TIMEOUT_SECONDS) -> ConversionResult:
+        """Close the input, wait up to *timeout_s* with kill escalation, remove FIFO state."""
+        self.close_input()
         events: list[str] = []
         try:
-            return_code = self._process.wait(timeout=_BWAVE_EXIT_TIMEOUT_SECONDS)
+            return_code = self._process.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             self.kill()
             return_code = self._process.wait(timeout=_BWAVE_KILL_TIMEOUT_SECONDS)
@@ -437,7 +497,6 @@ class StreamingConversion:
             events.append(f"wrote {self.store_path.name} ({size_mb:.1f} MB)")
         elif return_code != 0:
             events.append(f"WARNING: bwave exited with rc={return_code}")
-        self.fifo_path.unlink(missing_ok=True)
         self.store_path.with_name(self.store_path.name + ".progress").unlink(missing_ok=True)
         attempt = ConversionAttempt(self._scope, return_code, _bounded(stderr))
         return ConversionResult(
@@ -458,8 +517,14 @@ def start_streaming_conversion(
     *,
     scope: str | None = None,
     stderr_path: Path,
+    replace_existing: bool = True,
 ) -> StreamingConversion | None:
-    """Start the B-Wave half of FIFO conversion, or return unavailable."""
+    """Start the B-Wave half of FIFO conversion, or return unavailable.
+
+    ``replace_existing=False`` is for a path the user chose: nothing there is
+    unlinked, no directory is created, and any failure to claim the path
+    returns ``None`` so the caller can fall back.
+    """
     if os.name != "posix":
         return None
     binary = native_bwave_binary()
@@ -467,10 +532,17 @@ def start_streaming_conversion(
         return None
     import fcntl
 
-    fifo_path.parent.mkdir(parents=True, exist_ok=True)
     store_path.parent.mkdir(parents=True, exist_ok=True)
-    fifo_path.unlink(missing_ok=True)
-    os.mkfifo(str(fifo_path))
+    if replace_existing:
+        fifo_path.parent.mkdir(parents=True, exist_ok=True)
+        fifo_path.unlink(missing_ok=True)
+    try:
+        os.mkfifo(str(fifo_path))
+    except OSError:
+        if replace_existing:
+            raise
+        return None
+    fifo_status = fifo_path.lstat()
     keepalive_fd = os.open(str(fifo_path), os.O_RDWR)
     read_fd = os.open(str(fifo_path), os.O_RDONLY | os.O_NONBLOCK)
     fcntl.fcntl(read_fd, fcntl.F_SETFL, fcntl.fcntl(read_fd, fcntl.F_GETFL) & ~os.O_NONBLOCK)
@@ -493,7 +565,15 @@ def start_streaming_conversion(
     finally:
         stderr_file.close()
         os.close(read_fd)
-    return StreamingConversion(process, keepalive_fd, fifo_path, store_path, stderr_path, scope)
+    return StreamingConversion(
+        process,
+        keepalive_fd,
+        fifo_path,
+        store_path,
+        stderr_path,
+        scope,
+        (fifo_status.st_dev, fifo_status.st_ino),
+    )
 
 
 def _inspect_structure(path: Path) -> StoreStructure:

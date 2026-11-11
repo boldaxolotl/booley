@@ -11,6 +11,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tests.execution_test_support import (
@@ -19,6 +20,7 @@ from tests.execution_test_support import (
     wait_for_value,
 )
 
+from booley.runtime import execution_recovery
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
@@ -30,10 +32,12 @@ from booley.runtime.execution_records import (
     write_attachment_heartbeat,
 )
 from booley.runtime.execution_recovery import (
+    _ExecutionProcesses,
     _matches_execution,
     recover_execution,
 )
 from booley.runtime.pid import (
+    DEAD,
     RUNNING,
     UNKNOWN,
     ProcessIdentity,
@@ -172,6 +176,7 @@ def test_recovers_execution_after_supervisor_is_killed(
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     reset_cache()
     write_attachment_heartbeat(paths, generation=1)
+    # Kept on Popen: the test kills the supervisor and waits on it itself.
     supervisor = start_supervisor_with_detached_descendant(
         booley_dir, execution_id, descendant_pid_file
     )
@@ -269,6 +274,49 @@ def test_recovery_accepts_a_valid_lane_context_despite_a_leftover_project_child_
 
     record = read_json(paths.record)
     assert record is not None and record["tree_terminal"] is True
+
+
+@pytest.mark.parametrize("tree_terminal", [True, False])
+def test_recovery_keeps_a_terminal_record_written_before_supervisor_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tree_terminal: bool
+) -> None:
+    """The supervisor's real outcome survives its exit landing between recovery's two reads."""
+    booley_dir = tmp_path / ".booley"
+    execution_id = ExecutionId(uuid.uuid4().hex)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
+    supervisor = capture_process_identity(os.getpid())
+    assert supervisor is not None
+    running = {
+        "schema_version": 1,
+        "state": "running",
+        "supervisor": supervisor.to_payload(),
+        "leader": None,
+        "exit_code": None,
+        "tree_terminal": False,
+        "terminal_cause": None,
+        "updated_at": "2026-10-25T00:00:00Z",
+    }
+    paths.record.parent.mkdir(parents=True)
+    atomic_write_json(paths.record, running)
+
+    def supervisor_finishes_then_reads_dead(_identity: ProcessIdentity) -> SimpleNamespace:
+        atomic_write_json(
+            paths.record,
+            running | {"state": "terminal", "exit_code": 0, "tree_terminal": tree_terminal},
+        )
+        return SimpleNamespace(state=DEAD)
+
+    monkeypatch.setattr(execution_recovery, "observe_process", supervisor_finishes_then_reads_dead)
+    monkeypatch.setattr(
+        execution_recovery, "_scan_execution", lambda _id: _ExecutionProcesses((), True)
+    )
+
+    assert recover_execution(execution_id, booley_dir=booley_dir) is tree_terminal
+
+    record = read_json(paths.record)
+    assert record is not None
+    assert (record["state"], record["exit_code"]) == ("terminal", 0)
+    assert record["terminal_cause"] is None
 
 
 def test_recovery_refuses_a_mismatched_lane_context(tmp_path: Path) -> None:

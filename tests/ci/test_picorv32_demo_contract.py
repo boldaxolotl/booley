@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 import yaml
+from tests.subprocess_budget import run_bounded_child
 
 from booley.goals.model import parse_goal_arg
 from booley.runtime import dockerfile_syntax
@@ -164,7 +165,7 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 
     assert "project_contract_ref" not in raw_contract
     assert len(contract.upstream_ref) == 40
-    assert contract.project_ref == "e53c1896ab02595aa4ebb3a56b5aa7bd109177f9"
+    assert contract.project_ref == "a3520837bce9416c1a7209d779148a9eb12482a9"
     assert contract.schema == 2
     assert all(goal.target in contract.required_targets for goal in contract.required_goals)
     assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
@@ -213,7 +214,7 @@ def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> Non
     assert "BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json" in commands
     assert directory in commands
     if path == TEST_WORKFLOW:
-        steps = workflow["jobs"]["bwave-smoke"]["steps"]
+        steps = workflow["jobs"]["riscv-image"]["steps"]
         upload = next(
             step for step in steps if step.get("name") == "Upload Goal readiness evidence"
         )
@@ -251,7 +252,7 @@ def test_readiness_upload_requires_its_producer_to_run(
     path: Path, producer_name: str, upload_name: str
 ) -> None:
     workflow = yaml.safe_load(path.read_text())
-    job = "demo-contract" if path == WORKFLOW else "bwave-smoke"
+    job = "demo-contract" if path == WORKFLOW else "riscv-image"
     steps = workflow["jobs"][job]["steps"]
     all_steps = [child for step in steps for child in step.get("parallel", [step])]
     producer = next(step for step in all_steps if step.get("name") == producer_name)
@@ -432,7 +433,7 @@ def test_release_validation_skips_credentials_and_cannot_promote() -> None:
 
 
 def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-I",
@@ -441,8 +442,6 @@ def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
             "--contract",
             str(contract.resolve()),
         ],
-        capture_output=True,
-        text=True,
         check=False,
         timeout=10,
     )
@@ -929,10 +928,8 @@ def test_demo_verifier_uses_explicit_directory_for_both_readiness_stages(tmp_pat
     monkeypatch.setenv("BOOLEY_DIR", configured)
     monkeypatch.setenv("DEMO_COMMAND_LOG", str(commands))
     monkeypatch.setenv("BOOLEY_RUN_PICORV32_FLOWS", "0")
-    subprocess.run(
+    run_bounded_child(
         ["bash", str(VERIFY_SCRIPT.resolve())],
-        capture_output=True,
-        text=True,
         check=True,
         timeout=10,
     )

@@ -13,7 +13,6 @@ from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, immutable_mapping
 
-from .coverage_acceptance import CoverageAcceptance
 from .coverage_campaign import CoverageFinding, DurableTargetIdentity
 from .coverage_json import FrozenJson, freeze_coverage_mapping
 from .coverage_policy import CoverageCriterion
@@ -91,7 +90,6 @@ class CoverageTargetPlan:
     source_closure: Mapping[str, FrozenJson] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     target_fingerprint: str = ""
-    acceptance: CoverageAcceptance | None = None
     invocation_dir: Path | None = None
     started_at: str = field(default_factory=utc_now_rfc3339)
     waiver_config: CoverageWaiverConfig | None = None
@@ -141,19 +139,6 @@ def _suite(
         selected = request.tests
     else:
         selected = tuple(name for name in declared if name not in skipped)
-    if criterion is not None:
-        metrics = [threshold.metric for threshold in criterion.thresholds]
-        if (
-            not metrics
-            or len(set(metrics)) != len(metrics)
-            or set(metrics) - {"line", "branch", "expression", "toggle", "cover_property"}
-        ):
-            raise ValueError("Coverage Criterion must name unique V1 metrics")
-        if any(
-            isinstance(t.minimum_percent, bool) or not 0 < t.minimum_percent <= 100
-            for t in criterion.thresholds
-        ):
-            raise ValueError("Coverage thresholds must be finite numbers in (0, 100]")
     for names in (declared, required, selected):
         if not names or any(not isinstance(name, str) or not name.strip() for name in names):
             raise ValueError("Coverage requires an exact non-empty registered test suite")

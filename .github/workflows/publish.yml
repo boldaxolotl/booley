@@ -24,9 +24,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup-python
         with:
           python-version: "3.13"
           cache: pip
+
+      # A prefix-restored pip cache never shrinks; see .github/ci/README.md#pip-cache.
+      - name: Drop pip cache restored from an older dependency set
+        if: steps.setup-python.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        run: python -m pip cache purge
 
       - name: Verify tag matches package version
         shell: bash
@@ -59,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: x86_64-unknown-linux-gnu
 
@@ -205,7 +212,7 @@ jobs:
           python .github/scripts/release_changelog.py extract
           --target "$(cat VERSION)" --output "${RUNNER_TEMP}/release-notes.md"
 
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           body_path: ${{ runner.temp }}/release-notes.md
           files: |

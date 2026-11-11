@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from booley.harness import booley as cli
-from booley.harness import colors
 from booley.harness.terminal_status import section_header
+from booley.presentation import colors
 
 PUBLIC_COMMANDS: list[str] = [
     "chat",
@@ -19,22 +19,23 @@ PUBLIC_COMMANDS: list[str] = [
     "specialist",
     "worktree",
     "cheat",
+    "coverage",
     "doctor",
     "help",
+    "init",
     "resources",
     "targets",
     "auth",
     "bootstrap",
     "eda",
-    "init",
     "projects",
 ]
 
 
 GROUPS = {
     "Sandbox": PUBLIC_COMMANDS[:5],
-    "Host or Sandbox": PUBLIC_COMMANDS[5:10],
-    "Host": PUBLIC_COMMANDS[10:],
+    "Host or Sandbox": PUBLIC_COMMANDS[5:12],
+    "Host": PUBLIC_COMMANDS[12:],
 }
 
 
@@ -136,8 +137,8 @@ def test_cli_reference_has_the_same_public_inventory() -> None:
     )
     assert [(location, re.findall(r"`(\w+)`", commands)) for location, commands in rows] == [
         ("Sandbox", PUBLIC_COMMANDS[:5]),
-        ("Either", PUBLIC_COMMANDS[5:10]),
-        ("Host-only", PUBLIC_COMMANDS[10:]),
+        ("Either", PUBLIC_COMMANDS[5:12]),
+        ("Host-only", PUBLIC_COMMANDS[12:]),
     ]
 
 
@@ -150,48 +151,67 @@ def test_skill_commands_are_hidden_but_remain_registered(command: str) -> None:
     assert not re.search(rf"^ +{command}\s", parser.format_help(), re.M)
 
 
-@pytest.mark.parametrize(
-    "command,location",
-    [
-        ("chat", "Sandbox"),
-        ("dashboard", "Sandbox"),
-        ("flow", "Sandbox"),
-        ("specialist", "Sandbox"),
-        ("worktree", "Sandbox"),
-        ("goal", "Sandbox"),
-        ("cheat", "either"),
-        ("doctor", "either"),
-        ("help", "either"),
-        ("feedback", "either"),
-        ("cleanup", "either"),
-        ("upgrade", "either"),
-        ("resources", "either"),
-        ("targets", "either"),
-        ("auth", "host"),
-        ("bootstrap", "host"),
-        ("eda", "host"),
-        ("init", "host"),
-        ("projects", "host"),
-        ("session", "host"),
-    ],
-)
-@pytest.mark.parametrize("inside", [False, True])
+COMMAND_LOCATION_TABLE = [
+    ("chat", "Sandbox"),
+    ("dashboard", "Sandbox"),
+    ("flow", "Sandbox"),
+    ("specialist", "Sandbox"),
+    ("worktree", "Sandbox"),
+    ("goal", "Sandbox"),
+    ("cheat", "either"),
+    ("coverage", "either"),
+    ("doctor", "either"),
+    ("help", "either"),
+    ("feedback", "either"),
+    ("cleanup", "either"),
+    ("upgrade", "either"),
+    ("resources", "either"),
+    ("targets", "either"),
+    ("init", "either"),
+    ("auth", "host"),
+    ("bootstrap", "host"),
+    ("eda", "host"),
+    ("projects", "host"),
+    ("session", "host"),
+]
+
+
 def test_command_locations_enforce_the_audited_boundary(
-    command: str,
-    location: str,
-    inside: bool,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
-    monkeypatch.setattr("sys.argv", ["booley", command])
-    assert cli.COMMAND_LOCATIONS[command].value == location
-    refused = (location == "Sandbox" and not inside) or (location == "host" and inside)
-    if refused:
-        with pytest.raises(SystemExit) as exc:
-            cli._enforce_runtime_location(command)
-        assert exc.value.code == 2
-        assert f"booley {command}" in capsys.readouterr().err
-    else:
-        cli._enforce_runtime_location(command)
-        assert capsys.readouterr().err == ""
+    for command, location in COMMAND_LOCATION_TABLE:
+        for inside in (False, True):
+            monkeypatch.setattr(
+                cli.runtime_context, "inside_session_runtime", lambda inside=inside: inside
+            )
+            monkeypatch.setattr("sys.argv", ["booley", command])
+            assert cli.COMMAND_LOCATIONS[command].value == location, command
+            refused = (location == "Sandbox" and not inside) or (location == "host" and inside)
+            if refused:
+                with pytest.raises(SystemExit) as exc:
+                    cli._enforce_runtime_location(command)
+                assert exc.value.code == 2, (command, inside)
+                assert f"booley {command}" in capsys.readouterr().err
+            else:
+                cli._enforce_runtime_location(command)
+                assert capsys.readouterr().err == "", (command, inside)
+
+
+def test_sandbox_init_is_documented_for_hand_written_specs() -> None:
+    """Spec authors are told to run `booley init` from `onCreateCommand`."""
+    guide = (Path(__file__).parents[2] / "docs/user/SANDBOX.md").read_text(encoding="utf-8")
+    heading = "### Project setup in a hand-written spec (`booley init`)"
+    assert heading in guide
+    start = guide.index(heading)
+    section = guide[start : guide.find("\n#", start + len(heading))]
+    assert "`booley init`" in section
+    assert "onCreateCommand" in section
+    assert "## Hand-written devcontainer specs" in guide[:start]
+
+
+def test_init_help_says_it_runs_in_a_hand_written_sandbox() -> None:
+    parser = cli._build_parser()
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    help_text = " ".join(sub.choices["init"].format_help().split())
+    assert "hand-written Sandbox" in help_text
+    assert "Booley-issued Sandbox refuses it" in help_text

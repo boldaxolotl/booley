@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -31,7 +32,11 @@ from booley.flows.sim.campaign.coverage_execution import (
 )
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest
-from booley.flows.sim.campaign.serial_execution import _attempt, _build_attempt
+from booley.flows.sim.campaign.serial_execution import (
+    BuildScope,
+    bundle_build_attempt,
+    simulation_attempt,
+)
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.coverage_overlay import CoverageOverlay
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
@@ -52,9 +57,9 @@ from booley.flows.sim.verilator_coverage_execution import (
     prepare_coverage_collection,
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
-from booley.fusesoc.fusesoc_registry import core_target_coverage_errors
+from booley.fusesoc.fusesoc_registry import ResolvedFile, core_target_coverage_errors
 from booley.targets.catalog import TargetCatalog
-from tests.flows.sim.test_campaign_crash_matrix import _admission
+from tests.flows.sim.campaign_test_support import _admission
 from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
 
 
@@ -242,6 +247,53 @@ def test_execution_launches_the_test_run_with_its_variant_and_seed(
     )
     assert captured["work"].test_runs == (run,)
     assert "export SOAK=1\n" in captured["run_script"]
+
+
+def test_coverage_run_labels_its_test_variant_and_source_bytes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _declare_variants(tmp_path)
+    sources = tuple(
+        ResolvedFile(str(tmp_path / name), "systemVerilogSource")
+        for name in ("rtl/counter.sv", "tb/counter_tb.sv")
+    )
+    execution, target, raw_path, _captured = _execution_fixture(
+        tmp_path, monkeypatch, files=sources
+    )
+    expected_bytes = sum(
+        (tmp_path / name).stat().st_size for name in ("rtl/counter.sv", "tb/counter_tb.sv")
+    )
+    run = load_target_test_plan(tmp_path, "sim", identity="sim", adapter="verilator").run(
+        "wrap", "soak", 7
+    )
+    labels: dict[str, job_resources.ResourceLabel | None] = {}
+    invoke = execution._invoke
+
+    def spy(command, *, timeout):
+        text = " ".join(command)
+        for marker, name in (("BOOLEY_BUILD_STAGE", "build"), ("BOOLEY_COVERAGE_RUN_ID", "run")):
+            if marker in text:
+                labels[name] = job_resources.current_label()
+        return invoke(command, timeout=timeout)
+
+    execution._invoke = spy
+    job_resources.clear_label()
+    _build_coverage(execution, target)
+    result = execution.run(
+        replace(_run_request(target, raw_path), test=SelectedCoverageRun("wrap", run))
+    )
+    job_resources.clear_label()
+
+    assert result.verdict == "pass"
+    # The Test Variant is named; the seed is not.
+    assert labels["run"].tests == ("wrap+soak",)
+    assert labels["build"] == job_resources.ResourceLabel(
+        "sim", "sim_build", source_bytes=expected_bytes
+    )
+    assert labels["run"] == job_resources.ResourceLabel(
+        "sim", "sim_run", ("wrap+soak",), source_bytes=expected_bytes
+    )
+    assert expected_bytes > 0
 
 
 def test_prepare_collection_gives_every_selected_test_its_default_test_run(
@@ -642,6 +694,7 @@ def _execution_fixture(
     *,
     cocotb: bool = False,
     options: SimulationOptions | None = None,
+    files: tuple[ResolvedFile, ...] = (),
 ):
     _write_target(tmp_path)
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
@@ -658,7 +711,8 @@ def _execution_fixture(
         resolved=SimpleNamespace(
             cocotb_module="test_counter" if cocotb else "",
             parameters={},
-            files=(),
+            files=files,
+            build_root=build_root,
             edam_path=build_root / "target.eda.yml",
             flow_options={},
         ),
@@ -985,17 +1039,16 @@ def test_coverage_infrastructure_guard_preserves_abort_evidence(
 
 class _CoverageFailedBuildExecutor:
     def execute(self, request):
-        attempt, _run_directory = _attempt(request)
+        attempt, _run_directory = simulation_attempt(request)
         request.store.publish_attempt(request.attempt_directory, attempt)
         directory = request.attempt_directory / "private-build"
         directory.mkdir()
-        build_attempt = _build_attempt(request)
+        build_attempt = bundle_build_attempt(request, BuildScope.private(request))
         request.store.publish_build_attempt(directory, build_attempt)
         outcome = CoverageTargetOutcome(
             "sim",
             2,
             directory / "coverage.json",
-            directory / "sim.json",
             {"error": "collector build transport unavailable"},
         )
         return _publish_coverage_build_failure(

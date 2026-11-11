@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from booley.harness import colors
+from booley.presentation import colors
 
 _GLYPHS = {
     "pass": "✓",

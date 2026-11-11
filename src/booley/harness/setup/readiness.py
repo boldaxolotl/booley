@@ -33,8 +33,21 @@ from booley.harness.setup.guidance_links import (
     ensure_guidance_links,
     guidance_links_current,
 )
+from booley.harness.setup.line_endings import (
+    LineEndingActionKind,
+    LineEndingActionState,
+    LineEndingMode,
+    LineEndingObservation,
+    LineEndingObservationCode,
+    LineEndingStatus,
+    RepositoryLineEndingReport,
+    line_ending_repository_display,
+    reconcile_project_line_endings,
+    unknown_attributes_policy_details,
+)
 from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import is_scaffold_core_description
+from booley.runtime import runtime_context
 from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
@@ -93,13 +106,21 @@ class WorktreePortabilityRequest:
     inside_runtime: bool
 
 
+@dataclass(frozen=True, slots=True)
+class LineEndingInspectionRequest:
+    """Inputs needed to inspect line endings across the Project's repositories."""
+
+    project_root: Path
+    booley_dir: Path | None = None
+
+
 def load_project(project_root: Path) -> ProjectLoadResult:
     """Read and validate checkout-local configuration, without repairs."""
     report = Findings()
     try:
         booley_dir = resolve_checkout_booley_dir(project_root)
     except FileNotFoundError:
-        report.fail("Booley Directory not found", "booley init")
+        report.fail("Booley Directory not found", runtime_context.booley_init_hint())
         return ProjectLoadResult(report.report(), None, None)
     project = _check_project_setup(project_root, booley_dir, report)
     return ProjectLoadResult(report.report(), booley_dir, project)
@@ -125,6 +146,185 @@ def check_stealth_cores(project: ProjectAudit, *, mode: ReadinessMode) -> Diagno
         repair=mode is ReadinessMode.RECONCILE,
     )
     return report.report()
+
+
+def inspect_line_endings(request: LineEndingInspectionRequest) -> DiagnosticReport:
+    """Map the shared read-only line-ending report into findings; never repairs."""
+    report = Findings()
+    line_endings = reconcile_project_line_endings(
+        request.project_root,
+        request.booley_dir,
+        mode=LineEndingMode.INSPECT,
+    )
+    if line_endings.status is LineEndingStatus.NOT_APPLICABLE:
+        report.skip("line endings: Project Root is not a git repo")
+        return report.report()
+    for repository in line_endings.repositories:
+        _report_repository_line_endings(repository, report)
+    for failure in line_endings.discovery_failures:
+        display = line_ending_repository_display(failure.role, failure.candidate)
+        report.warn(
+            f"line endings: could not inspect {display}: {failure.detail}",
+            check_id="git.line-endings-unreadable",
+            subject=failure.role,
+        )
+    return report.report()
+
+
+def _line_ending_observation(
+    report: RepositoryLineEndingReport,
+    *codes: LineEndingObservationCode,
+) -> LineEndingObservation | None:
+    return next(
+        (observation for observation in report.observations if observation.code in codes),
+        None,
+    )
+
+
+def _report_unreadable_line_endings(
+    repository: RepositoryLineEndingReport,
+    identity: str,
+    report: Findings,
+) -> bool:
+    observation = _line_ending_observation(
+        repository,
+        LineEndingObservationCode.AUTOCRLF_UNREADABLE,
+        LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE,
+        LineEndingObservationCode.EOL_SCAN_UNREADABLE,
+        LineEndingObservationCode.STATUS_UNREADABLE,
+        LineEndingObservationCode.CANDIDATE_UNSAFE,
+    )
+    if observation is None:
+        return False
+    messages = {
+        LineEndingObservationCode.AUTOCRLF_UNREADABLE: "could not read core.autocrlf as a Git Boolean",
+        LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE: "could not read repo-local core.autocrlf",
+        LineEndingObservationCode.EOL_SCAN_UNREADABLE: "could not read `git ls-files --eol`",
+    }
+    detail = messages.get(observation.code, observation.detail or "inspection was incomplete")
+    report.warn(
+        f"line endings: {identity}: {detail}",
+        check_id="git.line-endings-unreadable",
+        subject=repository.repository.role,
+    )
+    return True
+
+
+def _report_attributes_policy_risk(
+    repository: RepositoryLineEndingReport,
+    identity: str,
+    report: Findings,
+) -> bool:
+    policy_risk = _line_ending_observation(
+        repository,
+        LineEndingObservationCode.LOCAL_POLICY_MISSING,
+        LineEndingObservationCode.LEAKED_ROOT_POLICY,
+        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
+    )
+    if policy_risk is not None:
+        report.warn(
+            f"{identity}: {policy_risk.detail}",
+            f"inspect attributes policy, then re-run {runtime_context.booley_init_hint()}",
+            check_id="git.line-endings-unreadable",
+            subject=repository.repository.role,
+        )
+        return True
+    return _report_unreadable_line_endings(repository, identity, report)
+
+
+def _report_attributes_migration(
+    repository: RepositoryLineEndingReport,
+    identity: str,
+    report: Findings,
+) -> bool:
+    if any(
+        action.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES
+        and action.state is LineEndingActionState.PLANNED
+        for action in repository.actions
+    ):
+        report.warn(
+            f"{identity}: repository-local line-ending default awaits Stealth opt-out migration",
+            f"{runtime_context.booley_init_hint()}   (migrates the local default to the root attributes policy)",
+            check_id="git.line-ending-migration",
+            subject=repository.repository.role,
+        )
+        return True
+    return False
+
+
+def _report_unknown_attributes_policy(
+    repository: RepositoryLineEndingReport,
+    identity: str,
+    report: Findings,
+) -> bool:
+    details = unknown_attributes_policy_details(repository)
+    if not details:
+        return False
+    report.warn(
+        f"{identity}: attributes policy inspection incomplete: {'; '.join(details)}",
+        "preserve existing attributes and worktree registrations; inspect the policy at its source",
+        check_id="git.attributes-policy-unknown",
+        subject=repository.repository.role,
+    )
+    return True
+
+
+def _report_autocrlf_risk(
+    repository: RepositoryLineEndingReport,
+    identity: str,
+    report: Findings,
+) -> bool:
+    risk = _line_ending_observation(
+        repository,
+        LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE,
+        LineEndingObservationCode.AUTOCRLF_NOT_PINNED,
+    )
+    if risk is None:
+        return False
+    if risk.code is LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE:
+        message = "core.autocrlf=true — the tree is LF today, but the next clone or checkout will re-create it with CRLF and break Goal Mode"
+    else:
+        message = "core.autocrlf is not set locally — the effective value is false today, but a global config change can re-create CRLF checkouts"
+    report.warn(
+        f"{identity}: {message}",
+        f"git -C {repository.repository.root} config --local core.autocrlf false   (or re-run {runtime_context.booley_init_hint(code=True)})",
+        check_id="git.autocrlf-risk",
+        subject=repository.repository.role,
+    )
+    return True
+
+
+def _report_repository_line_endings(
+    repository: RepositoryLineEndingReport,
+    report: Findings,
+) -> None:
+    identity = line_ending_repository_display(
+        repository.repository.role, repository.repository.root
+    )
+    unknown = _report_unknown_attributes_policy(repository, identity, report)
+    crlf = _line_ending_observation(repository, LineEndingObservationCode.CRLF_MISMATCH)
+    if crlf is not None:
+        report.fail(
+            f"{identity}: {crlf.count} tracked file(s) are checked out with CRLF — the "
+            "Sandbox sees every one as modified, which breaks the dirty-tree check, "
+            "protected inputs, and worktrees",
+            f"{runtime_context.booley_init_hint()}   (automatically repairs a clean tree; commit or stash first)",
+        )
+        return
+    if _report_autocrlf_risk(repository, identity, report):
+        return
+    if _report_attributes_policy_risk(repository, identity, report):
+        return
+    stale = _line_ending_observation(repository, LineEndingObservationCode.STALE_INDEX)
+    if stale is not None:
+        report.fail(
+            f"{identity}: tracked files have stale Git index metadata after line-ending repair — status reports modifications although staged and unstaged diffs are empty",
+            f"{runtime_context.booley_init_hint()}   (refreshes the affected tracked index entries)",
+        )
+        return
+    if _report_attributes_migration(repository, identity, report) or unknown:
+        return
+    report.pass_(f"{identity}: working tree is container-safe (no CRLF checkouts, autocrlf off)")
 
 
 def inspect_worktree_portability(request: WorktreePortabilityRequest) -> DiagnosticReport:
@@ -255,7 +455,7 @@ def _inspect_repository_policies(
                     if inferred_host
                     else ""
                 ),
-                "run `booley init`",
+                f"run {runtime_context.booley_init_hint(code=True)}",
                 check_id="git.worktree-portability",
                 subject=str(repository),
             )
@@ -426,7 +626,7 @@ def _first_target(project_root: Path, configs_toml: dict[str, dict[str, Any]]) -
 
 def _load_toml(path: Path, report: Findings) -> dict[str, Any] | None:
     if not path.is_file():
-        report.fail(f"{path.name} missing", "booley init")
+        report.fail(f"{path.name} missing", runtime_context.booley_init_hint())
         return None
     try:
         with path.open("rb") as handle:
@@ -453,6 +653,9 @@ def _validate_booley_toml(data: dict[str, Any], booley_dir: Path, report: Findin
     valid &= _add_config_audit(flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES), report)
     valid &= _add_config_audit(project_schema.audit_sandbox_table(data), report)
     valid &= _add_config_audit(project_schema.audit_goals_table(data), report)
+    valid &= _add_config_audit(project_schema.audit_chat_table(data), report)
+    valid &= _add_config_audit(project_schema.audit_worktree_table(data), report)
+    valid &= _add_config_audit(project_schema.audit_jobs_table(data), report)
     valid &= _add_config_audit(project_schema.audit_interactive_table(data), report)
     valid &= _add_config_audit(project_schema.audit_ignored_settings(data), report)
     valid &= _add_config_audit(project_schema.audit_known_tables(data), report)
@@ -469,7 +672,7 @@ def _validate_booley_toml(data: dict[str, Any], booley_dir: Path, report: Findin
     # [sources.*] table — those fields were retired (ADR 0026 follow-through).
 
     if not booley_dir.exists():
-        report.fail(f"Booley Directory missing: {booley_dir}", "booley init")
+        report.fail(f"Booley Directory missing: {booley_dir}", runtime_context.booley_init_hint())
         valid = False
     return valid
 
@@ -666,7 +869,8 @@ def _check_core_projections(project_root: Path, report: Findings, *, repair: boo
             core_projection.reconcile_projected_cores(project_root)
         except (core_projection.CoreProjectionError, OSError) as exc:
             report.fail(
-                f"stealth core projection failed: {exc}", "fix the conflict and run booley init"
+                f"stealth core projection failed: {exc}",
+                f"fix the conflict and run {runtime_context.booley_init_hint()}",
             )
             failed = True
     try:
@@ -674,14 +878,14 @@ def _check_core_projections(project_root: Path, report: Findings, *, repair: boo
     except (core_projection.CoreProjectionError, OSError) as exc:
         report.fail(
             f"could not inspect stealth core projections: {exc}",
-            "fix the core and run booley init",
+            f"fix the core and run {runtime_context.booley_init_hint()}",
         )
         failed = True
         issues = ()
     if issues:
         report.fail(
             f"stealth core projections are not current: {', '.join(issues)}",
-            "run booley init to reconcile the ignored root-level projections",
+            f"run {runtime_context.booley_init_hint()} to reconcile the ignored root-level projections",
         )
     elif not failed:
         report.pass_("stealth core projections match .booley/cores/")
@@ -699,7 +903,7 @@ def _check_projection_exclude(project_root: Path, report: Findings) -> None:
     if pattern not in lines:
         report.fail(
             "stealth core projections are not excluded from host git status",
-            "run booley init to add the generated projection pattern to .git/info/exclude",
+            f"run {runtime_context.booley_init_hint()} to add the generated projection pattern to .git/info/exclude",
         )
     else:
         report.pass_("stealth core projections are excluded through .git/info/exclude")

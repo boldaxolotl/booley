@@ -15,6 +15,7 @@ from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.runtime import runtime_context
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
+from tests.subprocess_budget import run_bounded_child
 
 # ---------------------------------------------------------------------------
 # Parser and venue
@@ -47,7 +48,7 @@ def test_worktree_requires_a_subcommand(capsys) -> None:
         tlr._build_parser().parse_args(["worktree"])
 
     assert exc.value.code == 2
-    assert "the following arguments are required: {new}" in capsys.readouterr().err
+    assert "the following arguments are required: {new,list,rm,gc}" in capsys.readouterr().err
 
 
 def test_worktree_is_sandbox_only_and_project_bound(monkeypatch, capsys) -> None:
@@ -62,19 +63,22 @@ def test_worktree_is_sandbox_only_and_project_bound(monkeypatch, capsys) -> None
     assert "runs inside the Booley Sandbox" in capsys.readouterr().err
 
 
-def test_worktree_help_describes_the_refusal_and_detached_head(capsys) -> None:
+def test_worktree_help_describes_the_refusal_and_branch(capsys) -> None:
     with pytest.raises(SystemExit):
         tlr._build_parser().parse_args(["worktree", "new", "--help"])
 
     help_text = " ".join(capsys.readouterr().out.split())
     assert ".booley/worktrees/<name>" in help_text
-    assert "detached HEAD" in help_text
+    assert "booley/<name>" in help_text
     assert "refused" in help_text
     assert "last commit" in help_text
     assert "post-setup" in help_text
 
 
 def test_missing_script_fails_without_running_anything(monkeypatch, tmp_path, capsys) -> None:
+    # The branch pre-check reads the current commit before the script is looked up.
+    for args in (("init",), ("commit", "--allow-empty", "-m", "init")):
+        _git(tmp_path, "-c", "user.name=T", "-c", "user.email=t@example.com", *args)
     monkeypatch.setattr(worktree_cmd, "worktree_create_script", lambda: tmp_path / "absent.sh")
     args = tlr._build_parser().parse_args(["worktree", "new", "x"])
 
@@ -100,15 +104,7 @@ def _ambient_booley_dir_is_the_checkouts_own(monkeypatch) -> None:
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-        timeout=60,
-    )
+    return run_bounded_child(["git", *args], cwd=cwd)
 
 
 def _write(path: Path, text: str) -> None:
@@ -152,24 +148,30 @@ def project(tmp_path: Path, monkeypatch) -> Path:
 
 
 def _new(name: str, project_root: Path) -> int:
-    return worktree_cmd.run(argparse.Namespace(name=name), project_root)
+    return worktree_cmd.run(argparse.Namespace(worktree_command="new", name=name), project_root)
 
 
 @_real_script
-def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, tmp_path) -> None:
+def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
+    project: Path, capsys, tmp_path
+) -> None:
     excludes = tmp_path / "empty-excludes"
     excludes.touch()
     assert _git(project, "config", "core.excludesFile", str(excludes)).returncode == 0
     assert _new("goal-entry", project) == 0
 
     worktree = project / ".booley" / "worktrees" / "goal-entry"
+    assert _git(worktree, "symbolic-ref", "--quiet", "HEAD").stdout.strip() == (
+        "refs/heads/booley/goal-entry"
+    )
     output = capsys.readouterr()
     assert output.out == f"{worktree}\n"
     # Success prints one calm line pointing at the removal docs, not the steps themselves.
     assert output.err == (
         "Filling git submodules from the main checkout...\n"
         "Created worktree 'goal-entry' with a Snapshot. "
-        "To remove it later, see https://booley.dev/docs/cli-reference/#worktrees\n"
+        "Remove it later with: booley worktree rm goal-entry "
+        "(see https://booley.dev/docs/cli-reference/#worktrees)\n"
     )
     # The Snapshot steps still exist for failures; their commands must work.
     steps = worktree_cmd.worktree_removal_instructions(
@@ -179,19 +181,98 @@ def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, 
     assert command in steps, "Snapshot removal instructions missing"
     assert "Snapshot" in steps and "same Sandbox" in steps and "Sandbox paths" in steps
     assert "WARNING" not in steps
-    assert "preserve" in steps and "docs/user/CLI-REFERENCE.md" in steps
-    assert steps.count("git -C") == 1 and "branch -D" not in steps
+    assert "preserve" in steps and "CLI-REFERENCE.md (host doc, not shipped)" in steps
+    assert steps.count("git -C") == 2 and "booley-worktree/" not in steps
+    assert shlex.join(["git", "-C", str(project), "branch", "-D", "booley/goal-entry"]) in steps
     assert "populated submodules" in steps and "--force" in steps
     assert (worktree / ".git").is_file()
     assert (worktree / "README.md").read_text(encoding="utf-8") == "hello\n"
-    assert _git(worktree, "symbolic-ref", "--quiet", "HEAD").returncode != 0
     head = _git(worktree, "rev-parse", "HEAD").stdout
     assert head == _git(project, "rev-parse", "HEAD").stdout
     # Discard the disposable Snapshot's copied and generated files before removal.
     assert _git(worktree, "clean", "-fdx").returncode == 0
-    subprocess.run(shlex.split(command), check=True, capture_output=True, timeout=10)
+    run_bounded_child(shlex.split(command), check=True, timeout=10)
     assert not worktree.exists()
     assert str(worktree) not in _git(project, "worktree", "list", "--porcelain").stdout
+
+
+@_real_script
+def test_new_refuses_an_existing_branch_and_leaves_it_untouched(project: Path, capsys) -> None:
+    _write(project / "other.txt", "later\n")
+    assert _git(project, "add", "other.txt").returncode == 0
+    assert _git(project, "commit", "-m", "later").returncode == 0
+    assert _git(project, "branch", "booley/taken", "HEAD~1").returncode == 0
+    taken = _git(project, "rev-parse", "booley/taken").stdout
+
+    assert _new("taken", project) == 1
+
+    assert "booley/taken" in capsys.readouterr().err
+    assert not (project / ".booley" / "worktrees" / "taken").exists()
+    assert _git(project, "rev-parse", "booley/taken").stdout == taken
+
+
+@_real_script
+def test_branch_description_name_checks_out_the_existing_branch(project: Path) -> None:
+    assert _git(project, "branch", "feat").returncode == 0
+
+    assert _new("feat--try", project) == 0
+
+    worktree = project / ".booley" / "worktrees" / "feat--try"
+    assert _git(worktree, "symbolic-ref", "--short", "HEAD").stdout.strip() == "feat"
+    assert (
+        _git(project, "show-ref", "--verify", "--quiet", "refs/heads/booley/feat--try").returncode
+        != 0
+    )
+
+
+@_real_script
+def test_failed_worktree_add_drops_only_its_new_branch(project: Path, capsys) -> None:
+    head = _git(project, "rev-parse", "HEAD").stdout
+    assert _git(project, "branch", "bystander").returncode == 0
+    hook = project / ".git" / "hooks" / "post-checkout"
+    _write(hook, "#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+
+    assert _new("doomed", project) == 1
+
+    capsys.readouterr()
+    assert (
+        _git(project, "show-ref", "--verify", "--quiet", "refs/heads/booley/doomed").returncode
+        != 0
+    )
+    assert _git(project, "rev-parse", "bystander").stdout == head
+    assert not (project / ".booley" / "worktrees" / "doomed").exists()
+
+
+@_real_script
+def test_a_failed_stamp_is_a_warning_and_the_worktree_is_still_reported(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    def refuse(common: Path, name: str) -> None:
+        raise OSError("read-only folder")
+
+    monkeypatch.setattr(worktree_cmd, "stamp_worktree", refuse)
+
+    assert _new("stampless", project) == 0
+
+    output = capsys.readouterr()
+    assert output.out == f"{project / '.booley' / 'worktrees' / 'stampless'}\n"
+    assert "WARNING: could not record the last-used time of stampless" in output.err
+
+
+@_real_script
+def test_new_resets_the_last_used_stamp(project: Path) -> None:
+    from booley.runtime.worktree_usage import last_used, stamp_worktree
+
+    common = project / ".booley"
+    stamp_worktree(common, "fresh")
+    stamp = common / "worktrees" / ".last-used" / "fresh"
+    os.utime(stamp, (1000, 1000))
+    assert last_used(common, "fresh") == 1000
+
+    assert _new("fresh", project) == 0
+
+    assert last_used(common, "fresh") > 1_000_000
 
 
 @_real_script
@@ -307,9 +388,20 @@ def python_outer(monkeypatch):
     """Exercise Python pairing on every OS without depending on a POSIX script."""
     from tests.goals.conftest import git
 
-    def create(name, root, *, paired_project):
+    def create(name, root, *, paired_project, new_branch=None):
         destination = worktree_cmd.worktree_path(root, name)
-        git(root, "worktree", "add", "--detach", str(destination), "HEAD")
+        if new_branch is None:
+            git(root, "worktree", "add", "--detach", str(destination), "HEAD")
+        else:
+            git(
+                root,
+                "worktree",
+                "add",
+                "-b",
+                new_branch.name,
+                str(destination),
+                new_branch.start_point,
+            )
         _write(destination / ".booley/booley.toml", "# script snapshot\n")
 
     monkeypatch.setattr(worktree_cmd, "_create_outer", create)
@@ -354,18 +446,19 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
         ["git", "-C", str(source), "worktree", "remove", str(paired)],
         ["git", "-C", str(root), "worktree", "remove", str(worktree)],
         ["git", "-C", str(source), "branch", "-D", "booley-worktree/real-paired"],
+        ["git", "-C", str(root), "branch", "-D", "booley/real-paired"],
     ]
     assert commands == [shlex.join(command) for command in expected]
     assert "Optional" in error and "preserving its commits" in error
     assert git(source, "config", "extensions.worktreeConfig") == "true"
     assert git(source, "config", "gc.worktreePruneExpire") == "never"
     for command, removed in zip(commands[:2], (paired, worktree), strict=True):
-        subprocess.run(shlex.split(command), check=True, capture_output=True, timeout=10)
+        run_bounded_child(shlex.split(command), check=True, timeout=10)
         assert not removed.exists()
     assert str(paired) not in git(source, "worktree", "list", "--porcelain")
     assert str(worktree) not in git(root, "worktree", "list", "--porcelain")
     assert git(source, "rev-parse", "booley-worktree/real-paired")
-    subprocess.run(shlex.split(commands[2]), check=True, capture_output=True, timeout=10)
+    run_bounded_child(shlex.split(commands[2]), check=True, timeout=10)
     assert _git(source, "rev-parse", "--verify", "booley-worktree/real-paired").returncode != 0
 
 
@@ -927,6 +1020,12 @@ def test_failing_post_setup_hook_rolls_back_and_names_the_log(
     _assert_creation_absent(root, "failing")
     leftover = _git(source, "config", "--get-regexp", r"^branch\.booley-worktree/failing\.")
     assert leftover.returncode != 0 and not leftover.stdout
+    # The outer branch is rolled back too, so the same name can be retried.
+    assert (
+        _git(root, "show-ref", "--verify", "--quiet", "refs/heads/booley/failing").returncode != 0
+    )
+    _commit_hook(source, "print('fixed')\n")
+    assert _new("failing", root) == 0
 
 
 def test_hook_flow_config_error_rolls_back(versioned_project, python_outer, monkeypatch, capsys):
@@ -993,16 +1092,7 @@ def test_user_worktree_standalone_baseline_pins_pairing_base(
     worktree = worktree_cmd.worktree_path(root, "baseline")
     paired = worktree / ".booley"
     assert git(paired, "config", "branch.booley-worktree/baseline.booleyBase") == base
-    assert (
-        subprocess.run(
-            ["git", "rev-parse", "@{upstream}"],
-            cwd=paired,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        ).returncode
-        != 0
-    )
+    assert run_bounded_child(["git", "rev-parse", "@{upstream}"], cwd=paired).returncode != 0
     _write(paired / "cores/constraints/top.sdc", "# later design\n")
     git(paired, "add", ".")
     git(paired, "commit", "-qm", "later")
@@ -1055,12 +1145,8 @@ def test_pairing_rollback_preserves_other_missing_registrations_and_removes_lock
     _assert_creation_absent(root, "locked")
     assert all(admin.is_dir() for admin in others)
     assert (
-        subprocess.run(
-            ["git", "config", "--get", "branch.booley-worktree/locked.booleyBase"],
-            check=False,
-            cwd=source,
-            capture_output=True,
-            timeout=30,
+        run_bounded_child(
+            ["git", "config", "--get", "branch.booley-worktree/locked.booleyBase"], cwd=source
         ).returncode
         != 0
     )
@@ -1213,7 +1299,7 @@ def test_outer_creation_failures_become_creation_errors(
 
     monkeypatch.setattr(worktree_cmd.subprocess, "run", fail)
     with pytest.raises(worktree_cmd.WorktreeCreationError, match=message):
-        worktree_cmd._create_outer("wt", tmp_path, paired_project=False)
+        worktree_cmd._create_outer("wt", tmp_path, paired_project=False, new_branch=None)
 
 
 def test_failed_outer_rollback_is_reported_and_noted(
@@ -1294,7 +1380,7 @@ def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
     )
     assert command in capsys.readouterr().out
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
-    subprocess.run(shlex.split(command), check=True, capture_output=True, timeout=10)
+    run_bounded_child(shlex.split(command), check=True, timeout=10)
     assert bundle.is_file()
     _managed_git(data, "commit", "-qm", "intentional generated bundle removal")
     _step_booley_dir(InitContext(project_root=root))
@@ -1772,7 +1858,7 @@ def test_relocated_pairing_failure_rolls_back_both_repositories(
 
     root = relocated_versioned_project
 
-    def create(name, project_root, *, paired_project):
+    def create(name, project_root, *, paired_project, new_branch=None):
         destination = worktree_cmd.worktree_path(project_root, name)
         git(project_root, "worktree", "add", "--detach", str(destination), "HEAD")
 

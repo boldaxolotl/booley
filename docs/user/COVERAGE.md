@@ -53,12 +53,14 @@ Target in one run. The easiest way to read it is to ask the agent, for example
 "What coverage did sim_soc reach?". The agent gets every metric's percentage,
 any threshold and whether it was met, and the Campaign's location.
 
-A run you start yourself prints one line per Target:
+A run you start yourself prints a block per Target:
 
 ```text
-sim_soc: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED (Simulation Campaign …)
+sim_soc: simulation PASS · coverage collection COMPLETE · evaluation PASS (Simulation Campaign …)
   manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
-  report: /work/.booley/flow-reports/sim.json
+  report: /work/.booley/flow-reports/sim/12/report.json
+  coverage: line 92.3% · branch 81.0% (min 80%, met) · toggle 64.2%
+  coverage campaign: /work/.booley/flow-reports/sim/12/targets/sim_soc/coverage.json
 ```
 
 The first line has three verdicts:
@@ -75,14 +77,27 @@ The first line has three verdicts:
   displayed 50%; minimum 80%)`. `BLOCKED` gives a code, such as an invalid
   [waiver](#coverage-waivers).
 
-The `manifest` and `report` paths are the same as in any `sim` run; see
-[Simulation results](FLOW-SIM.md#reading-results).
+The other lines:
+
+- **`manifest`** and **`report`** are the same as in any `sim` run; see
+  [Simulation results](FLOW-SIM.md#reading-results). `report` is this run's
+  own `sim/<N>/report.json`.
+- **`coverage`** is printed only when collection is `COMPLETE`. It lists each
+  metric that has points, in the order line, branch, expression, toggle,
+  `cover_property`. A metric with points but none eligible (all waived) shows
+  `n/a`. A threshold adds its minimum and whether it was `met` or `missed`.
+  Percentages are cut off, not rounded, to one decimal (or to the
+  decimals of the minimum, if it has more), so `100.0%` always means every
+  point is covered and a `met` metric never prints below its minimum.
+- **`coverage campaign`** is the Target's Coverage Campaign file, described
+  below. It is printed whatever the collection status, and also for the
+  Targets that finished before a run failed or was cancelled.
 
 ### Where the numbers are
 
-The terminal doesn't print the percentages. Each run gets a numbered
-directory under `flow-reports/` in the Booley Directory (or `--report-dir`),
-`sim/12/` above. Coverage results are in two of its files.
+Each run gets a numbered directory under `flow-reports/` in the Booley
+Directory (or `--report-dir`), `sim/12/` above. Coverage results are in two
+of its files.
 
 **`sim/<N>/report.json`** has each Target's percentages, under
 `detail.targets.<target>`:
@@ -101,13 +116,15 @@ directory under `flow-reports/` in the Booley Directory (or `--report-dir`),
 }
 ```
 
-`threshold` and `met` are filled in when a Coverage Goal sets a threshold
-for that metric. A metric the design has no points for, such as
+`percent` is rounded to two decimals here, so `77.19` is printed as `77.1%` on
+the terminal for a metric without a finer minimum. `threshold` and `met` are filled in when a Coverage Goal sets a
+threshold for that metric. A metric the design has no points for, such as
 `cover_property` in a design without `cover property` statements, is left out.
 
 **`sim/<N>/targets/<target>/coverage.json`** is the Coverage Campaign. Pass
-its path to the [Coverage Analyst](#analyzing-a-campaign) to find out what is
-uncovered and why.
+its path to [`booley coverage uncovered`](#finding-uncovered-points) to list
+the uncovered points, or to the [Coverage Analyst](#analyzing-a-campaign) to
+find out what is uncovered and why.
 
 ### How the numbers are counted
 
@@ -140,34 +157,53 @@ Target decides the exit code.
 
 ### Finding uncovered points
 
-Ask the agent, which runs the [Coverage Analyst](#analyzing-a-campaign). For a
-quick look yourself, every [coverage point](#what-is-measured) of the run is
-in the point store, `coverage-points.jsonl.gz`, one JSON line per point. It
-sits in the Campaign directory,
-`sim/<N>/targets/<target>/campaign/work-items/*/attempts/*/coverage-campaign/`.
-Inside the Sandbox, from that directory:
+`booley coverage uncovered` lists every point no test hit. It works in a host
+terminal and in the Sandbox, and only reads the file you give it. Pass the
+`coverage campaign:` path the run printed:
 
 ```bash
-# Uncovered points per source file, worst first
-zcat coverage-points.jsonl.gz | jq -r '
-  select(.disposition.kind == "eligible" and ([.hits_by_run[]] | add // 0) == 0)
-  | .identity.location.source' | sort | uniq -c | sort -rn | head
-
-# Uncovered points in one file: line, metric, which point, instance
-zcat coverage-points.jsonl.gz | jq -r '
-  select(.identity.location.source == "rtl/fifo.sv" and .disposition.kind == "eligible"
-         and ([.hits_by_run[]] | add // 0) == 0)
-  | [.identity.location.start.line, .identity.metric,
-     (.identity.subject | to_entries[0].value), .identity.hierarchy] | @tsv'
+# In the Sandbox
+booley coverage uncovered /work/.booley/flow-reports/sim/<N>/targets/<target>/coverage.json
+# On the host, from the Project
+booley coverage uncovered .booley/flow-reports/sim/<N>/targets/<target>/coverage.json
+# Only one metric, or one source file, or both
+booley coverage uncovered <coverage.json> --metric branch
+booley coverage uncovered <coverage.json> --metric toggle --source rtl/fifo.sv
 ```
 
-The second command prints one line per uncovered point, such as
-`42  toggle  wr_ptr[2]:1->0  TOP.tb.dut.u_fifo`: bit 2 of `wr_ptr` on line 42
-never fell from 1 to 0 in instance `u_fifo`. For a `branch` point the third
-column is the outcome (`if`, `else`, a `case` item); for an `expression`
-point, the term combination. Only `eligible` points count toward the
-percentage, so the commands skip testbench, generated and waived ones. The
-file's format can change between Booley releases.
+It prints one line per uncovered point, sorted by source file, line, and
+metric, then a count:
+
+```text
+rtl/fifo.sv:42  toggle  wr_ptr[2]:1->0  TOP.tb.dut.u_fifo
+rtl/fifo.sv:57  branch  else  TOP.tb.dut.u_fifo
+2 uncovered points; 1 waived point not listed
+```
+
+The columns are the file and line, the metric, which point, and the instance.
+Bit 2 of `wr_ptr` on line 42 never fell from 1 to 0 in instance `u_fifo`. For a
+`branch` point the third column is the outcome (`if`, `else`, a `case` item);
+for an `expression` point, the term combination; for a `line` point, the block
+number. The third column can contain spaces, so read the columns by eye rather
+than splitting on them.
+
+- Only points that count toward the percentage are listed. Testbench and
+  generated code is skipped, and so are [waived](#coverage-waivers) points, which the
+  last line counts. `--metric` and `--source` match exactly, and a filter that
+  matches nothing prints `0 uncovered points`.
+- The exit code is `0` whether or not points are uncovered: this is a reader,
+  not a gate. It is `2`, with a message naming the file, when the file is
+  missing, is not a coverage record, or its point store is damaged.
+- A run whose coverage collection failed (anything but `COMPLETE` in the
+  result) prints a warning first: its list may be incomplete, and is not a
+  coverage result.
+- The path must be the exact `sim/<N>/targets/<target>/coverage.json`, reached
+  without passing through symlinked folders other than `.booley`. For a
+  per-file count, pipe the list:
+  `booley coverage uncovered <coverage.json> | awk -F: 'NF > 1 {print $1}' | sort | uniq -c | sort -rn`.
+
+Ask the agent, which runs the [Coverage Analyst](#analyzing-a-campaign), to
+explain why points are uncovered.
 
 ## Coverage Goals
 

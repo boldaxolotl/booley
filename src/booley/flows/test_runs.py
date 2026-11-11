@@ -283,9 +283,9 @@ def declared_inputs_fingerprint(args: tuple[str, ...], env: Mapping[str, str]) -
 
     Argument order is significant (it is the simulator's argument order);
     environment key order is not. The encoding is the canonical JSON the
-    Simulation Campaign uses (``canonical_sha256``), reproduced here because
-    importing that module loads the whole Simulation Flow and this one stays
-    free of it; a test pins that both produce the same digest.
+    Simulation Campaign uses (``document_digest``), reproduced here because this
+    module is pure domain policy and imports no Flow module; a test pins that
+    both produce the same digest.
     """
     document = {"args": list(args), "env": dict(env)}
     encoded = json.dumps(
@@ -356,16 +356,21 @@ def build_test_run(
     )
 
 
-def discovered_test_run(test: str, unnamed: TestRun) -> TestRun:
+def discovered_test_run(test: str, unnamed: TestRun, *, target: str) -> TestRun:
     """The Test Run of a Test that an unfiltered batch discovered under *unnamed*.
 
     A Target without registered Tests runs as its unnamed invocation, and a
     Cocotb batch then reports the Tests its module holds. Each of them ran at
     that invocation's seed and environment, so that is its Test Run. A
     discovered name outside the Test name rules has no Test Run name of its
-    own and stays under the unnamed invocation. This is the one rule; results,
-    acceptance facts and reports all name a discovered Test through it.
+    own and stays under the unnamed invocation. A result called ``""`` or
+    after the Target selector *target* is the unnamed invocation's own result
+    (a native simulator names it that way): it is *unnamed*, never a Test of
+    that name. This is the one rule; results, acceptance facts and reports all
+    name a discovered Test through it.
     """
+    if test in {"", target}:
+        return unnamed
     try:
         return build_test_run(test, seed=unnamed.seed, env=dict(unnamed.env))
     except TestRunNameError:

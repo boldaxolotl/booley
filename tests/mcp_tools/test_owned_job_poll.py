@@ -22,6 +22,12 @@ from tests.mcp_tools.test_mcp_dispatch import _FakeLifetime, _run_id_from
 
 SERVER = "mcp-stdio:developer:pid:test:1:1"
 
+# PID the fake Job child reports. One above Linux PID_MAX_LIMIT (2**22), so no
+# live process owns it: the argv-identity check in ``jobrec.derive_status`` reads
+# the real /proc/<pid>/cmdline and finds nothing, instead of judging the fake
+# child "recycled" because an unrelated host process holds the PID (#3295).
+_FAKE_CHILD_PID = 4_194_305
+
 
 @pytest.fixture(autouse=True)
 def _env(tmp_path, monkeypatch):
@@ -56,7 +62,7 @@ def _write(run_id: str, *, owner: str | None, status: str = jobrec.STATUS_DONE, 
         "endpoint": "sim",
         "started_at": utc_now_rfc3339(),
         "timeout_s": 60,
-        "pid": 4242,
+        "pid": _FAKE_CHILD_PID,
         "exit_code": 0,
     }
     jobrec.write_record(
@@ -72,12 +78,20 @@ def _read(run_id: str) -> jobrec.JobRecord:
     return rec
 
 
-def _gated(monkeypatch, gates: dict[str, asyncio.Event]) -> None:
-    """Fake Job child: finishes once the gate named by its first argv word is set."""
+def _gated(
+    monkeypatch, gates: dict[str, asyncio.Event], spawned: asyncio.Event | None = None
+) -> None:
+    """Fake Job child: finishes once the gate named by its first argv word is set.
+
+    ``spawned``, when given, is set right after the child reports its PID, so a
+    test can wait for the PID to be persisted instead of relying on loop order.
+    """
 
     async def run(cmd, *, timeout, on_spawn=None, **_kwargs):
         if on_spawn:
-            on_spawn(4242)
+            on_spawn(_FAKE_CHILD_PID)
+        if spawned is not None:
+            spawned.set()
         await gates[cmd[0]].wait()
         return (0, f"OUT-{cmd[0]}", "", False)
 
@@ -122,7 +136,7 @@ def test_first_finished_owned_job_returned_with_other_listed(monkeypatch):
     assert "OUT-a" in second
 
 
-def test_several_unread_returns_earliest_and_lists_rest():
+def test_several_unread_returns_earliest_without_listing_rest():
     me = _caller()
     _write("late", owner=me.owner, ended_at="2026-01-01T00:05:00Z")
     _write("early", owner=me.owner, ended_at="2026-01-01T00:01:00Z")
@@ -130,8 +144,9 @@ def test_several_unread_returns_earliest_and_lists_rest():
     text = _all_text(asyncio.run(_poll(_JobManager(_FakeLifetime()), me)))
 
     assert "Result of job early" in text
-    assert "Also finished, not yet read" in text
-    assert "late" in text.split("Also finished, not yet read", 1)[1]
+    # The unread notice that ends every tool response lists the rest (#2539).
+    assert "Also finished, not yet read" not in text
+    assert "late" not in text
 
 
 def test_owned_poll_times_out_with_running_list(monkeypatch):
@@ -176,7 +191,7 @@ def test_nothing_to_wait_for_returns_immediately():
 def test_inline_completion_counts_as_read(monkeypatch):
     async def run(cmd, *, timeout, on_spawn=None, **_kwargs):
         if on_spawn:
-            on_spawn(4242)
+            on_spawn(_FAKE_CHILD_PID)
         return (0, "FAST", "", False)
 
     monkeypatch.setattr(mcp_server, "_run_subprocess", run)
@@ -254,24 +269,39 @@ def test_adopted_job_keeps_owner_across_restart(monkeypatch):
     from booley.mcp import job_ownership
 
     gates = {"a": asyncio.Event()}
-    _gated(monkeypatch, gates)
+    spawned = asyncio.Event()
+    _gated(monkeypatch, gates, spawned)
     attribution = SimpleNamespace(key="codex:t1", kind="thread", worktree_key="")
     context = McpRequestContext(attribution=attribution)
 
     def caller_after_restart():
         return job_ownership.caller_for(job_ownership.server_identity(), context)
 
+    # Orderings this test controls explicitly (no event-loop or timing luck):
+    #  1. the first manager's child has spawned and its PID is on disk before
+    #     the "restart" (Python 3.11 and 3.12+ schedule the job task differently);
+    #  2. the fake child is alive for the first poll and dead for the second.
     async def scenario():
         run_id = await _submit(_JobManager(_FakeLifetime()), "a", caller_after_restart())
+        await asyncio.wait_for(spawned.wait(), timeout=5)
+        before_restart = _read(run_id)
         restarted = _JobManager(_FakeLifetime())
         listed = _all_text(await _poll(restarted, caller_after_restart(), wait=0))
+        unread_before_reconcile = _read(run_id).read_at is None
         monkeypatch.setattr(mcp_server, "is_pid_alive", lambda _pid: False)
         restarted.reconcile_orphaned()
         finished = _all_text(await _poll(restarted, caller_after_restart(), wait=0))
-        return run_id, listed, finished, _read(run_id)
+        return run_id, before_restart, listed, unread_before_reconcile, finished, _read(run_id)
 
-    run_id, listed, finished, stored = asyncio.run(scenario())
+    run_id, before_restart, listed, unread_before_reconcile, finished, stored = asyncio.run(
+        scenario()
+    )
+    assert before_restart.pid == _FAKE_CHILD_PID
+    assert before_restart.status == jobrec.STATUS_RUNNING
+    # Listed as running, not handed back early as a result of a "recycled" PID.
+    assert listed.startswith("RUNNING:")
     assert run_id in listed
+    assert unread_before_reconcile
     assert f"Result of job {run_id}" in finished
     assert stored.owner == caller_after_restart().owner
     assert stored.read_at is not None

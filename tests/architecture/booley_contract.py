@@ -80,6 +80,25 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D40",
+        (prefix("booley.presentation"),),
+        (
+            prefix("booley.harness"),
+            prefix("booley.mcp"),
+            prefix("booley.runtime"),
+            prefix("booley.goals"),
+            prefix("booley.flows"),
+        ),
+        "shared presentation primitives stay beneath every composition and execution owner",
+    ),
+    DirectionRule(
+        "D39",
+        (prefix("booley.flows"),),
+        (prefix("booley.harness"),),
+        "Flows run under any composition; the Harness command layer supplies human CLI "
+        "concerns through the invocation, never by Flow import",
+    ),
+    DirectionRule(
         "D36",
         (prefix("booley.runtime"),),
         (prefix("booley.goals"),),
@@ -91,6 +110,13 @@ DIRECTION_RULES = (
         (prefix("booley.runtime.job_observation"),),
         (prefix("booley.targets"),),
         "Job observation owns process and artifact facts without interpreting Target policy",
+    ),
+    DirectionRule(
+        "D41",
+        (prefix("booley.runtime"),),
+        (prefix("booley.flows"),),
+        "Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through "
+        "booley.core and never imports a Flow",
     ),
     DirectionRule(
         "D38",
@@ -208,12 +234,20 @@ DIRECTION_RULES = (
     ),
     DirectionRule(
         "D26",
-        (exact("booley.harness.host_diagnostics"), exact("booley.harness.setup.readiness")),
+        (
+            exact("booley.harness.host_diagnostics"),
+            exact("booley.harness.setup.readiness"),
+            exact("booley.runtime.inspection"),
+            exact("booley.flows.sim.backends.cocotb_target_checks"),
+            exact("booley.runtime.vaporview"),
+            exact("booley.flows.target_test_plan_inspection"),
+            exact("booley.runtime.project_image"),
+        ),
         (
             exact("booley.harness.doctor"),
             exact("booley.harness.init_cmd"),
             exact("booley.harness.booley"),
-            exact("booley.harness.colors"),
+            exact("booley.presentation.colors"),
             exact("booley.harness.setup.common"),
         ),
         "diagnostic owners return observations without command orchestration or rendering",
@@ -405,37 +439,14 @@ COMPOSITION_PERMISSIONS = (
         "booley.specialists.specialist",
         "The MCP server classifies and composes Specialist endpoints.",
     ),
-    CompositionPermission(
-        "C8",
-        "D6",
-        "booley.runtime.incontainer_register",
-        "booley.harness.incontainer_register",
-        "The former module path remains an exact compatibility entry point.",
-    ),
 )
 
 LEGACY_WAIVERS = ()
 
-# Measured after integrating #530 and #531. The production SCC metadata test
-# requires tightening on every split.
-APPROVED_LEGACY_SCCS = (
-    frozenset(
-        f"booley.{name}"
-        for name in (
-            "agent_workspace",
-            "bwave",
-            "criteria",
-            "dev_support",
-            "feedback",
-            "flows",
-            "goals",
-            "harness",
-            "mcp",
-            "runtime",
-        )
-    ),
-    frozenset(("booley.fusesoc", "booley.targets")),
-)
+# Measured after #3061 removed the Runtime edges into Flows and Harness, which
+# dissolved the last large group once Flows no longer imported Harness. The
+# production SCC metadata test requires tightening on every split.
+APPROVED_LEGACY_SCCS = (frozenset(("booley.fusesoc", "booley.targets")),)
 
 BOOLEY_SOURCE_DEPENDENCY_CONTRACT = ArchitectureContract(
     rules=DIRECTION_RULES,

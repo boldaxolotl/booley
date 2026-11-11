@@ -8,6 +8,13 @@ already satisfied. A first init defaults to Claude with automatic credential
 selection; flags, existing configuration, or terminal answers override those
 defaults.
 
+Project Initialization is the location-neutral part: :func:`initialize_project`
+reconciles every Project file (Booley Directory, ``[agent]``, core projections,
+Goalsets, Git integration, line endings, guidance links) with no Docker, host
+credentials or Sandbox Issuance (ADR 0085). Host ``booley init`` runs it and then
+the host-only steps; ``booley session refresh`` runs it through
+:func:`reinitialize_project` without rewriting tracked files.
+
 Steps, in the order :func:`run_init` runs them. The number the user sees is
 allocated at print time by :meth:`InitContext.step_banner`, so it is always
 contiguous; identity lives in the ``record`` key, not the number.
@@ -42,7 +49,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -51,6 +58,9 @@ import tomlkit
 
 from booley import __version__
 from booley.commit_policy import stealth_enabled
+from booley.config import agent_app
+from booley.config.agent import AGENT_CLIS
+from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
 from booley.core.boundary import as_dict, as_str, require_dict
@@ -78,8 +88,7 @@ from booley.harness.bootstrap import (
     parse_git_version,
     reconcile_bootstrap,
 )
-from booley.harness.colors import bold_amber, green, red, yellow
-from booley.harness.image_lifecycle import reconcile as reconcile_images
+from booley.harness.setup import git_hooks
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import (
     InitContext,
@@ -111,10 +120,8 @@ from booley.harness.setup.docker_image import (
     _image_label,
     _iter_fingerprint_files,
     _read_version,
-    _stamp_image_fingerprint,
     _step_docker_image,
     _try_pull_image,
-    ensure_flavor_image,
     source_fingerprint_mismatch,
 )
 from booley.harness.setup.git_hooks import (
@@ -137,11 +144,18 @@ from booley.harness.setup.project_git_hook_reconcile import (
     step_project_git_hooks as _step_project_git_hooks,
 )
 from booley.harness.setup.project_origin import read_project_origin
-from booley.harness.setup.scaffold import step_scaffold
+from booley.harness.setup.scaffold import existing_design_files, step_scaffold
 from booley.harness.setup.skills import _deploy_skills
 from booley.harness.terminal_status import LineStatus, section_header, status_line
+from booley.presentation.colors import bold_amber, green, red, yellow
 from booley.projects.inventory import ProjectInventoryError, remember_project
-from booley.runtime import auth_token, doctor_stamp, project_repositories
+from booley.runtime import (
+    auth_token,
+    dashboard_tasks,
+    doctor_stamp,
+    project_repositories,
+    runtime_context,
+)
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
@@ -156,7 +170,7 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.docker_capacity import DockerCapacityError
-from booley.runtime.docs_links import docs_url
+from booley.runtime.docs_links import docs_url, sandbox_doc_path
 from booley.runtime.git import add_git_excludes, stealth_exclude_names
 from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
 from booley.runtime.image_lifecycle import (
@@ -214,6 +228,7 @@ BOOLEY_TOML_SKELETON = f"""\
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
 # BOOLEY_TEST_RUN_NAME, BOOLEY_TEST_VARIANT, BOOLEY_TEST_SEED,
 # BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...). Reference:
+# {sandbox_doc_path("FLOW-SIM.md")} → "Pre-Sim Commands" (Sandbox), online:
 # {docs_url("FLOW-SIM.md", "pre-sim-commands-flowssimpre_run_commands")}
 #
 # [flows.sim]
@@ -300,7 +315,7 @@ def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
     if not missing:
         return
 
-    if ctx.check_only:
+    if ctx.check_only or ctx.preserve_tracked_content:  # the file may be tracked
         warn(
             f"would add {len(missing)} missing ignore pattern(s) to {gitignore.name}: {', '.join(missing)}"
         )
@@ -431,9 +446,9 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
     fresh stealth setup was versioned *nowhere* until the user ran `git init` by
     hand. Do it for them, guarded:
 
-    - only in stealth mode (the default; an open ``--scaffold`` demo writes
-      ``[stealth] enabled = false`` and is throwaway, ``--scaffold --stealth``
-      keeps it on), and
+    - only in stealth mode (explicit ``[stealth] enabled = true``: the setup
+      skill's hidden answer or ``--scaffold --stealth``; a fresh init skeleton
+      has no key, so a rerun after setup records the choice creates the repo), and
     - only when ``target`` is not already its own git work tree (idempotent,
       never touches an existing repo).
 
@@ -554,7 +569,7 @@ class AgentSelection:
 
     provider: str
     auth: str
-    write_provider: bool = False
+    write_default: bool = False
     write_auth: bool = False
 
 
@@ -614,17 +629,21 @@ def _resolve_selection_value(
     ctx: InitContext,
     *,
     name: str,
+    key: str,
     configured: str | None,
     requested: str | None,
     choices: tuple[str, ...],
     default: str,
 ) -> tuple[str | None, bool]:
-    """Resolve one field and whether it must be added to booley.toml."""
+    """Resolve one field and whether it must be added to booley.toml.
+
+    ``name`` is the flag and prompt label; ``key`` is the ``[agent]`` config key.
+    """
     if configured is not None:
         if requested is not None and requested != configured:
             err(
                 f"--{name}={requested} conflicts with booley.toml [agent] "
-                f"{name}={configured!r}; edit the project config to change it"
+                f"{key}={configured!r}; edit the project config to change it"
             )
             return None, False
         return configured, False
@@ -647,9 +666,10 @@ def _resolve_agent_selection(
         err(f"cannot select an agent from {config_path}: {exc}")
         ctx.record("agent_config", "err", "invalid booley.toml")
         return None
-    provider, write_provider = _resolve_selection_value(
+    provider, write_default = _resolve_selection_value(
         ctx,
         name="provider",
+        key="default",
         configured=provider,
         requested=getattr(args, "provider", None),
         choices=("claude", "codex"),
@@ -661,6 +681,7 @@ def _resolve_agent_selection(
     auth, write_auth = _resolve_selection_value(
         ctx,
         name="auth",
+        key="auth",
         configured=auth,
         requested=getattr(args, "auth", None),
         choices=("auto", "subscription", "api_key"),
@@ -669,7 +690,7 @@ def _resolve_agent_selection(
     if auth is None:
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
-    return AgentSelection(provider, auth, write_provider, write_auth)
+    return AgentSelection(provider, auth, write_default, write_auth)
 
 
 def _insert_agent_fields(content: str, fields: dict[str, str]) -> str:
@@ -697,8 +718,8 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
     """Persist a complete [agent] choice before auth checks and Session seeding."""
     ctx.step_banner("agent provider and authentication policy")
     fields: dict[str, str] = {}
-    if selection.write_provider:
-        fields["provider"] = selection.provider
+    if selection.write_default:
+        fields["default"] = selection.provider
     if selection.write_auth:
         fields["auth"] = selection.auth
     if not fields:
@@ -710,7 +731,7 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         err(f"cannot persist agent selection: refusing symlinked {path}")
         ctx.record("agent_config", "err", "symlinked booley.toml")
         return False
-    if ctx.check_only:
+    if ctx.check_only or (ctx.preserve_tracked_content and path.is_file()):
         warn(f"would record [agent] {selection.provider}/{selection.auth} in {path}")
         ctx.record("agent_config", "warn", f"{selection.provider}/{selection.auth}")
         return True
@@ -1073,7 +1094,7 @@ def _select_interactive_app(
 ) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
-        from booley.config.agent import AGENT_CLIS, parse_agent_section
+        from booley.config.agent import parse_agent_section
 
         config_path = resolve_toml(
             project_data_source or authorized_project_data_source(project_root)
@@ -1250,7 +1271,20 @@ def _cli_seeds(plan: auth_token.CredentialPlan) -> dc.CliSeeds:
         login_source=source(plan.subscription_seed),
         token_source=source(plan.token_seed),
         config_source=source(plan.config_seed),
+        gateway_env=_gateway_env_keys(plan),
     )
+
+
+def _gateway_env_keys(plan: auth_token.CredentialPlan) -> tuple[str, ...]:
+    """The host gateway variables a Codex-on-the-gateway plan forwards; none otherwise."""
+    if plan.app != "codex" or plan.policy != GATEWAY_AUTH:
+        return ()
+    try:
+        return gateway_forwarded_keys(os.environ)
+    except GatewayConfigError as exc:
+        raise RuntimeSpecError(
+            f"Codex uses the gateway: {exc}; export the gateway settings before issuing the Sandbox"
+        ) from exc
 
 
 def _credential_plans(
@@ -1450,7 +1484,7 @@ def _inspect_interactive_plan(
         err(f"commercial EDA authorization failed closed: {detail}")
     except session_runtime.SessionError as exc:
         detail = str(exc)
-        err(f"could not inspect stopped Sandbox: {detail}")
+        err(f"could not reconcile the Sandbox: {detail}")
     ctx.record("interactive", "err", detail)
     return None
 
@@ -1468,7 +1502,7 @@ def _apply_interactive_plan(
         err(f"could not issue Sandbox specification: {detail}")
     except session_runtime.SessionError as exc:
         detail = str(exc)
-        err(f"could not reconcile stopped Sandbox: {detail}")
+        err(f"could not reconcile the Sandbox: {detail}")
     ctx.record("interactive", "err", detail)
     return None
 
@@ -1515,6 +1549,36 @@ def _step_interactive(
     if changes is None:
         return
     _report_interactive_changes(ctx, sources, changes)
+
+
+def _step_interactive_files(ctx: InitContext) -> None:
+    """Reconcile the Dashboard task and Interactive excludes without a Sandbox.
+
+    These are the Project-file parts of Interactive Mode: no Docker, no Sandbox
+    Issuance. Records nothing when everything is current, and nothing in check-only.
+    """
+    if ctx.check_only:
+        return
+    root = ctx.project_root
+    try:
+        excludes_changed = add_git_excludes(root, interactive_init.exclude_names(root))
+        transaction = dashboard_tasks.reconcile(root, authorized_project_data_source(root))
+    except (OSError, RuntimeError, RuntimeSpecError) as exc:
+        err(f"could not reconcile Interactive Mode files: {exc}")
+        ctx.record("interactive_files", "err", str(exc))
+        return
+    if excludes_changed:
+        ok(
+            "reconciled Interactive Mode git exclusions (info/exclude); existing exclusions retained"
+        )
+    for notice in transaction.plan.notices:
+        info(notice)
+    for diagnostic in transaction.plan.diagnostics:
+        warn(diagnostic)
+    if transaction.plan.diagnostics:
+        ctx.record("interactive_files", "warn", "; ".join(transaction.plan.diagnostics))
+    elif excludes_changed or transaction.applied:
+        ctx.record("interactive_files", "ok", "reconciled")
 
 
 # ---------------------------------------------------------------------------
@@ -1844,9 +1908,10 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
     outstanding = _outstanding_setup_steps(ctx.project_root)
     if scaffolded or (origin == "scaffold" and outstanding):
         if scaffolded:
-            info("Scaffolded starter project; continue greenfield setup in the container.")
-        info('Next: open this Project in VS Code and choose "Reopen in Container".')
-        info("In the container run `/booley-setup new`, then `booley doctor --deep`.")
+            info("Scaffolded starter project; finish greenfield setup with `/booley-setup new`.")
+        info("Next: run `/booley-setup new` in your agent chat here on the host (or continue")
+        info("it, if it ran this scaffold); it tells you when to Reopen in Container and")
+        info("runs the Doctor gate there.")
         info("AGENTS.md is optional; commit the scaffolded files before verification.")
         if outstanding:
             info("Check the current enabled Flow wiring and Project configuration.")
@@ -1854,6 +1919,12 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
     if not outstanding:
         _print_configured_advisory(ctx)
         return "configured"
+    new_ip = not existing_design_files(ctx.project_root, limit=1)
+    if new_ip:
+        info("No RTL or `.core` files found. For a new IP, run `/booley-setup new` in your")
+        info("agent chat here on the host; it asks the design choices and writes a starter")
+        info("project.")
+        print()
     info("Before running the harness, finish project setup with the booley-setup skill")
     info("(it starts with Step 0, the plan phase, here on the host):")
     print()
@@ -1861,13 +1932,13 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
         info(f"  * {line}")
     info("  * Step 4 (doctor)          - final doctor + deep doctor audit")
     info("  * Ensure git working tree is clean (no in-progress rebase/merge/cherry-pick)")
-    return ""
+    return "new-ip" if new_ip else ""
 
 
 def _print_planned_scaffold_advisory() -> None:
     info("After applying the scaffold, the greenfield route would be:")
-    info('  * Open this Project in VS Code and choose "Reopen in Container"')
-    info("  * In the container run `/booley-setup new`, then `booley doctor --deep`")
+    info("  * Run `/booley-setup new` in your agent chat here on the host; it tells you when")
+    info("    to Reopen in Container and runs the Doctor gate there")
     info("No scaffold files were written by this check.")
 
 
@@ -1900,19 +1971,29 @@ def _step_advisories(ctx: InitContext) -> None:
 
 def _step_project_trackability(ctx: InitContext) -> None:
     """Advise on effective exclusions after full Project reconciliation."""
-    from booley.runtime.project_trackability import FIX, inspect_project_trackability
+    from booley.runtime.project_trackability import (
+        STEALTH_UNSET,
+        STEALTH_UNSET_FIX,
+        fix,
+        inspect_project_trackability,
+        unrecorded_stealth_exclusions,
+    )
 
     selected = booley_dir_for_init(ctx.project_root)
     if stealth_enabled(ctx.project_root, booley_dir=selected):
         return
     ctx.step_banner("Project trackability")
+    unrecorded = unrecorded_stealth_exclusions(ctx.project_root, selected)
+    for name in unrecorded:
+        warn(STEALTH_UNSET.format(name=name))
+        hint(STEALTH_UNSET_FIX)
     inspection = inspect_project_trackability(ctx.project_root, selected)
     for group in inspection.ignored:
         warn(group.message)
-        hint(FIX)
+        hint(fix())
     for error in inspection.errors:
         warn(error)
-    problems = len(inspection.ignored) + len(inspection.errors)
+    problems = len(unrecorded) + len(inspection.ignored) + len(inspection.errors)
     ctx.record(
         "project_trackability",
         "warn" if problems else "ok",
@@ -2008,11 +2089,11 @@ def _print_summary(ctx: InitContext) -> int:
         )
         print(green('"Dev Containers: Reopen in Container".'))
     elif advisory.detail == "scaffold":
-        print(
-            green(
-                'Booley base setup complete. Next: "Reopen in Container", then `/booley-setup new`.'
-            )
-        )
+        print(green("Booley base setup complete. Next: `/booley-setup new` in your agent chat"))
+        print(green("here on the host."))
+    elif advisory.detail == "new-ip":
+        print(green("Booley base setup complete. New IP: run `/booley-setup new` from your agent"))
+        print(green("chat here on the host (or `/booley-setup` to port an existing design)."))
     elif advisory.detail == "configured":
         print(green("Booley setup complete — this project is ready."))
         print(green('Next: open this repo in VS Code and choose "Reopen in Container".'))
@@ -2210,7 +2291,8 @@ def _step_line_endings_and_guidance(
     still refusing a tree the user had left dirty.
     """
     booley_dir = _line_ending_booley_dir(ctx.project_root)
-    if _release_guidance_for_line_endings(ctx, booley_dir):
+    # Detaching hardlinks only serves a normalization, which this mode never runs.
+    if not ctx.preserve_tracked_content and _release_guidance_for_line_endings(ctx, booley_dir):
         guidance_plan = None  # the preflight plan observed the detached links
     _step_line_endings(ctx, booley_dir, clean_baseline=clean_baseline)
     _step_guidance_links(ctx, guidance_plan)
@@ -2319,27 +2401,128 @@ def _sandbox_git_version(image_id: str | None) -> tuple[int, int, int] | None:
     return parse_git_version(result.stdout) if result.returncode == 0 else None
 
 
-def _step_worktree_policies(ctx: InitContext, runtime_image_id: str | None) -> None:
+def _step_worktree_policies(
+    ctx: InitContext, sandbox_git_version: tuple[int, int, int] | None
+) -> None:
     """Reconcile pruning safety and the two-sided worktree-link policy."""
     booley_dir = booley_dir_for_init(ctx.project_root)
     _step_worktree_prune_guard(ctx, booley_dir=booley_dir)
     _step_worktree_link_policy(
         ctx,
-        sandbox_git_version=_sandbox_git_version(runtime_image_id),
+        sandbox_git_version=sandbox_git_version,
         booley_dir=booley_dir,
     )
 
 
+def _step_agent_unset(ctx: InitContext) -> bool:
+    """Note that no source names a default Agent CLI; booley.toml stays untouched."""
+    ctx.step_banner("agent provider and authentication policy")
+    info("no default Agent CLI in booley.toml or BOOLEY_AGENT_APP; left unset")
+    ctx.record("agent_config", "skip", "default Agent CLI left unset")
+    return True
+
+
 def _initialize_project_configuration(
     ctx: InitContext,
-    selection: AgentSelection,
+    selection: AgentSelection | None,
     agent_config_path: Path,
 ) -> bool:
     """Prepare the Directory before allowing agent configuration writes."""
     _step_booley_dir(ctx)
     if any(result.name == "booley_dir" and result.status == "err" for result in ctx.results):
         return False
+    if selection is None:
+        return _step_agent_unset(ctx)
     return _step_agent_config(ctx, selection, agent_config_path)
+
+
+@dataclass(frozen=True)
+class ProjectFacts:
+    """Facts only the host can determine, injected into Project Initialization."""
+
+    #: Git version inside the Sandbox Image; ``None`` when unknown.
+    sandbox_git_version: tuple[int, int, int] | None
+
+
+@dataclass(frozen=True)
+class ProjectInitialization:
+    """Inputs of one :func:`initialize_project` run, besides the step context."""
+
+    #: ``None`` records no default Agent CLI (a Sandbox with no declared or environment source).
+    agent: AgentSelection | None
+    agent_config_path: Path
+    #: Called once, after the Booley Directory content steps and before Git integration.
+    host_facts: Callable[[], ProjectFacts]
+    #: Also reconcile the Dashboard task and Interactive excludes (host init leaves
+    #: them to its Sandbox Issuance step, which owns their preconditions).
+    reconcile_interactive_files: bool = True
+    guidance_plan: InitPlan | None = None
+    line_ending_baseline: Mapping[Path, bool | None] | None = None
+
+
+def initialize_project(ctx: InitContext, request: ProjectInitialization) -> bool:
+    """Apply every Project-file step; False when the Booley Directory or [agent] failed.
+
+    Idempotent and location-neutral: nothing here uses Docker, host credentials, the
+    host-wide lock, the private store or Sandbox Issuance. Callers wrap it in
+    :func:`init_booley_dir_scope`.
+    """
+    if not _initialize_project_configuration(ctx, request.agent, request.agent_config_path):
+        return False
+    _step_core_projections(ctx)
+    _step_goalsets(ctx)
+    facts = request.host_facts()
+    _step_git_hooks(ctx)
+    _step_project_git_hooks(ctx)
+    _step_worktree_policies(ctx, facts.sandbox_git_version)
+    _step_line_endings_and_guidance(ctx, request.guidance_plan, request.line_ending_baseline)
+    if request.reconcile_interactive_files:
+        _step_interactive_files(ctx)
+    return True
+
+
+def reinitialize_project(project_root: Path, facts: ProjectFacts) -> list[StepResult]:
+    """Run Project Initialization for ``booley session refresh``.
+
+    Never prompts and never rewrites an existing tracked file: pending rewrites are
+    reported as ``warn`` results and left for host ``booley init``.
+    """
+    ctx = InitContext(
+        project_root=project_root,
+        interactive=False,
+        show_step_banners=False,
+        preserve_tracked_content=True,
+    )
+    banner("Project Initialization")
+    with init_booley_dir_scope(project_root):
+        config_path = _agent_config_path(project_root, seed=False)
+        if not _project_config_migration_preflight(ctx, config_path):
+            return ctx.results
+        selection = _resolve_agent_selection(ctx, argparse.Namespace(), config_path)
+        if selection is not None:
+            request = ProjectInitialization(selection, config_path, lambda: facts)
+            initialize_project(ctx, request)
+    return ctx.results
+
+
+@dataclass
+class _HostPreparation:
+    """Host-only steps whose outcome Project Initialization and Sandbox Issuance share."""
+
+    ctx: InitContext
+    selection: AgentSelection
+    skip_credentials: bool
+    pdk_root: Path | object | None = None
+    image_result: LifecycleResult | None = None
+    runtime_image_id: str | None = None
+
+    def facts(self) -> ProjectFacts:
+        """Authenticate, fetch the PDK and reconcile the image; return what Git needs."""
+        _step_auth(self.ctx, self.selection, skip_credentials=self.skip_credentials)
+        self.pdk_root = nangate_pdk.cache_root()
+        self.image_result = _reconcile_initialized_image(self.ctx)
+        self.runtime_image_id = _selected_runtime_image_id(self.image_result)
+        return ProjectFacts(_sandbox_git_version(self.runtime_image_id))
 
 
 def _run_project_init_steps(
@@ -2361,30 +2544,25 @@ def _run_project_init_steps(
     if getattr(args, "scaffold", None) and not step_scaffold(ctx, args):
         return _print_summary(ctx)
 
-    if not _initialize_project_configuration(ctx, selection, agent_config_path):
-        return _print_summary(ctx)
-    _step_core_projections(ctx)
-    _step_goalsets(ctx)
-    _step_auth(
-        ctx,
+    host = _HostPreparation(ctx, selection, getattr(args, "skip_credentials", False))
+    request = ProjectInitialization(
         selection,
-        skip_credentials=getattr(args, "skip_credentials", False),
+        agent_config_path,
+        host.facts,
+        reconcile_interactive_files=False,
+        guidance_plan=guidance_plan,
+        line_ending_baseline=line_ending_baseline,
     )
-    pdk_root = nangate_pdk.cache_root()
-    image_result = _reconcile_initialized_image(ctx)
-    runtime_image_id = _selected_runtime_image_id(image_result)
-    _step_git_hooks(ctx)
-    _step_project_git_hooks(ctx)
-    _step_worktree_policies(ctx, runtime_image_id)
-    _step_line_endings_and_guidance(ctx, guidance_plan, line_ending_baseline)
+    if not initialize_project(ctx, request):
+        return _print_summary(ctx)
     _step_interactive(
         ctx,
-        nangate_pdk_root=pdk_root,
+        nangate_pdk_root=host.pdk_root,
         agent_app=selection.provider,
-        runtime_image_id=runtime_image_id,
+        runtime_image_id=host.runtime_image_id,
         init_will_create_booley_dir=True,
     )
-    _step_retire_superseded_images(ctx, image_result)
+    _step_retire_superseded_images(ctx, host.image_result)
     _step_project_inventory(ctx)
     _step_project_trackability(ctx)
     _step_advisories(ctx)
@@ -2618,8 +2796,136 @@ def _init_with_migration(args: argparse.Namespace, project_root: Path, migration
     return _run_init_unlocked(args, project_root)
 
 
+#: Options that only make sense for host-side setup; a Sandbox refuses them by name.
+_SANDBOX_REFUSED_OPTIONS = (
+    ("seed", "--seed"),
+    ("force", "--force"),
+    ("repin_booley_dir", "--repin-booley-dir"),
+    ("scaffold", "--scaffold"),
+    ("provider", "--provider"),
+    ("auth", "--auth"),
+)
+
+
+def _sandbox_agent_selection(config_path: Path) -> AgentSelection | None:
+    """Pick the Agent CLI selection inside a Sandbox; ``None`` leaves the default unset.
+
+    A default declared in ``booley.toml`` is kept and never written. Otherwise
+    ``BOOLEY_AGENT_APP`` of ``claude`` or ``codex`` is recorded as the default.
+    ``auto`` is not resolved here: the registrar publishes its choice per start,
+    after ``onCreateCommand``, and pinning one start's choice would defeat ``auto``.
+    A missing ``auth`` is never written; unset already means ``auto``.
+    Raises what :func:`_read_agent_selection` raises for an unreadable ``[agent]``.
+    """
+    provider, auth = _read_agent_selection(config_path)
+    if provider is not None:
+        return AgentSelection(provider, auth or "auto")
+    app = (os.environ.get(agent_app.AGENT_APP_ENV) or "").strip()
+    if app in AGENT_CLIS:
+        return AgentSelection(app, auth or "auto", write_default=True)
+    return None
+
+
+def _sandbox_init_refusal(args: argparse.Namespace) -> str | None:
+    """Return why this Sandbox may not run ``booley init``, or ``None`` when it may.
+
+    Reads nothing but mountinfo, so a refusal can never have written anything.
+    """
+    if runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX:
+        return (
+            "ERROR: `booley init` cannot run inside a Booley-issued Sandbox: the host "
+            "owns this Project's Sandbox and Dashboard task. Run `booley init` on the host."
+        )
+    for attribute, flag in _SANDBOX_REFUSED_OPTIONS:
+        if getattr(args, attribute, None):
+            return (
+                f"ERROR: `booley init {flag}` is host-side setup and cannot run inside a "
+                f"Sandbox. Run `booley init {flag}` on the host."
+            )
+    return None
+
+
+def _sandbox_needs_host_migration(project_root: Path) -> bool:
+    """Observe (never change) whether a Booley Directory migration is pending."""
+    from booley.core.booley_layout import Layout, classify_layout
+    from booley.harness.setup.directory_migration import inspect_migration
+
+    return classify_layout(project_root) is Layout.RETIRED or (
+        inspect_migration(project_root) is not None
+    )
+
+
+def _initialize_sandbox_project(ctx: InitContext) -> int:
+    """Run Project Initialization with the Sandbox's own Git and Agent CLI facts."""
+    if not _project_checkout_ready(ctx):
+        return _print_summary(ctx)
+    if _sandbox_needs_host_migration(ctx.project_root):
+        err("this Project needs a Booley Directory migration, which runs on the host")
+        hint("run `booley init` on the host")
+        ctx.record("migration", "err", "Booley Directory migration required")
+        return _print_summary(ctx)
+    config_path = _agent_config_path(ctx.project_root, seed=False)
+    if not _project_config_migration_preflight(ctx, config_path):
+        return _print_summary(ctx)
+    try:
+        selection = _sandbox_agent_selection(config_path)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        err(f"cannot select an agent from {config_path}: {exc}")
+        ctx.record("agent_config", "err", "invalid booley.toml")
+        return _print_summary(ctx)
+    guidance_plan, may_proceed = _plan_existing_guidance(ctx)
+    if not may_proceed:
+        return _print_summary(ctx)
+    local_git = git_hooks._host_git_version()
+    request = ProjectInitialization(
+        selection,
+        config_path,
+        lambda: ProjectFacts(local_git),
+        reconcile_interactive_files=True,
+        guidance_plan=guidance_plan,
+        line_ending_baseline=_sample_line_ending_baseline(ctx),
+    )
+    with init_booley_dir_scope(ctx.project_root):
+        initialize_project(ctx, request)
+    return _print_summary(ctx)
+
+
+def run_sandbox_init(args: argparse.Namespace, project_root: Path) -> int:
+    """Project Initialization alone, for a hand-written Sandbox (issue 2751).
+
+    No Docker, Host Bootstrap, image work, Sandbox Issuance, pin, inventory or
+    advisories. Idempotent, so a spec can call it from ``onCreateCommand``.
+    Exits 2 only on a real failure or a refusal.
+    """
+    from booley.core.booley_layout import BooleyLayoutError
+
+    refusal = _sandbox_init_refusal(args)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 2
+    configure_progress_output()
+    ctx = InitContext(
+        project_root=project_root,
+        interactive=False,
+        check_only=getattr(args, "check_only", False),
+        verbose=getattr(args, "verbose", False),
+    )
+    _print_init_banner(ctx)
+    try:
+        return _initialize_sandbox_project(ctx)
+    except (BooleyLayoutError, OSError, subprocess.SubprocessError) as exc:
+        err(f"{exc}; run `booley init` again after resolving this condition")
+        ctx.record("inspection", "err", str(exc))
+        return _print_summary(ctx)
+
+
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
-    """Refuse before writes, then migrate under host-wide lifecycle serialization."""
+    """Refuse before writes, then migrate under host-wide lifecycle serialization.
+
+    Inside a Sandbox only Project Initialization runs (:func:`run_sandbox_init`).
+    """
+    if runtime_context.inside_session_runtime():
+        return run_sandbox_init(args, project_root)
     from booley.core.booley_layout import BooleyLayoutError
     from booley.core.checkout_role import SourceCheckoutProjectError
     from booley.runtime import issuance_invalidation, session_runtime

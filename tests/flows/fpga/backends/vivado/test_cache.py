@@ -10,6 +10,7 @@ import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
+from booley.flows.fpga.backends.vivado import edam as fpga_edam
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
@@ -174,6 +175,7 @@ def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> 
         work_root=tmp_path,
         fingerprint="a" * 64,
         require_bitstream=True,
+        source_bytes=None,
         recipe_snapshot={"flow": "fpga", "target": "fpga_demo"},
         recipe_fingerprint="recipe-a",
         run_evidence=_run_evidence("consumer-2"),
@@ -212,6 +214,7 @@ def test_cache_miss_forces_make_recipe(tmp_path: Path) -> None:
         work_root=tmp_path,
         fingerprint="a" * 64,
         require_bitstream=False,
+        source_bytes=None,
     )
     executed: list[str] = []
 
@@ -244,7 +247,7 @@ def test_no_cache_forces_executor_despite_valid_hit(tmp_path: Path) -> None:
             os.utime(path, (time.time() + 3600, time.time() + 3600))
     flow = _flow(tmp_path)
     flow.args.no_cache = True
-    prepared = _PreparedFpgaCommand(["make", "-C", "build"], tmp_path, "a" * 64, False)
+    prepared = _PreparedFpgaCommand(["make", "-C", "build"], tmp_path, "a" * 64, False, None)
     with (
         patch.object(flow, "_prepare_fpga_command", return_value=prepared),
         patch.object(fpga_cache, "load") as load,
@@ -293,6 +296,7 @@ def test_post_route_completion_gates_success_and_cache(
         tmp_path,
         "a" * 64,
         False,
+        None,
         ppa_profile=VIVADO_PROFILES["max_frequency"],
     )
     with (
@@ -342,15 +346,19 @@ def test_cached_reports_cannot_replace_missing_route_witness(tmp_path):
         )
 
 
-def test_string_guard_precedes_cache_lookup(tmp_path, monkeypatch):
+@pytest.mark.parametrize("datatype", ["str", "file"])
+def test_string_guard_precedes_cache_lookup(tmp_path, monkeypatch, datatype):
     resolved = replace(
         _resolved(tmp_path),
-        parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": "MAC"}},
+        parameters={"NAME": {"datatype": datatype, "paramtype": "vlogparam", "default": "MAC"}},
     )
     flow = _flow(tmp_path)
     monkeypatch.setattr(flow, "_resolve_fpga_target", lambda *_args, **_kwargs: resolved)
     monkeypatch.setattr(
         fpga_cache, "load", lambda *_args, **_kwargs: pytest.fail("string reached cache")
+    )
+    monkeypatch.setattr(
+        fpga_edam, "build_fpga_edam", lambda *_args, **_kwargs: pytest.fail("string reached EDAM")
     )
     with pytest.raises(ValueError, match="Vivado does not support string/file"):
         flow._prepare_fpga_command("fpga_demo")

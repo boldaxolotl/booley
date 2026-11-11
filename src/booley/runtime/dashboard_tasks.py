@@ -14,6 +14,7 @@ from typing import Any
 from booley.config.goals import parse_dashboard
 from booley.core.boundary import require_dict
 from booley.core.file_lock import nonblocking_file_lock
+from booley.runtime import runtime_context
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.jsonc import Document, Node
 from booley.runtime.project_repositories import (
@@ -98,7 +99,9 @@ def _read_ownership(booley_dir: Path) -> dict[str, Any]:
         require_dict(json.loads(ownership), field="Dashboard task ownership") if ownership else {}
     )
     if owner and owner.get("schema") != 1:
-        raise ValueError("Unsupported Dashboard ownership; run booley init on the host.")
+        raise ValueError(
+            f"Unsupported Dashboard ownership; run {runtime_context.booley_init_hint()}."
+        )
     return owner
 
 
@@ -110,13 +113,13 @@ def _attach_task_blocker(path: Path, booley_dir: Path) -> str:
     if owner.get("enabled") and not matching:
         return "User-removed Dashboard task preserved; disable then enable to restore."
     if len(matching) != 1 or not owner.get("enabled"):
-        return "Dashboard task unavailable or unowned; run booley init on the host."
+        return f"Dashboard task unavailable or unowned; run {runtime_context.booley_init_hint()}."
     task = matching[0]
     assert document is not None
     if document.source[task.start : task.end] != owner.get("task"):
         return "User-edited Dashboard task preserved; automatic opening is disabled."
     if task.value != TASK:
-        return "Dashboard task migration pending; run booley init on the host, then reattach."
+        return f"Dashboard task migration pending; run {runtime_context.booley_init_hint()}, then reattach."
     return ""
 
 

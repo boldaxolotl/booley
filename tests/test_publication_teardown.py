@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -20,13 +22,20 @@ from booley.flows.sim.campaign_reports import campaign_invocation_lock
 marker = Path(__MARKER__)
 reservation = None
 resources = None
+probe = None
+
+def _lock_probe(reservation_dir):
+    # Hold a read handle: the suite's retention policy may delete the lock file.
+    lock = reservation_dir.with_name(f".invocation-{reservation_dir.name}.lock")
+    return open(lock, "rb")
 
 def test_leak(tmp_path):
-    global reservation, resources
+    global reservation, resources, probe
     flow = SimulateFlow()
     resources = flow.publication_resources
     if __LEAK__ == "reservation":
         reservation = flow._next_invocation_dir(tmp_path / "reports")
+        probe = _lock_probe(reservation)
         resources.callback(marker.touch)
     elif __LEAK__ == "callback":
         resources.callback(marker.touch)
@@ -35,12 +44,14 @@ def test_leak(tmp_path):
         reservation = tmp_path / "1"
         campaign_invocation_lock_context = campaign_invocation_lock(reservation)
         campaign_invocation_lock_context.__enter__()
+        probe = _lock_probe(reservation)
         # Retain it outside the Flow so the independent probe is tested.
         resources = campaign_invocation_lock_context
     else:
         with resources:
             if __LEAK__ == "none":
                 reservation = flow._next_invocation_dir(tmp_path / "reports")
+                probe = _lock_probe(reservation)
             resources.callback(marker.touch)
 
 def test_cleanup():
@@ -49,11 +60,13 @@ def test_cleanup():
     else:
         assert marker.exists()
         assert not resources._exit_callbacks
-    if reservation is not None:
-        from tests.file_lock_probe import lock_is_held
+    if probe is not None:
+        from tests.file_lock_probe import handle_lock_is_held
 
-        lock = reservation.with_name(f".invocation-{reservation.name}.lock")
-        assert not lock_is_held(lock)
+        try:
+            assert not handle_lock_is_held(probe)
+        finally:
+            probe.close()
 """
 
 
@@ -97,14 +110,25 @@ def _run_child_pytest(tmp_path: Path, source: str) -> subprocess.CompletedProces
     environment["PYTHONPATH"] = os.pathsep.join((str(REPO_ROOT / "src"), str(REPO_ROOT)))
     for name in ("PYTEST_ADDOPTS", "PYTEST_XDIST_WORKER", "PYTEST_XDIST_TESTRUNUID"):
         environment.pop(name, None)
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--confcutdir", str(tmp_path), str(tmp_path)],
+    return run_bounded_child(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            # Run under the repository's real pytest configuration (retention
+            # policy, warning filters) while rootdir and cache stay in tmp_path.
+            "-c",
+            str(REPO_ROOT / "pyproject.toml"),
+            "--rootdir",
+            str(tmp_path),
+            "--confcutdir",
+            str(tmp_path),
+            str(tmp_path),
+        ],
         cwd=tmp_path,
         env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -171,3 +195,25 @@ def test_publication_guard_cleans_sessions_after_failure(tmp_path: Path, failure
         assert "Publication resources leaked past the test" in output, output
     else:
         assert f"intentional {failure} failure" in output, output
+
+
+_CHILD_PATCHED_SCANDIR_TEST = """
+import os
+
+def test_patched_scandir(monkeypatch, tmp_path):
+    (tmp_path / "entry").write_bytes(b"x")
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("scandir patch leaked into teardown")
+
+    monkeypatch.setattr(os, "scandir", refuse)
+"""
+
+
+def test_test_patches_are_undone_before_tmp_path_teardown(tmp_path: Path) -> None:
+    """A test's process-wide ``os.scandir`` patch cannot reach the teardown walk or rmtree."""
+    result = _run_child_pytest(tmp_path, _CHILD_PATCHED_SCANDIR_TEST)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "1 passed" in output, output
+    assert "error" not in output.lower(), output

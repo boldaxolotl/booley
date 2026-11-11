@@ -1,7 +1,7 @@
 """Guards for the Renovate runner and its repository configuration (#2996, tracker #2551).
 
-Renovate lists every pinned dependency on its Dependency Dashboard and holds each
-update for approval. These tests prove the parts that need no GitHub: custom managers
+Renovate lists every pinned dependency on its Dependency Dashboard; majors, Cargo
+lock-file maintenance and the manual rows wait there for approval. These tests prove the parts that need no GitHub: custom managers
 extract the pins on the real files, built-in managers see every pinned file, manual rows
 stay approval-only in groups of their own, shared pins resolve to one group, release age
 reaches only datasources with release timestamps, and the runner never exposes its token.
@@ -53,7 +53,8 @@ _VENDORED_MANIFEST = "crates/bwave/vendor/fst-writer/Cargo.toml"
 _EDA_DOC = "docs/user/SUPPORTED-EDA-TOOLS.md"
 _SESSION_CONTRACT = ".github/contracts/session-runtime.toml"
 _TROUBLESHOOTING = "docs/user/TROUBLESHOOTING.md"
-_TROUBLESHOOTING_PACKAGED = "src/booley/data/refs/TROUBLESHOOTING.md"
+_TROUBLESHOOTING_PACKAGED = "src/booley/data/docs/TROUBLESHOOTING.md"
+_EDA_DOC_PACKAGED = "src/booley/data/docs/SUPPORTED-EDA-TOOLS.md"
 _VERILATOR_IDENTITY = "src/booley/flows/sim/verilator_identity.py"
 _DEVCONTAINER = "src/booley/runtime/devcontainer.py"
 _VAPORVIEW_MODULE = "src/booley/runtime/vaporview.py"
@@ -77,7 +78,7 @@ _ACTIONLINT = "rhysd/actionlint"
 # Every literal copy of a canonical pin that Renovate must rewrite with it: (file,
 # dependency, number of places). A reworded line or a new copy fails the extraction test
 # below until this table and renovate.json agree.
-_COPIES: tuple[tuple[str, str, int], ...] = (
+_AUTHORED_COPIES: tuple[tuple[str, str, int], ...] = (
     (_SESSION_CONTRACT, _VERILATOR, 1),
     (_EDA_DOC, _VERILATOR, 1),
     (_VERILATOR_IDENTITY, _VERILATOR, 1),
@@ -110,6 +111,10 @@ _COPIES: tuple[tuple[str, str, int], ...] = (
     (_DOCKERFILE_BASE, _UBUNTU, 1),
     (_DOCKERFILE_BASE, _OPENROAD_BUILDER, 1),
     (_DOCKERFILE_BASE, _OPENROAD_EDA_BUILDER, 1),
+)
+# The generated packaged copy of the supported-tools doc carries every pin its source does.
+_COPIES: tuple[tuple[str, str, int], ...] = _AUTHORED_COPIES + tuple(
+    (_EDA_DOC_PACKAGED, dep, count) for file, dep, count in _AUTHORED_COPIES if file == _EDA_DOC
 )
 
 # Directories that hold the pins Renovate tracks outside Python and Rust manifests.
@@ -213,14 +218,12 @@ def _rule_matches(rule: dict[str, Any], dep: _Dep) -> bool:
 
 
 def _resolve(dep: _Dep) -> dict[str, Any]:
-    """Merge the top-level hold and every matching rule, later rules winning.
+    """Merge every matching rule over the default (no hold), later rules winning.
 
     ``prBodyNotes`` is the exception: Renovate merges it (``mergeable``), so every
     matching rule's notes are kept, in rule order.
     """
-    resolved: dict[str, Any] = {
-        "dependencyDashboardApproval": _config().get("dependencyDashboardApproval", False)
-    }
+    resolved: dict[str, Any] = {"dependencyDashboardApproval": False}
     notes: list[str] = []
     for rule in _rules():
         if _rule_matches(rule, dep):
@@ -581,6 +584,14 @@ def test_shared_pins_share_one_group() -> None:
         project = _resolve(_Dep(name, "pyproject.toml", "pypi", "poetry", "project.dependencies"))
         assert base["groupName"] == project["groupName"] == "sandbox-base", name
 
+    # pyslang is an extra in pyproject.toml and a base-image pin: one PR moves both.
+    assert "pyslang" in _pins(_text(_BASE_REQUIREMENTS))
+    base = _resolve(_Dep("pyslang", _BASE_REQUIREMENTS, "pypi", "pip_requirements"))
+    extra = _resolve(
+        _Dep("pyslang", "pyproject.toml", "pypi", "poetry", "project.optional-dependencies")
+    )
+    assert base["groupName"] == extra["groupName"] == "sandbox-base"
+
     # The Ubuntu parent image is pinned in both Dockerfiles and held equal by a test.
     for dockerfile in (_DOCKERFILE_BASE, _RISCV):
         assert any(
@@ -708,10 +719,12 @@ def _assert_runner_exposes_nothing() -> None:
     assert "noreply@github.com" not in allowed
 
 
-def _assert_config_holds_every_update() -> None:
-    """Nothing updates unapproved, automerges, or commits through the platform."""
+def _assert_config_never_automerges() -> None:
+    """Nothing automerges or commits through the platform; the remaining holds stay.
+
+    Majors, Cargo lock-file maintenance and every rule that sets a hold keep it.
+    """
     config = _config()
-    assert config["dependencyDashboardApproval"] is True
     # Lock-file maintenance runs for Cargo only (the one manager with lock files) and
     # waits for approval of its own.
     assert config["lockFileMaintenance"]["enabled"] is False
@@ -723,17 +736,42 @@ def _assert_config_holds_every_update() -> None:
     assert config["platformCommit"] == "disabled"
     mergify = yaml.safe_load(_text(".mergify.yml"))
     assert config["stopUpdatingLabel"] == mergify["merge_queue"]["queued_label"]
-    assert config["vulnerabilityAlerts"]["enabled"] is False
-    assert "urgent" in config["vulnerabilityAlerts"]["labels"]
     for rule in _rules():
         assert rule.get("dependencyDashboardApproval", True) is True, rule["description"]
         assert rule.get("automerge", False) is False, rule["description"]
 
 
-def test_runner_and_config_hold_every_update() -> None:
-    """AC2 (pre-merge part): the runner cannot leak its token and nothing updates unapproved."""
+def test_runner_exposes_nothing_and_config_never_automerges() -> None:
+    """The runner cannot leak its token and nothing automerges after the cutover."""
     _assert_runner_exposes_nothing()
-    _assert_config_holds_every_update()
+    _assert_config_never_automerges()
+
+
+def test_cutover_lifts_the_global_hold_and_drops_dependabot() -> None:
+    """AC1: no top-level approval hold remains and Dependabot version updates are gone."""
+    assert "dependencyDashboardApproval" not in _config()
+    assert not (_ROOT / ".github/dependabot.yml").exists()
+
+
+def test_security_updates_open_immediately_with_priority_label() -> None:
+    """AC2: vulnerability fixes are on, unscheduled, unheld, unaged, and labelled urgent."""
+    alerts = _config()["vulnerabilityAlerts"]
+    assert alerts["enabled"] is True
+    assert alerts["schedule"] == []
+    assert alerts["dependencyDashboardApproval"] is False
+    assert alerts["minimumReleaseAge"] is None
+    assert {"dependencies", "urgent"} <= set(alerts["labels"])
+
+
+_UPDATE_GUIDE = "docs/internals/agents/dependency-updates.md"
+
+
+def test_dependency_update_guide_is_linked_and_carries_the_checklist() -> None:
+    """AC4: AGENTS.md links the guide, which repeats the OpenROAD checklist the PR note emits."""
+    assert _UPDATE_GUIDE in _text("AGENTS.md")
+    guide = _text(_UPDATE_GUIDE)
+    for item in (*_OPENROAD_CHECKLIST_ARGS, *_OPENROAD_CHECKLIST_PATHS):
+        assert item in guide, item
 
 
 # --- Post-upgrade tasks (#2999) ----------------------------------------------------------

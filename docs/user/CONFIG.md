@@ -3,7 +3,7 @@
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
 Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard and Goal presence, and feedback redaction. Settings for one Flow, the Sandbox, or
+Dashboard and Goal presence, worktree cleanup, and feedback redaction. Settings for one Flow, the Sandbox, or
 Stealth Mode live on their own pages; the table below says where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
@@ -15,7 +15,7 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[worktree]`, `[sandbox].dashboard`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
@@ -133,10 +133,16 @@ Projects.
 ### Job resource history
 
 Booley measures every Job's peak memory, CPU time, and wall-clock time, and
-keeps the newest 20 runs per Target and Job phase. `booley resources` prints
-the run count and the minimum, median, and maximum peak memory and wall-clock
-time for each (`--json` for scripts). Use it to choose `heavy_memory` and
-`[sandbox].memory`.
+keeps the newest 20 runs per Target and Job phase, with no overall cap. A group
+with no run in the last 90 days is deleted the next time any Job records. Peak
+memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
+recorded before that rule keep their earlier peak. `booley resources` prints the
+run count and the minimum, median, and maximum peak memory and wall-clock time
+for each (`--json` for scripts). Use it to choose `heavy_memory` and
+`[sandbox].memory`. Each Test Variant of a simulation has its own entry
+(`tests=first+slow`; the default Variant keeps the bare Test name), and the
+seeds of one Variant share it. Flow runs that `booley doctor` starts are not
+recorded.
 
 ## Agent CLIs (`[agent]`)
 
@@ -154,10 +160,10 @@ Without `clis`, the Project uses only the default CLI. `clis` also decides
 which logins the Sandbox receives, see
 [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
 Without `default`, the
-first entry of `clis` is the default. `provider` is the older name for
-`default` and still works; `booley init` asks for it (default `claude`) and
-keeps your answer on re-runs, and `booley init --provider codex` sets it
-without the prompt. Each Specialist runs on the Agent CLI its model needs, so
+first entry of `clis` is the default. `booley init` asks for the default CLI
+(`claude` if you just press Enter), records it as `default`, and keeps your
+answer on re-runs; `booley init --provider codex` sets it without the prompt.
+`provider` is the older name for `default` and still works. Each Specialist runs on the Agent CLI its model needs, so
 list a second CLI only when a [`[models]`](#model-selection-models) entry asks
 for it.
 
@@ -191,8 +197,9 @@ codex = "api_key"
 
 A table may name only CLIs listed in `clis`. Codex also accepts `gateway`,
 which sends its calls through a model gateway set up for your Sandbox; Claude
-Code does not. A Sandbox that Booley issues for you cannot use `gateway` yet:
-issuing one fails with a pointer to a hand-written Sandbox spec.
+Code does not. A Sandbox that Booley issues for you forwards the gateway
+settings from your shell for Codex only; see
+[Codex through a model gateway](SANDBOX.md#codex-through-a-model-gateway).
 
 With `subscription` or `api_key`, `booley doctor` fails when the default CLI's
 credential is missing instead of quietly billing the other one; for another CLI
@@ -218,6 +225,25 @@ Sandbox and leaves your host checkout alone; `git -c`, `--author`, and
 (`booley session refresh`). Doctor run in the Sandbox warns when Git would use
 another identity, and names the fix, including for a hand-written devcontainer
 spec such as GitHub Codespaces.
+
+## Interactive sessions (`[chat]`)
+
+```toml
+[chat]
+worktree = "auto"    # "auto" (default), "always", or "never"
+```
+
+Decides where `booley chat` starts when you run it from the main checkout:
+
+- `auto`: in the main checkout when no other Booley session is using it,
+  otherwise in a new worktree `s<N>` on branch `booley/s<N>`.
+- `always`: always in a new worktree.
+- `never`: always in the main checkout.
+
+`booley chat --new-worktree` and `--here` override it for one launch. Any other
+value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
+linked worktree, `booley chat` starts there whatever this says. See
+[Several agents at once](USAGE.md#several-agents-at-once).
 
 ## Model selection (`[models]`)
 
@@ -276,6 +302,20 @@ A Goal session that makes no Booley call for `quiet_after` seconds (default two
 hours) counts as quiet. The Dashboard may drop it from the Sessions list, and
 Doctor warns that the Goal has no recent activity. Quiet never ends or abandons
 a Goal.
+
+## Worktree cleanup (`[worktree]`)
+
+```toml
+[worktree]
+gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
+```
+
+`booley worktree gc` removes worktrees whose last use is older than this age,
+keeping any that `booley worktree rm` would refuse (default `"7d"`). Every
+`booley chat` launch runs the same cleanup with this age. The setting is read
+from the main checkout's `.booley/booley.toml`; a worktree's own copy is
+ignored. `booley worktree gc --older-than AGE` overrides it. See
+[Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
 
 ## Feedback (`[feedback]`)
 

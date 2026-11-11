@@ -165,7 +165,7 @@ instead of silently widening the mapping.
 - Inspect `.booley/hooks/post-setup.*` if present — evidence of
   project-specific sandbox setup.
 - Inspect the sandbox build recipe (the bundled `data/docker/Dockerfile`
-  above) and `docs/user/SANDBOX.md` when considering image provisioning or the
+  above) and `/booley-docs/SANDBOX.md` when considering image provisioning or the
   Linux x86-64 host-provisioned Vivado policy. Treat floating FlexNet behavior
   as experimental until the required paid-site evidence exists.
 - Read representative RTL/testbench headers only as needed to identify source
@@ -246,7 +246,7 @@ Authoring rules:
   dead one (drop it from a depended-on core and that core silently
   contributes zero filesets).
 - **Per-Target Flow families:** the `fpga` name axis is authoritative:
-  `fpga`/`fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
+  `fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
   FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
   FPGA-axis Target does not also carry sim/lint/synth Criteria. Unprefixed
   vendored Targets retain `tool: vivado` as a compatibility fallback. Other
@@ -655,7 +655,7 @@ Rules that differ from SV Targets:
 Per-Target test lists, an optional run-time selector, Test Variants, and
 seeds. A **Test Run** is one Test Variant simulated with one seed, written
 `test[+variant][@seed]`; every key below decides which Test Runs a Target can
-run. Full rules: TESTS.md.
+run. Full rules: `/booley-docs/TESTS.md`.
 
 **Template:** `../TESTS_TEMPLATE.toml`.
 
@@ -718,26 +718,27 @@ What goes here:
   get approval before adding it. Before writing, confirm that every entry
   matches tracked files and that no build output lands inside a pattern; prefer
   `firmware/**/*.c` to `firmware/` when compilation writes into `firmware/`.
-  Keep existing entries. Entry forms and refusals: CONFIG.md → "Additional
+  Keep existing entries. Entry forms and refusals: `/booley-docs/CONFIG.md` → "Additional
   Protected Inputs".
 - **Stealth mode — always write what rows 16 and 20 settled.** Step 0 row 16
   owns the merged git-history policy. Write the plan's `[stealth]` values
   exactly, including hand-set values, volunteered exceptions, and unattended
   fallbacks.
-  Do not omit the block: Booley's runtime fallback for a missing key is on,
-  so omission would reverse an explicit disabled choice.
+  Do not omit the block: a missing `enabled` key means Stealth Mode is off,
+  so omission would silently drop a hidden answer and leave the choice
+  unrecorded (Doctor warns `stealth.enabled-unset` while `.booley/` is excluded).
   If row 16 explicitly chose to exclude repository-native `.core` files, also
   write `ignore_native_cores = true`; otherwise omit it (default false). This
   switch is valid only with `enabled = true`.
 - **Agent backend — preserve row 19 exactly.** `booley init` has already written
-  explicit `provider` and `auth` values. Carry them forward unchanged; for a
+  explicit `default` (older Projects: `provider`) and `auth` values. Carry them forward unchanged; for a
   Project with a missing field, write only the missing field settled during planning. Preserve
   an existing `[agent.git]` identity unchanged; it controls the default author
   and committer for Interactive and Goal Mode checkouts.
 - **Feedback redaction — preserve it when present.** Booley never transmits
   feedback. Keep any user-supplied `redact_extra = ["…"]` and
   `redact_identifiers` settings; they affect only an explicit local export. See
-  CONFIG.md → "Feedback".
+  `/booley-docs/CONFIG.md` → "Feedback".
 - **MCP tool availability — exactly what the plan decided.** Every installed
   built-in and every valid MCP tool under `.booley/mcp_tools/` is discovered
   automatically. Write `[flows.<name>].enabled = false` for an explicit Flow
@@ -800,7 +801,7 @@ What goes here:
   `"… is not available!"`, `$fopen` failed — then `$finish`), not just its
   assertion failures. A pass sentinel that prints once per case has usually
   printed dozens of times before such a run dies, so without that entry the
-  run scores **PASS**. A fail sentinel wins ties (FLOW-SIM.md), which is exactly
+  run scores **PASS**. A fail sentinel wins ties (`/booley-docs/FLOW-SIM.md` → "Pass/fail sentinels"), which is exactly
   what makes the fail-dominant set safe — prove it with the deliberate
   fail-path run below (delete an input, expect FAIL).
 - **Per-test non-RTL build steps** (the plan's row 6): declare them as

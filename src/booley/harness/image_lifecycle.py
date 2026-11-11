@@ -39,11 +39,9 @@ from booley.runtime.image_lifecycle import (
     ArtifactSource,
     BuildPort,
     DockerPort,
-    HostImageScope,
     ImageLifecycleError,
     ImageNode,
     ImageRole,
-    ImageScope,
     Intent,
     LifecyclePlan,
     LifecycleResult,
@@ -126,7 +124,6 @@ class _LegacyBuildAdapter:
         if booley.version_attribution.origin is VersionOrigin.SOURCE:
             _step_docker_image(
                 context,
-                node.reference,
                 allow_pull=False,
                 rebuild_runtime_base=self.refresh_runtime_base,
                 capacity_plan=self.capacity_plan,
@@ -257,7 +254,8 @@ class _IncrementalBuildAdapter:
         return candidate_reference
 
     def _verify_manual_ancestry(self, candidate: str, parent_id: str | None) -> None:
-        if not runtime_lifecycle.descends_from(self.docker, parent_id, candidate):
+        parent = self.docker.inspect(parent_id) if parent_id else None
+        if not runtime_lifecycle.descends_from(parent, self.docker.inspect(candidate)):
             raise ImageLifecycleError(
                 "manual Project recipe final image does not descend from the verified selected parent"
             )
@@ -460,9 +458,10 @@ class _IncrementalBuildAdapter:
 
     def _inherited_wheel_sha(self, node, parent_id) -> str:
         if node.role is ImageRole.PROJECT_OVERLAY and parent_id is not None:
-            sha = self.docker.label(parent_id, runtime_lifecycle.LABEL_WHEEL_SHA256)
-            fingerprint = self.docker.label(
-                parent_id, runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT
+            parent = self.docker.inspect(parent_id)
+            sha = parent.label(runtime_lifecycle.LABEL_WHEEL_SHA256) if parent else None
+            fingerprint = (
+                parent.label(runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT) if parent else None
             )
             if not sha or fingerprint != node.wheel_source_fingerprint:
                 raise ImageLifecycleError("Project overlay parent has no matching wheel identity")
@@ -642,26 +641,21 @@ def _uses_managed_project_overlay(project_root: Path) -> bool:
 
 
 def reconcile(
-    scope: ImageScope,
     intent: Intent,
     *,
     verbose: bool = False,
     capacity_plan: DockerBuildPlan | None = None,
 ) -> LifecycleResult:
-    """Reconcile an image graph with Project Initialization build adapters."""
+    """Reconcile the host base image with Project Initialization build adapters.
+
+    Project images converge through ``reconcile_planned``.
+    """
     docker = _docker_adapter()
     import booley
 
     if booley.version_attribution.origin is VersionOrigin.DISTRIBUTION:
         runtime_lifecycle._expected_image_build_contracts()
-    if isinstance(scope, HostImageScope):
-        root = booley.version_attribution.source_root or Path.cwd().resolve()
-    elif isinstance(scope, ProjectImageScope):
-        root = scope.project_root.resolve()
-    else:
-        raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    if isinstance(scope, ProjectImageScope):
-        return reconcile_planned(scope, intent, verbose=verbose)
+    root = booley.version_attribution.source_root or Path.cwd().resolve()
     builder = (
         None
         if intent is Intent.CHECK
@@ -669,17 +663,16 @@ def reconcile(
             root,
             docker,
             verbose=verbose,
-            refresh_runtime_base=(intent is Intent.REFRESH and isinstance(scope, HostImageScope)),
+            refresh_runtime_base=intent is Intent.REFRESH,
             capacity_plan=capacity_plan,
         )
     )
     return runtime_lifecycle.reconcile(
-        scope,
         intent,
         verbose=verbose,
         docker=docker,
         builder=builder,
-        artifact_policy=_artifact_policy(root if isinstance(scope, ProjectImageScope) else None),
+        artifact_policy=_artifact_policy(),
     )
 
 
@@ -701,7 +694,6 @@ def host_capacity_requests(intent: Intent) -> tuple[DockerBuildRequest, ...]:
     if policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
         return ()
     checked = runtime_lifecycle.reconcile(
-        HostImageScope(),
         Intent.CHECK,
         docker=docker,
         artifact_policy=policy,

@@ -47,31 +47,53 @@ REQUIRED_PATHS = [
 ]
 
 
-@pytest.mark.parametrize(
-    ("path", "git_checkout"),
-    [(path, git) for path in REQUIRED_PATHS for git in (False, True) if path[0] != "init"],
-    ids=lambda value: " ".join(value) if isinstance(value, tuple) else str(value),
-)
-def test_required_commands_refuse_outside_project(
-    path, git_checkout, tmp_path, monkeypatch, capsys
-):
-    monkeypatch.chdir(tmp_path)
+def _enter_empty_checkout(root, monkeypatch, *, git_checkout):
+    """Make *root* the working directory: an empty folder or a bare git checkout."""
+    root.mkdir()
+    monkeypatch.chdir(root)
     if git_checkout:
-        (tmp_path / ".git").mkdir()
-        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (root / ".git").mkdir()
+        (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     for variable in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
         monkeypatch.delenv(variable, raising=False)
     reset_cache()
-    monkeypatch.setattr(sys, "argv", ["booley", *path])
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
-    assert cli.main() == 2
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == (
-        "ERROR: Cannot determine owning Project; run from the Project Root.\n"
-        if path[0] == "session"
-        else "ERROR: not a Booley Project; cd into one or run `booley init` on the host.\n"
+
+
+def test_required_commands_refuse_outside_project(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.runtime_context, "runtime_location", lambda: cli.runtime_context.RuntimeLocation.HOST
     )
+    cases = [(path, git) for path in REQUIRED_PATHS for git in (False, True) if path[0] != "init"]
+    for number, (path, git_checkout) in enumerate(cases):
+        _enter_empty_checkout(tmp_path / f"case{number}", monkeypatch, git_checkout=git_checkout)
+        monkeypatch.setattr(sys, "argv", ["booley", *path])
+        assert cli.main() == 2, path
+        captured = capsys.readouterr()
+        assert captured.out == "", path
+        assert captured.err == (
+            "ERROR: Cannot determine owning Project; run from the Project Root.\n"
+            if path[0] == "session"
+            else "ERROR: not a Booley Project; cd into one or run `booley init`.\n"
+        ), path
+
+
+def test_missing_project_hint_names_where_to_run_init(tmp_path, monkeypatch, capsys):
+    """Both missing-Project refusals (command and explicit selection) read per location."""
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    hints = {
+        "HOST": "run `booley init`.",
+        "HAND_WRITTEN_SANDBOX": "run `booley init` in this Sandbox.",
+        "ISSUED_SANDBOX": "run `booley init` on the host.",
+    }
+    for number, (location, hint) in enumerate(hints.items()):
+        _enter_empty_checkout(tmp_path / f"case{number}", monkeypatch, git_checkout=True)
+        kind = cli.runtime_context.RuntimeLocation[location]
+        monkeypatch.setattr(cli.runtime_context, "runtime_location", lambda kind=kind: kind)
+        for argv in (["targets"], ["targets", "--project", str(tmp_path / f"case{number}")]):
+            monkeypatch.setattr(sys, "argv", ["booley", *argv])
+            assert cli.main() == 2, (location, argv)
+            assert capsys.readouterr().err.endswith(f"cd into one or {hint}\n")
 
 
 @pytest.mark.parametrize("argv", [["targets"], ["upgrade", "status"]])
@@ -265,7 +287,7 @@ def test_bare_and_explicit_chat_keep_launch_argv(cli_project, monkeypatch):
     monkeypatch.setattr(chat_cmd.shutil, "which", lambda provider, **_kw: f"/bin/{provider}")
     monkeypatch.setattr(chat_cmd, "capture_process_identity", lambda _pid: object())
     monkeypatch.setattr(chat_cmd, "process_session_key", lambda _identity: "key")
-    monkeypatch.setattr(chat_cmd, "reserve_session_handle", lambda *_args: "S17")
+    monkeypatch.setattr(chat_cmd, "reserve_session_handle", lambda *_args, **_kwargs: "S17")
     executed = []
 
     def execute(executable, argv):
@@ -274,7 +296,7 @@ def test_bare_and_explicit_chat_keep_launch_argv(cli_project, monkeypatch):
 
     monkeypatch.setattr(chat_cmd.os, "execvp", execute)
     # Run the launch in-process: the mocked exec must not fork pytest.
-    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch: launch())
+    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch, **_kw: launch())
     for argv in (["booley"], ["booley", "chat"]):
         monkeypatch.setattr(sys, "argv", argv)
         with pytest.raises(SystemExit):

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
-import subprocess
 import sys
 import textwrap
 import time
@@ -23,6 +23,7 @@ from booley.runtime.handles import HandleStore
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
 pytestmark = pytest.mark.timeout(120)
@@ -338,6 +339,98 @@ async def test_adopted_cancel_keeps_completion_that_wins_race(context, monkeypat
     assert job_records.read_record(run_id, context.jobs_root).status == "done"
 
 
+def _finish_record(context, run_id: str) -> None:
+    """Write the owner's terminal record, as a baseline Job's supervisor does."""
+    done = job_records.read_record(run_id, context.jobs_root)
+    assert done is not None
+    done.status, done.exit_code, done.ended_at = "done", 0, utc_now_rfc3339()
+    job_records.write_record(done, context.jobs_root)
+
+
+def _assert_owner_outcome_kept(context, run_id: str) -> None:
+    final = job_records.read_record(run_id, context.jobs_root)
+    assert final is not None
+    assert (final.status, final.exit_code) == ("done", 0)
+
+
+def test_reconcile_keeps_a_terminal_record_written_after_listing(context, monkeypatch):
+    run_id = "baseline-like"
+    rec = job_records.JobRecord(run_id, "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid())
+    job_records.write_record(rec, context.jobs_root)
+    jobs = JobLifecycle()
+
+    def owner_finishes_then_reads_dead(_pid):
+        _finish_record(context, run_id)
+        return False
+
+    monkeypatch.setattr(jobs, "_is_alive", owner_finishes_then_reads_dead)
+    jobs.reconcile_orphaned()
+    _assert_owner_outcome_kept(context, run_id)
+
+
+def test_reconcile_skips_a_record_deleted_after_listing(context, monkeypatch):
+    run_id = "vanishing"
+    rec = job_records.JobRecord(run_id, "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid())
+    job_records.write_record(rec, context.jobs_root)
+    jobs = JobLifecycle()
+
+    def record_removed_then_dead(_pid):
+        job_records.delete_record(run_id, root=context.jobs_root)
+        return False
+
+    monkeypatch.setattr(jobs, "_is_alive", record_removed_then_dead)
+    jobs.reconcile_orphaned()
+    assert job_records.read_record(run_id, context.jobs_root) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_state", ["dead", "live"])
+async def test_adopted_cancel_keeps_a_terminal_record_written_by_its_owner(
+    context, monkeypatch, owner_state
+):
+    run_id = "baseline-like"
+    rec = job_records.JobRecord(run_id, "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid())
+    job_records.write_record(rec, context.jobs_root)
+    jobs = JobLifecycle()
+    liveness = iter([True])  # ``cancel``'s own status check comes first
+
+    def is_alive(_pid):
+        if next(liveness, None) is not None:
+            return True
+        _finish_record(context, run_id)
+        return False
+
+    async def owner_finishes_during_termination(_pid):
+        _finish_record(context, run_id)
+
+    if owner_state == "dead":
+        monkeypatch.setattr(jobs, "_is_alive", is_alive)
+    else:
+        monkeypatch.setattr(jobs, "_is_alive", lambda _pid: True)
+        monkeypatch.setattr(jobs, "_cancel_process", owner_finishes_during_termination)
+
+    assert await jobs.cancel(run_id) == "finished"
+    _assert_owner_outcome_kept(context, run_id)
+
+
+@pytest.mark.asyncio
+async def test_adopted_cancel_still_cancels_an_owner_that_fails_on_sigterm(context, monkeypatch):
+    run_id = "baseline-like"
+    rec = job_records.JobRecord(run_id, "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid())
+    job_records.write_record(rec, context.jobs_root)
+    jobs = JobLifecycle()
+
+    async def owner_records_failure_on_sigterm(_pid):
+        failed = job_records.read_record(run_id, context.jobs_root)
+        assert failed is not None
+        failed.status, failed.exit_code, failed.ended_at = "failed", 2, utc_now_rfc3339()
+        job_records.write_record(failed, context.jobs_root)
+
+    monkeypatch.setattr(jobs, "_cancel_process", owner_records_failure_on_sigterm)
+    assert await jobs.cancel(run_id) == "running"
+    assert job_records.read_record(run_id, context.jobs_root).status == "cancelled"
+
+
 @pytest.mark.asyncio
 async def test_unknown_job_does_not_borrow_latest_report(context):
     write_report(context, "different", {"exit_code": 0, "passed": True})
@@ -371,14 +464,7 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
         asyncio.run(run())
         assert 'mcp' not in sys.modules and 'booley.mcp.server' not in sys.modules
     """)
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=context.work_dir,
-        capture_output=True,
-        text=True,
-        timeout=40,
-        check=False,
-    )
+    result = run_bounded_child([sys.executable, "-c", script], cwd=context.work_dir, timeout=40)
     assert result.returncode == 0, result.stderr
 
 
@@ -688,3 +774,156 @@ def test_reconcile_leaves_job_running_on_lasting_report_sharing_error(context, m
     JobLifecycle().reconcile_orphaned()
     assert job_records.read_record(rec.run_id, context.jobs_root).status == "running"
     assert attempts[report] > 1
+
+
+# --- job.log: every supervised MCP Job tees its combined output to disk ---------------
+
+
+def job_log_files(context):
+    """Every ``<jobs root>/<run_id>/job.log`` present now."""
+    return sorted(context.jobs_root.glob("*/job.log"))
+
+
+def log_bytes(context, run_id):
+    """Bytes of the Job's ``job.log``, or ``b""`` while it does not exist."""
+    path = context.jobs_root / run_id / "job.log"
+    return path.read_bytes() if path.is_file() else b""
+
+
+def log_gate_command(context, first="started", second="finished"):
+    """Child that emits *first*, waits for a release file, then emits *second*.
+
+    Lines are written as bytes so a Windows text layer cannot turn ``\\n`` into ``\\r\\n``.
+    """
+    return command(f"""
+        from pathlib import Path
+        import sys, time
+        release = Path({str(context.work_dir / "release")!r})
+        sys.stdout.buffer.write(b'{first}\\n'); sys.stdout.buffer.flush()
+        deadline = time.monotonic() + 60
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        sys.stdout.buffer.write(b'{second}\\n'); sys.stdout.buffer.flush()
+    """)
+
+
+@pytest.mark.asyncio
+async def test_submitted_job_logs_full_combined_output(context, monkeypatch):
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "64")  # tail cap: 4 x 64 = 256 bytes
+    script = """
+        import sys
+        sys.stderr.buffer.write(b'err-marker\\n')
+        sys.stderr.buffer.flush()
+        for number in range(200):
+            sys.stdout.buffer.write(f'out-{number:03d}\\n'.encode())
+        sys.stdout.buffer.flush()
+    """
+    expected_stdout = "".join(f"out-{number:03d}\n" for number in range(200)).encode()
+    submission = await JobLifecycle().submit_and_wait(
+        "lint", command(script), JOB_TIMEOUT, context=context, wait_seconds=WAIT_TIMEOUT
+    )
+    log = log_bytes(context, submission.poll.run_id)
+    assert log.count(b"err-marker\n") == 1
+    assert log.replace(b"err-marker\n", b"") == expected_stdout
+    # The agent-facing tail stays bounded: only the end of stdout survives.
+    result = submission.poll.result
+    assert "out-000" not in result.stdout
+    assert result.stdout.endswith("out-199\n")
+
+
+@pytest.mark.asyncio
+async def test_job_log_is_written_while_the_job_runs(context):
+    jobs = JobLifecycle()
+    run_id = jobs.submit("lint", log_gate_command(context), JOB_TIMEOUT, context=context)
+    try:
+        await wait_until(lambda: log_bytes(context, run_id) == b"started\n")
+    finally:
+        (context.work_dir / "release").write_text("go")
+    poll = await jobs.poll(run_id, WAIT_TIMEOUT)
+    assert poll.status == "finished"
+    assert log_bytes(context, run_id) == b"started\nfinished\n"
+
+
+@pytest.mark.asyncio
+async def test_inline_job_logs_while_running_and_forgets_log_with_record(context):
+    jobs = JobLifecycle()
+    run = asyncio.create_task(
+        jobs.run_synchronous("lint", log_gate_command(context), JOB_TIMEOUT, context=context)
+    )
+    try:
+        await wait_until(
+            lambda: [path.read_bytes() for path in job_log_files(context)] == [b"started\n"]
+        )
+        run_directory = job_log_files(context)[0].parent
+    finally:
+        (context.work_dir / "release").write_text("go")
+    exit_code, stdout, _stderr, _timed_out = await asyncio.wait_for(run, WAIT_TIMEOUT)
+    assert exit_code == 0 and stdout == "started\nfinished\n"
+    assert job_records.list_records(context.jobs_root) == []
+    assert not run_directory.exists()
+
+
+@pytest.mark.asyncio
+async def test_unwritable_job_log_does_not_fail_the_job(context):
+    jobs = JobLifecycle()
+    jobs._next_run_id = lambda endpoint: "lint-blocked"
+    # A regular file where the run directory belongs: creating it fails on every OS.
+    context.jobs_root.mkdir(parents=True, exist_ok=True)
+    (context.jobs_root / "lint-blocked").write_text("not a directory")
+    submission = await jobs.submit_and_wait(
+        "lint",
+        command("print('completed')"),
+        JOB_TIMEOUT,
+        context=context,
+        wait_seconds=WAIT_TIMEOUT,
+    )
+    result = submission.poll.result
+    assert result.exit_code == 0 and result.stdout.strip() == "completed"
+    assert submission.poll.record.status == "done"
+    assert result.stderr.count("job.log unavailable") == 1
+
+
+class _FailingSecondWrite:
+    """Raw log file whose second write fails the way a full disk does."""
+
+    def __init__(self, raw):
+        self._raw = raw
+        self._writes = 0
+
+    def write(self, data):
+        self._writes += 1
+        if self._writes == 2:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return self._raw.write(data)
+
+    def flush(self):
+        self._raw.flush()
+
+    def close(self):
+        self._raw.close()
+
+
+@pytest.mark.asyncio
+async def test_job_log_write_failure_mid_run_keeps_job_and_reports_once(context, monkeypatch):
+    real_open = Path.open
+
+    def open_job_log(path, *args, **kwargs):
+        opened = real_open(path, *args, **kwargs)
+        # Only the supervisor's write handle fails; readers of job.log are untouched.
+        writing = path.name == "job.log" and args[:1] == ("wb",)
+        return _FailingSecondWrite(opened) if writing else opened
+
+    monkeypatch.setattr(Path, "open", open_job_log)
+    jobs = JobLifecycle()
+    run_id = jobs.submit(
+        "lint", log_gate_command(context, "first", "second"), JOB_TIMEOUT, context=context
+    )
+    try:
+        # Release only once "first" is logged, so the two lines are separate chunks.
+        await wait_until(lambda: log_bytes(context, run_id) == b"first\n")
+    finally:
+        (context.work_dir / "release").write_text("go")
+    result = (await jobs.poll(run_id, WAIT_TIMEOUT)).result
+    assert result.exit_code == 0 and result.stdout == "first\nsecond\n"
+    assert result.stderr.count("job.log unavailable") == 1
+    assert log_bytes(context, run_id) == b"first\n"

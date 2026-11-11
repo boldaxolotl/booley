@@ -7,6 +7,14 @@ import gzip
 import json
 from pathlib import Path
 
+from booley.flows.sim.coverage_campaign import CoverageCampaign, DurableTargetIdentity
+from booley.flows.sim.coverage_campaign_store import decode_coverage_campaign
+
+
+def decode_document(document: dict, target: DurableTargetIdentity) -> CoverageCampaign:
+    """Decode a single-document test Campaign through the store's one decode."""
+    return decode_coverage_campaign(document, list(document["points"]), target)
+
 
 def rewrite_manifest_as_v4(manifest: dict) -> None:
     """Turn a freshly published manifest into what Booley 0.3.0 wrote (v4).

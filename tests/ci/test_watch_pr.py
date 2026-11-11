@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/watch_pr.py"
 SPEC = importlib.util.spec_from_file_location("watch_pr", SCRIPT)
@@ -20,6 +20,22 @@ assert SPEC is not None and SPEC.loader is not None
 watch_pr = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = watch_pr
 SPEC.loader.exec_module(watch_pr)
+
+
+_CHECKOUT_SRC = Path(__file__).resolve().parents[2] / "src"
+
+
+@pytest.fixture(autouse=True)
+def watcher_imports_this_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The watcher child imports ``booley``; the test interpreter need not have it installed.
+
+    ``tests/ci/conftest.py`` drops the suite-wide ``PYTHONPATH`` fixture for the
+    ``pip check`` tests, so this module restores it for its ``python3`` children.
+    """
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(filter(None, (str(_CHECKOUT_SRC), os.environ.get("PYTHONPATH")))),
+    )
 
 
 HEAD = "a" * 40
@@ -44,13 +60,10 @@ def write_fake_gh(tmp_path: Path, source: str) -> Path:
 
 
 def run_script(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_bounded_child(
         ["python3", str(SCRIPT), *args],
         env=env,
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -644,7 +657,9 @@ def test_stale_dequeued_label_is_reported_once_the_grace_expires() -> None:
 
 
 @pytest.mark.parametrize(
-    "command", ["@mergifyio queue default", "@mergifyio dequeue"], ids=["requeued", "dequeue"]
+    "command",
+    ["@mergifyio queue", "@mergifyio queue default", "@mergifyio dequeue"],
+    ids=["requeued", "requeued-named-queue", "dequeue"],
 )
 def test_dequeued_label_newer_than_last_control_ends_watch(command: str) -> None:
     state = snapshot(
@@ -876,12 +891,20 @@ def test_checks_reject_generic_exit_one_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
-def test_checks_accept_documented_no_checks_message(tmp_path: Path) -> None:
+@pytest.mark.parametrize("exit_code", [1, 8])
+@pytest.mark.parametrize(
+    "message",
+    [
+        pytest.param("no checks reported on the 'feature' branch", id="plain"),
+        pytest.param("no required checks reported on the 'feature' branch", id="required"),
+    ],
+)
+def test_checks_accept_documented_no_checks_message(
+    tmp_path: Path, message: str, exit_code: int
+) -> None:
     executable = write_fake_gh(
         tmp_path,
-        "import sys\n"
-        "print(\"no checks reported on the 'feature' branch\", file=sys.stderr)\n"
-        "raise SystemExit(1)\n",
+        f"import sys\nprint({message!r}, file=sys.stderr)\nraise SystemExit({exit_code})\n",
     )
     transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
 
@@ -1120,6 +1143,7 @@ def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
         "elif sys.argv[1] == 'api':\n"
         "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n",
     )
+    # The test drives this Popen itself (SIGTERM, communicate).
     process = subprocess.Popen(
         [
             "python3",

@@ -106,7 +106,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
     ```
 
     `booley` (or `booley chat`) just starts the Developer Agent chosen by
-    `[agent] default` in `.booley/booley.toml`:
+    `[agent] default` (or its older name `provider`) in `.booley/booley.toml`:
 
     | Provider | Same as running |
     | --- | --- |
@@ -114,17 +114,21 @@ Don't continue until `booley doctor` shows no failures or warnings.
     | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
 
     From then on you are using that CLI's own chat. To run several sessions,
-    open more container terminals. If more than one will edit files, give each
-    its own worktree; see [Several agents at once](#several-agents-at-once).
+    open more container terminals and run `booley` in each. While one session
+    is working in the main checkout, the next one starts in its own worktree;
+    see [Several agents at once](#several-agents-at-once).
 
     `booley chat --cli codex` opens another Agent CLI instead, as long as it is
     listed in `[agent] clis`; otherwise it stops and lists the allowed ones. In
     the Sandbox, Booley currently sets up (sign-in, Booley tools, skills) only
     the default CLI, so another one may ask you to sign in and lack Booley's tools.
 
-    Arguments after `booley chat` and its own options (`--cli`, `-C`) go to the
+    Arguments after `booley chat` and its own options (`--cli`, `-C`,
+    `--new-worktree`, `--here`) go to the
     CLI unchanged. To resume an earlier conversation, run
-    `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex).
+    `booley chat --resume <id>` (Claude) or `booley chat resume <id>` /
+    `booley chat resume --last` (Codex); a conversation that ran in a worktree
+    reopens there (see [Several agents at once](#several-agents-at-once)).
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
@@ -157,7 +161,7 @@ kind of run that Project Setup configured, so ask the agent which ones you have.
 | `sim` | Builds and runs your tests in Verilator or Icarus, optionally with coverage | *"Debug the backpressure test failure on the `sim_heavy` target."* | [FLOW-SIM.md](FLOW-SIM.md), [TESTS.md](TESTS.md), [COVERAGE.md](COVERAGE.md) |
 | `lint` | Lints with Verilator (structure and semantics) or Verible (style) | *"Run lint and explain every finding."* | [FLOW-LINT.md](FLOW-LINT.md) |
 | `synth` | Quick ASIC area and timing estimate with Yosys and OpenROAD | *"Compare synth area between these two commits: ..."* | [FLOW-SYNTH.md](FLOW-SYNTH.md) |
-| `fpga` | FPGA implementation with AMD Vivado installed on your computer | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
+| `fpga` | FPGA implementation with AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
 | `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) |
 | `mutation_tester` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#mutation_tester) |
 | `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md), [CLI-REFERENCE.md](CLI-REFERENCE.md#coverage_analyst) |
@@ -186,7 +190,7 @@ Agent chat:
 
 | Skill | Use it when |
 | --- | --- |
-| `/booley-setup` | Setting up a Project (you ran this already, on the host) |
+| `/booley-setup` | Setting up a Project (you started this on the host during setup) |
 | `/booley-goal` | Work needs conditions that must be met, with evidence |
 | `/booley-heal` | Doctor reports problems, or a Flow stopped working |
 | `/booley-feedback` | Reporting a Booley bug, confusion, praise, or an idea |
@@ -232,7 +236,7 @@ with `[sandbox].dashboard=false`. It comes back by itself after a window
 reload (this can take up to about half a minute). If you closed it, **Booley:
 Open Dashboard** in the Command Palette reopens it or reveals the open one.
 `booley dashboard` replaces a Dashboard that no terminal shows any more.
-The Dashboard has two windows; press `←` or `→` to switch:
+The Dashboard has three windows; press `←` or `→` to switch:
 
 - **Sessions:** every Developer Agent session and what its agent last
   reported: working, waiting for a tool call, or waiting for your input.
@@ -240,22 +244,132 @@ The Dashboard has two windows; press `←` or `→` to switch:
   **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
 - **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
   session.
+  A `booley flow` or `booley specialist` run typed in a container terminal
+  also appears here as a Standalone Job with no session. Its output is copied
+  to `job.log`, shown as a link.
+- **Targets:** the Targets of one worktree, with their core and the Flows that
+  can drive them. Press `Enter` on a Target for its filesets, tests, Test
+  Variants, and constraints. The **Worktree** item in the top bar picks the
+  worktree: those with a connected session come first, the main checkout last.
+
+The **Run** item in the top bar starts a built-in Booley Flow as a Standalone
+Job. Pick the worktree, the Flow, and its arguments (the Project comes from the
+worktree, so `-C`, `--project`, and `--work-dir` are refused); the Dashboard
+checks them and shows the equivalent `cd … && booley flow …` command. **Submit**
+starts the Job, **Copy command** asks your terminal to copy the command instead.
+The Jobs window then opens on All sessions with the new Job selected; a
+Finished filter switches to Running, which keeps the Job listed after it
+finishes. `Esc` returns to where you started.
 
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
-the first row to reach the top bar with the tabs, filters, and Help; the footer
-shows the keys you can use.
+the first row to reach the top bar with the tabs, filters, Run, and Help; the
+footer shows the keys you can use.
 
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
 `J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
-handle.
+handle, except a conversation resumed in its worktree, which keeps its handle.
 
 ### Several agents at once
 
-Agents that share a checkout overwrite each other's edits. Give each agent that
-edits files its own Git worktree: open a new container terminal, start `booley`,
-and ask *"Create a worktree named `fifo-fix` and work there."* Read-only
-sessions, such as one that only explains code or runs reviews, can share the
-main checkout. See
+Agents that share a checkout overwrite each other's edits, so `booley chat`
+keeps them apart. The first session runs in the main checkout. While it is
+running, the next `booley chat` creates a worktree `s<N>` on branch
+`booley/s<N>`, named after the session handle (`S3` gets `s3`), and starts
+there. It prints one line first:
+
+```text
+Booley session S3 works in worktree <path> on branch booley/s3 (<reason>).
+```
+
+A session that runs in the main checkout prints no such line. A worktree is
+made only when the main checkout is taken, so a lone session behaves as before.
+
+- `booley chat --new-worktree` always starts in a new worktree.
+- `booley chat --here` always starts in the main checkout, for example to
+  read code alongside another session.
+- `[chat] worktree = "auto" | "always" | "never"` in `.booley/booley.toml` sets
+  the default; see [Interactive sessions](CONFIG.md#interactive-sessions-chat).
+- Run from inside an existing linked worktree, `booley chat` starts there and
+  creates nothing.
+
+When the agent of a worktree session exits and you are still at the terminal,
+`booley chat` asks whether to keep or discard the worktree. The question lists
+the work that is not in the main checkout yet: uncommitted changes in the
+worktree and in its Paired Checkout, and the number of commits on each of its
+branches that main lacks (Git-ignored files are not counted):
+
+```text
+Session S3 has ended. Worktree s3: <path>
+Work not in main yet:
+  - 2 uncommitted change(s) in the worktree
+  - 3 commit(s) on booley/s3 not in main
+Discard deletes the uncommitted changes and keeps the branches. Booley never
+merges: merge what you need first.
+Keep or discard worktree s3? [K/d]
+```
+
+Enter keeps it. Discard removes the worktree, the same as
+`booley worktree rm s3`, and keeps its branches, so committed work stays
+reachable. Booley never merges anything for you. If the removal is refused, for
+example because the agent is still running somewhere or a Goal is active,
+Booley shows why and asks a second time before it removes the worktree anyway.
+A session in the main checkout gets no question.
+
+Booley keeps the worktree without asking, and prints `Kept worktree s3: <path>`,
+when nobody can answer: output goes to a pipe or a file, the terminal was
+closed, or the agent was stopped by a signal. A kept worktree is normal; find it
+with `booley worktree list` and remove it with `booley worktree rm`.
+
+Every `booley chat` launch also runs `booley worktree gc` first and prints only
+the worktrees it removed, so idle ones do not pile up. See
+[Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+
+#### Resuming a conversation
+
+Claude Code and Codex keep a conversation with the directory it ran in, so
+a conversation that ran in worktree `s3` cannot be resumed from the main
+checkout. Booley therefore sends a resume to the worktree the conversation ran
+in and keeps its handle (`S3` stays `S3`). It prints
+
+```text
+Booley session S3 resumes conversation <id> in worktree <path>.
+```
+
+- By id: `booley chat --resume <id>` (also `--resume=<id>` and `-r <id>`) for
+  Claude, `booley chat resume <id>` for Codex. Put the id right after `resume`.
+- The latest conversation: Claude's `-c`/`--continue` and Codex's
+  `resume --last` continue the most recent conversation (by the agent CLI's
+  own last-update time) among the main checkout and the worktrees whose
+  session is not running; a main checkout in use is skipped too. Booley then resumes that conversation by its id. If
+  Booley cannot tell which is newest, the agent CLI picks from the main
+  checkout, as before. `resume --last --all` is left to Codex.
+- A conversation that ran in the main checkout, or that Booley has no record
+  of, resumes in the main checkout.
+- If the worktree has since been removed, the conversation resumes in the main
+  checkout after a `NOTE`.
+- Resuming refuses a checkout that is in use, except the main checkout under
+  `[chat] worktree = "never"`, which is shared. A conversation whose worktree
+  has a running session (a Codex started by hand counts) is refused with exit 2
+  (end that session first). A conversation that belongs in the main checkout
+  while it is in use is refused too; run `booley chat --here ...` to resume it
+  beside that session.
+- `--here` and `--new-worktree` keep their meaning, and a launch from inside a
+  linked worktree stays there: none of them is redirected by a resume. The
+  `[chat] worktree` setting decides where new sessions start, not where a
+  resume goes.
+- A conversation you started by hand inside a worktree (not through
+  `booley chat`) reopens in that worktree, but may get a new handle once its
+  earlier session has ended.
+
+Put both options before any arguments meant for the agent CLI. Claude Code's
+own `--worktree` still goes to the agent.
+
+The check is best effort for agents that did not start through Booley. A plain
+`claude` tab or a VS Code panel does not hold the main checkout, so Booley only
+notices it once it has made a Booley tool call. Start such sessions in a
+worktree yourself (ask the agent: *"Create a worktree named `fifo-fix` and work
+there."*) or use `booley chat`. Read-only sessions, such as one that only
+explains code or runs reviews, can share the main checkout. See
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-developer-agents-keep-clobbering-each-others-edits).
 
 ### What the Developer Agent is allowed to do
@@ -274,10 +388,15 @@ doesn't replace your own review.
 > server, because the container blocks that network access. So: let it commit,
 > review the commits, then push them yourself from a terminal outside the
 > container.
->
-> With [Stealth Mode](STEALTH.md) on, a Git hook removes AI and Booley names
-> from commit messages and rejects `Co-Authored-By` lines. If a commit is
-> rejected, the agent just retries without that line.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+A Git hook removes AI and Booley names from commit messages and rejects
+`Co-Authored-By` lines. If a commit is rejected, the agent just retries without
+that line. See [STEALTH.md](STEALTH.md#commit-messages).
+
+</details>
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
 are saved in `.booley/.interactive_logs/`. Chat transcripts live in
@@ -293,9 +412,15 @@ it). The `AGENTS.md` and `CLAUDE.md` in your project root are just links to that
 file, so editing any of them changes the same text. Booley creates the links
 and keeps them out of Git.
 
-To save your edits, commit the real file (`git add .booley/AGENTS.md`). If your
-Booley Directory is its own Git repository (as in Stealth mode), commit
-`AGENTS.md` there instead.
+To save your edits, commit the real file (`git add .booley/AGENTS.md`).
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The Booley Directory is its own Git repository, so commit `AGENTS.md` there
+instead: `git -C .booley commit`. See [STEALTH.md](STEALTH.md#turning-it-on).
+
+</details>
 
 ### Viewing waveforms
 

@@ -26,7 +26,7 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.evidence.recipe import implementation_comparison_basis
 from booley.evidence.timing import make_clock_timing
 from booley.flows import artifacts
@@ -52,7 +52,6 @@ from booley.flows.synth.flow import (
     _parse_worst_slack,
     _synth_target_warnings,
     _vlogdefine_args,
-    _vlogparam_args,
     _worst_critical_path_ps,
     synth_target_report_slug,
 )
@@ -67,6 +66,7 @@ from booley.flows.synth.recipe import (
 )
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import WarningSummary, parse_synth_diagnostics
+from booley.flows.target_parameters import ParameterValue, vlogparam_specs
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -74,6 +74,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import relocated_project
+from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -586,6 +587,31 @@ def _write_syn_demo_project(work_dir: Path) -> None:
 # Captured before the autouse fixture below patches the attribute, so the
 # real-fusesoc e2e can reach the genuine resolver.
 _REAL_RESOLVE = fusesoc_registry._resolve_target
+
+
+# The Target-handle entry points the lenient catalog adapter replaces per test
+# (it drops the build's library plan); the AC4 test needs the genuine ones.
+_REAL_RESOLVE_HANDLE = fusesoc_registry.resolve_target_handle
+_REAL_SETUP_HANDLE = fusesoc_registry.setup_command_for_handle
+
+
+def _fusesoc_cmd() -> list[str]:
+    """Return the FuseSoC argv: the console script, else ``python -c`` without one."""
+    import sys
+
+    if shutil.which("fusesoc"):
+        return list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+    return [sys.executable, "-c", "from fusesoc.main import main; main()"]
+
+
+def _real_resolve(*args, **kwargs):
+    """Run the genuine legacy FuseSoC resolver."""
+    return _REAL_RESOLVE(*args, **{**kwargs, "fusesoc_cmd": _fusesoc_cmd()})
+
+
+def _real_resolve_handle(handle, **kwargs):
+    """Run the genuine Target-handle resolver, honoring the build's library plan."""
+    return _REAL_RESOLVE_HANDLE(handle, **{**kwargs, "fusesoc_cmd": _fusesoc_cmd()})
 
 
 @pytest.fixture(autouse=True)
@@ -1481,9 +1507,6 @@ class TestDryRun:
     def test_dry_run_records_evidence_for_projected_stealth_core(
         self, state_file: Path, tmp_path: Path
     ):
-        import shutil
-        import sys
-
         work_dir = tmp_path / "proj"
         _write_syn_demo_project(work_dir)
         booley_dir = work_dir / ".booley"
@@ -1506,20 +1529,7 @@ class TestDryRun:
             ]
         )
         flow.read_state()
-        fusesoc_cmd = (
-            list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-            if shutil.which("fusesoc")
-            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        )
-
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *args, **kwargs: _REAL_RESOLVE(
-                *args,
-                **{**kwargs, "fusesoc_cmd": fusesoc_cmd},
-            ),
-        ):
+        with patch.object(fusesoc_registry, "_resolve_target", side_effect=_real_resolve):
             result = flow._run()
             dry_plan = flow._flow_plan
             flow.args.dry_run = False
@@ -1530,6 +1540,137 @@ class TestDryRun:
         assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
         run_evidence = flow._recipe_evidence["syn"][2]
         assert run_evidence["source_sha256"]
+
+    @pytest.mark.skipif(
+        shutil.which("git") is None or os.name == "nt",
+        reason="`booley worktree new` runs only in the Sandbox on POSIX with git",
+    )
+    @pytest.mark.parametrize("isolation", ["isolated", "projected"])
+    def test_synth_plan_identity_matches_in_booley_worktree(
+        self,
+        isolation: str,
+        state_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The same Target and inputs plan identically in the main and a worktree checkout.
+
+        Isolated Projects name sources by Project-relative path, hiding the
+        private source mirror; without isolation the FuseSoC export names stay.
+        """
+        import argparse
+
+        pytest.importorskip("fusesoc")
+        pytest.importorskip("edalize")
+        from booley.harness import worktree_cmd
+
+        # `booley worktree new` refuses a foreign ambient BOOLEY_DIR.
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        root = tmp_path / "repo"
+        _write_syn_demo_project(root)
+        booley_dir = root / ".booley"
+        (booley_dir / "cores").mkdir(parents=True)
+        (root / "syn_demo.core").replace(booley_dir / "cores" / "syn_demo.core")
+        isolate = "ignore_native_cores = true\n" if isolation == "isolated" else ""
+        (booley_dir / "booley.toml").write_text(
+            f"[stealth]\nenabled = true\n{isolate}", encoding="utf-8"
+        )
+        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        for args in (
+            ("init",),
+            ("config", "user.name", "Test User"),
+            ("config", "user.email", "test@example.com"),
+            ("add", "rtl", "tb", "constraints"),
+            ("commit", "-m", "init"),
+        ):
+            run_bounded_child(["git", *args], cwd=root, check=True)
+        # Created before any preparation, so the Snapshot holds no generated state.
+        assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="wt"), root) == 0
+
+        def plans(checkout: Path):
+            flow = AsicSynthesizeFlow()
+            flow.parse_args(["--target", "syn", "--work-dir", str(checkout), "--dry-run"])
+            flow.read_state()
+            with (
+                patch.object(
+                    fusesoc_registry, "resolve_target_handle", side_effect=_real_resolve_handle
+                ),
+                patch.object(fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_HANDLE),
+            ):
+                assert flow._run().exit_code == EXIT_SUCCESS
+                dry_plan = flow._flow_plan
+                flow.args.dry_run = False
+                real_plan = flow._plan_synth_implementation(["syn"])
+            return dry_plan, real_plan
+
+        main_dry, main_real = plans(root)
+        wt_dry, wt_real = plans(booley_dir / "worktrees" / "wt")
+
+        assert main_dry.semantic_plan_fingerprint == wt_dry.semantic_plan_fingerprint
+        assert main_real.semantic_plan_fingerprint == wt_real.semantic_plan_fingerprint
+        unit = main_real.work_units[0]
+        configure = unit.commands[0].argv
+
+        def operands(flag: str) -> list[str]:
+            return [configure[i + 1] for i, arg in enumerate(configure) if arg == flag]
+
+        prefix = "" if isolation == "isolated" else "src/syn_demo_0/"
+        assert unit.sources == tuple(
+            prefix + name
+            for name in ("rtl/include/defs.svh", "rtl/pkg.sv", "rtl/dut.sv", "tb/tb_dut.sv")
+        )
+        assert unit.constraints == (f"{prefix}constraints/dut.sdc",)
+        assert operands("--extra-rtl") == [f"{prefix}rtl/pkg.sv", f"{prefix}rtl/dut.sv"]
+        assert operands("--inc-dir") == [f"{prefix}rtl/include"]
+
+
+def test_synth_label_carries_target_source_bytes(flow_and_state, tmp_path: Path) -> None:
+    from booley.flows import job_resources
+    from booley.fusesoc.fusesoc_registry import ResolvedFile
+
+    flow, _ = flow_and_state
+    (tmp_path / "dut.sv").write_bytes(b"module dut; endmodule\n")
+    (tmp_path / "pkg.sv").write_bytes(b"package p; endpackage\n")
+    expected_bytes = sum(len(path.read_bytes()) for path in tmp_path.glob("*.sv"))
+    recipe = SimpleNamespace(
+        command=["synth"],
+        resolved=SimpleNamespace(
+            build_root=tmp_path,
+            files=(
+                ResolvedFile("dut.sv", "systemVerilogSource"),
+                ResolvedFile("pkg.sv", "systemVerilogSource"),
+            ),
+        ),
+    )
+    plan = SimpleNamespace(
+        spec=SimpleNamespace(timing=SimpleNamespace(mode="logical")), build_dir=tmp_path
+    )
+    seen: list[job_resources.ResourceLabel | None] = []
+
+    def execute(*_args, **_kwargs):
+        seen.append(job_resources.current_label())
+        return SubprocessResult(returncode=0)
+
+    with (
+        patch.object(flow, "_resolve_synth_recipe", return_value=recipe),
+        patch.object(flow, "_configure_synth", return_value=plan),
+        patch.object(flow, "_synth_boundary_cmd", return_value=["make"]),
+        patch.object(flow, "_open_run_log"),
+        patch.object(flow, "_execute_boundary", side_effect=execute),
+        patch.object(flow, "_interpret_boundary_run", return_value=(SynthMetrics(), "")),
+        patch.object(
+            flow, "_attach_recipe_evidence", side_effect=lambda _target, metrics: metrics
+        ),
+        patch.object(flow, "_store_openroad_result"),
+    ):
+        flow._run_single_config("lite")
+
+    assert seen == [
+        job_resources.ResourceLabel(
+            "lite", "synth", split=job_resources.SYNTH_PHASES, source_bytes=expected_bytes
+        )
+    ]
+    assert expected_bytes > 0
 
 
 # ===========================================================================
@@ -4084,14 +4225,17 @@ class TestParamMapping:
 
     def test_vlogparam_emits_assignment(self):
         params = {"WIDTH": {"paramtype": "vlogparam", "default": 8}}
-        assert _vlogparam_args(params) == ["WIDTH=8"]
+        assert vlogparam_specs(params) == {"WIDTH": ParameterValue("", "8")}
 
     def test_vlogparam_normalizes_boolean_literals(self):
         params = {
             "ENABLED": {"datatype": "bool", "paramtype": "vlogparam", "default": True},
             "DISABLED": {"datatype": "bool", "paramtype": "vlogparam", "default": False},
         }
-        assert _vlogparam_args(params) == ["ENABLED=1", "DISABLED=0"]
+        assert vlogparam_specs(params) == {
+            "ENABLED": ParameterValue("bool", "1"),
+            "DISABLED": ParameterValue("bool", "0"),
+        }
 
     def test_paramtype_filtering_is_exclusive(self):
         params = {
@@ -4101,11 +4245,11 @@ class TestParamMapping:
         }
         # vlogdefine helper ignores vlogparam/plusarg and vice versa.
         assert _vlogdefine_args(params) == ["D"]
-        assert _vlogparam_args(params) == ["P=4"]
+        assert vlogparam_specs(params) == {"P": ParameterValue("", "4")}
 
     def test_empty_or_none_params(self):
         assert _vlogdefine_args(None) == []
-        assert _vlogparam_args({}) == []
+        assert vlogparam_specs({}) == {}
 
 
 # ===========================================================================
@@ -4219,9 +4363,6 @@ class TestSynthResolution:
         """
         pytest.importorskip("fusesoc")
         pytest.importorskip("edalize")
-        import shutil
-        import sys
-
         work_dir = tmp_path / "proj"
         _write_syn_demo_project(work_dir)
 
@@ -4236,19 +4377,7 @@ class TestSynthResolution:
         )
         flow.read_state()
 
-        if shutil.which("fusesoc"):
-            fusesoc_cmd = list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        else:
-            fusesoc_cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _REAL_RESOLVE(
-                *a,
-                **{**k, "fusesoc_cmd": fusesoc_cmd},
-            ),
-        ):
+        with patch.object(fusesoc_registry, "_resolve_target", side_effect=_real_resolve):
             cmd = flow._build_synth_cmd("syn")
 
         joined = " ".join(cmd)
@@ -5478,14 +5607,11 @@ def _run_generated_latch_case(flow_and_state, tmp_path, monkeypatch, frontend, m
         return syn_make.configure_synthesis(spec, stub.build_dir)
 
     def execute(cmd, **_kwargs):
-        process = subprocess.run(
+        process = run_bounded_child(
             cmd,
             cwd=tmp_path,
             env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-            capture_output=True,
-            text=True,
             timeout=5,
-            check=False,
         )
         return SubprocessResult(
             returncode=process.returncode, stdout=process.stdout, stderr=process.stderr
@@ -6023,7 +6149,7 @@ class _TtyOut(io.StringIO):
 class TestSummaryTable:
     @staticmethod
     def _force_color(monkeypatch: pytest.MonkeyPatch) -> None:
-        from booley.harness import colors
+        from booley.presentation import colors
 
         monkeypatch.setattr(colors, "COLORS_ENABLED", True)
 
@@ -6103,7 +6229,7 @@ class TestSummaryTable:
         printed = out.getvalue()
         assert f"{_GREEN}PASS\x1b[0m" in printed
         assert "\x1b" not in result.report_text
-        from booley.harness.colors import strip_ansi
+        from booley.presentation.colors import strip_ansi
 
         assert strip_ansi(printed) == result.report_text + "\n"
 
@@ -6119,7 +6245,6 @@ class TestSummaryTable:
         endpoint = SimpleNamespace(
             _console_publication_requested=True,
             _stdout_witness=witness,
-            _human_report=None,
             endpoint_kind="flow",
             _automatic_target_notice="",
             _automatic_target_notice_published=False,

@@ -14,11 +14,10 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from booley.core.build_paths import work_root_for
 from booley.flows.eda_failures import classify_eda_failure
-from booley.flows.parameter_transport import normalize_resolved_parameters
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.targets.catalog import TargetCatalog
@@ -40,9 +39,6 @@ from .compiler_cache import (
     execution_environment,
     resolve_policy,
 )
-
-if TYPE_CHECKING:
-    from .execution.contract import SimulationTargetOutcome
 
 BuildVerdict = Literal["pass", "fail"] | None
 BuildFailureKind = Literal["design", "infrastructure"] | None
@@ -202,7 +198,6 @@ def _prepare_simulation_build(
         backend_arguments=backend_arguments,
         library_plan=core_library,
     )
-    normalize_resolved_parameters(resolved)
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = _validated_simulator(handle, resolved)
     cache_policy = None
@@ -609,16 +604,3 @@ class SimulationBuildInfrastructureError(RuntimeError):
         super().__init__(build_failure_report(outcome))
         self.target = target
         self.outcome = outcome
-
-    @classmethod
-    def from_target_outcome(
-        cls, outcome: SimulationTargetOutcome
-    ) -> SimulationBuildInfrastructureError:
-        """Normalize an engine infrastructure outcome that ran no tests."""
-        failure = outcome.infrastructure_failure
-        assert failure is not None
-        detail = failure.detail or failure.message
-        build = outcome.builds[-1] if outcome.builds else setup_failure_outcome(detail)
-        if not build.reason:
-            build = replace(build, reason=detail, output=detail)
-        return cls(outcome.target, build)

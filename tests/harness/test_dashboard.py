@@ -397,7 +397,8 @@ async def test_session_arrows_help_back_and_quit():
         previous_rows = app.row_keys.copy()
         await choose_in_bar(app, pilot, "Help")
         assert app.navigation.view == "help"
-        assert "read-only" in str(app.query_one("#detail", Static).render())
+        help_text = str(app.query_one("#detail", Static).render())
+        assert "Run" in help_text and "read-only" not in help_text
         await pilot.press("escape")
         assert app.navigation == previous
         assert app.row_keys == previous_rows
@@ -1224,8 +1225,8 @@ async def test_pilot_header_semantic_styles(monkeypatch, tmp_path):
 async def _check_header_semantic_styles(monkeypatch, tmp_path, due):
     from rich.style import Style
 
-    from booley.harness import colors
     from booley.harness.dashboard.resources import Resources
+    from booley.presentation import colors
 
     current = model.DashboardSnapshot(
         health=_header_health(monkeypatch, tmp_path, due=due, upgrade=True),
@@ -1280,7 +1281,7 @@ async def _check_header_semantic_styles(monkeypatch, tmp_path, due):
 async def test_pilot_stale_notice_uses_attention_style(monkeypatch, tmp_path):
     from rich.style import Style
 
-    from booley.harness import colors
+    from booley.presentation import colors
 
     current = model.DashboardSnapshot(health=_header_health(monkeypatch, tmp_path))
     app = DashboardApp(lambda: current)
@@ -1325,7 +1326,7 @@ async def _check_pilot_doctor_line(
 ):
     from rich.style import Style
 
-    from booley.harness import colors
+    from booley.presentation import colors
 
     current = model.DashboardSnapshot(
         health=_header_health(monkeypatch, tmp_path, fail, warn, due, missing)
@@ -1363,8 +1364,8 @@ async def _check_pilot_doctor_line(
 def test_goal_statuses_use_shared_semantic_styles():
     from rich.style import Style
 
-    from booley.harness import colors
     from booley.harness.dashboard import app as app_module
+    from booley.presentation import colors
 
     expected = {
         "passing": "green",
@@ -1402,14 +1403,14 @@ def test_goal_statuses_use_shared_semantic_styles():
 def test_dashboard_palette_imports_have_no_copied_codes():
     import ast
 
-    from booley.harness import colors
     from booley.harness.dashboard import app as app_module
+    from booley.presentation import colors
 
     tree = ast.parse(Path(app_module.__file__).read_text(encoding="utf-8"))
     imported = {
         alias.name
         for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == "booley.harness.colors"
+        if isinstance(node, ast.ImportFrom) and node.module == "booley.presentation.colors"
         for alias in node.names
     }
     assert {"PALETTE_MAUVE", "PALETTE_ORANGE", "PALETTE_DODGER_BLUE"} <= imported, (

@@ -230,7 +230,7 @@ def test_completion_jobs_use_typed_bounded_read_only_activity(layout, monkeypatc
     jobs = record_paths(complete.control, complete.record.id).jobs_dir
     jobs.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(job_wait, "is_pid_alive", lambda pid: pid == 123)
-    monkeypatch.setattr(job_records.time, "time", lambda: 1_800_000_000.0)
+    monkeypatch.setattr(job_records, "wall_clock", lambda: 1_800_000_000.0)
     for run_id, pid in [("live", 123), ("dead", 124), ("spawn", None)]:
         job_records.write_record(
             job_records.JobRecord(

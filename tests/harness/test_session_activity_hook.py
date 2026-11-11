@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,12 +15,15 @@ from types import SimpleNamespace
 import pytest
 
 from booley.mcp.session_registry import SessionRegistry
+from booley.runtime import chat_sessions, handles
 from booley.runtime import session_activity as activity
 from booley.runtime.booley_dir import reset_cache, resolve_common_booley_dir
 from booley.runtime.chat_sessions import reserve_codex_chat
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import ActivityStore
+from booley.runtime.timefmt import rfc3339_from_epoch
+from booley.runtime.worktree_usage import WORKTREE_NAME, interactive_worktree_name
 from tests.booley_checkouts_support import (
     enter_worktree,
     isolate_git,
@@ -216,37 +221,6 @@ def test_nested_codex_stop_never_marks_the_outer_tab_idle(tmp_path, launcher):
     assert store.read("codex:nested").state == activity.WAITING_USER
 
 
-@pytest.mark.parametrize("corruption", ["schema", "label", "alias", "counter"])
-def test_hook_rejects_the_same_corrupt_handle_maps_as_the_registry(tmp_path, corruption):
-    proc = proc_tree(tmp_path / "proc", CHAIN, {300: "codex"})
-    owner = capture_process_identity(300, proc_root=proc)
-    reserve_codex_chat(tmp_path, owner)
-    store = HandleStore(tmp_path)
-    data = json.loads(store.path.read_bytes())
-    key = activity.process_session_key(owner)
-    if corruption == "schema":
-        data["schema"] = True
-    elif corruption == "label":
-        data["entries"][key] = 42
-    elif corruption == "alias":
-        data["aliases"]["invalid"] = 42
-    elif corruption == "counter":
-        data["next_number"] = True
-    store.path.write_text(json.dumps(data))
-    with pytest.raises(ValueError):
-        store.load()
-    assert hook.record(
-        "codex",
-        {"hook_event_name": "Stop", "session_id": "root"},
-        tmp_path,
-        NOW,
-        proc_root=proc,
-        pid=500,
-    )
-    assert ActivityStore(tmp_path).read(key) is None
-    assert ActivityStore(tmp_path).read("codex:root").state == activity.WAITING_USER
-
-
 def run_main(monkeypatch, capsys, argv, stdin, project=None):
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(stdin)))
     monkeypatch.setattr(hook, "resolve_common_booley_dir", lambda _env, _cwd: project)
@@ -302,17 +276,23 @@ def test_main_reports_a_store_failure_without_failing(tmp_path, monkeypatch, cap
 
 
 def test_script_repeats_the_packages_event_table_states_and_bounds():
+    from booley.harness import activity_hooks  # Absent on the base commit of the regression.
+
     assert hook.EVENT_STATES == activity.EVENT_STATES
     assert hook.END_EVENT == activity.END_EVENT
     assert hook.SCHEMA == activity.SCHEMA
     assert (hook.MAX_SIGNALS, hook.MAX_TOOL_NAME) == (activity.MAX_SIGNALS, activity.MAX_TOOL_NAME)
     assert hook.MAX_THREAD_ID == activity.MAX_THREAD_ID
+    assert hook.START_EVENT == activity_hooks.START_EVENT
+    assert hook.WORKTREE_NAME.pattern == WORKTREE_NAME.pattern
     assert (hook.WORKING, hook.WAITING_TOOL, hook.WAITING_USER) == (
         activity.WORKING,
         activity.WAITING_TOOL,
         activity.WAITING_USER,
     )
     assert hook.BOOLEY_DIR_NAME == ".booley"
+    assert hook.CODEX_NATIVE_NAMES == chat_sessions.CODEX_NATIVE_NAMES
+    assert hook.MAX_HANDLE_MAP_BYTES == handles.MAX_MAP_BYTES
 
 
 @pytest.mark.parametrize(("event", "state"), sorted(activity.EVENT_STATES.items()))
@@ -386,6 +366,7 @@ def test_worktree_hook_writes_main_activity(tmp_path, monkeypatch):
     """Run as the image runs it, from a linked worktree with no BOOLEY_DIR (#2603)."""
     main, worktree = enter_worktree(tmp_path, monkeypatch)
     payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "t1", "tool_name": "x"})
+    # Kept on subprocess.run: needs stdin data and binary output.
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SCRIPT), "codex"],
         input=payload.encode(),
@@ -442,6 +423,7 @@ def test_script_runs_standalone_without_site_packages_or_booley(tmp_path):
     project.mkdir()
     (project / "booley.toml").write_text("# Project\n")
     payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "t1", "tool_name": "x"})
+    # Kept on subprocess.run: needs stdin data and binary output.
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SCRIPT), "codex"],
         input=payload.encode(),
@@ -617,3 +599,246 @@ def test_a_question_replaces_a_background_wait(tmp_path):
     asking = {"hook_event_name": "PermissionRequest", "session_id": "t", "tool_name": "Bash"}
     assert hook.record("codex", asking, project=tmp_path, now=NOW + 1)
     assert ActivityStore(tmp_path).read("codex:t").state == activity.WAITING_USER
+
+
+# --- SessionStart: conversation records (#2610) ------------------------------------------
+
+
+def conversation_path(project, client, conversation_id):
+    name = hashlib.sha256(f"{client}:{conversation_id}".encode()).hexdigest()
+    return project / "worktrees" / ".conversations" / f"{name}.json"
+
+
+def add_worktree(project, name):
+    """A registered linked worktree: ``worktrees/<name>/.git`` is a file."""
+    root = project / "worktrees" / name
+    (root / "sub").mkdir(parents=True)
+    (root / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+    return root
+
+
+def session_start(conversation_id, cwd, **extra):
+    return {
+        "hook_event_name": "SessionStart",
+        "session_id": conversation_id,
+        "cwd": str(cwd),
+        "source": "startup",
+        **extra,
+    }
+
+
+def test_session_start_in_a_worktree_records_the_conversation(tmp_path):
+    for variant in ("claude", "claude-comm", "codex", "codex-unmarked"):
+        (tmp_path / variant).mkdir()
+        assert_conversation_recorded(tmp_path / variant, variant)
+
+
+def assert_conversation_recorded(tmp_path, variant):
+    project = tmp_path / "project"
+    cwd = add_worktree(project, "s1") / "sub"
+    client = variant.split("-")[0]
+    env = {}
+    # Plain "claude" must resolve through CLAUDE_PID: the nearest `claude` command is another PID.
+    commands = {{"claude": 200, "claude-comm": 300}.get(variant, 300): client}
+    proc = proc_tree(tmp_path / "proc", CHAIN, commands)
+    if variant == "claude":
+        env = {"CLAUDE_PID": "300"}
+        key = claude_key(proc, 300)
+        label = HandleStore(project).reserve(key, "S")
+    elif variant == "claude-comm":
+        key = claude_key(proc, 300)
+        label = HandleStore(project).reserve(key, "S")
+    elif variant == "codex":
+        owner = capture_process_identity(300, proc_root=proc)
+        label = reserve_codex_chat(project, owner)
+        key = activity.process_session_key(owner)
+    else:
+        key = None
+        label = HandleStore(project).reserve("codex:conv-1", "S")
+    payload = session_start("conv-1", cwd)
+    assert hook.record(client, payload, project, NOW, env=env, proc_root=proc, pid=500)
+    path = conversation_path(project, client, "conv-1")
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "schema": 1,
+        "client": client,
+        "conversation_id": "conv-1",
+        "cwd": str(cwd),
+        "worktree": "s1",
+        "handle": label,
+        "process_key": key,
+        "at": rfc3339_from_epoch(NOW),
+        "git_stamp": (cwd.parent / ".git").stat().st_mtime_ns,
+    }
+    # s1 exists as a worktree, so the handle allocated for this process is not S1.
+    assert label == "S2"
+    # A conversation record is not an activity signal.
+    assert not (project / "runtime/session_activity").exists()
+    # A later start of the same conversation replaces the record in place.
+    assert hook.record(client, payload, project, NOW + 5, env=env, proc_root=proc, pid=500)
+    assert json.loads(path.read_text(encoding="utf-8"))["at"] == rfc3339_from_epoch(NOW + 5)
+    assert len(list(path.parent.iterdir())) == 1
+
+
+def test_session_start_without_a_handle_map_still_records(tmp_path):
+    project = tmp_path / "project"
+    cwd = add_worktree(project, "s1")
+    assert hook.record("codex", session_start("t1", cwd), project, NOW)
+    record = json.loads(conversation_path(project, "codex", "t1").read_text(encoding="utf-8"))
+    assert (record["handle"], record["process_key"]) == (None, None)
+
+
+def test_session_start_from_a_real_worktree_records_via_main(tmp_path, monkeypatch):
+    """Run as the image runs it, from a linked worktree with no BOOLEY_DIR."""
+    main, worktree = enter_worktree(tmp_path, monkeypatch)
+    payload = json.dumps(session_start("conv-9", worktree)).encode()
+    # Kept on subprocess.run: needs stdin data and binary output.
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(SCRIPT), "claude"],
+        input=payload,
+        capture_output=True,
+        cwd=worktree,
+        env={},
+        timeout=30,
+        check=False,
+    )
+    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
+    record = json.loads(conversation_path(main, "claude", "conv-9").read_text(encoding="utf-8"))
+    assert (record["worktree"], record["cwd"], record["handle"]) == ("s1", str(worktree), None)
+    assert not (worktree / ".booley/worktrees/.conversations").exists()
+
+
+def test_session_start_outside_a_worktree_removes_the_record_and_a_subagent_records_nothing(
+    tmp_path,
+):
+    project = tmp_path / "project"
+    inside = add_worktree(project, "s1")
+    store = project / "worktrees" / ".conversations"
+    assert hook.record("codex", session_start("t1", inside), project, NOW)
+    path = conversation_path(project, "codex", "t1")
+    assert path.is_file()
+    # The conversation resumes in the main checkout: it must stop naming s1.
+    for elsewhere in (tmp_path, "relative/path", "", None):
+        assert hook.record("codex", session_start("t1", inside), project, NOW)
+        payload = session_start("t1", elsewhere)
+        if elsewhere is None:
+            del payload["cwd"]
+        assert not hook.record("codex", payload, project, NOW)
+        assert not path.exists()
+    # Neither a subagent, nor an unusable conversation id, records anything.
+    before = sorted(store.iterdir())
+    for extra in ({"agent_id": "child"}, {"session_id": ""}, {"session_id": "a\nb"}):
+        payload = session_start("t2", inside) | extra
+        assert not hook.record("codex", payload, project, NOW)
+    assert sorted(store.iterdir()) == before
+    assert not (project / "runtime/session_activity").exists()
+
+
+def test_full_conversation_store_evicts_records_of_gone_worktrees(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    kept, doomed = add_worktree(project, "s1"), add_worktree(project, "s2")
+    monkeypatch.setattr(hook, "MAX_CONVERSATIONS", 2)
+
+    def start(conversation, cwd):
+        return hook.record("codex", session_start(conversation, cwd), project, NOW)
+
+    assert start("c1", kept) and start("c2", doomed)
+    (doomed / ".git").unlink()
+    (doomed / "sub").rmdir()
+    doomed.rmdir()
+    # Full, but one record names a gone worktree: it makes room.
+    assert start("c3", kept)
+    assert conversation_path(project, "codex", "c1").is_file()
+    assert not conversation_path(project, "codex", "c2").exists()
+    assert conversation_path(project, "codex", "c3").is_file()
+    # Full of live records: rewriting is allowed, a new conversation is refused.
+    assert start("c1", kept)
+    with pytest.raises(OSError, match="conversation store is full"):
+        start("c4", kept)
+    assert not conversation_path(project, "codex", "c4").exists()
+
+
+def test_full_conversation_store_keeps_files_it_cannot_judge(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    cwd = add_worktree(project, "s1")
+    monkeypatch.setattr(hook, "MAX_CONVERSATIONS", 3)
+    store = project / "worktrees" / ".conversations"
+    store.mkdir()
+    (store / "junk.json").write_text("not json", encoding="utf-8")
+    (store / "other.json").write_text(json.dumps({"worktree": 7}), encoding="utf-8")
+    # Staging files left by a killed hook do not count towards the bound.
+    for name in (".staged1.tmp", ".staged2.tmp"):
+        (store / name).write_text("{}", encoding="utf-8")
+    assert hook.record("codex", session_start("c1", cwd), project, NOW)
+    with pytest.raises(OSError, match="conversation store is full"):
+        hook.record("codex", session_start("c2", cwd), project, NOW)
+    assert {"junk.json", "other.json"} <= {path.name for path in store.iterdir()}
+
+
+def test_a_refused_conversation_record_never_fails_the_turn(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "project"
+    cwd = add_worktree(project, "s1")
+    monkeypatch.setattr(hook, "MAX_CONVERSATIONS", 0)
+    stdin = json.dumps(session_start("c1", cwd)).encode()
+    code, output = run_main(monkeypatch, capsys, ["codex"], stdin, project)
+    assert (code, output.out) == (0, "")
+    assert "not recorded" in output.err
+    assert "conversation store is full" in output.err
+
+
+def test_conversation_storage_behind_a_symlink_is_refused(tmp_path):
+    project = tmp_path / "project"
+    cwd = add_worktree(project, "s1")
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    try:
+        (project / "worktrees" / ".conversations").symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable on this platform")
+    with pytest.raises(OSError, match="redirected"):
+        hook.record("codex", session_start("c1", cwd), project, NOW)
+    assert list(target.iterdir()) == []
+
+
+def test_hook_worktree_rule_matches_the_package(tmp_path):
+    project = tmp_path / "project"
+    add_worktree(project, "s1")
+    add_worktree(project, ".hidden")
+    (project / "worktrees" / "plain").mkdir()
+    (project / "worktrees" / "nested" / ".git").mkdir(parents=True)  # A directory is no link.
+    paths = ["worktrees/s1", "worktrees/s1/sub", "worktrees/s1/nope", ".", "worktrees"]
+    paths += ["worktrees/plain", "worktrees/.hidden", "worktrees/nested", "worktrees/gone"]
+    for relative in paths:
+        path = project / relative
+        assert hook._worktree_name(path, project) == interactive_worktree_name(path, project), path
+    assert hook._worktree_name(project / "worktrees/s1", project) == "s1"
+    assert hook._worktree_name(tmp_path, project) is None
+
+
+def test_resume_reader_reads_the_records_the_hook_writes(tmp_path):
+    # Bug caught: a reader that disagrees with the hook's record layout or its identity of a
+    # worktree, so a resume reopens a replaced worktree or none at all.
+    from booley.runtime import conversation_records
+
+    project = tmp_path / "project"
+    worktree = add_worktree(project, "s1")
+    cwd = worktree / "sub"
+    assert hook.record("codex", session_start("t1", cwd), project, NOW)
+
+    found = conversation_records.find(project, "codex", "t1")
+
+    assert found == conversation_records.ConversationRecord(
+        client="codex",
+        conversation_id="t1",
+        cwd=str(cwd),
+        worktree="s1",
+        handle=None,
+        process_key=None,
+        git_stamp=(worktree / ".git").stat().st_mtime_ns,
+    )
+    assert conversation_records.find(project, "claude", "t1") is None
+    assert conversation_records.is_live(project, found)
+    assert conversation_records.live(project) == [found]
+    # The worktree is replaced: same name, another incarnation.
+    os.utime(worktree / ".git", ns=(1, 1))
+    assert not conversation_records.is_live(project, found)
+    assert conversation_records.live(project) == []

@@ -31,6 +31,7 @@ if sys.platform != "linux":
         allow_module_level=True,
     )
 
+import fcntl
 import pty
 
 from booley.runtime.chat_sessions import codex_chat_owner
@@ -46,9 +47,9 @@ _SETTLE_SECONDS = 0.3
 _AGENT_EXIT_CODE = 7
 
 # The fake agent. Runs as the `claude` script and, in a copy of the interpreter
-# named `codex`, via `-c`. Everything it records is written before AGENT-READY.
+# named `codex`, via `-c`. Its identity (agent.json) is written before AGENT-READY.
 _AGENT_SOURCE = r"""
-import importlib.util, json, os, signal, subprocess, sys, time
+import _thread, importlib.util, json, os, select, signal, subprocess, sys, threading, time
 from pathlib import Path
 
 OUT = Path(os.environ["AGENT_OUT"])
@@ -101,6 +102,7 @@ if KIND == "claude":  # what the MCP server's registry row would be
     sessions = BOOLEY_DIR / "runtime" / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     (sessions / hook._signal_filename(key)).write_text("{}")
+# Kept on subprocess.run: inside generated agent source run outside pytest
 hook_run = subprocess.run(
     [os.environ["AGENT_HOOK_PYTHON"], "-I", "-c", os.environ["AGENT_HOOK_PROGRAM"],
      os.environ["AGENT_HOOK"], KIND, str(BOOLEY_DIR)],
@@ -109,19 +111,60 @@ hook_run = subprocess.run(
 cmdline = Path("/proc/self/cmdline").read_bytes().split(b"\0")[:-1]
 write_json("agent.json", {
     "pid": os.getpid(), "ppid": os.getppid(), "pgrp": os.getpgrp(),
-    "fg": os.tcgetpgrp(0) if os.isatty(0) else None,
+    "fg": os.tcgetpgrp(0) if os.isatty(0) else None, "cwd": os.getcwd(),
     "cmdline": [part.decode() for part in cmdline], "key": key,
     "hook": json.loads(hook_run.stdout) if hook_run.returncode == 0 else hook_run.stderr,
 })
 os.write(1, b"AGENT-READY\n")
 
-if VARIANT == "read":
+
+def trip_when_blocked(main_tid):
+    # Self-test only: deliver a SIGINT the way the C handler does (flag the
+    # signal, defer the Python handler to the main thread's next eval-breaker
+    # check) once the main thread sleeps in the kernel waiting for input. A real
+    # kernel signal would interrupt read(2); this one lands "just before" it.
+    task = Path("/proc/self/task") / str(main_tid)
+    stop = time.monotonic() + 10
+    state_name, wchan = "?", "?"
+    while time.monotonic() < stop:
+        try:
+            state_name = (task / "stat").read_text().rsplit(")", 1)[1].split()[0]
+            wchan = (task / "wchan").read_text().strip()
+        except OSError:
+            wchan = "unreadable"
+        if state_name == "S" and wchan not in ("0", "", "unreadable") and "futex" not in wchan:
+            write_json("trip.json", {"tripped": True, "state": state_name, "wchan": wchan})
+            _thread.interrupt_main(signal.SIGINT)
+            return
+        time.sleep(0.005)
+    write_json("trip.json", {"tripped": False, "state": state_name, "wchan": wchan})
+
+
+if VARIANT == "read-tripped":
+    threading.Thread(
+        target=trip_when_blocked, args=(threading.get_native_id(),), daemon=True
+    ).start()
+
+if VARIANT in ("read", "read-tripped"):
+    # Poll for input instead of blocking in read(2): a signal the C handler caught
+    # just before the read starts would otherwise defer its Python handler (and
+    # the count file) until input arrives. Each poll returns to bytecode, so the
+    # handler runs within one poll; the read then finds a line already waiting.
+    wait_until(lambda: select.select([0], [], [], 0)[0])
     sys.stdin.readline()
+elif VARIANT == "grandchild":
+    # Outlives the agent and inherits every descriptor that is not close-on-exec.
+    lingering = subprocess.Popen(["sleep", "60"], close_fds=False, start_new_session=True)
+    write_json("grandchild.json", {"pid": lingering.pid})
 elif VARIANT == "bg":
     wait_until(lambda: state["resumed"])
 elif VARIANT == "bg-fg-read":
     wait_until(lambda: state["resumed"] and (OUT / "fg-done").exists())
     sys.stdin.readline()
+elif VARIANT == "hup-exit":
+    # Exits normally (status 0) once its terminal hangs up, as an agent that handles SIGHUP does.
+    wait_until(lambda: counts["HUP"] > 0)
+    sys.exit(0)
 elif VARIANT == "wait":
     wait_until(lambda: state["first"] is not None)
     wait_until(lambda: time.monotonic() > state["first"] + SETTLE)
@@ -158,7 +201,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 provider = sys.argv[1]
+os.chdir(os.environ["DRIVER_ROOT"])  # the shell the user launched `booley chat` from
 OUT = Path(os.environ["DRIVER_OUT"])
+if os.environ.get("DRIVER_STDERR"):  # stderr off the terminal, as in `booley chat 2>log`
+    os.dup2(os.open(os.environ["DRIVER_STDERR"], os.O_WRONLY | os.O_CREAT | os.O_APPEND), 2)
 (OUT / "driver.json").write_text(json.dumps({"pid": os.getpid(), "pgrp": os.getpgrp()}))
 
 from booley.harness import chat_cmd, codex_chat
@@ -166,23 +212,86 @@ from booley.harness import chat_cmd, codex_chat
 booley_dir = Path(os.environ["AGENT_BOOLEY_DIR"])
 chat_cmd.resolve_checkout_booley_dir = lambda root: booley_dir
 chat_cmd.resolve_common_booley_dir = lambda root: booley_dir
+codex_chat.resolve_common_booley_dir = lambda root: booley_dir
 chat_cmd.load_agent_settings = lambda root, *, booley_dir: None
 chat_cmd.get_agent_settings = lambda: SimpleNamespace(default_cli=provider)
 
 real_command = codex_chat._command
 
 
-def command_running_the_fake(executable, handle):
+def command_running_the_fake(executable):
     # Keep the real validation, handle and --no-daemon; only add the fake's program.
-    program, argv = real_command(executable, handle)
-    return program, [argv[0], "-c", os.environ["AGENT_CODEX_PROGRAM"], *argv[1:]]
+    program, before, after = real_command(executable)
+    return program, before, ["-c", os.environ["AGENT_CODEX_PROGRAM"], *after]
 
 
 codex_chat._command = command_running_the_fake
 if provider == "codex":  # scoped to the launch: the driver itself starts normally
     os.environ.update(json.loads(os.environ["DRIVER_CODEX_ENV"]))
 sys.stdout.flush()
-raise SystemExit(chat_cmd.run(SimpleNamespace(agent_args=[]), Path(os.environ["DRIVER_ROOT"])))
+args = SimpleNamespace(agent_args=[], chat_worktree=os.environ.get("DRIVER_FLAG") or None)
+raise SystemExit(chat_cmd.run(args, Path(os.environ["DRIVER_ROOT"])))
+"""
+
+# Runs `_DRIVER_SOURCE` after pinning the signal dispositions it starts with
+# and arranging one signal to hit the launch window at a known point. Every
+# injection is the driver signalling itself, so none races the terminal handover.
+_INJECTING_DRIVER_SOURCE = r"""
+import json, os, runpy, signal
+from pathlib import Path
+
+# The pytest worker's inherited dispositions must not decide the outcome.
+signal.signal(signal.SIGINT, signal.default_int_handler)
+signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+
+AT = os.environ["INJECT_AT"]
+NUMBER = getattr(signal, os.environ["INJECT_SIGNAL"])
+OUT = Path(os.environ["DRIVER_OUT"])
+
+from booley.harness import chat_cmd
+from booley.runtime import foreground_child
+
+real_fork = os.fork
+
+
+def fork_with_injection():
+    if AT == "before-fork":  # a copy only the parent can have: a tty signal before the fork
+        os.kill(os.getpid(), NUMBER)
+    pid = real_fork()
+    if AT == "after-fork-both" or (AT == "after-fork-parent" and pid != 0):
+        os.kill(os.getpid(), NUMBER)  # each branch signals itself: a group signal both got
+    return pid
+
+
+os.fork = fork_with_injection
+
+real_reserve = chat_cmd.reserve_session_handle
+
+
+def reserve_after_injection(*args, **kwargs):
+    # After the child restored its dispositions, before the agent's exec.
+    os.kill(os.getpid(), NUMBER)
+    return real_reserve(*args, **kwargs)
+
+
+if AT == "during-launch":
+    chat_cmd.reserve_session_handle = reserve_after_injection
+
+real_propagate = foreground_child._propagate
+
+
+def propagate_after_recording(status):
+    # Proof that Booley reached propagation instead of dying of its own copy.
+    (OUT / "child-status.json").write_text(json.dumps({
+        "signaled": os.WIFSIGNALED(status),
+        "signal": os.WTERMSIG(status) if os.WIFSIGNALED(status) else None,
+    }))
+    return real_propagate(status)
+
+
+foreground_child._propagate = propagate_after_recording
+runpy.run_path(os.environ["INJECT_DRIVER"], run_name="__main__")
 """
 
 # A job-control shell: runs the driver as a foreground job, reacts to its stop.
@@ -263,6 +372,17 @@ class _Terminal:
                 ) from exc
         self._cursor = found + len(marker)
 
+    def drain(self) -> None:
+        """Read what the terminal still holds once the child has ended."""
+        while self._fd >= 0 and select.select([self._fd], [], [], _SETTLE_SECONDS)[0]:
+            try:
+                chunk = os.read(self._fd, 4096)
+            except OSError:  # EIO: the slave side is closed
+                return
+            if not chunk:
+                return
+            self.output += chunk.decode(errors="replace")
+
     def hang_up(self) -> None:
         """Close the master, as closing the terminal window does."""
         os.close(self._fd)
@@ -305,6 +425,7 @@ class _Scene:
         for directory in (self.out, self.booley_dir, bin_dir):
             directory.mkdir()
         self.driver = self._program("driver.py", _DRIVER_SOURCE)
+        self.injecting_driver = self._program("injecting_driver.py", _INJECTING_DRIVER_SOURCE)
         self.shell = self._program("shell.py", _SHELL_SOURCE)
         self.agent_file = self._program("agent.py", _AGENT_SOURCE)
         claude = bin_dir / "claude"
@@ -312,12 +433,14 @@ class _Scene:
         claude.chmod(0o755)
         self.codex_env = self._install_codex_copy(bin_dir / "codex")
         self.terminals: list[_Terminal] = []
+        self.strays: list[int] = []  # process groups a test left running on purpose
         self.processes: list[subprocess.Popen[bytes]] = []
-        env = {k: v for k, v in os.environ.items() if k != "PYTHONHOME"}
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "BOOLEY_DIR")}
         env.update(
             PATH=f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
             PYTHONPATH=os.pathsep.join([str(_REPO / "src"), env.get("PYTHONPATH", "")]),
             DRIVER_OUT=str(self.out),
+            INJECT_DRIVER=str(self.driver),
             DRIVER_ROOT=str(root),
             DRIVER_CODEX_ENV=json.dumps(self.codex_env),
             AGENT_OUT=str(self.out),
@@ -354,32 +477,88 @@ class _Scene:
         assert probe.returncode == 0, f"relocated interpreter copy failed: {probe.stderr}"
         return env
 
-    def env(self, variant: str, provider: str) -> dict[str, str]:
-        return {**self._env, "AGENT_VARIANT": variant, "AGENT_KIND": provider}
+    def env(
+        self, variant: str, provider: str, slot: str = "", flag: str = "", stderr_log: str = ""
+    ) -> dict[str, str]:
+        """The environment of one launch; its markers go to `out/<slot>` (a second chat's own).
+
+        *stderr_log* names a file in that directory that receives Booley's stderr.
+        """
+        out = self.out / slot
+        out.mkdir(exist_ok=True)
+        return {
+            **self._env,
+            "AGENT_VARIANT": variant,
+            "AGENT_KIND": provider,
+            "DRIVER_OUT": str(out),
+            "AGENT_OUT": str(out),
+            "DRIVER_FLAG": flag,
+            "DRIVER_STDERR": str(out / stderr_log) if stderr_log else "",
+        }
 
     def start(
-        self, provider: str, variant: str = "read", *, shell: str | None = None
+        self,
+        provider: str,
+        variant: str = "read",
+        *,
+        shell: str | None = None,
+        slot: str = "",
+        flag: str = "",
+        stderr_log: str = "",
+        ready: bool = True,
     ) -> _Terminal:
         """Start the driver (or the job-control shell around it) and wait for the agent."""
         argv = [sys.executable, str(self.driver), provider]
         if shell is not None:
             argv = [sys.executable, str(self.shell), shell, str(self.driver), provider]
-        terminal = _Terminal(argv, self.env(variant, provider))
+        terminal = _Terminal(argv, self.env(variant, provider, slot, flag, stderr_log))
         self.terminals.append(terminal)
-        terminal.expect("AGENT-READY")
-        terminal.groups = self._known_groups()
+        if ready:
+            terminal.expect("AGENT-READY")
+            terminal.groups = self._known_groups(slot)
         return terminal
 
-    def _known_groups(self) -> list[int]:
+    def _known_groups(self, slot: str = "") -> list[int]:
         return [
             group
             for name in ("driver.json", "agent.json")
-            if (group := self.read(name).get("pgrp")) is not None
+            if (group := self.read(name, slot).get("pgrp")) is not None
         ]
 
-    def read(self, name: str) -> dict[str, Any]:
-        path = self.out / name
+    def read(self, name: str, slot: str = "") -> dict[str, Any]:
+        path = self.out / slot / name
         return json.loads(path.read_text()) if path.exists() else {}
+
+    def git_project(self, *, hook: str | None = None) -> None:
+        """Make the scene's root a Git Project, as `booley chat` finds it in the Sandbox."""
+        for args in (
+            ("init", "-q"),
+            ("config", "user.name", "Test User"),
+            ("config", "user.email", "test@example.com"),
+            ("commit", "-q", "--allow-empty", "-m", "init"),
+        ):
+            subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True)
+        (self.booley_dir / "booley.toml").write_bytes(b"[submodules]\npaths = []\n")
+        if hook is not None:
+            (self.booley_dir / "hooks").mkdir()
+            (self.booley_dir / "hooks" / "post-setup.py").write_text(hook)
+
+    def worktree_names(self) -> list[str]:
+        """The worktrees Booley made, by directory, and by `booley/*` branch, as one list."""
+        root = self.booley_dir / "worktrees"
+        directories = (
+            sorted(p.name for p in root.iterdir() if not p.name.startswith("."))
+            if root.is_dir()
+            else []
+        )
+        branches = subprocess.run(
+            ["git", "branch", "--list", "booley/*", "--format=%(refname:short)"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        return directories + branches
 
     def counts(self) -> dict[str, int]:
         return self.read("counts.json")
@@ -394,8 +573,11 @@ class _Scene:
     def cleanup(self) -> None:
         for terminal in self.terminals:
             terminal.close()
+        for group in self.strays:
+            _kill_group(group)
         for process in self.processes:
             _kill_group(process.pid)
+            # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
             process.wait(timeout=_WAIT_SECONDS)
             for pipe in (process.stdin, process.stdout, process.stderr):
                 if pipe is not None:
@@ -431,6 +613,15 @@ def _finish_with_line(terminal: _Terminal) -> None:
     assert os.waitstatus_to_exitcode(terminal.wait_exit()) == _AGENT_EXIT_CODE
 
 
+def _finish_worktree_session(terminal: _Terminal) -> None:
+    """End a worktree session: the agent reads its line and exits, then Enter keeps the worktree."""
+    terminal.write("done\n")
+    terminal.expect("Keep or discard worktree")
+    terminal.write("\n")
+    terminal.expect("Kept worktree")
+    assert os.waitstatus_to_exitcode(terminal.wait_exit()) == _AGENT_EXIT_CODE
+
+
 def _settle() -> None:
     time.sleep(_SETTLE_SECONDS)
 
@@ -456,6 +647,7 @@ def test_codex_agent_is_the_forked_child_that_owns_the_marked_allocation(scene: 
     assert "--no-daemon" in agent["cmdline"]
     assert agent["hook"]["key"] == agent["key"]
     identity = capture_process_identity(agent["pid"])
+    assert identity is not None
     owner = codex_chat_owner(scene.booley_dir, identity)
     assert owner is not None
     assert process_session_key(owner) == agent["key"]
@@ -614,6 +806,8 @@ def test_exit_status_propagates_without_a_terminal(scene: _Scene) -> None:
     assert agent["pgrp"] == driver["pgrp"] == process.pid
     assert agent["pid"] != driver["pid"]
 
+    # AGENT-READY is written after the agent installed its handlers, and the
+    # shared group was asserted above: the INT cannot beat either.
     os.killpg(process.pid, signal.SIGINT)  # what the kernel does for a tty Ctrl-C
     scene.wait_for_count("INT", 1)
     _settle()
@@ -622,4 +816,340 @@ def test_exit_status_propagates_without_a_terminal(scene: _Scene) -> None:
 
     process.stdin.write(b"done\n")
     process.stdin.flush()
+    # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
     assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
+
+
+def test_fake_agent_counts_a_signal_caught_before_its_input_wait(scene: _Scene) -> None:
+    """A handled signal flagged just before the agent blocks must not wait for input."""
+    process = subprocess.Popen(
+        [sys.executable, scene.agent_file],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=scene.env("read-tripped", "claude"),
+        process_group=0,
+    )
+    scene.processes.append(process)
+    assert process.stdout is not None
+    assert process.stdin is not None
+    _read_until(process.stdout.fileno(), b"AGENT-READY")
+
+    wait_for(
+        lambda: "tripped" in scene.read("trip.json"),
+        failure="the fake agent never reported whether it tripped a signal",
+        timeout_s=_WAIT_SECONDS,
+    )
+    trip = scene.read("trip.json")
+    assert trip["tripped"], (
+        f"never saw the agent blocked in a kernel wait (needs /proc wchan): {trip}"
+    )
+
+    scene.wait_for_count("INT", 1)
+    _settle()
+    assert scene.counts()["INT"] == 1
+    assert process.poll() is None, "the handler must not end the agent's input wait"
+
+    process.stdin.write(b"done\n")
+    process.stdin.flush()
+    # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
+    assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
+
+
+# ---------------------------------------------------------------------------
+# Placement: a second concurrent chat works in the worktree named after its handle
+# ---------------------------------------------------------------------------
+
+_THREAD_ID = "019a0000-0000-7000-8000-000000000000"
+_SLOW_HOOK = (
+    "import pathlib, time\npathlib.Path({marker!r}).write_text('started')\ntime.sleep(60)\n"
+)
+
+
+def _main_lock_is_held(scene: _Scene) -> bool:
+    """Whether some process holds the main-checkout lock right now."""
+    path = scene.booley_dir / "runtime" / "chat-main.lock"
+    if not path.exists():
+        return False
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        return False
+
+
+def _tab_handle(agent: dict[str, Any]) -> str:
+    """The handle on the tab: Claude's `-n` name, or Codex's first argument."""
+    cmdline = agent["cmdline"]
+    return cmdline[cmdline.index("-n") + 1] if "-n" in cmdline else cmdline[0]
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_second_concurrent_chat_runs_in_the_worktree_named_after_its_handle(
+    scene: _Scene, provider: str
+) -> None:
+    # Bug caught: the lock never taken (the second launch lands in main), or the worktree and
+    # the handle numbered separately (tab, Dashboard and directory disagree).
+    scene.git_project()
+    first = scene.start(provider)
+    second = scene.start(provider, slot="b")
+    one, two = scene.read("agent.json"), scene.read("agent.json", "b")
+
+    assert Path(one["cwd"]).resolve() == scene.root.resolve()
+    handle = _tab_handle(two)
+    assert handle == "S2" and _tab_handle(one) == "S1"
+    worktree = scene.booley_dir / "worktrees" / handle.lower()
+    assert Path(two["cwd"]).resolve() == worktree.resolve()
+    # The Dashboard reads its label by the key the session hook computes for the agent process.
+    assert HandleStore(scene.booley_dir).load().labels()[two["hook"]["key"]] == handle
+    assert scene.worktree_names() == ["s2", "booley/s2"]
+    assert (
+        f"Booley session S2 works in worktree {worktree} on branch booley/s2 "
+        "(the main checkout is in use by another booley chat)."
+    ) in " ".join(second.output.split())
+    _finish_with_line(first)
+    # A session in the main checkout gets neither the prompt nor the `Kept` line.
+    first.drain()
+    assert "Keep or discard" not in first.output
+    assert "Kept worktree" not in first.output
+    _finish_worktree_session(second)
+
+
+def test_worktree_session_exit_lists_losses_and_discard_forces_after_refusal(
+    scene: _Scene,
+) -> None:
+    # Bug caught: no prompt on a real terminal after the agent exits (or one shown before
+    # the terminal is back), a discard that skips `rm`'s refusal, or a changed exit code.
+    scene.git_project()
+    terminal = scene.start("claude", flag="always")
+    worktree = scene.booley_dir / "worktrees" / "s1"
+    (worktree / "unsaved.txt").write_bytes(b"work\n")
+
+    terminal.write("done\n")
+    terminal.expect("Work not in main yet:")
+    terminal.expect("  - 1 uncommitted change(s) in the worktree")
+    terminal.expect("Keep or discard worktree s1? [K/d]")
+    terminal.write("d\n")
+    terminal.expect("cannot be removed safely")
+    terminal.expect("Remove it anyway and lose this work? [y/N]")
+    assert (worktree / "unsaved.txt").is_file(), "removed before the second question"
+    terminal.write("y\n")
+    terminal.expect("Removed worktree s1.")
+
+    assert os.waitstatus_to_exitcode(terminal.wait_exit()) == _AGENT_EXIT_CODE
+    assert scene.worktree_names() == ["booley/s1"]  # the branch outlives the worktree
+
+
+def test_worktree_session_without_a_terminal_keeps_it(scene: _Scene) -> None:
+    # Bug caught: a piped launch prompting (and hanging on) a question nobody can answer.
+    scene.git_project()
+    process = subprocess.Popen(
+        [sys.executable, str(scene.driver), "claude"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=scene.env("read", "claude", flag="always"),
+        process_group=0,
+    )
+    scene.processes.append(process)
+    assert process.stdout is not None
+    assert process.stdin is not None
+    assert process.stderr is not None
+    _read_until(process.stdout.fileno(), b"AGENT-READY")
+
+    process.stdin.write(b"done\n")
+    process.stdin.flush()
+    assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
+
+    err = process.stderr.read().decode()
+    worktree = scene.booley_dir / "worktrees" / "s1"
+    assert f"Kept worktree s1: {worktree}" in err
+    assert "Keep or discard" not in err
+    assert scene.worktree_names() == ["s1", "booley/s1"]
+
+
+def test_closing_the_terminal_of_a_worktree_session_keeps_it(scene: _Scene) -> None:
+    # Bug caught: Booley prompting on the hung terminal, or removing the worktree, after an
+    # agent that exits normally on SIGHUP. Stderr goes to a file so the outcome can be read.
+    scene.git_project()
+    terminal = scene.start("claude", "hup-exit", flag="always", stderr_log="stderr.log")
+
+    terminal.hang_up()
+    status = terminal.wait_exit()
+
+    assert os.waitstatus_to_exitcode(status) == 0
+    log = (scene.out / "stderr.log").read_text()
+    assert f"Kept worktree s1: {scene.booley_dir / 'worktrees' / 's1'}" in log
+    assert "Keep or discard" not in log
+    assert scene.worktree_names() == ["s1", "booley/s1"]
+
+
+def test_closing_the_terminal_keeps_the_agents_exit_code_with_stderr_on_it(scene: _Scene) -> None:
+    # Bug caught: the `Kept` line that cannot reach the hung-up terminal stays in Python's
+    # buffer, so the interpreter exits with 120 instead of the agent's status.
+    scene.git_project()
+    terminal = scene.start("claude", "hup-exit", flag="always")
+
+    terminal.hang_up()
+
+    assert os.waitstatus_to_exitcode(terminal.wait_exit()) == 0
+    assert scene.worktree_names() == ["s1", "booley/s1"]
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_worktree_session_calls_without_work_dir_route_to_its_worktree(
+    scene: _Scene, provider: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Bug caught: the agent started in main (or its cwd was not the worktree root), so a call
+    # without work_dir would run the main checkout's RTL.
+    from booley.mcp import peer_checkout
+
+    scene.git_project()
+    first = scene.start(provider)
+    second = scene.start(provider, slot="b")
+    agent = scene.read("agent.json", "b")
+    identity = capture_process_identity(agent["pid"])
+    assert identity is not None
+    monkeypatch.setattr(peer_checkout, "resolve_common_booley_dir", lambda: scene.booley_dir)
+    client = {"client_name": "codex-mcp-client", "metadata": {"threadId": _THREAD_ID}}
+    if provider == "claude":
+        client = {"client_name": "claude-code", "metadata": {}}
+
+    session = peer_checkout.session_process(identity, proc_root=Path("/proc"), **client)
+    assert session is not None
+    routed = peer_checkout.process_checkout(
+        session, server_cwd=scene.root.resolve(), proc_root=Path("/proc")
+    )
+
+    assert routed == (scene.booley_dir / "worktrees" / "s2").resolve()
+    _finish_with_line(first)
+    _finish_worktree_session(second)
+
+
+@pytest.mark.parametrize("interrupt", ["SIGINT", "SIGHUP"])
+def test_interrupted_worktree_setup_rolls_back(scene: _Scene, interrupt: str) -> None:
+    # Bug caught: a signal during setup leaves worktree s1 and branch booley/s1 behind (and
+    # Ctrl-C then dumps a traceback), or lets the agent start in a half-made worktree.
+    marker = scene.out / "hook-started"
+    scene.git_project(hook=_SLOW_HOOK.format(marker=str(marker)))
+    terminal = scene.start("claude", flag="always", ready=False)
+    wait_for(marker.exists, failure="the post-setup hook never started", timeout_s=_WAIT_SECONDS)
+
+    if interrupt == "SIGINT":
+        terminal.write("\x03")
+    else:
+        os.kill(scene.read("driver.json")["pid"], signal.SIGHUP)
+    code = os.waitstatus_to_exitcode(terminal.wait_exit())
+    terminal.drain()
+
+    assert code == 128 + int(getattr(signal, interrupt))
+    assert "Worktree setup interrupted; s1 was rolled back." in terminal.output
+    assert "Traceback" not in terminal.output
+    assert "AGENT-READY" not in terminal.output
+    assert scene.worktree_names() == []
+    assert scene.read("agent.json") == {}
+
+
+def test_ended_session_releases_the_lock_despite_a_lingering_grandchild(scene: _Scene) -> None:
+    # Bug caught: the main-checkout lock inherited by a process the agent left running, so the
+    # next launch is pushed into a worktree long after the session ended.
+    scene.git_project()
+    first = scene.start("claude", "grandchild")
+    assert os.waitstatus_to_exitcode(first.wait_exit()) == _AGENT_EXIT_CODE
+    grandchild = scene.read("grandchild.json")["pid"]
+    scene.strays.append(grandchild)
+    assert Path(f"/proc/{grandchild}").exists(), "the grandchild must outlive the session"
+
+    second = scene.start("claude", slot="b")
+
+    assert Path(scene.read("agent.json", "b")["cwd"]).resolve() == scene.root.resolve()
+    assert scene.worktree_names() == []
+    assert _main_lock_is_held(scene), "the next launch took main without holding the lock"
+    _finish_with_line(second)
+
+
+# -- signals that arrive while the agent is being launched -----------------------
+
+# Where the signal lands: before the fork (only the parent can hold it), right
+# after it in both processes, right after it in the parent only (terminal mode:
+# after the child's setpgid, before the handover), or in the child after it
+# restored its dispositions and before the agent's exec.
+_SHARED_INJECTIONS = ["before-fork", "after-fork-both", "during-launch"]
+_TERMINAL_INJECTIONS = ["before-fork", "after-fork-both", "after-fork-parent", "during-launch"]
+
+
+def _injection_env(scene: _Scene, at: str, signal_name: str) -> dict[str, str]:
+    return {**scene.env("read", "claude"), "INJECT_AT": at, "INJECT_SIGNAL": signal_name}
+
+
+def _describe_status(status: int) -> str:
+    if os.WIFSIGNALED(status):
+        return f"death by {signal.Signals(os.WTERMSIG(status)).name}"
+    return f"exit status {os.waitstatus_to_exitcode(status)}"
+
+
+def _assert_died_of(status: int, number: signal.Signals) -> None:
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == number, (
+        f"expected death by {number.name}, got {_describe_status(status)}"
+    )
+
+
+def _assert_agent_was_the_signal_target(scene: _Scene, number: signal.Signals) -> None:
+    """Booley reached propagation with the agent's death by *number*, not its own."""
+    assert scene.read("child-status.json") == {"signaled": True, "signal": int(number)}
+
+
+@pytest.mark.parametrize("at", _SHARED_INJECTIONS)
+def test_launch_window_interrupt_without_a_terminal(scene: _Scene, at: str) -> None:
+    process = subprocess.Popen(
+        [sys.executable, str(scene.injecting_driver), "claude"],
+        stdin=subprocess.DEVNULL,  # EOF: a lost interrupt lets the agent run and exit 7
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_injection_env(scene, at, "SIGINT"),
+        process_group=0,
+    )
+    scene.processes.append(process)
+    assert process.stderr is not None
+    # Kept on subprocess.Popen: test drives the process (stdin, signals, process group)
+    returncode = process.wait(timeout=_WAIT_SECONDS)
+    assert returncode == -signal.SIGINT, f"expected death by SIGINT, got exit status {returncode}"
+    assert "Traceback" not in process.stderr.read().decode(errors="replace")
+    _assert_agent_was_the_signal_target(scene, signal.SIGINT)
+
+
+@pytest.mark.parametrize("at", _TERMINAL_INJECTIONS)
+def test_launch_window_interrupt_on_a_terminal(scene: _Scene, at: str) -> None:
+    terminal = _Terminal(
+        [sys.executable, str(scene.injecting_driver), "claude"],
+        _injection_env(scene, at, "SIGINT"),
+    )
+    scene.terminals.append(terminal)
+    terminal.write("done\n")  # a lost interrupt lets the agent read it and exit 7
+
+    status = terminal.wait_exit()
+    terminal.drain()
+
+    _assert_died_of(status, signal.SIGINT)
+    assert "Traceback" not in terminal.output
+    _assert_agent_was_the_signal_target(scene, signal.SIGINT)
+
+
+def test_launch_window_ctrl_z_suspends_the_job_once(scene: _Scene) -> None:
+    terminal = _Terminal(
+        [sys.executable, str(scene.shell), "fg", str(scene.injecting_driver), "claude"],
+        _injection_env(scene, "after-fork-both", "SIGTSTP"),
+    )
+    scene.terminals.append(terminal)
+
+    terminal.expect("AGENT-READY")
+    # Two copies (Booley's and the agent's) must stop the job once, before the agent runs.
+    assert "SHELL-STOPPED" in terminal.output[: terminal.output.index("AGENT-READY")], (
+        f"the job was never suspended; saw {terminal.output!r}"
+    )
+    terminal.write("done\n")
+    terminal.wait_exit()
+
+    assert scene.read("shell.json") == {"stops": 1, "code": 7, "owner_is_shell": False}

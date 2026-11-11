@@ -230,7 +230,9 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be "
         "mutation scope. Declared opposite-category sources are refused in either mode; "
         "unregistered scoped sources retain the registration warning and receive only an exact "
-        "per-file category grant.",
+        "per-file category grant. Outside Goal Mode, both Reviewers also read firmware, the non-HDL files under "
+        "`fw/`, as read-only context: they never report findings in it, such a finding is shown "
+        "as out of scope, and a `scope` of only firmware is refused.",
         "",
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",
@@ -254,20 +256,35 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         [
             "",
             '**Interactive Mode:** also pass `scope="<file,...>"`. Add `spec="<path>"` '
-            '(required for the `spec` focus) or `steer=["<context>"]` for context. '
+            '(required for the `spec` focus) or `spec_text="<text>"` (CLI: `--spec-text`; '
+            'not with `spec`), or `steer=["<context>"]` for context. A completed review exits 0; '
+            'pass `fail_on="critical|major|minor"` (CLI: `--fail-on`) to exit 1 when an open '
+            "finding is at or above that severity. "
             "`dry_run=true` previews the call. Each new review replaces the previous findings.",
             "",
-            "**Goal Mode:** the Review Goal fixes scope and spec, so `scope`, `spec` and "
+            '**Changes only:** add `base="<commit>"` (CLI: `--base <commit>`) to review only '
+            "the `scope` files changed since the merge-base of that commit and HEAD, "
+            "uncommitted changes included; Goal Mode refuses it. Unchanged `scope` files that "
+            "use them are context, the diff and commit messages are given to the Reviewer, and "
+            "no change in scope exits 0 without a review. Pass every file of the category as "
+            "the `scope` to give the Reviewer the files that use the changed ones. Findings "
+            "already present before the change are listed separately as pre-existing and are "
+            "never open or verified.",
+            "",
+            "**Goal Mode:** the Review Goal fixes scope, spec and verdict, so `scope`, `spec`, "
+            "`spec_text`, `fail_on` and "
             "`steer` are refused. Declare each Review Goal with exactly one `target` or "
             "`paths` (see `booley cheat --goals`).",
             "",
             "**Verify fixes (both modes):** after fixing findings, call `reviewer` with "
             "`verify=true` (CLI: `--verify`). It rechecks only the latest review's open "
-            "findings, finds nothing new, and passes when none remain open. To argue a "
+            "findings and finds nothing new; none remaining open is a pass. To argue a "
             'finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: '
             '`--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts '
-            "or rejects each. No other argument is accepted with verify. After repeated "
-            "failed verifies, Goal Mode stops and asks you to change or abandon the Goal.",
+            "or rejects each. Outside Goal Mode `fail_on` (CLI: `--fail-on`) is the one other "
+            "argument accepted with verify, and counts the findings still open. After repeated "
+            "failed verifies, Goal Mode stops and asks you to change or abandon the Goal; "
+            "Interactive Mode refuses further verifies.",
         ]
     )
     return lines
@@ -344,7 +361,10 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "
         "CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's "
-        "Goal-bound MCP calls with `work_dir`.",
+        "Goal-bound MCP calls with `work_dir`. A CLI run is also a Standalone Job: it shows in "
+        "the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` "
+        "in the Project's common Booley Directory (the main checkout's `.booley` from a linked "
+        "worktree).",
         "",
         "| Specialist | Purpose | Sets | Modifies code |",
         "|------------|---------|------|:-------------:|",

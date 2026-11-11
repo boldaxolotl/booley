@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from booley.evidence.review_vocabulary import (
+    ORIGIN_PRE_EXISTING,
     PERSISTED_REVIEWER_DISPOSITIONS,
     REVIEW_DISPOSITIONS,
     REVIEWER_TO_PACKAGE,
@@ -63,6 +64,7 @@ def _finding_row(
         "justification": str(finding.get("justification", "")),
         "exclusion_reason": str(finding.get("exclusion_reason", "")),
         "actor": str(finding.get("disposition_actor", "")),
+        "origin": str(finding.get("origin", "")),
     }
 
 
@@ -176,16 +178,18 @@ _NONCURRENT_DONE = frozenset(
 )
 
 
-def outstanding_done_findings(criteria: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Return every unresolved done finding, conservatively including legacy rows.
+def corrective_done_findings(criteria: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return unresolved current `done` findings of every severity.
 
-    Optional Criteria and every severity require human acceptance. An explicitly
-    noncurrent disposition or status removes that obligation, never rediscovery.
+    Includes optional Criteria and legacy rows without a status. An explicitly
+    noncurrent disposition or status excludes a row; rediscovering the finding does not.
     """
-    return [row for row in collect_review_dispositions(criteria) if done_finding_outstanding(row)]
+    return [
+        row for row in collect_review_dispositions(criteria) if is_corrective_done_finding(row)
+    ]
 
 
-def done_finding_outstanding(row: Mapping[str, Any]) -> bool:
+def is_corrective_done_finding(row: Mapping[str, Any]) -> bool:
     """Classify normalized rows without changing their vocabulary or raw status."""
     criterion = row.get("criterion")
     if (
@@ -194,6 +198,8 @@ def done_finding_outstanding(row: Mapping[str, Any]) -> bool:
         or not criterion.endswith("_done")
     ):
         return False
+    if row.get("origin") == ORIGIN_PRE_EXISTING:
+        return False  # introduced-before-the-change findings are observations
     disposition = row.get("reviewer_disposition") or row.get("disposition")
     status = row.get("status")
     return not any(

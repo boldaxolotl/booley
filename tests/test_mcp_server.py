@@ -472,7 +472,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_configured_default_gets_small_margin(self, tmp_path):
         with patch(
-            "booley.flows.sim.flow._resolve_sim_timeout_ms",
+            "booley.flows.sim.flow.resolve_sim_timeout_ms",
             return_value=600_000,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -484,7 +484,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_campaign_budget_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
             return_value=4,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -496,7 +496,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_trace_margin_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -509,7 +509,7 @@ class TestMcpToolTimeoutSeconds:
     def test_coverage_trace_budget_adds_conversion_per_unit(self):
         def coverage_timeout(trace: bool) -> int:
             with patch(
-                "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+                "booley.flows.sim.flow.resolve_sim_campaign_work_units",
                 return_value=2,
             ):
                 return self._mcp_tool_timeout_seconds(
@@ -524,7 +524,7 @@ class TestMcpToolTimeoutSeconds:
         from booley.flows.sim.mode import SimulationMode
 
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
             return_value=3,
         ) as resolve_units:
             timeout = self._mcp_tool_timeout_seconds(
@@ -542,7 +542,7 @@ class TestMcpToolTimeoutSeconds:
     def test_watchdog_sizing_sees_the_requested_seed(self):
         """``--seed random`` splits Cocotb batches, so sizing must know about it."""
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
             return_value=3,
         ) as resolve_units:
             self._mcp_tool_timeout_seconds(
@@ -576,7 +576,7 @@ class TestMcpToolTimeoutSeconds:
         )
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
             return_value=1,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -778,7 +778,7 @@ class TestMcpToolTimeoutSeconds:
             encoding="utf-8",
         )
         with patch(
-            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -1918,20 +1918,25 @@ def test_simulation_count_transport_omits_only_full_mapping():
 
 @pytest.mark.parametrize("completion_error", [False, True])
 def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
-    monkeypatch, completion_error
+    tmp_path, monkeypatch, completion_error
 ):
     from types import SimpleNamespace
 
     from booley.flows.sim.flow import _campaign_report_lines
+    from booley.flows.test_runs import build_test_run
     from booley.mcp.server import _format_mcp_tool_result
     from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error
+    from tests.flows.sim.campaign_test_support import _recorded_campaign
 
     manifest = Path("/manifest.json")
     pointer_bytes = len(f"  manifest: {manifest.resolve()}\n".encode())
     budget = 4000 + pointer_bytes
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget))
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
-    observation = {"test": "smoke", "cycle_count": 7, "detail": {"reason": "x" * 3870}}
+    smoke = build_test_run("smoke")
+    observation = _recorded_campaign(tmp_path, (smoke,)).fact(
+        smoke, test="smoke", cycle_count=7, detail={"reason": "x" * 3870}
+    )
     outcome = SimpleNamespace(
         target={"selector": "sim"},
         manifest_path=manifest,
@@ -2080,97 +2085,50 @@ def _assert_live_checkpoint(structured, checkpoint):
     assert "exit_code" not in report
 
 
-def test_registered_poll_observes_blocked_legacy_simulation_execution(tmp_path, monkeypatch):
-    """The real Flow and execution publish an owned log before the invoker returns."""
+def test_registered_poll_observes_blocked_campaign_simulation(tmp_path, monkeypatch):
+    """A campaign launch blocked in the simulator shows as one live, running target."""
     from concurrent.futures import ThreadPoolExecutor
-    from contextlib import ExitStack
     from threading import Event
 
-    from booley.flows.base import SubprocessResult
-    from booley.flows.run_log import write_run_log_progress
-    from booley.flows.sim.execution import SimulationExecution, SimulationOptions
     from booley.mcp import server
     from booley.runtime.timefmt import utc_now_rfc3339
-    from tests.flows.sim.test_execution_engine import (
-        _compile_surface_patch,
-        _handle,
-        _inspection,
-        _prepared,
-    )
-    from tests.flows.sim.test_flow import _make_flow
+    from tests.flows.sim.campaign_boundary import PASS_PROCESS, run_campaign_sim
 
-    run_id = "gated-legacy-sim"
+    run_id = "gated-campaign-sim"
     monkeypatch.setenv("BOOLEY_RUN_ID", run_id)
-    flow = _make_flow(tmp_path, config="sim")
-    monkeypatch.setattr(
-        flow,
-        "_flow_plan",
-        SimpleNamespace(
-            work_units=(SimpleNamespace(selector="sim", role="ordinary", test_or_module_scope=()),)
-        ),
-        raising=False,
-    )
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
     entered, release = Event(), Event()
-    session = MagicMock()
-    session.__enter__.return_value = session
-    session.new_generation.return_value = prepared.work_root
-    session.try_reuse.return_value = None
-    session.capture_inputs.return_value = {}
 
-    def invoke(command, *, timeout):
-        del timeout
-        if "BOOLEY_BUILD_STAGE" in command[-1]:
-            return SubprocessResult(returncode=0, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n")
-        write_run_log_progress(
-            prepared.work_root, "synthetic exception\n" * 4, elapsed_s=1, line_count=4
-        )
+    def blocked_launch(_launch):
         entered.set()
-        assert release.wait(5), "test failed to release simulator invoker"
-        return SubprocessResult(returncode=0)
+        assert release.wait(30), "test failed to release simulator launch"
+        return PASS_PROCESS
 
-    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
-    monkeypatch.setattr(flow, "_simulation_execution", lambda **_kwargs: execution)
-    monkeypatch.setattr(flow, "_target_handle", lambda _target: handle)
-    with ExitStack() as stack:
-        stack.callback(flow.publication_resources.close)
-        stack.enter_context(_compile_surface_patch(handle))
-        stack.enter_context(
-            patch(
-                "booley.flows.sim.execution.engine.TargetCatalog.build",
-                return_value=_inspection(cocotb=False),
-            )
-        )
-        stack.enter_context(
-            patch(
-                "booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared
-            )
-        )
-        stack.enter_context(
-            patch("booley.flows.sim.execution.engine.SimulationBuildSession", return_value=session)
-        )
-        stack.enter_context(
-            patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123")
-        )
-        _poll_blocked_legacy_flow(
-            server,
-            flow,
+    def submit(pool):
+        return pool.submit(
+            run_campaign_sim,
             tmp_path,
-            run_id,
-            entered,
-            release,
             monkeypatch,
-            utc_now_rfc3339,
-            ThreadPoolExecutor,
+            {"sim": ["smoke"]},
+            blocked_launch,
+            target="sim",
         )
 
+    _poll_blocked_flow(
+        server,
+        tmp_path,
+        run_id,
+        submit,
+        entered,
+        release,
+        monkeypatch,
+        utc_now_rfc3339,
+        ThreadPoolExecutor,
+    )
 
-def _poll_blocked_legacy_flow(
-    server, flow, root, run_id, entered, release, monkeypatch, now, pool_type
+
+def _poll_blocked_flow(
+    server, root, run_id, submit, entered, release, monkeypatch, now, pool_type
 ):
-    import time
-
     jobs_root = root / "runtime/jobs"
     server.jobrec.write_record(
         server.jobrec.JobRecord(
@@ -2190,9 +2148,9 @@ def _poll_blocked_legacy_flow(
 
     monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
     with pool_type(max_workers=1) as pool:
-        future = pool.submit(flow._run_legacy_selected_mode, ["sim"], {}, time.monotonic(), 0)
+        future = submit(pool)
         try:
-            assert entered.wait(5), "simulator launch was not reached"
+            assert entered.wait(30), "simulator launch was not reached"
             application = server._build_mcp_application([], [], server._McpLifetime(None, None))
             payload = asyncio.run(
                 application.call_tool(
@@ -2213,11 +2171,12 @@ def _poll_blocked_legacy_flow(
             active = report["active"][0]
             assert active["stage"] == "executing"
             assert active["log"]["live"] is True
-            assert "synthetic exception" in (root / active["log"]["path"]).read_text()
+            assert Path(active["log"]["path"]).parts[-2:] == ("execution-evidence", "run.log")
             assert "passed" not in payload.structured_content
         finally:
             release.set()
-            future.result(timeout=5)
+            # The released run must finish cleanly, not merely stop blocking.
+            assert future.result(timeout=30).result.exit_code == 0
 
 
 def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():

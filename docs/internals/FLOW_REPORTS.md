@@ -45,7 +45,7 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 | `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
-| `eda_tool`, `eda_tools` | Resolved EDA identity: scalar `eda_tool` for one selected Target, or `eda_tools` mapping each selected Target to its tool (`null` if unresolved/unreached) for multiple Targets, even when tools match. Unknown single-Target identity is omitted; standalone frontends use the scalar. Specialists omit these keys when they run no EDA tool. |
+| `eda_tool`, `eda_tools` | Resolved EDA identity: scalar `eda_tool` for one selected Target, or `eda_tools` mapping each selected Target to its tool (`null` if unresolved/unreached) for multiple Targets, even when tools match. Unknown single-Target identity is omitted; a standalone sweep that used exactly one frontend fills the scalar, a mixed sweep leaves it unset. Specialists omit these keys when they run no EDA tool. |
 | `resources` | Optional process accounting: `cpu_user_s`, `cpu_sys_s` in seconds and `peak_rss_mb` in MiB. |
 | `run_id`, `report_text` | The Job ID and printed verdict card, when present. |
 | `usage` | For Specialists that call a model: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_create_tokens`, and `cost_usd`. |
@@ -96,11 +96,11 @@ A dry run runs no EDA tool, touches no Criteria, and fills no caches. It may
 run FuseSoC setup or generators in a throwaway directory when resolving the
 Target requires it; `planning_disclosures` says so when that happens.
 
-For Simulation, ordinary candidate and baseline units expose the simulator
-budget as `timeout_ms` and the invocation-carried build budget as recipe
-`build_timeout_ms`. Elaboration Check units expose their build budget in both
-fields because the Target build is their only subprocess. Standalone units
-retain the standalone-sweep `timeout_ms` and have no build field.
+For Simulation, only the Elaboration Check prints this plan: its units expose
+their build budget as `timeout_ms` and recipe `build_timeout_ms` because the
+Target build is their only subprocess. An ordinary or coverage dry run prints
+its Simulation Campaign preview instead. Standalone units retain the
+standalone-sweep `timeout_ms` and have no build field.
 
 ## `sim`
 
@@ -189,33 +189,21 @@ unavailable` instead; the verdict and Criteria are unaffected.
 | `passed`, `inconclusive`, `complete` | Target verdict, whether it was inconclusive, and whether the run finished writing its results. `complete: false` means the run was interrupted while publishing and can be resumed. |
 | `tests[]` | One entry per test (see below). |
 | `test_runs[]` | One row per Test Run: `name`, `test`, `variant`, `seed`, `args`, `env`, `fingerprint`, and `grade` (`pass`, `fail`, `error`, or `inconclusive`). `test` is null for the unnamed invocation; `variant` and `seed` are null when the run has none. |
-| `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`, shaped `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). Per-Test-Run logs and waveforms live in the Campaign's work items, not in this file. |
+| `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`, shaped `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). |
 | `coverage_campaign`, `collection`, `evaluation` | Coverage runs only: a reference (same shape as `campaign_manifest`) to the Target's `coverage.json` and the collection and evaluation statuses. |
 
-Reports from the older single-pass writer (`SimulateFlow._write_target_report`;
-normal CLI and MCP runs go through the Simulation Campaign instead) carry these
-fields in place of the Campaign ones:
-
-| Field | Contents |
-|---|---|
-| `tb_top`, `eda_tool`, `elapsed_s` | The testbench top, the simulator, and duration. |
-| `phase_timings_s` | Seconds spent in `setup`, `pre_sim`, `build`, `run`, `result_processing`, `publication`, and `unattributed`, with `execution_total` and `total`. |
-| `compile_command`, `fileset` | The build command and the resolved `rtl` and `tb` source lists. |
-| `artifacts` | The report, per-test run logs, result files, and waveforms from this run. |
-
-Simulation Campaign entries have `name` (`default` for an unnamed test),
-`passed`, nullable `cycles`, `sva_errors`, `timed_out`, `execution`,
-`failure_kind`, and `error_tail`. Each legacy/unprepared `tests[]` entry has `name`, `passed`, `verdict`, `termination`,
-`failure_kind`, `timed_out`,
-`elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`,
-`error_tail`, `test_validated`, `phase_timings_s`, and `resources`
-(`command_peak_rss_mb`, `command_oom_kill_delta`, and on supported platforms
-`simulation_user_cpu_s` and `simulation_system_cpu_s`). Traced tests add
-`trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and
-`trace_total_ticks`. Optional fields: `artifacts.run_log`,
-`workload_fingerprint`, and `validation_note`.
+Each `tests[]` entry has `name` (`default` for an unnamed test), `passed`,
+nullable `cycles`, `sva_errors`, `timed_out`, `execution`, `failure_kind`,
+and `error_tail`.
 Every `tests[]` entry that observed a Test Run also names it: `test_run` (the
 Test Run name, `test[+variant][@seed]`), `variant`, `seed`, and `fingerprint`.
+Each entry also has `log` and `trace`: the Test Run's simulator log and, for a
+`--trace` run, its waveform, as POSIX paths relative to the directory holding
+this `simulation.json` (so a copied run directory keeps them valid), or `null`
+when the file does not exist (a run that never started a simulator has no log).
+They come from the evidence of the attempt the Campaign accepted for the Test
+Run; the Test Runs of one Cocotb batch share its files. The `test_runs[]` rows
+do not carry them.
 
 Elaboration checks write the same file with `mode` set to `elab_only` or
 `elab_only_standalone`, and these fields:
@@ -228,8 +216,13 @@ Elaboration checks write the same file with `mode` set to `elab_only` or
 | `log` | The full build log. |
 
 For `elab_only_standalone`, `report.json` also has `detail.standalone` with
-`modules_checked`, `shared_files`, `frontend`, `failures`, any `unparsed`
-modules, and the log path.
+`modules_checked`, `shared_files`, `frontend`, `probes`, `failures`, any
+`unparsed` modules, and the log path. `frontend` is the `+`-joined probe
+frontends (`iverilog+verilator` for a mixed sweep, the plain name otherwise).
+`probes` groups the `{module, file}` pairs by `{frontend, dialect_flags,
+fallback}`; `dialect_flags` lists the language-dialect flags the probe ran with
+(empty for the compiler's default dialect). Each `failures` and `unparsed` entry
+also carries `frontend`, `dialect_flags` and `fallback`.
 
 ### Coverage Campaign files
 
@@ -357,10 +350,11 @@ others depend on. Run it as
 with one of the options below. The algorithm is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#exact-report-retention).
 
-- **`--native-target <target>`** removes that Target's `native/` directory (raw and
-  merged Verilator databases). `coverage.json` and the point store stay, so the
-  Campaign can still be analyzed. `availability.json` in the Target directory
-  records the pruning.
+- **`--native-target <target>`** removes the `native/` directory (raw and merged
+  Verilator databases) of the Coverage Campaign that the Target's `coverage.json`
+  references. `coverage.json` and the point store stay, so the
+  Campaign can still be analyzed. `availability.json` in that
+  directory records the pruning.
 - **`--full`** removes the whole run. It leaves an empty `.pruned-N` marker so
   the run number is not reused. It refuses when later resumed runs depend on
   this one, unless `--include-dependents` is given.

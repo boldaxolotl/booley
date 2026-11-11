@@ -25,7 +25,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
 from booley.core.booley_dir_links import lexical_booley_path
@@ -45,7 +45,15 @@ from booley.flows.eda_failures import (
     first_tool_diagnostic,
     strip_failure_markers,
 )
-from booley.flows.job_resources import SYNTH_PHASES, resource_phase
+from booley.flows.job_resources import SYNTH_PHASES, resolved_source_bytes, resource_phase
+from booley.flows.metric_declarations import (
+    Better,
+    CostTier,
+    FlowMetricValues,
+    MetricDeclaration,
+    MetricKind,
+    metric_values,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -75,7 +83,7 @@ from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
 from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
-from booley.harness.terminal_table import render_table
+from booley.presentation.terminal_table import render_table
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -122,6 +130,7 @@ from ..implementation_report import (
     ImplementationAggregate,
     ImplementationReport,
     build_implementation_aggregate,
+    implementation_context,
 )
 from ..invocation import resolve_timeout_ms
 from ..progress_lifecycle import ProgressPublicationError
@@ -132,7 +141,7 @@ from ..run_evidence import (
 )
 from ..source_fingerprint import compute_source_fingerprint
 from ..target_parameters import vlogdefine_args as _vlogdefine_args
-from ..target_parameters import vlogparam_args, vlogparam_specs
+from ..target_parameters import vlogparam_specs
 from .implementation_report import (
     build_synth_implementation_report,
 )
@@ -147,8 +156,6 @@ from .recipe import (
     synthesis_recipe_snapshot,
     synthesis_recipe_snapshot_fingerprint,
 )
-
-_vlogparam_args = vlogparam_args
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +289,22 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 # ---------------------------------------------------------------------------
 
 
+# Metrics the synthesis Flow declares; names are the ones Goal thresholds are built from.
+# area_um2/area_kge are the mapped area in logical mode and the placed area in OpenROAD modes.
+_SYNTH_COST_TIER = CostTier.HIGH
+SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
+    MetricDeclaration("area_um2", "μm²", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("area_kge", "kGE", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("cell_count", "cells", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("fmax_mhz", "MHz", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration(
+        "critical_path_ps", "ps", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK
+    ),
+    MetricDeclaration("wns_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration("whs_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+)
+
+
 @dataclass
 class SynthMetrics:
     """Parsed synthesis metrics for a single config run."""
@@ -373,6 +396,18 @@ class SynthMetrics:
         """Normalize string-compatible construction at the metrics interface."""
         if isinstance(self.synth_mode, str):
             self.synth_mode = SynthMode(self.synth_mode)
+
+    def flow_metrics(self) -> FlowMetricValues:
+        """Return this run's typed values for :data:`SYNTH_METRIC_DECLARATIONS`."""
+        return metric_values(
+            SYNTH_METRIC_DECLARATIONS,
+            plain={
+                "area_um2": self.area_um2,
+                "area_kge": self.area_kge,
+                "cell_count": self.cells,
+            },
+            per_clock=self.per_clock,
+        )
 
     def qor_detail(self) -> dict[str, Any]:
         """Return the canonical QoR fields shared by every report surface."""
@@ -1115,6 +1150,17 @@ def _work_relpath(path: Path, work_dir: Path) -> str:
     return posix_relpath(_work_path(path, work_dir), work_dir.resolve())
 
 
+def _plan_source_name(project_root: Path, item: fusesoc_registry.ResolvedFile) -> str:
+    """The POSIX name a plan records for a resolved source file.
+
+    Isolated Projects resolve through a private source mirror that exports
+    ``src/<core>/<Project-relative path>``; like simulation reports, the plan
+    hides the mirror and names the file by its Project-relative path, so the
+    identity is the same in every checkout. Other Projects keep FuseSoC's name.
+    """
+    return fusesoc_registry.mirrored_source_path(project_root, item) or Path(item.name).as_posix()
+
+
 class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
 
@@ -1483,12 +1529,14 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             target=target,
             temporary=role == "baseline",
         )
-        return self._run_configured(target, plan)
+        return self._run_configured(target, plan, resolved_source_bytes(planned.resolved))
 
-    def _run_configured(self, target: str, plan: Any) -> tuple[SynthMetrics, str]:
+    def _run_configured(
+        self, target: str, plan: Any, source_bytes: int | None
+    ) -> tuple[SynthMetrics, str]:
         """Run and interpret one configured plan, then refresh its OpenROAD reuse slot."""
         start = time.monotonic()
-        run = self._run_synth_make(target, plan)
+        run = self._run_synth_make(target, plan, source_bytes)
         elapsed = time.monotonic() - start
         metrics, output = self._interpret_boundary_run(
             target, plan, run.result, elapsed, producer=run.producer
@@ -1497,9 +1545,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         self._store_openroad_result(target, plan, metrics, run)
         return metrics, output
 
-    def _run_synth_make(self, target: str, plan: Any) -> _SynthRun:
+    def _run_synth_make(self, target: str, plan: Any, source_bytes: int | None) -> _SynthRun:
         """Run the synthesis Makefile; sv2v, Yosys and OpenROAD are measured as phases."""
-        with resource_phase(target, "synth", split=SYNTH_PHASES):
+        with resource_phase(target, "synth", split=SYNTH_PHASES, source_bytes=source_bytes):
             if not runs_openroad(plan.spec.timing.mode):
                 cmd = self._synth_boundary_cmd(plan)
                 return _SynthRun(self._execute_boundary(cmd, timeout=self._get_timeout()))
@@ -1990,22 +2038,19 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         baseline_ref: str | None,
     ) -> ImplementationReport:
         """Adapt native synthesis evidence to the shared canonical schema."""
-        plan = self._target_plan(target)
-        return build_synth_implementation_report(
+        context = implementation_context(
+            self._target_plan(target),
             target=target,
-            pair=plan.evidence_pair(),
-            current=metrics,
-            baseline=baseline_metrics,
-            baseline_ref=self.args.baseline if baseline_metrics is not None else None,
-            resolved_baseline_ref=(
-                getattr(self, "_baseline_full_sha", None) or baseline_ref
-                if baseline_metrics is not None
-                else None
-            ),
             eda_tool=self._eda_tool,
+            baseline_ran=baseline_metrics is not None,
+            requested_baseline_ref=self.args.baseline,
+            resolved_baseline_ref=getattr(self, "_baseline_full_sha", None) or baseline_ref,
+        )
+        return build_synth_implementation_report(
+            context,
+            metrics,
+            baseline_metrics,
             fatal_timing=getattr(self, "_timing_violation_is_fatal", False),
-            baseline_target_identity=plan.baseline.identity,
-            candidate_target_identity=plan.candidate.identity,
         )
 
     def _publisher(self) -> ImplementationPublisher:
@@ -2215,11 +2260,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         resolved = planned.resolved
         root = Path(self.args.work_dir)
         sources = tuple(
-            Path(item.name).as_posix()
+            _plan_source_name(root, item)
             for item in resolved.files
             if item.file_type.lower() != "sdc"
         )
-        constraints = tuple(Path(item.name).as_posix() for item in resolved.sdc_files)
+        constraints = tuple(_plan_source_name(root, item) for item in resolved.sdc_files)
         snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
         plan_recipe = dict(snapshot)
         recipe_args = snapshot.get("recipe_args", [])
@@ -2275,15 +2320,15 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     ) -> tuple[str, ...]:
         """Replace disposable staged paths with their Target-owned names."""
         replacements = {
-            _work_relpath(item.absolute(planned.resolved.build_root), root): Path(
-                item.name
-            ).as_posix()
+            _work_relpath(item.absolute(planned.resolved.build_root), root): _plan_source_name(
+                root, item
+            )
             for item in planned.resolved.files
         }
         replacements.update(
             {
                 _work_relpath(item.absolute(planned.resolved.build_root).parent, root): (
-                    Path(item.name).parent.as_posix()
+                    PurePosixPath(_plan_source_name(root, item)).parent.as_posix()
                 )
                 for item in planned.resolved.files
                 if item.is_include

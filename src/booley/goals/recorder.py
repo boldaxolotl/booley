@@ -53,6 +53,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
+from booley.core.booley_layout import GOAL_ID_PATTERN
 from booley.core.boundary import BoundaryError, require_positive_int
 from booley.criteria import evidence_ledger
 from booley.criteria.evidence_ledger import (
@@ -78,7 +79,7 @@ from booley.goals.freshness import (
 )
 from booley.goals.generated_artifacts import inventory_files
 from booley.goals.model import GoalRecord, GoalSpec, RecordedGoal
-from booley.goals.paths import GOAL_ID_PATTERN, record_paths
+from booley.goals.paths import record_paths
 from booley.goals.proposals import ProposalError
 from booley.goals.publication import EvidenceDiscarded, PublicationGate
 from booley.goals.state_store import GoalStateError, GoalStatePersistence, read_goal_state_file

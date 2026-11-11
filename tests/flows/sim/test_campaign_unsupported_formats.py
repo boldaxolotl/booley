@@ -16,11 +16,12 @@ from booley.flows.sim.campaign.codec import (
 from booley.flows.sim.campaign.resume import validate_resume_manifest
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.targets.catalog import TargetCatalog
+from tests.flows.sim.campaign_test_support import _retained_invocation, coverage_invocation
 from tests.flows.sim.test_campaign_manifest_codec import _linked_campaign_stores, _manifest
-from tests.flows.sim.test_campaign_phase6 import _retained_invocation
 from tests.flows.sim.test_campaign_resume_diagnostics import _interrupted_campaign
 from tests.flows.sim.test_campaign_retention import _run_retention_cli
 
@@ -113,25 +114,6 @@ def test_inspection_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_path) -> 
     _assert_refused(str(excinfo.value), _MANIFEST + "v1", reports / "sim/1")
 
 
-def _coverage_target(tmp_path, monkeypatch) -> tuple[Path, Path]:
-    """A completed Coverage run: the reports root and its Target report directory."""
-    from tests.flows.sim.test_coverage_invocation import project
-    from tests.flows.sim.test_coverage_transaction import NativeExecution
-
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path)
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
-    reports = tmp_path / "reports"
-    flow = SimulateFlow(
-        coverage_execution=lambda _handle, _options, _cmds, _access: NativeExecution()
-    )
-    request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
-    assert flow.execute(request).exit_code == 0
-    return reports, reports / "sim/1/targets/sim_0"
-
-
 def test_coverage_analysis_refuses_a_0_3_0_manifest_naming_its_invocation(
     tmp_path, monkeypatch
 ) -> None:
@@ -140,7 +122,8 @@ def test_coverage_analysis_refuses_a_0_3_0_manifest_naming_its_invocation(
         read_coverage_campaign,
     )
 
-    reports, target = _coverage_target(tmp_path, monkeypatch)
+    run = coverage_invocation(tmp_path, monkeypatch)
+    reports, target = run.reports, run.target
     manifest = target / "campaign/manifest.json"
     _rewrite(manifest, _as_030_manifest(manifest.read_bytes(), "v2"))
 
@@ -159,7 +142,8 @@ def test_coverage_analysis_refuses_a_0_3_0_projection_naming_its_invocation(
         read_coverage_campaign,
     )
 
-    reports, target = _coverage_target(tmp_path, monkeypatch)
+    run = coverage_invocation(tmp_path, monkeypatch)
+    reports, target = run.reports, run.target
     projection = json.loads((target / "simulation.json").read_bytes())
     projection["$schema"] = _PROJECTION_V2
     del projection["test_runs"]
@@ -219,7 +203,8 @@ def test_dependents_pruning_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_p
 def test_pruning_a_0_3_0_coverage_invocation_refuses_as_a_retention_error(
     tmp_path, monkeypatch
 ) -> None:
-    reports, target = _coverage_target(tmp_path, monkeypatch)
+    run = coverage_invocation(tmp_path, monkeypatch)
+    reports, target = run.reports, run.target
     manifest = target / "campaign/manifest.json"
     _rewrite(manifest, _as_030_manifest(manifest.read_bytes(), "v2"))
 
@@ -228,6 +213,47 @@ def test_pruning_a_0_3_0_coverage_invocation_refuses_as_a_retention_error(
 
     _assert_refused(str(excinfo.value), _MANIFEST + "v2", reports / "sim/1")
     assert (reports / "sim/1").is_dir()
+
+
+def test_full_prune_cli_refuses_a_0_3_0_coverage_campaign_naming_its_directory(
+    tmp_path, monkeypatch
+) -> None:
+    """``--full`` reaches the nested Coverage Campaign before any Simulation Campaign check."""
+    from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
+
+    run = coverage_invocation(tmp_path, monkeypatch)
+    nested = json.loads(run.campaign_path.read_bytes())
+    rewrite_manifest_as_v4(nested)
+    raw = canonical_json_bytes(nested)
+    _rewrite(run.campaign_path, raw)
+    reference = json.loads(run.public.read_bytes())
+    reference["coverage_campaign"].update(bytes=len(raw), sha256=content_digest(raw))
+    _rewrite(run.public, canonical_json_bytes(reference))
+
+    result = _run_retention_cli("--reports-root", str(run.reports), "--invocation", "1", "--full")
+
+    assert result.returncode == 2
+    assert "COV_SCHEMA_VERSION_UNSUPPORTED" in result.stderr
+    assert str(run.storage) in result.stderr
+    assert "Traceback" not in result.stderr
+    assert run.campaign_path.is_file()
+
+
+def test_native_prune_cli_refuses_a_0_3_0_coverage_invocation_at_its_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    """``--native-target`` inspects the Simulation Campaign first: its manifest is the marker."""
+    run = coverage_invocation(tmp_path, monkeypatch)
+    manifest = run.target / "campaign/manifest.json"
+    _rewrite(manifest, _as_030_manifest(manifest.read_bytes(), "v2"))
+
+    result = _run_retention_cli(
+        "--reports-root", str(run.reports), "--invocation", "1", "--native-target", "sim_0"
+    )
+
+    assert result.returncode == 2
+    _assert_refused(result.stderr, _MANIFEST + "v2", run.reports / "sim/1")
+    assert run.campaign_path.is_file()
 
 
 def test_a_schema_less_projection_cannot_authenticate_a_coverage_campaign() -> None:

@@ -1,9 +1,7 @@
 """Canonical Simulation invocation paths and atomic JSON publication."""
 
 import json
-import os
 import stat
-import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,8 +11,8 @@ from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.booley_layout import BooleyLayoutError
 from booley.core.checkout_role import SourceCheckoutProjectError
+from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import nonblocking_file_lock
-from booley.runtime.filesystem_utils import replace_file
 
 
 def target_report_directory(invocation: Path, selector: str) -> Path:
@@ -24,18 +22,8 @@ def target_report_directory(invocation: Path, selector: str) -> Path:
 
 def write_campaign_json(path: Path, document: dict[str, object]) -> None:
     """Publish a complete JSON document, never a partially written report."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=".coverage-", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(document, stream, sort_keys=True, indent=2, allow_nan=False)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        replace_file(Path(temporary), path)
-        _fsync_directory(path.parent)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    text = json.dumps(document, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    atomic_replace_bytes(path, text.encode("utf-8"))
 
 
 def write_compatibility_projection(
@@ -57,16 +45,6 @@ def write_compatibility_projection(
     checkpoint("before:compatibility_projection")
     write_campaign_json(path, projection)
     checkpoint("after:compatibility_projection")
-
-
-def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def simulation_booley_dir(project_root: Path) -> Path | None:

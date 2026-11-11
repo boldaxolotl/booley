@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
@@ -14,40 +13,57 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_grade,
     test_run_row,
 )
-from booley.flows.sim.execution.engine import _observed_test_run
 from booley.flows.test_runs import (
     build_test_run,
     discovered_test_run,
     test_run_document,
 )
-from booley.targets.domain import TargetHandle
 
-_HANDLE = cast(TargetHandle, SimpleNamespace(selector="sim"))
+_TARGET = {"selector": "sim"}
+
+
+def _item(unnamed):
+    """A work item whose only Test Run is the unnamed invocation *unnamed*."""
+    return {"work_item_id": "w", "target": _TARGET, "test_runs": (test_run_document(unnamed),)}
 
 
 @pytest.mark.parametrize("seed", [None, 9])
 @pytest.mark.parametrize("test", ["found_a", "default", "has space"])
 def test_results_facts_and_reports_name_a_discovered_test_the_same_way(test, seed):
-    """One rule, three readers: the engine, the facts binding and the report rows."""
+    """One rule, two readers: the facts binding and the report rows."""
     unnamed = build_test_run(None, seed=seed)
-    expected = discovered_test_run(test, unnamed)
+    expected = discovered_test_run(test, unnamed, target="sim")
 
-    engine = _observed_test_run(test, _HANDLE, (unnamed,))
-    item = {"work_item_id": "w", "test_runs": (test_run_document(unnamed),)}
+    item = _item(unnamed)
     ((bound_name, bound_fingerprint),) = observation_test_runs(item, ({"test": test},)) or ()
-    observation = {"work_item_id": "w", "test": test, "test_run": bound_name}
+    observation = {"work_item_id": "w", "target": _TARGET, "test": test, "test_run": bound_name}
     report = _observed_run(observation, {("w", unnamed.name): unnamed, ("w", ""): unnamed})
 
-    assert engine == report == expected
+    assert report == expected
     assert (bound_name, bound_fingerprint) == (expected.name, expected.fingerprint)
 
 
 def test_a_discovered_test_runs_at_the_unnamed_invocations_seed():
     unnamed = build_test_run(None, seed=9)
-    assert discovered_test_run("found_a", unnamed).name == "found_a@9"
-    assert discovered_test_run("found_a", build_test_run(None)).name == "found_a"
+    assert discovered_test_run("found_a", unnamed, target="sim").name == "found_a@9"
+    assert discovered_test_run("found_a", build_test_run(None), target="sim").name == "found_a"
     # A name outside the Test name rules stays under the unnamed invocation.
-    assert discovered_test_run("default", unnamed) is unnamed
+    assert discovered_test_run("default", unnamed, target="sim") is unnamed
+
+
+@pytest.mark.parametrize("seed", [None, 9])
+@pytest.mark.parametrize("name", ["", "sim"])
+def test_results_facts_and_reports_bind_the_unnamed_invocations_own_result_to_it(name, seed):
+    """A result named after the Target (or nothing) is the unnamed run, not a discovered Test."""
+    unnamed = build_test_run(None, seed=seed)
+
+    ((bound_name, bound_fingerprint),) = observation_test_runs(_item(unnamed), ({"test": name},))
+    # "test_run" names no recorded run, so the report must bind through the Test name.
+    observation = {"work_item_id": "w", "target": _TARGET, "test": name, "test_run": "unrecorded"}
+    report = _observed_run(observation, {("w", unnamed.name): unnamed, ("w", ""): unnamed})
+
+    assert report is unnamed
+    assert (bound_name, bound_fingerprint) == (unnamed.name, unnamed.fingerprint)
 
 
 @pytest.mark.parametrize(
@@ -69,16 +85,10 @@ def test_the_one_grade_table(passed, infrastructure, inconclusive, grade):
     assert grade in TEST_RUN_GRADES
 
 
-def test_direct_results_and_coverage_runs_are_graded_by_the_campaign_table():
-    """An infrastructure failure is an error on every path, even when inconclusive."""
+def test_coverage_runs_are_graded_by_the_campaign_table():
+    """An infrastructure failure is an error on the coverage path, even when inconclusive."""
     from booley.flows.sim.coverage_acceptance import coverage_run_grade
-    from booley.flows.sim.flow import TestResult, _test_run_rows
 
-    run = build_test_run("reset", seed=1)
-    result = TestResult(
-        name="reset", passed=False, inconclusive=True, failure_kind="infrastructure", test_run=run
-    )
-    assert _test_run_rows([result]) == [test_run_row(run, "error")]
     coverage = SimpleNamespace(
         simulation_verdict="inconclusive", attributes={"failure_kind": "infrastructure"}
     )

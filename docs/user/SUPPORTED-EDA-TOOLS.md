@@ -119,7 +119,9 @@ Run these commands on the host, outside the Sandbox:
     provisioning = "host"
     ```
 
-5. Run `booley init --seed`, then recreate the Sandbox so it gets the mount.
+5. Apply the change as [Applying Sandbox
+   changes](SANDBOX.md#applying-sandbox-changes) describes after a Grant
+   change, so the Sandbox gets the mount.
 
 `booley projects` lists every Project on this machine with its Grants. If
 Vivado will not start, see
@@ -147,7 +149,7 @@ can replace the Python packages.
 | Yosys | v0.69, with its built-in `slang` frontend |
 | sv2v | v0.0.13 |
 | OpenROAD | 26Q4 (commit `c4d317e4fa2398b9880920a1411c20258a2175a9`; reports itself as `26Q3-2927-gc4d317e4fa`) |
-| Verible | v0.0-4296-g0f262651 |
+| Verible | v0.0-4298-g085eef05 |
 | FuseSoC / Edalize | 2.4.7 / 0.6.8 |
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.3 |
 | Cell library | Nangate45 typical corner, downloaded by `booley bootstrap` |
@@ -157,13 +159,16 @@ The RISC-V image (`booley-sandbox-riscv`) adds the xPack RISC-V GCC
 `609dbe0b9994154833039209fa37151e7c05e9d4` (`1.1.1-dev`). This is upstream
 Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation needs.
 
-To see what your image actually has:
+To see what your image actually has, run these on the host:
 
 ```bash
-booley doctor -v                              # version lines for Verilator, Yosys, Icarus, sv2v
+booley doctor -v                              # host only: version lines from the Sandbox image for Verilator, Yosys, Icarus, sv2v
 booley session enter -- verilator --version   # any EDA tool
 booley session enter -- python -m pip list    # Python packages
 ```
+
+Inside the Sandbox, `booley doctor -v` prints no version lines; run the tool
+directly (`verilator --version`).
 
 ## Missing a tool?
 

@@ -11,7 +11,6 @@ from booley.targets.parameter_integrity import (
     ParameterIntegrityError,
     enabled_vlogdefine_names,
     validate_top_parameter_intent,
-    vlogparam_values,
 )
 
 
@@ -348,4 +347,3 @@ def test_resolved_parameter_helpers_preserve_types():
         "FLAG": {"paramtype": "vlogparam", "default": False},
     }
     assert enabled_vlogdefine_names(params) == ("FEATURE",)
-    assert vlogparam_values(params) == {"WIDTH": 8, "FLAG": False}

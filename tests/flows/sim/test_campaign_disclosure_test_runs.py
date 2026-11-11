@@ -16,6 +16,7 @@ import pytest
 
 from booley.config.project_config import normalize_tests_toml
 from booley.flows.sim.execution import SimulationExecution, SimulationOptions
+from booley.flows.sim.flow import PlannedTarget
 from booley.flows.target_test_plan import batch_test_runs, build_target_test_plan
 from tests.flows.sim.test_flow_test_run_resolution import _flow
 
@@ -60,11 +61,9 @@ def test_campaign_inputs_disclose_the_concrete_test_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(flow, "_effective_skips", lambda _target: set())
     runs = flow._resolve_test_runs("sim", _MAP)
     disclosed: list[tuple[tuple[str, ...], object]] = []
+    preview = SimpleNamespace(groups=(("a", "b"),), run_groups=(runs,))
     execution = SimpleNamespace(
-        preview=lambda _handle, _selection: SimpleNamespace(
-            groups=(("a", "b"),), run_groups=(runs,)
-        ),
-        plan_campaign_group=lambda _handle, group, test_runs=None: (
+        plan_ordinary_group=lambda _handle, group, test_runs=None: (
             disclosed.append((group, test_runs)) or {}
         ),
     )
@@ -75,7 +74,7 @@ def test_campaign_inputs_disclose_the_concrete_test_runs(tmp_path, monkeypatch):
     )
     handle = SimpleNamespace(project_root=tmp_path, selector="sim", identity="sim")
 
-    flow._ordinary_campaign_inputs("sim", _MAP, handle, None)
+    flow._ordinary_campaign_inputs(PlannedTarget("sim", handle, preview), _MAP)
 
     assert disclosed == [(("a", "b"), runs)]
     assert [run.name for run in runs] == ["a+shared@1", "b+shared@1"]
@@ -96,8 +95,8 @@ def test_group_disclosure_prepares_the_test_runs_it_is_given(monkeypatch):
 
     monkeypatch.setattr(execution, "ordinary_group", ordinary_group)
 
-    assert execution.plan_campaign_group(object(), ("a", "b"), runs) == {"disclosed": True}
-    assert execution.plan_campaign_group(object(), ("a",)) == {"disclosed": True}
+    assert execution.plan_ordinary_group(object(), ("a", "b"), runs) == {"disclosed": True}
+    assert execution.plan_ordinary_group(object(), ("a",)) == {"disclosed": True}
     assert prepared == [(("a", "b"), runs), (("a",), None)]
 
 
@@ -130,7 +129,7 @@ def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch
         preview=lambda _handle, selection: (
             previewed.append(selection) or SimpleNamespace(groups=(), run_groups=())
         ),
-        plan_campaign_group=lambda _handle, group, test_runs=None: (
+        plan_ordinary_group=lambda _handle, group, test_runs=None: (
             disclosed.append((group, test_runs)) or {"group": group}
         ),
     )

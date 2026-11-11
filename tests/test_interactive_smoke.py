@@ -29,7 +29,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from tests.conftest import symlink_or_skip
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.target_test_support import write_sim_preview_project
 
 _BOOLEY_ENV_VARS = (
@@ -407,14 +407,7 @@ def _fake_runtime_inspect(project, prepared):
 
 
 def _init_git_project(project_root: Path) -> None:
-    import subprocess
-
-    subprocess.run(
-        ["git", "init", str(project_root)],
-        capture_output=True,
-        check=True,
-        timeout=10,
-    )
+    run_bounded_child(["git", "init", str(project_root)], timeout=10, check=True)
 
 
 def _stub_full_init_dependencies(
@@ -486,6 +479,8 @@ class TestInitInteractive:
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
         (tmp_path / ".booley").mkdir()
+        # Stealth must be explicit for the Booley Directory to join the exclusions.
+        (tmp_path / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
 
         # No docker; isolate from host app detection / creds.
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)

@@ -1,6 +1,7 @@
 # Run each Specialist on the Agent CLI its model implies
 
-Status: accepted
+Status: accepted. The `mutation_tester` model key is superseded by
+[ADR 0088](0088-generate-mutants-deterministically-in-a-mutation-flow.md).
 
 ## Context
 
@@ -64,7 +65,8 @@ Until #2755, host Sandbox Issuance (and every host reader of the Project's
 credential policy) refuses a toml `gateway` policy, pointing to a hand-written
 spec with `BOOLEY_PRIMARY_AUTH=gateway`, and a Booley-issued Sandbox carries
 credentials for the default CLI only: a Specialist pinned to the other CLI
-fails its first call with that CLI's auth error.
+fails its first call with that CLI's auth error. #2897 lifts the `gateway`
+refusal; see ADR 0080's #2897 amendment.
 
 ## Rejected alternatives
 
@@ -85,8 +87,8 @@ them accepting tier names that no longer exist.
   Sandbox. URL and token still come only from the environment.
 - Projects with tier keys or `[models.roles]` must migrate before Booley loads
   their config; the error message gives the replacement.
-- `booley init` still records `provider`; it keeps an `[agent.auth]` table it
-  finds.
+- `booley init` keeps an `[agent.auth]` table it finds. (It recorded `provider`
+  when this was written; see the 2026-11-11 amendment.)
 
 ## Amendments (2026-11-06): list fallback (#2836)
 
@@ -122,3 +124,9 @@ back.
 - **Deep Doctor.** It walks each list with the launch rules: PASS when the
   first entry works, WARN naming the skipped or refused entries and the model
   chosen, FAIL when none works.
+
+## Amendment (2026-11-11): init records default (#3227)
+
+`booley init` now records the default Agent CLI as `[agent] default`, not the
+older alias `provider`. An existing `provider` key is kept as written and still
+works; error and Doctor text names `[agent] default`.

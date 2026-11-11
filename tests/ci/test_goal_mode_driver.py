@@ -451,6 +451,7 @@ def test_stop_baseline_jobs_cancels_detached_job_before_workspace_cleanup(tmp_pa
     project = tmp_path / ".booley"
     jobs = baseline_jobs_dir(project)
     command = [sys.executable, "-c", "import time; time.sleep(120)"]
+    # The test drives this Popen itself (cancel, wait).
     process = subprocess.Popen(command, **new_group_kwargs())
     # The test is the parent, so reap the child to avoid a lingering zombie PID.
     threading.Thread(target=process.wait, daemon=True).start()
@@ -517,7 +518,7 @@ def test_stop_baseline_jobs_repeats_termination_a_lost_signal_would_miss(
     stuck = job_records.JobRecord("sim-baseline-stuck", "sim_baseline", "now", 60, pid=4242)
     signalled: list[driver.ProcessGroup] = []
     clock = iter(range(0, 1000))
-    monkeypatch.setattr(driver.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(driver, "monotonic", lambda: float(next(clock)))
     monkeypatch.setattr(driver.time, "sleep", lambda _s: None)
     monkeypatch.setattr(driver, "BASELINE_RESIGNAL_SECONDS", 2)
     monkeypatch.setattr(driver, "BASELINE_KILL_FRACTION", 1.0)
@@ -541,7 +542,7 @@ def test_stop_baseline_jobs_kills_a_job_that_ignores_termination(tmp_path, monke
     stuck = job_records.JobRecord("sim-baseline-stuck", "sim_baseline", "now", 60, pid=4242)
     killed: list[tuple[int, int]] = []
     clock = iter(range(0, 1000))
-    monkeypatch.setattr(driver.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(driver, "monotonic", lambda: float(next(clock)))
     monkeypatch.setattr(driver.time, "sleep", lambda _s: None)
     monkeypatch.setattr(driver, "BASELINE_RESIGNAL_SECONDS", 1)
     monkeypatch.setattr(driver.job_records, "list_records", lambda _root: [stuck])

@@ -91,7 +91,6 @@ class OwnedPoll:
     """An argument-free poll: the first finished Job, and what else the caller has in flight."""
 
     finished: JobPoll | None
-    unread: tuple[jobrec.JobRecord, ...] = ()
     running: tuple[jobrec.JobRecord, ...] = ()
 
 
@@ -248,7 +247,14 @@ class JobLifecycle:
 
     def _forget_synchronous(self, rec: jobrec.JobRecord) -> None:
         """Drop a finished inline run's record and its pinned root."""
-        jobrec.delete_record(rec.run_id, root=self._write_root(rec))
+        root = self._write_root(rec)
+        jobrec.delete_record(rec.run_id, root=root)
+        log = jobrec.job_log_path(rec.run_id, root)
+        if log is not None:
+            # The log lives exactly as long as the record it sits beside.
+            with contextlib.suppress(OSError):
+                log.unlink(missing_ok=True)
+                log.parent.rmdir()
         self._job_roots.pop(rec.run_id, None)
 
     def _abort_synchronous(self, rec: jobrec.JobRecord) -> None:
@@ -348,6 +354,7 @@ class JobLifecycle:
             env=_endpoint_subprocess_env(context, pytest_scope=rec.endpoint, **overrides),
             is_queued=lambda: self._child_is_queued(rec),
             on_first_active=lambda: self._stamp_run_started(rec),
+            log_path=jobrec.job_log_path(rec.run_id, self._write_root(rec)),
         )
 
     async def _run_and_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
@@ -417,16 +424,36 @@ class JobLifecycle:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
+    def _still_running(self, rec: jobrec.JobRecord) -> jobrec.JobRecord | None:
+        """The current record when its owner has not finished it, else ``None``.
+
+        An adopted Job's owner writes its own terminal record and exits, so a
+        copy read before that can look dead or stoppable while the disk already
+        holds the real outcome; writing the stale copy would overwrite it.
+        """
+        fresh = self._read_run(rec.run_id)
+        if fresh is None or fresh.status != jobrec.STATUS_RUNNING:
+            return None
+        return fresh
+
     async def _cancel_adopted_job(self, rec: jobrec.JobRecord) -> None:
         if self._adopt_report_outcome(rec):
             return
         if rec.pid is not None and not self._is_alive(rec.pid):
-            self._record_terminal(rec, 2, timed_out=False)
+            fresh = self._still_running(rec)
+            if fresh is not None:
+                self._record_terminal(fresh, 2, timed_out=False)
             return
         if rec.pid is not None:
             await self._cancel_process(rec.pid)
-            if self._adopt_report_outcome(rec):
+            # A SIGTERMed owner records its own failure; that is still the user's
+            # cancellation. Only a completion that won the race is kept as is.
+            fresh = self._read_run(rec.run_id)
+            if fresh is None or fresh.status == jobrec.STATUS_DONE:
                 return
+            if self._adopt_report_outcome(fresh):
+                return
+            rec = fresh
         self._record_user_cancellation(rec)
 
     async def cancel(self, run_id: str) -> str | None:
@@ -601,30 +628,45 @@ class JobLifecycle:
             ended is not None and ended >= self._started_at
         )
 
+    def _unread_of(
+        self, owned: list[tuple[jobrec.JobRecord, bool]]
+    ) -> tuple[jobrec.JobRecord, ...]:
+        """Finished, unread Jobs among *owned*, earliest-ended first."""
+        return tuple(
+            sorted(
+                (rec for rec, active in owned if not active and self._is_unread(rec)),
+                key=lambda rec: (rec.ended_at or rec.started_at, rec.run_id),
+            )
+        )
+
+    def unread_owned(self, caller: Caller) -> tuple[jobrec.JobRecord, ...]:
+        """The caller's finished Jobs whose result it has not read, earliest-ended first.
+
+        Reads only: it never calls :meth:`mark_read`, so asking changes nothing.
+        """
+        return self._unread_of(self._owned_jobs(caller))
+
     async def poll_owned(
         self, wait_seconds: float, caller: Caller, *, disk_tick: float = _DISK_POLL_TICK_SECONDS
     ) -> OwnedPoll:
         """Wait for the first of the caller's Jobs to finish; never blocks without a running Job.
 
         A finished Job whose result the caller has not read is returned at once,
-        earliest first, with the other unread ones listed. Waiting never cancels a Job.
+        earliest first. Waiting never cancels a Job.
         """
         deadline = time.monotonic() + max(0.0, wait_seconds)
         while True:
             owned = self._owned_jobs(caller)
             running = tuple(rec for rec, active in owned if active)
-            unread = sorted(
-                (rec for rec, active in owned if not active and self._is_unread(rec)),
-                key=lambda rec: (rec.ended_at or rec.started_at, rec.run_id),
-            )
+            unread = self._unread_of(owned)
             if unread:
                 first = unread[0]
                 tracked = first.run_id in self._tasks
                 view = _poll_view(first.run_id, "finished", tracked, self._repository)
-                return OwnedPoll(self._complete_poll(view), tuple(unread[1:]), running)
+                return OwnedPoll(self._complete_poll(view), running)
             remaining = deadline - time.monotonic()
             if not running or remaining <= 0:
-                return OwnedPoll(None, (), running)
+                return OwnedPoll(None, running)
             tasks = {self._tasks[rec.run_id] for rec in running if rec.run_id in self._tasks}
             tick = min(disk_tick, remaining)
             if tasks:
@@ -665,6 +707,12 @@ class JobLifecycle:
             return
         if jobrec.derive_status(rec, self._is_alive) == jobrec.STATUS_RUNNING:
             return
+        # Re-read: the owner may have written its terminal record and exited
+        # since the listing; the stale copy must not overwrite that outcome.
+        current = read_record_or_none(rec.run_id, located.root)
+        if current is None or current.status != jobrec.STATUS_RUNNING:
+            return
+        rec = current
         report, fresh = self._report(rec)
         report_exit = report.get("exit_code") if fresh and report else None
         if isinstance(report_exit, int):

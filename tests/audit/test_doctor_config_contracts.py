@@ -92,7 +92,7 @@ def test_doctor_rejects_retired_elaboration_tables_with_migration(retired):
     assert any(
         f"[flows.{retired}] is retired" in message
         and "sim --mode elab-only" in message
-        and "[flows.sim].standalone_frontend" in message
+        and "delete standalone_frontend" in message
         for message in fails
     )
 
@@ -131,6 +131,8 @@ def test_validate_one_flow_table_accepts_lint_timeout_ms():
         ("warnings_as_errors", "lint", "sim", False),
         # trace_files declares the TB's own dump path; only simulate reads it.
         ("trace_files", "sim", "lint", ["fpu.vcd"]),
+        # Only synth reads output_dir; the retired sim key is reported as retired.
+        ("output_dir", "synth", "sim", "util/sim"),
     ],
 )
 def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, value):
@@ -144,18 +146,44 @@ def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, 
 
     _record_audit(
         flow_schema.audit_flow_table(non_reader, {knob: value}),
-        warned=warns.append,
+        warned=lambda msg, fix="": warns.append(msg),
         failed=lambda msg, fix="": fails.append(msg),
     )
-    assert any(f"[flows.{non_reader}].{knob}" in m and "ignores it" in m for m in warns)
+    # The retired sim output_dir is reported as retired, not as an ignored knob.
+    non_reader_message = "is retired" if knob == "output_dir" else "ignores it"
+    assert any(f"[flows.{non_reader}].{knob}" in m and non_reader_message in m for m in warns)
 
     warns.clear()
     _record_audit(
         flow_schema.audit_flow_table(reader, {knob: value}),
-        warned=warns.append,
+        warned=lambda msg, fix="": warns.append(msg),
         failed=lambda msg, fix="": fails.append(msg),
     )
-    assert not any(knob in m and "ignores it" in m for m in warns)
+    assert not any(knob in m and ("ignores it" in m or "is retired" in m) for m in warns)
+
+
+def test_sim_output_dir_is_retired_without_failing_doctor():
+    """``[flows.sim].output_dir`` never changed a run: Doctor warns once, never fails."""
+    fails: list[str] = []
+    warns: list[str] = []
+    audit = flow_schema.audit_flow_tables(
+        {"flows": {"sim": {"output_dir": "util/sim"}, "lint": {}, "synth": {}}},
+        ("sim", "lint", "synth"),
+    )
+
+    ok = _record_audit(
+        audit,
+        warned=lambda msg, fix="": warns.append(msg),
+        failed=lambda msg, fix="": fails.append(msg),
+    )
+
+    assert ok is True
+    assert fails == []
+    assert len(warns) == 1
+    assert "[flows.sim].output_dir is retired" in warns[0]
+    (finding,) = [f for f in audit.findings if f.check_id == "config.flow-key-retired"]
+    assert finding.subject == "sim.output_dir"
+    assert "delete [flows.sim].output_dir" in finding.fix
 
 
 @pytest.mark.parametrize(
@@ -297,3 +325,41 @@ class TestValidateAgentTable:
         # container's BOOLEY_AGENT_APP; only a present-and-wrong value fails.
         valid, passes, fails = self._run(section)
         assert valid and not fails and not passes
+
+
+def test_doctor_booley_toml_validation_names_retired_standalone_frontend(tmp_path):
+    """Doctor stops on the retired key with its own migration text, not the EDA fix."""
+    from booley.audit.diagnostic_results import Findings
+    from booley.harness.setup import readiness
+
+    findings = Findings()
+
+    valid = readiness._validate_booley_toml(
+        {"flows": {"sim": {"standalone_frontend": "auto"}}}, tmp_path, findings
+    )
+
+    assert valid is False
+    failures = findings.report().findings
+    assert len(failures) == 1
+    only = failures[0]
+    assert "[flows.sim].standalone_frontend is retired" in only.message
+    assert "each Target's simulator" in only.message
+    assert "booley.toml booley.toml" not in only.message
+    assert "commercial-EDA" not in only.fix
+
+
+def test_doctor_booley_toml_validation_accepts_memory_budget_and_rejects_zero(tmp_path):
+    """Doctor accepts the undocumented key silently and fails an invalid size naming it."""
+    from booley.audit.diagnostic_results import Findings
+    from booley.harness.setup import readiness
+
+    accepted = Findings()
+    assert readiness._validate_booley_toml({"jobs": {"memory_budget": "24g"}}, tmp_path, accepted)
+    assert not any("memory_budget" in f.message for f in accepted.report().findings)
+
+    rejected = Findings()
+    assert not readiness._validate_booley_toml(
+        {"jobs": {"memory_budget": "0g"}}, tmp_path, rejected
+    )
+    messages = [f.message for f in rejected.report().findings]
+    assert any("[jobs].memory_budget" in message for message in messages)

@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import shlex
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import patch
 
 import pytest
 
@@ -17,12 +15,11 @@ from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
-    AdapterTransportIdentity,
+    work_transport_identity,
     write_adapter_result,
 )
 from booley.flows.sim.backends import cocotb_results
 from booley.flows.sim.build import PreparedSimulationBuild
-from booley.flows.sim.build_session import SimulationBuildSession
 from booley.flows.sim.campaign.codec import decode_simulation_result, encode_simulation_result
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
@@ -32,7 +29,7 @@ from booley.flows.sim.campaign.coordinator import (
 from booley.flows.sim.campaign.flow_planning import plan_ordinary_hdl_campaign
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
+from booley.flows.sim.execution import SimulationExecution, SimulationOptions
 from booley.flows.sim.execution.contract import (
     SimulationArtifactEvidence,
     SimulationInfrastructureFailure,
@@ -40,299 +37,13 @@ from booley.flows.sim.execution.contract import (
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.test_runs import build_test_run
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
-from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.mcp.base import EXIT_FAILURE
 from booley.targets.domain import TargetHandle
 from tests.flows.report_headline import final_report_omits_headline
-from tests.flows.sim.leased_session import canned_build_session
-from tests.flows.sim.test_campaign_phase5_adversarial import _facts, _plan, _unmanaged
-from tests.flows.sim.test_flow import SimulateFlow, _make_flow
-
-
-@pytest.fixture()
-def _leased_build_session():
-    """Run canned-process compatibility tests against a leased build session."""
-    with canned_build_session():
-        yield
-
-
-@pytest.mark.parametrize(
-    ("process", "exit_code", "verdict", "sva_errors"),
-    [
-        pytest.param(
-            SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n"),
-            EXIT_SUCCESS,
-            "pass",
-            0,
-            id="pass-sentinel",
-        ),
-        pytest.param(
-            SubprocessResult(returncode=0, stdout="[SIM_RESULT] FAILED\n"),
-            EXIT_FAILURE,
-            "fail",
-            0,
-            id="fail-sentinel",
-        ),
-        pytest.param(
-            SubprocessResult(
-                returncode=0,
-                stdout=('[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'),
-            ),
-            EXIT_SUCCESS,
-            "pass",
-            0,
-            id="authenticated-summary-overrides-fail-sentinel",
-        ),
-        pytest.param(
-            SubprocessResult(
-                returncode=0,
-                stdout=('[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":false,"sva_errors":2}\n'),
-            ),
-            EXIT_FAILURE,
-            "fail",
-            2,
-            id="dirty-sva-overrides-pass-sentinel",
-        ),
-        pytest.param(
-            SubprocessResult(
-                returncode=-9,
-                stdout=('[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":false,"sva_errors":3}\n'),
-                timed_out=True,
-                duration_s=600.0,
-            ),
-            EXIT_FAILURE,
-            "timeout",
-            3,
-            id="timeout-overrides-fail-and-dirty-sva",
-        ),
-        pytest.param(
-            SubprocessResult(
-                returncode=1,
-                stdout=(
-                    "%Error: tb.sv:12: syntax error\n"
-                    "ERROR: Verilator elaboration failed (rc=1)\n"
-                    "[SIM_RESULT] PASSED\n"
-                    '[SIM_SUMMARY] {"passed":false,"sva_errors":4}\n'
-                ),
-                duration_s=0.1,
-            ),
-            EXIT_FAILURE,
-            "elab_error",
-            0,
-            id="elaboration-overrides-sentinel-and-dirty-sva",
-        ),
-        pytest.param(
-            SubprocessResult(
-                returncode=127,
-                stdout=(
-                    "/bin/sh: 1: verilator: not found\n"
-                    "ERROR: Verilator elaboration failed (rc=127)\n"
-                    "[SIM_RESULT] PASSED\n"
-                    '[SIM_SUMMARY] {"passed":false,"sva_errors":5}\n'
-                ),
-            ),
-            EXIT_ERROR,
-            None,
-            None,
-            id="infrastructure-overrides-sentinel-and-dirty-sva",
-        ),
-    ],
-)
-def test_public_simulation_precedence_table(
-    tmp_path: Path,
-    _leased_build_session: None,
-    process: SubprocessResult,
-    exit_code: int,
-    verdict: str | None,
-    sva_errors: int | None,
-) -> None:
-    """Conflicting execution evidence reaches the established public exit."""
-    flow = _make_flow(tmp_path, config="lite")
-    with (
-        patch("booley.flows.sim.flow._get_test_names", return_value={}),
-        patch.object(SimulateFlow, "_flow_enabled", return_value=True),
-        patch.object(flow, "_execute", return_value=process),
-        flow.publication_resources,
-    ):
-        outcome = flow._run()
-
-    assert outcome.exit_code == exit_code
-    report_path = tmp_path / "reports/sim/1/targets/lite/simulation.json"
-    if verdict is None:
-        assert not report_path.exists()
-        assert outcome.detail["eda_tool_error"] == "missing_executable"
-        return
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["tests"][0]["verdict"] == verdict
-    assert report["tests"][0]["sva_errors"] == sva_errors
-
-
-def test_compatibility_projection_and_endpoint_detail_shape(
-    tmp_path: Path,
-    _leased_build_session: None,
-) -> None:
-    """Freeze the established projection and endpoint values, not only keys."""
-    flow = _make_flow(tmp_path, config="lite")
-    process = SubprocessResult(
-        returncode=0,
-        stdout=(
-            '[SIM_RESULT] PASSED\n[SIM_CYCLES] 21\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
-        ),
-        duration_s=0.25,
-    )
-    with (
-        patch("booley.flows.sim.flow._get_test_names", return_value={}),
-        patch.object(SimulateFlow, "_flow_enabled", return_value=True),
-        patch.object(flow, "_execute", return_value=process),
-        patch.object(flow, "_compile_command_str", return_value=None),
-        patch.object(flow, "_fileset_for_report", return_value=None),
-        flow.publication_resources,
-    ):
-        outcome = flow._run()
-
-    report = json.loads(
-        (tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text(encoding="utf-8")
-    )
-    _assert_projection_shapes(report, outcome)
-    _assert_projection_values(report, outcome)
-
-
-def _assert_projection_shapes(report, outcome) -> None:
-    assert set(report) == {
-        "artifacts",
-        "build_stage",
-        "complete",
-        "eda_tool",
-        "elapsed_s",
-        "flow",
-        "mode",
-        "passed",
-        "phase_timings_s",
-        "target",
-        "target_identity",
-        "tb_top",
-        "test_runs",
-        "tests",
-        "timestamp",
-    }
-    assert set(report["test_runs"][0]) == {
-        "args",
-        "env",
-        "fingerprint",
-        "grade",
-        "name",
-        "seed",
-        "test",
-        "variant",
-    }
-    assert set(report["tests"][0]) == {
-        "artifacts",
-        "build_s",
-        "cycle_observation",
-        "cycles",
-        "elapsed_s",
-        "error_tail",
-        "failure_kind",
-        "name",
-        "passed",
-        "phase_timings_s",
-        "fingerprint",
-        "resources",
-        "seed",
-        "sva_errors",
-        "test_run",
-        "test_validated",
-        "timed_out",
-        "termination",
-        "variant",
-        "verdict",
-        "workload_fingerprint",
-    }
-    _assert_endpoint_detail_shape(outcome)
-
-
-def _assert_endpoint_detail_shape(outcome) -> None:
-    assert set(outcome.detail) == {
-        "artifacts",
-        "cycle_counts",
-        "elaboration",
-        "elapsed_s",
-        "mode",
-        "phase_timings_s",
-        "resolution_s",
-        "pre_sim_runs",
-        "pre_sim_lines",
-        "targets",
-        "targets_passed",
-    }
-    assert outcome.detail["pre_sim_runs"] == []
-    assert outcome.detail["pre_sim_lines"] == []
-
-
-def _assert_projection_values(report, outcome) -> None:
-    test = report["tests"][0]
-    assert report["flow"] == "sim"
-    assert report["mode"] == "simulate"
-    assert report["target"] == "lite"
-    assert report["target_identity"] == "::lite:0#lite"
-    assert report["complete"] is True
-    assert report["passed"] is True
-    assert test["name"] == "lite"
-    assert test["passed"] is True
-    assert test["verdict"] == "pass"
-    assert test["cycles"] == 21
-    assert test["cycle_observation"] == "legacy"
-    assert outcome.exit_code == EXIT_SUCCESS
-    assert outcome.criterion_key == "sim_pass_lite"
-    assert outcome.criterion_met is True
-    assert outcome.display_label == "target lite · test lite"
-    assert outcome.detail["mode"] == "simulate"
-    assert outcome.detail["targets"] == 1
-    assert outcome.detail["targets_passed"] == 1
-    assert outcome.detail["cycle_counts"] == [
-        {
-            "target": "lite",
-            "target_identity": "::lite:0#lite",
-            "test": "lite",
-            "verdict": "pass",
-            "cycles": 21,
-            "observation": "legacy",
-        }
-    ]
-
-
-class _BuildSessionBoundary(SimulationBuildSession):
-    """Deterministic cache behind the production session orchestration."""
-
-    def __init__(self, handle: TargetHandle, _variant: str) -> None:
-        super().__init__(handle, _variant)
-        self.cached: PreparedSimulationBuild | None = None
-        self.cache_decision = "miss"
-
-    def reusable_key(
-        self,
-        _prepared: PreparedSimulationBuild,
-        _inputs: dict[str, str],
-        *,
-        hooks: bool,
-    ) -> str:
-        assert hooks is False
-        return "stable-build-key"
-
-    def try_reuse(
-        self,
-        _prepared: PreparedSimulationBuild,
-        _key: str | None,
-    ) -> PreparedSimulationBuild | None:
-        self.cache_decision = "hit" if self.cached is not None else "miss"
-        return self.cached
-
-    def authorize_fresh_image(
-        self,
-        prepared: PreparedSimulationBuild,
-        _inputs: dict[str, str],
-        _key: str | None,
-    ) -> None:
-        self.cached = prepared
+from tests.flows.sim.campaign_boundary import run_campaign_sim
+from tests.flows.sim.campaign_test_support import _admission, _facts, _plan
+from tests.flows.sim.launched_work import launched_work
+from tests.flows.sim.test_flow import SimulateFlow
 
 
 class _SessionBoundaryExecution(SimulationExecution):
@@ -411,60 +122,6 @@ def _handle(root: Path) -> TargetHandle:
     )
 
 
-@pytest.mark.parametrize(
-    ("eda_tool", "cocotb", "expected_groups", "expected_builds", "expected_runs"),
-    [
-        pytest.param("icarus", False, 3, 1, 3, id="icarus-native-reuse"),
-        pytest.param("verilator", False, 3, 1, 3, id="verilator-native-reuse"),
-        pytest.param("icarus", True, 1, 1, 1, id="cocotb-batch"),
-    ],
-)
-def test_leased_session_build_and_run_counts(
-    tmp_path: Path,
-    eda_tool: str,
-    cocotb: bool,
-    expected_groups: int,
-    expected_builds: int,
-    expected_runs: int,
-) -> None:
-    """Production grouping reuses one leased native build and batches Cocotb."""
-    handle = _handle(tmp_path)
-    execution = _SessionBoundaryExecution(eda_tool=eda_tool, cocotb=cocotb)
-    commands: list[list[str]] = []
-    invoke = execution._invoke
-
-    def record(command: list[str], *, timeout: int) -> SubprocessResult:
-        commands.append(command)
-        return invoke(command, timeout=timeout)
-
-    execution._invoke = record
-    inspection = SimpleNamespace(
-        toplevel="tb_demo",
-        eda_tool=eda_tool,
-        flow_options={"cocotb_module": "test_demo"} if cocotb else {},
-    )
-    inspection.inspect = lambda _handle: inspection
-    with (
-        patch(
-            "booley.flows.sim.execution.engine.SimulationBuildSession",
-            _BuildSessionBoundary,
-        ),
-        patch(
-            "booley.flows.sim.execution.engine.TargetCatalog.build",
-            return_value=inspection,
-        ),
-    ):
-        outcome = execution.run(handle, NamedTests(("smoke", "stress", "edge")))
-
-    build_commands = [command for command in commands if "BOOLEY_BUILD_STAGE" in command[-1]]
-    run_commands = [command for command in commands if "BOOLEY_BUILD_STAGE" not in command[-1]]
-    assert outcome.passed, outcome.infrastructure_failure
-    assert len(outcome.builds) == expected_groups
-    assert [build.ran for build in outcome.builds] == [True] + [False] * (expected_groups - 1)
-    assert len(build_commands) == expected_builds
-    assert len(run_commands) == expected_runs
-
-
 class _AdapterAbortExecution(_SessionBoundaryExecution):
     termination = "fatal_init"
     failure_kind = "missing_input"
@@ -492,17 +149,9 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
                 returncode=0,
                 stdout=f"BOOLEY_BUILD_STAGE token={identity.attempt_token} rc=0\n",
             )
-        tokens = shlex.split(command[-1])
-        selected = tuple(
-            token.split("=", 1)[1] for token in tokens if token.startswith("--selected-test=")
-        )
-        identity = AdapterTransportIdentity(
-            "cocotb",
-            tokens[tokens.index("--attempt-token") + 1],
-            tokens[tokens.index("--target-identity") + 1],
-            selected,
-            Path(tokens[tokens.index("--adapter-result") + 1]),
-        )
+        identity = work_transport_identity(launched_work(command))
+        assert identity is not None
+        selected = identity.selected_tests
         detail = self.detail
         self.cocotb_path = identity.result_path.parent / "cocotb_results.json"
         self.cocotb_path.write_text(
@@ -598,7 +247,7 @@ def test_adapter_termination_reaches_normalized_campaign_result(tmp_path: Path) 
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
 
@@ -630,14 +279,8 @@ class _NativeAdapterExecution(_AdapterAbortExecution):
     def _invoke_process(self, command: list[str], *, timeout: int) -> SubprocessResult:
         if "BOOLEY_BUILD_STAGE" in command[-1]:
             return super()._invoke_process(command, timeout=timeout)
-        tokens = shlex.split(command[-1])
-        identity = AdapterTransportIdentity(
-            "verilator",
-            tokens[tokens.index("--attempt-token") + 1],
-            tokens[tokens.index("--target-identity") + 1],
-            (),
-            Path(tokens[tokens.index("--adapter-result") + 1]),
-        )
+        identity = work_transport_identity(launched_work(command))
+        assert identity is not None
         if self.adapter_termination:
             write_adapter_result(
                 identity,
@@ -669,7 +312,7 @@ def _run_campaign_result(tmp_path: Path, plan: Any, execution: Any) -> Any:
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -860,7 +503,7 @@ def test_infrastructure_guard_publishes_terminal_campaign(
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -908,7 +551,7 @@ def test_infrastructure_without_tests_retains_selected_identities(
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -917,6 +560,56 @@ def test_infrastructure_without_tests_retains_selected_identities(
     assert result.document["grade"] == "error"
     assert [item["test"] for item in result.document["observations"]] == list(names)
     assert all(item["functional"] == "not_observed" for item in result.document["observations"])
+
+
+class _NativeNoVerdictExecution(_NativeAdapterExecution):
+    """A native launch whose adapter protocol broke: infrastructure failure, no Test outcome."""
+
+    def _completed_group(self, *args, **kwargs):
+        outcome = super()._completed_group(*args, **kwargs)
+        return replace(
+            outcome,
+            tests=(),
+            infrastructure_failure=SimulationInfrastructureFailure(
+                "adapter_protocol", "simulator returned no verdict"
+            ),
+            artifacts=(),
+        )
+
+
+def test_infrastructure_failure_of_the_unnamed_invocation_is_one_observation_of_it(
+    tmp_path: Path,
+) -> None:
+    """A native Target without Tests has no names to retain: the run itself is the observation."""
+    handle, inspection, preview = _facts(tmp_path, cocotb=False, preview_names=())
+    (tmp_path / "dut.core").write_text(
+        "CAPI=2:\nname: acme:lib:dut:1\nfilesets:\n  tb:\n    files: [tb.sv]\n"
+        "    file_type: systemVerilogSource\ntargets:\n  sim:\n    flow: sim\n"
+        "    filesets: [tb]\n    flow_options: {tool: verilator}\n    toplevel: tb\n",
+        encoding="utf-8",
+    )
+    unnamed = (build_test_run(None, seed=9),)
+    preview = replace(preview, groups=((),), run_groups=(unnamed,), commands=(("run",),))
+    plan = plan_ordinary_hdl_campaign(
+        handle=handle,
+        inspection=inspection,
+        preview=preview,
+        groups=((),),
+        required_suite=(),
+        revision="abc123",
+        invocation_id=7,
+        execution_id="7" * 32,
+        trace=False,
+    )
+    execution = _NativeNoVerdictExecution(eda_tool="verilator", cocotb=False)
+    result = _run_campaign_result(tmp_path, plan, execution)
+
+    assert result.document["grade"] == "error"
+    (observation,) = result.document["observations"]
+    assert observation["test_run"] == "<default>@9"
+    assert observation["failure_class"] == "infrastructure"
+    (record,) = (tmp_path / "reports/1/targets/sim/campaign").rglob("*infrastructure-failure*")
+    assert json.loads(record.read_text(encoding="utf-8"))["selected_tests"] == [None]
 
 
 def test_cleanup_failure_preserves_completed_tests_and_guard(tmp_path, monkeypatch) -> None:
@@ -950,7 +643,7 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
@@ -962,23 +655,15 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
 
 
 @pytest.mark.parametrize("met", [True, False])
-def test_standalone_legacy_simulation_final_report_is_run_local(
-    tmp_path, _leased_build_session, met
-):
-    flow = _make_flow(tmp_path, config="lite")
-    flow.args.state_file = None
-    flow.read_state()
+def test_standalone_campaign_final_report_is_run_local(tmp_path, monkeypatch, met):
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     process = SubprocessResult(
         returncode=0, stdout=f"[SIM_RESULT] {'PASSED' if met else 'FAILED'}\n"
     )
-    with (
-        patch("booley.flows.sim.flow._get_test_names", return_value={}),
-        patch.object(SimulateFlow, "_flow_enabled", return_value=True),
-        patch.object(flow, "_execute", return_value=process),
-        flow.publication_resources,
-    ):
-        outcome = flow._run()
-        final_report_omits_headline(flow, outcome)
+    run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite")
+    flow = run.flow
+    with flow.publication_resources:
+        final_report_omits_headline(flow, run.result.outcome)
     assert flow.state.criteria["sim_pass_lite"].met is met
     assert "elab_pass_lite" not in flow.state.criteria
     assert flow.state._file_path is None
@@ -1041,7 +726,7 @@ def test_backend_timeout_on_campaign_path_preserves_detail_and_adds_hint(
     flow = SimulateFlow()
     # Planning and execution share the fake build, so the planned source
     # disclosure matches what execution later prepares.
-    flow._simulation_execution_override = execution
+    monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
     result = flow.execute_cli(argv)
 
     assert result.exit_code == EXIT_FAILURE, result.outcome.report_text

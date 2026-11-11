@@ -11,10 +11,9 @@ import stat
 import subprocess
 import sys
 import tomllib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,10 +26,17 @@ from booley.audit import (
     project_schema,
     resource_policy,
 )
-from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+from booley.audit.diagnostic_results import (
+    DiagnosticFinding,
+    DiagnosticReport,
+    Findings,
+    Severity,
+)
+from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
-from booley.harness import colors, developer_probe, doctor, host_diagnostics
+from booley.harness import developer_probe, doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
+from booley.presentation import colors
 from booley.runtime import (
     auth_token,
     doctor_stamp,
@@ -39,12 +45,12 @@ from booley.runtime import (
     runtime_context,
     session_issuance,
     session_runtime,
-    vaporview,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
+from tests.conftest import add_git_command_config
 from tests.devcontainer_spec_support import build_spec
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
@@ -54,7 +60,7 @@ from tests.diagnostic_helpers import (
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -346,6 +352,9 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{os.getuid()}\n", stderr="")
         if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["git", "--version"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
+        if cmd[1:3] == ["image", "ls"]:
+            # No issued Sandbox Image keepers; the strict listing rejects stray output.
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[1:3] == ["image", "inspect"] and "{{json .Config.Env}}" in cmd:
             # Healthy default: the sandbox image bakes the ADR 0028 runtime marker.
             return subprocess.CompletedProcess(
@@ -457,18 +466,6 @@ def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, cap
     assert rc == 0
     assert "devcontainer.json matches the spec `booley init` would write" in output
     assert "Booley files excluded from git" in output
-
-
-def test_git_exclude_warnings_are_scoped_per_missing_entry(tmp_path):
-    _git_init(tmp_path)
-    (tmp_path / ".git" / "info" / "exclude").write_text("/.devcontainer\n", encoding="utf-8")
-    findings: list[doctor.DoctorWarning] = []
-
-    doctor._check_devcontainer_excludes(tmp_path, lambda _msg: None, findings.append)
-
-    assert len(findings) == 1
-    assert findings[0].check_id == "project.git-excludes-missing"
-    assert findings[0].subject == ".booley"
 
 
 @pytest.mark.parametrize("concise", [False, True])
@@ -732,6 +729,28 @@ def _gitignore_probe(booley_dir: Path) -> list[DiagnosticFinding]:
     return reporter.findings
 
 
+def test_init_fix_hints_name_where_to_run_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plain `booley init` fix hints follow the runtime location, in Doctor and readiness."""
+    wording = {
+        "HOST": "booley init",
+        "HAND_WRITTEN_SANDBOX": "booley init in this Sandbox",
+        "ISSUED_SANDBOX": "booley init on the host",
+    }
+    # A Booley Directory without .gitignore, in a repository that lacks the projection exclude.
+    run_bounded_child(["git", "init", str(tmp_path)], check=True)
+    for name, where in wording.items():
+        kind = runtime_context.RuntimeLocation[name]
+        monkeypatch.setattr(runtime_context, "runtime_location", lambda kind=kind: kind)
+        findings = readiness.Findings()
+        readiness._check_projection_exclude(tmp_path, findings)
+
+        assert [finding.fix for finding in _gitignore_probe(tmp_path)] == [where]
+        (fix,) = [finding.fix for finding in findings.report().findings]
+        assert fix.startswith(f"run {where} to add the generated projection pattern")
+
+
 def test_project_gitignore_passes_with_every_init_pattern(tmp_path: Path) -> None:
     (tmp_path / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
 
@@ -832,14 +851,7 @@ def _history_probe(booley_dir: Path) -> doctor._Reporter:
 
 
 def _history_git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", *args], cwd=repo, check=True)
 
 
 def _history_repo(tmp_path: Path, monkeypatch) -> Path:
@@ -863,10 +875,56 @@ def _history_repo(tmp_path: Path, monkeypatch) -> Path:
     return tmp_path
 
 
+_COMPLETE_LOGICAL_SYNTH_REPORT = {
+    "synth_mode": "logical",
+    "termination": "completed",
+    "ppa_complete": True,
+    "area_source": "yosys_mapped",
+    "timing_complete": False,
+    "per_clock": [],
+}
+_CONTAINER_CLI = "doc" + "ker"
+
+
+def _write_synth_report(report_dir: Path, report: dict, target: str = "fast") -> None:
+    """Write *report* where Doctor reads a Target's deep synthesis report."""
+    from booley.flows.implementation_publication import target_report_path
+
+    path = target_report_path("synth", target, report_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+
+def _write_complete_synth_report(booley_dir: Path, target: str = "synth_fast") -> None:
+    """Write the terminal logical-synthesis report a real deep synth run leaves.
+
+    It carries no ``peak_rss_mb``, so Doctor's memory calibration reports the
+    measurement as unavailable instead of depending on host memory.
+    """
+    _write_synth_report(
+        booley_dir / doctor.DOCTOR_TMP_DIR / "flow-reports",
+        _COMPLETE_LOGICAL_SYNTH_REPORT,
+        target,
+    )
+
+
+def _deep_synth_writes_complete_report(monkeypatch, booley_dir: Path) -> None:
+    """Make the faked Sandbox leave a complete report after each deep synth command."""
+    base_run = doctor.subprocess.run
+
+    def run(cmd, **kwargs):
+        result = base_run(cmd, **kwargs)
+        if "booley.flows.synth" in cmd and "--dry-run" not in cmd:
+            _write_complete_synth_report(booley_dir)
+        return result
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+
 def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
-    monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
+    _deep_synth_writes_complete_report(monkeypatch, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=True), tmp_path)
 
@@ -891,11 +949,11 @@ def test_doctor_deep_surfaces_synthesis_warning_verdict(
 ):
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
-    monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
     base_run = doctor.subprocess.run
 
     def run_with_synth_warning(cmd, **kwargs):
         if "booley.flows.synth" in cmd and "--dry-run" not in cmd:
+            _write_complete_synth_report(booley_dir)
             return subprocess.CompletedProcess(
                 cmd,
                 0,
@@ -994,7 +1052,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
 ):
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
-    monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
+    _deep_synth_writes_complete_report(monkeypatch, booley_dir)
 
     def unexpected_agent_check(*_args, **_kwargs):
         raise AssertionError("agent check should have been skipped")
@@ -1029,7 +1087,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
 
 
 def _tool_check_harness(tmp_path, monkeypatch, fake_run):
-    """Drive ``_run_flow_check`` directly: stub subprocess + Target probing.
+    """Drive ``_run_flow_check`` directly: stub subprocess + Sandbox session startup.
 
     Returns ``(project, calls)`` — *calls* records every argv *fake_run* saw.
     """
@@ -1053,20 +1111,19 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
     return project, calls
 
 
-def _run_flow_check(project, rec: _Rec, *, dry_run: bool) -> None:
-    doctor._run_flow_check(
+def _run_flow_check(project, *, dry_run: bool) -> doctor._FlowCheckOutcome:
+    return doctor._run_flow_check(
         project,
         "sim",
         target="fast",
         dry_run=dry_run,
         flow_runtime=doctor._DoctorFlowRuntime(project.project_root, "doc" + "ker"),
         timeout_s=10,
-        verbose=False,
-        _pass=rec.p,
-        _warn=rec.w,
-        _skip=rec.s,
-        _fail=rec.f,
     )
+
+
+def _kinds(report: DiagnosticReport) -> set[Severity]:
+    return {finding.severity for finding in report.findings}
 
 
 def test_doctor_flow_runtime_starts_once_and_reuses_container(tmp_path, monkeypatch):
@@ -1100,11 +1157,10 @@ def test_deep_check_routing_truth_table(
         monkeypatch,
         lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr=""),
     )
-    rec = _Rec()
 
-    _run_flow_check(project, rec, dry_run=dry_run)
+    outcome = _run_flow_check(project, dry_run=dry_run)
 
-    assert rec.kinds() == {"pass"}
+    assert _kinds(outcome.report) == {Severity.PASS}
     assert len(calls) == 1
     cmd = calls[0]
     assert cmd[:3] == ["doc" + "ker", "exec", "-e"]
@@ -1165,13 +1221,13 @@ def test_session_runtime_startup_failure_fails_loudly(tmp_path, monkeypatch):
         "up",
         lambda _root: (_ for _ in ()).throw(doctor.session_runtime.SessionError("bad issuance")),
     )
-    rec = _Rec()
 
-    _run_flow_check(project, rec, dry_run=False)
+    outcome = _run_flow_check(project, dry_run=False)
 
-    assert rec.kinds() == {"fail"}
-    assert "could not enter the Sandbox" in rec.fails()[0]
-    assert "bad issuance" in rec.fails()[0]
+    [finding] = outcome.report.findings
+    assert finding.severity is Severity.FAIL
+    assert "could not enter the Sandbox" in finding.message
+    assert "bad issuance" in finding.message
 
 
 def test_session_capacity_refusal_keeps_capacity_remedy(tmp_path, monkeypatch):
@@ -1187,11 +1243,12 @@ def test_session_capacity_refusal_keeps_capacity_remedy(tmp_path, monkeypatch):
             doctor.session_runtime.SessionError("Sandbox start refused: host is at capacity")
         ),
     )
-    rec = _Rec()
 
-    _run_flow_check(project, rec, dry_run=False)
+    outcome = _run_flow_check(project, dry_run=False)
 
-    assert rec.fix_hints == ["free Sandbox capacity using the command in the refusal, then retry"]
+    assert [finding.fix for finding in outcome.report.findings] == [
+        "free Sandbox capacity using the command in the refusal, then retry"
+    ]
 
 
 def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
@@ -1207,13 +1264,13 @@ def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
             stderr="boom",
         ),
     )
-    rec = _Rec()
 
-    _run_flow_check(project, rec, dry_run=False)
+    outcome = _run_flow_check(project, dry_run=False)
 
-    assert rec.kinds() == {"fail"}
-    assert "failed with exit 97" in rec.fails()[0]
-    assert "OUTSIDE" not in rec.fails()[0]
+    [finding] = outcome.report.findings
+    assert finding.severity is Severity.FAIL
+    assert "failed with exit 97" in finding.message
+    assert "OUTSIDE" not in finding.message
 
 
 def test_core_resolve_misroute_fails_loudly(tmp_path, monkeypatch):
@@ -1473,24 +1530,18 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
         monkeypatch,
         lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr=""),
     )
-    rec = _Rec()
 
-    doctor._run_flow_check(
+    outcome = doctor._run_flow_check(
         project,
         "sim",
         target="fast",
         dry_run=False,
         flow_runtime=doctor._DoctorFlowRuntime(project.project_root, None),
         timeout_s=10,
-        verbose=False,
-        _pass=rec.p,
-        _warn=rec.w,
-        _skip=rec.s,
-        _fail=rec.f,
     )
 
-    assert rec.kinds() == {"skip"}
-    skip_msg = next(m for lvl, m in rec.events if lvl == "skip")
+    assert _kinds(outcome.report) == {Severity.SKIP}
+    skip_msg = outcome.report.findings[0].message
     assert "runtime not available" in skip_msg
     assert "booley init --force" not in skip_msg
 
@@ -1637,6 +1688,9 @@ def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monke
     from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 
     assert f"{INVOCATION_ORIGIN_ENV}=transport" in cmd
+    # Doctor's Flow runs write no Resource History records (#3235).
+    assert "BOOLEY_INTERNAL_DOCTOR_RUN=1" in cmd
+    assert doctor._doctor_subprocess_env(project)["BOOLEY_INTERNAL_DOCTOR_RUN"] == "1"
 
 
 def _tests_toml_project_audit(tmp_path, tests_toml_text: str) -> doctor.ProjectAudit:
@@ -2207,7 +2261,7 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
-        if cmd[:2] == ["git", "ls-files"]:
+        if cmd[:4] == ["git", "ls-files", "--", ".interactive_logs"]:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
@@ -2296,7 +2350,7 @@ def _audit(root: Path) -> _Rec:
         first_target="x",
     )
     rec = _Rec()
-    doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f)
+    doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=rec.d)
     return rec
 
 
@@ -2331,27 +2385,17 @@ targets:
 """
 
 
-def _write_cocotb_project(
-    root: Path,
-    *,
-    tb_body: str,
-    tests: list[str] | None = None,
-) -> None:
+def _write_cocotb_project(root: Path, *, tb_body: str) -> None:
     """A minimal project whose only sim Target is a Cocotb Target (ADR 0034).
 
-    *tb_body* is the Python testbench; *tests* (if given) is the tests.toml
-    ``tests = [...]`` list declared on the Target.
+    *tb_body* is the Python testbench.
     """
     (root / "design.core").write_text(_COCOTB_SIM_CORE, encoding="utf-8")
     (root / "rtl").mkdir(exist_ok=True)
     (root / "tb").mkdir(exist_ok=True)
     (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (root / "tb" / "test_dut.py").write_text(tb_body, encoding="utf-8")
-    pd = root / ".booley"
-    pd.mkdir(exist_ok=True)
-    if tests is not None:
-        names = ", ".join(f'"{t}"' for t in tests)
-        (pd / "tests.toml").write_text(f"[sim]\ntests = [{names}]\n", encoding="utf-8")
+    (root / ".booley").mkdir(exist_ok=True)
 
 
 class TestCoreAudit:
@@ -2385,7 +2429,12 @@ class TestCoreAudit:
         (tmp_path / ".booley").mkdir()
         rec = _Rec()
         doctor._run_core_audit(
-            project, rec.p, rec.w, rec.s, lambda msg, fix="": failures.append((msg, fix))
+            project,
+            rec.p,
+            rec.w,
+            rec.s,
+            lambda msg, fix="": failures.append((msg, fix)),
+            _diagnostics=rec.d,
         )
         # A bare ``defines:`` (null) is also a CAPI2 schema violation, so FuseSoC's
         # own verdict adds one ``.core schema`` row; the Target-level row is the one
@@ -2437,12 +2486,14 @@ class TestCoreAudit:
             return result
 
         monkeypatch.setattr(doctor.TargetCatalog, "inspect", inspect)
-        monkeypatch.setattr(doctor, "_audit_native_dependencies", lambda *_args: None)
 
         rec = _audit(tmp_path)
 
         assert rec.fails() == []
-        assert sorted(calls) == ["lint", "sim"]
+        # The core audit reads each root partition once; the native-dependency
+        # source collection runs last and reads the seed Target (sim) again.
+        assert sorted(calls[:-1]) == ["lint", "sim"]
+        assert calls[-1] == "sim"
 
     def _cpp_target_project(self, tmp_path: Path, include_line: str) -> doctor.ProjectAudit:
         (tmp_path / "design.core").write_text(
@@ -2476,85 +2527,64 @@ targets:
             first_target="sim",
         )
 
-    def test_native_dependency_is_flagged(self, tmp_path: Path):
-        """F-9: Ibex's dpi_memutil.cc includes <libelf.h> and links -lelf.
+    def test_core_audit_hands_native_dependency_report_to_diagnostics(self, tmp_path: Path):
+        """Doctor selects the Targets' sources and only forwards the owner's report.
 
-        Requirements baking is Python-only, so the derived image shipped
-        only the runtime libelf.so.1 — no header, no linker input — and the
-        failure surfaced deep inside a simulation build.
+        The fixture's missing ``tb/dpi_memutil.cc`` also exercises the owner's
+        unreadable-file skip through the real Target path.
         """
         project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
         rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
+        reports: list[DiagnosticReport] = []
 
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("libelf-dev" in m for m in warns)
-        assert any("tb/harness.cc" in m for m in warns)
-        # Advisory only — this is a curated hint list, not a resolver.
-        assert rec.fails() == []
+        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=reports.append)
 
-    def test_clean_cpp_sources_pass(self, tmp_path: Path):
-        project = self._cpp_target_project(
-            tmp_path, "#include <cstdint>\n#include <verilated.h>\n"
-        )
-        rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
+        owner_report = reports[-1]
+        assert [(f.severity, f.check_id, f.subject) for f in owner_report.findings] == [
+            (Severity.WARN, "sandbox.native-dependency-missing", "libelf-dev")
+        ]
+        assert "tb/harness.cc" in owner_report.findings[0].message
+        assert [m for lvl, m in rec.events if "libelf" in m] == []
 
-        assert [m for lvl, m in rec.events if lvl == "warn"] == []
-        assert any("no known-missing native build" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_native_dependency_declared_in_project_dockerfile_passes(self, tmp_path: Path):
+    def test_native_dependency_warning_renders_waived_after_tests_toml(self, tmp_path: Path):
         project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        docker_dir = project.booley_dir / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text(
-            "FROM booley-sandbox-riscv\n"
-            "RUN apt-get update \\\n"
-            "    && apt-get install -y --no-install-recommends libelf-dev\n",
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+        (tmp_path / "tb" / "tb_dut.sv").write_text(
+            '$display("[SIM_RESULT] PASSED");\n', encoding="utf-8"
+        )
+        (project.booley_dir / "doctor-waivers.toml").write_text(
+            "version = 1\n\n"
+            "[[waiver]]\n"
+            'check = "sandbox.native-dependency-missing"\n'
+            'subject = "libelf-dev"\n'
+            'reason = "image built elsewhere"\n'
+            "permanent = true\n",
             encoding="utf-8",
         )
-        rec = _Rec()
+        reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
 
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-
-        assert [m for lvl, m in rec.events if lvl == "warn"] == []
-        assert any("libelf-dev" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_native_dependency_in_dockerfile_comment_still_warns(self, tmp_path: Path):
-        project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        docker_dir = project.booley_dir / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text(
-            "FROM booley-sandbox-riscv\n# install libelf-dev later\n",
-            encoding="utf-8",
+        doctor._run_core_audit(
+            project,
+            reporter.pass_,
+            reporter.warn_,
+            reporter.skip_,
+            reporter.fail_,
+            _note=reporter.note_,
+            _diagnostics=reporter.diagnostics,
         )
-        rec = _Rec()
 
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-
-        assert any("libelf-dev" in m for lvl, m in rec.events if lvl == "warn")
-
-    def test_headers_present_in_the_base_image_are_not_flagged(self, tmp_path: Path):
-        """zlib1g-dev is installed in the base sandbox — warning would be noise."""
-        project = self._cpp_target_project(tmp_path, "#include <zlib.h>\n")
-        rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-        assert [m for lvl, m in rec.events if lvl == "warn"] == []
-
-    def test_project_without_cpp_sources_is_silent(self, tmp_path: Path):
-        (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        pd = tmp_path / ".booley"
-        pd.mkdir(exist_ok=True)
-        project = doctor.ProjectAudit(
-            project_root=tmp_path,
-            booley_dir=pd,
-            booley_toml={"flows": {"sim": {}}},
-            configs_toml={"sim": {}},
-            first_target="sim",
+        findings = reporter.result(0).findings
+        start = next(i for i, f in enumerate(findings) if f.message.startswith("tests.toml not"))
+        tail = findings[start:]
+        assert [f.severity for f in tail] == [Severity.SKIP, Severity.WAIVED]
+        assert (tail[1].check_id, tail[1].subject) == (
+            "sandbox.native-dependency-missing",
+            "libelf-dev",
         )
-        rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-        assert rec.events == []
+        assert "tb/harness.cc" in tail[1].message
+        assert reporter.counts["waived"] == 1
+        assert reporter.finish() == 0
 
     def test_in_scope_script_is_advisory_not_a_hard_fail(self, tmp_path: Path):
         """F-10: doctor's Scope is synthetic, so it cannot hard-fail on it.
@@ -2745,7 +2775,7 @@ targets:
             first_target="x",
         )
         rec = _Rec()
-        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f)
+        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=rec.d)
         assert any(
             "emits a recognized pass sentinel" in m for lvl, m in rec.events if lvl == "pass"
         )
@@ -2850,489 +2880,6 @@ targets:
 
 # Interactive Mode persistent state-volume note
 # =============================================================
-
-
-class TestViewerBridgeCheck:
-    """_check_viewer_bridge asks the attached window's bridge, not just the spec.
-
-    The gap it exists to close: a devcontainer.json that asks for the viewer
-    correctly (so every static check passes) can still have no window running
-    the Booley bridge or VaporView, and only `bwave gui` would find out.
-    """
-
-    @staticmethod
-    def _project(root: Path) -> doctor.ProjectAudit:
-        pd = root / ".booley"
-        pd.mkdir(exist_ok=True)
-        return doctor.ProjectAudit(
-            project_root=root,
-            booley_dir=pd,
-            booley_toml={},
-            configs_toml={"x": {}},
-            first_target="x",
-        )
-
-    _HEALTHY: tuple[dict, ...] = (
-        {"vaporview": vaporview.VERIFIED_VERSION, "error": None, "trusted": True},
-    )
-
-    def _run(
-        self,
-        tmp_path,
-        monkeypatch,
-        *,
-        docker="docker",
-        container="vsc-proj-abc-uid",
-        bridges=_HEALTHY,
-        attached: bool | None = True,
-        in_container: bool = False,
-        probe=None,
-        extension_state=None,
-        extension_probe=None,
-        version_calls: list | None = None,
-    ) -> _Rec:
-        from booley.runtime import runtime_context
-        from booley.runtime.vaporview import ExtensionState
-
-        # The version line is covered by TestVaporviewVersionCheck; here it only
-        # records how it was invoked so the bridge assertions stay focused.
-        monkeypatch.setattr(
-            doctor,
-            "_check_vaporview_version",
-            lambda argv, where, *_: (version_calls if version_calls is not None else []).append(
-                (argv, where)
-            ),
-        )
-
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_container)
-        monkeypatch.setattr(session_runtime, "vscode_session_container", lambda root: container)
-        monkeypatch.setattr(doctor, "_viewer_bridges", probe or (lambda argv: bridges))
-        monkeypatch.setattr(doctor, "_vscode_extension_host_running", lambda argv: attached)
-        monkeypatch.setattr(
-            doctor,
-            "_vaporview_extension_state",
-            extension_probe or (lambda argv: extension_state or ExtensionState.INSTALLED),
-        )
-        rec = _Rec()
-
-        def fail(message, fix=""):
-            rec.events.append(("fail", f"{message}\n{fix}"))
-
-        doctor._check_viewer_bridge(self._project(tmp_path), docker, rec.p, rec.s, fail)
-        return rec
-
-    def test_names_several_windows(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, bridges=list(self._HEALTHY) * 2)
-        assert any("(2 windows)" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_fails_when_no_window_answers(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, bridges=[])
-        assert rec.kinds() == {"fail"}
-        failure = next(m for lvl, m in rec.events if lvl == "fail")
-        # The fix nobody guesses: reload, not rebuild.
-        assert "Reload Window" in failure
-        assert "refresh the Sandbox" in failure
-        assert "vsc-proj-abc-uid" in failure
-
-    def test_window_without_vaporview_fails_with_its_reason(self, tmp_path, monkeypatch):
-        from booley.runtime.vaporview import ExtensionState
-
-        rec = self._run(
-            tmp_path,
-            monkeypatch,
-            bridges=[
-                *self._HEALTHY,
-                {"vaporview": None, "error": "VaporView is not installed", "trusted": True},
-            ],
-            extension_state=ExtensionState.MISSING,
-        )
-
-        failure = next(m for lvl, m in rec.events if lvl == "fail")
-        assert "1 of 2 window(s)" in failure
-        assert "VaporView is not installed" in failure
-        assert "--install-extension /usr/local/libexec/booley/vaporview-" in failure
-
-    def test_dark_bridge_with_missing_extension_leads_with_install(self, tmp_path, monkeypatch):
-        from booley.runtime.vaporview import ExtensionState
-
-        rec = self._run(tmp_path, monkeypatch, bridges=[], extension_state=ExtensionState.MISSING)
-
-        failure = next(m for lvl, m in rec.events if lvl == "fail")
-        assert "VaporView extension is not installed" in failure
-        assert "--install-extension /usr/local/libexec/booley/vaporview-" in failure
-        assert "starts its viewer bridge" not in failure
-
-    def test_dark_bridge_with_unknown_extension_state_reports_uncertainty(
-        self, tmp_path, monkeypatch
-    ):
-        from booley.runtime.vaporview import ExtensionState
-
-        rec = self._run(tmp_path, monkeypatch, bridges=[], extension_state=ExtensionState.UNKNOWN)
-
-        failure = next(m for lvl, m in rec.events if lvl == "fail")
-        assert "could not determine whether VaporView is installed" in failure
-        assert "VaporView extension is not installed" not in failure
-
-    _UNTRUSTED: ClassVar[dict] = {
-        "vaporview": None,
-        "error": "VaporView (lramseyer.vaporview) is not installed in this VS Code window",
-        "trusted": False,
-    }
-
-    def test_untrusted_window_skips_instead_of_failing(self, tmp_path, monkeypatch):
-        """Restricted Mode disables VaporView, so the bridge cannot see it: not a fault."""
-        rec = self._run(tmp_path, monkeypatch, bridges=[self._UNTRUSTED], in_container=True)
-
-        assert rec.kinds() == {"skip"}
-        skipped = next(m for lvl, m in rec.events if lvl == "skip")
-        assert "workspace trust" in skipped
-        assert "booley doctor" in skipped
-
-    def test_untrusted_window_with_missing_vaporview_still_fails(self, tmp_path, monkeypatch):
-        from booley.runtime.vaporview import ExtensionState
-
-        rec = self._run(
-            tmp_path,
-            monkeypatch,
-            bridges=[self._UNTRUSTED],
-            extension_state=ExtensionState.MISSING,
-        )
-
-        assert rec.kinds() == {"fail"}
-        failure = next(m for lvl, m in rec.events if lvl == "fail")
-        assert "--install-extension /usr/local/libexec/booley/vaporview-" in failure
-
-    def test_untrusted_window_beside_a_healthy_one_passes(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, bridges=[*self._HEALTHY, self._UNTRUSTED])
-
-        assert rec.kinds() == {"pass"}
-        passed = next(m for lvl, m in rec.events if lvl == "pass")
-        assert "waiting for workspace trust" in passed
-
-    def test_untrusted_and_trusted_broken_windows_still_fail(self, tmp_path, monkeypatch):
-        broken = {"vaporview": None, "error": "VaporView reports no version", "trusted": True}
-
-        rec = self._run(tmp_path, monkeypatch, bridges=[self._UNTRUSTED, broken])
-
-        assert rec.kinds() == {"fail"}
-        failure = next(m for lvl, m in rec.events if lvl == "fail")
-        assert "no version" in failure
-        assert "2 of 2 window(s)" in failure
-        assert "not installed in this VS Code window" in failure
-
-    def test_untrusted_window_with_unknown_registry_skips(self, tmp_path, monkeypatch):
-        """An undeterminable registry state does not turn a waiting window into a FAIL."""
-        from booley.runtime.vaporview import ExtensionState
-
-        rec = self._run(
-            tmp_path,
-            monkeypatch,
-            bridges=[self._UNTRUSTED],
-            extension_state=ExtensionState.UNKNOWN,
-            in_container=True,
-        )
-
-        assert rec.kinds() == {"skip"}
-
-    def test_broken_window_without_trust_field_still_fails(self, tmp_path, monkeypatch):
-        """An older extension never reports trust; absence is not 'untrusted'."""
-        legacy = {**self._UNTRUSTED, "trusted": None}
-
-        rec = self._run(tmp_path, monkeypatch, bridges=[legacy])
-
-        assert rec.kinds() == {"fail"}
-
-    def test_healthy_bridge_does_not_probe_extension_state(self, tmp_path, monkeypatch):
-        rec = self._run(
-            tmp_path,
-            monkeypatch,
-            extension_probe=lambda argv: pytest.fail("extension state must not be probed"),
-        )
-
-        assert rec.kinds() == {"pass"}
-
-    def test_skips_without_runtime(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, docker=None)
-        assert rec.kinds() == {"skip"}
-
-    def test_skips_without_vscode_container(self, tmp_path, monkeypatch):
-        # A headless `booley session up` container has no extension host and so
-        # no bridge by design — never a finding.
-        rec = self._run(tmp_path, monkeypatch, container=None)
-        assert rec.kinds() == {"skip"}
-        assert any("no VS Code devcontainer" in m for _, m in rec.events)
-
-    def test_skips_when_devcontainer_has_no_attached_extension_host(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, attached=False, bridges=[])
-        assert rec.kinds() == {"skip"}
-        assert any("no VS Code extension host attached" in m for _, m in rec.events)
-
-    def test_skips_when_probe_cannot_run(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, bridges=None)
-        assert rec.kinds() == {"skip"}
-
-    def test_in_container_probes_its_own_sockets_without_docker(self, tmp_path, monkeypatch):
-        """Inside the sandbox there is no docker and no container name to find —
-        the probe must still run, against the sockets `bwave gui` uses."""
-        seen: list[list[str]] = []
-
-        def probe(argv):
-            seen.append(argv)
-            return []
-
-        rec = self._run(tmp_path, monkeypatch, docker=None, in_container=True, probe=probe)
-        assert seen == [[]]  # no `docker exec` prefix
-        assert rec.kinds() == {"fail"}
-
-    def test_version_check_runs_in_the_attached_container(self, tmp_path, monkeypatch):
-        calls: list = []
-        self._run(tmp_path, monkeypatch, version_calls=calls)
-        assert calls == [(["docker", "exec", "vsc-proj-abc-uid"], " in 'vsc-proj-abc-uid'")]
-
-    def test_version_check_runs_locally_in_container(self, tmp_path, monkeypatch):
-        calls: list = []
-        self._run(tmp_path, monkeypatch, docker=None, in_container=True, version_calls=calls)
-        assert calls == [([], "")]
-
-    def test_version_check_skipped_without_extension_host(self, tmp_path, monkeypatch):
-        calls: list = []
-        self._run(tmp_path, monkeypatch, attached=False, version_calls=calls)
-        assert calls == []
-
-
-class TestVaporviewVersionCheck:
-    """_check_vaporview_version names both versions when the build is not the verified one."""
-
-    def _run(self, monkeypatch, versions):
-        monkeypatch.setattr(doctor, "_vaporview_installed_versions", lambda argv: versions)
-        rec = _Rec()
-
-        def fail(message, fix=""):
-            rec.events.append(("fail", f"{message}\n{fix}"))
-
-        doctor._check_vaporview_version(["docker", "exec", "c"], " in 'c'", rec.p, rec.s, fail)
-        return rec
-
-    def test_verified_version_passes(self, monkeypatch):
-        from booley.runtime import vaporview
-
-        rec = self._run(monkeypatch, [vaporview.VERIFIED_VERSION])
-        assert rec.kinds() == {"pass"}
-
-    def test_other_version_fails_with_both_versions_and_remedy(self, monkeypatch):
-        from booley.runtime import vaporview
-
-        rec = self._run(monkeypatch, ["9.9.9"])
-        assert rec.kinds() == {"fail"}
-        failure = next(m for lvl, m in rec.events if lvl == "fail")
-        assert "VaporView 9.9.9 is installed in 'c'" in failure
-        assert f"verifies only {vaporview.VERIFIED_VERSION}" in failure
-        assert f"code --install-extension {vaporview.BUNDLED_VSIX}" in failure
-        assert "Reload Window" in failure
-
-    def test_verified_alongside_other_still_fails(self, monkeypatch):
-        from booley.runtime import vaporview
-
-        rec = self._run(monkeypatch, [vaporview.VERIFIED_VERSION, "9.9.9"])
-        assert rec.kinds() == {"fail"}
-
-    @pytest.mark.parametrize("versions", [None, []], ids=["unknown", "not-installed"])
-    def test_unknown_or_absent_skips(self, monkeypatch, versions):
-        rec = self._run(monkeypatch, versions)
-        assert rec.kinds() == {"skip"}
-
-
-@pytest.mark.parametrize(
-    ("returncode", "stdout", "expected"),
-    [
-        (0, '["1.5.4"]\n', ["1.5.4"]),
-        (0, "[]\n", []),
-        (4, "", None),
-        (1, "Traceback (ImportError)", None),
-        (0, "not json", None),
-        (0, "[1]", None),
-    ],
-)
-def test_vaporview_versions_probe_parses_output(monkeypatch, returncode, stdout, expected):
-    seen = []
-
-    def run(argv, **kwargs):
-        seen.append(argv)
-        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(doctor.subprocess, "run", run)
-
-    assert doctor._vaporview_installed_versions(["docker", "exec", "s"]) == expected
-    assert seen == [
-        ["docker", "exec", "s", "python3", "-c", doctor._VAPORVIEW_VERSIONS_PROBE_SOURCE]
-    ]
-
-
-def _run_extension_host_probe(monkeypatch, tmp_path, cmdlines):
-    """Execute the real probe source against fake /proc cmdline files; return its exit code."""
-    import pathlib
-
-    fakes = []
-    for index, cmdline in enumerate(cmdlines):
-        path = tmp_path / str(index) / "cmdline"
-        if cmdline is not None:  # None = a process that exits between glob and read
-            path.parent.mkdir()
-            path.write_bytes(cmdline)
-        fakes.append(path)
-    real_glob = pathlib.Path.glob
-
-    def glob(self, pattern, *args, **kwargs):
-        if self == pathlib.Path("/proc"):
-            return iter(fakes)
-        return real_glob(self, pattern, *args, **kwargs)
-
-    monkeypatch.setattr(pathlib.Path, "glob", glob)
-    with pytest.raises(SystemExit) as exited:
-        exec(compile(doctor._VSCODE_EXTENSION_HOST_PROBE_SOURCE, "<probe>", "exec"), {})
-    return exited.value.code
-
-
-_EXTENSION_HOST_CMDLINE = b"/vscode/node\x00/vscode/out/bootstrap-fork\x00--type=extensionHost\x00"
-
-
-@pytest.mark.parametrize(
-    ("cmdlines", "expected"),
-    [
-        ([b"/usr/bin/sleep\x00100\x00", None, _EXTENSION_HOST_CMDLINE], 0),
-        ([b"/vscode/out/bootstrap-fork\x00--type=ptyHost\x00", None], 3),
-        ([], 3),
-    ],
-)
-def test_extension_host_probe_source_runs_and_reports_attachment(
-    monkeypatch, tmp_path, cmdlines, expected
-):
-    # The probe runs as `python3 -c` in the Sandbox, so execute the real source:
-    # a syntax error used to exit 1, which read as "no window attached".
-    assert _run_extension_host_probe(monkeypatch, tmp_path, cmdlines) == expected
-
-
-@pytest.mark.parametrize(
-    ("returncode", "expected"),
-    [(0, True), (3, False), (1, None), (2, None)],
-)
-def test_extension_host_probe_exit_codes(monkeypatch, returncode, expected):
-    seen = []
-
-    def run(argv, **kwargs):
-        seen.append(argv)
-        return subprocess.CompletedProcess(argv, returncode, stdout="", stderr="")
-
-    monkeypatch.setattr(doctor.subprocess, "run", run)
-
-    assert doctor._vscode_extension_host_running(["docker", "exec", "s"]) is expected
-    assert seen == [
-        ["docker", "exec", "s", "python3", "-c", doctor._VSCODE_EXTENSION_HOST_PROBE_SOURCE]
-    ]
-
-
-@pytest.mark.parametrize(
-    "name",
-    sorted(n for n in dir(doctor) if n.endswith("_PROBE_SOURCE")),
-)
-def test_every_python_probe_source_compiles(name):
-    compile(getattr(doctor, name), name, "exec")
-
-
-@pytest.mark.parametrize(
-    ("returncode", "expected"),
-    [
-        (0, "INSTALLED"),
-        (3, "MISSING"),
-        (4, "UNKNOWN"),
-        (1, "UNKNOWN"),
-    ],
-)
-def test_vaporview_extension_probe_preserves_state_and_prefix(monkeypatch, returncode, expected):
-    from booley.runtime.vaporview import ExtensionState
-
-    seen = []
-
-    def run(argv, **kwargs):
-        seen.append(argv)
-        return subprocess.CompletedProcess(argv, returncode, stdout="", stderr="")
-
-    monkeypatch.setattr(doctor.subprocess, "run", run)
-
-    state = doctor._vaporview_extension_state(["docker", "exec", "session"])
-
-    assert state is getattr(ExtensionState, expected)
-    assert seen == [
-        ["docker", "exec", "session", "python3", "-c", doctor._VAPORVIEW_STATE_PROBE_SOURCE]
-    ]
-
-
-@pytest.mark.parametrize(
-    ("outcome", "stdout", "expected"),
-    [
-        (
-            0,
-            f'{{"bridges": [{{"vaporview": "{vaporview.VERIFIED_VERSION}", "error": null}}]}}',
-            [{"vaporview": vaporview.VERIFIED_VERSION, "error": None, "trusted": None}],
-        ),
-        (
-            0,
-            '{"bridges": [{"vaporview": null, "error": "gone", "trusted": false}]}',
-            [{"vaporview": None, "error": "gone", "trusted": False}],
-        ),
-        (0, '{"bridges": []}', []),
-        (1, "Traceback (ImportError)", None),
-        (0, "not json", None),
-        (0, "[]", None),
-        (0, '{"bridges": [{"vaporview": 5, "error": null}]}', None),
-        (0, '{"bridges": [{"vaporview": null, "error": null, "trusted": "no"}]}', None),
-        (FileNotFoundError("docker"), "", None),
-        (subprocess.TimeoutExpired("docker", 20), "", None),
-    ],
-    ids=[
-        "healthy",
-        "trusted-false",
-        "none",
-        "old-booley",
-        "garbage",
-        "not-object",
-        "bad-version",
-        "bad-trusted",
-        "no-docker",
-        "timeout",
-    ],
-)
-def test_viewer_bridge_probe_parses_output(monkeypatch, outcome, stdout, expected):
-    seen = []
-
-    def run(argv, **kwargs):
-        seen.append(argv)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return subprocess.CompletedProcess(argv, outcome, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(doctor.subprocess, "run", run)
-
-    assert doctor._viewer_bridges(["docker", "exec", "c"]) == expected
-    assert seen == [["docker", "exec", "c", "python3", "-c", doctor._VIEWER_BRIDGE_PROBE_SOURCE]]
-
-
-def test_viewer_bridge_probe_source_runs_against_the_real_client(tmp_path):
-    """The probe text must import and print what _viewer_bridges parses."""
-    env = {
-        **os.environ,
-        "HOME": str(tmp_path),
-        "PYTHONPATH": str(Path(doctor.__file__).parents[2]),
-    }
-    result = subprocess.run(
-        [sys.executable, "-c", doctor._VIEWER_BRIDGE_PROBE_SOURCE],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"bridges": []}
 
 
 # =============================================================
@@ -3975,12 +3522,6 @@ def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_pat
     project = _misplaced_booley_project(tmp_path)
     monkeypatch.setattr(doctor, "_check_design_size", lambda *args, **kwargs: None)
     monkeypatch.setattr(doctor, "_check_flow_runtime_reality", lambda *args, **kwargs: None)
-    dry_runs: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        doctor,
-        "_run_flow_check",
-        lambda _project, flow_name, **kwargs: dry_runs.append((flow_name, kwargs["target"])),
-    )
     reporter = doctor._Reporter.create()
 
     doctor._run_flow_and_core_phase(
@@ -3997,8 +3538,9 @@ def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_pat
     assert "fpga_core" in fails[0].message
     assert "booley" in fails[0].message
     assert "targets.fpga_core.flow_options" in fails[0].fix
-    assert dry_runs == []
     skips = [f.message for f in reporter.findings if f.severity == "skip"]
+    # A dry-run without a container runtime would report this SKIP for its Target.
+    assert not any("dry-run [" in m and "runtime not available" in m for m in skips), skips
     for target in ("lint_core", "synth_core"):
         assert any(target in m and "picorv32_impl.core" in m for m in skips), skips
     assert any("fpga has no Doctor Target" in m and "picorv32_impl.core" in m for m in skips)
@@ -4282,7 +3824,7 @@ targets:
 def test_core_files_tracked_judges_relocated_state_repo(tmp_path):
     """#2917: files under a relocated (two-component) Booley Directory are judged by
     that directory's own repo, not the host's."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "booley.toml").write_text('[project]\ndir = "tools/booley"\n', encoding="utf-8")
     state_dir = tmp_path / "tools" / "booley"
     state_cores = state_dir / "cores"
@@ -4301,18 +3843,15 @@ targets:
   sim: {flow: sim, filesets: [fw]}
 """,
     )
-    subprocess.run(["git", "init", "-q"], cwd=state_dir, check=True, timeout=SUBPROCESS_TIMEOUT_S)
-    subprocess.run(["git", "add", "-A"], cwd=state_dir, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "init", "-q"], cwd=state_dir, check=True)
+    run_bounded_child(["git", "add", "-A"], cwd=state_dir, check=True)
 
     c = _Collector()
     doctor._check_core_files_tracked(tmp_path, c._pass, c._warn)
     assert not c.warned
 
-    subprocess.run(
-        ["git", "rm", "--cached", "-q", "cores/fw/boot.hex"],
-        cwd=state_dir,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
+    run_bounded_child(
+        ["git", "rm", "--cached", "-q", "cores/fw/boot.hex"], cwd=state_dir, check=True
     )
     c2 = _Collector()
     doctor._check_core_files_tracked(tmp_path, c2._pass, c2._warn)
@@ -4321,7 +3860,7 @@ targets:
 
 def _readmem_repo(tmp_path) -> None:
     """A repo whose TB boots via $readmemh from a memory image NOT in any .core."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "tb").mkdir()
     (tmp_path / "tb" / "tb.sv").write_text(
         'module tb; reg [7:0] mem[0:255];\n  initial $readmemh("fw/boot.vmem", mem);\nendmodule\n',
@@ -4400,7 +3939,7 @@ def _artifact_repo(tmp_path, *, with_source: bool, vendored: bool = False) -> No
     "upstream blob, no rebuildable source" opt-out of the heuristic — the
     CAPI2-valid marker, not the fusesoc-rejected bare ``vendored: true`` key).
     """
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (tmp_path / "firmware").mkdir()
@@ -4424,7 +3963,7 @@ targets:
   sim: {{flow: sim, filesets: [rtl]}}
 """,
     )
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "add", "-A"], cwd=tmp_path, check=True)
 
 
 def test_committed_build_artifact_with_sibling_source_warns(tmp_path):
@@ -4536,61 +4075,64 @@ def _fpga_doctor_project(
 
 
 def _run_isolated_flow_audit(project, monkeypatch):
+    """Run the Flow audit without a container runtime; return its sinks and dry-run reports.
+
+    Every dry-run then reports its real ``runtime not available`` SKIP, so
+    the reports name which flow and Target were dry-run.
+    """
     rec = _Rec()
-    calls: list[tuple[str, str, bool]] = []
+    reports: list[DiagnosticReport] = []
     monkeypatch.setattr(doctor, "_check_design_size", lambda *args, **kwargs: None)
     monkeypatch.setattr(doctor, "_check_flow_runtime_reality", lambda *args, **kwargs: None)
-
-    def record(_project, flow_name, **kwargs):
-        calls.append((flow_name, kwargs["target"], kwargs["dry_run"]))
-
-    monkeypatch.setattr(doctor, "_run_flow_check", record)
     doctor._run_flow_audit(
         project,
         doctor._DoctorFlowRuntime(project.project_root, None),
-        False,
         rec.p,
         rec.n,
         rec.w,
         rec.s,
         rec.f,
+        _diagnostics=reports.append,
     )
-    return rec, calls
+    dry_runs = [finding.message for report in reports for finding in report.findings]
+    return rec, dry_runs
 
 
 def test_flow_audit_dry_runs_marked_fpga_target_without_flow_table(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=True)
 
-    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+    rec, dry_runs = _run_isolated_flow_audit(project, monkeypatch)
 
-    assert calls == [("fpga", "fpga_board", True)]
+    assert dry_runs == [
+        f"fpga dry-run [fpga_board] skipped - '{doctor._CONTAINER_CLI}' runtime not available"
+    ]
     assert not rec.fails()
 
 
 def test_flow_audit_fails_enabled_fpga_table_without_marked_target(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=False, fpga_table={})
 
-    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+    rec, dry_runs = _run_isolated_flow_audit(project, monkeypatch)
 
-    assert calls == []
+    assert dry_runs == []
     assert any("fpga has no Doctor Target" in message for message in rec.fails())
 
 
 def test_flow_audit_skips_explicitly_disabled_marked_fpga_target(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=True, fpga_table={"enabled": False})
 
-    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+    rec, dry_runs = _run_isolated_flow_audit(project, monkeypatch)
 
-    assert calls == []
+    assert dry_runs == []
     assert ("skip", "fpga disabled in booley.toml") in rec.events
 
 
 def test_flow_audit_skips_fpga_when_not_configured_or_marked(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=False)
 
-    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+    rec, dry_runs = _run_isolated_flow_audit(project, monkeypatch)
 
-    assert calls == []
+    assert dry_runs == []
     assert any(
         level == "skip" and "fpga not applicable" in message for level, message in rec.events
     )
@@ -5047,12 +4589,7 @@ def test_image_bakes_current_booley_silent_when_undeterminable(tmp_path, monkeyp
 
 
 def _git_init(root: Path) -> None:
-    subprocess.run(
-        ["git", "init", "-q", str(root)],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", "-q", str(root)], check=True)
 
 
 class TestWorktreePruneGuard:
@@ -5294,18 +4831,15 @@ class TestWorktreePortability:
             monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
             monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
         elif source == "environment":
-            monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-            monkeypatch.setenv("GIT_CONFIG_KEY_0", "worktree.useRelativePaths")
-            monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+            add_git_command_config(monkeypatch, "worktree.useRelativePaths", "true")
         elif source == "file":
             monkeypatch.setenv("GIT_CONFIG", str(config))
         elif source == "worktree":
-            subprocess.run(
+            run_bounded_child(
                 ["git", "-C", str(tmp_path), "config", "extensions.worktreeConfig", "true"],
                 check=True,
-                timeout=SUBPROCESS_TIMEOUT_S,
             )
-            subprocess.run(
+            run_bounded_child(
                 [
                     "git",
                     "-C",
@@ -5316,7 +4850,6 @@ class TestWorktreePortability:
                     "true",
                 ],
                 check=True,
-                timeout=SUBPROCESS_TIMEOUT_S,
             )
         elif source == "foreign":
             monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
@@ -5406,15 +4939,13 @@ class TestWorktreePortability:
         if hazard != "extension-only":
             assert git_hooks._set_local_config(tmp_path, "true") is None
         if hazard in ("format", "extension-only"):
-            subprocess.run(
+            run_bounded_child(
                 ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"],
                 check=True,
-                timeout=SUBPROCESS_TIMEOUT_S,
             )
-            subprocess.run(
+            run_bounded_child(
                 ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
                 check=True,
-                timeout=SUBPROCESS_TIMEOUT_S,
             )
             if hazard == "format":
                 # The format diagnostic boundary remains authoritative even when
@@ -6481,7 +6012,7 @@ class TestDeveloperProbe:
         reporter = doctor._Reporter.create(profile=doctor._DoctorProfile(deep=True))
 
         doctor._run_deep_phase(
-            project, None, doctor._DoctorFlowRuntime(tmp_path, "docker"), False, reporter
+            project, None, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
         )
         reporter.finish()
 
@@ -6946,7 +6477,7 @@ targets:
 
 
 class TestCheckTargetNaming:
-    """The <axis>_<subject> convention — WARN, and only on cores the project owns."""
+    """The <axis>_<subject> convention: a note, and only on cores the project owns."""
 
     _CORE = """\
 CAPI=2:
@@ -7048,6 +6579,52 @@ sim_ok:
         assert len(warns) == 1
         assert "Target 'soc'" in warns[0]
         assert "rename it 'sim_soc'" in warns[0]
+
+    @pytest.mark.parametrize(
+        ("axis", "flow", "tool"),
+        [
+            ("sim", "sim", "verilator"),
+            ("lint", "lint", "verilator"),
+            ("synth", "generic", "yosys"),
+            ("fpga", "generic", "vivado"),
+        ],
+    )
+    def test_bare_axis_target_notes_core_name_rename(self, tmp_path, axis, flow, tool):
+        """A bare axis says nothing about the design; the note suggests <axis>_<core name>."""
+        block = f"""\
+{axis}:
+    filesets: [rtl]
+    flow: {flow}
+    flow_options: {{tool: {tool}, booley: {{doctor: [{axis}]}}}}
+    toplevel: dut
+"""
+        passes, warns = self._run(tmp_path, block, {"flows": {axis: {}}})
+        assert not passes
+        assert len(warns) == 1
+        assert "bare axis; add a subject" in warns[0]
+        assert f"rename it '{axis}_demo'" in warns[0]
+
+    def test_bare_axis_note_skips_vendored_core(self, tmp_path):
+        """Only the selected, owned core's bare Target is noted; an unselected one stays exempt."""
+        (tmp_path / "vendor.core").write_text(
+            "CAPI=2:\nname: ::upstream:0\nfilesets:\n"
+            "  rtl: {files: [dut.v], file_type: verilogSource}\n"
+            "targets:\n  lint:\n    filesets: [rtl]\n    flow: lint\n"
+            "    flow_options: {tool: verilator}\n    toplevel: dut\n",
+            encoding="utf-8",
+        )
+        block = """\
+sim:
+    filesets: [rtl]
+    flow: sim
+    flow_options: {tool: verilator, booley: {doctor: [sim]}}
+    toplevel: tb
+"""
+        passes, warns = self._run(tmp_path, block, {"flows": {"sim": {}}})
+        assert not passes
+        assert len(warns) == 1
+        assert "Target 'sim' in design.core" in warns[0]
+        assert "lint" not in warns[0]
 
 
 class TestCheckStrayDefaultTargets:
@@ -7194,181 +6771,6 @@ targets:
         assert not doctor._project_declares_verible_lint(project)
 
 
-class TestCocotbFactoryTests:
-    """B6: generated cocotb names cannot be grepped for as `def <name>(`.
-
-    ``TestFactory(...).generate_tests()`` and ``@cocotb.parametrize`` register
-    rendered names in the module namespace at import time, so the static check
-    is structurally blind to them. Not verifiable ⇒ report it as not
-    verifiable, not as a finding.
-    """
-
-    _FACTORY_TB = """\
-import cocotb
-from cocotb.regression import TestFactory
-
-
-async def run_test(dut, data_width=8):
-    pass
-
-
-factory = TestFactory(run_test)
-factory.add_option("data_width", [8, 16])
-factory.generate_tests()
-"""
-
-    _PARAMETRIZED_TB = """\
-import cocotb
-
-
-@cocotb.test()
-@cocotb.parametrize(("ifg", [12, 0]))
-async def run_test_tx(dut, ifg=12):
-    pass
-"""
-
-    @pytest.mark.parametrize(
-        ("body", "base"),
-        [
-            (_FACTORY_TB, "run_test"),
-            (_PARAMETRIZED_TB, "run_test_tx"),
-            (
-                _FACTORY_TB.replace("import TestFactory", "import TestFactory as Factory").replace(
-                    "TestFactory(run_test)", "Factory(run_test)"
-                ),
-                "run_test",
-            ),
-            (
-                _PARAMETRIZED_TB.replace("import cocotb", "import cocotb as c").replace(
-                    "@cocotb.", "@c."
-                ),
-                "run_test_tx",
-            ),
-        ],
-    )
-    def test_generating_base_name_is_deferred(self, tmp_path, body, base):
-        _write_cocotb_project(tmp_path, tb_body=body, tests=[base])
-        rec = _audit(tmp_path)
-        skips = [m for lvl, m in rec.events if lvl == "skip"]
-        assert any(base in m and "generating function" in m and "rendered IDs" in m for m in skips)
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    @pytest.mark.parametrize(
-        "names",
-        [
-            ["test_plain"],
-            ["test_plain", "run_test_tx"],
-            ["test_plain", "run_test_tx/ifg=12", "typo"],
-        ],
-    )
-    def test_generating_module_defers_every_registered_name(self, tmp_path, names):
-        body = self._PARAMETRIZED_TB + "\n@cocotb.test()\nasync def test_plain(dut): pass\n"
-        _write_cocotb_project(tmp_path, tb_body=body, tests=names)
-        rec = _audit(tmp_path)
-        skips = [
-            m for lvl, m in rec.events if lvl == "skip" and "cannot be verified statically" in m
-        ]
-        assert len(skips) == 1
-        assert f"{len(names)} tests.toml name(s)" in skips[0]
-        assert all(name in skips[0] for name in names)
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    @pytest.mark.parametrize("decorator", ["@cocotb.test()", "@cocotb.test", "@test()"])
-    def test_generation_words_in_comments_do_not_suppress_plain_checks(self, tmp_path, decorator):
-        body = f"import cocotb\nfrom cocotb import test\n# TestFactory generate_tests cocotb.parametrize\n{decorator}\nasync def test_reset(dut): pass\n"
-        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
-        rec = _audit(tmp_path)
-        assert any("tests.toml names all present" in m for lvl, m in rec.events if lvl == "pass")
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "async def test_reset(dut): pass\n",
-            "# def test_reset(dut):\n",
-            "class TB:\n    def test_reset(self): pass\n",
-        ],
-    )
-    def test_plain_function_search_does_not_earn_a_pass(self, tmp_path, body):
-        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
-        rec = _audit(tmp_path)
-        assert any(
-            "not found as" in m and "test_reset" in m for lvl, m in rec.events if lvl == "warn"
-        )
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "not python!",
-            "\x00",
-            "import cocotb\n@cocotb.test(name='other')\nasync def test_reset(dut): pass\n",
-        ],
-    )
-    def test_unverifiable_source_never_passes_names(self, tmp_path, body):
-        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
-        rec = _audit(tmp_path)
-        assert any("cannot be verified statically" in m for lvl, m in rec.events if lvl == "skip")
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    def test_factory_generated_names_are_reported_unverifiable_not_missing(
-        self,
-        tmp_path: Path,
-    ):
-        _write_cocotb_project(
-            tmp_path,
-            tb_body=self._FACTORY_TB,
-            tests=["run_test_001", "run_test_002"],
-        )
-        rec = _audit(tmp_path)
-        assert not any("not found as functions" in m for lvl, m in rec.events)
-        assert any(
-            "cannot be verified statically" in m and "factory" in m
-            for lvl, m in rec.events
-            if lvl == "skip"
-        )
-        assert rec.fails() == []
-
-    def test_parametrized_names_are_reported_unverifiable_not_missing(
-        self,
-        tmp_path: Path,
-    ):
-        _write_cocotb_project(
-            tmp_path,
-            tb_body=self._PARAMETRIZED_TB,
-            tests=["run_test_tx/ifg=12", "run_test_tx/ifg=0"],
-        )
-        rec = _audit(tmp_path)
-        assert not any("not found as functions" in m for lvl, m in rec.events)
-        assert any(
-            "cannot be verified statically" in m and "parameterized" in m
-            for lvl, m in rec.events
-            if lvl == "skip"
-        )
-        assert rec.fails() == []
-
-    def test_hand_written_names_still_warn_when_absent(self, tmp_path: Path):
-        # The softening is gated on the factory call: a module WITHOUT one that
-        # names a test it does not define is still a real, greppable mismatch.
-        _write_cocotb_project(
-            tmp_path,
-            tb_body="import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
-            tests=["test_reset", "test_typo"],
-        )
-        rec = _audit(tmp_path)
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("not found as functions" in m and "test_typo" in m for m in warns)
-        assert not any("test_reset" in m for m in warns)
-
-    def test_all_names_present_still_passes(self, tmp_path: Path):
-        _write_cocotb_project(
-            tmp_path,
-            tb_body="import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
-            tests=["test_reset"],
-        )
-        rec = _audit(tmp_path)
-        assert any("tests.toml names all present" in m for lvl, m in rec.events if lvl == "pass")
-
-
 class TestDeepLintFindingsAreNotToolFailure:
     """B3: `doctor --deep`'s lint smoke asked "did lint exit 0?", but lint exits
     1 on a WARN verdict (findings). Any project with a single lint warning could
@@ -7421,7 +6823,7 @@ class TestDeepLintFindingsAreNotToolFailure:
 
 
 class TestReporterAcceptsFixHints:
-    """The original crash: `_check_cocotb_targets` hands `_warn` a fix hint, but
+    """The original crash: a check handed `_warn` a fix hint, but
     `_Reporter.warn_` took only a message -> TypeError, aborting `doctor` on any
     cocotb project whose tests.toml names are factory-generated."""
 
@@ -7520,35 +6922,31 @@ class TestDisplayReportDir:
         assert doctor._display_report_dir(project, report_dir) == str(report_dir)
 
 
+def _inspect_line_endings(root: Path, booley_dir: Path | None = None) -> DiagnosticReport:
+    """Run the line-ending owner the way Doctor does, returning its report."""
+    return readiness.inspect_line_endings(readiness.LineEndingInspectionRequest(root, booley_dir))
+
+
+def _findings(report: DiagnosticReport, severity: Severity) -> list[DiagnosticFinding]:
+    return [finding for finding in report.findings if finding.severity is severity]
+
+
 class TestLineEndingsCheck:
     """`booley init` fixes CRLF checkouts, but a git config reset or a fresh
     Windows clone can drift back — doctor re-asks every run."""
 
     @staticmethod
     def _repo(root: Path, *, autocrlf: str) -> None:
-        subprocess.run(
-            ["git", "init", "-q", str(root)],
-            capture_output=True,
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        subprocess.run(
-            ["git", "-C", str(root), "config", "core.autocrlf", autocrlf],
-            capture_output=True,
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
+        run_bounded_child(["git", "init", "-q", str(root)], check=True)
+        run_bounded_child(
+            ["git", "-C", str(root), "config", "core.autocrlf", autocrlf], check=True
         )
 
     @staticmethod
     def _commit(root: Path, name: str, data: bytes) -> None:
         (root / name).write_bytes(data)
-        subprocess.run(
-            ["git", "-C", str(root), "add", "-f", name],
-            capture_output=True,
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        subprocess.run(
+        run_bounded_child(["git", "-C", str(root), "add", "-f", name], check=True)
+        run_bounded_child(
             [
                 "git",
                 "-C",
@@ -7561,20 +6959,18 @@ class TestLineEndingsCheck:
                 "-qm",
                 "c",
             ],
-            capture_output=True,
             check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
         )
 
     def test_lf_tree_with_autocrlf_off_passes(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.passed and not c.warned and not c.failed
+        assert _findings(report, Severity.PASS)
+        assert not _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
 
     def test_lf_tree_with_stale_crlf_index_stat_fails(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -7609,13 +7005,12 @@ class TestLineEndingsCheck:
             ).returncode
             == 0
         )
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert len(c.failed) == 1
-        assert "stale" in c.failed[0][0]
-        assert "booley init" in c.failed[0][1]
+        failed = _findings(report, Severity.FAIL)
+        assert len(failed) == 1
+        assert "stale" in failed[0].message
+        assert "booley init" in failed[0].fix
 
     def test_crlf_tree_fails_with_the_init_remediation(self, tmp_path: Path):
         # Ticket Mode is broken right now: the container reads every one of
@@ -7628,31 +7023,29 @@ class TestLineEndingsCheck:
             capture_output=True,
             check=True,
         )
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert len(c.failed) == 1
-        assert "booley init" in c.failed[0][1]
-        assert "--fix-line-endings" not in c.failed[0][1]
+        failed = _findings(report, Severity.FAIL)
+        assert len(failed) == 1
+        assert "booley init" in failed[0].fix
+        assert "--fix-line-endings" not in failed[0].fix
 
     def test_autocrlf_true_with_lf_tree_warns(self, tmp_path: Path):
         # Nothing is broken yet — the next checkout is what breaks it.
         self._repo(tmp_path, autocrlf="true")
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.warned and not c.failed
+        assert _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
 
     @pytest.mark.parametrize("true_value", ["yes", "on", "1"])
     def test_autocrlf_true_alias_with_lf_tree_warns(self, tmp_path: Path, true_value: str):
         self._repo(tmp_path, autocrlf=true_value)
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.warned and not c.failed and not c.passed
+        assert _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
+        assert not _findings(report, Severity.PASS)
 
     def test_explicit_crlf_checkout_policy_is_not_a_finding(self, tmp_path: Path):
         self._repo(tmp_path, autocrlf="false")
@@ -7664,11 +7057,11 @@ class TestLineEndingsCheck:
             capture_output=True,
             check=True,
         )
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.passed and not c.warned and not c.failed
+        assert _findings(report, Severity.PASS)
+        assert not _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
 
     def test_minus_text_payload_is_not_a_finding(self, tmp_path: Path):
         # A `*.bat -text` file is stored CRLF and checked out CRLF deliberately:
@@ -7677,11 +7070,11 @@ class TestLineEndingsCheck:
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, ".gitattributes", b"* text eol=lf\n*.bat -text\n")
         self._commit(tmp_path, "run.bat", b"@echo off\r\n")
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.passed and not c.warned and not c.failed
+        assert _findings(report, Severity.PASS)
+        assert not _findings(report, Severity.WARN)
+        assert not _findings(report, Severity.FAIL)
 
     def test_missing_gitattributes_rule_alone_is_silent(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -7690,18 +7083,15 @@ class TestLineEndingsCheck:
         # would be unfollowable advice on every Linux project.
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert not c.warned
+        assert not _findings(report, Severity.WARN)
 
     def test_not_a_git_repo_skips(self, tmp_path: Path):
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
-
-        assert c.skipped and not c.failed
+        assert _findings(report, Severity.SKIP)
+        assert not _findings(report, Severity.FAIL)
 
     def test_nested_crlf_failure_names_project_data_repository(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -7719,21 +7109,13 @@ class TestLineEndingsCheck:
             capture_output=True,
             check=True,
         )
-        c = _Collector()
+        report = _inspect_line_endings(tmp_path, booley_dir)
 
-        doctor._check_line_endings(
-            tmp_path,
-            c._pass,
-            c._warn,
-            c._skip,
-            c._fail,
-            booley_dir=booley_dir,
-        )
-
-        assert len(c.failed) == 1
-        assert "Booley Directory" in c.failed[0][0]
-        assert str(booley_dir) in c.failed[0][0]
-        assert any("Project Root" in message for message in c.passed)
+        failed = _findings(report, Severity.FAIL)
+        assert len(failed) == 1
+        assert "Booley Directory" in failed[0].message
+        assert str(booley_dir) in failed[0].message
+        assert any("Project Root" in f.message for f in _findings(report, Severity.PASS))
 
     def test_nested_autocrlf_warning_has_project_data_subject(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -7741,19 +7123,9 @@ class TestLineEndingsCheck:
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir(exist_ok=True)
         self._repo(booley_dir, autocrlf="true")
-        reporter = doctor._Reporter.create()
+        report = _inspect_line_endings(tmp_path, booley_dir)
 
-        doctor._check_line_endings(
-            tmp_path,
-            reporter.pass_,
-            reporter.warn_,
-            reporter.skip_,
-            reporter.fail_,
-            booley_dir=booley_dir,
-        )
-
-        assert reporter.findings is not None
-        warnings = [finding for finding in reporter.findings if finding.severity == "warn"]
+        warnings = _findings(report, Severity.WARN)
         assert len(warnings) == 1
         assert warnings[0].check_id == "git.autocrlf-risk"
         assert warnings[0].subject == "project-data"
@@ -7774,18 +7146,9 @@ class TestLineEndingsCheck:
             capture_output=True,
             check=True,
         )
-        reporter = doctor._Reporter.create()
+        report = _inspect_line_endings(tmp_path)
 
-        doctor._check_line_endings(
-            tmp_path,
-            reporter.pass_,
-            reporter.warn_,
-            reporter.skip_,
-            reporter.fail_,
-        )
-
-        assert reporter.findings is not None
-        warnings = [finding for finding in reporter.findings if finding.severity == "warn"]
+        warnings = _findings(report, Severity.WARN)
         assert len(warnings) == 1
         assert warnings[0].check_id == "git.autocrlf-risk"
         assert warnings[0].subject == "project-checkout"
@@ -7808,18 +7171,19 @@ class TestLineEndingsCheck:
     def test_unreadable_repository_report_maps_failed_probe(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
         code: str,
         expected: str,
     ):
         from booley.harness.setup.line_endings import (
             LineEndingObservation,
             LineEndingObservationCode,
+            LineEndingReport,
             LineEndingRepository,
             LineEndingStatus,
             RepositoryLineEndingReport,
         )
 
-        collector = _Collector()
         repository = LineEndingRepository("project-checkout", tmp_path)
         report = RepositoryLineEndingReport(
             repository,
@@ -7828,26 +7192,28 @@ class TestLineEndingsCheck:
             (),
         )
 
-        doctor._report_repository_line_endings(
-            report,
-            collector._pass,
-            collector._warn,
-            collector._fail,
+        monkeypatch.setattr(
+            readiness,
+            "reconcile_project_line_endings",
+            lambda *_args, **_kwargs: LineEndingReport(LineEndingStatus.UNSAFE, (report,), ()),
         )
+        result = _inspect_line_endings(tmp_path)
+        warned = _findings(result, Severity.WARN)
+        assert len(warned) == 1
+        assert expected in warned[0].message
 
-        assert len(collector.warned) == 1
-        assert expected in collector.warned[0]
-
-    def test_unreadable_index_comparison_report_warns(self, tmp_path: Path):
+    def test_unreadable_index_comparison_report_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         from booley.harness.setup.line_endings import (
             LineEndingObservation,
             LineEndingObservationCode,
+            LineEndingReport,
             LineEndingRepository,
             LineEndingStatus,
             RepositoryLineEndingReport,
         )
 
-        collector = _Collector()
         repository = LineEndingRepository("project-checkout", tmp_path)
         report = RepositoryLineEndingReport(
             repository,
@@ -7861,26 +7227,28 @@ class TestLineEndingsCheck:
             (),
         )
 
-        doctor._report_repository_line_endings(
-            report,
-            collector._pass,
-            collector._warn,
-            collector._fail,
+        monkeypatch.setattr(
+            readiness,
+            "reconcile_project_line_endings",
+            lambda *_args, **_kwargs: LineEndingReport(LineEndingStatus.UNSAFE, (report,), ()),
         )
+        result = _inspect_line_endings(tmp_path)
+        warned = _findings(result, Severity.WARN)
+        assert len(warned) == 1
+        assert "git diff timed out" in warned[0].message
 
-        assert len(collector.warned) == 1
-        assert "git diff timed out" in collector.warned[0]
-
-    def test_crlf_failure_precedes_candidate_warning(self, tmp_path: Path):
+    def test_crlf_failure_precedes_candidate_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         from booley.harness.setup.line_endings import (
             LineEndingObservation,
             LineEndingObservationCode,
+            LineEndingReport,
             LineEndingRepository,
             LineEndingStatus,
             RepositoryLineEndingReport,
         )
 
-        collector = _Collector()
         report = RepositoryLineEndingReport(
             LineEndingRepository("project-checkout", tmp_path),
             LineEndingStatus.UNSAFE,
@@ -7894,15 +7262,14 @@ class TestLineEndingsCheck:
             (),
         )
 
-        doctor._report_repository_line_endings(
-            report,
-            collector._pass,
-            collector._warn,
-            collector._fail,
+        monkeypatch.setattr(
+            readiness,
+            "reconcile_project_line_endings",
+            lambda *_args, **_kwargs: LineEndingReport(LineEndingStatus.UNSAFE, (report,), ()),
         )
-
-        assert len(collector.failed) == 1
-        assert not collector.warned
+        result = _inspect_line_endings(tmp_path)
+        assert len(_findings(result, Severity.FAIL)) == 1
+        assert not _findings(result, Severity.WARN)
 
     def test_autocrlf_check_id_precedes_unreadable_status(
         self,
@@ -7938,22 +7305,14 @@ class TestLineEndingsCheck:
             (),
         )
         monkeypatch.setattr(
-            doctor, "reconcile_project_line_endings", lambda *_args, **_kwargs: report
-        )
-        reporter = doctor._Reporter.create()
-
-        doctor._check_line_endings(
-            tmp_path,
-            reporter.pass_,
-            reporter.warn_,
-            reporter.skip_,
-            reporter.fail_,
+            readiness, "reconcile_project_line_endings", lambda *_args, **_kwargs: report
         )
 
-        assert reporter.findings is not None
-        assert len(reporter.findings) == 1
-        assert reporter.findings[0].check_id == "git.autocrlf-risk"
-        assert reporter.findings[0].severity == "warn"
+        findings = _inspect_line_endings(tmp_path).findings
+
+        assert len(findings) == 1
+        assert findings[0].check_id == "git.autocrlf-risk"
+        assert findings[0].severity is Severity.WARN
 
 
 # =============================================================
@@ -8053,7 +7412,7 @@ class TestSubscriptionCredsHealth:
 
         now = datetime(2026, 10, 8, 10, 30, tzinfo=UTC).timestamp()
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
-        monkeypatch.setattr(doctor.time, "time", lambda: now)
+        monkeypatch.setattr(doctor, "wall_clock", lambda: now)
         monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
         monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: "auto")
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
@@ -8311,11 +7670,10 @@ def test_doctor_reuses_one_target_source_inspector(
 
 def _git_commit_all(root: Path, message: str = "add") -> None:
     """Commit everything staged under ``root`` with a throwaway identity."""
-    subprocess.run(
+    run_bounded_child(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", message],
         cwd=root,
         check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -8334,7 +7692,7 @@ def _committed_repo(root: Path) -> None:
     """A git repo with one unrelated committed file, so HEAD exists."""
     _git_init(root)
     (root / "README").write_text("x\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "add", "README"], cwd=root, check=True)
     _git_commit_all(root)
 
 
@@ -8680,10 +8038,10 @@ def test_doctor_stealth_missing_local_policy_is_read_only(tmp_path):
     (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
     paths = [tmp_path / ".git/config", tmp_path / ".git/index"]
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
-    c = _Collector()
-    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, booley_dir=data)
-    assert c.warned and not c.passed and not c.failed
-    assert str(tmp_path / ".git/info/attributes") in c.warned[0]
+    report = _inspect_line_endings(tmp_path, data)
+    warned = _findings(report, Severity.WARN)
+    assert warned and not _findings(report, Severity.PASS) and not _findings(report, Severity.FAIL)
+    assert str(tmp_path / ".git/info/attributes") in warned[0].message
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
     assert not (tmp_path / ".git/info/attributes").exists()
     assert not (tmp_path / ".gitattributes").exists()
@@ -8873,7 +8231,7 @@ def test_mixed_lint_doctor_rejects_but_keeps_inventory(tmp_path, eda_tool):
             "FAIL",
         ),
         ('[feedback]\nmode = "off"\n', "[feedback].mode", "delete [feedback].mode", "FAIL"),
-        ('[interactive]\napp = "codex"\n', "[interactive].app", "[agent].provider", "FAIL"),
+        ('[interactive]\napp = "codex"\n', "[interactive].app", "[agent].default", "FAIL"),
     ],
 )
 def test_doctor_renders_removed_documentation_item_with_fix(
@@ -9286,23 +8644,17 @@ def test_doctor_opt_out_migration_read_only_and_direct_init_hint(tmp_path):
         config,
     ]
     before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths]
-    c = _Collector()
-    hints = []
-
-    def warn(message, fix=""):
-        c._warn(message, fix)
-        hints.append(fix)
-
-    doctor._check_line_endings(tmp_path, c._pass, warn, c._skip, c._fail, booley_dir=data)
-    assert c.warned and not c.failed and not c.passed
-    assert "migration" in c.warned[0]
-    assert "booley init" in hints[0]
-    assert "cannot prove ownership" not in c.warned[0]
+    report = _inspect_line_endings(tmp_path, data)
+    warned = _findings(report, Severity.WARN)
+    assert warned and not _findings(report, Severity.FAIL) and not _findings(report, Severity.PASS)
+    assert "migration" in warned[0].message
+    assert "booley init" in warned[0].fix
+    assert "cannot prove ownership" not in warned[0].message
     assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths] == before
     reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
-    c = _Collector()
-    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, booley_dir=data)
-    assert c.passed and not c.warned and not c.failed
+    report = _inspect_line_endings(tmp_path, data)
+    assert _findings(report, Severity.PASS)
+    assert not _findings(report, Severity.WARN) and not _findings(report, Severity.FAIL)
 
 
 @pytest.mark.parametrize("ignored", [False, True])
@@ -9450,35 +8802,6 @@ def test_seed_mount_policy_state_partitions_belong_to_same_project(tmp_path, mon
         "1 interactive state volume(s) from other projects" in f.message for f in report.findings
     )
     assert all(own not in detail.message for detail in report.details)
-
-
-@pytest.mark.parametrize("inventory", ["editor", "headless", "absent", "unknown"])
-def test_viewer_bridge_project_sandbox_resolution(
-    workspace, project_sandbox_resolution, monkeypatch, inventory
-):
-    fixture = project_sandbox_resolution
-    if inventory == "headless":
-        fixture.state["Config"]["Labels"].pop("devcontainer.local_folder")
-        fixture.state["Name"] = "/" + session_runtime.session_container_name(workspace)
-    elif inventory == "absent":
-        fixture.documents.clear()
-    elif inventory == "unknown":
-        fixture.state["Config"]["Labels"].pop("booley.project-id")
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(doctor, "_vscode_extension_host_running", lambda _: False)
-    rec = _Rec()
-    doctor._check_viewer_bridge(
-        TestViewerBridgeCheck._project(workspace), "docker", rec.p, rec.s, rec.f
-    )
-    if inventory == "unknown":
-        assert rec.kinds() == {"fail"}
-        assert any("identity disagrees" in message for message in rec.fails())
-    else:
-        assert rec.kinds() == {"skip"}
-        # Ownership alone must never claim an attached extension host.
-        assert "pass" not in rec.kinds()
 
 
 def test_doctor_flags_missing_specialist_ignores_without_mutating(tmp_path):
@@ -9711,23 +9034,12 @@ def test_deep_doctor_accepts_completed_logical_synthesis(tmp_path):
 
     path = target_report_path("synth", "synth", tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "synth_mode": "logical",
-                "termination": "completed",
-                "ppa_complete": True,
-                "area_source": "yosys_mapped",
-                "timing_complete": False,
-                "per_clock": [],
-            }
-        )
-    )
+    path.write_text(json.dumps(_COMPLETE_LOGICAL_SYNTH_REPORT))
     assert doctor._synth_deep_report_error("synth", "synth", False, tmp_path) == "", (
         "logical deep Doctor report was rejected"
     )
-    passed, failed = [], []
-    doctor._report_flow_check_result(
+    findings = Findings()
+    doctor._grade_flow_check_result(
         SimpleNamespace(),
         "synth",
         subprocess.CompletedProcess([], 0, "", ""),
@@ -9735,13 +9047,11 @@ def test_deep_doctor_accepts_completed_logical_synthesis(tmp_path):
         dry_run=False,
         label="synth",
         report_dir=tmp_path,
-        verbose=False,
-        _pass=passed.append,
-        _warn=lambda *a: None,
-        _skip=lambda *a: None,
-        _fail=lambda *a: failed.append(a),
+        findings=findings,
     )
-    assert passed and not failed
+    assert [(f.severity, f.message) for f in findings.report().findings] == [
+        (Severity.PASS, "synth passed")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -9800,38 +9110,6 @@ def test_deep_doctor_synthesis_legacy_and_malformed(tmp_path):
     )
     assert doctor._synth_deep_report_error("synth", "synth", True, tmp_path) == ""
     assert doctor._synth_deep_report_error("lint", "lint", False, tmp_path) == ""
-
-
-def test_cocotb_select_check_reads_the_qualified_section(tmp_path):
-    booley_dir = _write_project(tmp_path)
-    (booley_dir / "tests.toml").write_text(
-        '["unit#sim_fast"]\nselect = "+t={name}"\n', encoding="utf-8"
-    )
-    project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        booley_dir=booley_dir,
-        booley_toml={},
-        configs_toml={},
-        first_target="sim_fast",
-    )
-    ref = fusesoc_registry.TargetRef(
-        name="sim_fast",
-        vlnv="::unit:0",
-        core_file=tmp_path / "unit.core",
-        eda_tool="verilator",
-        flow="sim",
-        cocotb_module="tb",
-    )
-    failures: list[str] = []
-    doctor._check_cocotb_targets(
-        project,
-        {"sim_fast": ref},
-        lambda _message: None,
-        lambda *_args, **_kwargs: None,
-        lambda _message: None,
-        lambda message, _fix="": failures.append(message),
-    )
-    assert any("`select` plusarg template" in message for message in failures)
 
 
 # =============================================================
@@ -9930,7 +9208,7 @@ def test_doctor_fails_on_booley_dir_pin_mismatch(tmp_path, monkeypatch):
     # An ancestor's untrusted link is not this checkout's FAIL to report.
     inner = project / "inner"
     inner.mkdir()
-    subprocess.run(["git", "init", str(inner)], check=True, capture_output=True, timeout=30)
+    run_bounded_child(["git", "init", str(inner)], check=True)
     with pytest.raises(booley_dir_pin.BooleyDirPinError):
         cli._require_command_project("doctor", inner)
 
@@ -10060,22 +9338,20 @@ def test_goal_history_versioned_hint_for_relocated_booley_dir(tmp_path):
 
 
 def test_stealth_exclude_check_requires_relocated_entry(tmp_path):
-    root, _project = _relocated_project(tmp_path, stealth=True)
+    root, project = _relocated_project(tmp_path, stealth=True)
     exclude = root / ".git/info/exclude"
     exclude.write_bytes(b"/.devcontainer\n/.booley\n/tools/booley\n")
-    findings: list[doctor.DoctorWarning] = []
-    doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
-    assert findings == []
+    request = doctor.inspection.InteractiveGitRequest(root, project)
+    assert _findings(doctor.inspection.inspect_interactive_git(request), Severity.WARN) == []
 
     # Only the default spelling present: the relocated entry is reported missing.
     exclude.write_bytes(b"/.devcontainer\n/.booley\n")
-    doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
+    findings = _findings(doctor.inspection.inspect_interactive_git(request), Severity.WARN)
     assert [f.subject for f in findings] == ["tools/booley"]
 
     # The writers also hide `.booley`, so Doctor requires it beside the relocated entry.
-    findings.clear()
     exclude.write_bytes(b"/.devcontainer\n/tools/booley\n")
-    doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
+    findings = _findings(doctor.inspection.inspect_interactive_git(request), Severity.WARN)
     assert [f.subject for f in findings] == [".booley"]
 
 
@@ -10105,3 +9381,459 @@ def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
     plain.mkdir()
     default_audit = doctor.ProjectAudit(plain, plain / ".booley", {}, {}, "sim")
     assert "BOOLEY_DIR=/work/.booley" in doctor._mcp_probe_command(default_audit, "docker", "i")
+
+
+# ---------------------------------------------------------------------------
+# Doctor Flow check reports.
+# ---------------------------------------------------------------------------
+
+
+def _flow_phase_output(tmp_path, monkeypatch, capsys, *, verbose: bool) -> tuple[list[str], int]:
+    """Run the Flow dry-run phase with scripted sim/lint dry-runs.
+
+    Returns the ANSI-stripped output lines (project root replaced by ``<root>``)
+    and the exit code the reporter would produce.
+    """
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    base_run = doctor.subprocess.run
+    sim_stderr = "\n".join(
+        ["sim: starting", "sim: elaborating", "sim: linking"]
+        + [f"sim: note {index}" for index in range(4)]
+        + ["%Error: undefined signal foo", "sim: reason follows"]
+        + [f"sim: trailer {index}" for index in range(4)]
+    )
+    lint_stdout = "\n".join(["lint: ok line one", "lint: line two", "lint: line three"])
+
+    def run(cmd, **kwargs):
+        if "booley.flows.sim" in cmd and "--dry-run" in cmd:
+            return subprocess.CompletedProcess(cmd, 3, stdout="", stderr=sim_stderr)
+        if "booley.flows.lint" in cmd and "--dry-run" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=lint_stdout, stderr="")
+        return base_run(cmd, **kwargs)
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    reporter = doctor._Reporter.create(verbose=verbose)
+    docker_exe, project = doctor._run_project_phase(tmp_path, reporter, read_only=True)
+    capsys.readouterr()
+    assert project is not None
+    doctor._run_flow_and_core_phase(
+        project,
+        doctor._DoctorFlowRuntime(tmp_path, docker_exe),
+        verbose,
+        reporter,
+        lambda _message: None,
+    )
+    text = colors.strip_ansi(capsys.readouterr().out).replace(str(tmp_path), "<root>")
+    return text.splitlines(), reporter.finish()
+
+
+_FLOW_FAIL_ROWS = [
+    "  ✗  sim dry-run [sim_fast] failed with exit 3",
+    f"     → see {Path('<root>') / '.booley' / doctor.DOCTOR_TMP_DIR / 'flow-reports'}",
+    "      %Error: undefined signal foo",
+    "      sim: reason follows",
+    "      … (11 more line(s); see the report dir)",
+]
+_LINT_ROWS = [
+    "  ✓  lint executes in the Sandbox",
+    "  ✓  lint: 'verilator' on the Sandbox PATH",
+    "  ✓  lint dry-run [lint_fast] passed",
+]
+_LINT_VERBOSE_EXCERPT = [
+    "      lint: ok line one",
+    "      … (2 more line(s); see the report dir)",
+]
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_flow_check_doctor_output_is_stable(tmp_path, monkeypatch, capsys, verbose):
+    """Characterization: dry-run rows, hints, and excerpts print as before the report move.
+
+    A failing dry-run always shows its excerpt; a passing one shows a single
+    excerpt line only under ``--verbose``.
+    """
+    lines, exit_code = _flow_phase_output(tmp_path, monkeypatch, capsys, verbose=verbose)
+
+    start = lines.index(_FLOW_FAIL_ROWS[0])
+    end = lines.index("  ✓  synth executes in the Sandbox")
+    assert lines[start:end] == [
+        *_FLOW_FAIL_ROWS,
+        *_LINT_ROWS,
+        *(_LINT_VERBOSE_EXCERPT if verbose else []),
+    ]
+    assert exit_code == 1
+
+
+@dataclass(frozen=True)
+class _FlowCheckCase:
+    """One scripted Flow check and the report it must grade to.
+
+    ``<report_dir>`` in an expected fix stands for the Doctor report directory.
+    """
+
+    flow: str
+    dry_run: bool
+    findings: list[tuple[Severity, str, str, str | None, str | None]]
+    details: list[tuple[int, str, bool]]
+    process: bool
+    completed: bool
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    synth_report: dict | None = None
+    raises: BaseException | None = None
+    runtime_available: bool = True
+    first_config: dict | None = None
+    session_error: str | None = None
+
+
+_REPORT_DIR = "<report_dir>"
+
+_FLOW_CHECK_CASES = {
+    "pass": _FlowCheckCase(
+        "sim",
+        False,
+        [(Severity.PASS, "sim deep check [fast] passed", "", None, None)],
+        [(1, "    ok", True)],
+        process=True,
+        completed=True,
+        stdout="ok",
+    ),
+    "lint-findings": _FlowCheckCase(
+        "lint",
+        False,
+        [
+            (
+                Severity.PASS,
+                "lint deep check [fast] ran end-to-end; the design has lint findings "
+                "(exit 1 = WARN), which belong to `booley lint`",
+                "",
+                None,
+                None,
+            )
+        ],
+        [(1, "    RESULT: WARN (3 warnings)", True), (1, "    second line", True)],
+        process=True,
+        completed=True,
+        returncode=1,
+        stdout="RESULT: WARN (3 warnings)\nsecond line",
+    ),
+    "synth-warning": _FlowCheckCase(
+        "synth",
+        False,
+        [
+            (
+                Severity.WARN,
+                "synth deep check [fast] returned a WARN verdict",
+                "run `booley flow synth --target fast` and resolve its reported findings",
+                "flow.synth-deep-warning",
+                "fast",
+            )
+        ],
+        [(1, "    RESULT: WARN -- timing VIOLATED", True)],
+        process=True,
+        completed=True,
+        stdout="RESULT: WARN -- timing VIOLATED",
+        synth_report=_COMPLETE_LOGICAL_SYNTH_REPORT,
+    ),
+    "synth-incomplete-evidence": _FlowCheckCase(
+        "synth",
+        False,
+        [
+            (
+                Severity.FAIL,
+                "synth deep check [fast] produced incomplete synthesis evidence: "
+                "ppa_complete is not true",
+                f"see {_REPORT_DIR}",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=True,
+        completed=True,
+        synth_report={**_COMPLETE_LOGICAL_SYNTH_REPORT, "ppa_complete": False},
+    ),
+    "sim-tb-top-skip": _FlowCheckCase(
+        "sim",
+        True,
+        [
+            (
+                Severity.SKIP,
+                "sim dry-run [fast] skipped - tb_top is resolved at runtime "
+                "(no static tb_top in the first config)",
+                "",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=True,
+        completed=False,
+        returncode=2,
+        stderr="--tb-top is required",
+        first_config={"defines": []},
+    ),
+    "exit-failure": _FlowCheckCase(
+        "sim",
+        True,
+        [
+            (
+                Severity.FAIL,
+                "sim dry-run [fast] failed with exit 3",
+                f"see {_REPORT_DIR}",
+                None,
+                None,
+            )
+        ],
+        [(1, "    boom", False)],
+        process=True,
+        completed=True,
+        returncode=3,
+        stderr="boom",
+    ),
+    "timeout": _FlowCheckCase(
+        "sim",
+        False,
+        [
+            (
+                Severity.FAIL,
+                "sim deep check [fast] timed out after 10s",
+                f"see {_REPORT_DIR}",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=False,
+        completed=False,
+        raises=subprocess.TimeoutExpired("sim", 10),
+    ),
+    "launch-error": _FlowCheckCase(
+        "sim",
+        False,
+        [
+            (
+                Severity.FAIL,
+                "sim deep check [fast] failed to start: no exec",
+                f"see {_REPORT_DIR}",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=False,
+        completed=False,
+        raises=OSError("no exec"),
+    ),
+    "runtime-unavailable": _FlowCheckCase(
+        "sim",
+        False,
+        [
+            (
+                Severity.SKIP,
+                f"sim deep check [fast] skipped - '{_CONTAINER_CLI}' runtime not available",
+                "",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=False,
+        completed=False,
+        runtime_available=False,
+    ),
+    "sandbox-entry-failure": _FlowCheckCase(
+        "sim",
+        False,
+        [
+            (
+                Severity.FAIL,
+                "sim deep check [fast] could not enter the Sandbox: bad issuance",
+                "run 'booley init --seed' and retry",
+                None,
+                None,
+            )
+        ],
+        [],
+        process=False,
+        completed=False,
+        session_error="bad issuance",
+    ),
+}
+
+
+@pytest.mark.parametrize("case_id", list(_FLOW_CHECK_CASES))
+def test_flow_check_report_grades_each_outcome(tmp_path, monkeypatch, case_id):
+    """Every grading outcome lands in the returned report, details and run facts included."""
+    case = _FLOW_CHECK_CASES[case_id]
+
+    def fake_run(cmd):
+        if case.synth_report is not None:
+            _write_synth_report(report_dir, case.synth_report)
+        if case.raises is not None:
+            raise case.raises
+        return subprocess.CompletedProcess(cmd, case.returncode, case.stdout, case.stderr)
+
+    project, calls = _tool_check_harness(tmp_path, monkeypatch, fake_run)
+    report_dir = project.booley_dir / doctor.DOCTOR_TMP_DIR / "flow-reports"
+    if case.first_config is not None:
+        project = replace(project, configs_toml={"fast": case.first_config})
+    if case.session_error is not None:
+        error = doctor.session_runtime.SessionError(case.session_error)
+        monkeypatch.setattr(
+            doctor.session_runtime, "up", lambda _root: (_ for _ in ()).throw(error)
+        )
+
+    outcome = doctor._run_flow_check(
+        project,
+        case.flow,
+        target="fast",
+        dry_run=case.dry_run,
+        flow_runtime=doctor._DoctorFlowRuntime(
+            project.project_root, _CONTAINER_CLI if case.runtime_available else None
+        ),
+        timeout_s=10,
+    )
+
+    assert [
+        (f.severity, f.message, f.fix.replace(_REPORT_DIR, str(report_dir)), f.check_id, f.subject)
+        for f in outcome.report.findings
+    ] == [
+        (severity, message, fix.replace(_REPORT_DIR, str(report_dir)), check_id, subject)
+        for severity, message, fix, check_id, subject in case.findings
+    ]
+    assert [
+        (d.after_finding, d.message, d.verbose_only) for d in outcome.report.details
+    ] == case.details
+    assert outcome.completed is case.completed
+    assert (outcome.process is not None) is case.process
+    assert bool(calls) is (case.process or case.raises is not None)
+
+
+def _graded_flow_report(tmp_path, monkeypatch, case_id: str) -> DiagnosticReport:
+    """Return the report of one scripted Flow check from ``_FLOW_CHECK_CASES``."""
+    case = _FLOW_CHECK_CASES[case_id]
+
+    def fake_run(cmd):
+        if case.synth_report is not None:
+            _write_synth_report(
+                tmp_path / ".booley" / doctor.DOCTOR_TMP_DIR / "flow-reports", case.synth_report
+            )
+        return subprocess.CompletedProcess(cmd, case.returncode, case.stdout, case.stderr)
+
+    project, _calls = _tool_check_harness(tmp_path, monkeypatch, fake_run)
+    return doctor._run_flow_check(
+        project,
+        case.flow,
+        target="fast",
+        dry_run=case.dry_run,
+        flow_runtime=doctor._DoctorFlowRuntime(project.project_root, _CONTAINER_CLI),
+        timeout_s=10,
+    ).report
+
+
+@pytest.mark.parametrize(
+    ("case_id", "verbose", "excerpt_shown"),
+    [
+        ("exit-failure", False, True),
+        ("pass", False, False),
+        ("pass", True, True),
+    ],
+)
+def test_flow_check_report_renders_through_reporter(
+    tmp_path, monkeypatch, capsys, case_id, verbose, excerpt_shown
+):
+    """An always-shown detail prints in concise runs; a default one only under --verbose."""
+    report = _graded_flow_report(tmp_path, monkeypatch, case_id)
+    reporter = doctor._Reporter.create(verbose=verbose)
+
+    reporter.diagnostics(report)
+
+    output = colors.strip_ansi(capsys.readouterr().out)
+    excerpt = report.details[0].message
+    assert (excerpt in output) is excerpt_shown
+    if excerpt_shown:
+        assert output.index(report.findings[0].message) < output.index(excerpt)
+
+
+def test_flow_check_report_waiver_turns_synth_warning_into_waived(tmp_path, monkeypatch, capsys):
+    """The WARN is rebuilt with its check ID and Target subject, so a waiver matches it."""
+    report = _graded_flow_report(tmp_path, monkeypatch, "synth-warning")
+    booley_dir = tmp_path / ".booley"
+    (booley_dir / "doctor-waivers.toml").write_text(
+        'version = 1\n\n[[waiver]]\ncheck = "flow.synth-deep-warning"\nsubject = "fast"\n'
+        'reason = "Hold slack is reviewed."\npermanent = true\n',
+        encoding="utf-8",
+    )
+    reporter = doctor._Reporter.create(load_doctor_waivers(booley_dir), verbose=True)
+
+    reporter.diagnostics(report)
+
+    assert [f.severity for f in reporter.findings] == [Severity.WAIVED]
+    assert reporter.counts["warn"] == 0
+    assert reporter.counts["waived"] == 1
+    # The verbose excerpt still follows its finding, as it did before waivers.
+    assert "RESULT: WARN -- timing VIOLATED" in colors.strip_ansi(capsys.readouterr().out)
+
+
+def test_deep_synth_calibration_follows_flow_check_findings(tmp_path, monkeypatch):
+    """Deep synth renders its Flow-check report first; calibration runs only after a launch."""
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        booley_dir=booley_dir,
+        booley_toml={
+            "flows": {"sim": {"enabled": False}, "lint": {"enabled": False}, "synth": {}}
+        },
+        configs_toml={},
+        first_target="",
+    )
+    base_run = doctor.subprocess.run
+    timed_out = False
+
+    def run(cmd, **kwargs):
+        if "booley.flows.synth" not in cmd:
+            return base_run(cmd, **kwargs)
+        # The Flow wrote its report even when it then hung: a timeout must still skip calibration.
+        _write_complete_synth_report(booley_dir)
+        if timed_out:
+            raise subprocess.TimeoutExpired(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    def deep_events() -> tuple[list[tuple[str, str]], doctor_deep.DeepCheckTracker]:
+        events: list[tuple[str, str]] = []
+        tracker = doctor_deep.DeepCheckTracker()
+        doctor._run_deep_checks(
+            project,
+            doctor._DoctorFlowRuntime(tmp_path, _CONTAINER_CLI),
+            lambda message: events.append(("pass", message)),
+            lambda message, fix="": events.append(("warn", message.check_id)),
+            lambda _message: None,
+            lambda message, fix: events.append(("fail", message)),
+            _diagnostics=lambda report: events.extend(
+                (f.severity.value, f.message) for f in report.findings
+            ),
+            completeness=tracker,
+        )
+        return events, tracker
+
+    events, tracker = deep_events()
+
+    assert events == [
+        ("pass", "synth deep check [synth_fast] passed"),
+        ("warn", "synth.memory-calibration-unavailable"),
+    ]
+    assert tracker.missing == ()
+
+    timed_out = True
+    events, tracker = deep_events()
+
+    assert [kind for kind, _message in events] == ["fail"]
+    assert "timed out" in events[0][1]
+    assert len(tracker.missing) == 1
+    assert tracker.missing[0].startswith("synth.smoke.")

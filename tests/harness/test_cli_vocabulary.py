@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -23,6 +22,7 @@ from booley.mcp.base import McpTool
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
 from booley.specialists.reviewer import ReviewerSpecialist
+from tests.subprocess_budget import run_bounded_child
 
 
 def command(argv):
@@ -39,7 +39,7 @@ def projects(tmp_path, monkeypatch):
     for name in ("a", "b"):
         root = tmp_path / name
         root.mkdir()
-        subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10)
+        run_bounded_child(["git", "init", "-q", str(root)], check=True, timeout=10)
         (root / ".booley").mkdir()
         (root / "rtl").mkdir()
         roots.append(root)
@@ -150,7 +150,7 @@ def test_recursive_command_inventory():
         "session": {"up", "enter", "down", "status", "validate", "prepare", "refresh"},
         "cleanup": {"prepare", "preview", "apply"},
         "upgrade": {"status", "acknowledge"},
-        "worktree": {"new"},
+        "worktree": {"new", "list", "rm", "gc"},
         "feedback": {"add", "friction", "say", "win", "triage", "filed"}
         | {"list", "report", "export", "redact"},
     }

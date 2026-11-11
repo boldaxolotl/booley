@@ -42,10 +42,20 @@ or CI fails with that command in its message.
 Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
 [TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md).
 
-`docs/user/TROUBLESHOOTING.md` is the single authored troubleshooting source.
-After editing it, refresh the installed-runtime copy with
-`python -m booley.dev_support.reference_docs`; use `--check` to verify it
-without writing.
+The Sandbox agents read a fixed set of user docs from `/booley-docs/`. The
+authored files stay in `docs/user/` (plus `docs/internals/FLOW_REPORTS.md`); the
+set is `SHIPPED_DOCS` in `src/booley/dev_support/reference_docs.py`. After
+editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
+with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
+without writing. The same command mirrors `CHANGELOG.md` byte for byte to
+`src/booley/data/refs/CHANGELOG.md`, so run it after editing `CHANGELOG.md` too.
+`python3 .github/scripts/sync_packaged_copies.py [--check]` runs it without
+installing Booley. Never edit a copy or the mirror by hand. The sync turns
+links to other shipped docs into sibling links and links to unshipped docs
+(`PLAIN_TEXT_TARGETS`) into plain text marked `(host doc, not shipped)`. A new
+link to a doc in neither set fails the sync with the file, the link and the fix.
+The regenerated copy lives under `src/booley/**`, so such an edit also runs the
+Python CI lane.
 
 ### Building a development wheel
 
@@ -84,17 +94,19 @@ installs Booley from any checkout, and runs commands against the active
 worktree's source. At `handoff` it names CI's lint-job checks: `ruff
 check .`, `ruff format --check .`, and `pyright` (the strict boundary check,
 configured by `[tool.pyright]` in `pyproject.toml`, resolving third-party
-imports in the shared environment). Its `coverage.changed-lines` handoff
+imports in the shared environment). Its `packaged-copies.check` command
+(before commit) fails when a packaged doc copy or the packaged `CHANGELOG.md`
+mirror is stale. Its `coverage.changed-lines` handoff
 command repeats CI's 90% changed-line coverage gate against the newest merge
 base with `main`, reading the coverage report that a passing `pytest.broad`
 run wrote for the same tree outside the checkout; it refuses a missing or
 stale report. Develop readiness defaults to the `python` test profile: its
 broad command runs `tests/ --test-profile python`, excluding every
-`native_bwave` test. It includes every Goal recovery and authority
-permutation, as every complete-suite CI run does.
+`native_bwave` test. `tests/` collection skips `tests/goals/` (temporary, until
+Goal Mode removal #3276); run those with unprofiled `pytest tests/goals`.
 
 Use `python3 .github/scripts/agent_readiness.py --test-profile full` before a
-full test run. `full` covers all of `tests/`, including native integration; it
+full test run. `full` covers `tests/` (minus `tests/goals/`), including native integration; it
 does not include Rust tests or `crates/bwave/tests/`. Native source tests all
 use the active checkout's `crates/bwave/target/debug/bwave` (`bwave.exe` on
 Windows), ignoring release builds and runtime binary overrides. This test-only
@@ -333,6 +345,14 @@ Porting EDA tools is #1, but not the only way to help:
   [Getting set up](#getting-set-up) above); a change that breaks tests is yours
   to fix.
 - **Match the surrounding code**: comment density, naming, and idiom.
+- **Register tests of Sandbox-only code.** Windows CI skips tests listed in
+  `tests/sandbox_only.py`, the `sandbox_only` marker's registry, because that code
+  never runs on a Windows host. Add a test module there only when the module it
+  exercises runs only in the Sandbox. Every new module under a registered
+  directory such as `tests/goals/` is Sandbox-only unless it is listed in
+  `WINDOWS_HOST_TESTS`. A guard test fails if a module a host command can
+  import is left with only Sandbox-only tests. See
+  [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests).
 - **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are three PRs.
 - **Keep slow tests well inside their time budget.** CI gives each test 60
   seconds unless a `@pytest.mark.timeout(N)` marker says otherwise. On Windows
@@ -349,6 +369,34 @@ Porting EDA tools is #1, but not the only way to help:
   each test's `timeout_headroom_ratio` property records how much of its
   budget it used.
 
+## Writing user docs
+
+The main text of every page in `docs/user/` describes one baseline setup:
+Stealth Mode off, an HDL testbench, Linux, and the EDA tools in the Sandbox
+Image. A reader on that setup should never have to skip a sentence.
+
+When a variant changes what the reader sees or does, put the difference in a
+collapsed callout right after the baseline text it modifies:
+
+```markdown
+<details markdown>
+<summary>In stealth mode</summary>
+
+Commit `AGENTS.md` in the Booley Directory's own repository instead:
+`git -C .booley commit`.
+
+</details>
+```
+
+- Use one fixed label per variant: `In stealth mode`, `With a cocotb
+  testbench`, `On Windows`, `With host-installed licensed tools`.
+- Say only what differs, and link to the variant's own page (`STEALTH.md`,
+  `WINDOWS.md`, ...) for the full story. Keep the callout at block level, not
+  inside a list item, and leave blank lines around its Markdown body.
+- Leave in the main text: choices every reader makes (port or scaffold, FPGA or
+  ASIC), hard limits (no coverage on Icarus), and reference tables that must
+  list every value.
+
 ## Branch and pull request workflow
 
 Booley uses a mainline workflow; there is no permanent development integration
@@ -356,9 +404,16 @@ branch. Start each feature, fix, refactor, or documentation branch from the
 latest `main`, and open its pull request directly into `main`. Keep the branch
 focused on one concern and make sure the required checks pass. A repository
 maintainer or agent then adds the ready PR to the Mergify queue; external
-contributors do not need write access to request review. Mergify updates and
-validates queued PRs one at a time before merging them. Delete the branch only
-after Mergify reports the PR merged.
+contributors do not need write access to request review. A PR labelled
+`confidential-review` waits for a maintainer to review it first. Mergify updates
+and validates queued PRs one at a time before merging them. Delete the branch
+only after Mergify reports the PR merged.
+
+A pull request from a fork needs no setup, such as allowlisting your commit
+identity, if you do not have write access. The `confidential-content` check
+treats findings on commits you author and on your PR text as advisory: they do
+not block the check, and a maintainer reviews any flagged confidential-term
+match. A commit whose author is an allowlisted maintainer identity is still checked.
 
 CI skips draft pull requests: `Tests`, the PicoRV32 demo contract, and the
 project site build start when the PR is opened ready or marked ready for

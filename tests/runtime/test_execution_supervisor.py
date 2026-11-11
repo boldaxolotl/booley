@@ -25,6 +25,7 @@ from tests.execution_test_support import (
     start_supervisor_with_detached_descendant,
     wait_for,
 )
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
@@ -76,6 +77,7 @@ def _start_supervisor_with_test_heartbeat(
         "supervisor._EXECUTION_HEARTBEAT_SECONDS = 0.03\n"
         "raise SystemExit(supervisor.main())\n"
     )
+    # Kept on Popen: the test waits on the supervisor itself.
     return subprocess.Popen(
         [
             sys.executable,
@@ -105,7 +107,7 @@ def _run_command(tmp_path: Path, command: list[str], *, path: str | None = None)
     env = runtime_env(data)
     if path is not None:
         env["PATH"] = path
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -117,10 +119,7 @@ def _run_command(tmp_path: Path, command: list[str], *, path: str | None = None)
             *command,
         ],
         env=env,
-        capture_output=True,
-        text=True,
         timeout=10,
-        check=False,
     )
     return result, read_json(paths.record)
 
@@ -258,6 +257,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     descendant_pid_file = tmp_path / "descendant.pid"
+    # Kept on Popen: the test cancels and waits on the supervisor itself.
     supervisor = start_supervisor_with_detached_descendant(
         booley_dir, execution_id, descendant_pid_file
     )
@@ -297,6 +297,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
     finally:
         if supervisor.poll() is None:
             supervisor.kill()
+        # Kept on Popen: reaps the supervisor the test drives itself.
         supervisor.communicate(timeout=5)
         if descendant_pid is not None and _non_zombie_alive(descendant_pid):
             os.killpg(descendant_pid, signal.SIGKILL)
@@ -382,6 +383,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
     execution_id = _unique_execution_id()
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
+    # Kept on Popen: the test waits on the supervisor itself.
     supervisor = subprocess.Popen(
         [
             sys.executable,
