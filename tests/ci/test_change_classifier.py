@@ -123,7 +123,7 @@ def _run_classifier(
         command.extend(("--ref", ref))
     result = run_bounded_child(
         command,
-        heck=False,
+        check=False,
     )
     return result, output
 
