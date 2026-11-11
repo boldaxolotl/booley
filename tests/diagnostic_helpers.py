@@ -98,8 +98,10 @@ class _Rec:
         _require_doctor_warning(m)
         self.events.append(("warn", m))
 
-    def n(self, m: str) -> None:
+    def n(self, m: str, fix: str = "") -> None:
         self.events.append(("note", m))
+        if fix:
+            self.fix_hints.append(fix)
 
     def s(self, m: str) -> None:
         self.events.append(("skip", m))

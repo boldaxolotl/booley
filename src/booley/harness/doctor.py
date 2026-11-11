@@ -6418,8 +6418,8 @@ def _project_has_cocotb_target(project: ProjectAudit | None) -> bool:
 def _load_tests_toml_normalized(project: ProjectAudit) -> dict[str, dict]:
     """The normalized tests.toml sections, or empty when absent/invalid.
 
-    Invalidity is the tests.toml inspection owner's finding, not this reader's — the cocotb
-    checks just degrade to the no-tests view.
+    Invalidity is reported by ``target_test_plan_inspection``, not this reader — the
+    cocotb checks just degrade to the no-tests view.
     """
     tests_path = project.booley_dir / "tests.toml"
     if not tests_path.exists():
@@ -8103,7 +8103,7 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
             with tests_path.open("rb") as f:
                 sections = normalize_tests_toml(tomllib.load(f))
         except (OSError, ValueError, tomllib.TOMLDecodeError):
-            sections = {}  # the tests.toml inspection owner already reported the breakage
+            sections = {}  # target_test_plan_inspection already reported the breakage
         try:
             handle = TargetCatalog.build(project.project_root).select(target, for_flow="sim")
             section = lookup_target_section(sections, handle.identity)

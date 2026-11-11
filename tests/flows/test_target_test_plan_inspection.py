@@ -48,14 +48,20 @@ def _inspect(root: Path, text: str | None) -> DiagnosticReport:
     return owner.inspect_target_test_plans(owner.TargetTestPlanInspectionRequest(root, booley_dir))
 
 
-def _handle(name: str, identity: str | None = None) -> SimpleNamespace:
-    return SimpleNamespace(name=name, selector=name, identity=identity or name)
+def _handle(name: str, identity: str | None = None, sim: bool = True) -> SimpleNamespace:
+    """A Target handle; ``sim=False`` marks one the sim Flow does not list."""
+    return SimpleNamespace(name=name, selector=name, identity=identity or name, sim=sim)
 
 
-def _target(tool: str = "verilator", cocotb: bool = False, plusargs: tuple[str, ...] = ()):
+def _target(
+    tool: str = "verilator",
+    cocotb: bool = False,
+    plusargs: tuple[str, ...] = (),
+    cocotb_module: object = "tb",
+):
     return SimpleNamespace(
         eda_tool=tool,
-        flow_options={"cocotb_module": "tb"} if cocotb else {},
+        flow_options={"cocotb_module": cocotb_module} if cocotb else {},
         parameters={name: {"paramtype": "plusarg"} for name in plusargs},
     )
 
@@ -67,7 +73,10 @@ def _use_catalog(monkeypatch, handles, targets=None) -> None:
     def inspect(handle):
         return targets.get(handle.selector, _target())
 
-    catalog = SimpleNamespace(list=lambda **_kwargs: tuple(handles), inspect=inspect)
+    def list_handles(for_flow=None):
+        return tuple(h for h in handles if h.sim or for_flow != "sim")
+
+    catalog = SimpleNamespace(list=list_handles, inspect=inspect)
     monkeypatch.setattr(TargetCatalog, "build", classmethod(lambda _cls, _root: catalog))
 
 
@@ -110,18 +119,19 @@ def test_two_keys_for_one_target_fail_naming_both(tmp_path, monkeypatch):
     _use_catalog(monkeypatch, _two_core_handles())
     report = _inspect(tmp_path, '["y#sim"]\n["vendor:b:y#sim"]\n["x#sim"]\n')
     triples = _triples(report)
+    assert [t[0] for t in triples] == ["pass", "fail", "pass"]
     assert triples[0] == ("pass", _TESTS_TOML_VALID, "")
-    fails = [t for t in triples if t[0] == "fail"]
-    assert len(fails) == 1
-    assert "[vendor:b:y#sim] and [y#sim]" in fails[0][1]
-    assert fails[0][2] == "keep one tests.toml section per Target"
+    assert "[vendor:b:y#sim] and [y#sim]" in triples[1][1]
+    assert triples[1][2] == "keep one tests.toml section per Target"
+    # The conflicting Target is skipped by the plan audit; only `x` gets a plan line.
+    assert triples[2] == ("pass", _VERILATOR_LINE.format(name="sim"), "")
 
 
 def test_qualified_key_naming_no_target_fails(tmp_path, monkeypatch):
     _use_catalog(monkeypatch, _two_core_handles())
     # `sim` is a declared Target name, but no `ghost` core declares it.
     report = _inspect(tmp_path, '["vendor:z:ghost#sim"]\n')
-    assert _triples(report)[:2] == [
+    assert _triples(report) == [
         ("pass", _TESTS_TOML_VALID, ""),
         (
             "fail",
@@ -129,6 +139,8 @@ def test_qualified_key_naming_no_target_fails(tmp_path, monkeypatch):
             "fix the section key (a dead key runs the testbench's default "
             "test and reports a false PASS)",
         ),
+        ("pass", _VERILATOR_LINE.format(name="sim"), ""),
+        ("pass", _VERILATOR_LINE.format(name="sim"), ""),
     ]
 
 
@@ -356,8 +368,12 @@ def test_default_seed_on_an_unseeded_target_fails(tmp_path, monkeypatch):
 def test_unknown_simulator_falls_back_to_its_raw_tool_name(tmp_path, monkeypatch):
     # An unrecognised tool is not a refusal: the plan is built for its raw name.
     _use_catalog(monkeypatch, [_handle("sim")], {"sim": _target("mystery-sim")})
-    ((_, _, _), (severity, message, _)) = _triples(_inspect(tmp_path, '[sim]\ntests = ["a"]\n'))
-    assert (severity, message.startswith("Target 'sim' Test Runs are ")) == ("pass", True)
+    report = _inspect(tmp_path, '[sim]\ntests = ["a"]\n')
+    assert _triples(report)[1] == (
+        "pass",
+        "Target 'sim' Test Runs are unseeded (Booley applies no seed to a mystery-sim Test Run)",
+        "",
+    )
 
 
 def test_absent_file_skips_without_naming_a_fallback_file(tmp_path):
@@ -397,3 +413,22 @@ def test_uninspectable_target_is_left_to_the_resolve_check(tmp_path, monkeypatch
         ("pass", _TESTS_TOML_VALID, ""),
         ("pass", _VERILATOR_LINE.format(name="fine"), ""),
     ]
+
+
+def test_plan_audit_lists_only_sim_targets(tmp_path, monkeypatch):
+    # The section-key audit sees every Target; the plan audit asks for sim Targets only.
+    _use_catalog(monkeypatch, [_handle("sim"), _handle("synth", sim=False)])
+    assert _triples(_inspect(tmp_path, '[sim]\ntests = ["a"]\n')) == [
+        ("pass", _TESTS_TOML_VALID, ""),
+        ("pass", _VERILATOR_LINE.format(name="sim"), ""),
+    ]
+
+
+def test_any_truthy_cocotb_module_makes_a_cocotb_target(tmp_path, monkeypatch):
+    # Doctor's long-standing rule: a non-string truthy value still means Cocotb
+    # (the Flow's own adapter rule would not), so a seed template is refused.
+    target = _target("icarus", cocotb=True, cocotb_module=True)
+    _use_catalog(monkeypatch, [_handle("sim")], {"sim": target})
+    report = _inspect(tmp_path, '[sim]\ntests = ["a"]\nseed = "+seed={seed}"\n')
+    assert report.findings[1].message.endswith("remove the seed template")
+    assert "Cocotb Target" in report.findings[1].message
