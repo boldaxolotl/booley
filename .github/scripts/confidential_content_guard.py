@@ -13,6 +13,11 @@ Local pre-push wrappers should pass Git's remote name and location arguments
 after the ``pre-push`` command. Without them, the guard can exclude only the
 updated ref's previous tip because it cannot prove what else the destination
 already contains.
+
+Pull-request scans in CI classify the pull request from the trusted event
+payload. Work by an outside contributor (a fork whose author is neither owner,
+member, nor collaborator) is advisory, as are the commits of such a pull
+request inside a Mergify candidate; everything else stays enforced.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import BinaryIO, TextIO
+from typing import BinaryIO, Literal, TextIO, cast
 
 from confidential_vocabulary import (
     SealedVocabularyError,
@@ -71,6 +76,34 @@ _PR_WRITE_URL_RE = re.compile(
     r"https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+"
     r"(?:#(?:issuecomment|pullrequestreview)-\d+)?"
 )
+# A fork PR is outside work unless its author can write to this repository.
+_MAINTAINER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+# A Mergify candidate is a same-repository PR opened by this bot on its queue branch.
+_MERGIFY_BOT_ID = 37929162
+_CANDIDATE_REF_PREFIX = "mergify/merge-queue/"
+# Mergify's first-parent merge commits carry exactly this message; the second
+# parent is the head of queued PR N.
+_CANDIDATE_MERGE_RE = re.compile(r"Merge of #(?P<number>[1-9][0-9]*)")
+_REPOSITORY_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_REVIEW_LABEL = "confidential-review"
+_ADVISORY_MARKER = "confidential-content-advisory"
+_TERM_KIND = "confidential term"
+_BOT_LOGIN = "github-actions[bot]"
+# Per open pull request, only the fields `_is_outside` and the head-commit check read.
+_OPEN_PULLS_JQ = (
+    ".[] | {author_association, head: {sha: .head.sha, repo: {id: .head.repo.id}}, "
+    "base: {repo: {id: .base.repo.id}}} | @json"
+)
+_MAX_ADVISORY_ROWS = 100
+_MAX_LOCATION_CHARS = 200
+_LOOKUP_TIMEOUT_SECONDS = 10
+_GH_TIMEOUT_SECONDS = 120
+# What `_scan_text` and `_commit_*` locations look like: drop the volatile parts
+# (commit prefix, trailing line number) so an amended or rebased commit keeps its digest.
+_LOCATION_COMMIT_RE = re.compile(r"^commit [0-9a-f]{12} ")
+_LOCATION_LINE_RE = re.compile(r":[0-9]+$")
+
+PullRequestScope = Literal["outside", "candidate", "maintainer"]
 
 
 class GuardError(RuntimeError):
@@ -106,8 +139,9 @@ class Finding:
 class Provenance:
     """Where commits and tree entries came from, so scans can attribute them.
 
-    ``outside`` holds commits merged from another owner's pull request;
-    ``attributing_merges`` the merges that attribute them (their messages are
+    ``outside`` holds commits attributed to outside work (merged from another
+    owner's pull request, an outside PR's own commits, or a verified candidate
+    range); ``attributing_merges`` the merges that attribute them (their messages are
     outside-authored); ``trusted_entries`` the exact ``(path, blob oid)`` pairs
     already accepted on the base tip.
     """
@@ -410,7 +444,7 @@ def _scan_text(text: str, location: str, config: GuardConfig) -> list[Finding]:
             continue
         found_ids.add(pattern.term_id)
         line = text.count("\n", 0, match.start()) + 1
-        findings.append(Finding("confidential term", f"{safe_location}:{line}", pattern.term_id))
+        findings.append(Finding(_TERM_KIND, f"{safe_location}:{line}", pattern.term_id))
         if len(findings) >= _MAX_FINDINGS:
             break
     return findings
@@ -810,6 +844,239 @@ def _outside_attribution(repo: Path, revision: str, owner: str) -> Provenance:
     return Provenance(frozenset(outside), frozenset(attributing))
 
 
+def _nested(value: object, *keys: str) -> object:
+    """Read ``value[keys[0]][keys[1]]...``; anything missing or not a dict is ``None``."""
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = cast("dict[str, object]", value).get(key)
+    return value
+
+
+def _repository_ids(pull_request: object) -> tuple[int, int] | None:
+    """Return the (head, base) repository IDs, or ``None`` when either is unreadable."""
+    head_id = _nested(pull_request, "head", "repo", "id")
+    base_id = _nested(pull_request, "base", "repo", "id")
+    if (
+        isinstance(head_id, int)
+        and isinstance(base_id, int)
+        and not isinstance(head_id, bool)
+        and not isinstance(base_id, bool)
+    ):
+        return head_id, base_id
+    return None
+
+
+def _is_outside(pull_request: object) -> bool:
+    """True for a fork PR whose author cannot write here; unreadable fields fail closed."""
+    ids = _repository_ids(pull_request)
+    association = _nested(pull_request, "author_association")
+    return (
+        ids is not None
+        and ids[0] != ids[1]
+        and isinstance(association, str)
+        and association.strip().upper() not in _MAINTAINER_ASSOCIATIONS
+    )
+
+
+def _is_mergify_candidate(pull_request: object) -> bool:
+    """True for a same-repository PR opened by the Mergify bot on its queue branch."""
+    ids = _repository_ids(pull_request)
+    head_ref = _nested(pull_request, "head", "ref")
+    return (
+        ids is not None
+        and ids[0] == ids[1]
+        and type(_nested(pull_request, "user", "id")) is int
+        and _nested(pull_request, "user", "id") == _MERGIFY_BOT_ID
+        and _nested(pull_request, "user", "type") == "Bot"
+        and isinstance(head_ref, str)
+        and head_ref.startswith(_CANDIDATE_REF_PREFIX)
+    )
+
+
+def _pull_request_object(event: object) -> dict[str, object]:
+    pull_request = _nested(event, "pull_request")
+    if not isinstance(pull_request, dict):
+        raise GuardError("the GitHub event has no pull-request object")
+    return cast("dict[str, object]", pull_request)
+
+
+def _pull_request_scope(pull_request: object) -> PullRequestScope:
+    """Classify a pull request; the classifiers are disjoint (a candidate is same-repository)."""
+    if _is_outside(pull_request):
+        return "maintainer" if _shares_head_with_other_work(pull_request) else "outside"
+    if _is_mergify_candidate(pull_request):
+        return "candidate"
+    return "maintainer"
+
+
+def _shares_head_with_other_work(pull_request: object) -> bool:
+    """True when another open PR has this head commit and is not outside work, or the lookup fails.
+
+    The required status is published on the head commit, which several PRs can
+    share. An outside PR whose head is a maintainer PR's (or a Mergify
+    candidate's) head commit would otherwise overwrite that PR's status with its
+    own advisory success, so such a PR is enforced like maintainer work. The
+    open pull requests are listed from the base repository, because a commit
+    that exists only in forks has no entry in the per-commit lookup.
+    """
+    try:
+        if not isinstance(pull_request, dict):
+            raise GuardError("the pull request is invalid")
+        pull_request = cast("dict[str, object]", pull_request)
+        full_name, _number = _pull_request_target(pull_request)
+        head_sha = _nested(pull_request, "head", "sha")
+        if not isinstance(head_sha, str) or _OID_RE.fullmatch(head_sha) is None:
+            raise GuardError("the pull-request head revision is invalid")
+        output = _gh_api(
+            [
+                "--paginate",
+                f"repos/{full_name}/pulls?state=open&per_page=100",
+                "--jq",
+                _OPEN_PULLS_JQ,
+            ],
+            "head-commit lookup",
+        )
+        associated = [
+            row
+            for row in _json_lines(output, "head-commit lookup")
+            if str(_nested(row, "head", "sha")).casefold() == head_sha.casefold()
+        ]
+    except GuardError:
+        print(
+            "NOTE: the head-commit lookup failed; this pull request stays enforced",
+            file=sys.stderr,
+        )
+        return True
+    # This PR is outside work itself, so it never counts as another one.
+    shared = any(not _is_outside(row) for row in associated)
+    if shared:
+        print(
+            "NOTE: another non-outside pull request has this head commit; enforced",
+            file=sys.stderr,
+        )
+    return shared
+
+
+def _read_event(event_path: Path) -> object:
+    try:
+        return json.loads(event_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GuardError("the GitHub event is invalid") from exc
+
+
+def _gh_env() -> dict[str, str]:
+    """Environment for non-interactive ``gh``: no prompts, no ambient repository override."""
+    env = os.environ.copy()
+    env["GH_PROMPT_DISABLED"] = "1"
+    env.pop("GH_REPO", None)
+    env.pop(_KEY_B64_ENV, None)
+    return env
+
+
+def _github_pull_request(full_name: str, number: int) -> dict[str, object] | None:
+    """Read pull request ``number`` through the workflow token; ``None`` on any failure.
+
+    Output is never printed, so a failure cannot leak content.
+    """
+    if _REPOSITORY_NAME_RE.fullmatch(full_name) is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{full_name}/pulls/{number}"],
+            capture_output=True,
+            check=False,
+            env=_gh_env(),
+            timeout=_LOOKUP_TIMEOUT_SECONDS,
+        )
+        parsed: object = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return cast("dict[str, object]", parsed) if isinstance(parsed, dict) else None
+
+
+def _first_parent_chain(repo: Path, head: str, base: str) -> list[list[str]]:
+    """Return ``[commit, *parents]`` for the first-parent chain from ``head`` down to ``base``."""
+    raw = _run_git(repo, ["rev-list", "--first-parent", "--parents", head, "--not", base])
+    chain = [line.split() for line in raw.decode("ascii", errors="replace").splitlines() if line]
+    if any(_OID_RE.fullmatch(oid) is None for oids in chain for oid in oids):
+        raise GuardError("git rev-list returned an invalid object name")
+    return chain
+
+
+def _candidate_merge_exemption(
+    repo: Path, full_name: str, oids: list[str]
+) -> tuple[list[str], str | None] | None:
+    """Return a ``Merge of #N`` commit's exempt commits and, if none, why; else ``None``.
+
+    Commits reachable from the second parent and not the first belong to queued
+    PR N, and are exempt only when GitHub reports PR N as outside work whose head
+    is exactly that second parent.
+    """
+    if len(oids) != 3:
+        return None
+    match = _CANDIDATE_MERGE_RE.fullmatch(_commit_facts(repo, oids[0])[4].strip())
+    if match is None:
+        return None
+    pull_request = _github_pull_request(full_name, int(match["number"]))
+    if pull_request is None:
+        reason = "lookup failed"
+    elif not _is_outside(pull_request):
+        reason = "not an outside PR"
+    elif str(_nested(pull_request, "head", "sha")).casefold() != oids[2].casefold():
+        reason = "head mismatch"
+    else:
+        return _rev_list(repo, [oids[2], "--not", oids[1]]), None
+    return (
+        [],
+        f"NOTE: candidate merge {oids[0][:12]} of #{match['number']} stays enforced: {reason}",
+    )
+
+
+def _candidate_exempt_commits(repo: Path, pull_request: dict[str, object]) -> frozenset[str]:
+    """Commits of a Mergify candidate that belong to verified outside pull requests."""
+    head = _nested(pull_request, "head", "sha")
+    base = _nested(pull_request, "base", "sha")
+    full_name = _nested(pull_request, "base", "repo", "full_name")
+    if (
+        not isinstance(head, str)
+        or not isinstance(base, str)
+        or _OID_RE.fullmatch(head) is None
+        or _OID_RE.fullmatch(base) is None
+    ):
+        raise GuardError("the candidate pull request has no valid head or base revision")
+    exempt: set[str] = set()
+    merges = 0
+    for oids in _first_parent_chain(repo, head, base):
+        exemption = _candidate_merge_exemption(
+            repo, full_name if isinstance(full_name, str) else "", oids
+        )
+        if exemption is None:
+            continue
+        merges += 1
+        exempt.update(exemption[0])
+        if exemption[1] is not None:
+            print(exemption[1], file=sys.stderr)
+    if merges == 0:
+        print("NOTE: candidate has no 'Merge of #N' commit; nothing is exempt", file=sys.stderr)
+    return frozenset(exempt)
+
+
+def _scope_provenance(
+    repo: Path,
+    scope: PullRequestScope,
+    pull_request: dict[str, object],
+    commits: Iterable[str],
+    base_provenance: Provenance,
+) -> Provenance:
+    """Mark the commits that are advisory for this pull request's scope."""
+    if scope == "outside":
+        return replace(base_provenance, outside=frozenset(commits))
+    if scope == "candidate":
+        return replace(base_provenance, outside=_candidate_exempt_commits(repo, pull_request))
+    return base_provenance
+
+
 def _advertised_destination_oids(repo: Path, remote_location: str) -> list[str] | None:
     try:
         result = subprocess.run(
@@ -918,6 +1185,222 @@ def _guard_failure(exc: GuardError, stream: TextIO) -> int:
     return 1
 
 
+def _write_advisory_report(
+    report_path: Path, findings: list[Finding], config: GuardConfig
+) -> None:
+    """Append one JSON line per advisory term finding for ``post-advisory``.
+
+    Selected by kind, never by location text. Identity advisories are logged only:
+    every outside contributor's identity is unlisted, so reporting them would
+    label every outside pull request.
+    """
+    rows = [
+        json.dumps(
+            {
+                "kind": finding.kind,
+                "location": _redact_location(finding.location, config),
+                "term_id": finding.term_id,
+            },
+            sort_keys=True,
+        )
+        for finding in findings
+        if finding.advisory and finding.kind == _TERM_KIND
+    ]
+    try:
+        with report_path.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.writelines(f"{row}\n" for row in rows)
+    except OSError as exc:
+        raise GuardError("the advisory report cannot be written") from exc
+
+
+def _finish_scan(
+    findings: list[Finding],
+    config: GuardConfig,
+    *,
+    report_path: Path | None,
+    clean_message: str | None = None,
+) -> int:
+    """Print findings, write the advisory report when given, and return the exit status.
+
+    Only enforced findings fail the scan; advisory findings are printed as warnings.
+    """
+    if findings:
+        _print_findings(findings, config, sys.stderr)
+        if report_path is not None:
+            _write_advisory_report(report_path, findings, config)
+    if _has_enforced(findings):
+        return 1
+    if not findings and clean_message is not None:
+        print(clean_message)
+    return 0
+
+
+AdvisoryRow = tuple[str, str, str]
+
+
+def _read_advisory_report(report_path: Path) -> list[AdvisoryRow]:
+    """Read the report as distinct ``(kind, location, term id)`` rows, in file order."""
+    try:
+        records = [
+            json.loads(line)
+            for line in report_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (OSError, ValueError) as exc:
+        raise GuardError("the advisory report cannot be read") from exc
+    rows: list[AdvisoryRow] = []
+    for record in records:
+        fields = [_nested(record, name) for name in ("kind", "location", "term_id")]
+        if not all(isinstance(field, str) for field in fields):
+            raise GuardError("the advisory report is malformed")
+        rows.append(cast("AdvisoryRow", tuple(fields)))
+    return list(dict.fromkeys(rows))
+
+
+def _finding_set_digest(rows: list[AdvisoryRow]) -> str:
+    """Digest the finding set, ignoring commit ids and line numbers so a rebase keeps it."""
+    normalized = sorted(
+        {
+            (kind, _LOCATION_LINE_RE.sub("", _LOCATION_COMMIT_RE.sub("", location)), term_id)
+            for kind, location, term_id in rows
+        }
+    )
+    return hashlib.sha256(json.dumps(normalized, separators=(",", ":")).encode()).hexdigest()
+
+
+def _table_cell(text: str) -> str:
+    """Render untrusted text as one inert code span in a Markdown table cell."""
+    cleaned = "".join("?" if ord(char) < 32 or ord(char) == 127 else char for char in text)
+    cleaned = cleaned[:_MAX_LOCATION_CHARS].replace("`", "'").replace("|", "\\|")
+    return f"`{cleaned}`"
+
+
+def _advisory_comment_body(marker: str, rows: list[AdvisoryRow]) -> str:
+    """Build the comment: the marker, a plain note, and a bounded table of redacted rows."""
+    lines = [
+        marker,
+        "",
+        "Confidential-content scan: advisory findings on this outside pull request.",
+        "They do not block it and nothing is required from you; a maintainer will review them.",
+        "",
+        "| Kind | Location | Term id |",
+        "| --- | --- | --- |",
+    ]
+    lines.extend(
+        f"| {kind} | {_table_cell(location)} | {_table_cell(term_id)} |"
+        for kind, location, term_id in rows[:_MAX_ADVISORY_ROWS]
+    )
+    if len(rows) > _MAX_ADVISORY_ROWS:
+        lines.extend(["", f"{len(rows) - _MAX_ADVISORY_ROWS} more findings not shown."])
+    return "\n".join(lines) + "\n"
+
+
+def _gh_api(arguments: list[str], what: str, stdin: bytes | None = None) -> bytes:
+    """Run ``gh api``; any failure is a ``GuardError`` that never echoes ``gh`` output."""
+    try:
+        result = subprocess.run(
+            ["gh", "api", *arguments],
+            input=stdin,
+            capture_output=True,
+            check=False,
+            env=_gh_env(),
+            timeout=_GH_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise GuardError(f"the GitHub {what} could not run") from exc
+    if result.returncode != 0:
+        raise GuardError(f"the GitHub {what} failed")
+    return result.stdout
+
+
+def _json_lines(output: bytes, what: str) -> list[object]:
+    """Parse ``gh --jq`` output, one JSON value per line (``@json`` never emits a raw newline)."""
+    try:
+        text = output.decode("utf-8", errors="replace")
+        return [json.loads(line) for line in text.split("\n") if line]
+    except ValueError as exc:
+        raise GuardError(f"the GitHub {what} returned an invalid record") from exc
+
+
+def _advisory_posted(full_name: str, number: int, marker: str) -> bool:
+    """True when the workflow bot already commented this finding set.
+
+    Only the bot's own comments count, and only when the marker is the comment's
+    first line, so neither a contributor's comment nor a path planted in the
+    table can suppress the advisory. ``--jq`` runs once per page, so each comment
+    is emitted as one JSON line (``@json`` never emits a raw newline) and filtered here.
+    """
+    output = _gh_api(
+        [
+            "--paginate",
+            f"repos/{full_name}/issues/{number}/comments",
+            "--jq",
+            '.[] | [.user.login, .user.type, (.body // "")] | @json',
+        ],
+        "advisory lookup",
+    )
+    for row in _json_lines(output, "advisory lookup"):
+        if not isinstance(row, list) or len(row) != 3 or not all(isinstance(x, str) for x in row):
+            raise GuardError("the GitHub advisory lookup returned an invalid record")
+        login, account_type, body = cast("list[str]", row)
+        if (
+            login == _BOT_LOGIN
+            and account_type == "Bot"
+            and body.split("\n", 1)[0].rstrip("\r") == marker
+        ):
+            return True
+    return False
+
+
+def _pull_request_target(pull_request: dict[str, object]) -> tuple[str, int]:
+    """Return the base repository's full name and the pull request number."""
+    full_name = _nested(pull_request, "base", "repo", "full_name")
+    number = pull_request.get("number")
+    if (
+        not isinstance(full_name, str)
+        or _REPOSITORY_NAME_RE.fullmatch(full_name) is None
+        or not isinstance(number, int)
+        or isinstance(number, bool)
+        or number < 1
+    ):
+        raise GuardError("the pull-request repository or number is invalid")
+    return full_name, number
+
+
+def post_advisory_main(event_path: Path, report_path: Path) -> int:
+    """Comment and label an outside PR once per finding set, inside the status-bearing step.
+
+    The label goes first so the bot marker exists only once the label is on; a
+    failed label or comment leaves no marker and the next run retries both.
+    """
+    try:
+        rows = _read_advisory_report(report_path)
+        if not rows:
+            print("No advisory findings to post.")
+            return 0
+        full_name, number = _pull_request_target(_pull_request_object(_read_event(event_path)))
+        marker = f"<!-- {_ADVISORY_MARKER} {_finding_set_digest(rows)} -->"
+        if _advisory_posted(full_name, number, marker):
+            print("Advisory for this finding set was already posted.")
+            return 0
+        label = json.dumps({"labels": [_REVIEW_LABEL]}).encode("utf-8")
+        _gh_api(
+            ["--method", "POST", f"repos/{full_name}/issues/{number}/labels", "--input", "-"],
+            "advisory label",
+            label,
+        )
+        comment = json.dumps({"body": _advisory_comment_body(marker, rows)}).encode("utf-8")
+        _gh_api(
+            ["--method", "POST", f"repos/{full_name}/issues/{number}/comments", "--input", "-"],
+            "advisory comment",
+            comment,
+        )
+    except GuardError as exc:
+        return _guard_failure(exc, sys.stderr)
+    print("Advisory comment posted and review label applied.")
+    return 0
+
+
 def commit_message_hook_main(message_path: Path, repo: Path | str | None = None) -> int:
     root = Path(repo or Path.cwd()).resolve()
     try:
@@ -941,8 +1424,12 @@ def pre_push_hook_main(
     remote_name: str | None = None,
     remote_location: str | None = None,
     trusted_base: str | None = None,
+    pull_request_event: Path | None = None,
+    advisory_report: Path | None = None,
 ) -> int:
+    """Scan outgoing commits; with a PR event, outside work is advisory (see module docs)."""
     root = Path(repo or Path.cwd()).resolve()
+    scope: PullRequestScope = "maintainer"
     try:
         if (remote_name is None) != (remote_location is None):
             raise GuardError("the pre-push destination is incomplete")
@@ -967,30 +1454,44 @@ def pre_push_hook_main(
                     destination_tips=destination_tips,
                 )
             )
+        if pull_request_event is not None:
+            pull_request = _pull_request_object(_read_event(pull_request_event))
+            scope = _pull_request_scope(pull_request)
+            provenance = _scope_provenance(root, scope, pull_request, commits, provenance)
         findings = inspect_commits(root, commits, config, provenance)
+        return _finish_scan(
+            findings, config, report_path=advisory_report if scope == "outside" else None
+        )
     except GuardError as exc:
         return _guard_failure(exc, sys.stderr)
-    if findings:
-        _print_findings(findings, config, sys.stderr)
-        return 1
-    return 0
 
 
-def pull_request_main(repo: Path | str, event_path: Path) -> int:
+def _event_metadata_findings(
+    event: object, config: GuardConfig, scope: PullRequestScope
+) -> list[Finding]:
+    """Scan PR metadata; outside work and Mergify-generated candidate text is advisory."""
+    findings = inspect_pull_request_event(event, config)
+    return _as_advisory(findings) if scope != "maintainer" else findings
+
+
+def pull_request_main(
+    repo: Path | str, event_path: Path, advisory_report: Path | None = None
+) -> int:
     """Inspect PR title, body, and head ref without executing pull-request code."""
     root = Path(repo).resolve()
     try:
         config = load_config(root)
-        event = json.loads(event_path.read_text(encoding="utf-8"))
-        findings = inspect_pull_request_event(event, config)
-    except (GuardError, OSError, json.JSONDecodeError) as exc:
-        error = exc if isinstance(exc, GuardError) else GuardError("the GitHub event is invalid")
-        return _guard_failure(error, sys.stderr)
-    if findings:
-        _print_findings(findings, config, sys.stderr)
-        return 1
-    print("Confidential-content pull-request metadata guard: clean.")
-    return 0
+        event = _read_event(event_path)
+        scope = _pull_request_scope(_pull_request_object(event))
+        findings = _event_metadata_findings(event, config, scope)
+        return _finish_scan(
+            findings,
+            config,
+            report_path=advisory_report if scope == "outside" else None,
+            clean_message="Confidential-content pull-request metadata guard: clean.",
+        )
+    except GuardError as exc:
+        return _guard_failure(exc, sys.stderr)
 
 
 def _read_pr_text(stream: BinaryIO) -> str:
@@ -1078,14 +1579,11 @@ def publish_pr_main(repo: Path | str, args: argparse.Namespace) -> int:
         if findings:
             _print_findings(findings, config, sys.stderr)
             return 1
-        env = os.environ.copy()
-        env["GH_PROMPT_DISABLED"] = "1"
-        env.pop("GH_REPO", None)
         result = subprocess.run(
             _publish_pr_command(args, title, body),
             input=body.encode("utf-8") if body is not None else b"",
             cwd=root,
-            env=env,
+            env=_gh_env(),
             capture_output=True,
             check=False,
             timeout=120,
@@ -1207,47 +1705,83 @@ def restore_draft_main(repo: Path | str) -> int:
     return 0
 
 
+def _load_vocabularies(root: Path, revision: str) -> tuple[GuardConfig, GuardConfig]:
+    """Return the trusted and the proposed vocabulary; the proposal must use the trusted key."""
+    trusted = _sealed_config_bytes(root)
+    identifier = sealed_key_id(trusted)
+    key = _vocabulary_key(identifier)
+    trusted_config = _parse_config(unseal_vocabulary(trusted, key), root)
+    spec = f"{revision}:{_SEALED_CONFIG_NAME}"
+    size = int(_run_git(root, ["cat-file", "-s", spec]).strip())
+    if size > 2 * 1024 * 1024:
+        raise GuardError("the proposed encrypted vocabulary exceeds the size limit")
+    proposed = _run_git(root, ["cat-file", "blob", spec])
+    if sealed_key_id(proposed) != identifier:
+        raise GuardError("the proposed encrypted vocabulary uses a different key")
+    return trusted_config, _parse_config(unseal_vocabulary(proposed, key), root)
+
+
+def _candidate_findings(
+    root: Path,
+    commits: list[str],
+    event: object,
+    scope: PullRequestScope,
+    config: GuardConfig,
+    trusted: Provenance,
+) -> list[Finding]:
+    """Commit and metadata findings of a proposed candidate, per the PR's provenance scope."""
+    provenance = _scope_provenance(root, scope, _pull_request_object(event), commits, trusted)
+    findings = inspect_commits(root, commits, config, provenance)
+    _add_limited(findings, _event_metadata_findings(event, config, scope))
+    return findings
+
+
 def verify_candidate_main(
     repo: Path | str,
     revision: str,
     base: str,
     event_path: Path,
     trusted_base: str | None = None,
+    advisory_report: Path | None = None,
 ) -> int:
-    """Validate and scan a proposed vocabulary using the trusted current key."""
+    """Validate and scan a proposed vocabulary using the trusted current key.
+
+    Outside work is advisory (see module docs), but an invalid or foreign
+    proposed vocabulary always fails. Locations are redacted with both the trusted
+    and the proposed vocabulary, so a term the proposal removes never prints.
+    """
     root = Path(repo).resolve()
     try:
         if _OID_RE.fullmatch(revision) is None or _OID_RE.fullmatch(base) is None:
             raise GuardError("the candidate or base revision is invalid")
-        trusted = _sealed_config_bytes(root)
-        identifier = sealed_key_id(trusted)
-        key = _vocabulary_key(identifier)
-        _parse_config(unseal_vocabulary(trusted, key), root)
-        spec = f"{revision}:{_SEALED_CONFIG_NAME}"
-        size = int(_run_git(root, ["cat-file", "-s", spec]).strip())
-        if size > 2 * 1024 * 1024:
-            raise GuardError("the proposed encrypted vocabulary exceeds the size limit")
-        proposed = _run_git(root, ["cat-file", "blob", spec])
-        if sealed_key_id(proposed) != identifier:
-            raise GuardError("the proposed encrypted vocabulary uses a different key")
-        candidate_config = _parse_config(unseal_vocabulary(proposed, key), root)
-        commits = outgoing_commits(root, revision, base)
-        provenance = _trusted_provenance(root, trusted_base)
-        findings = inspect_commits(root, commits, candidate_config, provenance)
-        event = json.loads(event_path.read_text(encoding="utf-8"))
-        _add_limited(findings, inspect_pull_request_event(event, candidate_config))
-    except (ValueError, OSError, json.JSONDecodeError, SealedVocabularyError, GuardError) as exc:
+        trusted_config, candidate_config = _load_vocabularies(root, revision)
+        event = _read_event(event_path)
+        scope = _pull_request_scope(_pull_request_object(event))
+        findings = _candidate_findings(
+            root,
+            outgoing_commits(root, revision, base),
+            event,
+            scope,
+            candidate_config,
+            _trusted_provenance(root, trusted_base),
+        )
+        findings = [
+            replace(finding, location=_redact_location(finding.location, trusted_config))
+            for finding in findings
+        ]
+        return _finish_scan(
+            findings,
+            candidate_config,
+            report_path=advisory_report if scope == "outside" else None,
+            clean_message="Proposed encrypted vocabulary: valid.",
+        )
+    except (ValueError, OSError, SealedVocabularyError, GuardError) as exc:
         error = (
             exc
             if isinstance(exc, GuardError)
             else GuardError("the proposed vocabulary is invalid")
         )
         return _guard_failure(error, sys.stderr)
-    if findings:
-        _print_findings(findings, candidate_config, sys.stderr)
-        return 1
-    print("Proposed encrypted vocabulary: valid.")
-    return 0
 
 
 def sync_ci_key_main(repo: Path | str) -> int:
@@ -1312,6 +1846,9 @@ def audit_main(
         return 1
     print("Confidential-content leak guard: clean.")
     return 0
+
+
+_ADVISORY_REPORT_HELP = "append outside-PR advisory term findings (JSON lines) to this file"
 
 
 def _add_pr_publish_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -1387,6 +1924,7 @@ def _add_history_parsers(subparsers: argparse._SubParsersAction) -> None:
     verify_parser.add_argument(
         "--trusted-base", help="commit whose exact path and blob entries are already accepted"
     )
+    verify_parser.add_argument("--advisory-report", type=Path, help=_ADVISORY_REPORT_HELP)
     subparsers.add_parser("sync-ci-key", help="publish the decryption key to Actions")
     subparsers.add_parser(
         "self-test", help="check the encryption dependency without a key or repository"
@@ -1418,10 +1956,22 @@ def _parser() -> argparse.ArgumentParser:
     pre_push_parser.add_argument(
         "--trusted-base", help="commit whose exact path and blob entries are already accepted"
     )
+    pre_push_parser.add_argument(
+        "--pull-request-event",
+        type=Path,
+        help="GitHub pull_request event: scan this pull request by its provenance",
+    )
+    pre_push_parser.add_argument("--advisory-report", type=Path, help=_ADVISORY_REPORT_HELP)
     pull_request_parser = subparsers.add_parser(
         "pull-request", help="inspect GitHub pull-request metadata"
     )
     pull_request_parser.add_argument("--event", required=True, type=Path)
+    pull_request_parser.add_argument("--advisory-report", type=Path, help=_ADVISORY_REPORT_HELP)
+    post_parser = subparsers.add_parser(
+        "post-advisory", help="comment and label an outside PR from an advisory report"
+    )
+    post_parser.add_argument("--event", required=True, type=Path)
+    post_parser.add_argument("--report", required=True, type=Path)
     pr_text_parser = subparsers.add_parser(
         "pr-text", help="inspect proposed PR text before publishing it"
     )
@@ -1439,7 +1989,9 @@ def _parser() -> argparse.ArgumentParser:
 
 def _pr_command_main(parsed: argparse.Namespace) -> int:
     if parsed.command == "pull-request":
-        return pull_request_main(parsed.repo, parsed.event)
+        return pull_request_main(parsed.repo, parsed.event, parsed.advisory_report)
+    if parsed.command == "post-advisory":
+        return post_advisory_main(parsed.event, parsed.report)
     if parsed.command == "pr-text":
         return pr_text_main(parsed.repo, parsed.file, read_stdin=parsed.stdin)
     return publish_pr_main(parsed.repo, parsed)
@@ -1454,7 +2006,12 @@ def _vocabulary_command_main(parsed: argparse.Namespace) -> int:
         return restore_draft_main(parsed.repo)
     if parsed.command == "verify-candidate":
         return verify_candidate_main(
-            parsed.repo, parsed.rev, parsed.base, parsed.event, parsed.trusted_base
+            parsed.repo,
+            parsed.rev,
+            parsed.base,
+            parsed.event,
+            parsed.trusted_base,
+            parsed.advisory_report,
         )
     return sync_ci_key_main(parsed.repo)
 
@@ -1469,10 +2026,12 @@ def main(argv: list[str] | None = None) -> int:
             remote_name=parsed.remote_name,
             remote_location=parsed.remote_location,
             trusted_base=parsed.trusted_base,
+            pull_request_event=parsed.pull_request_event,
+            advisory_report=parsed.advisory_report,
         )
     if parsed.command == "self-test":
         return self_test_main()
-    if parsed.command in {"pull-request", "pr-text", "publish-pr"}:
+    if parsed.command in {"pull-request", "post-advisory", "pr-text", "publish-pr"}:
         return _pr_command_main(parsed)
     if parsed.command in {
         "seal-config",

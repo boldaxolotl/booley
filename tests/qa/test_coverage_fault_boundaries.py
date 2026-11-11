@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 ROOT = Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults"
 SPEC = importlib.util.spec_from_file_location("qa_filesystem", ROOT / "filesystem.py")
@@ -22,7 +23,7 @@ def library(tmp_path_factory):
     if sys.platform != "linux":
         pytest.skip("Linux preload fixture; Windows QA uses the issued Linux Sandbox")
     target = tmp_path_factory.mktemp("coverage-shim") / "boundary.so"
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             "gcc",
             "-shared",
@@ -35,10 +36,6 @@ def library(tmp_path_factory):
             str(ROOT / "boundary.c"),
             "-ldl",
         ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
     )
     assert result.returncode == 0, result.stderr
     return target
@@ -235,10 +232,10 @@ finally: os.close(fd)
     )
     assert (tmp_path / "payload").read_text() == "retained"
     # Restoration is a new ordinary operation without any injected environment.
-    subprocess.run(
+    run_bounded_child(
         [sys.executable, "-c", "import os,sys;os.unlink(sys.argv[1])", str(tmp_path / "payload")],
-        check=True,
         timeout=10,
+        check=True,
     )
     assert not (tmp_path / "payload").exists()
 

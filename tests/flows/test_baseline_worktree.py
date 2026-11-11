@@ -23,6 +23,7 @@ from booley.flows.baseline_worktree import (
 )
 from booley.runtime.submodule_materialization import materialize_submodules
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -40,9 +41,7 @@ def _select_worktree_state(tmp_path: Path, monkeypatch):
 
 
 def _git(repo: Path, *a: str) -> str:
-    result = subprocess.run(
-        ["git", *a], cwd=repo, check=True, capture_output=True, text=True, timeout=30
-    )
+    result = run_bounded_child(["git", *a], cwd=repo, check=True)
     return result.stdout.strip()
 
 
@@ -717,13 +716,8 @@ def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tu
     (outer / "rtl").mkdir()
     (outer / "rtl/top.v").write_text("module top; // historical\nendmodule\n", encoding="utf-8")
     _commit_all(outer, "historical RTL")
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=outer,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
+    revision = run_bounded_child(
+        ["git", "rev-parse", "HEAD"], cwd=outer, check=True
     ).stdout.strip()
     (outer / "rtl/top.v").write_text("module top; // current\nendmodule\n", encoding="utf-8")
     _commit_all(outer, "current RTL")

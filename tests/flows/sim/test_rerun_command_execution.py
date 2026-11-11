@@ -22,6 +22,7 @@ from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_FAILURE
 from tests.flows.sim.campaign_boundary import Launch, run_campaign_sim
+from tests.flows.sim.test_cocotb import _cocotb_output
 from tests.flows.sim.test_flow import (
     SimulateFlow,
     _canned_build_session,  # noqa: F401 -- autouse fixture
@@ -61,11 +62,13 @@ def _invoke(
     extra_files: dict[str, str] | None = None,
     build: SubprocessResult | None = None,
     exit_code: int = EXIT_FAILURE,
+    stdout: str = "[SIM_RESULT] FAILED\n",
 ):
     """Run one campaign invocation that fails every launch; return its outcome and launches.
 
     *registry* is the catalog handed to the harness and the ``tests.toml`` text
     written over it (a Target without registered Tests has an empty catalog).
+    *stdout* is what the simulator prints on every launch.
     """
     root.mkdir()
     catalog, registry_toml = registry
@@ -77,7 +80,7 @@ def _invoke(
         files["other.core"] = _CORE.format(vlnv="acme:lib:other:1", tool=tool)
 
     def fail(_launch: Launch) -> SubprocessResult:
-        return SubprocessResult(returncode=1, stdout="[SIM_RESULT] FAILED\n", duration_s=0.1)
+        return SubprocessResult(returncode=1, stdout=stdout, duration_s=0.1)
 
     run = run_campaign_sim(
         root,
@@ -252,3 +255,74 @@ def test_an_unnamed_invocation_that_fails_before_the_simulator_is_named_by_its_t
     # A pre-sim failure is graded fail and offers the rerun; a build error offers none.
     expected_rerun = "booley flow sim --target lite --seed 9" if stage == "pre-sim" else None
     assert _rerun_line(outcome.report_text) == expected_rerun
+
+
+_COCOTB_CORE = (
+    "CAPI=2:\nname: ::lite:0\nfilesets:\n  rtl:\n    files:\n"
+    "      - rtl/counter.sv: {file_type: systemVerilogSource}\n  tb:\n    files:\n"
+    "      - tb/test_counter.py: {file_type: user}\n    tags: [tb]\n"
+    "targets:\n  lite:\n    filesets: [rtl, tb]\n    toplevel: counter\n    flow: sim\n"
+    "    flow_options: {tool: verilator, cocotb_module: test_counter}\n"
+)
+_DISCOVERED = [("found_a", "pass", ""), ("found_b", "fail", "boom"), ("found_c", "fail", "bang")]
+
+
+@pytest.mark.parametrize(
+    ("argv", "seed"),
+    [
+        pytest.param(["--seed", "9"], 9, id="seeded"),
+        pytest.param([], 1, id="default-seed"),
+    ],
+)
+def test_executing_the_batch_rerun_command_of_failed_discovered_tests_reruns_the_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str], seed: int
+):
+    """Failed discovered Tests share one batch rerun command, and it runs (never exit 2).
+
+    A Cocotb Target without registered Tests cannot select a discovered test
+    function with ``--test``, so the report names the whole batch's command.
+    """
+    stdout = _cocotb_output(_DISCOVERED, passed=False)
+    files = {
+        "lite.core": _COCOTB_CORE,
+        "rtl/counter.sv": "module counter; endmodule\n",
+        "tb/test_counter.py": "",
+    }
+    first, first_runs, first_launches = _invoke(
+        tmp_path / "first",
+        monkeypatch,
+        ["--target", "lite", *argv],
+        "verilator",
+        "::lite:0",
+        registry=_UNNAMED,
+        extra_files=files,
+        stdout=stdout,
+    )
+    assert first_runs == [f"found_{name}@{seed}" for name in "abc"]
+    lines = first.report_text.splitlines()
+    header = (
+        "  Rerun the whole batch with the same seed "
+        "(register its test functions as Tests in tests.toml to rerun one alone):"
+    )
+    assert header in lines, first.report_text
+    batch = lines[lines.index(header) + 1 :]
+    assert [line for line in batch if line.strip().startswith("booley flow sim")] == [
+        f"    booley flow sim --target lite --seed {seed}"
+    ]
+    assert "--test=" not in first.report_text
+
+    words = shlex.split(batch[0])
+    again, again_runs, again_launches = _invoke(
+        tmp_path / "again",
+        monkeypatch,
+        words[3:],
+        "verilator",
+        "::lite:0",
+        registry=_UNNAMED,
+        extra_files=files,
+        stdout=stdout,
+    )
+
+    assert again_runs == first_runs
+    assert again_launches == first_launches and len(first_launches) == 1
+    assert batch[0] in again.report_text

@@ -13,6 +13,31 @@ from pathlib import Path
 from typing import Any
 
 from booley.evidence.timing import ClockTiming, per_clock_to_json
+from booley.flows.metric_declarations import (
+    Better,
+    CostTier,
+    FlowMetricValues,
+    MetricDeclaration,
+    MetricKind,
+    metric_values,
+)
+
+# Metrics the FPGA implementation Flow declares; names are the ones Goal thresholds are built from.
+# Per-clock wns_ns/whs_ns cover intra-clock paths only, unlike the design-wide Goal fields.
+_FPGA_COST_TIER = CostTier.HIGH
+FPGA_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
+    MetricDeclaration("lut_count", "LUTs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("ff_count", "FFs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
+    # Vivado reports fractional BRAM tiles (a RAMB18 is half a tile).
+    MetricDeclaration("bram_count", "BRAM tiles", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("dsp_count", "DSPs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("fmax_mhz", "MHz", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration(
+        "critical_path_ps", "ps", Better.LOWER, _FPGA_COST_TIER, MetricKind.PER_CLOCK
+    ),
+    MetricDeclaration("wns_ns", "ns", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration("whs_ns", "ns", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
+)
 
 
 @dataclass
@@ -58,6 +83,23 @@ class FpgaMetrics:
     run_evidence: dict[str, Any] = field(default_factory=dict)
     #: Current run consuming a prior producer's cached artifacts.
     cache_consumer_run_id: str = ""
+
+    def flow_metrics(self) -> FlowMetricValues:
+        """Return this run's typed values for :data:`FPGA_METRIC_DECLARATIONS`.
+
+        The design-wide ``wns_ns``/``whs_ns`` fields are not part of these values:
+        they include inter-clock paths that the per-clock rows exclude.
+        """
+        return metric_values(
+            FPGA_METRIC_DECLARATIONS,
+            plain={
+                "lut_count": self.lut_count,
+                "ff_count": self.ff_count,
+                "bram_count": self.bram_count,
+                "dsp_count": self.dsp_count,
+            },
+            per_clock=self.per_clock,
+        )
 
     @property
     def has_primary_metrics(self) -> bool:
