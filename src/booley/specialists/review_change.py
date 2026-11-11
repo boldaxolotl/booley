@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from booley.core.hdl import declared_module_names, strip_comments
+from booley.fusesoc.fusesoc_registry import canonical_project_path
 from booley.runtime.platform_paths import run_captured_bounded
 
 from .review_contract import normalize_scope_path
@@ -102,6 +103,18 @@ def _changed_paths(work_dir: Path, merge_base: str) -> tuple[set[str], set[str]]
     return tracked | untracked, untracked
 
 
+def _rename_sources(work_dir: Path, merge_base: str) -> dict[str, str]:
+    """Map each renamed path to its name at the merge-base (``-z`` name-status)."""
+    fields = _git(
+        work_dir, "diff", "-z", "--name-status", "--relative", "-M", "--diff-filter=R", merge_base
+    ).split("\0")
+    # Each rename is three NUL-separated fields: ``R<score>``, old path, new path.
+    return {
+        normalize_scope_path(new): normalize_scope_path(old)
+        for old, new in zip(fields[1::3], fields[2::3], strict=False)
+    }
+
+
 def _provided_names(path: str, text: str) -> set[str]:
     """Names other files use to refer to *path*: file name, stem, declared units."""
     posix = PurePosixPath(path)
@@ -142,11 +155,27 @@ def _cap(text: str, limit: int, what: str) -> str:
     return text[:limit] + _TRUNCATED.format(what=what)
 
 
+def _cap_per_file(diff: str, limit: int) -> str:
+    """Bound a unified diff to *limit* characters, giving every file an equal share.
+
+    One large new file must not push the later files' changes out of the
+    prompt: the Reviewer could not tell what they changed.
+    """
+    if len(diff) <= limit:
+        return diff
+    chunks = [chunk for chunk in re.split(r"(?m)^(?=diff --git )", diff) if chunk]
+    share = limit // len(chunks)
+    return "".join(_cap(chunk, share, "DIFF OF THIS FILE") for chunk in chunks)
+
+
 def _diff_text(
     work_dir: Path, merge_base: str, changed: Sequence[str], untracked: set[str]
 ) -> str:
     """Unified diff of the tracked changed files plus a note per new untracked file."""
     tracked = [path for path in changed if path not in untracked]
+    # A renamed file diffs against its old name, so the Reviewer sees what moved.
+    renames = _rename_sources(work_dir, merge_base)
+    sources = [renames[path] for path in tracked if path in renames]
     parts: list[str] = []
     if tracked:
         parts.append(
@@ -157,16 +186,17 @@ def _diff_text(
                 "--no-ext-diff",
                 "--no-textconv",
                 "--relative",
-                "--no-renames",
+                "-M",
                 merge_base,
                 "--",
                 *tracked,
+                *sources,
             )
         )
     parts.extend(
         f"new untracked file: {path} (read it in full)\n" for path in changed if path in untracked
     )
-    return _cap("".join(parts), MAX_DIFF_CHARS, "DIFF")
+    return _cap_per_file("".join(parts), MAX_DIFF_CHARS)
 
 
 def resolve_review_change(work_dir: Path, base: str, scope: Sequence[str]) -> ReviewChange:
@@ -177,7 +207,10 @@ def resolve_review_change(work_dir: Path, base: str, scope: Sequence[str]) -> Re
     """
     merge_base = _merge_base(work_dir, base)
     every_change, untracked = _changed_paths(work_dir, merge_base)
-    entries = sorted({normalize_scope_path(entry) for entry in scope})
+    # Same spelling as Git's file list: ``..``, absolute paths and links resolved.
+    entries = sorted(
+        {canonical_project_path(work_dir, normalize_scope_path(entry)) for entry in scope}
+    )
     changed = tuple(entry for entry in entries if entry in every_change)
     if not changed:
         return ReviewChange(base=base, merge_base=merge_base)

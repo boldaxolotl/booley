@@ -162,6 +162,18 @@ def test_base_without_changes_in_scope_exits_zero_without_model_call(
     invoke.assert_not_called()
 
 
+def test_missing_spec_is_refused_even_when_nothing_changed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, _, invoke = review(
+        repo, monkeypatch, ["--scope", "rtl/a.sv", "--focus", "spec", "--base", "main"]
+    )
+
+    assert result.exit_code == 2
+    assert "needs a spec" in result.report_text
+    invoke.assert_not_called()
+
+
 def test_base_without_changes_writes_no_state(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     result, reviewer, invoke = review(repo, monkeypatch, ["--scope", "rtl/a.sv", "--base", "main"])
 
@@ -286,6 +298,22 @@ def test_pre_existing_findings_are_observations(
     rows = verified.detail["issue_list"]
     assert [row["summary"] for row in rows if row.get("origin") == "pre_existing"] == ["Old bug"]
     assert [row["status"] for row in rows if row["summary"] == "Introduced bug"] == ["fixed"]
+
+
+def test_same_finding_reported_as_introduced_and_pre_existing_stays_open(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
+    args = ["--scope", "rtl/a.sv", "--base", "main"]
+    twin = finding(line=3, summary="Twin")
+
+    result, _, _ = review(repo, monkeypatch, args, [twin, {**twin, "origin": "pre_existing"}])
+
+    assert result.detail["issues"] == 1
+    assert sorted(row["origin"] for row in result.detail["issue_list"]) == [
+        "introduced",
+        "pre_existing",
+    ]
 
 
 def test_pre_existing_findings_do_not_fail_clean_gate(

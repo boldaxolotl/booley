@@ -103,9 +103,59 @@ def test_diff_and_commit_messages_are_capped(repo: Path) -> None:
 
     change = resolve_review_change(repo, "main", ["rtl/pkg.sv"])
 
-    assert change.diff.endswith("[DIFF TRUNCATED]\n")
+    assert change.diff.endswith("[DIFF OF THIS FILE TRUNCATED]\n")
     assert change.commits.endswith("[COMMITS TRUNCATED]\n")
     assert len(change.diff) < MAX_DIFF_CHARS + 50
+
+
+def test_scope_spelled_with_dotdot_or_absolute_path_still_matches(repo: Path) -> None:
+    edit(repo, "rtl/pkg.sv", "// changed\n")
+
+    change = resolve_review_change(repo, "main", ["rtl/sub/../pkg.sv", str(repo / "rtl/user.sv")])
+
+    assert change.changed == ("rtl/pkg.sv",)
+    assert change.context == ("rtl/user.sv",)
+
+
+def test_renamed_file_is_diffed_against_its_old_name(repo: Path) -> None:
+    git(repo, "mv", "rtl/lonely.sv", "rtl/moved.sv")
+    edit(repo, "rtl/moved.sv", "// edited after the move\n")
+
+    change = resolve_review_change(repo, "main", ["rtl/moved.sv"])
+
+    assert change.changed == ("rtl/moved.sv",)
+    assert "rename from rtl/lonely.sv" in change.diff
+    assert "+// edited after the move" in change.diff
+    assert "new file mode" not in change.diff
+
+
+def test_one_large_file_does_not_crowd_out_the_others(repo: Path) -> None:
+    (repo / "rtl/pkg.sv").write_text("// x\n" * (MAX_DIFF_CHARS // 4), newline="\n")
+    edit(repo, "rtl/shared.py", "# small change\n")
+
+    change = resolve_review_change(repo, "main", ["rtl/pkg.sv", "rtl/shared.py"])
+
+    assert "[DIFF OF THIS FILE TRUNCATED]" in change.diff
+    assert "+# small change" in change.diff
+
+
+def test_base_is_passed_to_git_after_end_of_options(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    argvs: list[list[str]] = []
+    real = review_change.run_captured_bounded
+
+    def spy(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        argvs.append(argv)
+        return real(argv, **kwargs)
+
+    monkeypatch.setattr(review_change, "run_captured_bounded", spy)
+
+    with pytest.raises(ReviewChangeError):
+        resolve_review_change(repo, "--version", ["rtl/pkg.sv"])
+
+    rev_parse = next(argv for argv in argvs if "rev-parse" in argv)
+    assert rev_parse[-2:] == ["--end-of-options", "--version^{commit}"]
 
 
 def test_unreadable_scope_file_matches_nothing(repo: Path) -> None:
