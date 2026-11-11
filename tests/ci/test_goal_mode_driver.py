@@ -451,6 +451,7 @@ def test_stop_baseline_jobs_cancels_detached_job_before_workspace_cleanup(tmp_pa
     project = tmp_path / ".booley"
     jobs = baseline_jobs_dir(project)
     command = [sys.executable, "-c", "import time; time.sleep(120)"]
+    # The test drives this Popen itself (cancel, wait).
     process = subprocess.Popen(command, **new_group_kwargs())
     # The test is the parent, so reap the child to avoid a lingering zombie PID.
     threading.Thread(target=process.wait, daemon=True).start()

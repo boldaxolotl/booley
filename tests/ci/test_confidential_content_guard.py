@@ -11,11 +11,11 @@ from pathlib import Path
 from time import perf_counter
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 SCANNER = Path(__file__).parents[2] / ".github/scripts/confidential_content_guard.py"
 SAFE_IDENT = "Safe User <safe@example.test>"
 SENTINEL = "quokka-sentinel-987"
-SUBPROCESS_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -28,13 +28,10 @@ class _DestinationScenario:
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(
+    result = run_bounded_child(
         ["git", "-C", str(repo), *args],
-        capture_output=True,
         check=True,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     return result.stdout.strip()
 
@@ -121,13 +118,10 @@ def _sealed_fixture(repo: Path, config: str) -> dict[str, str]:
     env = os.environ | {"BOOLEY_LEAK_GUARD_KEY_DIR": str(repo / ".git/guard-keys")}
     (repo / ".github").mkdir(exist_ok=True)
     (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(config))
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, str(SCANNER), "--repo", str(repo), "seal-config"],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     return env
@@ -158,6 +152,7 @@ def _scan_records(
     if destination is not None:
         command.extend((destination[0], str(destination[1])))
     command.extend(extra_args)
+    # Kept on subprocess.run: feeds the push records on stdin.
     return subprocess.run(
         command,
         input=records,
@@ -165,7 +160,7 @@ def _scan_records(
         check=False,
         env=env,
         text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -173,7 +168,7 @@ def _scan_pull_request(repo: Path, event: dict) -> subprocess.CompletedProcess[s
     event_path = repo / "event.json"
     event_path.write_text(json.dumps(event), encoding="utf-8")
     env = _sealed_fixture(repo, _encoded_config())
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             str(SCANNER),
@@ -183,11 +178,8 @@ def _scan_pull_request(repo: Path, event: dict) -> subprocess.CompletedProcess[s
             "--event",
             str(event_path),
         ],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -208,6 +200,7 @@ def _scan_pr_text(
         command.extend(("--file", str(path)))
     if stdin is not None:
         command.append("--stdin")
+    # Kept on subprocess.run: feeds the PR text on stdin.
     return subprocess.run(
         command,
         input=stdin,
@@ -216,31 +209,25 @@ def _scan_pr_text(
         env=env,
         text=True,
         encoding="utf-8",
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
 def _sync_ci_key(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_bounded_child(
         [sys.executable, str(SCANNER), "--repo", str(repo), "sync-ci-key"],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
 def _publish_pr(
     repo: Path, args: list[str], env: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_bounded_child(
         [sys.executable, str(SCANNER), "--repo", str(repo), "publish-pr", *args],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -694,22 +681,17 @@ def test_clone_recovers_vocabulary_with_separately_restored_key(tmp_path: Path) 
     _commit(repo, "track encrypted vocabulary")
 
     clone = tmp_path / "restored"
-    subprocess.run(
-        ["git", "clone", "--quiet", str(repo), str(clone)],
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
-    )
+    cloned = run_bounded_child(["git", "clone", "--quiet", str(repo), str(clone)])
+    assert cloned.returncode == 0, cloned.stderr
     restored_keys = tmp_path / "restored-keys"
     restored_env = os.environ | {"BOOLEY_LEAK_GUARD_KEY_DIR": str(restored_keys)}
-    key_path = subprocess.run(
+    key_path = run_bounded_child(
         [sys.executable, str(SCANNER), "--repo", str(clone), "key-path"],
-        capture_output=True,
         check=False,
         env=restored_env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert key_path.returncode == 0, key_path.stderr
+    # Kept on subprocess.run: feeds the PR text on stdin.
     missing = subprocess.run(
         [sys.executable, str(SCANNER), "--repo", str(clone), "pr-text", "--stdin"],
         input="public title",
@@ -717,7 +699,7 @@ def test_clone_recovers_vocabulary_with_separately_restored_key(tmp_path: Path) 
         check=False,
         env=restored_env,
         text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     assert missing.returncode == 1
 
@@ -725,6 +707,7 @@ def test_clone_recovers_vocabulary_with_separately_restored_key(tmp_path: Path) 
     restored_keys.mkdir()
     shutil.copyfile(next(source_keys.glob("*.key")), Path(key_path.stdout.strip()))
     Path(key_path.stdout.strip()).chmod(0o600)
+    # Kept on subprocess.run: feeds the PR text on stdin.
     detected = subprocess.run(
         [sys.executable, str(SCANNER), "--repo", str(clone), "pr-text", "--stdin"],
         input=SENTINEL,
@@ -732,18 +715,15 @@ def test_clone_recovers_vocabulary_with_separately_restored_key(tmp_path: Path) 
         check=False,
         env=restored_env,
         text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     assert detected.returncode == 1
     assert "confidential term" in detected.stderr
     assert SENTINEL not in detected.stderr
-    restored = subprocess.run(
+    restored = run_bounded_child(
         [sys.executable, str(SCANNER), "--repo", str(clone), "restore-draft"],
-        capture_output=True,
         check=False,
         env=restored_env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert restored.returncode == 0, restored.stderr
     draft = clone / ".git/booley-leak-guard.toml"
@@ -756,13 +736,10 @@ def test_restore_draft_refuses_plaintext_inside_worktree(tmp_path: Path) -> None
     env = _sealed_fixture(repo, _encoded_config()) | {
         "BOOLEY_LEAK_GUARD_CONFIG": "private.toml",
     }
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, str(SCANNER), "--repo", str(repo), "restore-draft"],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert result.returncode == 1
     assert not (repo / "private.toml").exists()
@@ -782,7 +759,7 @@ def test_candidate_encrypted_vocabulary_is_validated_against_trusted_key(
         ),
         encoding="utf-8",
     )
-    valid = subprocess.run(
+    valid = run_bounded_child(
         [
             sys.executable,
             str(SCANNER),
@@ -796,11 +773,8 @@ def test_candidate_encrypted_vocabulary_is_validated_against_trusted_key(
             "--event",
             str(event_path),
         ],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert valid.returncode == 0, valid.stderr
 
@@ -808,7 +782,7 @@ def test_candidate_encrypted_vocabulary_is_validated_against_trusted_key(
     encrypted.write_bytes(b"corrupt\n")
     broken = _commit(repo, "corrupt encrypted vocabulary")
     _git(repo, "checkout", trusted)
-    invalid = subprocess.run(
+    invalid = run_bounded_child(
         [
             sys.executable,
             str(SCANNER),
@@ -822,11 +796,8 @@ def test_candidate_encrypted_vocabulary_is_validated_against_trusted_key(
             "--event",
             str(event_path),
         ],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert invalid.returncode == 1
     assert "could not complete" in invalid.stderr
@@ -851,7 +822,7 @@ def test_candidate_scan_blocks_new_term_in_same_pr(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             str(SCANNER),
@@ -865,11 +836,8 @@ def test_candidate_scan_blocks_new_term_in_same_pr(tmp_path: Path) -> None:
             "--event",
             str(event_path),
         ],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert result.returncode == 1
     assert "confidential term" in result.stderr
@@ -885,6 +853,7 @@ def test_tampered_encrypted_vocabulary_fails_closed(tmp_path: Path) -> None:
     payload[-1] ^= 1
     encrypted.write_bytes(b"\n".join((header, locator, base64.b64encode(payload), b"")))
 
+    # Kept on subprocess.run: feeds the PR text on stdin.
     result = subprocess.run(
         [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text", "--stdin"],
         input="public title",
@@ -892,7 +861,7 @@ def test_tampered_encrypted_vocabulary_fails_closed(tmp_path: Path) -> None:
         check=False,
         env=env,
         text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     assert result.returncode == 1
     assert "could not complete" in result.stderr
@@ -963,6 +932,7 @@ def test_large_nonmatching_pr_text_scans_promptly(tmp_path: Path, prefix: str) -
     ).decode()
     env = _sealed_fixture(repo, config)
     start = perf_counter()
+    # Kept on subprocess.run: feeds the PR text on stdin.
     result = subprocess.run(
         [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text", "--stdin"],
         input=prefix + "~" * 1_000_000,
@@ -970,7 +940,7 @@ def test_large_nonmatching_pr_text_scans_promptly(tmp_path: Path, prefix: str) -
         check=False,
         env=env,
         text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     elapsed = perf_counter() - start
 
@@ -1452,13 +1422,10 @@ def _self_test(*, pythonpath: Path | None = None) -> subprocess.CompletedProcess
     env = os.environ.copy()
     if pythonpath is not None:
         env["PYTHONPATH"] = str(pythonpath)
-    return subprocess.run(
+    return run_bounded_child(
         [sys.executable, str(SCANNER), "self-test"],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -1517,13 +1484,10 @@ def _audit(
         command.extend(("--rev", rev))
     if owner is not None:
         command.extend(("--repository-owner", owner))
-    return subprocess.run(
+    return run_bounded_child(
         command,
-        capture_output=True,
         check=False,
         env=_sealed_fixture(repo, _encoded_config()),
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -1786,6 +1750,7 @@ def _pr_scan(
     trusted = ["--trusted-base", trusted_base] if trusted_base is not None else []
     base_command = [sys.executable, str(SCANNER), "--repo", str(repo)]
     if command == "pre-push":
+        # Kept on subprocess.run: feeds the push record on stdin.
         return subprocess.run(
             [*base_command, "pre-push", *trusted],
             input=f"refs/heads/topic {head} refs/heads/main {base}\n",
@@ -1793,14 +1758,14 @@ def _pr_scan(
             check=False,
             env=env,
             text=True,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
     event = repo.parent / "event.json"
     event.write_text(
         json.dumps({"pull_request": {"title": "public", "body": "", "head": {"ref": "topic"}}}),
         encoding="utf-8",
     )
-    return subprocess.run(
+    return run_bounded_child(
         [
             *base_command,
             "verify-candidate",
@@ -1812,11 +1777,8 @@ def _pr_scan(
             str(event),
             *trusted,
         ],
-        capture_output=True,
         check=False,
         env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
