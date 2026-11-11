@@ -458,3 +458,43 @@ def test_sim_card_examples_name_the_run_report(tmp_path: Path) -> None:
     ]
     assert cards
     assert set(cards) == {expected}
+
+
+_CARD_ROW = re.compile(r"^    (PASS|FAIL|ERROR|INCONCLUSIVE)\s")
+_CARD_LOG = re.compile(
+    r"^      log: /work/\.booley/flow-reports/sim/\d+/targets/\w+/campaign/work-items/"
+    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-run\.log$"
+)
+_CARD_WAVEFORM = re.compile(
+    r"^      waveform: /work/\.booley/flow-reports/sim/\d+/targets/\w+/campaign/work-items/"
+    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-[^/\s]+\.fst$"
+)
+
+
+def test_sim_reading_results_example_shows_evidence_paths_without_a_search_recipe() -> None:
+    page = _reference_text(USER_DOCS / "FLOW-SIM.md")
+    section = page.split("\n## Reading results\n", 1)[1].split("\n## ", 1)[0]
+
+    graded = ""
+    logs: list[str] = []
+    waveforms: list[str] = []
+    for line in section.splitlines():
+        row = _CARD_ROW.match(line)
+        if row:
+            graded = row.group(1)
+        elif line.startswith("      log:"):
+            # Only a Test Run that did not pass names its log, under its own row.
+            assert _CARD_LOG.match(line), line
+            assert graded not in {"", "PASS"}, line
+            logs.append(graded)
+        elif line.startswith("      waveform:"):
+            assert _CARD_WAVEFORM.match(line), line
+            assert graded, line
+            waveforms.append(graded)
+
+    assert logs == ["FAIL"]
+    assert "PASS" in waveforms
+    # The card names the files; the guide teaches no hunt through the work items.
+    assert "grep" not in section
+    assert "work-items/*" not in section
+    assert "result.json" not in section
