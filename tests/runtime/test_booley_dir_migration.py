@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import subprocess
 import uuid
 from pathlib import Path
 
 import pytest
 from tests.goals.conftest import git
+from tests.subprocess_budget import run_bounded_child
 
 from booley.core.booley_dir import reset_cache, resolve_booley_dir
 from booley.core.booley_layout import BooleyLayoutError
@@ -204,9 +204,7 @@ def test_pull_of_tracked_rename_refuses_both_and_preserves_local_state(tmp_path)
     (source / OLD / ".gitignore").write_text("goals/*/\nworktrees/\n")
     git(source, "add", "-f", OLD)
     git(source, "commit", "-qm", "Project")
-    subprocess.run(
-        ["git", "clone", str(source), str(clone)], check=True, capture_output=True, timeout=30
-    )
+    run_bounded_child(["git", "clone", str(source), str(clone)], check=True)
     record = _record(clone / OLD, GoalState.ABANDONED, clone)
     migration.apply_migration(_inspect(source))
     git(source, "add", "-A", "--", OLD)
