@@ -4,6 +4,7 @@ import errno
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -98,6 +99,13 @@ def test_failed_projection_replacement_preserves_previous_complete_document(
     assert list(tmp_path.iterdir()) == [path]
 
 
+def _no_files(count: int) -> list[Any]:
+    """*count* Test Runs without a log or waveform."""
+    from booley.flows.sim.campaign.test_run_files import TestRunFiles
+
+    return [TestRunFiles(None, None)] * count
+
+
 def test_infrastructure_termination_is_reported_beyond_observation_preview() -> None:
     from booley.flows.sim.flow import _campaign_observation_preview
 
@@ -119,7 +127,9 @@ def test_infrastructure_termination_is_reported_beyond_observation_preview() -> 
         assertions="not_observed",
         detail={"termination": "disk_budget", "reason": "disk guard"},
     )
-    preview = _campaign_observation_preview([observation] * 32 + [aborted])
+    preview = _campaign_observation_preview(
+        [observation] * 32 + [aborted], _no_files(33), Path("target")
+    )
     assert preview["observations_truncated"] is True
     assert preview["termination_counts"] == {"disk_budget": 1}
     assert preview["observations"][0]["failure_class"] is None
@@ -149,7 +159,9 @@ def test_campaign_build_diagnostics_survive_preview_limit() -> None:
         execution="aborted",
         detail={"termination": "build_infrastructure", "build_stage": stage},
     )
-    preview = _campaign_observation_preview([observation] * 32 + [failed])
+    preview = _campaign_observation_preview(
+        [observation] * 32 + [failed], _no_files(33), Path("target")
+    )
     assert preview["build_stage"] == [stage]
 
 
@@ -302,7 +314,7 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
     assert report["cycle_counts"]["one"][0] == {"test": None, "cycle_count": 0}
     assert len(json.dumps(_structured_from_report(report)).encode()) < 65536
     assert "cycle_counts" not in report["detail"]
-    preview = _campaign_observation_preview(observations[:40])
+    preview = _campaign_observation_preview(observations[:40], _no_files(40), tmp_path)
     assert len(preview["observations"]) == 32 and preview["observations"][-1]["cycle_count"] == 31
     assert "cycle_counts" not in preview
 
@@ -1308,6 +1320,8 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
         "assertion_count",
         "cycle_count",
         "detail",
+        "log",
+        "trace",
     }
     assert details["observation_counts"]["execution"] == {"completed": 39, "timeout": 1}
 
