@@ -209,6 +209,7 @@ def _run_paid_flow_with_vendor_evidence(container: str, p: Prerequisites) -> Non
                     active_status = status.stdout
                     break
         time.sleep(1)
+    # Unbounded child: the test drives this Popen itself while sampling lmstat.
     output, _ = process.communicate(timeout=690)
     assert process.returncode == 0, output
     assert active_status, "FlexNet never reported this Session's paid checkout"
