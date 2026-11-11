@@ -118,7 +118,8 @@ class _RecordedCampaign:
         """*members* as a v2 observation fact of *run*, as the manifest recorded it.
 
         Sets ``work_item_id`` (the item recording *run*), ``test_run`` and
-        ``test_run_fingerprint`` over *members*. *discovered* names a Test an
+        ``test_run_fingerprint`` over *members* (plus ``target`` for a *discovered*
+        fact, which the report reads to name the discovered Test Run). *discovered* names a Test an
         unfiltered batch of the unnamed *run* found: the fact's ``test`` is that
         name and its Test Run is production ``discovered_test_run``'s. The
         caller's ``test`` member is otherwise kept as given.
@@ -128,7 +129,10 @@ class _RecordedCampaign:
             for item in cast(Sequence[Mapping[str, Any]], self.manifest.document["work_items"])
             if any(doc["name"] == run.name for doc in item["test_runs"])
         )
-        observed = run if discovered is None else discovered_test_run(discovered, run)
+        selector = cast(Mapping[str, Any], item["target"])["selector"]
+        observed = (
+            run if discovered is None else discovered_test_run(discovered, run, target=selector)
+        )
         stamped: dict[str, object] = {
             "work_item_id": item["work_item_id"],
             "test_run": observed.name,
@@ -136,6 +140,7 @@ class _RecordedCampaign:
         }
         if discovered is not None:
             stamped["test"] = discovered
+            stamped["target"] = item["target"]
         return members | stamped
 
 
