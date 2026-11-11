@@ -42,6 +42,7 @@ class TestDescendantPids:
             time.sleep(30)
             """
         )
+        # The test drives this Popen itself (cancel, wait, communicate).
         proc = subprocess.Popen([sys.executable, "-c", src], stdout=subprocess.PIPE, text=True)
         grandchild: int | None = None
         try:

@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import history_commit
 from booley.runtime.history_commit import (
@@ -20,9 +21,7 @@ RECORD = "notes/summary.md"
 
 
 def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, timeout=30
-    )
+    result = run_bounded_child(["git", *args], cwd=cwd, check=True)
     return result.stdout.strip()
 
 
@@ -51,6 +50,7 @@ def _head(root: Path) -> str:
 
 
 def _blob(root: Path, text: str) -> str:
+    # Kept on subprocess.run: feeds the blob on stdin.
     return subprocess.run(
         ["git", "hash-object", "-w", "--stdin"],
         cwd=root,

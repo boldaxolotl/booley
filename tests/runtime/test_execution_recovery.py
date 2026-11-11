@@ -176,6 +176,7 @@ def test_recovers_execution_after_supervisor_is_killed(
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     reset_cache()
     write_attachment_heartbeat(paths, generation=1)
+    # The test drives this Popen itself (cancel, wait, communicate).
     supervisor = start_supervisor_with_detached_descendant(
         booley_dir, execution_id, descendant_pid_file
     )

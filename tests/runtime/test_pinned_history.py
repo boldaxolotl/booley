@@ -102,6 +102,7 @@ def test_preserves_unrelated_or_conflicting_staging_without_wedging(repo, public
         blob = raw_git(repo, "hash-object", "README").strip()
         import subprocess
 
+        # Kept on subprocess.run: feeds binary index data on stdin.
         subprocess.run(
             ["git", "update-index", "--index-info"],
             cwd=repo,
