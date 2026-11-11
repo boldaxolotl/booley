@@ -8,10 +8,11 @@ import os
 import re
 import shlex
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, cast
 
 from booley.core.build_paths import work_root_for
 from booley.core.hdl import declared_module_names, strip_comments
@@ -20,6 +21,7 @@ from booley.flows.sim.live_progress import attempt_scope, observe_stage
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.timefmt import format_duration
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetInspection
 
 from .. import output_budget
 from .mode import SimulationMode
@@ -37,7 +39,8 @@ _ERROR_TAIL_CHARS = 2000
 _extract_error_gist = extract_error_gist
 
 
-# One probe outcome: module, file, frontend, fallback flag, and compiler output.
+# One probe outcome: module, file, frontend, dialect flags, fallback flag, and
+# compiler output.
 _ProbeRecord = dict[str, Any]
 
 
@@ -47,13 +50,15 @@ def _standalone_entries(records: list[_ProbeRecord]) -> list[dict[str, Any]]:
     The full compiler output stays in the sweep's run.log; the report keeps
     only the gist. Shared by the ``failures`` and ``unparsed`` lists so the two
     never drift into different shapes. Each row names the frontend that
-    produced it and whether that frontend was a fallback probe.
+    produced it, the dialect flags it ran with, and whether that frontend was a
+    fallback probe.
     """
     return [
         {
             "module": r["module"],
             "file": r["file"],
             "frontend": r["frontend"],
+            "dialect_flags": r["dialect_flags"],
             "fallback": r["fallback"],
             "error_gist": _extract_error_gist(r["error"]),
         }
@@ -101,6 +106,34 @@ _EDA_TOOL_AS_FRONTEND = {
     "iverilog": _FRONTEND_IVERILOG,
 }
 
+# Target option key that carries each frontend's compiler options (Edalize
+# spells them ``<tool>_options``), in both ``flow_options`` and the legacy
+# ``tools: <tool>:`` section.
+_FRONTEND_OPTIONS_KEY = {
+    _FRONTEND_IVERILOG: "iverilog_options",
+    _FRONTEND_VERILATOR: "verilator_options",
+}
+
+# Dialect flags a fallback probe runs with: the Target's own flags do not apply
+# to a compiler the Target does not use. Icarus needs SystemVerilog enabled to
+# parse the sources at all; Verilator's default already accepts them.
+_FALLBACK_FLAGS = {
+    _FRONTEND_IVERILOG: ("-g2012",),
+    _FRONTEND_VERILATOR: (),
+}
+
+# Verilator options that select the language generation, each followed by its
+# value token (``--default-language 1364-2005``).
+_VERILATOR_LANGUAGE_OPTIONS = frozenset(
+    {"--language", "-language", "--default-language", "-default-language"}
+)
+
+# Verilator ``+<generation>ext+<extensions>`` language-extension options. A
+# closed generation list keeps ``+libext+``, ``+incdir+`` and ``+define+`` out.
+_VERILATOR_LANGUAGE_EXT_RE = re.compile(
+    r"^\+(?:1364-\d{4}|1800-\d{4}|1800\+VAMS|systemverilog|verilog1995|verilog2001)ext\+"
+)
+
 # Compiler output that means "this frontend cannot parse the construct",
 # as opposed to "your design is broken": Icarus emits a bare syntax error on
 # SystemVerilog it never implemented, Verilator names it `Unsupported:`.
@@ -126,6 +159,92 @@ def _scan_hdl_declarations(text: str) -> tuple[list[str], bool]:
     return modules, has_shared
 
 
+@dataclass(frozen=True, order=True)
+class _ProbeDialect:
+    """A probe compiler plus the language-dialect flags of the Target using it."""
+
+    frontend: str
+    flags: tuple[str, ...]
+
+
+def _is_option_sequence(value: object) -> bool:
+    """Whether *value* is an authored option list (a list or the tuple it is frozen into)."""
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
+def _option_tokens(options: object) -> list[str]:
+    """Flatten authored option entries into one shell-split token list.
+
+    Edalize joins every entry with spaces, so ``["--default-language",
+    "1364-2005"]`` and ``["--default-language 1364-2005"]`` are the same
+    command line. A value that is not a sequence (or is a bare string)
+    contributes nothing; an entry that does not shell-split is kept whole.
+    ``TargetInspection`` freezes authored lists into tuples, so any sequence
+    counts.
+    """
+    if not _is_option_sequence(options):
+        return []
+    tokens: list[str] = []
+    for option in cast("Sequence[object]", options):
+        try:
+            tokens.extend(shlex.split(str(option)))
+        except ValueError:
+            tokens.append(str(option))
+    return tokens
+
+
+def _dialect_flags(frontend: str, options: object) -> tuple[str, ...]:
+    """The language-dialect flags among a Target's compiler *options*, in order.
+
+    Only the flags that change which language the compiler accepts are kept:
+    Icarus ``-g*`` generation selectors; Verilator ``--language`` /
+    ``--default-language`` with their value and ``+<generation>ext+`` options.
+    Defines, include paths and every other option are Target build settings,
+    not dialect, and never reach the probe. Authored order is preserved because
+    both compilers let the last language flag win.
+    """
+    tokens = _option_tokens(options)
+    flags: list[str] = []
+    take_value = False
+    for token in tokens:
+        if take_value:
+            flags.append(token)
+            take_value = False
+        elif frontend == _FRONTEND_IVERILOG and token.startswith("-g"):
+            flags.append(token)
+            # A bare ``-g`` takes its generation as the next token.
+            take_value = token == "-g"
+        elif frontend == _FRONTEND_VERILATOR and token in _VERILATOR_LANGUAGE_OPTIONS:
+            flags.append(token)
+            take_value = True
+        elif frontend == _FRONTEND_VERILATOR and _VERILATOR_LANGUAGE_EXT_RE.match(token):
+            flags.append(token)
+    return tuple(flags)
+
+
+def _probe_label(frontend: str, flags: tuple[str, ...]) -> str:
+    """Human label naming a probe's compiler and dialect, e.g. ``iverilog -g2005``."""
+    return shlex.join([frontend, *flags]) if flags else f"{frontend} (default dialect)"
+
+
+def _target_dialect(inspection: TargetInspection) -> _ProbeDialect | None:
+    """The probe dialect a Target's simulator implies, or ``None`` if not drivable.
+
+    Options are read the way the Target build reads them: modern
+    ``flow_options`` first, then the legacy ``tools: <tool>:`` options.
+    """
+    eda_tool = inspection.eda_tool
+    frontend = _EDA_TOOL_AS_FRONTEND.get(eda_tool.lower()) if isinstance(eda_tool, str) else None
+    if frontend is None:
+        return None
+    key = _FRONTEND_OPTIONS_KEY[frontend]
+    options: list[object] = []
+    for authored in (inspection.flow_options.get(key), inspection.tool_options.get(key)):
+        if _is_option_sequence(authored):
+            options.extend(cast("Sequence[object]", authored))
+    return _ProbeDialect(frontend, _dialect_flags(frontend, options))
+
+
 @dataclass
 class _StandaloneOutcome:
     """Result of one standalone-elaboration sweep, ready to merge into _run."""
@@ -139,12 +258,15 @@ class _StandaloneOutcome:
 
 @dataclass(frozen=True)
 class _StandaloneProbe:
-    """One planned per-module compile: the compiler and whether it is a fallback."""
+    """One planned per-module compile: compiler, dialect flags, and fallback role."""
 
     module: str
     file: str
     # "iverilog" | "verilator"
     frontend: str
+    # Language-dialect flags of the Target(s) this probe stands for; empty means
+    # the compiler's default dialect.
+    flags: tuple[str, ...]
     # True only for a fallback probe that no covering Target's own compiler matches.
     fallback: bool
     # Shared package/interface files this probe compiles before the module.
@@ -183,8 +305,8 @@ class StandaloneMixin:
         mode = getattr(self.args, "mode", None)
         return isinstance(mode, SimulationMode) and mode.includes_standalone
 
-    def _standalone_rtl_scope(self, targets: list[str]) -> dict[str, set[str | None]]:
-        """Project-relative HDL files in the Targets' RTL scope, with their frontends.
+    def _standalone_rtl_scope(self, targets: list[str]) -> dict[str, set[_ProbeDialect | None]]:
+        """Project-relative HDL files in the Targets' RTL scope, with their dialects.
 
         Reuses the same fileset resolution the per-target report already
         relies on (``target_source_files``, dependency closure included): the
@@ -192,19 +314,17 @@ class StandaloneMixin:
         and vendor/harness files outside the declared RTL filesets are exempt
         by construction. Union across the selected Targets, first-seen order,
         narrowed to compiled (System)Verilog sources. Each file maps to the
-        native probe frontends of the Targets covering it; ``None`` means a
+        native probe dialects (frontend plus the Target's language flags) of
+        the Targets covering it; ``None`` means a
         covering Target simulates with a tool the probe cannot drive and needs
         a fallback. Raises on resolution failure — the caller grades that a
         Flow ERROR (no verdict reached).
         """
-        coverage: dict[str, set[str | None]] = {}
+        coverage: dict[str, set[_ProbeDialect | None]] = {}
         catalog = TargetCatalog.build(self.args.work_dir)
         for tgt in targets:
             inspection = catalog.inspect(self._target_handle(tgt))
-            eda_tool = inspection.eda_tool
-            native = (
-                _EDA_TOOL_AS_FRONTEND.get(eda_tool.lower()) if isinstance(eda_tool, str) else None
-            )
+            native = _target_dialect(inspection)
             for rel in inspection.rtl_files:
                 coverage.setdefault(rel, set()).add(native)
         return {
@@ -251,30 +371,37 @@ class StandaloneMixin:
         return _FRONTEND_VERILATOR if shutil.which(_FRONTEND_VERILATOR) else _FRONTEND_IVERILOG
 
     @staticmethod
-    def _file_probes(needs: set[str | None], fallback: str | None) -> list[tuple[str, bool]]:
-        """``(frontend, is_fallback)`` probes one file needs, in stable order.
+    def _file_probes(
+        needs: set[_ProbeDialect | None], fallback: str | None
+    ) -> list[tuple[_ProbeDialect, bool]]:
+        """``(dialect, is_fallback)`` probes one file needs, in stable order.
 
-        Every native frontend of a covering Target probes once. A Target whose
-        simulator is not drivable adds the fallback probe, unless the fallback
-        compiler already is one of the native frontends — then that single
-        probe is graded normally.
+        Every distinct native dialect of a covering Target probes once. A
+        Target whose simulator is not drivable adds the fallback probe, unless
+        the fallback compiler already is one of the native frontends — then
+        that native probe is graded normally.
         """
-        probes = [(frontend, False) for frontend in sorted(f for f in needs if f is not None)]
-        if None in needs and fallback is not None and fallback not in needs:
-            probes.append((fallback, True))
+        probes = [(dialect, False) for dialect in sorted(d for d in needs if d is not None)]
+        if (
+            None in needs
+            and fallback is not None
+            and all(dialect.frontend != fallback for dialect, _ in probes)
+        ):
+            probes.append((_ProbeDialect(fallback, _FALLBACK_FLAGS[fallback]), True))
         return probes
 
     def _standalone_probes(
         self,
         modules: list[tuple[str, str]],
         shared: list[str],
-        coverage: dict[str, set[str | None]],
+        coverage: dict[str, set[_ProbeDialect | None]],
     ) -> list[_StandaloneProbe]:
-        """Expand every ``(module, file)`` into one probe per covering frontend.
+        """Expand every ``(module, file)`` into one probe per covering dialect.
 
         A probe compiles only the shared package/interface files covered by the
-        Targets that contribute its frontend, so an Icarus probe never builds a
-        package only a Verilator Target uses (and vice versa).
+        Targets that contribute its frontend and dialect flags, so an Icarus
+        probe never builds a package only a Verilator Target uses, nor a
+        ``-g2005`` probe one only a ``-g2012`` Target uses.
         """
         fallback = (
             self._standalone_fallback_frontend()
@@ -283,12 +410,16 @@ class StandaloneMixin:
         )
         probes: list[_StandaloneProbe] = []
         for module, rel in modules:
-            for frontend, is_fallback in self._file_probes(coverage[rel], fallback):
-                contributors: set[str | None] = {None} if is_fallback else {frontend}
-                if not is_fallback and frontend == fallback and None in coverage[rel]:
+            for dialect, is_fallback in self._file_probes(coverage[rel], fallback):
+                contributors: set[_ProbeDialect | None] = {None} if is_fallback else {dialect}
+                if not is_fallback and dialect.frontend == fallback and None in coverage[rel]:
                     contributors.add(None)
                 prereqs = tuple(s for s in shared if s != rel and coverage[s] & contributors)
-                probes.append(_StandaloneProbe(module, rel, frontend, is_fallback, prereqs))
+                probes.append(
+                    _StandaloneProbe(
+                        module, rel, dialect.frontend, dialect.flags, is_fallback, prereqs
+                    )
+                )
         return probes
 
     def _standalone_compile_command(
@@ -296,14 +427,16 @@ class StandaloneMixin:
         module: str,
         rel: str,
         shared: list[str],
-        frontend: str = _FRONTEND_IVERILOG,
+        frontend: str,
+        flags: tuple[str, ...],
     ) -> list[str]:
         """The per-module probe: elaborate *module* from its declaring file only.
 
         The declaring file plus the shared package/interface files (minus the
-        declaring file itself when it is one of them). Parameter defaults only
-        — no ``-P``/``-G`` overrides: a default parameterization that fails to
-        elaborate is a finding.
+        declaring file itself when it is one of them), compiled with the
+        Target's language-dialect *flags* and nothing else of its options.
+        Parameter defaults only — no ``-P``/``-G`` overrides: a default
+        parameterization that fails to elaborate is a finding.
 
         Prerequisites come FIRST on the command line: both frontends resolve
         ``import pkg::*`` during the parse, so a package declared in a file
@@ -320,13 +453,14 @@ class StandaloneMixin:
                 "verilator",
                 "--lint-only",
                 "-Wno-fatal",
+                *flags,
                 "--top-module",
                 module,
                 *prereqs,
                 rel,
             ]
         # ``-o`` goes to the null device so the probe never litters the worktree.
-        return ["iverilog", "-g2012", "-o", os.devnull, "-s", module, *prereqs, rel]
+        return ["iverilog", *flags, "-o", os.devnull, "-s", module, *prereqs, rel]
 
     def _run_standalone_probes(
         self,
@@ -355,21 +489,19 @@ class StandaloneMixin:
                     f"{label} standalone sweep timed out after {self._get_timeout()}s",
                 )
             record, log_chunk, eda_tool_error = self._run_standalone_probe(
-                probe.module,
-                probe.file,
-                list(probe.prereqs),
-                probe.frontend,
+                probe,
                 timeout_s=max(1, math.ceil(remaining_s)),
             )
             role = " (fallback)" if probe.fallback else ""
+            via = _probe_label(probe.frontend, probe.flags)
             log_chunks.append(
-                f"# standalone probe: {probe.module} ({probe.file}) via {probe.frontend}{role}\n"
-                f"{log_chunk}"
+                f"# standalone probe: {probe.module} ({probe.file}) via {via}{role}\n{log_chunk}"
             )
             if eda_tool_error:
                 return failures, unparsed, log_chunks, eda_tool_error
             if record is not None:
                 record["frontend"] = probe.frontend
+                record["dialect_flags"] = list(probe.flags)
                 record["fallback"] = probe.fallback
                 parse_gap = probe.fallback and primary_ok and _PARSE_GAP_RE.search(record["error"])
                 destination = unparsed if parse_gap else failures
@@ -378,16 +510,16 @@ class StandaloneMixin:
 
     def _run_standalone_probe(
         self,
-        module: str,
-        rel: str,
-        shared: list[str],
-        frontend: str,
+        probe: _StandaloneProbe,
         *,
         timeout_s: int,
     ) -> tuple[_ProbeRecord | None, str, str]:
         """Run one bounded probe and return its finding, log, and tool error."""
+        module, rel, frontend = probe.module, probe.file, probe.frontend
         with attempt_scope(module, identity=module, operation="standalone"):
-            command = self._standalone_compile_command(module, rel, shared, frontend)
+            command = self._standalone_compile_command(
+                module, rel, list(probe.prereqs), frontend, probe.flags
+            )
             observe_stage(module, "building")
             proc = self._execute(command, timeout=timeout_s)
         combined = (proc.stdout + proc.stderr).strip()
@@ -488,7 +620,7 @@ class StandaloneMixin:
         commands = tuple(
             tuple(
                 self._standalone_compile_command(
-                    probe.module, probe.file, list(probe.prereqs), probe.frontend
+                    probe.module, probe.file, list(probe.prereqs), probe.frontend, probe.flags
                 )
             )
             for probe in probes
@@ -577,11 +709,11 @@ class StandaloneMixin:
 
         ``frontend`` is the ``+``-joined probe frontend label (the plain
         frontend name for a one-frontend sweep); ``probes`` groups the
-        ``(module, file)`` pairs by ``(frontend, fallback)``.
+        ``(module, file)`` pairs by ``(frontend, dialect flags, fallback)``.
         """
-        groups: dict[tuple[str, bool], list[dict[str, str]]] = {}
+        groups: dict[tuple[str, tuple[str, ...], bool], list[dict[str, str]]] = {}
         for probe in recipe.probes:
-            groups.setdefault((probe.frontend, probe.fallback), []).append(
+            groups.setdefault((probe.frontend, probe.flags, probe.fallback), []).append(
                 {"module": probe.module, "file": probe.file}
             )
         detail: dict[str, Any] = {
@@ -589,8 +721,13 @@ class StandaloneMixin:
             "shared_files": list(recipe.shared),
             "frontend": recipe.frontend_label,
             "probes": [
-                {"frontend": frontend, "fallback": fallback, "modules": modules}
-                for (frontend, fallback), modules in sorted(groups.items())
+                {
+                    "frontend": frontend,
+                    "dialect_flags": list(flags),
+                    "fallback": fallback,
+                    "modules": modules,
+                }
+                for (frontend, flags, fallback), modules in sorted(groups.items())
             ],
             "failures": _standalone_entries(failures),
         }
@@ -616,7 +753,7 @@ class StandaloneMixin:
         failures: list[_ProbeRecord],
         log_pointer: str | None,
     ) -> list[str]:
-        """Per-failure console lines: module, declaring file, frontend, compiler stderr.
+        """Per-failure console lines: module, declaring file, probe dialect, compiler stderr.
 
         Echoes the first few failures with their (tail-capped) compiler output;
         the complete output for every module lives in the standalone run.log.
@@ -624,7 +761,8 @@ class StandaloneMixin:
         lines: list[str] = []
         tail_chars = output_budget.scaled(_ERROR_TAIL_CHARS)
         for f in failures[:_MAX_ECHOED_STANDALONE_FAILURES]:
-            lines.append(f"[sim:elab-only]   {f['module']} ({f['file']}) via {f['frontend']}:")
+            via = _probe_label(f["frontend"], tuple(f["dialect_flags"]))
+            lines.append(f"[sim:elab-only]   {f['module']} ({f['file']}) via {via}:")
             err = f["error"] or "(no compiler output)"
             if len(err) > tail_chars:
                 where = f", full log: {log_pointer}" if log_pointer else ""
@@ -659,7 +797,8 @@ class StandaloneMixin:
         ]
         for u in unparsed[:_MAX_ECHOED_STANDALONE_FAILURES]:
             gist = _extract_error_gist(u["error"]) or "(no compiler output)"
-            lines.append(f"[sim:elab-only]     {u['module']} ({u['file']}): {gist}")
+            via = _probe_label(u["frontend"], tuple(u["dialect_flags"]))
+            lines.append(f"[sim:elab-only]     {u['module']} ({u['file']}) via {via}: {gist}")
         if len(unparsed) > _MAX_ECHOED_STANDALONE_FAILURES:
             more = len(unparsed) - _MAX_ECHOED_STANDALONE_FAILURES
             lines.append(f"[sim:elab-only]     ... and {more} more")
