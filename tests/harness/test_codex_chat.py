@@ -144,6 +144,10 @@ def test_runtime_directory_failure_keeps_plain_codex_launch(
     assert not HandleStore(project).path.exists()
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="Booley runs the Codex chat Node shim only for Linux Codex launches",
+)
 def test_shim_preserves_arguments_environment_and_exit_status(tmp_path, monkeypatch):
     node = shutil.which("node")
     if node is None:
@@ -157,7 +161,7 @@ def test_shim_preserves_arguments_environment_and_exit_status(tmp_path, monkeypa
     shim = Path(codex_chat.__file__).parents[1] / "data/codex_chat.mjs"
     result = run_bounded_child(
         [node, str(shim), "S123", str(entrypoint), "argument with spaces", "--no-daemon"],
-        timeout=30,  # Allow Node startup headroom on busy Windows runners.
+        timeout=30,  # Node startup headroom; sized for slow CI runners.
     )
     assert result.returncode == 17
     assert json.loads(result.stdout) == {
