@@ -269,6 +269,7 @@ def _owner_of(child: subprocess.Popen[str]) -> view_probe.ViewOwner:
 def _reap(child: subprocess.Popen[str]) -> None:
     if child.poll() is None:
         child.kill()
+    # Kept on subprocess.Popen: child the test drives and signals.
     child.wait(timeout=5)
     if child.stdout is not None:
         child.stdout.close()

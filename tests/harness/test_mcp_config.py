@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import tomllib
@@ -13,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.runtime.mcp_config import generate_codex_config
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.mark.parametrize("failure", ["missing", "stale", "broken", "wrong-result"])
@@ -90,12 +90,8 @@ incontainer_setup._apply_claude_first_run = lambda *args, **kwargs: "current"
 assert incontainer_setup.register("claude").startswith("claude:current")
 assert "tomli" not in sys.modules
 """
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
         env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), "HOME": str(tmp_path)},
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -138,12 +134,8 @@ with patch.object(mcp_config.logger, "warning") as warning:
     warning.assert_not_called()
 assert len(calls) == 2 and path.read_text() == source
 """
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-c", script, str(tmp_path)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
         env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
     )
     assert result.returncode == 0, result.stdout + result.stderr

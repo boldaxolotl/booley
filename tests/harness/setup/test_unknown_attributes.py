@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -35,14 +34,13 @@ from booley.harness.setup.line_endings import (
     LineEndingStatus as Status,
 )
 from booley.runtime.booley_dir import init_booley_dir_scope
+from tests.subprocess_budget import run_bounded_child
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
 
-def _git(root: Path, *args: str) -> bytes:
-    result = subprocess.run(
-        ["git", "-C", str(root), *args], capture_output=True, timeout=10, check=True
-    )
+def _git(root: Path, *args: str) -> str:
+    result = run_bounded_child(["git", "-C", str(root), *args], timeout=10, check=True)
     return result.stdout
 
 
@@ -146,7 +144,7 @@ def test_unknown_sibling_blocks_every_publication_trigger(tmp_path, mode, autocr
     assert not any(a.kind is ActionKind.PUBLISH_ATTRIBUTES for a in checkout.actions)
     assert not local.exists()
     if mode is Mode.REPAIR:
-        assert _git(root, "config", "--local", "core.autocrlf").strip() == b"false"
+        assert _git(root, "config", "--local", "core.autocrlf").strip() == "false"
         assert report.status is Status.SAFE
     parked.rename(sibling)
     if mode is Mode.REPAIR:
