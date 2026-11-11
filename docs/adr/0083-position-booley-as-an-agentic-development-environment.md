@@ -2,6 +2,10 @@
 
 Status: accepted
 
+Amended by [ADR 0092](0092-measure-commits-against-target-metrics.md): once
+Goal Mode is removed, read "Goal status" and "Review Package" below as the
+Measurement Report and the Review Report. The positioning stands.
+
 ## Context
 
 Booley described itself as "the open-source agentic RTL IDE". The word IDE

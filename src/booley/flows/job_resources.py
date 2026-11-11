@@ -20,12 +20,15 @@ from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.runtime import job_slots
 from booley.runtime.pid import is_pid_alive
-from booley.runtime.resource_history import append_records
+from booley.runtime.resource_history import DOCTOR_RUN_ENV, append_records
 from booley.runtime.timefmt import utc_now_rfc3339
+
+if TYPE_CHECKING:
+    from booley.fusesoc.fusesoc_registry import ResolvedTarget
 
 logger = logging.getLogger(__name__)
 
@@ -51,17 +54,43 @@ class ResourceLabel:
 
     target: str
     phase: str
+    # Test Variant names (``test`` for the default Variant, ``test+variant``
+    # otherwise); seeds are never part of the key.
     tests: tuple[str, ...] = ()
     # Process name -> phase, for one command that runs several phases.
     split: Mapping[str, str] | None = None
+    # Size of the Target's source files; recorded as data, not part of the key.
+    source_bytes: int | None = None
 
 
 _label: ContextVar[ResourceLabel | None] = ContextVar("booley_resource_label", default=None)
 
 
-def label_commands(target: str, phase: str, *, tests: tuple[str, ...] = ()) -> None:
+def label_commands(
+    target: str,
+    phase: str,
+    *,
+    tests: tuple[str, ...] = (),
+    source_bytes: int | None = None,
+) -> None:
     """Label the following commands in this context (one lifecycle stage)."""
-    _label.set(ResourceLabel(target, phase, tuple(tests)))
+    _label.set(ResourceLabel(target, phase, tuple(tests), source_bytes=source_bytes))
+
+
+def resolved_source_bytes(resolved: ResolvedTarget) -> int | None:
+    """Total size in bytes of the Target's distinct resolved source files.
+
+    A snapshot taken when the Target is resolved (before any Pre-Sim Command),
+    kept as analysis data and never as a key. ``None`` (unknown, never ``0``)
+    when the Target has no files or any file cannot be read.
+    """
+    paths = {entry.absolute(resolved.build_root) for entry in resolved.files}
+    if not paths:
+        return None
+    try:
+        return sum(path.stat().st_size for path in paths)
+    except OSError:
+        return None
 
 
 def clear_label() -> None:
@@ -71,10 +100,14 @@ def clear_label() -> None:
 
 @contextlib.contextmanager
 def resource_phase(
-    target: str, phase: str, *, split: Mapping[str, str] | None = None
+    target: str,
+    phase: str,
+    *,
+    split: Mapping[str, str] | None = None,
+    source_bytes: int | None = None,
 ) -> Iterator[None]:
     """Label the commands run inside the block."""
-    token = _label.set(ResourceLabel(target, phase, split=split))
+    token = _label.set(ResourceLabel(target, phase, split=split, source_bytes=source_bytes))
     try:
         yield
     finally:
@@ -423,9 +456,12 @@ def history_records(
         (name, u, u.seen_s(), u.sampled_cpu_s()) for name, u in sorted(measurement.phases.items())
     ]
     tests = ",".join(label.tests)
+    # Absent when unknown, never zero.
+    size = {} if label.source_bytes is None else {"source_bytes": label.source_bytes}
     return [
         {
             **common,
+            **size,
             "key": {
                 "target": label.target,
                 "phase": phase,
@@ -452,7 +488,13 @@ def record_command(
     measurement: JobMeasurement,
     result: Any,
 ) -> None:
-    """Append the command's records to the Project history; never raise."""
+    """Append the command's records to the Project history; never raise.
+
+    Flow runs that Doctor starts (self-tests, smoke and deep checks) write
+    nothing: they would pollute the Project's real keys.
+    """
+    if os.environ.get(DOCTOR_RUN_ENV):
+        return
     from booley.runtime.booley_dir import resolve_common_booley_dir
 
     try:

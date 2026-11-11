@@ -254,8 +254,8 @@ def test_flows_label_their_commands(flow_class, method, phase, split):
     # A logical synth plan; the other Flows take the command itself.
     plan = SimpleNamespace(spec=SimpleNamespace(timing=SimpleNamespace(mode="logical")))
     command = plan if flow_class is AsicSynthesizeFlow else ["make"]
-    label = _label_seen(flow_class(), method, "core", command)
-    assert label == job_resources.ResourceLabel("core", phase, split=split)
+    label = _label_seen(flow_class(), method, "core", command, 4096)
+    assert label == job_resources.ResourceLabel("core", phase, split=split, source_bytes=4096)
     assert job_resources.current_label() is None
 
 
@@ -370,3 +370,77 @@ def test_report_handles_empty_unreadable_and_unmeasured_history(tmp_path, capsys
     resource_history.history_path(tmp_path).write_text("not json", encoding="utf-8")
     assert resources_cli.run(args, tmp_path) == 2
     assert "cannot read the Job resource history" in capsys.readouterr().err
+
+
+def test_records_carry_source_bytes_only_when_known(flow, tmp_path):
+    job_resources.label_commands("core", "sim_build", source_bytes=1234)
+    assert flow._execute_local(_python("pass")).returncode == 0
+    job_resources.label_commands("core", "sim_build")
+    assert flow._execute_local(_python("pass")).returncode == 0
+
+    known, unknown = _history(tmp_path)
+    assert known["source_bytes"] == 1234
+    # Unknown is absent, never zero.
+    assert "source_bytes" not in unknown
+    assert set(unknown) == RECORD_FIELDS
+
+
+def test_resolved_source_bytes_sums_distinct_files_or_is_unknown(tmp_path):
+    (tmp_path / "a.sv").write_bytes(b"abc")
+    (tmp_path / "b.sv").write_bytes(b"12345")
+
+    def target(*names: str) -> SimpleNamespace:
+        files = tuple(SimpleNamespace(absolute=lambda root, n=n: Path(root) / n) for n in names)
+        return SimpleNamespace(files=files, build_root=tmp_path)
+
+    assert job_resources.resolved_source_bytes(target("a.sv", "b.sv", "a.sv")) == 8
+    assert job_resources.resolved_source_bytes(target("a.sv", "missing.sv")) is None
+    assert job_resources.resolved_source_bytes(target()) is None
+
+
+def test_doctor_started_runs_write_no_records(flow, tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_INTERNAL_DOCTOR_RUN", "1")
+    assert flow._execute_local(_python("pass")).returncode == 0
+    assert _history(tmp_path) == []
+
+    monkeypatch.delenv("BOOLEY_INTERNAL_DOCTOR_RUN")
+    assert flow._execute_local(_python("pass")).returncode == 0
+    assert len(_history(tmp_path)) == 1
+
+
+def test_history_written_before_source_bytes_still_loads(tmp_path):
+    old_key = {"target": "core", "phase": "sim_run", "flags": [], "test_run": "smoke"}
+    old_record = {
+        "key": old_key,
+        "flow": "simulate",
+        "finished_at": "2026-01-01T00:00:00Z",
+        "outcome": "exit_zero",
+        "returncode": 0,
+        "oom_kill_delta": 0,
+        "solo": True,
+        "sample_interval_s": 0.25,
+        "peak_memory_mb": 100.0,
+        "peak_rss_mb": 90.0,
+        "peak_tmp_mb": 10.0,
+        "cpu_user_s": 1.0,
+        "cpu_sys_s": 0.1,
+        "wall_s": 2.0,
+        "container_peak_delta_mb": 105.0,
+    }
+    path = resource_history.history_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    document = {"$schema": resource_history.SCHEMA, "records": [old_record]}
+    path.write_bytes(json.dumps(document).encode("utf-8"))
+
+    label = job_resources.ResourceLabel("core", "sim_run", ("smoke",), source_bytes=77)
+    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0)
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+    (new_record,) = job_resources.history_records("simulate", label, (), measurement, result)
+    assert new_record["source_bytes"] == 77 and new_record["key"] == old_key
+    resource_history.append_records(tmp_path, [new_record])
+
+    records = _history(tmp_path)
+    assert "source_bytes" not in records[0] and records[1]["source_bytes"] == 77
+    (summary,) = resource_history.summarize(records)
+    assert summary["key"] == old_key and summary["runs"] == 2
+    assert "core sim_run tests=smoke: 2 runs" in resource_history.render_report([summary])
