@@ -64,7 +64,7 @@ def test_campaign_inputs_disclose_the_concrete_test_runs(tmp_path, monkeypatch):
         preview=lambda _handle, _selection: SimpleNamespace(
             groups=(("a", "b"),), run_groups=(runs,)
         ),
-        plan_campaign_group=lambda _handle, group, test_runs=None: (
+        plan_ordinary_group=lambda _handle, group, test_runs=None: (
             disclosed.append((group, test_runs)) or {}
         ),
     )
@@ -96,8 +96,8 @@ def test_group_disclosure_prepares_the_test_runs_it_is_given(monkeypatch):
 
     monkeypatch.setattr(execution, "ordinary_group", ordinary_group)
 
-    assert execution.plan_campaign_group(object(), ("a", "b"), runs) == {"disclosed": True}
-    assert execution.plan_campaign_group(object(), ("a",)) == {"disclosed": True}
+    assert execution.plan_ordinary_group(object(), ("a", "b"), runs) == {"disclosed": True}
+    assert execution.plan_ordinary_group(object(), ("a",)) == {"disclosed": True}
     assert prepared == [(("a", "b"), runs), (("a",), None)]
 
 
@@ -130,7 +130,7 @@ def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch
         preview=lambda _handle, selection: (
             previewed.append(selection) or SimpleNamespace(groups=(), run_groups=())
         ),
-        plan_campaign_group=lambda _handle, group, test_runs=None: (
+        plan_ordinary_group=lambda _handle, group, test_runs=None: (
             disclosed.append((group, test_runs)) or {"group": group}
         ),
     )

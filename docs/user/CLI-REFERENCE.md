@@ -16,7 +16,7 @@ in the wrong place stops and prints how to run it in the right one.
 | Location | Public commands, in order |
 |---|---|
 | Sandbox | `chat`, `dashboard`, `flow`, `specialist`, `worktree` |
-| Either | `cheat`, `doctor`, `help`, `init`, `resources`, `targets` |
+| Either | `cheat`, `coverage`, `doctor`, `help`, `init`, `resources`, `targets` |
 | Host-only | `auth`, `bootstrap`, `eda`, `projects` |
 
 `booley flow` and `booley specialist` run and list only in the Sandbox, but
@@ -55,6 +55,8 @@ Initialization only; a Booley-issued Sandbox refuses it. See
 ```bash
 booley                            # open the Developer Agent (same as booley chat)
 booley chat --cli codex           # open another Agent CLI your Project allows
+booley chat --new-worktree        # start in a new worktree s<N> even if the main checkout is free
+booley chat --here                # start in the main checkout even if it is in use (in a linked worktree: stay there)
 booley chat --resume <id>         # Claude: arguments after chat and its options go to the agent CLI
 booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
@@ -65,6 +67,11 @@ booley worktree rm <name>         # remove a worktree, keeping its evidence and 
 booley worktree gc                # remove idle worktrees (default: a week), where safe
 ```
 
+`--new-worktree` and `--here` are mutually exclusive and are read only before
+the agent's own arguments. `--new-worktree` is refused when you run it from
+inside a linked worktree. If Booley cannot reserve a session handle for a
+worktree launch, it exits with status 2 and suggests `--here`.
+
 The Dashboard opens by itself when you attach to the container; see
 [The dashboard](USAGE.md#the-dashboard).
 
@@ -74,6 +81,8 @@ The Dashboard opens by itself when you attach to the container; see
 booley cheat                      # list the cheatsheet sections
 booley cheat --all                # the whole cheatsheet
 booley cheat --goals              # Goal Mode, the Goal catalog, and thresholds
+booley coverage uncovered <coverage.json>   # uncovered points of a coverage run
+booley coverage uncovered <coverage.json> --metric branch --source rtl/fifo.sv
 booley doctor                     # check setup and environment health
 booley doctor --concise           # show only problems
 booley doctor --deep              # also run short real simulations, lints, and syntheses
@@ -86,8 +95,9 @@ booley resources --json           # the same, machine-readable
 ```
 
 Doctor also runs by itself at certain points; see [Doctor](DOCTOR.md).
-Targets are explained in [TARGETS.md](TARGETS.md), and resource history in
-[Job resource history](CONFIG.md#job-resource-history).
+Targets are explained in [TARGETS.md](TARGETS.md), resource history in
+[Job resource history](CONFIG.md#job-resource-history), and the coverage
+listing in [Finding uncovered points](COVERAGE.md#finding-uncovered-points).
 
 ### Projects on this machine · host
 
@@ -135,8 +145,10 @@ The setup is in [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisio
 
 A worktree is a second checkout of your Project where a separate Developer
 Agent can work without touching your files, for example one per Goal Mode
-session. Usually you ask the agent to create one. In a container terminal,
-from the main checkout:
+session. `booley chat` creates one (`s<N>`, on branch `booley/s<N>`) when the
+main checkout is in use; see
+[Several agents at once](USAGE.md#several-agents-at-once). You can also ask the
+agent to create one, or run, in a container terminal from the main checkout:
 
 ```bash
 booley worktree new <name>
