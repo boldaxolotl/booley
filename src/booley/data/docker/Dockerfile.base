@@ -492,6 +492,15 @@ RUN python -m pip install --break-system-packages --no-cache-dir --ignore-instal
 RUN test "$(cocotb-config --version)" = "$(sed -n 's/^cocotb==//p' /tmp/booley-build/base-python-requirements.txt)" \
     && python3 -c "import cocotb, cocotbext.axi, cocotbext.uart, numpy" \
     && test -e "$(cocotb-config --lib-name-path vpi icarus)"
+
+# Mutant generator parser (ADR 0088): the Mutation Flow parses Verilog and
+# SystemVerilog with pyslang inside the Sandbox. The import fails the build if
+# the wheel or its nanobind backend is missing.
+RUN python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
+    --constraint /tmp/booley-build/base-python-requirements.txt \
+    pyslang
+RUN python3 -c "import pyslang"
+
 USER agent
 
 # Pre-create pip user-install dirs so named volumes inherit agent ownership
