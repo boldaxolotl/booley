@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 _CPP_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
 _HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
+
+# Booley already treats ``fw/`` as the firmware directory (always an RTL prefix).
+FIRMWARE_DIR = "fw"
 
 
 class ReviewContractError(ValueError):
@@ -101,3 +104,19 @@ def resolve_review_scope(
     return ReviewScopeContract(
         frozenset(cocotb), frozenset(hdl), frozenset(support | set(unsupported))
     )
+
+
+def is_firmware_path(work_dir: Path | str, path: Path | str) -> bool:
+    """Whether *path* is firmware: a non-HDL file under the project's ``fw/`` directory.
+
+    HDL under ``fw/`` stays RTL so Specialist Source Isolation still hides it from
+    the testbench Reviewer. Absolute, ``./``, ``..`` and symlinked spellings
+    resolve to one project-relative path; outside-project paths are never firmware.
+    """
+    from booley.fusesoc.fusesoc_registry import canonical_project_path
+
+    relative = PurePosixPath(canonical_project_path(work_dir, path))
+    # Any HDL suffix keeps a file RTL, as Source Isolation's source detection does, so
+    # backups such as ``rom.sv.orig`` or ``rom.sv~`` never become firmware.
+    hdl_named = any(suffix.lower().rstrip("~") in _HDL_SUFFIXES for suffix in relative.suffixes)
+    return not relative.is_absolute() and relative.parts[:1] == (FIRMWARE_DIR,) and not hdl_named
