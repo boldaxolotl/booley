@@ -50,6 +50,7 @@ from booley.flows.sim.verilator_coverage import (
     SimulationBuildRequest,
     SimulationBuildResult,
     SimulationBuildVariant,
+    SimulationCommandRequest,
     SimulationRunRequest,
 )
 from booley.flows.sim.verilator_coverage_execution import (
@@ -1273,3 +1274,50 @@ def test_coverage_log_failure_remains_advisory(tmp_path, monkeypatch, observed, 
     assert captured["timeouts"]
     if observed:
         assert sink.error == "OSError: full"
+
+
+def test_coverage_request_maps_to_recorded_keys(tmp_path: Path, monkeypatch) -> None:
+    """A coverage Job's request lists the keys its commands record, in run order."""
+    from booley.flows.job_estimates import phase_keys, sim_job_request
+    from booley.runtime.resource_history import history_key
+
+    _declare_variants(tmp_path)
+    execution, target, raw_path, _captured = _execution_fixture(tmp_path, monkeypatch)
+    plan = load_target_test_plan(tmp_path, "sim", identity="sim", adapter="verilator")
+    runs = plan.resolve(("wrap+soak@7",))
+    labels: list[job_resources.ResourceLabel | None] = []
+    invoke = execution._invoke
+
+    def spy(command, *, timeout):
+        labels.append(job_resources.current_label())
+        return invoke(command, timeout=timeout)
+
+    execution._invoke = spy
+    job_resources.clear_label()
+    _build_coverage(execution, target)
+    execution.run(
+        replace(_run_request(target, raw_path), test=SelectedCoverageRun("wrap", runs[0]))
+    )
+    execution.command(
+        SimulationCommandRequest(("verilator_coverage", "--version"), tmp_path, raw_path)
+    )
+    job_resources.clear_label()
+
+    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0)
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+    recorded: list = []
+    for label in labels:
+        assert label is not None
+        (record,) = job_resources.history_records(
+            "simulate", label, ("coverage",), measurement, result
+        )
+        if history_key(record) not in recorded:
+            recorded.append(history_key(record))
+    request = sim_job_request(plan, runs, flags=("coverage",))
+    assert list(phase_keys(request)) == recorded
+    assert [key.phase for key in recorded] == [
+        "sim_prepare",
+        "sim_build",
+        "sim_run",
+        "sim_postprocess",
+    ]

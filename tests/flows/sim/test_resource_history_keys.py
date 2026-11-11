@@ -82,3 +82,41 @@ def test_sim_history_keys_name_variants_not_seeds(
     assert builds, "the changed source forces at least one measured build"
     assert {r["source_bytes"] for r in runs[:3] + builds[:1]} == {initial_bytes}
     assert runs[-1]["source_bytes"] == initial_bytes + len(appended)
+
+
+def test_sim_request_maps_to_recorded_keys(
+    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The estimator lists the keys a real ``SimulateFlow`` run writes, in run order."""
+    from booley.flows.job_estimates import phase_keys, sim_job_request
+    from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
+
+    booley_dir = flow_project / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    (booley_dir / "tests.toml").write_text(_TESTS_TOML, encoding="utf-8")
+    selectors = ("first+slow@1", "first+fast")
+
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim",
+            work_dir=flow_project,
+            report_dir=tmp_path / "reports",
+            test=selectors,
+            timeout_ms=30_000,
+        )
+    )
+    assert result.exit_code == 0, result.outcome.report_text
+
+    recorded: list[resource_history.HistoryKey] = []
+    for record in resource_history.load_records(booley_dir):
+        key = resource_history.history_key(record)
+        if key not in recorded:
+            recorded.append(key)
+    # Nothing writes these, which is why the request never lists them.
+    assert {key.phase for key in recorded} == {"sim_build", "sim_run"}
+    plan = load_checkout_target_test_plan(flow_project, "sim")
+    request = sim_job_request(plan, plan.resolve(selectors))
+    assert list(phase_keys(request)) == recorded
+    assert [key.test_run for key in recorded] == ["", "first+slow", "first"]

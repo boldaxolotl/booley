@@ -26,6 +26,7 @@ from typing import Literal, cast
 from booley.config.project_config import DEFAULT_TEST_SELECT
 from booley.config.tests_toml_rules import (
     DEFAULT_SEED,
+    VARIANT_SEPARATOR,
     VERILATOR_SEED_OPTION,
     SeedConfigurationError,
     TestVariantError,
@@ -216,6 +217,23 @@ class TargetTestPlan:
     def variants_of(self, test: str) -> TestVariantTable | None:
         """The Variant table *test* declares, or ``None``."""
         return next((table for table in self.variant_tables if table.test == test), None)
+
+    def runs_default_variant(self, run: TestRun) -> bool:
+        """Whether *run* is its Test's default Test Variant (or the Test declares none)."""
+        table = self.variants_of(run.test) if run.test is not None else None
+        return run.variant is None if table is None else run.variant == table.default
+
+    def history_test_name(self, run: TestRun) -> str:
+        """Resource History name of a named *run*: ``test`` or ``test+variant``, no seed.
+
+        A default Variant (or a Test without Variants) keeps the bare Test name,
+        so keys written before Variants were told apart still match.
+        """
+        if run.test is None:
+            raise ValueError("the unnamed invocation has no Test name")
+        if self.runs_default_variant(run):
+            return run.test
+        return f"{run.test}{VARIANT_SEPARATOR}{run.variant}"
 
     def unseeded_cause(self) -> str:
         """In a few words, why this Target is unseeded (for a Doctor line)."""
