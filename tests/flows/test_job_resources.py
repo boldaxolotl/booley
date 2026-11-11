@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
-import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,7 +23,9 @@ from booley.flows.sim.live_progress import observe_stage
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.runtime import resource_history
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+from booley.runtime.timefmt import rfc3339_from_datetime, utc_now_rfc3339
 from tests.flows.test_flow_base import EchoFlow, _env_with_state
+from tests.subprocess_budget import run_bounded_child
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 
@@ -77,6 +79,7 @@ def _record(key: str, **fields: Any) -> dict[str, Any]:
     return {
         "key": {"target": key, "phase": "p", "flags": [], "test_run": ""},
         "container_peak_delta_mb": None,
+        "finished_at": utc_now_rfc3339(),
         **measured,
         **fields,
     }
@@ -99,8 +102,51 @@ def test_command_records_every_field_and_keeps_its_exit_code(flow, tmp_path):
     assert record["sample_interval_s"] == 0.25
 
 
+# A child forked by a non-main thread. The thread stays alive in ``wait()`` for
+# the whole sampling window: Linux reparents a dead thread's children to a live
+# one, which the main thread's ``children`` file would already list.
+_THREAD_CHILD = """
+import subprocess, sys, threading, time
+
+CHILD = (
+    "import sys; b = bytearray(64 << 20); b[::4096] = bytes(len(b[::4096])); "
+    "print('ready', flush=True); sys.stdin.read()"
+)
+spawned = []
+ready = threading.Event()
+
+
+def spawn():
+    child = subprocess.Popen(
+        [sys.executable, "-c", CHILD], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+    )
+    spawned.append(child)
+    child.stdout.readline()
+    ready.set()
+    child.wait()
+
+
+worker = threading.Thread(target=spawn)
+worker.start()
+ready.wait()
+time.sleep(1.0)
+spawned[0].stdin.close()
+worker.join()
+"""
+
+
 @linux_only
-def test_file_in_job_tmpdir_counts_as_peak_memory(flow, tmp_path):
+def test_child_of_a_non_main_thread_counts_toward_peak(flow, tmp_path):
+    flow._execute_local(_python(_THREAD_CHILD))
+
+    (record,) = _history(tmp_path)
+    assert record["peak_rss_mb"] >= 64
+
+
+@linux_only
+@pytest.mark.parametrize("on_tmpfs", [True, False], ids=["tmpfs", "disk"])
+def test_tmpdir_counts_as_memory_only_on_tmpfs(flow, tmp_path, monkeypatch, on_tmpfs):
+    monkeypatch.setattr(job_resources, "tmpdir_in_memory", lambda _path: on_tmpfs)
     code = (
         "import os, time\n"
         "with open(os.path.join(os.environ['TMPDIR'], 'big'), 'wb') as f: f.write(b'x' * (32 << 20))\n"
@@ -110,8 +156,30 @@ def test_file_in_job_tmpdir_counts_as_peak_memory(flow, tmp_path):
 
     (record,) = _history(tmp_path)
     assert record["peak_tmp_mb"] >= 32
-    assert record["peak_memory_mb"] >= record["peak_tmp_mb"] + 5
+    if on_tmpfs:
+        assert record["peak_memory_mb"] >= record["peak_tmp_mb"] + 5
+    else:
+        assert record["peak_memory_mb"] == record["peak_rss_mb"]
     assert not Path(result.stdout.strip()).exists(), "the Job's TMPDIR is removed afterwards"
+
+
+@linux_only
+def test_tmpfs_detection_uses_the_longest_mount_point(tmp_path, monkeypatch):
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_bytes(
+        b"1 0 8:1 / / rw - ext4 /dev/sda1 rw\n"
+        b"2 1 0:2 / /tmp rw - tmpfs tmpfs rw\n"
+        b"3 2 8:2 / /tmp/disk rw - ext4 /dev/sda2 rw\n"
+        b"4 1 0:3 / /my\\040tmp rw - tmpfs tmpfs rw\n"
+    )
+    monkeypatch.setattr(job_resources, "_MOUNTINFO", mountinfo)
+
+    assert job_resources.tmpdir_in_memory(Path("/tmp/a")) is True
+    assert job_resources.tmpdir_in_memory(Path("/tmp/disk/a")) is False
+    assert job_resources.tmpdir_in_memory(Path("/tmpx/a")) is False
+    assert job_resources.tmpdir_in_memory(Path("/my tmp/a")) is True
+    monkeypatch.setattr(job_resources, "_MOUNTINFO", tmp_path / "missing")
+    assert job_resources.tmpdir_in_memory(Path("/tmp/a")) is False
 
 
 @linux_only
@@ -297,27 +365,52 @@ def test_parallel_writers_never_lose_or_corrupt_records(tmp_path):
     assert keys == {f"w{n}-{index}" for n in range(6) for index in range(10)}
 
 
-def test_history_is_bounded_and_survives_a_restart(tmp_path, monkeypatch):
-    for index in range(resource_history.MAX_SAMPLES_PER_KEY + 5):
-        resource_history.append_records(tmp_path, [_record("same", seq=index)])
-    monkeypatch.setattr(resource_history, "MAX_RECORDS", 22)
-    resource_history.append_records(tmp_path, [_record("a"), _record("b"), _record("c")])
+def test_history_keeps_twenty_per_key_and_every_key(tmp_path):
+    keys, per_key = 120, 21
+    resource_history.append_records(
+        tmp_path, [_record(f"k{k}", seq=n) for n in range(per_key) for k in range(keys)]
+    )
+    resource_history.append_records(tmp_path, [_record("k0", seq=per_key)])
 
-    records = json.loads(resource_history.history_path(tmp_path).read_text())["records"]
-    assert len(records) == 22
-    assert [r["seq"] for r in records if "seq" in r] == list(range(6, 25))
+    records = _history(tmp_path)
+    assert len(records) > 2000
+    for k in range(keys):
+        seqs = [r["seq"] for r in records if r["key"]["target"] == f"k{k}"]
+        newest = per_key if k == 0 else per_key - 1
+        assert seqs == list(range(newest - 19, newest + 1))
+
+
+def test_key_expires_ninety_days_after_its_newest_record(tmp_path):
+    def aged(key: str, days: int) -> dict[str, Any]:
+        then = datetime.now(UTC) - timedelta(days=days)
+        return _record(key, finished_at=rfc3339_from_datetime(then))
+
+    resource_history.append_records(
+        tmp_path,
+        [
+            aged("old", 91),
+            aged("recent", 89),
+            aged("stale-but-touched", 91),
+            aged("stale-but-touched", 0),
+        ],
+    )
+    resource_history.append_records(tmp_path, [_record("fresh")])
+
+    kept = [r["key"]["target"] for r in _history(tmp_path)]
+    assert "old" not in kept
+    assert kept.count("recent") == 1
+    assert kept.count("stale-but-touched") == 2
+    assert "fresh" in kept
 
 
 def test_history_is_ignored_by_git(tmp_path):
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     (booley_dir / ".gitignore").write_text(PROJECT_GITIGNORE)
     resource_history.append_records(booley_dir, [_record("x")])
     path = resource_history.history_path(booley_dir)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "check-ignore", "-q", str(path)], check=True, timeout=30
-    )
+    run_bounded_child(["git", "-C", str(tmp_path), "check-ignore", "-q", str(path)], check=True)
 
 
 def test_report_shows_spread_ratio_and_solo_calibration(tmp_path, capsys):
@@ -343,7 +436,7 @@ def test_report_shows_spread_ratio_and_solo_calibration(tmp_path, capsys):
     text = capsys.readouterr().out
     assert "core p: 3 runs; peak memory 100 MiB / 200 MiB / 400 MiB (max/median 2.00)" in text
     assert "wall 10s / 20s / 30s (max/median 1.50)" in text
-    assert "solo runs 2: container peak / (RSS+TMPDIR) 0.95 / 1.10 / 1.25" in text
+    assert "solo runs 2: container peak / peak memory 0.95 / 1.10 / 1.25" in text
     assert "outside TMPDIR" in text
     assert resources_cli.run(type("Args", (), {"json": True})(), tmp_path) == 0
     assert json.loads(capsys.readouterr().out) == [summary]

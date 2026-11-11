@@ -12,6 +12,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
 from booley.mcp.flow_adapter import flow_schema
+from booley.runtime.endpoint_execution import EXIT_ERROR
 
 
 def test_repeatable_test_is_exact_and_preserves_order() -> None:
@@ -185,7 +186,10 @@ def test_mcp_schema_rejects_explicit_empty_test_selection() -> None:
 def test_named_selection_requires_catalog_and_is_exact(tmp_path) -> None:
     flow = SimulateFlow()
     flow.parse_args(["--target", "sim", "--work-dir", str(tmp_path), "--test", "smoke"])
-    assert flow._validate_test_selector(["sim"], {}) is not None
+    no_catalog = flow._validate_test_selector(["sim"], {})
+    assert no_catalog is not None
+    assert no_catalog.exit_code == EXIT_ERROR
+    assert "registered test catalog" in no_catalog.report_text
     assert flow._validate_test_selector(["sim"], {"sim": ["smoke_long"]}) is not None
     assert flow._validate_test_selector(["sim"], {"sim": ["smoke"]}) is None
 

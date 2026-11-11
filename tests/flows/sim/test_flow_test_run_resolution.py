@@ -12,7 +12,7 @@ from booley.criteria.presentation import CriterionPresentation
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns, SeedGroup
 from booley.flows.sim.execution import DefaultSelection, SelectedTestRuns
-from booley.flows.sim.flow import SimulateFlow, _resolve_sim_campaign_work_units
+from booley.flows.sim.flow import SimulateFlow, resolve_sim_campaign_work_units
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import UnseededTargetError, build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
@@ -313,4 +313,4 @@ def test_two_keys_for_one_target_refuse_the_run_naming_both(tmp_path):
     assert refusal is not None and refusal.exit_code == EXIT_ERROR
     assert "[vendor:b:y#sim] and [y#sim]" in refusal.report_text
     # The watchdog sizing preflight must not raise: the child Flow reports the refusal.
-    assert _resolve_sim_campaign_work_units(tmp_path, "y#sim") == 1
+    assert resolve_sim_campaign_work_units(tmp_path, "y#sim") == 1

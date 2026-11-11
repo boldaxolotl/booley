@@ -23,7 +23,6 @@ from typing import Any, Protocol, runtime_checkable
 from booley.core.boundary import BoundaryError, require_dict, require_list
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.cycle_count import build_cycle_comparison
-from booley.criteria.templates import BASELINE_TARGET_PARAM
 
 # Threshold-evaluator helpers — re-exported for backward compatibility and also
 # used directly by DevelopmentState's delta-check methods below.
@@ -40,6 +39,7 @@ from booley.evidence.fields import (
     BASELINE_REF_DETAIL,
     BASELINE_REF_PARAM,
     BASELINE_TARGET_DETAIL,
+    BASELINE_TARGET_PARAM,
     CANDIDATE_TARGET_DETAIL,
     RECIPE_FINGERPRINT_DETAIL,
     RECIPE_FINGERPRINT_PARAM,

@@ -15,10 +15,10 @@ from pathlib import Path
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.evidence.fields import (
     BASELINE_RECIPE_SNAPSHOT_DETAIL,
     BASELINE_TARGET_DETAIL,
+    BASELINE_TARGET_PARAM,
     CANDIDATE_TARGET_DETAIL,
 )
 from booley.evidence.recipe import recipe_snapshot_fingerprint

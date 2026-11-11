@@ -768,7 +768,7 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
     flow._args = SimRequest(target="sim", coverage=False, mode=None, result_verbosity="compact")
     evidence = {}
 
-    def run(*, prepared, admission):
+    def run(_prepared):
         candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
         evidence.update(_published_hook_budget_boundary(flow, candidate, roomy))
         monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(evidence["budget"]))
@@ -794,7 +794,7 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
         evidence["endpoint_text"] = result.report_text
         return result
 
-    monkeypatch.setattr(flow, "_run_selected_mode", run)
+    monkeypatch.setattr(flow, "_ordinary_campaign", run)
     prepared = module.PreparedSimulationEndpoint((), None, ("sim",), {})
     result = flow.run_prepared_simulation(prepared, None)
     return flow, result, evidence

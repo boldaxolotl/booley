@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -811,3 +812,33 @@ def test_hook_worktree_rule_matches_the_package(tmp_path):
         assert hook._worktree_name(path, project) == interactive_worktree_name(path, project), path
     assert hook._worktree_name(project / "worktrees/s1", project) == "s1"
     assert hook._worktree_name(tmp_path, project) is None
+
+
+def test_resume_reader_reads_the_records_the_hook_writes(tmp_path):
+    # Bug caught: a reader that disagrees with the hook's record layout or its identity of a
+    # worktree, so a resume reopens a replaced worktree or none at all.
+    from booley.runtime import conversation_records
+
+    project = tmp_path / "project"
+    worktree = add_worktree(project, "s1")
+    cwd = worktree / "sub"
+    assert hook.record("codex", session_start("t1", cwd), project, NOW)
+
+    found = conversation_records.find(project, "codex", "t1")
+
+    assert found == conversation_records.ConversationRecord(
+        client="codex",
+        conversation_id="t1",
+        cwd=str(cwd),
+        worktree="s1",
+        handle=None,
+        process_key=None,
+        git_stamp=(worktree / ".git").stat().st_mtime_ns,
+    )
+    assert conversation_records.find(project, "claude", "t1") is None
+    assert conversation_records.is_live(project, found)
+    assert conversation_records.live(project) == [found]
+    # The worktree is replaced: same name, another incarnation.
+    os.utime(worktree / ".git", ns=(1, 1))
+    assert not conversation_records.is_live(project, found)
+    assert conversation_records.live(project) == []

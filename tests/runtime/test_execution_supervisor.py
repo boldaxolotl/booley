@@ -297,6 +297,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
     finally:
         if supervisor.poll() is None:
             supervisor.kill()
+        # Kept on Popen: reaps the supervisor the test drives itself.
         supervisor.communicate(timeout=5)
         if descendant_pid is not None and _non_zombie_alive(descendant_pid):
             os.killpg(descendant_pid, signal.SIGKILL)

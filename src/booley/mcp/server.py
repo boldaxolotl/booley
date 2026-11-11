@@ -1584,13 +1584,13 @@ def _sim_mcp_tool_timeout_seconds(
         resolve_sim_build_timeout_ms,
         resolve_sim_trace_convert_timeout_ms,
     )
-    from booley.flows.sim.flow import _resolve_sim_campaign_work_units, _resolve_sim_timeout_ms
+    from booley.flows.sim.flow import resolve_sim_campaign_work_units, resolve_sim_timeout_ms
     from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
 
     work_dir = context.work_dir
     requested = requested_timeout_ms(arguments)
     if requested is None:
-        timeout_ms = _resolve_sim_timeout_ms(work_dir)
+        timeout_ms = resolve_sim_timeout_ms(work_dir)
     else:
         timeout_ms = resolve_timeout_ms("sim", None, requested)
     build_timeout_ms = resolve_sim_build_timeout_ms(work_dir)
@@ -1604,7 +1604,7 @@ def _sim_mcp_tool_timeout_seconds(
         work_units = (
             1
             if arguments.get("resume_from") is not None
-            else _resolve_sim_campaign_work_units(
+            else resolve_sim_campaign_work_units(
                 work_dir,
                 raw_target,
                 arguments.get("test"),

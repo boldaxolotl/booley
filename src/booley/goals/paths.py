@@ -22,14 +22,19 @@ Branch. ``goals/*/`` is ignored and ``goals/history/`` kept by the Project
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.core.booley_layout import GOALS_DIR_NAME
-from booley.goals.model import WorktreeIdentity
+from booley.core.booley_layout import (
+    GOAL_RECORD_LOGS_DIR,
+    GOAL_SLUG_MAX_LENGTH,
+    GOAL_SLUG_PATTERN,
+    GOALS_DIR_NAME,
+    is_goal_record_name,
+)
 from booley.runtime.session_paths import RUNTIME_DIR, session_jobs_dir
 from booley.runtime.timefmt import compact_utc_now
+from booley.runtime.worktree_identity import WorktreeIdentity
 
 GOALS_DIR = GOALS_DIR_NAME
 LOCKS_DIR = "locks"
@@ -37,7 +42,7 @@ HISTORY_DIR = "history"
 RECORD_FILE = "record.json"
 RECORD_LOCK_FILE = "lock"
 STATE_FILE = "booley_state.json"
-LOGS_DIR = "logs"
+LOGS_DIR = GOAL_RECORD_LOGS_DIR
 CHANGES_FILE = "changes.jsonl"
 SUMMARY_FILE = "SUMMARY.md"
 REVIEW_PACKAGE_FILE = "review-package.json"
@@ -46,10 +51,8 @@ STAGING_PREFIX = ".staging-"
 
 # A Goal slug is what a human names the work; it becomes part of the Goal id
 # and of the Goal Branch name, so it stays a short lowercase path segment.
-SLUG_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-SLUG_MAX_LENGTH = 64
-# ``<slug>-<compact UTC timestamp>``, see :func:`new_goal_id`.
-GOAL_ID_PATTERN = re.compile(rf"(?P<slug>{SLUG_PATTERN.pattern})-\d{{8}}T\d{{6}}Z")
+SLUG_PATTERN = GOAL_SLUG_PATTERN
+SLUG_MAX_LENGTH = GOAL_SLUG_MAX_LENGTH
 
 
 class GoalIdError(ValueError):
@@ -77,8 +80,7 @@ def new_goal_id(slug: str, *, timestamp: str | None = None) -> str:
 
 def validate_goal_id(goal_id: str) -> str:
     """Return *goal_id* when it names a Goal Record, else raise :class:`GoalIdError`."""
-    match = GOAL_ID_PATTERN.fullmatch(goal_id)
-    if match is None or len(match["slug"]) > SLUG_MAX_LENGTH:
+    if not is_goal_record_name(goal_id):
         raise GoalIdError(f"{goal_id!r} is not a Goal id (<slug>-<YYYYMMDDTHHMMSSZ>)")
     return goal_id
 
