@@ -126,7 +126,9 @@ Don't continue until `booley doctor` shows no failures or warnings.
     Arguments after `booley chat` and its own options (`--cli`, `-C`,
     `--new-worktree`, `--here`) go to the
     CLI unchanged. To resume an earlier conversation, run
-    `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex).
+    `booley chat --resume <id>` (Claude) or `booley chat resume <id>` /
+    `booley chat resume --last` (Codex); a conversation that ran in a worktree
+    reopens there (see [Several agents at once](#several-agents-at-once)).
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
@@ -256,7 +258,7 @@ shows the keys you can use.
 
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
 `J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
-handle.
+handle, except a conversation resumed in its worktree, which keeps its handle.
 
 ### Several agents at once
 
@@ -280,6 +282,43 @@ made only when the main checkout is taken, so a lone session behaves as before.
   the default; see [Interactive sessions](CONFIG.md#interactive-sessions-chat).
 - Run from inside an existing linked worktree, `booley chat` starts there and
   creates nothing.
+
+#### Resuming a conversation
+
+Claude Code and Codex keep a conversation with the directory it ran in, so
+a conversation that ran in worktree `s3` cannot be resumed from the main
+checkout. Booley therefore sends a resume to the worktree the conversation ran
+in and keeps its handle (`S3` stays `S3`). It prints
+
+```text
+Booley session S3 resumes conversation <id> in worktree <path>.
+```
+
+- By id: `booley chat --resume <id>` (also `--resume=<id>` and `-r <id>`) for
+  Claude, `booley chat resume <id>` for Codex. Put the id right after `resume`.
+- The latest conversation: Claude's `-c`/`--continue` and Codex's
+  `resume --last` continue the most recent conversation (by the agent CLI's
+  own last-update time) among the main checkout and the worktrees whose
+  session is not running. Booley then resumes that conversation by its id. If
+  Booley cannot tell which is newest, the agent CLI picks from the main
+  checkout, as before. `resume --last --all` is left to Codex.
+- A conversation that ran in the main checkout, or that Booley has no record
+  of, resumes in the main checkout.
+- If the worktree has since been removed, the conversation resumes in the main
+  checkout after a `NOTE`.
+- Resuming never starts a second agent in a checkout that is in use. A
+  conversation whose worktree has a running session is refused with exit 2
+  (end that session first). A conversation that belongs in the main checkout
+  while it is in use is refused too; run `booley chat --here ...` to resume it
+  beside that session. Under `[chat] worktree = "never"` the main checkout is
+  shared and the resume starts there.
+- `--here` and `--new-worktree` keep their meaning, and a launch from inside a
+  linked worktree stays there: none of them is redirected by a resume. The
+  `[chat] worktree` setting decides where new sessions start, not where a
+  resume goes.
+- A conversation you started by hand inside a worktree (not through
+  `booley chat`) reopens in that worktree, but may get a new handle once its
+  earlier session has ended.
 
 Put both options before any arguments meant for the agent CLI. Claude Code's
 own `--worktree` still goes to the agent.

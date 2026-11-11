@@ -18,8 +18,9 @@ from booley.config.chat import chat_worktree
 from booley.config.gateway import GATEWAY_ENV_KEYS, HIDDEN_GATEWAY_ENV, GatewayConfigError
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.core.booley_dir import resolve_main_checkout_root
-from booley.harness import chat_checkout, codex_chat, worktree_cmd
+from booley.harness import chat_checkout, chat_resume, codex_chat, worktree_cmd
 from booley.harness.chat_checkout import Placement
+from booley.harness.chat_resume import ResumeRefusedError, ResumeTarget
 from booley.runtime.booley_dir import resolve_checkout_booley_dir, resolve_common_booley_dir
 from booley.runtime.foreground_child import exec_agent, run_foreground_child
 from booley.runtime.handles import reserve_session_handle
@@ -42,12 +43,13 @@ _HANDLE_WAIT_S = 10.0
 
 
 def _claude_command(
-    project_root: Path, agent_args: list[str], *, strict: bool
+    project_root: Path, agent_args: list[str], *, strict: bool, predecessors: tuple[str, ...]
 ) -> tuple[str, list[str], str | None]:
     """Use the launch process's persistent handle when naming is available.
 
     The handle stays argv[0]; Booley adds `-n <handle>` unless the user named the session.
     Without a handle the launch falls back to plain `claude`, or raises when *strict*.
+    A resumed tab keeps the handle of its *predecessors*.
     """
     try:
         identity = capture_process_identity(os.getpid())
@@ -57,6 +59,7 @@ def _claude_command(
             resolve_common_booley_dir(project_root),
             process_session_key(identity),
             wait_s=_HANDLE_WAIT_S,
+            predecessors=predecessors,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         if strict:
@@ -144,18 +147,27 @@ def _signals_interrupt_setup() -> Iterator[None]:
 
 
 def _agent_command(
-    provider: str, project_root: Path, agent_args: list[str], *, strict: bool
+    provider: str,
+    project_root: Path,
+    agent_args: list[str],
+    *,
+    strict: bool,
+    predecessors: tuple[str, ...] = (),
 ) -> tuple[str, list[str], str | None]:
     """Return the program, argv and reserved handle (``None`` when unnamed) for *provider*.
 
     With *strict* a handle that cannot be reserved raises `_NoHandleError` instead of
-    falling back to an unnamed tab.
+    falling back to an unnamed tab. A resumed tab keeps the handle of its *predecessors*.
     """
     try:
         if provider == "codex":
-            return codex_chat.command(project_root, wait_s=_HANDLE_WAIT_S, strict=strict)
+            return codex_chat.command(
+                project_root, wait_s=_HANDLE_WAIT_S, strict=strict, predecessors=predecessors
+            )
         if provider == "claude":
-            return _claude_command(project_root, agent_args, strict=strict)
+            return _claude_command(
+                project_root, agent_args, strict=strict, predecessors=predecessors
+            )
     except (OSError, ValueError, RuntimeError) as exc:
         raise _NoHandleError(str(exc)) from exc
     return provider, [provider], None
@@ -211,16 +223,35 @@ def _enter_worktree(project_root: Path, handle: str, reason: str | None) -> int 
     return None
 
 
+def _enter_resumed_worktree(resume: ResumeTarget, handle: str | None) -> None:
+    """Announce the resumed conversation and move into the worktree it ran in."""
+    session = f"session {handle} " if handle else ""
+    print(
+        f"Booley {session}resumes conversation {resume.conversation_id} "
+        f"in worktree {resume.worktree}.",
+        file=sys.stderr,
+    )
+    os.chdir(resume.cwd or Path.cwd())
+
+
 def _launch(provider: str, project_root: Path, agent_args: list[str], placement: Placement) -> int:
     """Exec the agent CLI; runs in the forked child, so identities are the agent's own.
 
     A worktree placement first reserves the handle, creates the worktree it names and
-    starts the agent there. Returns an exit code only when the launch fails: on success
+    starts the agent there. A resumed conversation keeps its earlier handle and reopens
+    in the worktree it ran in. Returns an exit code only when the launch fails: on success
     the process is replaced.
     """
+    resume = placement.resume
+    if resume is not None:
+        agent_args = list(resume.agent_args)
     try:
         executable, argv, handle = _agent_command(
-            provider, project_root, agent_args, strict=placement.worktree
+            provider,
+            project_root,
+            agent_args,
+            strict=placement.worktree,
+            predecessors=resume.predecessors if resume else (),
         )
         if provider == "claude":
             _hide_gateway_from_claude()
@@ -229,6 +260,8 @@ def _launch(provider: str, project_root: Path, agent_args: list[str], placement:
                 raise _NoHandleError(f"{provider} cannot carry a handle")
             if (code := _enter_worktree(project_root, handle, placement.reason)) is not None:
                 return code
+        elif resume is not None and resume.cwd is not None:
+            _enter_resumed_worktree(resume, handle)
         # Last statement before the process is replaced: the CLI exists and the
         # launch arguments are settled, so the notice only precedes a real start.
         print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
@@ -278,7 +311,19 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
 
     # The child, not Booley, reserves the handle: the handle belongs to the agent's process.
     launch = functools.partial(_launch, provider, project_root, args.agent_args)
-    return _run_in_checkout(launch, mode, flagged, project_root)
+    resume = chat_resume.request(provider, args.agent_args)
+    resolve = (
+        None
+        if resume is None
+        else functools.partial(
+            chat_resume.resolve,
+            provider=provider,
+            resume=resume,
+            launch_cwd=Path.cwd(),
+            agent_args=args.agent_args,
+        )
+    )
+    return _run_in_checkout(launch, mode, flagged, project_root, resolve)
 
 
 def _worktree_mode(args: argparse.Namespace, booley_dir: Path) -> tuple[str, bool]:
@@ -288,13 +333,77 @@ def _worktree_mode(args: argparse.Namespace, booley_dir: Path) -> tuple[str, boo
     return (chat_worktree(booley_dir), False) if flag is None else (flag, True)
 
 
+def _main_user(lock: chat_checkout.MainLock, common: Path, main_root: Path) -> str | None:
+    """Who occupies the main checkout (``None`` when it is free): another launch or a Session."""
+    if not lock.held:
+        return "another booley chat"
+    session = chat_checkout.main_checkout_session(common, main_root)
+    return None if session is None else f"Session {session}"
+
+
+def _resume_placement(
+    mode: str,
+    lock: chat_checkout.MainLock,
+    common: Path,
+    main_root: Path,
+    resolve: Callable[[Path], ResumeTarget],
+) -> Placement:
+    """Place a resumed conversation where the CLI can find it (ADR 0082, Resume).
+
+    The conversation's worktree frees the main checkout. The main checkout is single-occupancy
+    except under `never`: a resume that needs it while it is in use is refused, because a new
+    worktree would not hold the conversation.
+    """
+    target = resolve(common)
+    if target.notice:
+        print(target.notice, file=sys.stderr)
+    if target.worktree is not None:
+        lock.release()
+    elif mode != "never" and (user := _main_user(lock, common, main_root)) is not None:
+        what = target.conversation_id and f"conversation {target.conversation_id}"
+        raise ResumeRefusedError(
+            f"the main checkout is in use by {user}; {what or 'the latest conversation'} "
+            "resumes only there. Run booley chat --here ... to resume it beside that session."
+        )
+    return Placement(worktree=False, resume=target)
+
+
+def _placement(
+    mode: str,
+    flagged: bool,
+    lock: chat_checkout.MainLock,
+    common: Path,
+    main_root: Path,
+    resolve: Callable[[Path], ResumeTarget] | None,
+) -> Placement:
+    """Where this launch starts. A flag is an explicit choice, so it beats resume routing."""
+    if resolve is not None and not flagged:
+        return _resume_placement(mode, lock, common, main_root, resolve)
+    session = (
+        chat_checkout.main_checkout_session(common, main_root)
+        if mode == "auto" and lock.held
+        else None
+    )
+    placement = chat_checkout.choose_placement(
+        mode, lock_held=lock.held, session=session, flagged=flagged
+    )
+    if mode == "auto" and placement.worktree:
+        lock.release()  # not in main, so later launches may take it
+    return placement
+
+
 def _run_in_checkout(
-    launch: Callable[[Placement], int], mode: str, flagged: bool, project_root: Path
+    launch: Callable[[Placement], int],
+    mode: str,
+    flagged: bool,
+    project_root: Path,
+    resolve: Callable[[Path], ResumeTarget] | None,
 ) -> int:
     """Pick the checkout from where the launch happens, hold the main lock, run the child.
 
     Only a launch from the main checkout is placed: anywhere else (a linked worktree,
-    outside Git) the agent starts in place, as before, without the lock.
+    outside Git) the agent starts in place, as before, without the lock. *resolve* decides
+    where a resumed conversation reopens.
     """
     main_root = resolve_main_checkout_root(project_root)
     if chat_checkout.launch_checkout(Path.cwd(), main_root) != "main":
@@ -307,14 +416,9 @@ def _run_in_checkout(
         return run_foreground_child(functools.partial(launch, Placement(worktree=False)))
     common = resolve_common_booley_dir(project_root)
     with chat_checkout.main_checkout_lock(common) as lock:
-        session = (
-            chat_checkout.main_checkout_session(common, main_root)
-            if mode == "auto" and lock.held
-            else None
-        )
-        placement = chat_checkout.choose_placement(
-            mode, lock_held=lock.held, session=session, flagged=flagged
-        )
-        if mode == "auto" and placement.worktree:
-            lock.release()  # not in main, so later launches may take it
+        try:
+            placement = _placement(mode, flagged, lock, common, main_root, resolve)
+        except ResumeRefusedError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
         return run_foreground_child(functools.partial(launch, placement))

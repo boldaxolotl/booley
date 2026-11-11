@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import IO
 
 from booley.core.file_lock import LockContentionError, acquire_file_lock, release_file_lock
+from booley.harness.chat_resume import ResumeTarget
 from booley.runtime.safe_storage import refuse_symlinks
 
 LOCK_RELATIVE_PATH = Path("runtime") / "chat-main.lock"
@@ -38,10 +39,15 @@ class MainLock:
 
 @dataclass(frozen=True)
 class Placement:
-    """Where the agent starts; `reason` explains a worktree in the banner."""
+    """Where the agent starts; `reason` explains a worktree in the banner.
+
+    A *resume* places a resumed conversation (ADR 0082, Resume): in the worktree it ran in,
+    or, with no `cwd`, in the main checkout with its own arguments.
+    """
 
     worktree: bool
     reason: str | None = None
+    resume: ResumeTarget | None = None
 
 
 @contextmanager
