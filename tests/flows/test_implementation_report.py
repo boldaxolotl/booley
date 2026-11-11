@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from booley.criteria.templates import TargetPair
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
+from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.fpga.implementation_report import build_fpga_implementation_report
 from booley.flows.implementation_publication import (
     ImplementationProgress,
@@ -24,7 +25,7 @@ from booley.flows.implementation_report import (
     build_implementation_report,
 )
 from booley.flows.progress_lifecycle import ProgressPublicationError
-from booley.flows.synth.flow import SynthMetrics
+from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 from booley.flows.synth.implementation_report import build_synth_implementation_report
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
@@ -126,30 +127,21 @@ def test_context_rejects_missing_identity_and_diagnostics_are_bounded() -> None:
 
 
 def test_synth_and_fpga_adapters_share_structure_but_keep_unique_metrics() -> None:
-    pair = TargetPair("old", "new")
     synth = build_synth_implementation_report(
-        target="new",
-        pair=pair,
-        current=SynthMetrics(area_um2=100.0, area_kge=1.0, cells=10),
-        baseline=None,
-        baseline_ref=None,
-        resolved_baseline_ref=None,
-        eda_tool="yosys",
+        _context(flow="synth", target="new", eda_tool="yosys"),
+        SynthMetrics(area_um2=100.0, area_kge=1.0, cells=10),
+        None,
         fatal_timing=False,
     ).canonical
     fpga = build_fpga_implementation_report(
-        target="new",
-        pair=pair,
-        current=FpgaMetrics(
+        _context(flow="fpga", target="new", eda_tool="vivado"),
+        FpgaMetrics(
             lut_count=10,
             ff_count=20,
             wns_ns=0.1,
             whs_ns=0.1,
         ),
-        baseline=None,
-        baseline_ref=None,
-        resolved_baseline_ref=None,
-        eda_tool="vivado",
+        None,
     ).canonical
 
     assert set(synth) == set(fpga)
@@ -170,13 +162,9 @@ def test_fpga_cache_separates_producer_and_consumer_provenance() -> None:
     )
 
     report = build_fpga_implementation_report(
-        target="board",
-        pair=TargetPair("board", "board"),
-        current=current,
-        baseline=None,
-        baseline_ref=None,
-        resolved_baseline_ref=None,
-        eda_tool="vivado",
+        _context(flow="fpga", target="board", eda_tool="vivado"),
+        current,
+        None,
     ).canonical
 
     assert report["cache"] == {"cached": True, "fingerprint": "cache-key"}
@@ -199,13 +187,9 @@ def test_baseline_infrastructure_error_makes_comparison_an_error() -> None:
 
 def test_synthesis_fatal_timing_is_persisted_as_failure() -> None:
     report = build_synth_implementation_report(
-        target="asic",
-        pair=TargetPair("asic", "asic"),
-        current=SynthMetrics(area_kge=1.0, cells=10, wns_ns=-0.2),
-        baseline=None,
-        baseline_ref=None,
-        resolved_baseline_ref=None,
-        eda_tool="yosys",
+        _context(),
+        SynthMetrics(area_kge=1.0, cells=10, wns_ns=-0.2),
+        None,
         fatal_timing=True,
     )
 
@@ -437,3 +421,84 @@ def test_progress_rejects_inconsistent_terminal_shape(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="complete and phase disagree"):
         ImplementationPublisher(tmp_path, tmp_path, tmp_path / "1").publish_progress(progress)
+
+
+def _pair_plan(flow: str) -> SimpleNamespace:
+    """Duck-typed pair plan with distinct baseline and candidate Targets."""
+    return SimpleNamespace(
+        flow=flow,
+        baseline=SimpleNamespace(selector="old", identity="acme:lib:dut:1#old"),
+        candidate=SimpleNamespace(selector="new", identity="acme:lib:dut:1#new"),
+    )
+
+
+def test_implementation_context_from_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    from booley.flows.implementation_report import implementation_context
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "run-42")
+    plan = _pair_plan("fpga")
+
+    ran = implementation_context(
+        plan,
+        target="new",
+        eda_tool="vivado",
+        baseline_ran=True,
+        requested_baseline_ref="main~1",
+        resolved_baseline_ref="a" * 40,
+    )
+    skipped = implementation_context(
+        plan,
+        target="new",
+        eda_tool="vivado",
+        baseline_ran=False,
+        requested_baseline_ref="main~1",
+        resolved_baseline_ref="a" * 40,
+    )
+
+    assert (ran.flow, ran.target, ran.eda_tool) == ("fpga", "new", "vivado")
+    assert ran.invocation_run_id == "run-42"
+    assert ran.baseline_target == "old"
+    assert ran.baseline_target_identity == "acme:lib:dut:1#old"
+    assert ran.candidate_target_identity == "acme:lib:dut:1#new"
+    assert (ran.requested_baseline_ref, ran.resolved_baseline_ref) == ("main~1", "a" * 40)
+    assert (skipped.requested_baseline_ref, skipped.resolved_baseline_ref) == (None, None)
+    assert skipped.baseline_target_identity == ran.baseline_target_identity
+
+
+@pytest.mark.parametrize("flow_name", ["synth", "fpga"])
+def test_flow_report_identity_wiring(flow_name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both Flows feed the same report identity: refs, Targets and eda tool."""
+    monkeypatch.setenv("BOOLEY_RUN_ID", "run-7")
+    if flow_name == "synth":
+        flow = object.__new__(AsicSynthesizeFlow)
+        current: SynthMetrics | FpgaMetrics = SynthMetrics(area_kge=1.0, cells=10)
+        baseline: SynthMetrics | FpgaMetrics = SynthMetrics(area_kge=1.0, cells=10)
+    else:
+        flow = object.__new__(FpgaImplFlow)
+        current = FpgaMetrics(lut_count=10, ff_count=20, wns_ns=0.1, whs_ns=0.1)
+        baseline = FpgaMetrics(lut_count=10, ff_count=20, wns_ns=0.1, whs_ns=0.1)
+    flow._args = SimpleNamespace(baseline="main~1")
+    flow._eda_tool = "tool-x"
+    flow._target_plan = lambda _target: _pair_plan(flow_name)
+
+    flow._baseline_full_sha = "a" * 40
+    with_baseline = flow._implementation_report("new", current, baseline, "short").canonical
+    flow._baseline_full_sha = None
+    short_ref = flow._implementation_report("new", current, baseline, "short").canonical
+    without_baseline = flow._implementation_report("new", current, None, None).canonical
+
+    comparison = with_baseline["comparison"]
+    assert comparison["requested_ref"] == "main~1"
+    assert comparison["resolved_ref"] == "a" * 40
+    assert comparison["baseline_target"] == "old"
+    assert comparison["baseline_target_identity"] == "acme:lib:dut:1#old"
+    assert comparison["candidate_target_identity"] == "acme:lib:dut:1#new"
+    assert short_ref["comparison"]["resolved_ref"] == "short"
+    assert without_baseline["comparison"] is None
+    for canonical in (with_baseline, without_baseline):
+        identity = canonical["identity"]
+        assert identity["flow"] == flow_name
+        assert identity["target"] == "new"
+        assert identity["target_identity"] == "acme:lib:dut:1#new"
+        assert identity["eda_tool"] == "tool-x"
+        assert identity["invocation_run_id"] == "run-7"

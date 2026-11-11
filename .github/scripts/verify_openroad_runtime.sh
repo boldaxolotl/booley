@@ -91,7 +91,9 @@ import sys
 from pathlib import Path
 
 from booley.flows.synth.backends.openroad.timing import OpenRoadPdk, write_openroad_script
+from booley.flows.synth.backends.pipeline import SynthSpec
 from booley.flows.synth.backends.yosys.core import _build_yosys_script
+from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.timing import StaTimingConfig
 
 work, liberty, tech_lef, stdcell_lef, layer_rc = map(Path, sys.argv[1:])
@@ -101,8 +103,28 @@ def write_yosys_script(path: Path, script: str) -> None:
     path.write_text("\n".join(script.split("; ")) + "\n", encoding="utf-8")
 
 
+def probe_spec(design: str, liberty_path: Path, abc_recipe: str | None) -> SynthSpec:
+    """Minimal sv2v-frontend spec: the probe only renders the script text."""
+    return SynthSpec(
+        design_name=design,
+        sources=(),
+        inc_dirs=(),
+        defines=(),
+        params={},
+        liberty=liberty_path,
+        liberty_found=True,
+        flatten=False,
+        abc_recipe=abc_recipe,
+        frontend="sv2v",
+        timing=StaTimingConfig(mode=SynthMode.LOGICAL),
+    )
+
+
 yosys_script = _build_yosys_script(
-    [work / "dut.v"], "dut", liberty, work, False, None, "balanced"
+    probe_spec("dut", liberty, "balanced"),
+    sources=[work / "dut.v"],
+    inc_dirs=[],
+    work_dir=work,
 )
 write_yosys_script(work / "synth.ys", yosys_script)
 undriven_script = yosys_script.replace(
@@ -115,7 +137,10 @@ write_yosys_script(work / "synth-undriven.ys", undriven_script)
 abc_control_dir = work / "abc-control"
 abc_control_dir.mkdir()
 abc_control_script = _build_yosys_script(
-    [work / "dut.v"], "dut", liberty, abc_control_dir, False, None, "balanced"
+    probe_spec("dut", liberty, "balanced"),
+    sources=[work / "dut.v"],
+    inc_dirs=[],
+    work_dir=abc_control_dir,
 )
 abc_control_script = abc_control_script.replace(
     " -dont_use FA_X1 -dont_use HA_X1", ""
@@ -142,7 +167,10 @@ def write_collision_case(label: str, design_name: str, rtl: str) -> None:
     source = run_dir / "dut.v"
     source.write_text(rtl, encoding="utf-8")
     script = _build_yosys_script(
-        [source], design_name, collision_liberty, run_dir, False, None, None
+        probe_spec(design_name, collision_liberty, None),
+        sources=[source],
+        inc_dirs=[],
+        work_dir=run_dir,
     )
     write_yosys_script(run_dir / "synth.ys", script)
 

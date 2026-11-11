@@ -118,6 +118,7 @@ from ..implementation_report import (
     ImplementationAggregate,
     ImplementationReport,
     build_implementation_aggregate,
+    implementation_context,
 )
 from ..invocation import resolve_timeout_ms
 from ..progress_lifecycle import ProgressPublicationError
@@ -141,7 +142,11 @@ from .implementation_report import (
     build_fpga_implementation_report,
 )
 from .profiles import VIVADO_PROFILES, VivadoProfile, resolve_fpga_profile
-from .recipe import fpga_recipe_snapshot, fpga_recipe_snapshot_fingerprint
+from .recipe import (
+    ResolvedFpgaRecipe,
+    fpga_recipe_snapshot,
+    fpga_recipe_snapshot_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,30 +169,6 @@ class _PreparedFpgaCommand:
         """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
         yield self.run_cmd
         yield self.work_root
-
-
-@dataclass(frozen=True)
-class _ResolvedFpgaRecipe:
-    """Validated Target recipe shared by dry-run and real materialization."""
-
-    target: str
-    resolved: Any
-    part: str
-    top: str
-    xdc_files: tuple[Path, ...]
-    sv_files: tuple[Path, ...]
-    v_files: tuple[Path, ...]
-    include_dirs: tuple[Path, ...]
-    defines: tuple[str, ...]
-    vlogparams: dict[str, Any]
-    out_of_context: bool
-    ppa_profile: VivadoProfile
-    recipe_snapshot: dict[str, Any]
-    recipe_fingerprint: str
-    source_evidence: run_evidence.FlowSourceEvidence
-    # Folders Vivado resolves relative includes in; set only in isolated
-    # Projects, where they widen the cache key (see cache.input_fingerprint).
-    reachable_dirs: tuple[Path, ...] = ()
 
 
 _FPGA_METRIC_MAP: dict[str, str] = {
@@ -426,7 +407,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     def _fpga_work_unit(
         self,
         target: str,
-        recipe: _ResolvedFpgaRecipe,
+        recipe: ResolvedFpgaRecipe,
         *,
         role: WorkUnitRole,
         revision: str | None,
@@ -472,7 +453,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     @staticmethod
     def _fpga_plan_input_path(
         path: Path,
-        recipe: _ResolvedFpgaRecipe,
+        recipe: ResolvedFpgaRecipe,
         root: Path,
     ) -> str:
         """Render staged inputs by their stable Target-owned relative names."""
@@ -487,7 +468,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         baseline_units: list[WorkUnitPlan] = []
         errors: list[str] = []
         candidate_revision = git_full_sha("HEAD", Path(self.args.work_dir))
-        candidate_recipes: dict[str, _ResolvedFpgaRecipe] = {}
+        candidate_recipes: dict[str, ResolvedFpgaRecipe] = {}
         for target in targets:
             try:
                 if self.args.dry_run:
@@ -582,7 +563,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         target: str,
         *,
         build_root: Path | None = None,
-    ) -> _ResolvedFpgaRecipe:
+    ) -> ResolvedFpgaRecipe:
         """Resolve and validate every Target input shared with a real dispatch."""
         work_dir = Path(self.args.work_dir)
         resolved = self._resolve_fpga_target(target, build_root=build_root)
@@ -607,7 +588,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             target=target,
         )
         snapshot = fpga_recipe_snapshot(resolved, target=target, profile=ppa_profile)
-        return _ResolvedFpgaRecipe(
+        return ResolvedFpgaRecipe(
             target=target,
             resolved=resolved,
             part=part,
@@ -727,7 +708,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             ppa_profile=recipe.ppa_profile,
         )
 
-    def _fpga_recipe_for_execution(self, target: str) -> _ResolvedFpgaRecipe:
+    def _fpga_recipe_for_execution(self, target: str) -> ResolvedFpgaRecipe:
         """Reuse a planned candidate recipe or resolve the active execution revision."""
         if getattr(self, "_execution_role", "candidate") == "candidate":
             planned = getattr(self, "_planned_candidate_fpga_recipes", {}).get(target)
@@ -737,20 +718,13 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
 
     def _materialize_fpga_project(
         self,
-        recipe: _ResolvedFpgaRecipe,
+        recipe: ResolvedFpgaRecipe,
         work_root: Path,
     ) -> dict[str, Any]:
         """Generate Vivado Tcl, then apply profile and out-of-context patches in order."""
         edam = fpga_edam.build_fpga_edam(
+            recipe,
             name=f"fpga_{recipe.target}",
-            toplevel=recipe.top,
-            part=recipe.part,
-            sv_files=list(recipe.sv_files),
-            v_files=list(recipe.v_files),
-            include_dirs=list(recipe.include_dirs),
-            xdc_files=list(recipe.xdc_files),
-            defines=list(recipe.defines),
-            vlogparams=recipe.vlogparams,
             workspace_root=self.args.work_dir,
             work_root=work_root,
         )
@@ -1326,22 +1300,15 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         baseline_ref: str | None,
     ) -> ImplementationReport:
         """Adapt native FPGA evidence to the shared canonical schema."""
-        plan = self._target_plan(target)
-        return build_fpga_implementation_report(
+        context = implementation_context(
+            self._target_plan(target),
             target=target,
-            pair=plan.evidence_pair(),
-            current=current,
-            baseline=baseline,
-            baseline_ref=self.args.baseline if baseline is not None else None,
-            resolved_baseline_ref=(
-                getattr(self, "_baseline_full_sha", None) or baseline_ref
-                if baseline is not None
-                else None
-            ),
             eda_tool=self._eda_tool,
-            baseline_target_identity=plan.baseline.identity,
-            candidate_target_identity=plan.candidate.identity,
+            baseline_ran=baseline is not None,
+            requested_baseline_ref=self.args.baseline,
+            resolved_baseline_ref=getattr(self, "_baseline_full_sha", None) or baseline_ref,
         )
+        return build_fpga_implementation_report(context, current, baseline)
 
     def _publisher(self) -> ImplementationPublisher:
         return ImplementationPublisher(
