@@ -18,6 +18,7 @@ from fusesoc.vlnv import Vlnv
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.config.tests_toml_rules import (
+    VARIANT_SEPARATOR,
     TestVariantError,
     adapter_argument,
     option_key,
@@ -28,6 +29,7 @@ from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows import edam as edam_layer
 from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
+from booley.flows.job_resources import resolved_source_bytes
 from booley.flows.run_log import RunLogIdentity, write_run_log
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
@@ -256,6 +258,10 @@ class _Attempt:
     cache_decision: str = ""
     #: Concrete Test Runs the caller resolved; ``None`` means the defaults.
     test_runs: tuple[TestRun, ...] | None = None
+    #: Resource History Test names: Test Variants, never seeds (``test_names`` stay bare).
+    history_tests: tuple[str, ...] = ()
+    #: Size of the Target's resolved source files; ``None`` when unknown.
+    source_bytes: int | None = None
 
 
 def _require_attempt_log(handle: TargetHandle, attempt: _Attempt) -> None:
@@ -497,6 +503,7 @@ class PreparedOrdinaryGroup:
             "building",
             evidence_root=attempt.prepared.build_root,
             attempt_token=attempt.identity.attempt_token,
+            source_bytes=attempt.source_bytes,
         )
         process = self._execution._invoke(["sh", "-c", script], timeout=timeout_s)
         build = _fresh_build_outcome(attempt, process, timeout_s)
@@ -911,6 +918,8 @@ class SimulationExecution:
             evidence_root=attempt.prepared.build_root,
             attempt_token=attempt.identity.attempt_token,
             tests=attempt.test_names,
+            history_tests=attempt.history_tests,
+            source_bytes=attempt.source_bytes,
         )
         try:
             return execute_adapter_attempt(self._invoke, request)
@@ -921,6 +930,8 @@ class SimulationExecution:
                 evidence_root=attempt.prepared.build_root,
                 attempt_token=attempt.identity.attempt_token,
                 tests=attempt.test_names,
+                history_tests=attempt.history_tests,
+                source_bytes=attempt.source_bytes,
             )
 
     def _prepare_attempt(
@@ -982,6 +993,8 @@ class SimulationExecution:
             workload_inputs=(),
             setup_s=time.monotonic() - started,
             test_runs=test_runs,
+            history_tests=history_test_names(handle, prepared, work.test_runs),
+            source_bytes=resolved_source_bytes(prepared.resolved),
         )
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
@@ -1148,6 +1161,28 @@ def _build_variant(trace: bool) -> str:
 
 def _trace_overlay(handle: TargetHandle) -> Any:
     return trace_overlay.write_trace_overlay(handle)
+
+
+def history_test_names(
+    handle: TargetHandle, prepared: PreparedSimulationBuild, runs: tuple[TestRun, ...]
+) -> tuple[str, ...]:
+    """Resource History Test names of *runs*: ``test`` or ``test+variant``, no seed.
+
+    A default Variant (or a Test without Variants) keeps the bare Test name, so
+    keys written before Variants were told apart still match.
+    """
+    plan = target_test_plan(
+        handle,
+        "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool,
+        prepared.resolved.parameters,
+    )
+    return tuple(
+        run.test
+        if _runs_default_variant(plan, run)
+        else f"{run.test}{VARIANT_SEPARATOR}{run.variant}"
+        for run in runs
+        if run.test is not None
+    )
 
 
 def _group_names(runs: tuple[TestRun, ...]) -> tuple[str, ...]:
