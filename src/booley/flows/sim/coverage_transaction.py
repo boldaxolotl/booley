@@ -3,11 +3,10 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
 from booley.runtime.timefmt import utc_now_rfc3339
 
-from .campaign_reports import target_report_directory, write_campaign_json
 from .coverage_acceptance import coverage_test_run_rows
 from .coverage_campaign import (
     CoverageCampaign,
@@ -33,15 +32,8 @@ class CoverageTargetOutcome:
     target: str
     exit_code: int
     campaign_path: Path
-    simulation_path: Path
     detail: Mapping[str, FrozenJson]
     abort_remaining: bool = False
-
-
-class CoverageProgressSink(Protocol):
-    """Observational checkpoint emitted only after a Target transaction finishes."""
-
-    def completed(self, outcome: CoverageTargetOutcome) -> None: ...
 
 
 def _campaign(plan: CoverageTargetPlan, result: CoverageCollectionResult) -> CoverageCampaign:
@@ -144,22 +136,15 @@ def _normalization(result: CoverageCollectionResult) -> Mapping[str, FrozenJson]
 def run_coverage_target(
     plan: CoverageTargetPlan,
     execution: SimulationExecutionPort,
-    progress: CoverageProgressSink,
     *,
-    embedded_root: Path | None = None,
+    embedded_root: Path,
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> CoverageTargetOutcome:
-    """Publish the Campaign and Simulation projection, then checkpoint progress."""
+    """Collect, evaluate and publish one Target's Campaign under the attempt-owned root."""
     assert plan.invocation_dir is not None and plan.collection_request is not None
-    root = embedded_root or target_report_directory(plan.invocation_dir, plan.handle.selector)
-    outcome = _execute_coverage_transaction(
-        plan,
-        execution,
-        root,
-        embedded=embedded_root is not None,
-        publication_checkpoint=publication_checkpoint,
+    return _execute_coverage_transaction(
+        plan, execution, embedded_root, publication_checkpoint=publication_checkpoint
     )
-    return _checkpoint_progress(progress, outcome)
 
 
 def _execute_coverage_transaction(
@@ -167,7 +152,6 @@ def _execute_coverage_transaction(
     execution: SimulationExecutionPort,
     root: Path,
     *,
-    embedded: bool,
     publication_checkpoint: Callable[[str], None] | None,
 ) -> CoverageTargetOutcome:
     result = None
@@ -191,34 +175,12 @@ def _execute_coverage_transaction(
             result,
             root,
             campaign,
-            embedded=embedded,
             publication_checkpoint=publication_checkpoint,
             campaign_published=record_campaign_publication,
         )
     except (OSError, ValueError) as exc:
         return _transaction_error(
             plan, root, result, exc, campaign, campaign_published=campaign_published
-        )
-    return outcome
-
-
-def _checkpoint_progress(
-    progress: CoverageProgressSink, outcome: CoverageTargetOutcome
-) -> CoverageTargetOutcome:
-    try:
-        progress.completed(outcome)
-    except OSError as exc:
-        outcome = replace(
-            outcome,
-            exit_code=2,
-            abort_remaining=True,
-            detail=freeze_coverage_mapping(
-                {
-                    **outcome.detail,
-                    "error": f"Progress checkpoint failed: {exc}",
-                    "abort_remaining": True,
-                }
-            ),
         )
     return outcome
 
@@ -238,11 +200,10 @@ def _publish(
     root: Path,
     campaign: CoverageCampaign,
     *,
-    embedded: bool,
     publication_checkpoint: Callable[[str], None] | None,
     campaign_published: Callable[[], None],
 ) -> CoverageTargetOutcome:
-    campaign_path, simulation_path = root / "coverage.json", root / "simulation.json"
+    campaign_path = root / "coverage.json"
     checkpoint = publication_checkpoint or (lambda _boundary: None)
     checkpoint("before:coverage_campaign")
     publish_coverage_campaign(root, campaign)
@@ -251,15 +212,12 @@ def _publish(
     observed = _has_completed_run(result)
     passed = all(run.simulation_verdict == "pass" for run in result.runs) if observed else None
     detail = _simulation_projection(plan, campaign, result, passed)
-    if not embedded:
-        write_campaign_json(simulation_path, detail)
     status = campaign.evaluation["status"]
     exit_code = _coverage_exit_code(result, status, passed)
     outcome = CoverageTargetOutcome(
         plan.handle.selector,
         exit_code,
         campaign_path,
-        simulation_path,
         freeze_coverage_mapping(detail),
         abort_remaining=result.infrastructure_error,
     )
@@ -329,7 +287,6 @@ def _transaction_error(
         plan.handle.selector,
         2,
         root / "coverage.json",
-        root / "simulation.json",
         freeze_coverage_mapping(detail),
         True,
     )

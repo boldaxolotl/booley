@@ -344,9 +344,8 @@ def test_coverage_build_timeout_reports_not_run_infrastructure_error(
         CoverageInvocationRequest,
         prepare_coverage_invocation,
     )
-    from booley.flows.sim.coverage_transaction import run_coverage_target
     from tests.flows.sim.test_coverage_invocation import project
-    from tests.flows.sim.test_coverage_transaction import NativeExecution, Progress
+    from tests.flows.sim.test_coverage_transaction import NativeExecution, run_target
 
     # Separate roots: both fixtures write the same FuseSoC core.
     (tmp_path / "adapter").mkdir()
@@ -361,7 +360,7 @@ def test_coverage_build_timeout_reports_not_run_infrastructure_error(
         def build(self, request):
             return timed_out
 
-    outcome = run_coverage_target(plan, TimedOut(), Progress())
+    outcome = run_target(plan, TimedOut())
 
     assert outcome.exit_code == 2
     assert outcome.detail["passed"] is None
