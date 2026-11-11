@@ -89,6 +89,11 @@ _REVIEW_LABEL = "confidential-review"
 _ADVISORY_MARKER = "confidential-content-advisory"
 _TERM_KIND = "confidential term"
 _BOT_LOGIN = "github-actions[bot]"
+# Per associated pull request, only the fields `_is_outside` and the head check read.
+_COMMIT_PULLS_JQ = (
+    ".[] | {number, author_association, head: {repo: {id: .head.repo.id}}, "
+    "base: {repo: {id: .base.repo.id}}} | @json"
+)
 _MAX_ADVISORY_ROWS = 100
 _MAX_LOCATION_CHARS = 200
 _LOOKUP_TIMEOUT_SECONDS = 10
@@ -899,10 +904,52 @@ def _pull_request_object(event: object) -> dict[str, object]:
 def _pull_request_scope(pull_request: object) -> PullRequestScope:
     """Classify a pull request; the classifiers are disjoint (a candidate is same-repository)."""
     if _is_outside(pull_request):
-        return "outside"
+        return "maintainer" if _shares_head_with_other_work(pull_request) else "outside"
     if _is_mergify_candidate(pull_request):
         return "candidate"
     return "maintainer"
+
+
+def _shares_head_with_other_work(pull_request: object) -> bool:
+    """True when another PR with this head commit is not outside work, or the lookup fails.
+
+    The required status is published on the head commit, which several PRs can
+    share. An outside PR whose head is a maintainer PR's (or a Mergify
+    candidate's) head commit would otherwise overwrite that PR's status with its
+    own advisory success, so such a PR is enforced like maintainer work.
+    """
+    try:
+        if not isinstance(pull_request, dict):
+            raise GuardError("the pull request is invalid")
+        pull_request = cast("dict[str, object]", pull_request)
+        full_name, _number = _pull_request_target(pull_request)
+        head_sha = _nested(pull_request, "head", "sha")
+        if not isinstance(head_sha, str) or _OID_RE.fullmatch(head_sha) is None:
+            raise GuardError("the pull-request head revision is invalid")
+        output = _gh_api(
+            [
+                "--paginate",
+                f"repos/{full_name}/commits/{head_sha}/pulls",
+                "--jq",
+                _COMMIT_PULLS_JQ,
+            ],
+            "head-commit lookup",
+        )
+        associated = _json_lines(output, "head-commit lookup")
+    except GuardError:
+        print(
+            "NOTE: the head-commit lookup failed; this pull request stays enforced",
+            file=sys.stderr,
+        )
+        return True
+    # This PR is outside work itself, so it never counts as another one.
+    shared = any(not _is_outside(row) for row in associated)
+    if shared:
+        print(
+            "NOTE: another non-outside pull request has this head commit; enforced",
+            file=sys.stderr,
+        )
+    return shared
 
 
 def _read_event(event_path: Path) -> object:
@@ -917,6 +964,7 @@ def _gh_env() -> dict[str, str]:
     env = os.environ.copy()
     env["GH_PROMPT_DISABLED"] = "1"
     env.pop("GH_REPO", None)
+    env.pop(_KEY_B64_ENV, None)
     return env
 
 
@@ -1259,6 +1307,15 @@ def _gh_api(arguments: list[str], what: str, stdin: bytes | None = None) -> byte
     return result.stdout
 
 
+def _json_lines(output: bytes, what: str) -> list[object]:
+    """Parse ``gh --jq`` output, one JSON value per line (``@json`` never emits a raw newline)."""
+    try:
+        text = output.decode("utf-8", errors="replace")
+        return [json.loads(line) for line in text.split("\n") if line]
+    except ValueError as exc:
+        raise GuardError(f"the GitHub {what} returned an invalid record") from exc
+
+
 def _advisory_posted(full_name: str, number: int, marker: str) -> bool:
     """True when the workflow bot already commented this finding set.
 
@@ -1276,21 +1333,22 @@ def _advisory_posted(full_name: str, number: int, marker: str) -> bool:
         ],
         "advisory lookup",
     )
-    for line in output.decode("utf-8", errors="replace").split("\n"):
-        if not line:
-            continue
+    for row in _json_lines(output, "advisory lookup"):
         try:
-            login, account_type, body = cast("list[str]", json.loads(line))
+            login, account_type, body = cast("list[str]", row)
         except (ValueError, TypeError) as exc:
             raise GuardError("the GitHub advisory lookup returned an invalid record") from exc
-        if login == _BOT_LOGIN and account_type == "Bot" and body.split("\n", 1)[0] == marker:
+        if (
+            login == _BOT_LOGIN
+            and account_type == "Bot"
+            and body.split("\n", 1)[0].rstrip("\r") == marker
+        ):
             return True
     return False
 
 
-def _pull_request_target(event: object) -> tuple[str, int]:
+def _pull_request_target(pull_request: dict[str, object]) -> tuple[str, int]:
     """Return the base repository's full name and the pull request number."""
-    pull_request = _pull_request_object(event)
     full_name = _nested(pull_request, "base", "repo", "full_name")
     number = pull_request.get("number")
     if (
@@ -1315,7 +1373,7 @@ def post_advisory_main(event_path: Path, report_path: Path) -> int:
         if not rows:
             print("No advisory findings to post.")
             return 0
-        full_name, number = _pull_request_target(_read_event(event_path))
+        full_name, number = _pull_request_target(_pull_request_object(_read_event(event_path)))
         marker = f"<!-- {_ADVISORY_MARKER} {_finding_set_digest(rows)} -->"
         if _advisory_posted(full_name, number, marker):
             print("Advisory for this finding set was already posted.")

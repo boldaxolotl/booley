@@ -98,7 +98,10 @@ and term id, never the term); it never skips a check silently.
   stay enforced. An incomplete scan, including an invalid proposed encrypted
   vocabulary, still fails. Advisory findings never displace enforced ones under
   the finding cap. Same-repository PRs and maintainer fork PRs keep full
-  enforcement.
+  enforcement. The required status is published on the head commit, which
+  several PRs can share, so an outside PR whose head commit another non-outside
+  PR also has (found through GitHub, using the workflow token) is enforced like
+  maintainer work; a failed lookup enforces too, and the scan prints a `NOTE`.
 - **Mergify candidates.** A candidate is a same-repository PR opened by the
   Mergify bot (user ID `37929162`, type `Bot`) from a `mergify/merge-queue/`
   branch. The scanner walks its first-parent chain down to the PR base. For each
@@ -110,7 +113,7 @@ and term id, never the term); it never skips a check silently.
   first-parent commit (for example a push onto the candidate branch) leaves its
   commits enforced; a `Merge of #N` commit left enforced prints a `NOTE` naming
   why, and so does a candidate with no such commit. The `Merge of #N`
-  commits themselves stay enforced. The candidate's own title and body are
+  commits themselves stay enforced. The candidate's own title, body, and head ref are
   Mergify-generated from queued PRs whose own status already checked them, so
   its metadata findings are advisory. This depends on Mergify's `Merge of #N`
   message and bot user ID; a format change fails closed (everything enforced).

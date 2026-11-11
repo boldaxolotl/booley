@@ -2075,6 +2075,14 @@ if "--method" in arguments:
     sys.exit(1 if failing else 0)
 if "--paginate" in arguments:
     selector = arguments[arguments.index("--jq") + 1]
+    endpoint = arguments[arguments.index("--paginate") + 1]
+    if "/commits/" in endpoint:
+        record(method="GET", endpoint=endpoint, jq=selector)
+        if os.path.exists(os.path.join(state, "fail-commit-lookup")):
+            sys.exit(1)
+        pulls = os.path.join(state, "commit-pulls.jsonl")
+        sys.stdout.write(open(pulls, encoding="utf-8").read() if os.path.exists(pulls) else "")
+        sys.exit(0)
     path = os.path.join(state, "comments.json")
     comments = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
     record(method="GET", endpoint=arguments[arguments.index("--paginate") + 1], jq=selector)
@@ -2126,6 +2134,15 @@ class _FakeGh:
             "base": {"repo": {"id": 1}},
         }
         (self.state / "pulls" / f"{number}.json").write_text(json.dumps(pull), encoding="utf-8")
+
+    def serve_commit_pulls(self, *pulls: dict | None) -> None:
+        """Serve the pull requests the commit lookup returns; `None` makes it fail."""
+        failure = self.state / "fail-commit-lookup"
+        failure.unlink(missing_ok=True)
+        if None in pulls:
+            failure.write_text("", encoding="utf-8")
+        lines = "".join(json.dumps(pull) + "\n" for pull in pulls if pull is not None)
+        (self.state / "commit-pulls.jsonl").write_text(lines, encoding="utf-8", newline="\n")
 
     def serve_raw_comments(self, text: str) -> None:
         (self.state / "comments.raw").write_text(text, encoding="utf-8", newline="\n")
@@ -2350,7 +2367,7 @@ def test_pr_scan_step_posts_unless_the_bot_posted_this_set(tmp_path: Path, case:
     marker = posted.splitlines()[0]
     bot = {"login": "github-actions[bot]", "type": "Bot"}
     comment = {
-        "other-digest": {"user": bot, "body": marker.replace(marker[-10], "z") + "\nrows"},
+        "other-digest": {"user": bot, "body": marker[:-10] + "z" + marker[-9:] + "\nrows"},
         "other-bot-login": {"user": {"login": "other[bot]", "type": "Bot"}, "body": posted},
         # A contributor-controlled path can put the marker inside the bot's table.
         "marker-in-cell": {"user": bot, "body": f"<!-- other -->\n| `{marker}` |"},
@@ -2363,11 +2380,65 @@ def test_pr_scan_step_posts_unless_the_bot_posted_this_set(tmp_path: Path, case:
     assert len(gh.posts("/labels")) == len(gh.posts("/comments")) == 1
 
 
+def _associated_pull(number: int, *, head_repo_id: int, association: str) -> dict:
+    return {
+        "number": number,
+        "author_association": association,
+        "head": {"repo": {"id": head_repo_id}},
+        "base": {"repo": {"id": 1}},
+    }
+
+
+# name -> (pull requests sharing the head commit, expected status, expected NOTE)
+_SHARED_HEAD_CASES: dict[str, tuple[list[dict | None], int, str]] = {
+    "only-itself": ([_associated_pull(7, head_repo_id=2, association="NONE")], 0, ""),
+    "another-outside-pr": ([_associated_pull(9, head_repo_id=3, association="NONE")], 0, ""),
+    "same-repository-pr": (
+        [_associated_pull(9, head_repo_id=1, association="CONTRIBUTOR")],
+        1,
+        "another non-outside pull request",
+    ),
+    "maintainer-fork-pr": (
+        [_associated_pull(9, head_repo_id=2, association="MEMBER")],
+        1,
+        "another non-outside pull request",
+    ),
+    "unreadable-association": (
+        [{"number": 9, "head": {"repo": {"id": 2}}, "base": {"repo": {"id": 1}}}],
+        1,
+        "another non-outside pull request",
+    ),
+    "lookup-fails": ([None], 1, "the head-commit lookup failed"),
+}
+
+
 @POSIX_ONLY
-def test_pr_scan_step_fails_on_a_malformed_comment_lookup(tmp_path: Path) -> None:
+@pytest.mark.parametrize("case", sorted(_SHARED_HEAD_CASES))
+def test_outside_pr_sharing_its_head_commit_with_other_work_stays_enforced(
+    tmp_path: Path, case: str
+) -> None:
+    pulls, status, note = _SHARED_HEAD_CASES[case]
     repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
     gh = _FakeGh(tmp_path)
-    gh.serve_raw_comments("not json\n")
+    gh.serve_commit_pulls(*pulls)
+
+    result = _run_pr_scan_step(repo, _pr_event(head=head, base=base), gh, base=base)
+
+    _expect_exit(result, status)
+    assert note in result.stderr
+    lookups = [call for call in gh.calls() if "/commits/" in call.get("endpoint", "")]
+    assert lookups and all(f"/commits/{head}/pulls" in call["endpoint"] for call in lookups)
+    if status:
+        assert "ERROR" in result.stderr
+        assert gh.posts("/labels") == gh.posts("/comments") == []
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("raw", ["not json\n", "null\n"])
+def test_pr_scan_step_fails_on_a_malformed_comment_lookup(tmp_path: Path, raw: str) -> None:
+    repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
+    gh = _FakeGh(tmp_path)
+    gh.serve_raw_comments(raw)
 
     result = _run_pr_scan_step(repo, _pr_event(head=head, base=base), gh, base=base)
 
@@ -2422,13 +2493,23 @@ def test_pr_scan_step_posts_one_comment_per_finding_set(tmp_path: Path) -> None:
     gh.reset()
 
     _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
-    assert [call["method"] for call in gh.calls()] == ["GET"]
+    assert not [call for call in gh.calls() if call["method"] == "POST"]
 
     # A contributor posting the marker must not suppress the advisory.
     gh.serve_comments([{"user": {"login": "someone", "type": "User"}, "body": posted}])
     gh.reset()
 
     _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
+    assert len(gh.posts("/labels")) == len(gh.posts("/comments")) == 1
+
+    # A different finding set (the term now sits in another file) gets its own comment.
+    _git(repo, "mv", "a.txt", "b.txt")
+    _git(repo, "commit", "--amend", "--no-edit", env=_identity_env(*OUTSIDER))
+    moved = _pr_event(head=_git(repo, "rev-parse", "HEAD"), base=base)
+    gh.serve_comments([bot])
+    gh.reset()
+
+    _expect_exit(_run_pr_scan_step(repo, moved, gh, base=base), 0)
     assert len(gh.posts("/labels")) == len(gh.posts("/comments")) == 1
 
 
@@ -2716,13 +2797,15 @@ def test_candidate_metadata_needs_every_mergify_marker(tmp_path: Path, case: str
     assert SENTINEL not in result.stdout + result.stderr
 
 
+@POSIX_ONLY
 def test_outside_pr_enforced_finding_survives_advisory_cap(tmp_path: Path) -> None:
+    gh = _FakeGh(tmp_path)  # answers the head-commit lookup
     allowlisted_term = {"maintainer.txt": TERM_TEXT}
     many_paths = {f"{SENTINEL}-{index}.txt": "clean\n" for index in range(101)}
     repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, many_paths), (SAFE, allowlisted_term)])
 
     result = _scan_with_event(
-        repo, "pre-push", _pr_event(head=head, base=base), base=base, env=os.environ.copy()
+        repo, "pre-push", _pr_event(head=head, base=base), base=base, env=gh.env
     )
 
     _expect_exit(result, 1)
@@ -2747,7 +2830,9 @@ def test_outside_pr_invalid_proposed_vocabulary_still_fails(tmp_path: Path) -> N
     assert "WARNING" not in result.stderr
 
 
+@POSIX_ONLY
 def test_advisory_report_write_failure_fails_closed(tmp_path: Path) -> None:
+    gh = _FakeGh(tmp_path)  # answers the head-commit lookup
     repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
     event_path = _write_event(repo, _pr_event(head=head, base=base))
 
@@ -2760,7 +2845,7 @@ def test_advisory_report_write_failure_fails_closed(tmp_path: Path) -> None:
             "--advisory-report",
             str(repo / "no/such/dir"),
         ],
-        os.environ.copy(),
+        gh.env,
     )
 
     # A clean title and body write no report row, so the missing directory is never touched.
@@ -2776,7 +2861,7 @@ def test_advisory_report_write_failure_fails_closed(tmp_path: Path) -> None:
             "--advisory-report",
             str(repo / "no/such/dir"),
         ],
-        os.environ.copy(),
+        gh.env,
     )
     _expect_exit(failed, 1)
     assert "the advisory report cannot be written" in failed.stderr
