@@ -10,11 +10,11 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.commit_policy import policy
 from booley.core.booley_dir import own_booley_dir
@@ -45,9 +45,7 @@ clis = {clis}
 
 
 def _git(cwd: Path, *args: str) -> None:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=False, timeout=60
-    )
+    result = run_bounded_child(["git", *args], cwd=cwd)
     assert result.returncode == 0, result.stderr
 
 

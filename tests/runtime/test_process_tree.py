@@ -42,6 +42,7 @@ class TestDescendantPids:
             time.sleep(30)
             """
         )
+        # Kept on Popen: reads the grandchild pid from stdout while the tree is alive.
         proc = subprocess.Popen([sys.executable, "-c", src], stdout=subprocess.PIPE, text=True)
         grandchild: int | None = None
         try:

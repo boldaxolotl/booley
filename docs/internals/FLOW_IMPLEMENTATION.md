@@ -418,11 +418,13 @@ the resolved identity (`target`, `target_identity`), the target `passed` and
 `inconclusive` flags, a `test_runs` list, and a `tests` list whose entries
 contain `name`, `passed`, nullable `cycles`, `sva_errors`, `timed_out`,
 `execution`, `failure_kind`, and `error_tail`, plus the observed Test Run's
-`test_run`, `variant`, `seed`, and `fingerprint`. Full cycle counts are also
+`test_run`, `variant`, `seed`, and `fingerprint`, and its `log` and `trace`
+paths (see below). Full cycle counts are also
 copied to `report.json` (see [FLOW_REPORTS.md](FLOW_REPORTS.md)). For native HDL
 Targets, each test's unabridged, attempt-specific simulator output is kept as
-`run.log` evidence in its Campaign work item, not referenced from the
-projection. A grouped run preserves this copy before starting the next test,
+live-log (`live_run_log`) evidence in its Campaign work item; the projection and
+the card name it through `booley.flows.sim.campaign.test_run_files`, the one
+lookup from a Test Run to its accepted attempt's log and `trace` files. A grouped run preserves this copy before starting the next test,
 including for failed, timed-out, and inconclusive tests that produced output.
 Each launched attempt's `execution-evidence` directory, beside its snapshot,
 keeps the live `run.log` (tail-truncated to 10 MB), the adapter result JSON, and
@@ -470,7 +472,11 @@ module is probed with the simulator of every selected Target whose RTL fileset
 contains it ([ADR 0089](../adr/0089-probe-standalone-modules-with-each-targets-simulator.md)):
 `inspection.eda_tool` maps `icarus`/`iverilog` to `iverilog` and `verilator` to
 `verilator`. A probe compiles only the shared package/interface files of the
-Targets that contribute its frontend. A Target with any other simulator needs a
+Targets that contribute its frontend and dialect flags. The probe forwards only
+the Target's language-dialect options (Icarus `-g*`; Verilator `--language`,
+`--default-language`, `+<generation>ext+`), read from `flow_options` and then
+the legacy tool options; a module shared by Targets with different dialect
+flags is probed once per distinct set. A Target with any other simulator needs a
 fallback probe (Verilator when on PATH, else Icarus); the sim Flow can select
 only Icarus and Verilator Targets today, so this path is unreachable until a
 commercial simulator Target exists. A fallback probe whose compiler already is
