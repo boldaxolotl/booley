@@ -47,7 +47,7 @@ def test_worktree_requires_a_subcommand(capsys) -> None:
         tlr._build_parser().parse_args(["worktree"])
 
     assert exc.value.code == 2
-    assert "the following arguments are required: {new,list,rm}" in capsys.readouterr().err
+    assert "the following arguments are required: {new,list,rm,gc}" in capsys.readouterr().err
 
 
 def test_worktree_is_sandbox_only_and_project_bound(monkeypatch, capsys) -> None:

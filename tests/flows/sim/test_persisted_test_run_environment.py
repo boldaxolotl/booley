@@ -68,7 +68,11 @@ def test_every_decoder_of_a_persisted_test_run_refuses_the_name(name: str):
         _manifest_test_runs(manifest)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Test Run environment"):
         _manifest_run_groups(manifest)  # type: ignore[arg-type]
-    unnamed = {"work_item_id": "w", "test_runs": (_record(name, test=None),)}
+    unnamed = {
+        "work_item_id": "w",
+        "target": {"selector": "sim"},
+        "test_runs": (_record(name, test=None),),
+    }
     with pytest.raises(ValueError, match="Test Run environment"):
         observation_test_runs(unnamed, ({"test": "found"},))
 

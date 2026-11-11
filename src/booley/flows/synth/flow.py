@@ -122,6 +122,7 @@ from ..implementation_report import (
     ImplementationAggregate,
     ImplementationReport,
     build_implementation_aggregate,
+    implementation_context,
 )
 from ..invocation import resolve_timeout_ms
 from ..progress_lifecycle import ProgressPublicationError
@@ -1999,22 +2000,19 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         baseline_ref: str | None,
     ) -> ImplementationReport:
         """Adapt native synthesis evidence to the shared canonical schema."""
-        plan = self._target_plan(target)
-        return build_synth_implementation_report(
+        context = implementation_context(
+            self._target_plan(target),
             target=target,
-            pair=plan.evidence_pair(),
-            current=metrics,
-            baseline=baseline_metrics,
-            baseline_ref=self.args.baseline if baseline_metrics is not None else None,
-            resolved_baseline_ref=(
-                getattr(self, "_baseline_full_sha", None) or baseline_ref
-                if baseline_metrics is not None
-                else None
-            ),
             eda_tool=self._eda_tool,
+            baseline_ran=baseline_metrics is not None,
+            requested_baseline_ref=self.args.baseline,
+            resolved_baseline_ref=getattr(self, "_baseline_full_sha", None) or baseline_ref,
+        )
+        return build_synth_implementation_report(
+            context,
+            metrics,
+            baseline_metrics,
             fatal_timing=getattr(self, "_timing_violation_is_fatal", False),
-            baseline_target_identity=plan.baseline.identity,
-            candidate_target_identity=plan.candidate.identity,
         )
 
     def _publisher(self) -> ImplementationPublisher:

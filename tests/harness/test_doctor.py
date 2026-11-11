@@ -2359,7 +2359,7 @@ def _audit(root: Path) -> _Rec:
         first_target="x",
     )
     rec = _Rec()
-    doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f)
+    doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=rec.d)
     return rec
 
 
@@ -2448,7 +2448,12 @@ class TestCoreAudit:
         (tmp_path / ".booley").mkdir()
         rec = _Rec()
         doctor._run_core_audit(
-            project, rec.p, rec.w, rec.s, lambda msg, fix="": failures.append((msg, fix))
+            project,
+            rec.p,
+            rec.w,
+            rec.s,
+            lambda msg, fix="": failures.append((msg, fix)),
+            _diagnostics=rec.d,
         )
         # A bare ``defines:`` (null) is also a CAPI2 schema violation, so FuseSoC's
         # own verdict adds one ``.core schema`` row; the Target-level row is the one
@@ -2808,7 +2813,7 @@ targets:
             first_target="x",
         )
         rec = _Rec()
-        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f)
+        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=rec.d)
         assert any(
             "emits a recognized pass sentinel" in m for lvl, m in rec.events if lvl == "pass"
         )

@@ -6,10 +6,11 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ from booley.flows.sim.campaign.codec import (
     decode_bundle_build_result,
     decode_simulation_attempt,
     decode_simulation_result,
+    encode_simulation_campaign_manifest,
 )
 from booley.flows.sim.campaign.coordinator import (
     CampaignOutcome,
@@ -42,9 +44,10 @@ from booley.flows.sim.campaign.coordinator import (
 from booley.flows.sim.campaign.coverage_execution import (
     CoverageAggregateExecutor,
 )
-from booley.flows.sim.campaign.facts import AcceptanceFacts
+from booley.flows.sim.campaign.facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from booley.flows.sim.campaign.flow_planning import plan_coarse_simulation_campaign
 from booley.flows.sim.campaign.model import (
+    SimulationCampaignManifest,
     SimulationResult,
     create_simulation_campaign_plan,
 )
@@ -72,6 +75,7 @@ from booley.flows.sim.execution.contract import (
     SimulationTestOutcome,
 )
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
+from booley.flows.test_runs import TestRun, build_test_run, discovered_test_run
 from booley.runtime.execution_records import (
     ExecutionId,
 )
@@ -96,11 +100,73 @@ def _recovery_status(tmp_path: Path) -> CampaignRecoveryStatus:
     )
 
 
-def _acceptance_facts() -> dict[str, object]:
+@dataclass(frozen=True)
+class _RecordedCampaign:
+    """A current-schema manifest written under a test root, one work item per Test Run."""
+
+    manifest_path: Path
+    manifest: SimulationCampaignManifest
+
+    @property
+    def digest(self) -> str:
+        """The digest acceptance facts name the recorded manifest by."""
+        return manifest_digest(self.manifest)
+
+    def fact(
+        self, run: TestRun, *, discovered: str | None = None, **members: object
+    ) -> dict[str, object]:
+        """*members* as a v2 observation fact of *run*, as the manifest recorded it.
+
+        Sets ``work_item_id`` (the item recording *run*), ``test_run`` and
+        ``test_run_fingerprint`` over *members* (plus ``target`` for a *discovered*
+        fact, which the report reads to name the discovered Test Run). *discovered* names a Test an
+        unfiltered batch of the unnamed *run* found: the fact's ``test`` is that
+        name and its Test Run is production ``discovered_test_run``'s. The
+        caller's ``test`` member is otherwise kept as given.
+        """
+        (item,) = (
+            item
+            for item in cast(Sequence[Mapping[str, Any]], self.manifest.document["work_items"])
+            if any(doc["name"] == run.name for doc in item["test_runs"])
+        )
+        selector = cast(Mapping[str, Any], item["target"])["selector"]
+        observed = (
+            run if discovered is None else discovered_test_run(discovered, run, target=selector)
+        )
+        stamped: dict[str, object] = {
+            "work_item_id": item["work_item_id"],
+            "test_run": observed.name,
+            "test_run_fingerprint": observed.fingerprint,
+        }
+        if discovered is not None:
+            stamped["test"] = discovered
+            stamped["target"] = item["target"]
+        return members | stamped
+
+
+def _recorded_campaign(
+    root: Path, runs: Sequence[TestRun], required: tuple[str, ...] = ("reset", "count")
+) -> _RecordedCampaign:
+    """Plan *runs* with the real planner and write the manifest as ``manifest.json``.
+
+    Each call plans in a fresh directory under *root*: the planner's fixture
+    creates ``.booley/`` and sources there, so one root cannot plan twice and
+    tests that use *root* as a work directory stay free of them.
+    """
+    from tests.flows.sim.test_campaign_test_runs import _hdl_plan
+
+    directory = Path(tempfile.mkdtemp(prefix="recorded-campaign-", dir=root))
+    manifest = _hdl_plan(directory, tuple((run,) for run in runs), required).manifest
+    manifest_path = directory / "manifest.json"
+    manifest_path.write_bytes(encode_simulation_campaign_manifest(manifest))
+    return _RecordedCampaign(manifest_path, manifest)
+
+
+def _acceptance_facts(manifest_sha256: str) -> dict[str, object]:
     return {
-        "$schema": "booley.simulation-acceptance-facts/v1",
+        "$schema": ACCEPTANCE_FACTS_SCHEMA,
         "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "manifest_sha256": "sha256:" + "1" * 64,
+        "manifest_sha256": manifest_sha256,
         "origin": {"execution_id": "", "invocation_id": 1},
         "target": {
             "vlnv": "acme:lib:dut:1",
@@ -128,7 +194,7 @@ def _observation(test: str | None) -> dict[str, object]:
         "work_item_id": "item:0000:0123456789abcdef",
         "role": "candidate",
         "revision": "abc",
-        "target": _acceptance_facts()["target"],
+        "target": _acceptance_facts("")["target"],
         "result_sha256": "sha256:" + "3" * 64,
         "test": test,
         "execution": "completed",
@@ -149,7 +215,12 @@ def _simulation_outcome(
     complete: bool = True,
     role: str = "candidate",
 ) -> CampaignOutcome:
-    document = _acceptance_facts()
+    runs: dict[str | None, TestRun] = {}
+    for observation in observations:
+        test = cast("str | None", observation["test"])
+        runs.setdefault(test, build_test_run(test))
+    recorded = _recorded_campaign(tmp_path, tuple(runs.values()), required)
+    document = _acceptance_facts(recorded.digest)
     target = dict(document["target"])  # type: ignore[arg-type]
     target["role"] = role
     document["target"] = target
@@ -160,7 +231,11 @@ def _simulation_outcome(
     }
     normalized = []
     for observation in observations:
-        normalized.append(observation | {"target": target, "role": role})
+        run = runs[cast("str | None", observation["test"])]
+        normalized.append(
+            recorded.fact(run, **cast("dict[str, Any]", observation))
+            | {"target": target, "role": role}
+        )
     document["observations"] = normalized
     facts = AcceptanceFacts(document)
     passing = all(
@@ -180,7 +255,7 @@ def _simulation_outcome(
         )
     )
     return CampaignOutcome(
-        tmp_path / "manifest.json",
+        recorded.manifest_path,
         tmp_path / "summary.json",
         facts.document["target"],  # type: ignore[arg-type]
         tuple(facts.document["observations"]),  # type: ignore[arg-type]

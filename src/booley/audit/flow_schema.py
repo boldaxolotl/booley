@@ -33,7 +33,6 @@ SELECTIVE_FLOW_KNOBS = {
     "trace_convert_timeout_ms": frozenset({"sim"}),
     "pre_run_commands": frozenset({"sim"}),
     "sim_time_grace_s": frozenset({"sim"}),
-    "standalone_frontend": frozenset({"sim"}),
     "fail_on_timing_violation": frozenset({"synth"}),
     "warnings_as_errors": frozenset({"lint"}),
     "run_cwd": frozenset({"sim"}),
@@ -121,8 +120,7 @@ def _retired_flow_findings(flows: Mapping[str, Any]) -> list[ConfigFinding]:
             findings.append(
                 fail_finding(
                     f"booley.toml [flows.{retired}] is retired",
-                    "use `booley flow sim --mode elab-only` and move "
-                    "standalone_frontend to [flows.sim].standalone_frontend",
+                    "use `booley flow sim --mode elab-only` and delete standalone_frontend",
                 )
             )
     for old, new in LEGACY_TO_CANONICAL.items():
@@ -298,17 +296,11 @@ def _flow_shape_findings(
         is_str_list(pre_sim_commands) and all(pre_sim_commands)
     ):
         findings.append(fail_finding(*pre_run_commands_problem(flow_name)))
-    standalone_frontend = section.get("standalone_frontend")
-    if standalone_frontend is not None and standalone_frontend not in {
-        "auto",
-        "iverilog",
-        "verilator",
-    }:
+    if "standalone_frontend" in section:
         findings.append(
             fail_finding(
-                f"booley.toml [flows.{flow_name}].standalone_frontend must be "
-                "one of auto, iverilog, verilator",
-                f"fix [flows.{flow_name}].standalone_frontend",
+                f"booley.toml [flows.{flow_name}].standalone_frontend is retired",
+                "delete it; the standalone module probe now follows each Target's simulator",
             )
         )
     return findings

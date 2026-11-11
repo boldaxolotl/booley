@@ -349,14 +349,16 @@ def test_flow_collection_reports_required_sections_and_retired_aliases() -> None
     assert {item.subject for item in missing} == {"lint", "synth"}
 
 
-def test_sim_accepts_standalone_frontend_and_rejects_removed_cache_knob() -> None:
-    valid = flow_schema.audit_flow_table("sim", {"standalone_frontend": "verilator"})
-    invalid_frontend = flow_schema.audit_flow_table("sim", {"standalone_frontend": "vcs"})
+def test_sim_rejects_retired_standalone_frontend_and_removed_cache_knob() -> None:
     removed_cache_knob = flow_schema.audit_flow_table("sim", {"keep_build_dir": True})
 
-    assert valid.is_valid
-    assert not invalid_frontend.is_valid
     assert not removed_cache_knob.is_valid
+    for value in ("auto", "verilator"):
+        retired = flow_schema.audit_flow_table("sim", {"standalone_frontend": value})
+        assert not retired.is_valid
+        message = " ".join(f"{item.message} {item.fix}" for item in retired.findings)
+        assert "standalone_frontend is retired" in message
+        assert "each Target's simulator" in message
 
 
 def test_empty_eda_configuration_is_valid() -> None:

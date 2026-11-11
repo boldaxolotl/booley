@@ -22,6 +22,7 @@ from booley.flows.prepared_invocation import OrdinaryRunInvocation
 from booley.flows.sim.acceptance import (
     AcceptanceContext,
     SimulationAcceptanceCoordinator,
+    _OutcomeEvidence,
     record_campaign_acceptance,
 )
 from booley.flows.sim.campaign.codec import (
@@ -38,6 +39,7 @@ from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.flows.test_runs import build_test_run
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EndpointOutcome
 from tests.criteria.ledger_support import FixtureRecorder
 from tests.flows.sim.campaign_test_support import (
@@ -46,6 +48,7 @@ from tests.flows.sim.campaign_test_support import (
     _manifest_for,
     _NoEdaExecutor,
     _observation,
+    _recorded_campaign,
     _recovery_status,
     _simulation_outcome,
 )
@@ -76,7 +79,7 @@ def _simulation_changes(
     state.save()
     recorder = Recorder()
     result = SimulationAcceptanceCoordinator().reconcile(
-        outcome,
+        _OutcomeEvidence(outcome),
         AcceptanceContext(
             "ticket",
             {"slug": "ticket"},
@@ -108,8 +111,10 @@ def _cycle_outcome(
     baseline_test: str = "smoke",
     manifest_owner: str = "550e8400-e29b-41d4-a716-446655440000",
 ) -> CampaignOutcome:
-    document = _acceptance_facts()
-    observation = _observation("smoke")
+    smoke = build_test_run("smoke")
+    recorded = _recorded_campaign(tmp_path, (smoke,))
+    document = _acceptance_facts(recorded.digest)
+    observation = recorded.fact(smoke, **_observation("smoke"))
     observation["target"] = document["target"]
     observation["cycle_count"] = current
     document["observations"] = [observation]
@@ -118,7 +123,7 @@ def _cycle_outcome(
     ]
     facts = AcceptanceFacts(document)
     return CampaignOutcome(
-        tmp_path / "manifest.json",
+        recorded.manifest_path,
         tmp_path / "summary.json",
         facts.document["target"],  # type: ignore[arg-type]
         tuple(facts.document["observations"]),  # type: ignore[arg-type]
@@ -135,6 +140,7 @@ def _cycle_prerequisite(
     baseline: int, selector: str, test: str, manifest_owner: str
 ) -> dict[str, object]:
     campaign_id = "550e8400-e29b-41d4-a716-446655440000"
+    baseline_run = build_test_run(test)
     return {
         "role": "cycle_count_baseline",
         "manifest": {
@@ -166,6 +172,9 @@ def _cycle_prerequisite(
         },
         "cycle_observation": {
             "test": test,
+            # The Test Run the baseline observed, as the coordinator records it.
+            "test_run": baseline_run.name,
+            "test_run_fingerprint": baseline_run.fingerprint,
             "cycle_count": baseline,
             "unit": "cycles",
         },
@@ -204,7 +213,7 @@ def _cycle_reconciliation(
     state.save()
     recorder = Recorder()
     result = SimulationAcceptanceCoordinator().reconcile(
-        outcome,
+        _OutcomeEvidence(outcome),
         AcceptanceContext(
             "ticket",
             {"slug": "ticket"},
@@ -359,11 +368,13 @@ def test_acceptance_coordinator_records_selected_test_detail(tmp_path: Path) -> 
     state.init_criteria({"sim_pass_sim": True}, strict=True)
     state.save()
     recorder = Recorder()
-    document = _acceptance_facts()
-    document["observations"] = [_observation("smoke")]
+    smoke = build_test_run("smoke")
+    recorded = _recorded_campaign(tmp_path, (smoke,))
+    document = _acceptance_facts(recorded.digest)
+    document["observations"] = [recorded.fact(smoke, **_observation("smoke"))]
     facts = AcceptanceFacts(document)
     outcome = CampaignOutcome(
-        tmp_path / "manifest.json",
+        recorded.manifest_path,
         tmp_path / "summary.json",
         facts.document["target"],  # type: ignore[arg-type]
         (),
@@ -375,7 +386,7 @@ def test_acceptance_coordinator_records_selected_test_detail(tmp_path: Path) -> 
         _recovery_status(tmp_path),
     )
     result = SimulationAcceptanceCoordinator().reconcile(
-        outcome,
+        _OutcomeEvidence(outcome),
         AcceptanceContext(
             "ticket",
             {"slug": "ticket"},
@@ -406,16 +417,18 @@ def test_passing_subset_does_not_change_target_level_simulation_criterion(
     state = DevelopmentState.load(tmp_path / "state.json")
     state.init_criteria({"sim_pass_sim": True}, strict=True)
     state.save()
-    document = _acceptance_facts()
+    smoke = build_test_run("smoke")
+    recorded = _recorded_campaign(tmp_path, (smoke,), ("smoke", "regression"))
+    document = _acceptance_facts(recorded.digest)
     document["required_suite"] = {
         "names": ["smoke", "regression"],
         "default_invocation": False,
         "source_sha256": "sha256:" + "2" * 64,
     }
-    document["observations"] = [_observation("smoke")]
+    document["observations"] = [recorded.fact(smoke, **_observation("smoke"))]
     facts = AcceptanceFacts(document)
     outcome = CampaignOutcome(
-        tmp_path / "manifest.json",
+        recorded.manifest_path,
         tmp_path / "summary.json",
         facts.document["target"],  # type: ignore[arg-type]
         tuple(facts.document["observations"]),  # type: ignore[arg-type]
@@ -428,7 +441,7 @@ def test_passing_subset_does_not_change_target_level_simulation_criterion(
     )
 
     result = SimulationAcceptanceCoordinator().reconcile(
-        outcome,
+        _OutcomeEvidence(outcome),
         AcceptanceContext(
             "ticket",
             {"slug": "ticket"},
@@ -981,7 +994,7 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
 
 
 def test_infrastructure_abort_preserves_simulation_criterion(tmp_path: Path) -> None:
-    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator
+    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator, _OutcomeEvidence
 
     original, _invocation = _named_campaign_outcome(tmp_path)
     document = json.loads(original.acceptance_facts.canonical_bytes())
@@ -1015,5 +1028,5 @@ def test_infrastructure_abort_preserves_simulation_criterion(tmp_path: Path) -> 
         },
     )
     before = state.to_dict()
-    assert SimulationAcceptanceCoordinator._derive_changes(outcome, state) == []
+    assert SimulationAcceptanceCoordinator._derive_changes(_OutcomeEvidence(outcome), state) == []
     assert state.to_dict() == before

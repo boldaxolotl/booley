@@ -32,4 +32,4 @@ _Avoid_: Qualification, Mission, regression suite
 **Capability Map**:
 The mapping from supported Booley behavior to the Mission Areas that exercise
 it. It records QA breadth, not execution evidence and not native RTL coverage.
-_Avoid_: Capability Coverage, Coverage Campaign, coverage result
+_Avoid_: Capability Coverage, Coverage Record, coverage result

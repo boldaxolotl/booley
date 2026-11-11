@@ -1918,20 +1918,25 @@ def test_simulation_count_transport_omits_only_full_mapping():
 
 @pytest.mark.parametrize("completion_error", [False, True])
 def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
-    monkeypatch, completion_error
+    tmp_path, monkeypatch, completion_error
 ):
     from types import SimpleNamespace
 
     from booley.flows.sim.flow import _campaign_report_lines
+    from booley.flows.test_runs import build_test_run
     from booley.mcp.server import _format_mcp_tool_result
     from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error
+    from tests.flows.sim.campaign_test_support import _recorded_campaign
 
     manifest = Path("/manifest.json")
     pointer_bytes = len(f"  manifest: {manifest.resolve()}\n".encode())
     budget = 4000 + pointer_bytes
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget))
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
-    observation = {"test": "smoke", "cycle_count": 7, "detail": {"reason": "x" * 3870}}
+    smoke = build_test_run("smoke")
+    observation = _recorded_campaign(tmp_path, (smoke,)).fact(
+        smoke, test="smoke", cycle_count=7, detail={"reason": "x" * 3870}
+    )
     outcome = SimpleNamespace(
         target={"selector": "sim"},
         manifest_path=manifest,

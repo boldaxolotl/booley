@@ -121,6 +121,23 @@ def test_reference_codec_round_trips_exact_canonical_immutable_document(tmp_path
         decoded.document["target"]["identity"] = "substitute"  # type: ignore[index]
 
 
+def test_building_and_encoding_a_built_reference_never_decodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reference Booley built from its own values is encoded without re-validation."""
+    target = tmp_path / "targets" / _TARGET_SELECTOR
+    nested = _nested_campaign(target)
+
+    def refuse(_raw: bytes) -> CoverageCampaignReference:
+        raise AssertionError("a Booley-built reference was decoded")
+
+    monkeypatch.setattr(coverage_reference, "decode_coverage_campaign_reference", refuse)
+
+    value = _reference(target, nested)
+
+    assert encode_coverage_campaign_reference(value).endswith(b"\n")
+
+
 @pytest.mark.parametrize(
     ("pointer", "replacement"),
     [

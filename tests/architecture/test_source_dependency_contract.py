@@ -471,6 +471,7 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
         "harness.setup.readiness",
         "runtime.inspection",
         "runtime.vaporview",
+        "flows.target_test_plan_inspection",
     ],
 )
 @pytest.mark.parametrize(
@@ -490,6 +491,7 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     root = tmp_path / "booley"
     for package in (
         root,
+        root / "flows",
         root / "harness",
         root / "harness" / "setup",
         root / "presentation",

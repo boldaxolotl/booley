@@ -13,7 +13,7 @@ import stat
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1318,6 +1318,8 @@ def _blocked_shared_result(
     elif names:
         identities = names
     else:
+        # The default selection's name is the Target selector; Test Run binding
+        # (discovered_test_run) maps it back to the unnamed invocation.
         target = cast(Mapping[str, object], request.manifest.document["target"])
         identities = (cast(str, target["selector"]),)
     observations = []
@@ -1718,7 +1720,8 @@ def _infrastructure_observations(
     if outcome.tests:
         return _observed_infrastructure_tests(outcome, build_failure=build_failure)
     selection = cast(Mapping[str, object], request.work_item["selection"])
-    identities = (None,) if selection["kind"] == "unfiltered" else selection["names"]
+    # The unnamed invocation (unfiltered batch or default selection) has no names.
+    identities = tuple(cast(Sequence[str], selection["names"])) or (None,)
     failure = outcome.infrastructure_failure
     assert failure is not None
     if build_failure:
@@ -1878,7 +1881,7 @@ def _capture_outcome_evidence(
     if outcome.infrastructure_failure is not None and not outcome.tests:
         failure = outcome.infrastructure_failure
         selection = cast(Mapping[str, object], request.work_item["selection"])
-        names = [None] if selection["kind"] == "unfiltered" else list(selection["names"])
+        names = list(cast(Sequence[str], selection["names"])) or [None]
         raw = canonical_json_bytes(
             {
                 "$schema": "booley.simulation-infrastructure-failure/v1",
