@@ -237,7 +237,9 @@ Decides where `booley chat` starts when you run it from the main checkout:
 
 - `auto`: in the main checkout when no other Booley session is using it,
   otherwise in a new worktree `s<N>` on branch `booley/s<N>`.
-- `always`: always in a new worktree.
+- `always`: always in a new worktree; if the main checkout was free, the launch
+  holds it until its session ends, so a later `auto` launch starts in a
+  worktree too.
 - `never`: always in the main checkout.
 
 `booley chat --new-worktree` and `--here` override it for one launch. Any other
