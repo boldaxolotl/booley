@@ -41,8 +41,12 @@ CoverageHarness = Literal["generated_main", "custom_main", "cocotb", "hdl_testbe
 CoverageSourceKind = Literal["rtl", "testbench", "generated", "foreign"]
 CoverageCollectionStatus = Literal["complete", "collector_error"]
 
+#: Explicit switches rather than ``--coverage``, which would also enable FSM
+#: coverage. Since Verilator 5.054 ``--coverage-line`` no longer emits
+#: ``branch`` points: ``if``/``else`` and ``?:`` need ``--coverage-branch``.
 VERILATOR_COVERAGE_INSTRUMENTATION = (
     "--coverage-line",
+    "--coverage-branch",
     "--coverage-toggle",
     "--coverage-expr",
     "--coverage-user",

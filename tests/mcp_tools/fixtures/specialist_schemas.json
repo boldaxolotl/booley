@@ -30,7 +30,7 @@
     "additionalProperties": false,
     "properties": {
       "count": {
-        "description": "Number of mutations: integer or 'auto' (default: 10)",
+        "description": "Number of Mutants: integer or 'auto' (default: 10)",
         "type": "string"
       },
       "diagnostic": {
@@ -44,24 +44,17 @@
         "type": "boolean"
       },
       "min_detected": {
-        "description": "Pass threshold: minimum mutations that must be killed (default: all of --count, i.e. all-or-nothing). Lower it to accept a partial mutation score.",
+        "description": "Pass threshold: minimum Mutants that must be detected (default: ceil(0.8 x --count); some survivors may be equivalent Mutants). Raise it to demand more, lower it to accept less.",
         "type": "integer"
       },
-      "regen_lock": {
-        "default": false,
-        "description": "Wipe the mutation lock dir and re-run the Mutation Tester Specialist from scratch.",
-        "type": "boolean"
-      },
       "scope": {
-        "description": "Comma-separated RTL files eligible for mutation",
+        "description": "Comma-separated RTL files eligible for mutation (default: the Target's own RTL, without testbench, vendored and generated files)",
         "type": "string"
       },
-      "steer": {
-        "description": "Developer Agent context for mutation targeting. Repeatable; over MCP pass an array of strings, not a bare string.",
-        "items": {
-          "type": "string"
-        },
-        "type": "array"
+      "seed": {
+        "default": 0,
+        "description": "Non-negative integer that selects the Mutants (default: 0). The same RTL, --count and --seed give the same Mutants.",
+        "type": "integer"
       },
       "target": {
         "description": "Exactly one Simulation Target. The CLI accepts one --target value; MCP accepts one Target selector string.",
@@ -73,8 +66,7 @@
       }
     },
     "required": [
-      "target",
-      "scope"
+      "target"
     ],
     "type": "object"
   },

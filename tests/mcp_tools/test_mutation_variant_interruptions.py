@@ -152,7 +152,7 @@ def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
         formula_count=1,
         source_size_budget=None,
     )
-    endpoint._run_variant_sweep(plan, specs, variants)
+    endpoint._run_variant_sweep(plan, specs, variants, {})
 
 
 def _command(worktree: Path, fifo: Path, stage: str) -> list[str]:

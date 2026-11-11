@@ -567,7 +567,7 @@ _MUTATION = next(
 
 
 def _smoke_project(tmp_path: Path, *, ignore_native_cores: bool = True) -> Path:
-    """A worktree whose ``sim_core`` Target lists one RTL file with a line comment."""
+    """A worktree whose ``sim_core`` Target lists one RTL file."""
     worktree = tmp_path / "worktree"
     (worktree / "rtl").mkdir(parents=True)
     (worktree / "rtl/dut.sv").write_text(
@@ -591,7 +591,7 @@ def _smoke_project(tmp_path: Path, *, ignore_native_cores: bool = True) -> Path:
 
 def _mirror_dir(booley_dir: Path) -> Path:
     runtime = driver.record_paths(booley_dir, _ID).runtime_dir
-    return driver.mutation_lock.variant_build_dir(1, runtime) / "core-mirror"
+    return driver.mutation_workspace.variant_build_dir(1, runtime) / "core-mirror"
 
 
 class SmokeSession(FakeSession):
@@ -617,8 +617,11 @@ def _run_smoke(tmp_path, replies, *, worktree=None, build_mirror=True):
     return result, session.calls, booley_dir
 
 
-def test_mutation_smoke_seeds_one_proposal_lock_and_requires_exit_zero(tmp_path) -> None:
-    result, calls, booley_dir = _run_smoke(tmp_path, [_reply("EXIT_CODE: 0")])
+_PASS = "  1 detected (0 timeout), 0 invalid, 0 not detected\nEXIT_CODE: 0"
+
+
+def test_mutation_smoke_runs_one_generated_mutant_and_requires_exit_zero(tmp_path) -> None:
+    result, calls, booley_dir = _run_smoke(tmp_path, [_reply(_PASS)])
 
     assert result["status"] == "pass"
     ((name, arguments),) = calls
@@ -630,15 +633,10 @@ def test_mutation_smoke_seeds_one_proposal_lock_and_requires_exit_zero(tmp_path)
         0,
         True,
     )
+    assert "seed" not in arguments
+    # No proposal lock is seeded: the generator needs no agent.
     runtime = driver.record_paths(booley_dir, _ID).runtime_dir
-    lock = driver.mutation_lock.load_lock(runtime)
-    assert lock is not None and lock.count == 1 and lock.scope == ["rtl/dut.sv"]
-    (spec,) = lock.mutations
-    assert spec["line"] == 2 and spec["original_code"] == "  // the unit under test"
-    assert spec["mutated_code"] == "  // the unit under test mutation-smoke"
-    assert lock.scope_hashes == driver.mutation_lock.compute_scope_hashes(
-        ["rtl/dut.sv"], tmp_path / "worktree"
-    )
+    assert not (runtime / "mutation_tester/lock").exists()
 
 
 def test_mutation_smoke_fails_when_variant_does_not_elaborate(tmp_path) -> None:
@@ -648,30 +646,33 @@ def test_mutation_smoke_fails_when_variant_does_not_elaborate(tmp_path) -> None:
 
 def test_mutation_smoke_requires_the_private_mirror_to_have_been_built(tmp_path) -> None:
     with pytest.raises(driver.GoalDriverError, match="private mirror"):
-        _run_smoke(tmp_path, [_reply("EXIT_CODE: 0")], build_mirror=False)
+        _run_smoke(tmp_path, [_reply(_PASS)], build_mirror=False)
+
+
+def test_mutation_smoke_fails_when_the_mutant_is_reported_invalid(tmp_path) -> None:
+    invalid = "  0 detected (0 timeout), 1 invalid, 0 not detected\nEXIT_CODE: 0"
+    with pytest.raises(driver.GoalDriverError, match="reported invalid"):
+        _run_smoke(tmp_path, [_reply(invalid)])
+
+
+def test_mutation_smoke_does_not_mistake_10_invalid_for_zero(tmp_path) -> None:
+    invalid = "  0 detected (0 timeout), 10 invalid, 0 not detected\nEXIT_CODE: 0"
+    with pytest.raises(driver.GoalDriverError, match="reported invalid"):
+        _run_smoke(tmp_path, [_reply(invalid)])
+
+
+def test_mutation_smoke_resolves_the_first_rtl_file_of_the_target(tmp_path) -> None:
+    worktree = _smoke_project(tmp_path)
+    (worktree / "rtl/other.sv").write_text("module other; endmodule\n", encoding="utf-8")
+    core = worktree / ".booley/cores/dut.core"
+    core.write_text(core.read_text("utf-8").replace("[rtl/dut.sv]", "[rtl/other.sv, rtl/dut.sv]"))
+    _, calls, _ = _run_smoke(tmp_path, [_reply(_PASS)], worktree=worktree)
+    assert calls[0][1]["scope"] == "rtl/other.sv"
 
 
 def test_mutation_smoke_refuses_project_without_ignore_native_cores(tmp_path) -> None:
     worktree = _smoke_project(tmp_path, ignore_native_cores=False)
     with pytest.raises(driver.GoalDriverError, match="ignore_native_cores"):
-        _run_smoke(tmp_path, [], worktree=worktree)
-
-
-def test_mutation_smoke_skips_tool_directives_and_continued_comments(tmp_path) -> None:
-    worktree = _smoke_project(tmp_path)
-    (worktree / "rtl/dut.sv").write_text(
-        "// verilator lint_off WIDTH\n// macro tail \\\n  // plain note\nmodule dut; endmodule\n",
-        encoding="utf-8",
-    )
-    _, _, booley_dir = _run_smoke(tmp_path, [_reply("EXIT_CODE: 0")], worktree=worktree)
-    lock = driver.mutation_lock.load_lock(driver.record_paths(booley_dir, _ID).runtime_dir)
-    assert lock is not None and lock.mutations[0]["line"] == 3
-
-
-def test_mutation_smoke_needs_a_line_comment_in_the_scope_file(tmp_path) -> None:
-    worktree = _smoke_project(tmp_path)
-    (worktree / "rtl/dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-    with pytest.raises(driver.GoalDriverError, match="no // line comment"):
         _run_smoke(tmp_path, [], worktree=worktree)
 
 
@@ -682,7 +683,7 @@ def test_readiness_runs_the_mutation_smoke_only_when_asked(tmp_path) -> None:
     name = driver.goal_presentation(driver.translate_goals(goals).goals[0]).name
     status = f"{_ID} (active) · 0/1 met\n{name} unmet"
     booley_dir = tmp_path / "main/.booley"
-    session = SmokeSession([_reply(enter), _reply(status), _reply("EXIT_CODE: 0")], booley_dir)
+    session = SmokeSession([_reply(enter), _reply(status), _reply(_PASS)], booley_dir)
 
     result = asyncio.run(
         driver.readiness(session, worktree, goals, mutation_smoke_booley_dir=booley_dir)

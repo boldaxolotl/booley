@@ -9,7 +9,6 @@ import pytest
 from booley.config import agent as agent_config
 from booley.config.agent import load_agent_settings, set_agent_settings
 from booley.config.gateway import GatewayConfigError
-from booley.core.models import AgentResult
 from booley.harness import developer_probe, doctor
 from booley.runtime import agent as agent_mod
 from booley.runtime.agent_config import set_backend_config
@@ -80,20 +79,6 @@ def _doctor_findings(root, auth="subscription", provider="codex"):
     return reporter.findings or []
 
 
-def _mutation_creator_params(root, monkeypatch):
-    endpoint = MutationTesterSpecialist()
-    endpoint.parse_args(["--target", "sim_demo", "--scope", "rtl", "--work-dir", str(root)])
-    captured = []
-    monkeypatch.setattr(
-        endpoint,
-        "_invoke_agent_with_resume",
-        lambda p: captured.append(p) or AgentResult(output=""),
-    )
-    monkeypatch.setattr(endpoint, "_persist_session_id", lambda _key: None)
-    endpoint._invoke_creator("fixture", resume=False, attempt=1)
-    return captured[0]
-
-
 def test_gateway_model_pins_codex_specialists_only(project, monkeypatch):
     monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", _PIN)
 
@@ -151,13 +136,6 @@ def test_gateway_effort_overrides_codex_effort(project, monkeypatch):
         assert _lazy().effort_for("codex") == level
 
 
-def test_gateway_effort_reaches_mutation_creator_call(project, monkeypatch):
-    monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", "low")
-    _lazy()
-
-    assert _mutation_creator_params(project, monkeypatch).reasoning_effort == "low"
-
-
 def test_gateway_invalid_effort_fails_loudly(project, monkeypatch):
     monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", "turbo")
 
@@ -190,7 +168,6 @@ def test_gateway_model_without_effort_keeps_default_effort(project, monkeypatch)
 
     assert settings.model_for_specialist("coverage_analyst") == _PIN
     assert settings.effort_for("codex") == "high"
-    assert _mutation_creator_params(project, monkeypatch).reasoning_effort is None
 
 
 def test_doctor_notes_gateway_model_vars_ignored_outside_gateway(project, monkeypatch):

@@ -18,8 +18,8 @@ Booley ships four:
   FPGA and report resources and timing.
 
 This page covers what they share: choosing Targets, common options, following
-a run, and reading the result. **Specialists**, the LLM-powered helpers that
-review code or test your testbench, have their own page:
+a run, and reading the result. **Specialists**, the helpers that review code
+(an LLM agent) or test your testbench (no LLM), have their own page:
 Specialists (host doc, not shipped).
 
 For everyday work Usage (host doc, not shipped) is enough: the Developer Agent picks the

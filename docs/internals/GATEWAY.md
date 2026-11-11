@@ -148,7 +148,7 @@ single place that decides this; `booley doctor` mirrors the condition in
 | Variable | Effect |
 | --- | --- |
 | `BOOLEY_GATEWAY_MODEL` | One model id (no whitespace or control characters), passed to Codex as is. An issued Sandbox forwards no model or effort pin. Replaces the model of every Specialist that runs on Codex (a `gpt-*` `[models]` entry, or no entry while Codex is the default Agent CLI), and Booley's internal model when Codex is the default, including the model Doctor's developer probe uses. A Specialist pinned to a `claude-*` model keeps it. |
-| `BOOLEY_GATEWAY_EFFORT` | Reasoning effort for every Codex Specialist call and the mutation creator and developer probe calls: `none` (no reasoning, not "unset"), `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` or `persistent` (case-insensitive). Unset, each call keeps its usual effort. Whether the gateway's model supports a level is the gateway's call. |
+| `BOOLEY_GATEWAY_EFFORT` | Reasoning effort for every Codex Specialist call and the developer probe calls: `none` (no reasoning, not "unset"), `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` or `persistent` (case-insensitive). Unset, each call keeps its usual effort. Whether the gateway's model supports a level is the gateway's call. |
 
 Notes:
 
