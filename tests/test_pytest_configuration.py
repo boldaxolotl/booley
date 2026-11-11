@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
@@ -210,7 +210,7 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
 
 def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
     """The native integration job owns every test that executes B-Wave."""
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -227,9 +227,7 @@ def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
             for name, value in os.environ.items()
             if not name.startswith("PYTEST_XDIST_")
         },
-        capture_output=True,
-        text=True,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 0, result.stderr
@@ -1080,7 +1078,7 @@ def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
     monkeypatch.setenv("DOCKER_LOG", str(docker_log))
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             str(REPOSITORY_ROOT / ".github/scripts/run_with_container_cleanup.sh"),
             "booley-ci-123-1-fifo",
@@ -1089,7 +1087,7 @@ def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
             "exit 7",
         ],
         cwd=REPOSITORY_ROOT,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 7
@@ -1258,7 +1256,7 @@ def test_goal_mode_unit_tests_run_only_when_named(
         if not name.startswith(("PYTEST_XDIST_", "BOOLEY_PYTEST_"))
         and name not in {"PYTEST_ADDOPTS", "BOOLEY_DIR"}
     }
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -1274,10 +1272,7 @@ def test_goal_mode_unit_tests_run_only_when_named(
         ],
         cwd=REPOSITORY_ROOT,
         env=environment,
-        capture_output=True,
-        text=True,
         timeout=SUBPROCESS_TIMEOUT_S,
-        check=False,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1403,7 +1398,7 @@ def test_suite_default_timeout_preserves_explicit_settings(
     }
     if environment_timeout is not None:
         environment["PYTEST_TIMEOUT"] = environment_timeout
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -1416,10 +1411,7 @@ def test_suite_default_timeout_preserves_explicit_settings(
         ],
         cwd=REPOSITORY_ROOT,
         env=environment,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1570,7 +1562,7 @@ def test_explicit_basetemp_keeps_only_failing_tmp_path(tmp_path: Path) -> None:
         for name, value in os.environ.items()
         if name != "PYTEST_ADDOPTS" and not name.startswith("PYTEST_XDIST_")
     }
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -1589,10 +1581,7 @@ def test_explicit_basetemp_keeps_only_failing_tmp_path(tmp_path: Path) -> None:
         ],
         cwd=project,
         env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     output = result.stdout + result.stderr
     assert result.returncode == 1, output
@@ -1609,13 +1598,10 @@ def _scoped_git_value(key: str, cwd: Path) -> str:
     Inherits the test's environment. The literal scope prefix lets callers
     tell a command-scope value from the same value in a host global config.
     """
-    result = subprocess.run(
+    result = run_bounded_child(
         ["git", "config", "--show-scope", "--get", key],
         cwd=cwd,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 

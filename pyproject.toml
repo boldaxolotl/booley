@@ -75,6 +75,14 @@ test = [
     # (tests expecting 130 get 1); hold 7.17.0 until upstream is fixed.
     "coverage==7.17.0",
     "diff-cover==10.6.0",
+    # The Mutant generator tests parse real Verilog (kept equal to hdl-parser).
+    "pyslang==12.1.0",
+]
+# Mutant generator parser (ADR 0088). Installed in the Sandbox image; the host
+# does not need it. Exact pin, held equal to base-python-requirements.txt by
+# tests/docker/test_sandbox_dockerfile.py.
+hdl-parser = [
+    "pyslang==12.1.0",
 ]
 quality = [
     "pyright==1.1.414",
@@ -108,6 +116,8 @@ dev = [
     # the quality extra repeats these pins for a smaller hosted install.
     "diff-cover==10.6.0",
     "pyright==1.1.414",
+    # Mutant generator parser (kept equal to the hdl-parser extra).
+    "pyslang==12.1.0",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files

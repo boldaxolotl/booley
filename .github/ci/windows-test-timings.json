@@ -980,8 +980,6 @@
     "tests/harness/test_init_agent_selection.py::test_nested_child_run_init_isolates_every_project_write[False-True]": 2.298455,
     "tests/harness/test_init_agent_selection.py::test_nested_child_run_init_isolates_every_project_write[True-False]": 2.058154,
     "tests/harness/test_init_agent_selection.py::test_nested_child_run_init_isolates_every_project_write[True-True]": 2.81156,
-    "tests/harness/test_init_flavor_image.py::TestBaseImageNote::test_base_step_explains_the_flavor_relationship": 6.656986,
-    "tests/harness/test_init_flavor_image.py::TestBaseImageNote::test_base_step_is_quiet_when_the_project_runs_the_base": 2.598,
     "tests/harness/test_init_goalsets.py::test_goalset_step_selects_init_destination_not_parent_project[False]": 0.006,
     "tests/harness/test_init_goalsets.py::test_goalset_step_selects_init_destination_not_parent_project[True]": 0.005,
     "tests/harness/test_init_goalsets.py::test_init_check_only_writes_nothing": 0.003,

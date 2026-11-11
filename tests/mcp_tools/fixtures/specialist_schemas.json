@@ -81,6 +81,10 @@
   "reviewer": {
     "additionalProperties": false,
     "properties": {
+      "base": {
+        "description": "Review only the --scope files changed since the merge-base of COMMIT and HEAD, uncommitted changes included; problems already present before the change are reported as non-blocking pre-existing observations",
+        "type": "string"
+      },
       "category": {
         "description": "Review category: rtl or tb",
         "enum": [

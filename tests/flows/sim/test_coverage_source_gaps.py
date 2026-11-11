@@ -5,8 +5,7 @@ from dataclasses import replace
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_json import freeze_coverage_mapping
 from booley.flows.sim.coverage_source_gaps import GAP_CODE, source_gap_report_lines
-from booley.flows.sim.coverage_transaction import run_coverage_target
-from tests.flows.sim.test_coverage_transaction import NativeExecution, Progress, gap_plan
+from tests.flows.sim.test_coverage_transaction import NativeExecution, gap_plan, run_target
 
 
 def _gap_paths(outcome):
@@ -33,7 +32,7 @@ def test_absent_points_warns_only_for_module_bearing_non_include_rtl(tmp_path):
         testbench={"tb/bench.sv": "module bench; endmodule\n"},
     )
     assert plan.rtl_candidates == ("rtl/counter.sv", "rtl/unused.sv")
-    _campaign, paths = _gap_paths(run_coverage_target(plan, NativeExecution(), Progress()))
+    _campaign, paths = _gap_paths(run_target(plan, NativeExecution()))
     assert paths == ["rtl/unused.sv"]
 
 
@@ -59,9 +58,7 @@ def test_presence_counts_even_when_no_scored_point_exists(tmp_path):
         f"rtl/{name}.sv": f"module {name}; endmodule\n"
         for name in ("fsm_only", "future_only", "absent")
     }
-    outcome = run_coverage_target(
-        gap_plan(tmp_path, sources), _ExtraRecordsExecution(), Progress()
-    )
+    outcome = run_target(gap_plan(tmp_path, sources), _ExtraRecordsExecution())
     campaign, paths = _gap_paths(outcome)
     assert campaign.collection["status"] == "complete"
     # absent.sv is the positive control: it has no record of any type.
@@ -73,7 +70,7 @@ def test_line_directives_and_token_joins_do_not_suppress_source_gaps(tmp_path):
         "rtl/remapped.sv": '`line 100 "logical.sv" 0\nmodule remapped; endmodule\n',
         "rtl/joined.sv": "`define J(a) a``_x\nmodule joined; endmodule\n",
     }
-    outcome = run_coverage_target(gap_plan(tmp_path, sources), NativeExecution(), Progress())
+    outcome = run_target(gap_plan(tmp_path, sources), NativeExecution())
     campaign, paths = _gap_paths(outcome)
     assert sorted(paths) == ["rtl/joined.sv", "rtl/remapped.sv"]
     assert not any(f.code == "COV_RTL_SOURCE_DISCOVERY_INCOMPLETE" for f in campaign.findings)

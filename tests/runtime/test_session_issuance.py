@@ -26,6 +26,7 @@ from tests.session_issuance_support import (
     plain_builder,
     stub_keeper,
 )
+from tests.subprocess_budget import run_bounded_child
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import host_config_path
@@ -2980,13 +2981,8 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
     )
 
     def git(*args, env=environment):
-        return subprocess.run(
-            [_HOST_GIT, "-C", str(project), *args],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
+        return run_bounded_child(
+            [_HOST_GIT, "-C", str(project), *args], timeout=10, env=env, check=True
         ).stdout.strip()
 
     git("init", "-q")
@@ -3000,13 +2996,13 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         "BOOLEY_DIR": stamp.project_data_source,
         "BOOLEY_MCP_MODE": "interactive",
     }
-    subprocess.run(
+    applied = run_bounded_child(
         [sys.executable, *dc.git_identity_command().split()[1:]],
         cwd=project,
         env=sandbox,
-        check=True,
         timeout=10,
     )
+    assert applied.returncode == 0, applied.stderr
     for env, expected in (
         (environment, "Human <human@example.invalid>"),
         (sandbox, "Dev <dev@localhost>"),
@@ -3501,7 +3497,11 @@ def test_real_grant_changes_refuse_refresh_then_allow_authorized_reseed(
         eda_grants.GrantCoordinator().revoke(project, "vivado")
     assert not runtime_spec.stamp_path(project).exists()
     images = Mock(spec=session_refresh.RuntimeImageOperations)
-    with pytest.raises(session_runtime.SessionError, match="cannot preserve the prior Sandbox"):
+    with pytest.raises(
+        session_runtime.SessionError,
+        match=r"cannot preserve the prior Sandbox.*"
+        r"`booley session down`, `booley init --seed`, and `booley session up`",
+    ):
         session_refresh.refresh(project, images)
     images.inspect.assert_not_called()
     images.prepare.assert_not_called()
