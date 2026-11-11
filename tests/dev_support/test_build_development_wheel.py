@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import reset_git_command_config
 from tests.source_checkout_support import copy_source_checkout
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import build_stamp
 
@@ -44,7 +45,7 @@ def isolated_git(tmp_path, monkeypatch):
 
 def init_git(root):
     def git(*args):
-        subprocess.run(
+        run_bounded_child(
             [
                 "git",
                 "-c",
@@ -55,7 +56,6 @@ def init_git(root):
             ],
             cwd=root,
             check=True,
-            capture_output=True,
             timeout=10,
         )
 
@@ -264,14 +264,10 @@ def test_source_launcher_runs_from_unrelated_cwd(tmp_path):
         f"(out/{WHEEL!r}).write_bytes(b'new')\n"
         "print('stub frontend log')\n"
     )
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-P", str(root / ".github/scripts/build_development_wheel.py")],
         cwd=tmp_path,
         env={**os.environ, "PYTHONPATH": str(frontend)},
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == str((root / "dist" / WHEEL).resolve()) + "\n"
@@ -297,7 +293,7 @@ def test_unresolvable_checkout_preserves_dist(
         checkout.rename(relocated)
         checkout = relocated
     elif layout == "no-head":
-        subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True, timeout=10)
+        run_bounded_child(["git", "init", str(checkout)], check=True, timeout=10)
     elif layout in {"redirected", "spoofed-root"}:
         other = tmp_path / "other"
         other.mkdir()
@@ -357,10 +353,9 @@ def test_unresolved_stamp_return_prevents_frontend(checkout, monkeypatch, capsys
 
 def test_linked_worktree_remains_supported(checkout, tmp_path, monkeypatch):
     linked = tmp_path / "linked"
-    subprocess.run(
+    run_bounded_child(
         ["git", "-C", str(checkout), "worktree", "add", "-b", "linked", str(linked)],
         check=True,
-        capture_output=True,
         timeout=10,
     )
     for tree in build_stamp._DEVELOPMENT_CONTEXT_TREES:
