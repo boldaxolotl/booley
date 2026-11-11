@@ -920,7 +920,8 @@ def test_reviewers_read_firmware_in_snapshot(tmp_path, monkeypatch, category):
     """Both Reviewers read non-HDL firmware under fw/; HDL there keeps its category."""
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
-    for name in ("rtl/dut.sv", "tb/tb.sv", "fw/boot.c", "fw/rom.sv", "fw/start.c"):
+    hdl_backups = ("fw/rom.sv.orig", "fw/rom.sv~")
+    for name in ("rtl/dut.sv", "tb/tb.sv", "fw/boot.c", "fw/rom.sv", "fw/start.c", *hdl_backups):
         (repo / name).parent.mkdir(exist_ok=True)
         (repo / name).write_text(f"// {name}\n")
     (repo / "design.core").write_text(
@@ -937,6 +938,7 @@ def test_reviewers_read_firmware_in_snapshot(tmp_path, monkeypatch, category):
         root = Path(params.cwd)
         seen.update({name: (root / name).is_file() for name in ("fw/boot.c", "fw/start.c")})
         seen["fw/rom.sv"] = (root / "fw/rom.sv").is_file()
+        seen["backups"] = any((root / name).is_file() for name in hdl_backups)
         seen["opposite"] = (root / ("tb/tb.sv" if category == "rtl" else "rtl/dut.sv")).is_file()
         return AgentResult(output="{}")
 
@@ -954,3 +956,5 @@ def test_reviewers_read_firmware_in_snapshot(tmp_path, monkeypatch, category):
     assert not seen["opposite"]
     # HDL under fw/ stays RTL: the testbench Reviewer still never sees it.
     assert seen["fw/rom.sv"] == (category == "rtl")
+    # Undeclared HDL backups are never firmware, so neither Reviewer sees them.
+    assert not seen["backups"]

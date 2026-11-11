@@ -115,8 +115,7 @@ def is_firmware_path(work_dir: Path | str, path: Path | str) -> bool:
     from booley.fusesoc.fusesoc_registry import canonical_project_path
 
     relative = PurePosixPath(canonical_project_path(work_dir, path))
-    return (
-        not relative.is_absolute()
-        and relative.parts[:1] == (FIRMWARE_DIR,)
-        and relative.suffix.lower() not in _HDL_SUFFIXES
-    )
+    # Any HDL suffix keeps a file RTL, as Source Isolation's source detection does, so
+    # backups such as ``rom.sv.orig`` or ``rom.sv~`` never become firmware.
+    hdl_named = any(suffix.lower().rstrip("~") in _HDL_SUFFIXES for suffix in relative.suffixes)
+    return not relative.is_absolute() and relative.parts[:1] == (FIRMWARE_DIR,) and not hdl_named

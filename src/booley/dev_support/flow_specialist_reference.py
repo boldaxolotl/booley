@@ -230,7 +230,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be "
         "mutation scope. Declared opposite-category sources are refused in either mode; "
         "unregistered scoped sources retain the registration warning and receive only an exact "
-        "per-file category grant. Both Reviewers also read firmware, the non-HDL files under "
+        "per-file category grant. Outside Goal Mode, both Reviewers also read firmware, the non-HDL files under "
         "`fw/`, as read-only context: they never report findings in it, such a finding is shown "
         "as out of scope, and a `scope` of only firmware is refused.",
         "",

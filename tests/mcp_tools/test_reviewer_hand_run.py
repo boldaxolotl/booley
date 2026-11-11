@@ -161,6 +161,7 @@ def test_completed_review_and_verify_exit_zero_without_fail_on(
     ("fail_on", "severity", "expected"),
     [
         ("major", "MAJOR", 1),
+        ("major", "CRITICAL", 1),
         ("major", "MINOR", 0),
         ("critical", "CRITICAL", 1),
         ("critical", "MAJOR", 0),

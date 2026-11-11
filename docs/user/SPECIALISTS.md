@@ -21,9 +21,9 @@ other side. A reviewer looking at the testbench never reads the RTL, so it
 judges the tests against the spec rather than against what the RTL happens to
 do. [Features](FEATURES.md#independent-specialists) explains why this matters.
 
-Firmware is the exception: both Reviewers can read it, as context. Firmware
-means non-HDL files under the project's `fw/` directory; HDL under `fw/` still
-counts as RTL. A Reviewer never reports findings in firmware (a finding it
+Outside Goal Mode, firmware is the exception: both Reviewers can read it, as
+context. Firmware means non-HDL files under the project's `fw/` directory; HDL
+under `fw/` (backups like `rom.sv.orig` included) still counts as RTL. A Reviewer never reports findings in firmware (a finding it
 reports there is shown as out of scope and never counts as open), and a
 `--scope` made only of firmware files is refused.
 
