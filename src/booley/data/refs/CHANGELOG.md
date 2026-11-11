@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Job resource history keeps the newest 20 runs per Target, Job phase, flags,
+  and Test Run with no overall cap, and deletes a group that has had no run in
+  90 days. Peak memory now includes processes forked by any thread of a Job
+  command, and counts the Job's temporary files only when `TMPDIR` is on
+  tmpfs (they are still recorded as the temporary-file peak); earlier runs
+  keep their earlier peak.
 - A failed test function that a Cocotb Target without registered Tests discovered
   now gets one `booley flow sim --target <name> --seed N` command that reruns the
   whole batch, instead of a `--test=<name>@N` command that Booley refused with
