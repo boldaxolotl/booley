@@ -17,6 +17,7 @@ from booley.harness.setup.project_git_hook_bundle import (
     BUNDLE_NAME,
     build_project_git_hook_bundle,
 )
+from tests.subprocess_budget import run_bounded_child
 
 
 def test_bundle_is_deterministic_and_has_fixed_archive_metadata() -> None:
@@ -80,14 +81,8 @@ def test_bundle_runs_without_ambient_booley_package(tmp_path: Path) -> None:
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(fake)
-    result = subprocess.run(
-        ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)],
-        cwd=project,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+    result = run_bounded_child(
+        ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)], cwd=project, env=env
     )
 
     assert result.returncode == 0, result.stderr
@@ -99,13 +94,7 @@ def test_launcher_rejects_missing_or_unknown_commands(tmp_path: Path, argv: list
     bundle = tmp_path / BUNDLE_NAME
     bundle.write_bytes(build_project_git_hook_bundle().content)
 
-    result = subprocess.run(
-        ["python3", "-I", "-S", str(bundle), *argv],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    result = run_bounded_child(["python3", "-I", "-S", str(bundle), *argv])
 
     assert result.returncode == 2
     assert "project-git-hooks.pyz" in result.stderr
@@ -182,19 +171,15 @@ def test_bundled_hook_accepts_destination_history_and_blocks_new_identity(
 
 
 def _bundled_git(project: Path, env: dict[str, str], *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(project), *args],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
+    return run_bounded_child(
+        ["git", "-C", str(project), *args], env=env, check=True
     ).stdout.strip()
 
 
 def _bundled_push(
     project: Path, bundle: Path, destination: Path, env: dict[str, str], sha: str
 ) -> subprocess.CompletedProcess[str]:
+    # Kept on subprocess.run: needs stdin data (pre-push ref line)
     return subprocess.run(
         [sys.executable, "-I", "-S", str(bundle), "pre-push", "destination", str(destination)],
         input=f"refs/heads/main {sha} refs/heads/main {'0' * 40}\n",
@@ -216,9 +201,7 @@ def _bundled_hook_environment(minimum):
             if env.get("BOOLEY_TEST_REQUIRE_MIN_GIT") == "1":
                 pytest.fail("required minimum Git bundle executable absent")
             pytest.skip("optional bundled minimum Git execution needs BOOLEY_TEST_MIN_GIT")
-        version = subprocess.run(
-            [executable, "--version"], capture_output=True, text=True, check=True, timeout=10
-        )
+        version = run_bounded_child([executable, "--version"], check=True, timeout=10)
         assert re.fullmatch(r"git version 2\.37\.2(?:\.windows\.\d+)?", version.stdout.strip())
         env["PATH"] = str(Path(executable).resolve().parent) + os.pathsep + env["PATH"]
     return env
@@ -228,7 +211,7 @@ def test_bundle_identifier_tiers_refresh_from_current_config(tmp_path):
     project = tmp_path / "project"
     directory = project / ".booley"
     directory.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(project)], check=True, timeout=30)
+    run_bounded_child(["git", "init", "-q", str(project)], check=True)
     bundle = directory / BUNDLE_NAME
     first = build_project_git_hook_bundle()
     bundle.write_bytes(first.content)
@@ -249,13 +232,8 @@ def test_bundle_identifier_tiers_refresh_from_current_config(tmp_path):
         message.write_text(
             "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n"
         )
-        result = subprocess.run(
-            ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)],
-            cwd=project,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+        result = run_bounded_child(
+            ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)], cwd=project
         )
         assert result.returncode == 0, result.stderr
         assert message.read_text() == expected
