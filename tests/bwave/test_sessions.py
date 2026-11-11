@@ -674,6 +674,7 @@ def test_concurrent_registrations_keep_every_alias(monkeypatch, tmp_path):
         for prefix in ("a", "b")
     ]
     for child in children:
+        # Kept on communicate: both children must run concurrently to race the store.
         _, stderr = child.communicate(timeout=120)
         assert child.returncode == 0, stderr
 

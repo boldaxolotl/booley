@@ -22,6 +22,7 @@ from booley.bwave import cli as bwave_cli
 from booley.bwave.sessions import _load_sessions
 from booley.flows.base import SubprocessResult
 from tests.flows.sim.campaign_boundary import CampaignSimRun, Launch, run_campaign_sim
+from tests.subprocess_budget import run_bounded_child
 
 # The child prints the trace a bwave argv resolves to (what ``bwave`` would query).
 _RESOLVE_CHILD = (
@@ -88,14 +89,7 @@ def _bwave_resolves(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess[s
         "TMP": shell_tmp,
         "PYTHONPATH": str(Path(booley.__file__).resolve().parents[1]),
     }
-    return subprocess.run(
-        [sys.executable, "-c", _RESOLVE_CHILD, *argv],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
+    return run_bounded_child([sys.executable, "-c", _RESOLVE_CHILD, *argv], env=env)
 
 
 def test_traced_run_registers_the_target_session_for_a_later_bwave_process(
