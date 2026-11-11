@@ -19,6 +19,7 @@ from fusesoc.vlnv import Vlnv
 from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.eda_failures import new_attempt_token
+from booley.flows.job_resources import resolved_source_bytes
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
@@ -62,6 +63,7 @@ from booley.flows.sim.execution.contract import (
     pre_sim_failure_message,
 )
 from booley.flows.sim.execution.engine import (
+    history_test_names,
     launch_environment,
     prepare_simulation_work,
     simulation_adapter_kind,
@@ -144,6 +146,8 @@ class VerilatorCoverageExecution:
         self._trace_mode = "vcd_fifo"
         self._attempt_run_cwd: Path | None = None
         self._snapshot_bound = False
+        # Size of the resolved Target's files, labelled on every later command.
+        self._source_bytes: int | None = None
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         """Prepare and compile the collector-selected isolated build variant."""
@@ -153,6 +157,7 @@ class VerilatorCoverageExecution:
         self._build_variant = None
         self._attempt_run_cwd = None
         self._snapshot_bound = False
+        self._source_bytes = None
         commands = self._commands()
         if commands and self._build_access() == "legacy-per-test":
             return SimulationBuildResult(
@@ -173,6 +178,7 @@ class VerilatorCoverageExecution:
                 prepared = self._prepare_build(request, build_root=candidate)
                 if isinstance(prepared, str):
                     return SimulationBuildResult(False, prepared)
+                self._source_bytes = resolved_source_bytes(prepared.resolved)
                 if project_compile_surface(compile_surface) != sources_before:
                     raise SimulationBuildSlotError(
                         "Project compile inputs changed during coverage preparation"
@@ -269,6 +275,7 @@ class VerilatorCoverageExecution:
             log=prepare_attempt_log(
                 prepared.build_root, self._handle.selector, token, self._handle.project_root
             ),
+            source_bytes=self._source_bytes,
         )
         announce_unit("coverage: build/elaboration", target=self._handle.selector)
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
@@ -418,6 +425,8 @@ class VerilatorCoverageExecution:
                 self._handle.project_root,
             ),
             tests=(request.test.name,),
+            history_tests=history_test_names(self._handle, prepared, work.test_runs),
+            source_bytes=self._source_bytes,
         )
         try:
             executed = execute_adapter_attempt(
@@ -437,6 +446,7 @@ class VerilatorCoverageExecution:
                 "postprocessing",
                 evidence_root=prepared.build_root,
                 attempt_token=transport.attempt_token,
+                source_bytes=self._source_bytes,
             )
         return replace(_simulation_run_result(executed, request.test.name), pre_sim=pre_sim)
 
@@ -452,7 +462,7 @@ class VerilatorCoverageExecution:
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
         """Run one collector utility in its requested artifact directory."""
-        observe_stage(self._handle.selector, "postprocessing")
+        observe_stage(self._handle.selector, "postprocessing", source_bytes=self._source_bytes)
         announce_unit(f"coverage: {request.argv[0]}", target=self._handle.selector)
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
         script = f"cd {shlex.quote(str(request.cwd))}\nexec {shlex.join(request.argv)}"
