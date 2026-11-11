@@ -23,14 +23,20 @@ combination before merge.
 ## Main pushes and the nightly run
 
 A push to `main` runs a narrow tier: `changes`, `release-semantic`,
-`build-dist`, `package-artifacts`, `bwave-smoke`, then `ci-required` and `ci-metrics`
+`build-dist`, `bwave-smoke`, then `ci-required` and `ci-metrics`
 (`MAIN_PUSH_JOBS` in `.github/scripts/ci_changes.py`). Mergify merges a batch's
 PRs one by one; the merge of the batch's last PR reproduces the tree its queue
 candidate already passed, so the suite would only repeat that result. The
 commits before it are untested intermediate trees that no later run tests on
 their own (the nightly run below covers `main`'s tip). `bwave-smoke` stays because
 only a `main` push may write the shared `sandbox-substrate` build cache, and it
-installs the wheel `build-dist` builds.
+installs the wheel `build-dist` builds. `package-artifacts` is absent because
+a queue candidate whose paths select it already ran its isolated host install,
+direct wheel and sdist checks on the same tree; drift in the unconstrained host
+install otherwise surfaces in the nightly run. The nightly run also refreshes
+the shared `pyproject.toml` and `constraints.txt` pip cache, so after a
+dependency merge, until that night's run, a PR's first run restores an older
+entry by prefix, purges it and reinstalls; a `main` push no longer refreshes it.
 
 `build-dist` builds the wheel and sdist once and uploads them as `pr-dist`;
 the classifier selects it whenever `package-artifacts`, `bwave-smoke` or

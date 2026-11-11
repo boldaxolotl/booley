@@ -999,7 +999,6 @@ class _CoverageFailedBuildExecutor:
             "sim",
             2,
             directory / "coverage.json",
-            directory / "sim.json",
             {"error": "collector build transport unavailable"},
         )
         return _publish_coverage_build_failure(

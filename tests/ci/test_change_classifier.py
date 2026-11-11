@@ -1133,7 +1133,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
 
 
 def test_main_push_runs_only_the_cache_writing_tier(tmp_path: Path) -> None:
-    """The queue already validated main's tree; a main push re-runs only the image build."""
+    """The queue already validated main's tree; a main push runs only `build-dist` and `bwave-smoke`."""
     repo, base = _repository(tmp_path)
     _write(repo, "src/booley/data/docker/Dockerfile.base", "FROM scratch\n")
     head = _commit(repo, "stable base change")
@@ -1144,12 +1144,10 @@ def test_main_push_runs_only_the_cache_writing_tier(tmp_path: Path) -> None:
         "changes",
         "release-semantic",
         "build-dist",
-        "package-artifacts",
         "bwave-smoke",
     }
     assert {job for job, selected in _jobs(outputs).items() if selected} == {
         "build-dist",
-        "package-artifacts",
         "bwave-smoke",
     }
     # bwave-smoke still learns which images this push must build.

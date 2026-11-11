@@ -119,7 +119,9 @@ Run these commands on the host, outside the Sandbox:
     provisioning = "host"
     ```
 
-5. Run `booley init --seed`, then recreate the Sandbox so it gets the mount.
+5. Apply the change as [Applying Sandbox
+   changes](SANDBOX.md#applying-sandbox-changes) describes after a Grant
+   change, so the Sandbox gets the mount.
 
 `booley projects` lists every Project on this machine with its Grants. If
 Vivado will not start, see
@@ -157,13 +159,16 @@ The RISC-V image (`booley-sandbox-riscv`) adds the xPack RISC-V GCC
 `609dbe0b9994154833039209fa37151e7c05e9d4` (`1.1.1-dev`). This is upstream
 Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation needs.
 
-To see what your image actually has:
+To see what your image actually has, run these on the host:
 
 ```bash
-booley doctor -v                              # version lines for Verilator, Yosys, Icarus, sv2v
+booley doctor -v                              # host only: version lines from the Sandbox image for Verilator, Yosys, Icarus, sv2v
 booley session enter -- verilator --version   # any EDA tool
 booley session enter -- python -m pip list    # Python packages
 ```
+
+Inside the Sandbox, `booley doctor -v` prints no version lines; run the tool
+directly (`verilator --version`).
 
 ## Missing a tool?
 

@@ -50,11 +50,11 @@ class ReviewScopeContract:
 
     def is_cocotb_file(self, path: str) -> bool:
         """Return whether *path* is a Python testbench in this scope."""
-        return _normalize(path) in self.cocotb_files
+        return normalize_scope_path(path) in self.cocotb_files
 
     def contains_file(self, path: str) -> bool:
         """Return whether *path* is one of the explicitly scoped sources."""
-        normalized = _normalize(path)
+        normalized = normalize_scope_path(path)
         return (
             normalized in self.cocotb_files
             or normalized in self.hdl_files
@@ -62,7 +62,8 @@ class ReviewScopeContract:
         )
 
 
-def _normalize(path: str) -> str:
+def normalize_scope_path(path: str) -> str:
+    """Return *path* with ``/`` separators and no leading ``./``."""
     value = path.replace("\\", "/").removeprefix("./")
     return str(PurePosixPath(value))
 
@@ -78,7 +79,7 @@ def resolve_review_scope(
     support: set[str] = set()
     unsupported: list[str] = []
     for raw_path in scope:
-        path = _normalize(raw_path)
+        path = normalize_scope_path(raw_path)
         suffix = PurePosixPath(path).suffix.lower()
         if suffix == ".py" and category == "tb":
             cocotb.add(path)
