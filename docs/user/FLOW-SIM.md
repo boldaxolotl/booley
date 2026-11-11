@@ -315,11 +315,14 @@ normal run, even if a test then fails.
 
 `--mode elab-only-standalone` also elaborates each reusable RTL module on its
 own. This catches a module that compiles only thanks to a define or include
-that the Target happens to supply. `standalone_frontend` chooses the compiler
-for that sweep: `auto` (default) uses Verilator when it is installed, otherwise
-Icarus. When that compiler differs from the Target's and can't parse something
-the Target build accepted, the module is reported as ungraded rather than as a
-design failure; if no other module fails, the run exits `2`.
+that the Target happens to supply. Each module is elaborated with the
+simulator of every selected Target that uses it (Icarus or Verilator), together
+with only the package and interface files of those Targets. A module shared by
+an Icarus Target and a Verilator Target is compiled by both, within the same
+sweep timeout, so a mixed-simulator project can take up to twice as long. A
+parse error from the Target's own compiler is a design failure (exit `1`) and
+the report names the compiler. Delete `[flows.sim].standalone_frontend` if
+your `booley.toml` sets it: every Flow refuses to run while it is set.
 
 Both modes skip Pre-Sim Commands, and refuse options that only make sense when
 tests run, such as `--test`, `--trace` and `--no-kill`. A compile error in the
@@ -497,7 +500,6 @@ shown are the defaults. Coverage settings are on the
 # trace_files = []                   # see Waveforms
 # max_rundir_bytes = 5368709120      # stop a run that writes more than 5 GiB; 0 = off
 # sim_time_grace_s = 180             # cocotb: stop a run whose clock never starts; 0 = off
-# standalone_frontend = "auto"       # auto | verilator | iverilog; see Elaboration checks
 
 [flows.sim.compiler_cache]
 # enabled = true
