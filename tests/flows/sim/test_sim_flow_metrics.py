@@ -227,3 +227,26 @@ def test_coverage_run_with_timed_out_test_keeps_simulation_metrics(
 
     # Collection fails after a timeout: no coverage value, but the failing test is a value.
     assert values.plain == {"tests_failed": 1, "tests_total": 2}
+
+
+def test_boolean_cycle_count_gives_no_value(tmp_path: Path) -> None:
+    from booley.flows.sim.metrics import simulation_flow_metrics
+
+    outcome = _simulation_outcome(
+        tmp_path, [_row("flag", cycle_count=True), _row("count", cycle_count=3)]
+    )
+
+    assert simulation_flow_metrics(outcome).per_test == {"cycle_count": {"count": 3}}
+
+
+def test_unreadable_coverage_campaign_produces_no_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.metric_declarations import MetricsUnavailableError
+    from booley.flows.sim.metrics import coverage_campaign_path, simulation_flow_metrics
+
+    outcome = _coverage_outcome(tmp_path, monkeypatch, _MixedCoverageExecution())
+    coverage_campaign_path(outcome).write_bytes(b"{ not json")
+
+    with pytest.raises(MetricsUnavailableError, match="Coverage Campaign could not be read"):
+        simulation_flow_metrics(outcome)

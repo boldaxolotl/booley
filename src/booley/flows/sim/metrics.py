@@ -8,9 +8,9 @@ types and the emission funnel live in :mod:`booley.flows.metric_declarations`.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import Path
 
+from booley.core.boundary import as_int
 from booley.flows.metric_declarations import (
     Better,
     CostTier,
@@ -23,7 +23,10 @@ from booley.flows.metric_declarations import (
 )
 from booley.flows.sim.campaign.coordinator import CampaignOutcome
 from booley.flows.sim.campaign.test_run_report import observation_grade
-from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+from booley.flows.sim.coverage_reference import (
+    CoverageCampaignReferenceError,
+    resolve_coverage_campaign_reference,
+)
 
 # Coverage Campaign metric key (``coverage_policy``) -> declared metric name.
 COVERAGE_METRIC_NAMES = {
@@ -77,7 +80,14 @@ def _coverage_percents(outcome: CampaignOutcome) -> dict[str, MetricValue]:
     round 20,000 of 20,001 points up to ``100.0`` where the coverage floor compares the
     exact fraction.
     """
-    campaign = resolve_coverage_campaign_reference(coverage_campaign_path(outcome)).loaded.campaign
+    try:
+        campaign = resolve_coverage_campaign_reference(
+            coverage_campaign_path(outcome)
+        ).loaded.campaign
+    except CoverageCampaignReferenceError as error:
+        raise MetricsUnavailableError(
+            f"the Coverage Campaign could not be read: {error}"
+        ) from error
     if campaign.collection["status"] != "complete":
         return {}
     return {
@@ -85,10 +95,6 @@ def _coverage_percents(outcome: CampaignOutcome) -> dict[str, MetricValue]:
         for rollup in campaign.rollups
         if rollup.metric in COVERAGE_METRIC_NAMES and rollup.eligible_points > 0
     }
-
-
-def _names(rows: Iterable[str]) -> str:
-    return ", ".join(sorted(rows))
 
 
 def simulation_flow_metrics(outcome: CampaignOutcome) -> FlowMetricValues:
@@ -109,7 +115,7 @@ def simulation_flow_metrics(outcome: CampaignOutcome) -> FlowMetricValues:
     errored = [str(row["test_run"]) for row, grade in grades if grade == "error"]
     if errored:
         raise MetricsUnavailableError(
-            f"Test Runs ended in infrastructure error, with no verdict: {_names(errored)}"
+            f"Test Runs ended in infrastructure error, with no verdict: {', '.join(sorted(errored))}"
         )
     plain: dict[str, MetricValue | None] = {
         "tests_failed": sum(grade != "pass" for _, grade in grades),
@@ -120,8 +126,8 @@ def simulation_flow_metrics(outcome: CampaignOutcome) -> FlowMetricValues:
         plain |= _coverage_percents(outcome)
     cycles: dict[str, MetricValue | None] = {}
     for row, grade in grades:
-        count = row["cycle_count"]
-        if grade == "pass" and isinstance(count, int):
+        count = as_int(row["cycle_count"])  # rejects bool, which is an int subclass
+        if grade == "pass" and count is not None:
             cycles[str(row["test_run"])] = count
     declarations = COVERAGE_METRIC_DECLARATIONS if is_coverage_run else SIM_METRIC_DECLARATIONS
     return metric_values(

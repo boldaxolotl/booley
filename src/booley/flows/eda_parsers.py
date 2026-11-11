@@ -33,7 +33,7 @@ VERILATOR_ERROR_RE = re.compile(r"^%Error.*", re.MULTILINE)
 # One Verilator error finding. The rule suffix and the ``file:line:col:`` location are
 # both optional (``%Error: Internal Error`` has neither); the message is what is left.
 VERILATOR_ERROR_FINDING_RE = re.compile(
-    r"^%Error(?:-(?P<rule>[A-Z0-9_]+))?:\s+"
+    r"^%Error(?:-(?P<rule>[A-Z0-9_]+))?:[ \t]+"
     r"(?:(?P<file>[^:\s][^:\n]*):(?P<line>\d+):(?:\d+:)?\s+)?"
     r"(?P<message>.*)$",
     re.MULTILINE,
