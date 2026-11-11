@@ -220,8 +220,8 @@ g++ "$work/main.cc" -o "$work/main-cpp"
 name = "EDA command diagnostics"
 command = '''
 iverilog -V >/dev/null 2>&1
-test "$(verilator --version | awk '{print $2}')" = "5.052"
-grep -Fx 'Verilator source revision: ea338be98e1e838d3518809ce8899f85a009963c' /usr/local/share/verilator/BOOLEY-SOURCE.txt
+test "$(verilator --version | awk '{print $2}')" = "5.054"
+grep -Fx 'Verilator source revision: bbb60a403932a9f695cb6ff001ceb73de6ad9234' /usr/local/share/verilator/BOOLEY-SOURCE.txt
 yosys -V >/dev/null
 openroad -version >/dev/null
 sv2v --version >/dev/null

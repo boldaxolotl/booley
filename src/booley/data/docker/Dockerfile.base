@@ -96,9 +96,9 @@ RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from sou
 # fix (a6f4dd031f50387ae0169490c6d8843b91dd1c07). Keep the full immutable
 # release commit beside the human-readable tag.
 # renovate: datasource=github-tags depName=verilator/verilator
-ARG VERILATOR_VERSION=v5.052
+ARG VERILATOR_VERSION=v5.054
 # pin-companion: VERILATOR_VERSION
-ARG VERILATOR_REF=ea338be98e1e838d3518809ce8899f85a009963c
+ARG VERILATOR_REF=bbb60a403932a9f695cb6ff001ceb73de6ad9234
 RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from source (this takes a while)..." \
     && apt-get update && apt-get install -y --no-install-recommends help2man liblz4-dev \
     && rm -rf /var/lib/apt/lists/* \
