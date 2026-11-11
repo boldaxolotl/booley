@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -365,6 +366,7 @@ def test_worktree_hook_writes_main_activity(tmp_path, monkeypatch):
     """Run as the image runs it, from a linked worktree with no BOOLEY_DIR (#2603)."""
     main, worktree = enter_worktree(tmp_path, monkeypatch)
     payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "t1", "tool_name": "x"})
+    # Kept on subprocess.run: needs stdin data and binary output.
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SCRIPT), "codex"],
         input=payload.encode(),
@@ -421,6 +423,7 @@ def test_script_runs_standalone_without_site_packages_or_booley(tmp_path):
     project.mkdir()
     (project / "booley.toml").write_text("# Project\n")
     payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "t1", "tool_name": "x"})
+    # Kept on subprocess.run: needs stdin data and binary output.
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SCRIPT), "codex"],
         input=payload.encode(),
@@ -688,6 +691,7 @@ def test_session_start_from_a_real_worktree_records_via_main(tmp_path, monkeypat
     """Run as the image runs it, from a linked worktree with no BOOLEY_DIR."""
     main, worktree = enter_worktree(tmp_path, monkeypatch)
     payload = json.dumps(session_start("conv-9", worktree)).encode()
+    # Kept on subprocess.run: needs stdin data and binary output.
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SCRIPT), "claude"],
         input=payload,
@@ -808,3 +812,33 @@ def test_hook_worktree_rule_matches_the_package(tmp_path):
         assert hook._worktree_name(path, project) == interactive_worktree_name(path, project), path
     assert hook._worktree_name(project / "worktrees/s1", project) == "s1"
     assert hook._worktree_name(tmp_path, project) is None
+
+
+def test_resume_reader_reads_the_records_the_hook_writes(tmp_path):
+    # Bug caught: a reader that disagrees with the hook's record layout or its identity of a
+    # worktree, so a resume reopens a replaced worktree or none at all.
+    from booley.runtime import conversation_records
+
+    project = tmp_path / "project"
+    worktree = add_worktree(project, "s1")
+    cwd = worktree / "sub"
+    assert hook.record("codex", session_start("t1", cwd), project, NOW)
+
+    found = conversation_records.find(project, "codex", "t1")
+
+    assert found == conversation_records.ConversationRecord(
+        client="codex",
+        conversation_id="t1",
+        cwd=str(cwd),
+        worktree="s1",
+        handle=None,
+        process_key=None,
+        git_stamp=(worktree / ".git").stat().st_mtime_ns,
+    )
+    assert conversation_records.find(project, "claude", "t1") is None
+    assert conversation_records.is_live(project, found)
+    assert conversation_records.live(project) == [found]
+    # The worktree is replaced: same name, another incarnation.
+    os.utime(worktree / ".git", ns=(1, 1))
+    assert not conversation_records.is_live(project, found)
+    assert conversation_records.live(project) == []

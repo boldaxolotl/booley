@@ -34,7 +34,9 @@ class NamingUnsupportedError(ValueError):
     """This host or Codex install cannot carry a Booley tab handle; plain Codex still starts."""
 
 
-def _named_command(project_root: Path, wait_s: float | None) -> tuple[str, list[str], str]:
+def _named_command(
+    project_root: Path, wait_s: float | None, predecessors: tuple[str, ...]
+) -> tuple[str, list[str], str]:
     """Reserve the handle and build the named command; raise when naming is unavailable."""
     if not sys.platform.startswith("linux"):
         raise NamingUnsupportedError("Codex tab handles need Linux")
@@ -46,22 +48,31 @@ def _named_command(project_root: Path, wait_s: float | None) -> tuple[str, list[
     identity = capture_process_identity(os.getpid())
     if identity is None:
         raise ValueError("launch process identity is unavailable")
-    handle = reserve_codex_chat(resolve_common_booley_dir(project_root), identity, wait_s=wait_s)
+    handle = reserve_codex_chat(
+        resolve_common_booley_dir(project_root),
+        identity,
+        wait_s=wait_s,
+        predecessors=predecessors,
+    )
     return program, [*before, handle, *after], handle
 
 
 def command(
-    project_root: Path, *, wait_s: float | None = None, strict: bool = False
+    project_root: Path,
+    *,
+    wait_s: float | None = None,
+    strict: bool = False,
+    predecessors: tuple[str, ...] = (),
 ) -> tuple[str, list[str], str | None]:
     """Return the program, its argv and the reserved handle (``None`` when unnamed).
 
     Naming is best effort: an unsupported launcher retains normal startup and an error
     adds a NOTE. With *strict*, every reason the handle cannot be reserved is raised
     instead, for a caller that cannot start without one. *wait_s* bounds the wait for
-    the Session writer lock.
+    the Session writer lock. A resumed tab keeps the handle of its *predecessors*.
     """
     try:
-        return _named_command(project_root, wait_s)
+        return _named_command(project_root, wait_s, predecessors)
     except NamingUnsupportedError:
         if strict:
             raise

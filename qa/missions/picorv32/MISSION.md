@@ -359,6 +359,6 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 - The pinned demo already ships `goalsets/zbb.md` and `specs/zbb.md` for its own Zbb Goal. Area 6
   uses this mission's Goalset and prompts; the child must not pick up the demo's `zbb` Goalset.
 - The demo has no `[agent]` pin, so Booley defaults to Claude Code. To drive the run with Codex, add
-  `[agent]` with `provider = "codex"` to `booley.toml` before the first `booley init`.
+  `[agent]` with `default = "codex"` to `booley.toml` before the first `booley init`.
 - The demo ships `doctor-waivers.toml`. Waived Doctor rows are expected and are not warnings; some
   waivers apply only in GitHub Codespaces.

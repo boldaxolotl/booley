@@ -413,7 +413,7 @@ class TestLoadBackendConfig:
             get_backend_config()
         msg = str(exc.value)
         assert "BOOLEY_PRIMARY_PROVIDER=claude" in msg
-        assert "[agent] provider" in msg
+        assert "[agent] default" in msg
 
     def test_lazy_falls_back_to_agent_app_in_container(self, tmp_path, monkeypatch):
         """QA-9: a bare specialist run with no hand-off resolves via BOOLEY_AGENT_APP.

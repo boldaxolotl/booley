@@ -83,11 +83,18 @@ class HandleMap:
         return self.entries[target]
 
     def drop(self, keys: set[str]) -> None:
-        """Remove *keys* and every alias pointing at them; an empty map restarts numbering."""
+        """Remove *keys* and every alias pointing at them; an empty map restarts numbering.
+
+        An alias of a removed alias goes too: the Codex ownership marker of a resumed tab
+        points at the tab's own key, which is itself an alias of the first tab's entry.
+        """
         for key in keys:
             self.entries.pop(key, None)
+        removed = {name for name, target in self.aliases.items() if target in keys}
         self.aliases = {
-            name: target for name, target in self.aliases.items() if target not in keys
+            name: target
+            for name, target in self.aliases.items()
+            if target not in keys and target not in removed
         }
         if not self.entries:
             self.aliases.clear()
@@ -230,9 +237,18 @@ def session_writer(
     return _writer(booley_dir / "runtime/sessions", wait_s=wait_s, booley_dir=booley_dir)
 
 
-def reserve_session_handle(booley_dir: Path, key: str, *, wait_s: float | None = None) -> str:
-    """Reserve the Session handle for *key*, waiting up to *wait_s* for the writer lock."""
-    return HandleStore(booley_dir).reserve(key, "S", wait_s=wait_s)
+def reserve_session_handle(
+    booley_dir: Path,
+    key: str,
+    *,
+    wait_s: float | None = None,
+    predecessors: tuple[str, ...] = (),
+) -> str:
+    """Reserve the Session handle for *key*, waiting up to *wait_s* for the writer lock.
+
+    *key* keeps the handle of the first of *predecessors* that has one (a resumed tab).
+    """
+    return HandleStore(booley_dir).reserve(key, "S", wait_s=wait_s, predecessors=predecessors)
 
 
 def register_job(

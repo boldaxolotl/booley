@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -11,19 +10,14 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime import dashboard_tasks
 from booley.runtime.session_issuance import RuntimeSpecError
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture
 def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     project = tmp_path / "proj"
     (project / ".booley").mkdir(parents=True)
-    subprocess.run(
-        ["git", "init", str(project)],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", str(project)], check=True)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     return project
 
