@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 
@@ -90,7 +91,7 @@ def _run_report(tmp_path: Path, runner_temp: Path) -> subprocess.CompletedProces
         fake = bin_dir / name
         fake.write_text(body, encoding="utf-8")
         fake.chmod(0o755)
-    return subprocess.run(
+    return run_bounded_child(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
         env={
             # BASH_ENV would make a non-interactive bash source a host file.
@@ -98,10 +99,7 @@ def _run_report(tmp_path: Path, runner_temp: Path) -> subprocess.CompletedProces
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "RUNNER_TEMP": str(runner_temp),
         },
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=60,
     )
 
 
