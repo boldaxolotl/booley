@@ -47,7 +47,7 @@ from booley.flows.test_runs import build_test_run, test_run_document
 from booley.targets.catalog import TargetCatalog
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 __all__ = ["project_alias"]
 
@@ -923,14 +923,7 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
     )
 
     root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
-    current = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    ).stdout.strip()
+    current = run_bounded_child(["git", "rev-parse", "HEAD"], cwd=root, check=True).stdout.strip()
     _candidate, store, _baseline, baseline_store = _linked_campaign_stores(
         tmp_path, topology_revisions=(current, revision)
     )
