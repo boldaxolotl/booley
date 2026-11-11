@@ -101,6 +101,8 @@ def test_tests_do_not_patch_shared_clock() -> None:
     for path in sorted(_TESTS_ROOT.rglob("*.py")):
         scanned.add(path.resolve())
         relative = path.relative_to(_TESTS_ROOT).as_posix()
+        if relative.startswith("goals/"):
+            continue  # CI does not run Goal Mode unit tests (#3329), so it cannot gate them
         hits.extend(_shared_clock_patches(path.read_text(encoding="utf-8"), f"tests/{relative}"))
     assert Path(__file__).resolve() in scanned, "scan did not discover the guard's own file"
     assert not hits, (
