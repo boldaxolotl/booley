@@ -49,6 +49,7 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
     """
 
     def routed(args: list[str], *, timeout: float = 30, executable: str = "docker"):
+        # Unbounded child: stands in for production _run_docker; tests' subprocess.run fakes must intercept this call
         return subprocess.run(
             [executable, *args],
             capture_output=True,
