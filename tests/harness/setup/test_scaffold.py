@@ -38,6 +38,7 @@ from booley.targets.target_surface import collect_surface
 from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -661,7 +662,7 @@ def _track_scaffold(root: Path) -> None:
             "scaffold",
         ],
     ):
-        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=10)
+        run_bounded_child(["git", *args], cwd=root, check=True, timeout=10)
 
 
 def _seed_doctor_init_state(root: Path) -> None:
@@ -687,7 +688,7 @@ def _seed_doctor_init_state(root: Path) -> None:
         ("worktree.useRelativePaths", "true"),
         ("core.autocrlf", "false"),
     ):
-        subprocess.run(["git", "config", key, value], cwd=root, check=True, timeout=10)
+        run_bounded_child(["git", "config", key, value], cwd=root, check=True, timeout=10)
     config = booley_dir / "booley.toml"
     config.write_text(config.read_text() + '\n[agent]\nprovider = "claude"\nauth = "auto"\n')
     _track_scaffold(root)
@@ -987,12 +988,10 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
 
 
 def _git(root: Path, *args: str) -> str:
-    result = subprocess.run(
+    result = run_bounded_child(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
         cwd=root,
         check=True,
-        capture_output=True,
-        text=True,
         timeout=10,
     )
     return result.stdout
