@@ -278,8 +278,9 @@ def compute_memory_budget(
 ) -> MemoryBudget:
     """Compute the Memory Budget for the project configuration *config*.
 
-    Raises ``ValueError`` for an invalid ``[jobs].memory_budget`` and for an
-    unreadable ``MemTotal`` when the container has no limit.
+    Raises ``ValueError`` for an invalid ``[jobs].memory_budget``, and
+    ``OSError`` or ``ValueError`` for a missing or unreadable ``MemTotal`` when
+    the container has no limit.
     """
     override = configured_memory_budget(config)
     limit = cgroup_memory_limit_bytes()
