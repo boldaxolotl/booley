@@ -23,14 +23,20 @@ combination before merge.
 ## Main pushes and the nightly run
 
 A push to `main` runs a narrow tier: `changes`, `release-semantic`,
-`package-artifacts`, `bwave-smoke`, then `ci-required` and `ci-metrics`
+`build-dist`, `package-artifacts`, `bwave-smoke`, then `ci-required` and `ci-metrics`
 (`MAIN_PUSH_JOBS` in `.github/scripts/ci_changes.py`). Mergify merges a batch's
 PRs one by one; the merge of the batch's last PR reproduces the tree its queue
 candidate already passed, so the suite would only repeat that result. The
 commits before it are untested intermediate trees that no later run tests on
 their own (the nightly run below covers `main`'s tip). `bwave-smoke` stays because
 only a `main` push may write the shared `sandbox-substrate` build cache, and it
-installs the wheel `package-artifacts` builds.
+installs the wheel `build-dist` builds.
+
+`build-dist` builds the wheel and sdist once and uploads them as `pr-dist`;
+the classifier selects it whenever `package-artifacts`, `bwave-smoke` or
+`riscv-image` runs. The image jobs start from it directly instead of waiting
+for `package-artifacts`' install and sdist validations (issue #2867), so a
+wheel that later fails those validations still costs image-job minutes.
 
 A scheduled run on `main` every night at 01:47 UTC selects every job except
 `riscv-image`, which stays path-gated on every event (see RISC-V on-demand
@@ -215,7 +221,7 @@ in workflows; it runs the jobs that install those pins and the Python lane that
 keeps them in step with `pyproject.toml`, but not `full`. README, website and
 documentation-only changes run `docs-check` instead: `git diff --check` plus the
 content tests that `.github/scripts/ci_docs_tests.py` derives from the files that read
-documentation. They add `package-artifacts` when `README.md` changed, and
+documentation. They add `package-artifacts` (with `build-dist`) when `README.md` changed, and
 `site-build` and `lint` for `website/` and `docs/user/`. The nightly run on
 `main` selects every job (a `main` push runs only its narrow tier), and the
 weekly `full-python-matrix.yml` workflow runs the same mark expression.

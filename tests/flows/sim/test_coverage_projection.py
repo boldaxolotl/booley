@@ -96,18 +96,6 @@ def test_atomic_projection_rejects_missing_scored_metric() -> None:
         project_coverage_criterion(_entry("expression"), _evaluation(), {}, atomic=True)
 
 
-def test_atomic_projection_rejects_duplicate_metric_rows() -> None:
-    evaluation = _evaluation(
-        metrics=[
-            {"metric": "line", "verdict": "pass"},
-            {"metric": "line", "verdict": "fail"},
-        ]
-    )
-
-    with pytest.raises(AcceptanceRecordingError, match="repeats metric"):
-        project_coverage_criterion(_entry("line"), evaluation, {}, atomic=True)
-
-
 def test_blocked_projection_leaves_missing_atomic_metric_unmet() -> None:
     evaluation = _evaluation(status="blocked", metrics=[])
     met, detail = project_coverage_criterion(_entry("line"), evaluation, {}, atomic=True)

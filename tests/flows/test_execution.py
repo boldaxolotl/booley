@@ -70,6 +70,16 @@ def test_linked_worktree_without_local_config_uses_main_project_config(tmp_path)
     assert flow_enabled("fpga", worktree) is False
 
 
+@pytest.mark.parametrize("requested", ["sim", "lint"])
+def test_every_flow_rejects_retired_standalone_frontend(requested):
+    config = {"flows": {"sim": {"standalone_frontend": "verilator"}}}
+
+    with pytest.raises(
+        FlowConfigError, match=r"standalone_frontend is retired.*each Target's simulator"
+    ):
+        flow_enabled_from_config(requested, config)
+
+
 @pytest.mark.parametrize("retired", ["elab", "elaborate"])
 @pytest.mark.parametrize("requested", ["sim", "lint"])
 def test_every_flow_rejects_retired_elaboration_tables(retired, requested):
@@ -77,6 +87,6 @@ def test_every_flow_rejects_retired_elaboration_tables(retired, requested):
 
     with pytest.raises(
         FlowConfigError,
-        match=rf"flows\.{retired}.*sim --mode elab-only.*flows\.sim",
+        match=rf"flows\.{retired}.*sim --mode elab-only.*delete standalone_frontend",
     ):
         flow_enabled_from_config(requested, config)

@@ -45,7 +45,7 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 | `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
-| `eda_tool`, `eda_tools` | Resolved EDA identity: scalar `eda_tool` for one selected Target, or `eda_tools` mapping each selected Target to its tool (`null` if unresolved/unreached) for multiple Targets, even when tools match. Unknown single-Target identity is omitted; standalone frontends use the scalar. Specialists omit these keys when they run no EDA tool. |
+| `eda_tool`, `eda_tools` | Resolved EDA identity: scalar `eda_tool` for one selected Target, or `eda_tools` mapping each selected Target to its tool (`null` if unresolved/unreached) for multiple Targets, even when tools match. Unknown single-Target identity is omitted; a standalone sweep that used exactly one frontend fills the scalar, a mixed sweep leaves it unset. Specialists omit these keys when they run no EDA tool. |
 | `resources` | Optional process accounting: `cpu_user_s`, `cpu_sys_s` in seconds and `peak_rss_mb` in MiB. |
 | `run_id`, `report_text` | The Job ID and printed verdict card, when present. |
 | `usage` | For Specialists that call a model: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_create_tokens`, and `cost_usd`. |
@@ -209,8 +209,11 @@ Elaboration checks write the same file with `mode` set to `elab_only` or
 | `log` | The full build log. |
 
 For `elab_only_standalone`, `report.json` also has `detail.standalone` with
-`modules_checked`, `shared_files`, `frontend`, `failures`, any `unparsed`
-modules, and the log path.
+`modules_checked`, `shared_files`, `frontend`, `probes`, `failures`, any
+`unparsed` modules, and the log path. `frontend` is the `+`-joined probe
+frontends (`iverilog+verilator` for a mixed sweep, the plain name otherwise).
+`probes` groups the `{module, file}` pairs by `{frontend, fallback}`. Each
+`failures` and `unparsed` entry also carries `frontend` and `fallback`.
 
 ### Coverage Campaign files
 

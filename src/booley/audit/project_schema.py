@@ -30,6 +30,7 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
         "eda",
         "stealth",
         "submodules",
+        "worktree",
     }
 )
 
@@ -352,10 +353,9 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
 
     migration = retired_config_error(data)
     if migration:
-        return failure(
-            f"booley.toml {migration}",
-            "remove retired commercial-EDA authority keys",
-        )
+        # Invariant: the migration text is already a complete finding ("booley.toml
+        # ..." plus the fix), so it is reported as-is, never re-wrapped.
+        return failure(migration, "delete the retired key or table the message names")
     try:
         eda_configs = parse_eda_config(data.get("eda"))
         validate_host_provisioning_platform(eda_configs)
@@ -364,6 +364,17 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
             f"booley.toml {exc}",
             "fix [eda] provisioning configuration",
         )
+    return ConfigTableAudit()
+
+
+def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Validate the ``booley worktree gc`` idle age."""
+    from booley.config.worktree import parse_gc_older_than
+
+    try:
+        parse_gc_older_than(data)
+    except ValueError as exc:
+        return failure(f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"')
     return ConfigTableAudit()
 
 

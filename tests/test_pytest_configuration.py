@@ -498,7 +498,7 @@ def test_riscv_image_lane_is_path_gated() -> None:
     )
     job = workflow["jobs"]["riscv-image"]
     assert job["if"] == "fromJSON(needs.changes.outputs.jobs)['riscv-image']"
-    assert job["needs"] == ["changes", "package-artifacts"]
+    assert job["needs"] == ["changes", "build-dist"]
     assert "riscv-image" in workflow["jobs"]["ci-required"]["needs"]
 
     smoke = yaml.safe_dump(workflow["jobs"]["bwave-smoke"])

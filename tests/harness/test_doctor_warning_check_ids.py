@@ -84,8 +84,8 @@ def _emit(case: str, tmp_path, monkeypatch, reporter):
             reporter.warn_,
             reporter.skip_,
             reporter.fail_,
-            _note=reporter.note_,
             _diagnostics=reporter.diagnostics,
+            _note=reporter.note_,
         )
 
 

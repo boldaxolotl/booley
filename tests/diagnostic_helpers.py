@@ -98,8 +98,10 @@ class _Rec:
         _require_doctor_warning(m)
         self.events.append(("warn", m))
 
-    def n(self, m: str) -> None:
+    def n(self, m: str, fix: str = "") -> None:
         self.events.append(("note", m))
+        if fix:
+            self.fix_hints.append(fix)
 
     def s(self, m: str) -> None:
         self.events.append(("skip", m))
@@ -109,10 +111,11 @@ class _Rec:
         if fix:
             self.fix_hints.append(fix)
 
-    def d(self, report: DiagnosticReport) -> None:
-        """Record each finding of an owner's report as a (severity, message) event."""
-        for finding in report.findings:
-            self.events.append((finding.severity.value, finding.message))
+    def d(self, report) -> None:
+        """Record an owner's ``DiagnosticReport`` as the reporter's diagnostics path does."""
+        _record_report(
+            report, passed=self.p, warned=self.w, skipped=self.s, failed=self.f, noted=self.n
+        )
 
     def fails(self) -> list[str]:
         return [m for lvl, m in self.events if lvl == "fail"]
