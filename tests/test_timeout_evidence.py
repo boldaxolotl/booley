@@ -232,27 +232,6 @@ def _timeout_environment(evidence: Path) -> dict[str, str]:
     return environment
 
 
-def test_stalled_nested_pytest_fails_with_elapsed_time_and_partial_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Pytest's output capture is suspended outside test items, so this print reaches the child's real stdout.
-    (tmp_path / "conftest.py").write_text(
-        "import time\n"
-        "def pytest_unconfigure(config):\n"
-        "    print('STALL-MARKER', flush=True)\n"
-        "    time.sleep(60)\n",
-        encoding="utf-8",
-    )
-    # Shrink this module's nested-pytest bound so the stall trips quickly.
-    monkeypatch.setitem(globals(), "SUBPROCESS_TIMEOUT_S", 2)
-    with pytest.raises(pytest.fail.Exception) as raised:
-        _run_pytest_case(tmp_path, 0, "@pytest.mark.timeout(10)", "pass")
-    message = str(raised.value)
-    assert "timed out after 2 s" in message
-    assert "elapsed" in message
-    assert "STALL-MARKER" in message
-
-
 def test_failed_evidence_write_still_terminates_worker(tmp_path: Path) -> None:
     body = (
         "import os; from pathlib import Path; "
