@@ -8,13 +8,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+
 _ROOT = Path(__file__).parents[1]
 # A Sandbox-only module that stays cheap (six tests) and never reaches a host command.
 _MARKED_MODULE = "tests/goals/test_waiver_policy.py"
 # A neighbouring module that covers host code and must stay unmarked.
 _HOST_MODULE = "tests/goals/test_store.py"
-# Sized from the suite's 60 s per-test timeout, which Windows CI limits to 80%.
-_PYTEST_TIMEOUT_S = 40
 
 
 def _pytest(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -22,7 +22,7 @@ def _pytest(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]
     environment = {
         name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")
     }
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -35,10 +35,7 @@ def _pytest(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]
         ],
         cwd=_ROOT,
         env=environment,
-        capture_output=True,
-        text=True,
-        timeout=_PYTEST_TIMEOUT_S,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
