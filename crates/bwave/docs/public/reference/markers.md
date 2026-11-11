@@ -48,7 +48,10 @@ state         'h2  'h2  'h2  'h5  'h5  'h5  'h0  'h0  'h0
 The Booley Python wrapper persists named cycle references per registered trace
 alias:
 
-1. Register a trace: `bwave register sim.fst --as dut`.
+1. Register a trace: `bwave register sim.fst --as dut`. A traced
+   `booley flow sim` run registers `@<target>` and the default alias itself;
+   markers already set on an alias stay on it when a later traced run
+   replaces its trace.
 2. Set markers: `bwave markers @dut set err_start 1234`.
 3. Use names where a command accepts a cycle, for example
    `bwave @dut value --at err_start` or

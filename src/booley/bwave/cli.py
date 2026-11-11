@@ -165,11 +165,11 @@ from booley.bwave.sessions import (
     SESSION_FILE,  # noqa: F401  # re-exported for backward compatibility
     _get_markers,
     _load_sessions,
-    _register_trace,  # noqa: F401  # re-exported for backward compatibility
     _save_sessions,  # noqa: F401  # re-exported for backward compatibility
     _validate_marker_name,  # noqa: F401  # re-exported for backward compatibility
     cmd_markers,
     cmd_register,
+    register_trace,  # noqa: F401  # public: the Simulation Flow registers traced runs
 )
 
 
@@ -278,7 +278,9 @@ def _resolve_trace_from_session(alias: str | None = None) -> str:
         sys.exit(
             "ERROR: No trace path given and no registered session.\n"
             "Either pass a trace path or register one:\n"
-            "  bwave register SIM_DIR --as ALIAS"
+            "  bwave register SIM_DIR --as ALIAS\n"
+            "Or rerun the simulation with tracing; it registers each Target's waveform:\n"
+            "  booley flow sim --target TARGET --trace   (MCP: sim with trace: true)"
         )
     # session comes from the on-disk JSON session file (external input): it may
     # be a non-object or lack the "trace" key if hand-edited or corrupted.

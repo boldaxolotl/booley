@@ -183,10 +183,10 @@ def test_load_corrupt_sessions():
 
 
 def test_register_multiple_aliases():
-    from booley.bwave.cli import _load_sessions, _register_trace
+    from booley.bwave.cli import _load_sessions, register_trace
 
-    _register_trace(Path("/tmp/a.fst"), alias="a")
-    _register_trace(Path("/tmp/b.fst"), alias="b")
+    register_trace(Path("/tmp/a.fst"), alias="a")
+    register_trace(Path("/tmp/b.fst"), alias="b")
     sessions = _load_sessions()
     assert sessions["a"]["trace"].endswith("a.fst")
     assert sessions["b"]["trace"].endswith("b.fst")
@@ -634,6 +634,80 @@ def test_no_session_error():
     assert "no registered session" in r.stderr.lower()
 
 
+def test_no_session_error_names_the_traced_sim_run(monkeypatch, tmp_path):
+    from booley.bwave import cli as bwave
+
+    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "none" / "bwave_sessions.json")
+
+    with pytest.raises(SystemExit) as exc:
+        bwave._resolve_trace_from_session()
+
+    message = str(exc.value)
+    assert "bwave register SIM_DIR --as ALIAS" in message
+    assert "booley flow sim" in message
+    assert "--trace" in message
+    assert "trace: true" in message
+
+
+_REGISTER_MANY_CHILD = """
+import sys
+from pathlib import Path
+from booley.bwave import cli, sessions
+
+cli.SESSION_FILE = Path(sys.argv[1])
+for index in range(20):
+    sessions.register_trace(Path(f"/traces/{sys.argv[2]}{index}.fst"), alias=f"{sys.argv[2]}{index}")
+"""
+
+
+def test_concurrent_registrations_keep_every_alias(monkeypatch, tmp_path):
+    """Two traced runs finishing together must not drop each other's aliases."""
+    import booley
+    from booley.bwave import cli as bwave
+
+    store = tmp_path / "store" / "bwave_sessions.json"
+    monkeypatch.setattr(bwave, "SESSION_FILE", store)
+    env = {**os.environ, "PYTHONPATH": str(Path(booley.__file__).resolve().parents[1])}
+    children = [
+        subprocess.Popen(
+            [sys.executable, "-c", _REGISTER_MANY_CHILD, str(store), prefix],
+            env=env,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for prefix in ("a", "b")
+    ]
+    for child in children:
+        _, stderr = child.communicate(timeout=120)
+        assert child.returncode == 0, stderr
+
+    aliases = set(bwave._load_sessions())
+    assert {f"{prefix}{index}" for prefix in "ab" for index in range(20)} <= aliases
+
+
+def test_register_trace_raises_when_the_store_cannot_be_written(monkeypatch, tmp_path, capsys):
+    from booley.bwave import cli as bwave
+    from booley.bwave import sessions
+
+    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "bwave_sessions.json")
+    monkeypatch.setattr(sessions, "_save_sessions", lambda _data: False)
+    trace = tmp_path / "trace.fst"
+    trace.write_bytes(b"fixture")
+
+    with pytest.raises(OSError, match="could not write session file"):
+        sessions.register_trace(trace, alias="dut")
+
+    # `bwave register` keeps its old behavior: warn, still report the trace.
+    monkeypatch.setattr(
+        sessions, "inspect_store", lambda *_a, **_k: type("S", (), {"structurally_usable": True})()
+    )
+    monkeypatch.setattr(sessions, "_trace_identity", lambda _: "top")
+    sessions.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
+    captured = capsys.readouterr()
+    assert f"@dut -> {trace}" in captured.out
+    assert "could not write session file" in captured.err
+
+
 def test_build_subcommand_does_not_require_registered_session(monkeypatch):
     from booley.bwave import cli as bwave
 
@@ -666,7 +740,7 @@ def test_v02_subcommand_accepts_trace_after_command(monkeypatch, tmp_path):
     assert calls == [["bwave-bin", "list", str(trace), "--limit", bwave._LIST_LIMIT_DEFAULT]]
 
 
-def test_register_trace_preserves_alias_and_last_markers(tmp_path, monkeypatch):
+def testregister_trace_preserves_alias_and_last_markers(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"
@@ -676,13 +750,13 @@ def test_register_trace_preserves_alias_and_last_markers(tmp_path, monkeypatch):
     a.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
     b.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
 
-    bwave._register_trace(a, alias="dut")
+    bwave.register_trace(a, alias="dut")
     sessions = bwave._load_sessions()
     sessions["dut"]["markers"] = {"start": 10}
     sessions["_last"]["markers"] = {"last_only": 99}
     bwave._save_sessions(sessions)
 
-    bwave._register_trace(b, alias="dut")
+    bwave.register_trace(b, alias="dut")
     sessions = bwave._load_sessions()
     assert sessions["dut"]["trace"] == str(b.resolve())
     assert sessions["dut"]["markers"] == {"start": 10}
@@ -706,7 +780,7 @@ def test_markers_set_list_delete(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
     trace = tmp_path / "trace.fst"
     trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
-    bwave._register_trace(trace, alias="dut")
+    bwave.register_trace(trace, alias="dut")
 
     bwave.cmd_markers(argparse.Namespace(extra=["@dut", "set", "done", "20"]))
     bwave.cmd_markers(argparse.Namespace(extra=["@dut", "set", "start", "10"]))
@@ -1024,7 +1098,7 @@ def test_register_human_trace_age_without_native_reader(
         sessions, "inspect_store", lambda *_a, **_k: SimpleNamespace(structurally_usable=True)
     )
     monkeypatch.setattr(sessions, "_trace_identity", lambda _: "top")
-    monkeypatch.setattr(sessions, "_register_trace", lambda _trace, alias: alias)
+    monkeypatch.setattr(sessions, "register_trace", lambda _trace, alias: alias)
     monkeypatch.setattr(sessions, "format_age", partial(format_age, now=100000))
     sessions.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
     assert f"(written {expected})" in capsys.readouterr().err
@@ -1033,6 +1107,6 @@ def test_register_human_trace_age_without_native_reader(
         path.unlink()
         return alias
 
-    monkeypatch.setattr(sessions, "_register_trace", remove_trace)
+    monkeypatch.setattr(sessions, "register_trace", remove_trace)
     sessions.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
     assert "written" not in capsys.readouterr().err

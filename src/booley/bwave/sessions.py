@@ -14,7 +14,7 @@ Consumers:
   - ``booley.bwave.cli`` re-exports these symbols for backward compatibility
     and calls a few of them from its CLI dispatch / marker-resolution code.
   - ``tests/bwave/test_sessions.py`` imports SESSION_FILE, _load_sessions,
-    _save_sessions, _register_trace via the ``bwave`` facade.
+    _save_sessions, register_trace via the ``bwave`` facade.
 
 Cross-module coupling is one-directional at import time: ``bwave`` imports this
 module eagerly; this module imports ``bwave`` only *lazily* (inside functions)
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from booley.bwave.contract import decode_list_metadata
 from booley.bwave.contract import exit_usage as _exit_usage
 from booley.bwave.waveform_store import ExistingStorePolicy, convert_vcd, inspect_store
 from booley.core.boundary import BoundaryError
+from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.timefmt import format_age, utc_now_rfc3339
 
 
@@ -55,6 +57,8 @@ def _bwave_cache_root() -> Path:
 # ---------------------------------------------------------------------------
 SESSION_FILE = _bwave_cache_root() / "bwave_sessions.json"
 _DEFAULT_ALIAS = "_last"
+# Bounded wait for the registration lock: a held lock is another registration.
+_LOCK_TIMEOUT_S = 5
 
 
 def _session_file() -> Path:
@@ -81,32 +85,64 @@ def _load_sessions() -> dict:
         return {}
 
 
-def _save_sessions(data: dict) -> None:
-    """Write sessions file (creates tmp/ dir if needed).
+def _save_sessions(data: dict) -> bool:
+    """Publish the sessions file atomically (creates the directory if needed).
+
+    The document is written to a sibling temp file and renamed over the store,
+    so a concurrent reader sees the old or the new sessions, never a torn file
+    that ``_load_sessions`` would read as empty.
 
     Retries on PermissionError — Windows can transiently lock files when
-    another process or sandbox holds a handle.
+    another process or sandbox holds a handle. Returns False (after a warning
+    on stderr) when every attempt was refused; other OSErrors propagate.
     """
     import time as _time
 
     session_file = _session_file()
     session_file.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(3):
-        try:
-            session_file.write_text(json.dumps(data, indent=2) + "\n")
-            return
-        except PermissionError:
-            if attempt < 2:
-                _time.sleep(0.1 * (attempt + 1))
-    # Non-critical — log and continue
+    pending = session_file.with_name(f"{session_file.name}.{os.getpid()}.tmp")
+    try:
+        for attempt in range(3):
+            try:
+                pending.write_text(json.dumps(data, indent=2) + "\n")
+                pending.replace(session_file)
+                return True
+            except PermissionError:
+                if attempt < 2:
+                    _time.sleep(0.1 * (attempt + 1))
+    finally:
+        pending.unlink(missing_ok=True)
+    # Non-critical for markers — warn and continue
     print(
         f"[bwave] WARNING: could not write session file {session_file} (PermissionError)",
         file=sys.stderr,
     )
+    return False
 
 
-def _register_trace(trace: Path, alias: str | None = None) -> str:
-    """Register a trace under an alias. Returns the alias used."""
+def register_trace(trace: Path, alias: str | None = None) -> str:
+    """Register a trace under an alias and make it the default session.
+
+    Used by ``bwave register`` and by a traced ``booley flow sim`` run. The
+    load-modify-save runs under an exclusive lock on a sidecar file, so two
+    registrations finishing together cannot drop each other's aliases.
+
+    Returns the alias used. Raises ``OSError`` when the store cannot be locked
+    or written; the caller decides whether that matters.
+    """
+    session_file = _session_file()
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = session_file.with_name(f"{session_file.name}.lock")
+    with lock_path.open("a+") as lock:
+        wait_for_file_lock(lock, timeout_s=_LOCK_TIMEOUT_S)
+        try:
+            return _register_trace_locked(trace, alias)
+        finally:
+            release_file_lock(lock)
+
+
+def _register_trace_locked(trace: Path, alias: str | None) -> str:
+    """Load-modify-save one registration; the caller holds the store lock."""
     sessions = _load_sessions()
     alias = alias or _DEFAULT_ALIAS
     entry = {
@@ -124,7 +160,8 @@ def _register_trace(trace: Path, alias: str | None = None) -> str:
             # Update _last trace but keep its own markers
             sessions[_DEFAULT_ALIAS]["trace"] = entry["trace"]
             sessions[_DEFAULT_ALIAS]["registered_at"] = entry["registered_at"]
-    _save_sessions(sessions)
+    if not _save_sessions(sessions):
+        raise OSError(f"could not write session file {_session_file()} (PermissionError)")
     return alias
 
 
@@ -306,7 +343,13 @@ def cmd_register(args: argparse.Namespace) -> None:
         # the raw VCD). Either way the alias must not be registered as-is.
         trace = _resolve_raw_vcd(trace, getattr(args, "build", False), diagnostics)
 
-    alias = _register_trace(trace, args.alias)
+    try:
+        alias = register_trace(trace, args.alias)
+    except OSError as exc:
+        # Keep the historical contract: a store that cannot be written warns
+        # and the command still reports the trace it found.
+        print(f"[bwave] WARNING: could not write session file ({exc})", file=sys.stderr)
+        alias = args.alias or _DEFAULT_ALIAS
     print(f"@{alias} -> {trace}")
     # Identity + age, so binding the wrong design (or a trace from a sim you
     # already superseded) is visible in the register output instead of being
