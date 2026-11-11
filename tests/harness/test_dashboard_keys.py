@@ -187,9 +187,12 @@ async def test_help_describes_arrow_model_and_names_no_removed_key():
             "waiting for tool call",
             "waiting for user input",
             "Unknown",
-            "read-only",
+            "Run",
+            "Standalone Job",
+            "switches to Running",
         ):
             assert phrase in text, phrase
+        assert "read-only" not in text
         assert "1-9" not in text and "1\u20139" not in text
         assert not re.search(r"(?:^|· )[1-9?jrasuq] \w", text, re.MULTILINE)
         assert "shortcut" not in text.lower() and "quit" not in text.lower()

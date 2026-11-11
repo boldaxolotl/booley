@@ -568,3 +568,17 @@ def test_dashboard_does_not_label_refusals_or_policy_probes(tmp_path, monkeypatc
     monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
     assert command.run_attach(tmp_path, policy_only=True) == 0
     assert "disabled by configuration" in capsys.readouterr().out
+
+
+def test_dashboard_help_describes_run(capsys):
+    from booley.harness import booley as cli
+
+    parser = cli._build_parser()
+    listing = next(line for line in parser.format_help().splitlines() if "dashboard" in line)
+    assert "read-only" not in listing
+    with pytest.raises(SystemExit) as exit_info:
+        parser.parse_args(["dashboard", "--help"])
+    assert exit_info.value.code == 0
+    page = " ".join(capsys.readouterr().out.split())
+    assert "Run to start a Booley Flow" in page
+    assert "read-only" not in page

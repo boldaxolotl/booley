@@ -397,7 +397,8 @@ async def test_session_arrows_help_back_and_quit():
         previous_rows = app.row_keys.copy()
         await choose_in_bar(app, pilot, "Help")
         assert app.navigation.view == "help"
-        assert "read-only" in str(app.query_one("#detail", Static).render())
+        help_text = str(app.query_one("#detail", Static).render())
+        assert "Run" in help_text and "read-only" not in help_text
         await pilot.press("escape")
         assert app.navigation == previous
         assert app.row_keys == previous_rows
