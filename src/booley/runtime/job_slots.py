@@ -149,6 +149,42 @@ class QueueFullError(RuntimeError):
     """
 
 
+# What a read-only look at one slot entry can tell about its future (``_entry_verdict``).
+_VERDICT_LIVE = "live"  # stays; counts toward admission
+_VERDICT_GONE = "gone"  # a reap removes it with no recovery outcome to wait for
+_VERDICT_RECOVERABLE = "recoverable"  # a reap removes it only if a recovery call succeeds
+
+
+@dataclass(frozen=True)
+class AdmissionOutlook:
+    """What an ``interactive`` claim on *job_class* would meet: ``ahead`` entries, a cap, a bound."""
+
+    job_class: str
+    ahead: int
+    cap: int
+    queue_max: int
+
+    @property
+    def runs_now(self) -> bool:
+        """True when a slot is free for the claim."""
+        return self.ahead < self.cap
+
+    @property
+    def position(self) -> int:
+        """1-based place in the queue; 0 when the claim runs now."""
+        return 0 if self.runs_now else self.ahead - self.cap + 1
+
+    @property
+    def full(self) -> bool:
+        """True when admission refuses the claim."""
+        return self.ahead >= self.cap + self.queue_max
+
+    @property
+    def refusal(self) -> str:
+        """The reason admission gives when the queue is full."""
+        return f"{self.job_class} queue is full ({self.queue_max} waiting)"
+
+
 class ClaimLostError(RuntimeError):
     """The waiting entry vanished — the queued job was cancelled.
 
@@ -430,14 +466,9 @@ class SlotStore:
         # count can race a concurrent submit; the post-create rank check
         # catches whatever slips through.
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
-        ahead = [
-            name
-            for name in self._live_entry_names(job_class)
-            if (entry := _parse_entry_name(name)) is not None
-            and (entry[0] == _HOLDER or entry[1] <= priority)
-        ]
-        if len(ahead) >= cap + self.caps.queue_max:
-            raise QueueFullError(f"{job_class} queue is full ({self.caps.queue_max} waiting)")
+        outlook = self._outlook_of(job_class, self._live_entry_names(job_class), priority)
+        if outlook.full:
+            raise QueueFullError(outlook.refusal)
 
         created = self._now()
         if execution_id is not None:
@@ -466,8 +497,32 @@ class SlotStore:
         # withdraw our own entry and refuse — the queue must stay bounded.
         if self._rank(token) >= cap + self.caps.queue_max:
             self.release(token)
-            raise QueueFullError(f"{job_class} queue is full ({self.caps.queue_max} waiting)")
+            raise QueueFullError(outlook.refusal)
         return token
+
+    def outlook(self, job_class: str) -> AdmissionOutlook:
+        """What an ``interactive`` claim on *job_class* would meet now, changing nothing.
+
+        Counts like :meth:`submit` after its reap, except that entries a reap
+        removes only after a recovery call count too: recovery is a mutation
+        this reader may not make, so it can predict a wait that recovery would
+        avoid. Never creates the class directory (an absent one is an empty queue).
+        """
+        cls_dir = self.root / job_class
+        names = self._live_entry_names(job_class)
+        names = [name for name in names if self._entry_verdict(cls_dir / name) != _VERDICT_GONE]
+        return self._outlook_of(job_class, names, _ROLE_PRIORITY[ROLE_INTERACTIVE])
+
+    def _outlook_of(self, job_class: str, names: list[str], priority: int) -> AdmissionOutlook:
+        """Count the *names* that rank ahead of a claim of *priority*, against the class bounds."""
+        ahead = 0
+        for name in names:
+            entry = _parse_entry_name(name)
+            if entry is not None and (entry[0] == _HOLDER or entry[1] <= priority):
+                ahead += 1
+        return AdmissionOutlook(
+            job_class, ahead, self.caps.cap_for(job_class), self.caps.queue_max
+        )
 
     def _create_entry(self, request: _WaiterRequest) -> SlotToken:
         """Create a uniquely-named waiter entry; atomic full-content appearance."""
@@ -1168,10 +1223,13 @@ class SlotStore:
         return reaped
 
     def _is_stale(self, path: Path) -> bool:
+        """True when the entry is removed: its verdict is not live and any recovery it needs succeeds."""
+        if self._entry_verdict(path) == _VERDICT_LIVE:
+            return False
         parsed = _parse_entry_name(path.name)
         if parsed is None:
             return self._is_old_junk(path)
-        state, _priority, _seq, _pid, _n = parsed
+        state = parsed[0]
 
         try:
             tok = self._load_token(path)
@@ -1182,6 +1240,51 @@ class SlotStore:
             # Named like an entry but corrupt; same junk rule.
             return self._is_old_junk(path)
         return self._token_is_stale(tok, state)
+
+    def _entry_verdict(self, path: Path) -> str:
+        """Whether a reap would keep, drop or try to recover the entry; reads only.
+
+        The one staleness judgment ``reap`` and ``outlook`` share, so a preview
+        counts what admission counts. ``_token_is_stale`` carries out the
+        actions (lease claim, recovery) the verdict only predicts.
+        """
+        parsed = _parse_entry_name(path.name)
+        if parsed is None:
+            return _VERDICT_GONE if self._is_old_junk(path) else _VERDICT_LIVE
+        try:
+            tok = self._load_token(path)
+        except OSError:
+            gone = not self._is_pid_alive(parsed[3]) and self._is_old_junk(path)
+            return _VERDICT_GONE if gone else _VERDICT_LIVE
+        if tok is None:
+            return _VERDICT_GONE if self._is_old_junk(path) else _VERDICT_LIVE
+        return self._token_verdict(tok, parsed[0])
+
+    def _token_verdict(self, tok: SlotToken, state: str) -> str:
+        """The verdict for a readable entry; unknown future schemas fail closed to live."""
+        if not isinstance(tok.schema_version, int) or isinstance(tok.schema_version, bool):
+            return _VERDICT_LIVE
+        if tok.schema_version > SLOT_SCHEMA_VERSION:
+            return _VERDICT_LIVE
+        deadline_reached = state == _HOLDER and (
+            self._lease_expired(tok) or self._work_deadline_expired(tok)
+        )
+        if tok.owner_kind == "execution":
+            return self._execution_verdict(tok, deadline_reached=deadline_reached)
+        if self._owner_is_stale(tok):
+            return _VERDICT_GONE
+        return _VERDICT_RECOVERABLE if deadline_reached else _VERDICT_LIVE
+
+    def _execution_verdict(self, tok: SlotToken, *, deadline_reached: bool) -> str:
+        """The verdict for an entry owned by a durable execution."""
+        if tok.execution_id is None:
+            return _VERDICT_LIVE  # never reaped: nothing to ask about its owner
+        if self._recovery.execution_is_terminal(tok.execution_id):
+            return _VERDICT_GONE
+        recovery_due = (
+            self._owner_is_stale(tok) or deadline_reached or tok.lease_state == LEASE_CANCELLING
+        )
+        return _VERDICT_RECOVERABLE if recovery_due else _VERDICT_LIVE
 
     def _token_is_stale(self, tok: SlotToken, state: str) -> bool:
         # Unknown future schemas fail closed: this process cannot safely infer
