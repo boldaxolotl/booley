@@ -6,7 +6,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import ClassVar
@@ -29,6 +28,7 @@ from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError, MissingTargetToplevelError, TargetHandle
+from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -2674,7 +2674,7 @@ def _real_lint_setup(monkeypatch, command: list[str], root: Path) -> None:
     def bounded_runner(*args, **kwargs):
         assert kwargs["env"] == env
         assert args[0][args[0].index("--config") + 1] == str(config)
-        return subprocess.run(*args, **kwargs, timeout=30, check=False)
+        return run_bounded_child(args[0], cwd=kwargs["cwd"], env=kwargs["env"])
 
     def resolve(*args, **kwargs):
         return real_resolve(
