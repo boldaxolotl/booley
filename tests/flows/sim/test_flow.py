@@ -23,7 +23,7 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.flow import (
     _artifact_path_component,
     _filter_tests,
-    _resolve_sim_campaign_work_units,
+    resolve_sim_campaign_work_units,
 )
 from booley.flows.sim.mode import SimulationMode
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
@@ -178,7 +178,7 @@ def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Pat
             return_value={"native": ["known_hang"]},
         ),
     ):
-        units = _resolve_sim_campaign_work_units(
+        units = resolve_sim_campaign_work_units(
             tmp_path,
             "native,cocotb",
         )
@@ -198,7 +198,7 @@ def test_campaign_work_units_count_elaboration_modes(
     mode: SimulationMode,
     expected: int,
 ) -> None:
-    assert _resolve_sim_campaign_work_units(tmp_path, "one,two", mode=mode) == expected
+    assert resolve_sim_campaign_work_units(tmp_path, "one,two", mode=mode) == expected
 
 
 def test_artifact_path_component_never_embeds_unsafe_test_names():
@@ -479,11 +479,13 @@ class TestDryRun:
 
         assert flow._redact_plan_environment("lite", command) == command
 
-    def test_plan_collects_preview_errors(self, tmp_path: Path) -> None:
+    def test_plan_collects_preview_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         flow = _make_flow(tmp_path, config="lite")
         execution = MagicMock()
         execution.preview.side_effect = ValueError("preview failed")
-        flow._simulation_execution_override = execution
+        monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
 
         planned, errors = flow._preview_targets(["lite"], {})
 
@@ -491,7 +493,7 @@ class TestDryRun:
         assert errors == ["lite: preview failed"]
 
     def test_plan_reports_a_refused_private_mirror_as_a_planning_error(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A mirror refusal (#2895) is a planning error, not an escaped exception."""
         from booley.flows.sim.build import SimulationBuildPreparationError
@@ -499,7 +501,7 @@ class TestDryRun:
         flow = _make_flow(tmp_path, config="lite")
         execution = MagicMock()
         execution.preview.side_effect = SimulationBuildPreparationError("mirror refused")
-        flow._simulation_execution_override = execution
+        monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
 
         planned, errors = flow._preview_targets(["lite"], {})
 
