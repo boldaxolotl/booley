@@ -218,10 +218,18 @@ once so it gets the new credential. Billing choices are in
 
 ### Two Developer Agents keep clobbering each other's edits
 
-They share one worktree. Give each agent that edits code its own: ask the agent
-to create a worktree (`booley worktree new <name>` in the Sandbox), then start
-Goal Mode there with `/booley-goal`. The Dashboard warns about a shared
-worktree but doesn't separate the agents.
+They share one worktree. Sessions started with `booley chat` get their own
+automatically: while the main checkout is in use, the next one starts in a
+worktree `s<N>`. A plain `claude` tab or VS Code panel started before any
+Booley tool call is not counted, so it may still share the main checkout. Start
+those in a worktree: ask the agent to create one (`booley worktree new <name>`
+in the Sandbox), then start Goal Mode there with `/booley-goal`. The Dashboard
+warns about a shared worktree but doesn't separate the agents.
+
+If `booley chat` keeps opening worktrees because a Codex session ended without
+notice, Booley counts the main checkout as in use until that session goes quiet
+(`[goals] quiet_after`, two hours by default). Run `booley chat --here` to use
+the main checkout now.
 
 ### Worktrees show as `prunable` on the host
 

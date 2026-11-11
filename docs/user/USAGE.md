@@ -114,15 +114,17 @@ Don't continue until `booley doctor` shows no failures or warnings.
     | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
 
     From then on you are using that CLI's own chat. To run several sessions,
-    open more container terminals. If more than one will edit files, give each
-    its own worktree; see [Several agents at once](#several-agents-at-once).
+    open more container terminals and run `booley` in each. While one session
+    is working in the main checkout, the next one starts in its own worktree;
+    see [Several agents at once](#several-agents-at-once).
 
     `booley chat --cli codex` opens another Agent CLI instead, as long as it is
     listed in `[agent] clis`; otherwise it stops and lists the allowed ones. In
     the Sandbox, Booley currently sets up (sign-in, Booley tools, skills) only
     the default CLI, so another one may ask you to sign in and lack Booley's tools.
 
-    Arguments after `booley chat` and its own options (`--cli`, `-C`) go to the
+    Arguments after `booley chat` and its own options (`--cli`, `-C`,
+    `--new-worktree`, `--here`) go to the
     CLI unchanged. To resume an earlier conversation, run
     `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex).
 
@@ -258,11 +260,36 @@ handle.
 
 ### Several agents at once
 
-Agents that share a checkout overwrite each other's edits. Give each agent that
-edits files its own Git worktree: open a new container terminal, start `booley`,
-and ask *"Create a worktree named `fifo-fix` and work there."* Read-only
-sessions, such as one that only explains code or runs reviews, can share the
-main checkout. See
+Agents that share a checkout overwrite each other's edits, so `booley chat`
+keeps them apart. The first session runs in the main checkout. While it is
+running, the next `booley chat` creates a worktree `s<N>` on branch
+`booley/s<N>`, named after the session handle (`S3` gets `s3`), and starts
+there. It prints one line first:
+
+```text
+Booley session S3 works in worktree <path> on branch booley/s3 (<reason>).
+```
+
+A session that runs in the main checkout prints no such line. A worktree is
+made only when the main checkout is taken, so a lone session behaves as before.
+
+- `booley chat --new-worktree` always starts in a new worktree.
+- `booley chat --here` always starts in the main checkout, for example to
+  read code alongside another session.
+- `[chat] worktree = "auto" | "always" | "never"` in `.booley/booley.toml` sets
+  the default; see [Interactive sessions](CONFIG.md#interactive-sessions-chat).
+- Run from inside an existing linked worktree, `booley chat` starts there and
+  creates nothing.
+
+Put both options before any arguments meant for the agent CLI. Claude Code's
+own `--worktree` still goes to the agent.
+
+The check is best effort for agents that did not start through Booley. A plain
+`claude` tab or a VS Code panel does not hold the main checkout, so Booley only
+notices it once it has made a Booley tool call. Start such sessions in a
+worktree yourself (ask the agent: *"Create a worktree named `fifo-fix` and work
+there."*) or use `booley chat`. Read-only sessions, such as one that only
+explains code or runs reviews, can share the main checkout. See
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-developer-agents-keep-clobbering-each-others-edits).
 
 ### What the Developer Agent is allowed to do

@@ -155,9 +155,9 @@ def test_dashboard_and_chat_handles_use_main(worktree, monkeypatch):
 
     reserved: list[Path] = []
     monkeypatch.setattr(
-        chat_cmd, "reserve_session_handle", lambda d, _key: reserved.append(d) or "handle"
+        chat_cmd, "reserve_session_handle", lambda d, _key, **_kw: reserved.append(d) or "handle"
     )
-    chat_cmd._claude_argv(tree, [])
+    chat_cmd._claude_command(tree, [], strict=False)
     assert reserved == [main]
 
 
