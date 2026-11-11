@@ -418,7 +418,7 @@ remove it.
 ### Every simulation test comes back INCONCLUSIVE
 
 Every Test Run of an HDL testbench reads `INCONCLUSIVE`, `booley flow sim`
-exits `1`, and each Test Run's log ends with a line such as
+exits `1`, and each Test Run's log contains a line such as
 `Verilator sim INCONCLUSIVE (rc=0, no sentinel)`.
 
 Booley grades an HDL testbench by a pass or fail message it prints, a
@@ -448,21 +448,21 @@ To fix it, do one of these:
 
 - Print the sentinel at the end of the test, for example
   `$display("[SIM_RESULT] PASSED");` or `$display("[SIM_RESULT] FAILED");`.
-  Doctor's warning points to a fuller example that ships inside the
-  installed Booley package, `booley/data/refs/sim_result_sentinel.sv`.
+  Doctor's warning points to a fuller example.
 - Declare the messages your testbench already prints as `pass_sentinels`
   and `fail_sentinels` under `[flows.sim]`.
 
-**Only with `--trace`.** When a traced run produces no waveform Booley can
-read, a test that would have passed is reported inconclusive instead, even
-though its log still prints the pass sentinel and ends in `PASSED`. A
-failure or timeout keeps its verdict. See
-[Waveforms](https://booley.dev/docs/flow-sim/#waveforms) for `trace_args`
-and `trace_files`.
+If you ran with `--trace`, a test that would have passed is reported
+inconclusive when the traced run produces no waveform Booley can read. This
+is the exception to the missing-sentinel cause: the log still prints the pass
+sentinel and a `PASSED` line, usually followed by an `ERROR:` line that says
+why no waveform was kept. Fix the cause, often `trace_args` or `trace_files`
+(see [Waveforms](https://booley.dev/docs/flow-sim/#waveforms)), or rerun
+without `--trace`. A failure or timeout keeps its verdict.
 
 A Cocotb Target uses no sentinels: its Test Run is inconclusive when cocotb's
 result file is missing or doesn't report that test as passed or failed, and
-its log ends with `cocotb sim INCONCLUSIVE (<reason>)`.
+its log contains `cocotb sim INCONCLUSIVE (<reason>)`.
 
 ### Simulation stalls at time zero without results
 
