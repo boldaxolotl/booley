@@ -2,8 +2,8 @@
 
 ``SimulateFlow.execute`` runs every ordinary Simulation as a Simulation
 Campaign: ``OrdinaryHdlSerialExecutor`` drives
-``SimulationExecution.ordinary_group`` and ``PreparedOrdinaryGroup.compile``,
-not ``SimulationExecution.run``. These tests pin build reuse on that path, so a
+``SimulationExecution.ordinary_group`` and ``PreparedOrdinaryGroup.compile``.
+These tests pin build reuse on that path, so a
 second identical ``sim`` call is served by the retained image and its durable
 ``build-execution.json`` records why.
 
@@ -209,10 +209,11 @@ def test_flow_sim_pre_sim_firmware_in_run_cwd_keeps_reuse(
     [
         'printf fw > \\"$BOOLEY_BUILD_ROOT/firmware.hex\\"',
         'printf fw > \\"$BOOLEY_BUILD_ROOT/.booley-adapter-x.json\\"',
+        'printf fw > \\"$BOOLEY_BUILD_ROOT/.a-x.json\\"',
         'chmod u+x \\"$BOOLEY_BUILD_ROOT\\"/*.vc',
         'mkdir \\"$BOOLEY_BUILD_ROOT/empty\\"',
     ],
-    ids=["file", "reserved-name", "chmod-only", "empty-dir"],
+    ids=["file", "reserved-name", "adapter-result-name", "chmod-only", "empty-dir"],
 )
 def test_flow_sim_legacy_pre_sim_change_to_generation_forces_build(
     flow_project: Path, tmp_path: Path, effect: str

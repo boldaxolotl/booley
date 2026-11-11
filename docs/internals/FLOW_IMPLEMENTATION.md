@@ -332,10 +332,12 @@ Each test resolves to exactly one of five verdicts:
 - `timeout`: the per-test budget was exceeded.
 
 `SimulateFlow` delegates execution through one `SimulationExecution`
-`ordinary_group` / `preview` boundary. The boundary resolves each `TargetHandle` from its own
-Project Root, prepares the shared build, fires Pre-Sim Commands, invokes one
-leaf adapter, and returns immutable build, test, workload, log, trace, and
-infrastructure evidence. The Flow retains campaign concerns: Target/test
+`preview` / `plan_ordinary_group` / `ordinary_group` boundary. The boundary resolves each
+`TargetHandle` from its own Project Root, prepares and compiles one group's
+build, launches an executable snapshot through one leaf adapter, and returns
+immutable build, test, workload, log, trace, and infrastructure evidence. The
+Simulation Campaign sequences Pre-Sim Commands and runtime inputs around it.
+The Flow retains campaign concerns: Target/test
 selection, Cycle Count baselines, Criteria, report rendering, and public exit
 codes.
 
@@ -422,9 +424,10 @@ Targets, each test's unabridged, attempt-specific simulator output is kept as
 `run.log` evidence in its Campaign work item, not referenced from the
 projection. A grouped run preserves this copy before starting the next test,
 including for failed, timed-out, and inconclusive tests that produced output.
-The Target build directory retains its compatibility `run.log` (the latest
-test's output, tail-truncated to 10 MB) and `result.json`; Cocotb adds its
-`results.xml`.
+Each launched attempt's `execution-evidence` directory, beside its snapshot,
+keeps the live `run.log` (tail-truncated to 10 MB), the adapter result JSON, and
+Cocotb's `results.xml`. A failed build never launches, so its `run.log` stays in
+the generation build root.
 
 Trace artifacts stay off the pass/fail path by design: `--trace` builds a
 separate trace-overlay Target (its own build root) so it never clobbers the fast
