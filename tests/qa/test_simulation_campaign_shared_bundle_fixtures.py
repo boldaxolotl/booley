@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.subprocess_budget import run_bounded_child
 
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
@@ -35,14 +36,7 @@ def _write_json(path: Path, value: object) -> None:
 
 
 def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        argv,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
+    result = run_bounded_child([str(arg) for arg in argv], cwd=cwd)
     assert result.returncode == 0, (
         f"command failed ({result.returncode}): {' '.join(argv)}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"

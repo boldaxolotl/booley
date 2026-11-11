@@ -6,7 +6,6 @@ import asyncio
 import errno
 import json
 import os
-import subprocess
 import sys
 import textwrap
 import time
@@ -24,6 +23,7 @@ from booley.runtime.handles import HandleStore
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
 pytestmark = pytest.mark.timeout(120)
@@ -464,14 +464,7 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
         asyncio.run(run())
         assert 'mcp' not in sys.modules and 'booley.mcp.server' not in sys.modules
     """)
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=context.work_dir,
-        capture_output=True,
-        text=True,
-        timeout=40,
-        check=False,
-    )
+    result = run_bounded_child([sys.executable, "-c", script], cwd=context.work_dir, timeout=40)
     assert result.returncode == 0, result.stderr
 
 

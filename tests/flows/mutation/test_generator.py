@@ -9,7 +9,6 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import os
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +19,7 @@ import pytest
 import booley
 from booley.core.boundary import BoundaryError
 from booley.dev_support.mutation_variants import MutationVariantPlan
+from tests.subprocess_budget import run_bounded_child
 
 if TYPE_CHECKING:
     from booley.flows.mutation.generator import Mutant, MutantSelection
@@ -86,12 +86,8 @@ def test_importing_generator_does_not_import_pyslang() -> None:
         "sys.exit(1 if 'pyslang' in sys.modules else 0)"
     )
     package_root = str(Path(booley.__file__).parents[1])  # the source tree under test
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
         env={**os.environ, "PYTHONPATH": package_root},
     )
     assert result.returncode == 0, result.stderr

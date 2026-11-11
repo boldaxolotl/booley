@@ -99,6 +99,7 @@ exports.activate = async () => {
 
 
 def run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+    # Kept on subprocess.run: standalone script outside pytest, cannot import the test helper.
     return subprocess.run(argv, check=True, timeout=30, capture_output=True, text=True, **kwargs)
 
 

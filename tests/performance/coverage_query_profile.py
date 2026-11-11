@@ -123,6 +123,7 @@ def _sample(campaign_path: Path, point_count: int) -> dict[str, object]:
                 command, WORKER_TIMEOUT_SECONDS, output=stdout, stderr=stderr
             )
         time.sleep(RSS_SAMPLE_INTERVAL_SECONDS)
+    # Kept on Popen: standalone script outside pytest, cannot import the test helper.
     stdout, stderr = process.communicate(timeout=5)
     if process.returncode:
         raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
@@ -147,6 +148,7 @@ def _controller(point_count: int, samples: int) -> None:
             Path(raw_directory), scale_campaign(point_count)
         ).campaign
         for sample in range(samples):
+            # Kept on subprocess.run: standalone script outside pytest, cannot import the test helper.
             completed = subprocess.run(
                 [
                     *command,
