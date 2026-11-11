@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from fractions import Fraction
 from types import MappingProxyType
@@ -112,7 +113,7 @@ def test_candidates_rescue_a_strict_failure_and_each_is_needed() -> None:
 
 
 def test_a_candidate_rescuing_one_metric_is_needed_while_another_fails() -> None:
-    """ "Needed" is judged per metric: an unrelated failing metric does not hide it."""
+    """Per-metric: an unrelated failing metric does not hide a needed candidate."""
     points = (
         *(_point(f"c{index}", hits=1) for index in range(3)),
         _point("u1", hits=0),
@@ -224,9 +225,12 @@ def _other_source_u1(points: tuple[CoveragePoint, ...]) -> tuple[CoveragePoint, 
     ],
 )
 def test_candidates_are_rederived_from_the_campaign(
-    changes: dict[str, str], edit_points, status: str, reason: str
+    changes: dict[str, str],
+    edit_points: Callable[[tuple[CoveragePoint, ...]], tuple[CoveragePoint, ...]] | None,
+    status: str,
+    reason: str,
 ) -> None:
-    """D1: a record is checked, not trusted — forged or stale bindings are not offered."""
+    """D1: a record is checked, not trusted — forged, stale or unwaivable points are not offered."""
     campaign, criterion = _evaluated(100)
     if edit_points is not None:
         campaign = replace(campaign, points=edit_points(campaign.points))

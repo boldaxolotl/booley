@@ -482,7 +482,7 @@ def _screen_candidates(
 
 def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
     problem = waivable_point_problem([] if point is None else [point], rtl)
-    if point is None or (problem is not None and problem != "ineligible"):
+    if problem is not None and problem != "ineligible":
         return "forbidden", "Candidate must identify an exact RTL Coverage Point"
     if problem == "ineligible" or item["reason"] not in {"excluded", "unreachable"}:
         return "forbidden", "Point is not eligible or reason is not an allowed approval reason"

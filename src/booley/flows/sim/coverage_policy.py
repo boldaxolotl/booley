@@ -19,7 +19,11 @@ from booley.flows.sim.coverage_json import (
     coverage_mapping_document,
     freeze_coverage_mapping,
 )
-from booley.flows.sim.coverage_waivers import ApprovedWaiver, ApprovedWaiverSet
+from booley.flows.sim.coverage_waivers import (
+    ApprovedWaiver,
+    ApprovedWaiverMatch,
+    ApprovedWaiverSet,
+)
 
 __all__ = [
     "ApprovedWaiver",
@@ -334,6 +338,21 @@ def _scored_campaign(
     return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
 
 
+def _waived_dispositions(waiver_match: ApprovedWaiverMatch) -> dict[str, dict[str, object]]:
+    """Waived disposition per matched Coverage Point id, with approval provenance."""
+    return {
+        waiver.point_id: {
+            "kind": "waived",
+            "reason": waiver.reason,
+            "waiver_id": waiver.waiver_id,
+            "waiver_file": waiver.waiver_file,
+            "waiver_fingerprint": waiver.waiver_fingerprint,
+            "provenance": waiver.provenance,
+        }
+        for waiver in waiver_match.waivers
+    }
+
+
 def evaluate_coverage_campaign(
     campaign: CoverageCampaign,
     criterion: CoverageCriterion | None,
@@ -341,20 +360,7 @@ def evaluate_coverage_campaign(
 ) -> EvaluatedCoverageCampaign:
     """Return a new immutable Campaign with deterministic policy evidence."""
     waiver_match = approved_waivers.match(campaign)
-    campaign = apply_point_dispositions(
-        campaign,
-        {
-            waiver.point_id: {
-                "kind": "waived",
-                "reason": waiver.reason,
-                "waiver_id": waiver.waiver_id,
-                "waiver_file": waiver.waiver_file,
-                "waiver_fingerprint": waiver.waiver_fingerprint,
-                "provenance": waiver.provenance,
-            }
-            for waiver in waiver_match.waivers
-        },
-    )
+    campaign = apply_point_dispositions(campaign, _waived_dispositions(waiver_match))
     diagnostics = [
         _diagnostic(item.code, item.pointer, item.message) for item in waiver_match.findings
     ]
