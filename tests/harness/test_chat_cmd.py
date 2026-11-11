@@ -40,7 +40,7 @@ def _use_real_codex_command(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def inline_launch(monkeypatch):
     """Run the launch in-process: these tests mock the exec and must not fork pytest."""
-    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch: launch())
+    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch, **_kw: launch())
 
 
 @pytest.fixture(autouse=True)
