@@ -580,7 +580,7 @@ def test_step_keeps_hand_written_agent_forms_as_a_table(
     ctx = _ctx(tmp_path, monkeypatch)
     assert step_scaffold(ctx, _args()) is True
     cfg = tomllib.loads((pd / "booley.toml").read_text(encoding="utf-8"))
-    assert cfg["agent"] == {"default": "codex", "auth": "api_key"}
+    assert cfg["agent"] == {"provider": "codex", "auth": "api_key"}
     assert "agent" not in cfg["flows"]["fpga"]
     capsys.readouterr()
 
