@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import importlib
-import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 import yaml
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
@@ -47,16 +46,14 @@ def _tracked_repo(tmp_path: Path, files: dict[str, str]) -> Path:
     """Create a Git repository whose index holds ``_BASE_FILES`` plus ``files``."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(
-        ["git", "-C", str(repo), "init", "-q", "-b", "main"],
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    init = run_bounded_child(["git", "-C", str(repo), "init", "-q", "-b", "main"])
+    assert init.returncode == 0, init.stderr
     for relative, text in {**_BASE_FILES, **files}.items():
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    staged = run_bounded_child(["git", "-C", str(repo), "add", "-A"])
+    assert staged.returncode == 0, staged.stderr
     return repo
 
 

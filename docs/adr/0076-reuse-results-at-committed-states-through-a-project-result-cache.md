@@ -1,6 +1,6 @@
 # Reuse results at committed states through a Project Result Cache
 
-Status: proposed
+Status: superseded by [ADR 0092](0092-measure-commits-against-target-metrics.md) (2026-11-11; was proposed). Measurement Runs keyed by Git tree replace the Result Cache.
 
 ## Context
 

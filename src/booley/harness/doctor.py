@@ -147,6 +147,7 @@ from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_com
 from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
+from booley.runtime.resource_history import DOCTOR_RUN_ENV
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths
@@ -6702,6 +6703,8 @@ def _doctor_subprocess_env(project: ProjectAudit) -> dict[str, str]:
 
     env["BOOLEY_DIR"] = str(project.booley_dir)
     env[INVOCATION_ORIGIN_ENV] = "transport"
+    # Flow runs Doctor starts must not write Resource History records.
+    env[DOCTOR_RUN_ENV] = "1"
     return env
 
 
@@ -7552,6 +7555,7 @@ def _flow_command(
 
     command_env = dict.fromkeys(_PROJECT_CONTEXT_ENV, "")
     command_env[INVOCATION_ORIGIN_ENV] = "transport"
+    command_env[DOCTOR_RUN_ENV] = "1"
     if doctor_selftest_kind is not None:
         command_env[selftest_overlay.INTERNAL_KIND_ENV] = doctor_selftest_kind
     return flow_runtime.command(inner, env=command_env)

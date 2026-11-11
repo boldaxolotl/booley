@@ -219,11 +219,22 @@ def observe_stage(
     attempt_token: str = "",
     log: RunLogIdentity | None = None,
     tests: tuple[str, ...] = (),
+    history_tests: tuple[str, ...] | None = None,
+    source_bytes: int | None = None,
 ) -> None:
-    """Publish one real lifecycle transition, never infer a verdict."""
+    """Publish one real lifecycle transition, never infer a verdict.
+
+    *history_tests* are the Resource History names (Test Variants); they
+    default to *tests*, which keep driving progress.
+    """
     if stage not in _STAGES:
         raise ValueError(f"invalid Simulation observation stage: {stage}")
-    label_commands(target, _RESOURCE_PHASES[stage], tests=tests)
+    label_commands(
+        target,
+        _RESOURCE_PHASES[stage],
+        tests=tests if history_tests is None else history_tests,
+        source_bytes=source_bytes,
+    )
     sink = _sink.get()
     if sink is None:
         return
