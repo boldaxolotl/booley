@@ -87,17 +87,38 @@ class AcceptanceOutcome:
     reason: str
 
 
-class _TestRunRows:
-    """The authenticated Test Run rows of one outcome, read on first use."""
+@dataclass(frozen=True, slots=True)
+class _PublicCoverage:
+    """One outcome's public ``coverage.json``: authenticated, with its canonical bytes' digest."""
+
+    path: Path
+    resolved: ResolvedCoverageCampaign
+    size: int
+    sha256: str
+
+
+class _OutcomeEvidence:
+    """The authenticated evidence of one outcome, read on first use.
+
+    Test Run rows and the public Coverage Campaign reference are each
+    resolved at most once, however many Criteria or Goals read them.
+    """
 
     def __init__(self, outcome: CampaignOutcome) -> None:
-        self._outcome = outcome
+        self.outcome = outcome
         self._rows: dict[object, dict[str, object]] | None = None
+        self._coverage: _PublicCoverage | None = None
+
+    def coverage(self) -> _PublicCoverage:
+        """The outcome's public Coverage Campaign reference, resolved on first call."""
+        if self._coverage is None:
+            self._coverage = _resolve_facts_coverage(self.outcome)
+        return self._coverage
 
     def of(self, observations: Iterable[Mapping[str, object] | None]) -> list[dict[str, object]]:
         """The row of each of *observations* that names a Test Run, in order."""
         if self._rows is None:
-            rows = evidence_test_run_rows(self._outcome)
+            rows = evidence_test_run_rows(self.outcome)
             self._rows = {row["name"]: row for row in rows}
         named = (item.get("test_run") for item in observations if item is not None)
         return [dict(self._rows[name]) for name in named if name in self._rows]
@@ -114,13 +135,14 @@ class SimulationAcceptanceCoordinator:
 
     def reconcile(
         self,
-        outcome: CampaignOutcome,
+        evidence: _OutcomeEvidence,
         context: AcceptanceContext,
     ) -> AcceptanceOutcome:
+        outcome = evidence.outcome
         if context.diagnostic or context.state._file_path is None:
             return AcceptanceOutcome(False, None, (), "no_criteria")
         changes = self._derive_changes(
-            outcome, context.state, context.baseline_refusals, context.frozen
+            evidence, context.state, context.baseline_refusals, context.frozen
         )
         if context.detail_stamper is not None:
             selector = str(outcome.target["selector"])
@@ -149,23 +171,25 @@ class SimulationAcceptanceCoordinator:
 
     @staticmethod
     def _derive_changes(
-        outcome: CampaignOutcome,
+        evidence: _OutcomeEvidence,
         state: DevelopmentState,
         baseline_refusals: Mapping[tuple[str, str], str] | None = None,
         frozen: FrozenTestRuns | None = None,
     ) -> list[CriterionChange]:
+        outcome = evidence.outcome
         facts = outcome.acceptance_facts.document
         target = facts["target"]
         if not isinstance(target, Mapping):
             raise TypeError("campaign acceptance Target is not a mapping")
         target_name = str(target["name"])
         shadow = deepcopy(state)
-        rows = _TestRunRows(outcome)
         if frozen is not None:
-            return _goal_changes(outcome, shadow, target, rows, baseline_refusals or {}, frozen)
-        changes = _cycle_changes(outcome, shadow, target, rows, baseline_refusals or {})
-        changes.extend(_coverage_changes(outcome, shadow, target, rows))
-        changes.extend(_simulation_changes(outcome, shadow, target, target_name, rows))
+            return _goal_changes(
+                outcome, shadow, target, evidence, baseline_refusals or {}, frozen
+            )
+        changes = _cycle_changes(outcome, shadow, target, evidence, baseline_refusals or {})
+        changes.extend(_coverage_changes(shadow, target, evidence))
+        changes.extend(_simulation_changes(outcome, shadow, target, target_name, evidence))
         return changes
 
 
@@ -174,7 +198,7 @@ def _simulation_changes(
     shadow: DevelopmentState,
     target: Mapping[str, object],
     target_name: str,
-    rows: _TestRunRows,
+    evidence: _OutcomeEvidence,
 ) -> list[CriterionChange]:
     if not outcome.complete or target["role"] != "candidate":
         return []
@@ -204,7 +228,7 @@ def _simulation_changes(
             continue
         met = _simulation_criterion_met(outcome, contract, relevant)
         detail = _simulation_detail(outcome, contract, registered, relevant)
-        detail["test_runs"] = rows.of(relevant)
+        detail["test_runs"] = evidence.of(relevant)
         changes.extend(shadow.set_criterion(key, met, detail=detail))
     return changes
 
@@ -421,9 +445,10 @@ def record_campaign_acceptance(
     for item in outcomes:
         if not isinstance(item, CampaignOutcome):
             raise TypeError("invalid Simulation Campaign outcome")
+        evidence = _OutcomeEvidence(item)
         if endpoint.state._file_path is None and not context.diagnostic:
-            _record_standalone_campaign(endpoint, item)
-        accepted = reconciler.reconcile(item, context)
+            _record_standalone_campaign(endpoint, evidence)
+        accepted = reconciler.reconcile(evidence, context)
         acceptances.append(accepted)
         keys.extend(change.key for change in accepted.changes)
         endpoint._simulation_acceptance_outcomes = tuple(acceptances)
@@ -432,13 +457,14 @@ def record_campaign_acceptance(
             "no_criteria",
             "no_applicable_criteria",
         }
-        projection = _campaign_projection(item, booley_dir=booley_dir)
+        projection = _campaign_projection(evidence, booley_dir=booley_dir)
         origin = item.manifest_path.parents[1] / "simulation.json"
         write_compatibility_projection(origin, projection, acceptance_committed=complete)
 
 
-def _record_standalone_campaign(endpoint: EndpointState, outcome: CampaignOutcome) -> None:
+def _record_standalone_campaign(endpoint: EndpointState, evidence: _OutcomeEvidence) -> None:
     """Record a conclusive candidate workload without creating Ticket state."""
+    outcome = evidence.outcome
     if not outcome.complete or outcome.target["role"] != "candidate":
         return
     if outcome.aggregate_grade not in {"pass", "fail"}:
@@ -454,14 +480,15 @@ def _record_standalone_campaign(endpoint: EndpointState, outcome: CampaignOutcom
         detail={
             "mode": "simulate",
             "selected_tests": [_test_name(name) for name in observations],
-            "test_runs": _TestRunRows(outcome).of(observations.values()),
+            "test_runs": evidence.of(observations.values()),
         },
     )
 
 
 def _campaign_projection(
-    outcome: CampaignOutcome, *, booley_dir: Path | None = None
+    evidence: _OutcomeEvidence, *, booley_dir: Path | None = None
 ) -> dict[str, object]:
+    outcome = evidence.outcome
     facts = outcome.acceptance_facts.document
     campaign_id = str(facts["campaign_id"])
     target_directory = outcome.manifest_path.parents[1]
@@ -496,7 +523,7 @@ def _campaign_projection(
     if outcome.coverage_reference is not None:
         projection.update(
             _coverage_projection_fields(
-                outcome, target_directory, campaign_id, booley_dir=booley_dir
+                evidence, target_directory, campaign_id, booley_dir=booley_dir
             )
         )
     return projection
@@ -553,17 +580,17 @@ def _observation_error_tail(observation: Mapping[str, object]) -> str:
 
 
 def _coverage_projection_fields(
-    outcome: CampaignOutcome,
+    evidence: _OutcomeEvidence,
     target_directory: Path,
     campaign_id: str,
     *,
     booley_dir: Path | None = None,
 ) -> dict[str, object]:
-    public = target_directory / "coverage.json"
-    coverage = _resolve_facts_coverage(outcome, public).loaded.campaign
+    public = evidence.coverage()
+    coverage = public.resolved.loaded.campaign
     return {
         "coverage_campaign": _artifact_document(
-            public,
+            public.path,
             base=target_directory,
             kind="coverage_campaign_reference",
             owner=campaign_id,
@@ -597,15 +624,14 @@ def _artifact_document(
 
 
 def _coverage_changes(
-    outcome: CampaignOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
-    rows: _TestRunRows,
+    evidence: _OutcomeEvidence,
 ) -> list[CriterionChange]:
     """Bind nested Coverage Campaign evaluation into the joint transaction."""
-    if outcome.coverage_reference is None:
+    if evidence.outcome.coverage_reference is None:
         return []
-    public_path, resolved = _public_coverage(outcome)
+    coverage = evidence.coverage()
     name = str(target["name"])
     identity = f"{target['vlnv']}#{name}"
     selector = str(target["selector"])
@@ -621,8 +647,8 @@ def _coverage_changes(
     ]
     if not keys:
         return []
-    detail = _coverage_detail(outcome, resolved, public_path, rows)
-    evaluation = resolved.loaded.campaign.evaluation
+    detail = _coverage_detail(evidence)
+    evaluation = coverage.resolved.loaded.campaign.evaluation
     changes: list[CriterionChange] = []
     for key in keys:
         met, projected_detail = project_coverage_criterion(
@@ -641,15 +667,9 @@ def _coverage_changes(
     return changes
 
 
-def _public_coverage(outcome: CampaignOutcome) -> tuple[Path, ResolvedCoverageCampaign]:
-    """The campaign's public ``coverage.json`` and its authenticated resolution."""
+def _resolve_facts_coverage(outcome: CampaignOutcome) -> _PublicCoverage:
+    """Resolve the campaign's public ``coverage.json`` against its Acceptance Facts."""
     public_path = outcome.manifest_path.parents[1] / "coverage.json"
-    return public_path, _resolve_facts_coverage(outcome, public_path)
-
-
-def _resolve_facts_coverage(
-    outcome: CampaignOutcome, public_path: Path
-) -> ResolvedCoverageCampaign:
     facts = outcome.acceptance_facts.document
     bound = facts["coverage_reference"]
     if not isinstance(bound, Mapping) or not isinstance(outcome.coverage_reference, Mapping):
@@ -660,6 +680,7 @@ def _resolve_facts_coverage(
         raise AcceptanceRecordingError("coverage acceptance reference is malformed")
     resolved = resolve_coverage_campaign_reference(public_path)
     raw = encode_coverage_campaign_reference(resolved.reference)
+    digest = content_digest(raw)
     invocation = outcome.manifest_path.parents[3]
     expected_path = public_path.relative_to(invocation).as_posix()
     if (
@@ -667,39 +688,35 @@ def _resolve_facts_coverage(
         or outcome.coverage_reference != document
         or evidence["path"] != expected_path
         or evidence["bytes"] != len(raw)
-        or evidence["sha256"] != content_digest(raw)
+        or evidence["sha256"] != digest
         or evidence["owner"] != facts["campaign_id"]
     ):
         raise AcceptanceRecordingError(
             "public Coverage Campaign reference disagrees with Acceptance Facts"
         )
     authenticate_coverage_campaign_owner(resolved)
-    return resolved
+    return _PublicCoverage(public_path, resolved, len(raw), digest)
 
 
-def _coverage_detail(
-    outcome: CampaignOutcome,
-    resolved: ResolvedCoverageCampaign,
-    public_path: Path,
-    rows: _TestRunRows,
-) -> dict[str, object]:
-    campaign = resolved.loaded.campaign
-    raw = encode_coverage_campaign_reference(resolved.reference)
+def _coverage_detail(evidence: _OutcomeEvidence) -> dict[str, object]:
+    outcome = evidence.outcome
+    coverage = evidence.coverage()
+    campaign = coverage.resolved.loaded.campaign
     nested = outcome.coverage_reference["coverage_campaign"]
     assert isinstance(nested, Mapping)
     report_root = outcome.manifest_path.parents[5]
-    relative_public_path = public_path.relative_to(report_root).as_posix()
+    relative_public_path = coverage.path.relative_to(report_root).as_posix()
     return {
         "coverage_campaign_reference": {
             "path_base": "reports_root",
             "path": relative_public_path,
-            "bytes": len(raw),
-            "sha256": content_digest(raw),
+            "bytes": coverage.size,
+            "sha256": coverage.sha256,
             "nested_campaign_sha256": nested["sha256"],
         },
         "evaluation": coverage_mapping_document(campaign.evaluation),
         "criterion_fingerprint": campaign.evaluation.get("criterion_fingerprint"),
-        "test_runs": rows.of(outcome.observations),
+        "test_runs": evidence.of(outcome.observations),
     }
 
 
@@ -732,7 +749,7 @@ def _cycle_changes(
     outcome: CampaignOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
-    rows: _TestRunRows,
+    evidence: _OutcomeEvidence,
     refusals: Mapping[tuple[str, str], str],
 ) -> list[CriterionChange]:
     facts = _CycleFacts.of(outcome, target, refusals)
@@ -745,7 +762,7 @@ def _cycle_changes(
         ):
             continue
         current = observations.get(params.get("test"))
-        changes.extend(_cycle_change(shadow, key, current, facts, rows))
+        changes.extend(_cycle_change(shadow, key, current, facts, evidence))
     return changes
 
 
@@ -754,7 +771,7 @@ def _cycle_change(
     key: str,
     current: Mapping[str, object] | None,
     facts: _CycleFacts,
-    rows: _TestRunRows,
+    evidence: _OutcomeEvidence,
 ) -> list[CriterionChange]:
     """Judge Cycle Count Criterion *key* from the candidate observation *current*.
 
@@ -781,7 +798,7 @@ def _cycle_change(
         baseline_state,
         checks,
     )
-    detail["test_runs"] = rows.of((current,))
+    detail["test_runs"] = evidence.of((current,))
     if baseline_state == "mismatched":
         run_name = current.get("test_run") if current is not None else None
         refused_as = baseline_refusal_key(str(test), cast("str | None", run_name))
@@ -938,7 +955,7 @@ def _goal_changes(
     outcome: CampaignOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
-    rows: _TestRunRows,
+    evidence: _OutcomeEvidence,
     refusals: Mapping[tuple[str, str], str],
     frozen: FrozenTestRuns,
 ) -> list[CriterionChange]:
@@ -961,7 +978,7 @@ def _goal_changes(
         return []
     names = {f"{target['vlnv']}#{target['name']}", str(target["selector"])}
     cycle = _CycleFacts.of(outcome, target, refusals)
-    ran = rows.all()
+    ran = evidence.all()
     changes: list[CriterionChange] = []
     for goal in frozen.of_target(names):
         matched = goal.matching(ran)
@@ -969,9 +986,9 @@ def _goal_changes(
             continue
         measured: list[CriterionChange] = []
         if goal.kind == "cycle_count" and goal.measured_by(ran):
-            measured = _goal_cycle_change(outcome, shadow, goal, matched, cycle, rows)
+            measured = _goal_cycle_change(outcome, shadow, goal, matched, cycle, evidence)
         elif goal.kind == "coverage" and goal.measured_by(ran) and outcome.complete:
-            measured = _goal_coverage_change(outcome, shadow, goal, rows)
+            measured = _goal_coverage_change(outcome, shadow, goal, evidence)
         if not measured:
             detail = {**_goal_simulation_detail(outcome, matched), **goal.outcomes_detail(matched)}
             measured = shadow.set_criterion(goal.key, goal.own_verdict(matched), detail=detail)
@@ -1012,7 +1029,7 @@ def _goal_cycle_change(
     goal: GoalTestRuns,
     matched: list[dict[str, object]],
     cycle: _CycleFacts,
-    rows: _TestRunRows,
+    evidence: _OutcomeEvidence,
 ) -> list[CriterionChange]:
     """Judge a Cycle Count Goal from the observation of its one frozen Test Run.
 
@@ -1022,14 +1039,14 @@ def _goal_cycle_change(
     current = observations.get(str(matched[0]["name"]))
     if current is None:
         return []
-    return _cycle_change(shadow, goal.key, current, cycle, rows)
+    return _cycle_change(shadow, goal.key, current, cycle, evidence)
 
 
 def _goal_coverage_change(
     outcome: CampaignOutcome,
     shadow: DevelopmentState,
     goal: GoalTestRuns,
-    rows: _TestRunRows,
+    evidence: _OutcomeEvidence,
 ) -> list[CriterionChange]:
     """The one projection of a coverage evaluation onto a Goal's Criterion.
 
@@ -1045,10 +1062,12 @@ def _goal_coverage_change(
     """
     if outcome.coverage_reference is None:
         return []
-    public_path, resolved = _public_coverage(outcome)
-    detail = _coverage_detail(outcome, resolved, public_path, rows)
+    detail = _coverage_detail(evidence)
     met, projected_detail = project_coverage_criterion(
-        shadow.criteria[goal.key], resolved.loaded.campaign.evaluation, detail, atomic=False
+        shadow.criteria[goal.key],
+        evidence.coverage().resolved.loaded.campaign.evaluation,
+        detail,
+        atomic=False,
     )
     return shadow.set_criterion(goal.key, met, detail=projected_detail)
 

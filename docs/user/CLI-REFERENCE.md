@@ -16,8 +16,8 @@ in the wrong place stops and prints how to run it in the right one.
 | Location | Public commands, in order |
 |---|---|
 | Sandbox | `chat`, `dashboard`, `flow`, `specialist`, `worktree` |
-| Either | `cheat`, `doctor`, `help`, `resources`, `targets` |
-| Host-only | `auth`, `bootstrap`, `eda`, `init`, `projects` |
+| Either | `cheat`, `doctor`, `help`, `init`, `resources`, `targets` |
+| Host-only | `auth`, `bootstrap`, `eda`, `projects` |
 
 `booley flow` and `booley specialist` run and list only in the Sandbox, but
 `booley flow <name> --help` and `booley specialist <name> --help` also work on
@@ -46,6 +46,10 @@ Host Bootstrap is described in [INSTALL.md](INSTALL.md#host-bootstrap);
 `init` and its options in [SETUP.md](SETUP.md); logins and billing in
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
+`booley init` also runs inside a hand-written Sandbox such as a Codespace, where it does Project
+Initialization only; a Booley-issued Sandbox refuses it. See
+[Project setup in a hand-written spec](SANDBOX.md#project-setup-in-a-hand-written-spec-booley-init).
+
 ### Work in the Sandbox · container
 
 ```bash
@@ -58,6 +62,7 @@ booley dashboard                  # sessions and Jobs; see Usage
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
 booley worktree rm <name>         # remove a worktree, keeping its evidence and branches
+booley worktree gc                # remove idle worktrees (default: a week), where safe
 ```
 
 The Dashboard opens by itself when you attach to the container; see
@@ -95,7 +100,7 @@ booley projects prune-keepers            # preview images left by earlier forget
 booley projects prune-keepers --confirm <digest>   # remove exactly that preview
 ```
 
-Each successful `booley init` remembers its Project Root. `booley projects`
+Each successful host `booley init` remembers its Project Root. `booley projects`
 marks each one `present`, `missing`, or `uninitialized`.
 
 `discover` scans only the directories you name and doesn't follow symlinks.
@@ -235,6 +240,30 @@ a worktree that is still intact again, so work added since is never removed
 without the refusal. It never prunes other worktrees' registrations. To reuse
 the name, delete the kept branch first with
 `git -C <absolute-project-root> branch -D booley/<name>`.
+
+**Cleaning up idle worktrees.** `booley worktree gc` removes every worktree that
+nobody has used for a while, so abandoned ones do not pile up:
+
+```text
+booley worktree gc [--older-than AGE]
+```
+
+A worktree counts as idle when its last use (the `LAST USED` column of
+`booley worktree list`) is older than `AGE`: days, hours, minutes, and seconds
+as `7d`, `36h`, `1d12h`, `90m`, or `30s`. The default is `7d`; set another
+default with `gc_older_than` in the main checkout's `.booley/booley.toml`
+([configuration](CONFIG.md#worktree-cleanup-worktree)). `--older-than` wins over
+the setting. Run it from the main checkout or another worktree.
+
+Each idle worktree goes through `booley worktree rm` without `--force`, so
+everything `rm` refuses is kept: a live Session, an active Goal Mode, and
+unsaved work (see the list above). A removed worktree prints the same lines as
+`rm`, evidence and branches included. Each worktree that stays prints `Kept
+worktree <name>:` and why, such as that it was used too recently, that the
+worktree you are in cannot be removed from inside, that it predates the
+last-use record (`LAST USED` reads `never`), or `rm`'s refusal reasons. The
+command ends with the totals, and exits 1 if the setting is invalid, the
+worktrees cannot be listed, or a removal failed.
 
 If `booley worktree new` fails and leaves a checkout behind, it prints the
 manual Git steps with the real Sandbox paths; use those, not host paths.

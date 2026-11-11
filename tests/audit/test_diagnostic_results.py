@@ -2,7 +2,13 @@
 
 import pytest
 
-from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+from booley.audit.diagnostic_results import (
+    DiagnosticDetail,
+    DiagnosticFinding,
+    DiagnosticReport,
+    Findings,
+    Severity,
+)
 
 
 @pytest.mark.parametrize("check_id", [None, "", "Text with spaces", "host."])
@@ -31,3 +37,16 @@ def test_only_fail_and_warn_findings_are_active():
     assert (report.health.fail_count, report.health.warn_count) == (1, 1)
     assert not report.health.clean
     assert report.health.exit_code == 1
+
+
+def test_detail_is_verbose_only_unless_marked() -> None:
+    findings = Findings()
+    findings.pass_("first")
+    findings.detail("hidden unless verbose")
+    findings.fail("second", "fix it")
+    findings.detail("always shown", verbose_only=False)
+
+    assert findings.report().details == (
+        DiagnosticDetail(1, "hidden unless verbose", True),
+        DiagnosticDetail(2, "always shown", False),
+    )

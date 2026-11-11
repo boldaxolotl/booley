@@ -155,3 +155,41 @@ def test_timing_output_records_only_reported_phases(tmp_path: Path, case: str) -
     assert set(phases) == {"setup", "teardown"}
     assert all(isinstance(seconds, float) and seconds >= 0 for seconds in phases.values())
     assert payload["tests"] == {}
+
+
+class _ShardConfig:
+    """The options and hook the shard plugin reads while selecting one shard."""
+
+    def __init__(self, tmp_path: Path, timings: dict[str, float]) -> None:
+        model = tmp_path / "timings.json"
+        model.write_text(
+            json.dumps({"schema": 1, "default_seconds": 1.0, "tests": timings}), encoding="utf-8"
+        )
+        self.options = {
+            "--ci-shard-count": 2,
+            "--ci-shard-index": 0,
+            "--ci-shard-group": "windows",
+            "--ci-shard-manifest": tmp_path / "manifest.json",
+            "--ci-timing-model": model,
+        }
+        self.hook = SimpleNamespace(pytest_deselected=lambda items: None)
+
+    def getoption(self, name: str) -> object:
+        return self.options.get(name)
+
+
+def _item(nodeid: str, *, skipped: bool = False) -> SimpleNamespace:
+    marker = SimpleNamespace(name="skip") if skipped else None
+    return SimpleNamespace(nodeid=nodeid, get_closest_marker=lambda name: marker)
+
+
+def test_skipped_items_are_balanced_as_free(tmp_path: Path) -> None:
+    """A slow-looking node that is skipped must not take a shard's share of the real work."""
+    config = _ShardConfig(tmp_path, {"t::slow": 9.0, "t::skip": 50.0})
+    items = [_item("t::slow"), _item("t::fast"), _item("t::skip", skipped=True)]
+
+    shard_plugin.pytest_collection_modifyitems(config, items)
+
+    assert [item.nodeid for item in items] == ["t::slow", "t::skip"]
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["expected"] == ["t::fast", "t::skip", "t::slow"]

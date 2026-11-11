@@ -8,7 +8,7 @@ import hashlib
 import json
 import math
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -87,23 +87,33 @@ def load_timings(path: Path | None) -> TimingModel:
 
 
 def assign_shards(
-    nodeids: Sequence[str], shard_count: int, timings: TimingModel
+    nodeids: Sequence[str],
+    shard_count: int,
+    timings: TimingModel,
+    skipped: Collection[str] = (),
 ) -> tuple[tuple[str, ...], ...]:
-    """Assign every unique node ID once using deterministic LPT balancing."""
+    """Assign every unique node ID once using deterministic LPT balancing.
+
+    ``skipped`` node IDs do no work, so they add no load: they are spread round-robin in
+    node-ID order after the balanced assignment of the rest.
+    """
     if shard_count < 1:
         raise ShardError("shard_count must be positive")
     if len(nodeids) != len(set(nodeids)):
         raise ShardError("collected node IDs must be unique")
     shards: list[list[str]] = [[] for _ in range(shard_count)]
     loads = [0.0] * shard_count
+    skipped_ids = set(skipped)
     weighted = sorted(
-        nodeids,
+        (nodeid for nodeid in nodeids if nodeid not in skipped_ids),
         key=lambda nodeid: (-timings.tests.get(nodeid, timings.default_seconds), nodeid),
     )
     for nodeid in weighted:
         index = min(range(shard_count), key=lambda candidate: (loads[candidate], candidate))
         shards[index].append(nodeid)
         loads[index] += timings.tests.get(nodeid, timings.default_seconds)
+    for position, nodeid in enumerate(sorted(skipped_ids & set(nodeids))):
+        shards[position % shard_count].append(nodeid)
     return tuple(tuple(sorted(shard)) for shard in shards)
 
 

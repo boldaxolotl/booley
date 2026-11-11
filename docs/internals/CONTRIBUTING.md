@@ -102,11 +102,11 @@ base with `main`, reading the coverage report that a passing `pytest.broad`
 run wrote for the same tree outside the checkout; it refuses a missing or
 stale report. Develop readiness defaults to the `python` test profile: its
 broad command runs `tests/ --test-profile python`, excluding every
-`native_bwave` test. It includes every Goal recovery and authority
-permutation, as every complete-suite CI run does.
+`native_bwave` test. `tests/` collection skips `tests/goals/` (temporary, until
+Goal Mode removal #3276); run those with unprofiled `pytest tests/goals`.
 
 Use `python3 .github/scripts/agent_readiness.py --test-profile full` before a
-full test run. `full` covers all of `tests/`, including native integration; it
+full test run. `full` covers `tests/` (minus `tests/goals/`), including native integration; it
 does not include Rust tests or `crates/bwave/tests/`. Native source tests all
 use the active checkout's `crates/bwave/target/debug/bwave` (`bwave.exe` on
 Windows), ignoring release builds and runtime binary overrides. This test-only
@@ -345,6 +345,14 @@ Porting EDA tools is #1, but not the only way to help:
   [Getting set up](#getting-set-up) above); a change that breaks tests is yours
   to fix.
 - **Match the surrounding code**: comment density, naming, and idiom.
+- **Register tests of Sandbox-only code.** Windows CI skips tests listed in
+  `tests/sandbox_only.py`, the `sandbox_only` marker's registry, because that code
+  never runs on a Windows host. Add a test module there only when the module it
+  exercises runs only in the Sandbox. Every new module under a registered
+  directory such as `tests/goals/` is Sandbox-only unless it is listed in
+  `WINDOWS_HOST_TESTS`. A guard test fails if a module a host command can
+  import is left with only Sandbox-only tests. See
+  [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests).
 - **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are three PRs.
 - **Keep slow tests well inside their time budget.** CI gives each test 60
   seconds unless a `@pytest.mark.timeout(N)` marker says otherwise. On Windows

@@ -25,7 +25,7 @@ Idempotent, Project-independent preparation of the host environment and the curr
 _Avoid_: Project bootstrap, machine setup, installation
 
 **Project Initialization**:
-Idempotent, location-neutral reconciliation of one codebase's Project files (the Booley Directory, Git integration, guidance links, core projections and the Dashboard task), making it a **Project** without interpreting its design. It needs no Docker, host credentials or **Sandbox Issuance**. Host `booley init` runs it with Sandbox Image preparation alongside, then adds Sandbox Issuance, which owns the Dashboard task on that path.
+Idempotent, location-neutral reconciliation of one codebase's Project files (the Booley Directory, Git integration, guidance links, core projections and the Dashboard task), making it a **Project** without interpreting its design. It needs no Docker, host credentials or **Sandbox Issuance**. Host `booley init` runs it with Sandbox Image preparation alongside, then adds Sandbox Issuance, which owns the Dashboard task on that path. `booley init` in a hand-written Sandbox runs it alone; a Booley-issued Sandbox refuses it.
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 
 **Project Setup**:

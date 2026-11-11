@@ -119,7 +119,7 @@ The docs site (https://booley.dev/docs/, one page per doc name) shows the latest
 release, so use it only when its version equals the installed one.
 
 The CLIs fail fast on the wrong side, each naming the fix: `booley init`
-refuses in-container; the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses
+refuses inside a Booley-issued Sandbox (a hand-written Sandbox runs Project Initialization only); the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses
 on the host. To check explicitly: `/.dockerenv` exists only in the container.
 `SETUP-PLAN.md` carries the full context across the boundary — a fresh
 in-container session just re-invokes this skill and phase detection resumes
