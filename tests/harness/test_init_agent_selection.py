@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 import tomllib
 import warnings
@@ -17,6 +16,7 @@ from booley.harness.setup.common import InitContext
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import Diagnostic, ImageCleanup
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -203,9 +203,7 @@ def _initialize_nested_git_repositories(parent_booley_dir, child):
         ),
     )
     for root, *args in commands:
-        subprocess.run(
-            ["git", "-C", str(root), *args], capture_output=True, check=True, timeout=10
-        )
+        run_bounded_child(["git", "-C", str(root), *args], check=True, timeout=10)
     return (parent_booley_dir / ".git" / "config").read_bytes()
 
 

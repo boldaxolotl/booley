@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar
@@ -15,11 +14,12 @@ from booley.harness.endpoint_help import _parse_help, _parser_copy, _ParserSynta
 from booley.mcp.base import McpTool
 from booley.mcp.registry import McpToolInfo
 from booley.runtime.booley_dir import reset_cache
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
     for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
