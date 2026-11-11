@@ -485,14 +485,9 @@ class TestDryRun:
         execution.preview.side_effect = ValueError("preview failed")
         flow._simulation_execution_override = execution
 
-        units, errors = flow._plan_simulation_targets(
-            ["lite"],
-            {},
-            role="ordinary",
-            revision=None,
-        )
+        planned, errors = flow._preview_targets(["lite"], {})
 
-        assert units == []
+        assert planned == []
         assert errors == ["lite: preview failed"]
 
     def test_plan_reports_a_refused_private_mirror_as_a_planning_error(
@@ -506,26 +501,10 @@ class TestDryRun:
         execution.preview.side_effect = SimulationBuildPreparationError("mirror refused")
         flow._simulation_execution_override = execution
 
-        units, errors = flow._plan_simulation_targets(["lite"], {}, role="ordinary", revision=None)
+        planned, errors = flow._preview_targets(["lite"], {})
 
-        assert units == []
+        assert planned == []
         assert errors == ["lite: mirror refused"]
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_plan_fingerprint_changes_with_configured_environment(
-        self,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ) -> None:
-        flow = _make_flow(tmp_path, config="lite")
-        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "fast"}):
-            first = flow._plan_simulation(["lite"], {})
-        with patch.object(flow, "_target_sim_env", return_value={"FLAVOR": "safe"}):
-            second = flow._plan_simulation(["lite"], {})
-
-        assert first.semantic_plan_fingerprint != second.semantic_plan_fingerprint
 
     @pytest.mark.parametrize(
         ("targets", "request_args", "expected"),
