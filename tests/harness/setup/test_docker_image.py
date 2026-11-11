@@ -150,6 +150,17 @@ def test_docker_build_command_reuses_local_parent_labels(tmp_path):
         labeled_spec
     )
 
+    context_spec = init_docker_image._DockerBuildSpec(
+        dockerfile=dockerfile,
+        context=tmp_path,
+        exists=False,
+        image="project-image",
+        build_contexts=(("booley-runtime-base", "docker-image://base-image"),),
+    )
+    context_command = init_docker_image._docker_build_command(context_spec)
+    flag_at = context_command.index("--build-context")
+    assert context_command[flag_at + 1] == "booley-runtime-base=docker-image://base-image"
+
 
 def _matching_runtime_base_build(tmp_path, monkeypatch):
     docker_dir = tmp_path / "src" / "booley" / "data" / "docker"

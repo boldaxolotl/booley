@@ -1,4 +1,4 @@
-"""Booley-shipped sandbox flavors (booley-sandbox-riscv) in ``booley init``.
+"""Booley-shipped sandbox flavor registry (booley-sandbox-riscv) and base-image note.
 
 A flavor is Booley's own image, not the user's. These tests pin the shipped
 flavor files, the remote tag derivation, and the base-image note init prints
@@ -59,8 +59,8 @@ class TestShippedFlavorFiles:
         The two schemes are opposite ends: a generated project image is
         ``<slug>-booley-sandbox`` (suffix), a flavor is ``booley-sandbox-<x>``
         (prefix). If a future flavor breaks that, a user's own project image
-        would be mistaken for a shipped flavor in the flavor registry and
-        rebuilt from a shipped Dockerfile.
+        would be mistaken for a shipped flavor by Doctor's flavor checks and the
+        base-image note.
         """
         for image in idi.FLAVOR_IMAGES:
             assert image.startswith(f"{pi.BASE_IMAGE}-")
