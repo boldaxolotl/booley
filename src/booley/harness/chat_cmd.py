@@ -323,6 +323,7 @@ def _run_in_checkout(
                 file=sys.stderr,
             )
             return 2
+        chat_exit.stamp_in_place_worktree(project_root)
         return run_foreground_child(functools.partial(launch, Placement(worktree=False), None))
     common = resolve_common_booley_dir(project_root)
     with chat_checkout.main_checkout_lock(common) as lock:
@@ -336,7 +337,8 @@ def _run_in_checkout(
         )
         if mode == "auto" and placement.worktree:
             lock.release()  # not in main, so later launches may take it
-        if not placement.worktree:
+        # Without `os.fork` (Windows) the agent replaces Booley: no session ever ends in it.
+        if not placement.worktree or not hasattr(os, "fork"):
             return run_foreground_child(functools.partial(launch, placement, None))
         created = CreatedWorktree()
         try:

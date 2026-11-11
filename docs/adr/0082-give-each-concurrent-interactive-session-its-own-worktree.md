@@ -196,7 +196,8 @@ Implemented by #2613 (2026-11-11):
 - Only a worktree that this launch created is offered: a launch from inside an
   existing linked worktree, and a session in the main checkout, get no prompt.
 - The exit step runs after the agent was reaped and before Booley takes on the
-  agent's status, so the exit code stays the agent's.
+  agent's status, so the exit code stays the agent's. Closing the terminal while
+  the prompt waits ends Booley by SIGHUP, as for any program.
 
 ### Lifecycle commands
 

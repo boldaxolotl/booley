@@ -35,7 +35,7 @@ from booley.harness.worktree_rm import (
     report_removal,
 )
 from booley.runtime.foreground_child import ChildExit, foreground_tty
-from booley.runtime.worktree_usage import stamp_worktree
+from booley.runtime.worktree_usage import record_worktree_use, stamp_worktree
 
 _KEEP_ANSWERS = frozenset({"", "k", "keep"})
 _DISCARD_ANSWERS = frozenset({"d", "discard"})
@@ -178,7 +178,9 @@ class _EndedSession:
             return refusal
         except KeyboardInterrupt:
             # `rm` records what it began, so running it again finishes the removal.
-            _say(f"Removal interrupted; run booley worktree rm {self.name} to finish it.")
+            # `rm` records what it began; a forced removal needs `--force` again to finish.
+            forced = " --force" if force else ""
+            _say(f"Removal interrupted; run booley worktree rm {self.name}{forced} to finish it.")
         except REMOVAL_FAILURES as exc:
             _say(f"ERROR: {exc}")
             self.keep()
@@ -226,6 +228,17 @@ def exit_step(
         session.offer()
     except (KeyboardInterrupt, EOFError):
         session.keep()
+
+
+def stamp_in_place_worktree(project_root: Path) -> None:
+    """Count a launch from inside a Booley worktree as a use of it.
+
+    The agent that starts there gets no worktree of its own and may make no Booley tool
+    call for a while; without the stamp another launch's `gc` could remove the worktree
+    under it once it sat idle past `gc_older_than`.
+    """
+    with contextlib.suppress(*REMOVAL_FAILURES):
+        record_worktree_use(Path.cwd(), resolve_common_booley_dir(project_root))
 
 
 def collect_at_launch(project_root: Path) -> None:
