@@ -278,9 +278,12 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
             raise SimulationCampaignCancellationError("cancelled")
         raise OSError("failed")
 
-    monkeypatch.setattr(flow, "_execute_validated_resume", fail_after_attempt)
+    monkeypatch.setattr(flow, "_write_campaign_progress", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(flow, "_run_validated_resume_campaign", fail_after_attempt)
     with flow.publication_resources:
-        result = flow._execute_campaign_resume(validated, _admission(), observed)
+        result = flow._execute_campaign(
+            _admission(), flow._resume_campaign_run(validated, observed)
+        )
 
     assert result.exit_code == (EXIT_CANCELLED if cancelled else EXIT_ERROR)
     assert result.detail["completed"] == []
