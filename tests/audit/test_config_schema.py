@@ -242,7 +242,7 @@ def test_retired_structural_controls_have_actionable_failures() -> None:
     assert all(not audit.is_valid for audit in audits)
     assert [audit.findings[0].fix for audit in audits] == [
         "delete [sandbox].mode",
-        "delete it and select the runtime with [agent].provider",
+        "delete it and select the runtime with [agent].default",
     ]
 
 

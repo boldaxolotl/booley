@@ -548,14 +548,14 @@ def test_step_keeps_agent_table_from_plain_init(tmp_path: Path, monkeypatch, cap
     (pd / "booley.toml").write_text(
         "# booley-init-origin: port\n"
         + BOOLEY_TOML_SKELETON
-        + '\n[agent]\nprovider = "codex"\nauth = "api_key"\n',
+        + '\n[agent]\ndefault = "codex"\nauth = "api_key"\n',
         encoding="utf-8",
     )
     ctx = _ctx(tmp_path, monkeypatch)
     assert step_scaffold(ctx, _args()) is True
     text = (pd / "booley.toml").read_text(encoding="utf-8")
     cfg = tomllib.loads(text)
-    assert cfg["agent"] == {"provider": "codex", "auth": "api_key"}
+    assert cfg["agent"] == {"default": "codex", "auth": "api_key"}
     assert cfg["project"]["name"] == "my_ip"
     assert "# booley-init-origin: scaffold" in text
     assert "# booley-init-origin: port" not in text
@@ -580,7 +580,7 @@ def test_step_keeps_hand_written_agent_forms_as_a_table(
     ctx = _ctx(tmp_path, monkeypatch)
     assert step_scaffold(ctx, _args()) is True
     cfg = tomllib.loads((pd / "booley.toml").read_text(encoding="utf-8"))
-    assert cfg["agent"] == {"provider": "codex", "auth": "api_key"}
+    assert cfg["agent"] == {"default": "codex", "auth": "api_key"}
     assert "agent" not in cfg["flows"]["fpga"]
     capsys.readouterr()
 

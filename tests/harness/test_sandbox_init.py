@@ -209,7 +209,7 @@ def test_sandbox_init_fills_missing_default_cli_from_agent_app(
         assert _booley_init(project, monkeypatch) == 0, app
 
         assert booley_dir.joinpath("booley.toml").read_bytes() == (
-            original + f'\n[agent]\nprovider = "{app}"\n'.encode()
+            original + f'\n[agent]\ndefault = "{app}"\n'.encode()
         )
         assert _git(booley_dir, "status", "--porcelain") == " M booley.toml\n"
 

@@ -569,7 +569,7 @@ class AgentSelection:
 
     provider: str
     auth: str
-    write_provider: bool = False
+    write_default: bool = False
     write_auth: bool = False
 
 
@@ -629,17 +629,21 @@ def _resolve_selection_value(
     ctx: InitContext,
     *,
     name: str,
+    key: str,
     configured: str | None,
     requested: str | None,
     choices: tuple[str, ...],
     default: str,
 ) -> tuple[str | None, bool]:
-    """Resolve one field and whether it must be added to booley.toml."""
+    """Resolve one field and whether it must be added to booley.toml.
+
+    ``name`` is the flag and prompt label; ``key`` is the ``[agent]`` config key.
+    """
     if configured is not None:
         if requested is not None and requested != configured:
             err(
                 f"--{name}={requested} conflicts with booley.toml [agent] "
-                f"{name}={configured!r}; edit the project config to change it"
+                f"{key}={configured!r}; edit the project config to change it"
             )
             return None, False
         return configured, False
@@ -662,9 +666,10 @@ def _resolve_agent_selection(
         err(f"cannot select an agent from {config_path}: {exc}")
         ctx.record("agent_config", "err", "invalid booley.toml")
         return None
-    provider, write_provider = _resolve_selection_value(
+    provider, write_default = _resolve_selection_value(
         ctx,
         name="provider",
+        key="default",
         configured=provider,
         requested=getattr(args, "provider", None),
         choices=("claude", "codex"),
@@ -676,6 +681,7 @@ def _resolve_agent_selection(
     auth, write_auth = _resolve_selection_value(
         ctx,
         name="auth",
+        key="auth",
         configured=auth,
         requested=getattr(args, "auth", None),
         choices=("auto", "subscription", "api_key"),
@@ -684,7 +690,7 @@ def _resolve_agent_selection(
     if auth is None:
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
-    return AgentSelection(provider, auth, write_provider, write_auth)
+    return AgentSelection(provider, auth, write_default, write_auth)
 
 
 def _insert_agent_fields(content: str, fields: dict[str, str]) -> str:
@@ -712,8 +718,8 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
     """Persist a complete [agent] choice before auth checks and Session seeding."""
     ctx.step_banner("agent provider and authentication policy")
     fields: dict[str, str] = {}
-    if selection.write_provider:
-        fields["provider"] = selection.provider
+    if selection.write_default:
+        fields["default"] = selection.provider
     if selection.write_auth:
         fields["auth"] = selection.auth
     if not fields:
@@ -2816,7 +2822,7 @@ def _sandbox_agent_selection(config_path: Path) -> AgentSelection | None:
         return AgentSelection(provider, auth or "auto")
     app = (os.environ.get(agent_app.AGENT_APP_ENV) or "").strip()
     if app in AGENT_CLIS:
-        return AgentSelection(app, auth or "auto", write_provider=True)
+        return AgentSelection(app, auth or "auto", write_default=True)
     return None
 
 

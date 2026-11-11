@@ -759,7 +759,7 @@ def _check_only(root: Path) -> int:
 
 
 _GUIDANCE = b"# Guidance\n\nUse LF.\n"
-_AGENT_TABLE = b'[agent]\nprovider = "claude"\nauth = "subscription"\n'
+_AGENT_TABLE = b'[agent]\ndefault = "claude"\nauth = "subscription"\n'
 _CONFIG_WITHOUT_AGENT = b"# user config\n[flows.sim]\nenabled = true\n"
 
 
@@ -1508,7 +1508,7 @@ def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys
 
     text = config.read_text(encoding="utf-8")
     parsed = tomllib.loads(text)
-    assert parsed["agent"] == {"provider": "claude", "auth": "subscription"}, "[agent] kept"
+    assert parsed["agent"] == {"default": "claude", "auth": "subscription"}, "[agent] kept"
     assert parsed["stealth"]["enabled"] is False
     assert "# booley-init-origin: scaffold" in text
     assert not (repo / ".booley/.git").exists(), "no inner repository for an open scaffold"
@@ -1554,7 +1554,7 @@ def test_stealth_scaffold_after_plain_init_keeps_hidden_layout(repo, monkeypatch
     assert init_cmd.run_init(_after_init_scaffold_args(stealth=True), repo) == 0
 
     parsed = tomllib.loads((repo / ".booley/booley.toml").read_text(encoding="utf-8"))
-    assert parsed["agent"] == {"provider": "claude", "auth": "subscription"}
+    assert parsed["agent"] == {"default": "claude", "auth": "subscription"}
     assert parsed["stealth"]["enabled"] is True
     assert (repo / ".booley/.git").is_dir(), "Stealth keeps the inner repository"
     assert "/.booley" in _exclude_lines(repo)

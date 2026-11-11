@@ -94,7 +94,7 @@ booley init --provider codex --auth subscription
 ```
 
 The choice is recorded in the `[agent]` table of `.booley/booley.toml`, as
-`provider` (the older name for `default`) and `auth`. The flag spells the
+`default` and `auth`. The flag spells the
 policy `api-key`; the file spells it `api_key`. Re-running init keeps it; to
 change it later, edit that table (see [CONFIG.md](CONFIG.md)).
 
@@ -121,7 +121,7 @@ which one to bill and records it in `.booley/booley.toml`:
 
 ```toml
 [agent]
-provider = "claude"     # or "codex"
+default = "claude"      # or "codex"
 auth = "subscription"   # or "api_key"
 ```
 

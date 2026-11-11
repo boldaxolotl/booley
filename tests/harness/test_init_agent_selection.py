@@ -103,7 +103,7 @@ def test_full_init_ignores_ancestor_environment_and_warmed_cache(tmp_path, monke
     assert selection == init_cmd.AgentSelection("codex", "subscription", True, True)
     config.parent.mkdir()
     assert init_cmd._step_agent_config(ctx, selection, config)
-    assert 'provider = "codex"' in config.read_text(encoding="utf-8")
+    assert 'default = "codex"' in config.read_text(encoding="utf-8")
     assert parent_config.read_text(encoding="utf-8") == original
 
 
@@ -147,7 +147,7 @@ def test_nested_child_run_init_isolates_every_project_write(
 
     child_config = child / ".booley" / "booley.toml"
     content = child_config.read_text(encoding="utf-8")
-    assert 'provider = "codex"' in content
+    assert 'default = "codex"' in content
     assert 'auth = "subscription"' in content
     assert not (child_config.parent / "tickets").exists()
     assert (child_config.parent / "goalsets" / "feature.md").is_file()
@@ -291,7 +291,7 @@ def test_run_init_persists_selection_before_seed(tmp_path, monkeypatch):
     def seed(_ctx, selection):
         config = (booley_dir / "booley.toml").read_text(encoding="utf-8")
         assert selection == init_cmd.AgentSelection("codex", "subscription", True, True)
-        assert '[agent]\nprovider = "codex"\nauth = "subscription"' in config
+        assert '[agent]\ndefault = "codex"\nauth = "subscription"' in config
         return 0
 
     monkeypatch.setattr(init_cmd, "_run_seed", seed)
@@ -359,7 +359,7 @@ def test_persist_selection_preserves_existing_config_text(tmp_path):
 
     updated = config.read_text(encoding="utf-8")
     assert updated.startswith(original)
-    assert updated.endswith('[agent]\nprovider = "claude"\nauth = "api_key"\n')
+    assert updated.endswith('[agent]\ndefault = "claude"\nauth = "api_key"\n')
 
 
 def test_persist_selection_writes_project_data_with_lf(tmp_path):
@@ -449,7 +449,72 @@ def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
 
     assert resolved == init_cmd.AgentSelection("claude", "auto", False, True)
     assert init_cmd._step_agent_config(ctx, resolved, config)
-    assert config.read_text(encoding="utf-8") == ('[agent]\nprovider = "claude"\nauth = "auto"\n')
+    # Bytes: the older `provider` line must survive byte-identical; init only adds auth.
+    assert config.read_bytes() == b'[agent]\nprovider = "claude"\nauth = "auto"\n'
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        pytest.param(None, id="missing-file"),
+        pytest.param(b"# c\n[flows.sim]\nenabled = false\n", id="no-agent-table"),
+    ],
+)
+def test_first_init_records_default_not_provider(tmp_path, existing):
+    """A Project without [agent] gets the current key `default`, never the older `provider`."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
+    if existing is not None:
+        config.write_bytes(existing)
+    ctx = InitContext(project_root=tmp_path, interactive=False)
+
+    resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
+    assert init_cmd._step_agent_config(ctx, resolved, config)
+
+    written = config.read_bytes()
+    assert written.startswith(existing or b"")
+    assert written.endswith(b'[agent]\ndefault = "claude"\nauth = "auto"\n')
+    assert "provider" not in tomllib.loads(written.decode("utf-8"))["agent"]
+
+
+def test_agent_table_without_default_gains_default(tmp_path):
+    """An [agent] table that declares no default CLI receives `default`, not `provider`."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
+    config.write_bytes(b'[agent]\nauth = "subscription"\n')
+    ctx = InitContext(project_root=tmp_path, interactive=False)
+
+    resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
+    assert init_cmd._step_agent_config(ctx, resolved, config)
+
+    assert config.read_bytes() == b'[agent]\nauth = "subscription"\ndefault = "claude"\n'
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        pytest.param(b'[agent]\ndefault = "codex"\n', id="default"),
+        pytest.param(b'[agent]\nprovider = "codex"\n', id="provider-alias"),
+        pytest.param(b'[agent]\nclis = ["codex"]\n', id="clis"),
+    ],
+)
+def test_provider_flag_conflict_names_agent_default(tmp_path, capsys, declared):
+    """The conflict error names the config key `[agent] default`, whichever spelling declared it."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
+    config.write_bytes(declared)
+    ctx = InitContext(project_root=tmp_path, interactive=False)
+
+    assert init_cmd._resolve_agent_selection(ctx, _args(provider="claude"), config) is None
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "--provider=claude conflicts with booley.toml [agent] default='codex'" in output
+    assert "[agent] provider" not in output
+    assert config.read_bytes() == declared
 
 
 @pytest.mark.parametrize(
@@ -483,7 +548,7 @@ def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
         ),
         pytest.param(
             '[agent.git]\nname = "E"\n',
-            '[agent]\nprovider = "claude"\nauth = "auto"\n\n[agent.git]\nname = "E"\n',
+            '[agent]\ndefault = "claude"\nauth = "auto"\n\n[agent.git]\nname = "E"\n',
             id="agent-git-only",
         ),
     ],
