@@ -1478,7 +1478,7 @@ def _inspect_interactive_plan(
         err(f"commercial EDA authorization failed closed: {detail}")
     except session_runtime.SessionError as exc:
         detail = str(exc)
-        err(f"could not inspect stopped Sandbox: {detail}")
+        err(f"could not reconcile the Sandbox: {detail}")
     ctx.record("interactive", "err", detail)
     return None
 
@@ -1496,7 +1496,7 @@ def _apply_interactive_plan(
         err(f"could not issue Sandbox specification: {detail}")
     except session_runtime.SessionError as exc:
         detail = str(exc)
-        err(f"could not reconcile stopped Sandbox: {detail}")
+        err(f"could not reconcile the Sandbox: {detail}")
     ctx.record("interactive", "err", detail)
     return None
 
