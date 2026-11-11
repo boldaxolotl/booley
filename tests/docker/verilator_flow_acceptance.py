@@ -32,6 +32,7 @@ _EXPECTED = {
 
 def invoke(command: list[str], *, timeout: int, cwd: Path) -> SubprocessResult:
     """Allow compilation outside the adapter-enforced simulation timeout."""
+    # Unbounded child: standalone script outside pytest
     completed = subprocess.run(
         command,
         cwd=cwd,
