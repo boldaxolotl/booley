@@ -63,6 +63,7 @@ def _finding_row(
         "justification": str(finding.get("justification", "")),
         "exclusion_reason": str(finding.get("exclusion_reason", "")),
         "actor": str(finding.get("disposition_actor", "")),
+        "origin": str(finding.get("origin", "")),
     }
 
 
@@ -196,6 +197,8 @@ def is_corrective_done_finding(row: Mapping[str, Any]) -> bool:
         or not criterion.endswith("_done")
     ):
         return False
+    if row.get("origin") == "pre_existing":
+        return False  # introduced-before-the-change findings are observations
     disposition = row.get("reviewer_disposition") or row.get("disposition")
     status = row.get("status")
     return not any(
