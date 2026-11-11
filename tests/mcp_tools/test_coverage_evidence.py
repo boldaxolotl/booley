@@ -589,3 +589,69 @@ def test_malformed_source_gap_pointers_are_skipped():
         ),
     )
     assert source_gap_paths(campaign) == tuple(paths)
+
+
+def _mixed_campaign():
+    """A Campaign with eligible, waived, unscored, hit and never-hit points over two sources."""
+    from tests.flows.sim.test_coverage_point_query import _point
+
+    campaign = _campaign_with_waiver()
+    points = (
+        _point("rtl/b.sv", 5),
+        _point("rtl/a.sv", 7),
+        _point("rtl/a.sv", 7, "branch", subject={"outcome": "else"}),
+        _point("rtl/a.sv", 2, hits={"run:reset": 1}),
+        _point("rtl/a.sv", 31, kind="waived"),
+        _point("rtl/b.sv", 3, "branch", subject={"outcome": "if"}),
+        _point("tb/tb.sv", 4, kind="unscored"),
+    )
+    return replace(campaign, points=points)
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [{}, {"metric": "branch"}, {"source": "rtl/a.sv"}, {"metric": "line", "source": "rtl/b.sv"}],
+    ids=["none", "metric", "source", "both"],
+)
+def test_evidence_points_and_uncovered_command_select_the_same_points(filters):
+    from booley.flows.sim.coverage_point_query import uncovered_points
+
+    campaign = _mixed_campaign()
+    session = CoverageEvidenceSession(campaign, None)
+
+    result = session.query(
+        {"view": "points", "covered": False, "disposition": "eligible", "limit": 100, **filters}
+    )
+
+    references = session.analysis_scope()["point_references"]
+    evidence_ids = {references[point["point_ref"]] for point in result["points"]}
+    command_ids = {point.id for point in uncovered_points(campaign.points, **filters).points}
+    assert evidence_ids == command_ids
+    assert result["matched_points"] == len(command_ids)
+    assert command_ids
+
+
+def test_evidence_tool_keeps_no_copy_of_the_point_rules():
+    """The covered rule and the four point filters live only in coverage_point_query."""
+    import ast
+    from pathlib import Path
+
+    from booley.flows.sim import coverage_evidence
+
+    tree = ast.parse(Path(coverage_evidence.__file__).read_text(encoding="utf-8"))
+    attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    comparisons = [ast.unparse(node) for node in ast.walk(tree) if isinstance(node, ast.Compare)]
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+
+    assert "hits_by_run" not in attributes
+    assert not [
+        text
+        for text in comparisons
+        if "identity.metric" in text or "identity.source" in text or '["kind"]' in text
+    ]
+    assert "coverage_point_matches" in imported
