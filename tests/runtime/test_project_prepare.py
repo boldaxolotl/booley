@@ -5,27 +5,19 @@ from __future__ import annotations
 import json
 import os
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 import booley
 from booley.runtime.project_prepare import prepare_project
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    ).stdout.strip()
+    return run_bounded_child(["git", *args], cwd=repo, check=True).stdout.strip()
 
 
 def _project(tmp_path: Path) -> tuple[Path, Path]:
