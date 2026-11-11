@@ -1,9 +1,10 @@
 """Measure one Job command's resources and add them to the resource history.
 
 Every local Flow command is sampled while it runs: process-tree RSS, the size
-of the command's own temporary directory (``TMPDIR``, which lives on the
-Sandbox's tmpfs and is charged to the container's memory limit), CPU time,
-wall-clock time and the container's cgroup memory. Measurement only observes:
+of the command's own temporary directory (``TMPDIR``), CPU time, wall-clock
+time and the container's cgroup memory. TMPDIR counts toward peak memory only
+when it is on tmpfs (its pages are charged to the container's memory limit);
+the temporary-file peak is always recorded on its own. Measurement only observes:
 it never changes a Job's verdict, scheduling or exit code, and a value that
 could not be measured is recorded as absent (``None``), never as zero.
 """
@@ -148,7 +149,8 @@ def process_tree(root_pid: int) -> dict[int, _Proc] | None:
 
     The direct child is often ``make`` or ``sh`` while the memory lives in
     tool grandchildren, so the whole tree is summed. Linux exposes the
-    descendants through ``task/<pid>/children`` without psutil.
+    descendants through ``task/<tid>/children`` of every thread (a child
+    belongs to the thread that forked it) without psutil.
     """
     if not Path("/proc").is_dir():
         return None
@@ -160,13 +162,45 @@ def process_tree(root_pid: int) -> dict[int, _Proc] | None:
         if pid in seen:
             continue
         seen.add(pid)
-        with contextlib.suppress(OSError, ValueError):
-            children = Path(f"/proc/{pid}/task/{pid}/children").read_text(encoding="utf-8")
-            pending.extend(int(token) for token in children.split())
+        with contextlib.suppress(OSError):
+            for task in Path(f"/proc/{pid}/task").iterdir():
+                # A thread can exit between the listing and the read.
+                with contextlib.suppress(OSError, ValueError):
+                    children = (task / "children").read_text(encoding="utf-8")
+                    pending.extend(int(token) for token in children.split())
         proc = _read_proc(pid)
         if proc is not None:
             found[pid] = proc
     return found
+
+
+_MOUNTINFO = Path("/proc/self/mountinfo")
+
+
+def tmpdir_in_memory(path: Path) -> bool:
+    """Whether *path* lives on tmpfs, by its longest enclosing mount point.
+
+    Unreadable mount information (no ``/proc``) is ``False``: nothing is
+    measured there anyway.
+    """
+    target = path.resolve()
+    try:
+        lines = _MOUNTINFO.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    best_length = -1
+    in_memory = False
+    for line in lines:
+        before, _, after = line.partition(" - ")
+        fields = before.split()
+        if len(fields) < 5 or not after:
+            continue
+        mount_point = Path(fields[4].replace("\\040", " "))
+        # ``>=``: on equal mount points the later (overmounting) line wins.
+        if target.is_relative_to(mount_point) and len(mount_point.parts) >= best_length:
+            best_length = len(mount_point.parts)
+            in_memory = after.split()[0] == "tmpfs"
+    return in_memory
 
 
 def directory_bytes(root: Path) -> int:
@@ -208,15 +242,23 @@ class Usage:
     last_seen: float | None = None
     ticks: dict[int, tuple[int, int]] = field(default_factory=dict)
 
-    def add(self, now: float, procs: dict[int, _Proc] | None, tmp: int, growth: int | None):
+    def add(
+        self,
+        now: float,
+        procs: dict[int, _Proc] | None,
+        tmp: int,
+        growth: int | None,
+        tmp_in_memory: bool,
+    ):
         """Fold one sample in; *procs* is ``None`` when RSS cannot be read."""
         self.peak_tmp = _peak(self.peak_tmp, tmp)
         self.container_peak = _peak(self.container_peak, growth)
         if procs is None:
             return
         rss = sum(proc.rss_bytes for proc in procs.values())
-        # An empty tree (the command already exited) still counts its TMPDIR files.
-        self.peak_memory = _peak(self.peak_memory, rss + tmp)
+        # An empty tree (the command already exited) still counts its TMPDIR files
+        # when they are tmpfs pages.
+        self.peak_memory = _peak(self.peak_memory, rss + (tmp if tmp_in_memory else 0))
         if procs:
             self.peak_rss = _peak(self.peak_rss, rss)
             self.first_seen = now if self.first_seen is None else self.first_seen
@@ -309,6 +351,7 @@ class JobResourceMonitor:
 
     def __init__(self, split: Mapping[str, str] | None = None, *, interval_s: float = 0.25):
         self.tmp_dir = Path(tempfile.mkdtemp(prefix="booley-job-"))
+        self._tmp_in_memory = tmpdir_in_memory(self.tmp_dir)
         self._split = split or {}
         self._interval_s = interval_s
         self._overall = Usage()
@@ -374,7 +417,7 @@ class JobResourceMonitor:
         if container is not None and self._container_start is not None:
             growth = max(0, container - self._container_start)
         with self._lock:
-            self._overall.add(now, procs, tmp, growth)
+            self._overall.add(now, procs, tmp, growth, self._tmp_in_memory)
             for phase in set(self._split.values()):
                 members = {
                     pid: proc
@@ -382,7 +425,9 @@ class JobResourceMonitor:
                     if self._split.get(proc.comm) == phase
                 }
                 if members:
-                    self._phases.setdefault(phase, Usage()).add(now, members, tmp, growth)
+                    self._phases.setdefault(phase, Usage()).add(
+                        now, members, tmp, growth, self._tmp_in_memory
+                    )
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval_s):
