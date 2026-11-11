@@ -88,9 +88,6 @@ quality = [
     "pyright==1.1.414",
     "ruff==0.17.2",
 ]
-mutation = [
-    "mutmut==3.8.1",
-]
 dev = [
     # The repository-owned confidential vocabulary uses AES-GCM in its local
     # guard and the trusted CI scanner.
@@ -119,7 +116,6 @@ dev = [
     # the quality extra repeats these pins for a smaller hosted install.
     "diff-cover==10.6.0",
     "pyright==1.1.414",
-    "mutmut==3.8.1",
     # Mutant generator parser (kept equal to the hdl-parser extra).
     "pyslang==12.1.0",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in

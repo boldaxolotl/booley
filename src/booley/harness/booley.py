@@ -932,7 +932,8 @@ def _add_utility_subparsers(sub) -> None:
         epilog=(
             "Arguments after `chat` and its own options are passed unchanged to the "
             "Agent CLI, after Booley's own launch arguments, for example "
-            "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex). "
+            "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); "
+            "a resumed conversation reopens in the worktree it ran in. "
             "Booley reads -h/--help, -C/--project, --cli, --new-worktree and --here only "
             "before any other argument. Put `--` first to forward them to the agent: "
             "`booley chat -- --help`. Claude Code's own `--worktree` is not Booley's and "

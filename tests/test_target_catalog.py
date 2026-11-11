@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import textwrap
 from dataclasses import replace
 from pathlib import Path
@@ -26,6 +25,7 @@ from booley.targets.domain import (
     UnknownTargetError,
 )
 from tests.conftest import require_symlinks, symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 
 def _write_core(root: Path, filename: str, vlnv: str, targets: str) -> Path:
@@ -46,14 +46,7 @@ def _write_core(root: Path, filename: str, vlnv: str, targets: str) -> Path:
 
 
 def _git(root: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    result = run_bounded_child(["git", *args], cwd=root, check=True)
     return result.stdout.strip()
 
 

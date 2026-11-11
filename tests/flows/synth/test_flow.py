@@ -74,6 +74,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import relocated_project
+from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -1582,7 +1583,7 @@ class TestDryRun:
             ("add", "rtl", "tb", "constraints"),
             ("commit", "-m", "init"),
         ):
-            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=60)
+            run_bounded_child(["git", *args], cwd=root, check=True)
         # Created before any preparation, so the Snapshot holds no generated state.
         assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="wt"), root) == 0
 
@@ -5606,14 +5607,11 @@ def _run_generated_latch_case(flow_and_state, tmp_path, monkeypatch, frontend, m
         return syn_make.configure_synthesis(spec, stub.build_dir)
 
     def execute(cmd, **_kwargs):
-        process = subprocess.run(
+        process = run_bounded_child(
             cmd,
             cwd=tmp_path,
             env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-            capture_output=True,
-            text=True,
             timeout=5,
-            check=False,
         )
         return SubprocessResult(
             returncode=process.returncode, stdout=process.stdout, stderr=process.stderr
