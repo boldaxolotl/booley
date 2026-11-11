@@ -46,7 +46,9 @@ def inline_launch(monkeypatch):
 @pytest.fixture(autouse=True)
 def plain_codex_launch(monkeypatch):
     monkeypatch.setattr(chat_cmd, "resolve_common_booley_dir", lambda root: root)
-    monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _root: ("codex", ["codex"]))
+    monkeypatch.setattr(
+        chat_cmd.codex_chat, "command", lambda _root, **_kw: ("codex", ["codex"], None)
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +59,9 @@ def deterministic_claude_launch(monkeypatch):
         lambda _pid: ProcessIdentity(98765, "fixture", 101),
         raising=False,
     )
-    monkeypatch.setattr(chat_cmd, "reserve_session_handle", lambda *_args: "S17", raising=False)
+    monkeypatch.setattr(
+        chat_cmd, "reserve_session_handle", lambda *_args, **_kw: "S17", raising=False
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +126,9 @@ def test_run_uses_named_codex_command(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
     monkeypatch.setattr(
-        chat_cmd.codex_chat, "command", lambda _root: ("/bin/codex", ["S17", "--no-daemon"])
+        chat_cmd.codex_chat,
+        "command",
+        lambda _root, **_kw: ("/bin/codex", ["S17", "--no-daemon"], "S17"),
     )
     executed = []
 
@@ -245,7 +251,7 @@ def test_worktree_provider_config_uses_the_shared_runtime_handle_map(tmp_path, m
     monkeypatch.setattr(
         codex_chat,
         "reserve_codex_chat",
-        lambda directory, _identity: directories.append(directory) or "S17",
+        lambda directory, _identity, **_kw: directories.append(directory) or "S17",
     )
     monkeypatch.setattr(
         chat_cmd.os, "execvp", lambda *_args: (_ for _ in ()).throw(_ExecCalledError)
@@ -274,7 +280,7 @@ def test_claude_named_exec_preserves_codex_command(tmp_path, monkeypatch):
     monkeypatch.setattr(
         chat_cmd,
         "reserve_session_handle",
-        lambda directory, key: reservations.append((directory, key)) or "S17",
+        lambda directory, key, **_kw: reservations.append((directory, key)) or "S17",
         raising=False,
     )
     executed = []
@@ -296,7 +302,7 @@ def test_claude_named_exec_preserves_codex_command(tmp_path, monkeypatch):
     monkeypatch.setattr(
         chat_cmd.codex_chat,
         "command",
-        lambda _root: ("/native/codex", ["S23", "--no-daemon", "--fixture"]),
+        lambda _root, **_kw: ("/native/codex", ["S23", "--no-daemon", "--fixture"], "S23"),
     )
     with pytest.raises(_ExecCalledError):
         chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
@@ -318,7 +324,7 @@ def _check_claude_reservation_failure(tmp_path, monkeypatch, capsys, error):
     _configure_claude(monkeypatch)
     reservations = []
 
-    def reserve(directory, key):
+    def reserve(directory, key, **_kw):
         reservations.append((directory, key))
         raise error
 
@@ -391,7 +397,7 @@ def test_claude_worktree_settings_use_shared_runtime_reservation(tmp_path, monke
     monkeypatch.setattr(
         chat_cmd,
         "reserve_session_handle",
-        lambda directory, _key: directories.append(directory) or "S17",
+        lambda directory, _key, **_kw: directories.append(directory) or "S17",
         raising=False,
     )
     monkeypatch.setattr(
@@ -434,10 +440,14 @@ def test_codex_launch_paths_append_agent_args(tmp_path, monkeypatch):
         ["/usr/bin/node", "/shim.mjs", "S23", "/lib/codex.js", "--no-daemon"],
     )
     for launch in (native, npm):
-        monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _root, launch=launch: launch)
+        monkeypatch.setattr(
+            chat_cmd.codex_chat, "command", lambda _root, launch=launch, **_kw: (*launch, "S23")
+        )
         _launch(tmp_path, forwarded)
         assert executed[-1] == (launch[0], [*launch[1], *forwarded])
-    monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _root: ("codex", ["codex"]))
+    monkeypatch.setattr(
+        chat_cmd.codex_chat, "command", lambda _root, **_kw: ("codex", ["codex"], None)
+    )
     _launch(tmp_path, forwarded)
     assert executed[-1] == ("codex", ["codex", *forwarded])
 
@@ -448,7 +458,7 @@ def test_claude_launch_paths_append_agent_args(tmp_path, monkeypatch):
     _launch(tmp_path, ["--resume", "abc"])
     assert executed[-1] == ("claude", ["S17", "-n", "S17", "--resume", "abc"])
 
-    def unavailable(*_args):
+    def unavailable(*_args, **_kw):
         raise OSError("save failed")
 
     monkeypatch.setattr(chat_cmd, "reserve_session_handle", unavailable, raising=False)
@@ -593,3 +603,30 @@ def test_handwritten_gateway_claude_chat_keeps_gateway_settings(tmp_path, monkey
     assert "BOOLEY_HIDDEN_GATEWAY" not in seen
     overrides = _claude_backend._claude_env_overrides("subscription")
     assert not [name for name in _GATEWAY_VALUES if name in overrides]
+
+
+def _parse_chat(monkeypatch, *tail):
+    monkeypatch.setattr(sys, "argv", ["booley", "chat", *tail])
+    return booley_cli._parse_cli()
+
+
+def test_chat_worktree_flags_lead_and_claude_worktree_passes_through(monkeypatch, capsys):
+    # Bug caught: the flags parsed after agent arguments (stealing the agent's own options),
+    # or Claude Code's `--worktree` taken for Booley's.
+    args = _parse_chat(monkeypatch, "--here", "--worktree", "x")
+    assert (args.chat_worktree, args.agent_args) == ("never", ["--worktree", "x"])
+
+    args = _parse_chat(monkeypatch, "--cli", "claude", "--new-worktree", "--resume", "id")
+    assert (args.chat_worktree, args.cli, args.agent_args) == (
+        "always",
+        "claude",
+        ["--resume", "id"],
+    )
+
+    args = _parse_chat(monkeypatch, "--resume", "id", "--here")
+    assert (args.chat_worktree, args.agent_args) == (None, ["--resume", "id", "--here"])
+    assert _parse_chat(monkeypatch).chat_worktree is None
+
+    with pytest.raises(SystemExit):
+        _parse_chat(monkeypatch, "--new-worktree", "--here")
+    assert "not allowed with argument" in capsys.readouterr().err
