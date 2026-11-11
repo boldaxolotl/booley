@@ -9,6 +9,10 @@ Dashboard is a read-only terminal view, one per Sandbox, opened by
 `booley dashboard`. The Console retires; its Textual code may be reused.
 The overview stays concise; session, Goal, and Job details have separate views.
 
+Amended by [ADR 0092](0092-measure-commits-against-target-metrics.md): when
+Goal Mode is removed, the Goal status summary, Goal views and Goal-change
+proposals below are replaced by one session-row line about Measured Commits.
+
 ## Decisions
 
 - **One per Sandbox.** A bundled workspace extension opens the Dashboard in a VS Code
