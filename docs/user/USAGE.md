@@ -272,38 +272,20 @@ there. When the worktree is ready it prints:
 Booley session S3 works in worktree <path> on branch booley/s3 (<reason>).
 ```
 
-The main checkout is taken while another `booley chat` whose agent runs there
-is still running, or while a session there has made a Booley tool call and not
-ended. A `booley chat` started with `--new-worktree` or under
-`[chat] worktree = "always"` also holds the main checkout until its session
-ends if the main checkout was free when it started, although its agent works
-in a worktree. A `booley chat` that `auto` placed in a worktree holds nothing.
-The reason in parentheses is one
-of:
+The reason is `the main checkout is in use by another booley chat`,
+`Session S2 is working in the main checkout`, `--new-worktree`, or
+`[chat] worktree = "always"`. A lone session runs in the main checkout and
+prints no such line.
 
-- `the main checkout is in use by another booley chat`
-- `Session S2 is working in the main checkout`
-- `--new-worktree`
-- `[chat] worktree = "always"`
-
-A lone session runs in the main checkout and prints no such line, so it behaves
-as before.
-
-The new worktree starts at the main checkout's last commit. Uncommitted changes
-to the Project's files are not copied, so commit first what the new session
-needs. The worktree's Booley Directory gets the current configuration,
-uncommitted edits included, except in Stealth Mode, where one warning names the
-uncommitted Booley Directory files left out (see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-lacks-my-uncommitted-booley-changes)).
-
-Before the agent starts, Booley fills the Git submodules from the main checkout
-and runs the Project's post-setup hook, printing
-`Filling git submodules from the main checkout...` and
-`Running post-setup hook ... (log: ...)` (the second only if the Project has a
-hook). On a large Project this can take minutes; the `Booley session` line
-above follows once setup succeeded. If a step fails, Booley
-removes the worktree and does not start the agent (see
+The worktree starts at the main checkout's last commit, so commit first what
+the new session needs: uncommitted changes to the Project's files are not
+copied. Booley also fills the Git submodules and runs the Project's post-setup
+hook before the agent starts, which can take minutes on a large Project; if a
+step fails, it removes the worktree and starts no agent (see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-fails-in-the-post-setup-hook)).
+The worktree gets your current Booley configuration; in Stealth Mode, one
+warning names the uncommitted Booley Directory files left out (see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-lacks-my-uncommitted-booley-changes)).
 
 - `booley chat --new-worktree` always starts in a new worktree.
 - `booley chat --here` always starts in the main checkout, for example to
@@ -340,19 +322,16 @@ Booley keeps the worktree without asking, and prints `Kept worktree s3: <path>`,
 when nobody can answer: output goes to a pipe or a file, the terminal was
 closed, or the agent was stopped by a signal. A kept worktree is normal.
 
-To manage worktrees, run these in a container terminal:
+Manage worktrees from a container terminal:
 
-- `booley worktree list` shows one row per worktree: its branch, uncommitted
-  and unmerged work, live sessions, active Goal, and last use.
-- `booley worktree rm <name>` removes one, keeps its branches, and moves its
-  evidence aside. It refuses while a session runs there, a Goal is active, or
-  work would be lost; `--force` overrides most refusals.
-- `booley worktree gc [--older-than AGE]` runs `rm`, without `--force`, on
-  every worktree idle longer than `[worktree] gc_older_than` (default `7d`).
-  `booley chat` runs it at every launch and prints only what it removed, so
-  idle worktrees do not pile up.
+- `booley worktree list` shows each worktree's branch, unmerged work, and
+  live sessions.
+- `booley worktree rm <name>` removes one and keeps its branches. It refuses
+  while a session runs there, a Goal is active, or work would be lost.
+- `booley worktree gc` removes worktrees idle longer than `[worktree]
+  gc_older_than` (default `7d`). `booley chat` runs it at every launch.
 
-See [Worktrees](CLI-REFERENCE.md#worktrees) for the details.
+See [Worktrees](CLI-REFERENCE.md#worktrees).
 
 #### Resuming a conversation
 
@@ -397,18 +376,11 @@ own `--worktree` still goes to the agent.
 The check is best effort for agents that did not start through Booley. A plain
 `claude` tab or a VS Code panel does not hold the main checkout, so Booley only
 notices it once it has made a Booley tool call. To keep such a session apart,
-start it in a worktree from a container terminal: run
-`booley chat --new-worktree`, or run `booley worktree new <name>`, `cd` to the
-path it prints, and start `claude` there. Its Booley tool calls then run on
-that worktree. Asking an agent that already runs in the main checkout to create
-a worktree is not enough: its Booley tool calls keep running on the main
-checkout unless it names the worktree in each one. A VS Code panel cannot be
-started in a worktree that way, so use a terminal with `booley chat` for a
-second editing session. A Codex started by hand runs its Booley tool calls on
-the main checkout wherever it was started, unless each call names the
-worktree, so start Codex with `booley chat`.
-Read-only sessions, such as one that only explains code or runs reviews, can
-share the main checkout. See
+start it with `booley chat --new-worktree` from a container terminal. Asking a
+running agent to create a worktree is not enough: its Booley tool calls still
+run on the main checkout. Start Codex with `booley chat` too. Read-only
+sessions, such as one that only explains code or runs reviews, can share the
+main checkout. See
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-developer-agents-keep-clobbering-each-others-edits).
 
 ### What the Developer Agent is allowed to do
