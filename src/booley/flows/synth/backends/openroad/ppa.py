@@ -2,24 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
 
 from booley.flows.implementation_profiles import validate_ppa_profile
-
-
-@dataclass(frozen=True)
-class OpenRoadPpaSettings:
-    """OpenROAD-specific placement and timing-repair controls."""
-
-    utilization_pct: float
-    placement_density: float
-    repair_setup: bool = True
-    repair_hold: bool = False
-    gate_cloning: bool = False
-    setup_margin_ns: float = 0.0
-    repair_tns_percent: float | None = None
-
+from booley.flows.synth.timing import OpenRoadPpaSettings
 
 _PROFILES = {
     "compact": OpenRoadPpaSettings(utilization_pct=40.0, placement_density=0.65),

@@ -1,12 +1,15 @@
 """Flow-level timing intent and normalized result parsing.
 
 This module is the synthesis Flow's timing interface. EDA-tool command and
-report implementations belong to the adapters under :mod:`backends`.
+report implementations belong to the adapters under :mod:`backends`. It also
+holds the OpenROAD PPA settings the timing resolver takes, so the Yosys adapter
+can accept them without importing the OpenROAD adapter.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
@@ -30,6 +33,19 @@ class StaTimingConfig(NamedTuple):
     setup_margin_ns: float = 0.0
     repair_tns_percent: float | None = None
     report_paths: int = DEFAULT_TIMING_REPORT_PATHS
+
+
+@dataclass(frozen=True)
+class OpenRoadPpaSettings:
+    """OpenROAD-specific placement and timing-repair controls."""
+
+    utilization_pct: float
+    placement_density: float
+    repair_setup: bool = True
+    repair_hold: bool = False
+    gate_cloning: bool = False
+    setup_margin_ns: float = 0.0
+    repair_tns_percent: float | None = None
 
 
 DEFAULT_STA_UTILIZATION_PCT = 40.0
