@@ -33,6 +33,8 @@ module excl #(parameter W = 4 + 1) (input logic clk, input logic [W-1:0] a, b, i
     cover (a == b);
   end
   always @(posedge clk) assert property (@(posedge clk) a == b);
+  assign z = ^{(1 + 1){a}};
+  assign z = ^(2 + 1)'(a);
 endmodule
 class C;
   function void h();
