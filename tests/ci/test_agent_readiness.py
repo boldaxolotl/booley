@@ -139,7 +139,7 @@ def test_packaged_copies_check_runs_as_reported():
     assert command is not None
     environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
     result = run_bounded_child(
-        command.argv,
+        list(command.argv),
         cwd=command.cwd,
         env=environment,
         timeout=SUBPROCESS_TIMEOUT_S,
