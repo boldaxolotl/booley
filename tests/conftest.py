@@ -20,7 +20,19 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 # Ensure src/ is importable (fallback when not installed via pip install -e .)
 sys.path.insert(0, str(_SOURCE_ROOT / "src"))
 
-pytest_plugins = ["tests.timeout_evidence", "tests.timeout_headroom", "tests.sandbox_only"]
+pytest_plugins = [
+    "tests.timeout_evidence",
+    "tests.timeout_headroom",
+    "tests.sandbox_only",
+    "tests.thread_leak_guard",
+]
+
+# Temporary (#3329): a bare ``pytest tests/`` skips the Goal Mode unit tests; the
+# coverage omit for ``src/booley/goals`` (pyproject.toml) and the classifier
+# exemption (.github/scripts/ci_goal_tests.py) go with it. Remove all three when
+# Goal Mode is removed (#3276), or when metrics-driven development fully replaces
+# it. Naming the path still collects them: ``pytest tests/goals``.
+collect_ignore = ["goals"]
 
 
 @pytest.fixture(autouse=True)

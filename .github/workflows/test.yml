@@ -1399,7 +1399,7 @@ jobs:
       - name: Prepare isolated validation temp directories
         shell: bash
         run: |
-          for validation in agent-policy openroad verible isolation fifo native-fst verilator coverage-release simulator cocotb goal-mode; do
+          for validation in agent-policy openroad verible isolation fifo native-fst verilator coverage-release simulator cocotb; do
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
@@ -1556,25 +1556,6 @@ jobs:
               python3 -m booley.flows.sim --project /validation-tmp/project --target sim_icarus &&
               python3 -m booley.flows.sim --project /validation-tmp/project --target sim_verilator"
 
-          - name: Run Goal Mode production-image smoke
-            env:
-              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/goal-mode
-            run: >-
-              .github/scripts/run_with_container_cleanup.sh
-              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-goal-mode
-              docker run --rm --init
-              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-goal-mode
-              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
-              --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
-              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
-              -e TMPDIR=/validation-tmp -e BOOLEY_GOAL_MODE_SMOKE=1 -e BOOLEY_MCP_MODE=interactive
-              booley-test bash -c "pip install --break-system-packages -r /work/.github/ci/requirements-runners.txt &&
-              python -m pytest /work/tests/smoke/test_goal_mode_image_smoke.py
-              -v --tb=short --junitxml=/validation-tmp/goal-mode.xml
-              -o cache_dir=/validation-tmp/pytest-cache &&
-              python /work/.github/scripts/assert_junit.py /validation-tmp/goal-mode.xml
-              --label goal-mode --min-tests 1 --max-skips 0"
-
       # Snapshot after the group, whatever its outcome. Validation containers
       # run with --rm, so their own writable-layer use (for example Verilator's
       # /tmp) is already gone here and the sizes below can understate the peak.
@@ -1618,7 +1599,6 @@ jobs:
           path: |
             ${{ runner.temp }}/bwave-smoke/coverage-release/coverage-release.xml
             ${{ runner.temp }}/bwave-smoke/coverage-release/test-timings.jsonl
-            ${{ runner.temp }}/bwave-smoke/goal-mode/goal-mode.xml
           if-no-files-found: warn
           retention-days: 14
 

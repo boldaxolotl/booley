@@ -25,6 +25,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from ci_goal_tests import GOAL_TESTS_PREFIX
 from ci_test_shards import load_timings
 
 MAX_COUNT = 10
@@ -37,8 +38,10 @@ MODULE_FLOOR_SECONDS = 5.0
 # PR already passed flake-stress, so the queue skips it.
 QUEUE_BRANCH_PREFIX = "mergify/merge-queue/"
 TIMING_MODEL = Path(__file__).parents[2] / ".github/ci/windows-test-timings.json"
-# tests/fixtures/ holds sample projects whose tests run only inside them.
-_EXCLUDED_PREFIXES = ("tests/fixtures/",)
+# tests/fixtures/ holds sample projects whose tests run only inside them. CI never
+# runs Goal Mode unit tests (#3329), and an explicit path would bypass the
+# collection ignore in tests/conftest.py.
+_EXCLUDED_PREFIXES = ("tests/fixtures/", GOAL_TESTS_PREFIX)
 _ADDED_STATUSES = frozenset("AC")
 _CHANGED_STATUSES = frozenset("ACMRT")
 
