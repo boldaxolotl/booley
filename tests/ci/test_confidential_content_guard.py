@@ -11,6 +11,7 @@ from pathlib import Path
 from time import perf_counter
 
 import pytest
+import yaml
 
 SCANNER = Path(__file__).parents[2] / ".github/scripts/confidential_content_guard.py"
 SAFE_IDENT = "Safe User <safe@example.test>"
@@ -2033,3 +2034,773 @@ def test_workflow_pr_scan_trusts_base_tip_only_for_main() -> None:
     assert '"${BASE_REF}" = main' in pr_scan
     assert '--trusted-base "${BASE_SHA}"' in pr_scan
     assert pr_scan.count('"${trusted_base[@]}"') == 2
+
+
+# --- Advisory scans for outside PRs and Mergify candidates (issue #3331) ------
+
+WORKFLOW = SCANNER.parent.parent / "workflows/confidential-content.yml"
+POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="fake gh and the scan step need POSIX")
+MERGIFY_USER = {"id": 37929162, "type": "Bot"}
+_FAKE_GH_SCRIPT = """\
+import json, os, re, sys
+
+state = os.environ["FAKE_GH_DIR"]
+arguments = sys.argv[1:]
+
+
+def record(**entry):
+    with open(os.path.join(state, "calls.jsonl"), "a", encoding="utf-8") as stream:
+        stream.write(json.dumps(entry) + "\\n")
+
+
+# The code under test must run gh non-interactively and without an ambient repository.
+if "GH_REPO" in os.environ or os.environ.get("GH_PROMPT_DISABLED") != "1":
+    sys.exit(2)
+if arguments[:1] != ["api"]:
+    sys.exit(2)
+arguments = arguments[1:]
+if "--method" in arguments:
+    # A request body is only accepted verbatim through `--input -`, never as fields.
+    if any(flag in arguments for flag in ("-f", "-F", "--field", "--raw-field")):
+        sys.exit(2)
+    if arguments[-2:] != ["--input", "-"]:
+        sys.exit(2)
+    endpoint = arguments[arguments.index("--method") + 2]
+    body = json.loads(sys.stdin.read())
+    failing = os.path.exists(os.path.join(state, "fail")) and endpoint.endswith(
+        open(os.path.join(state, "fail"), encoding="utf-8").read().strip()
+    )
+    record(method="POST", endpoint=endpoint, body=body, failed=failing)
+    sys.exit(1 if failing else 0)
+if "--paginate" in arguments:
+    selector = arguments[arguments.index("--jq") + 1]
+    marker = re.search(r"<!-- confidential-content-advisory [0-9a-f]+ -->", selector).group(0)
+    path = os.path.join(state, "comments.json")
+    comments = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
+    record(method="GET", endpoint=arguments[arguments.index("--paginate") + 1], jq=selector)
+    for comment in comments:
+        user = comment["user"]
+        if user["login"] == "github-actions[bot]" and user["type"] == "Bot" and marker in comment["body"]:
+            print("match")
+    sys.exit(0)
+endpoint = arguments[0]
+record(method="GET", endpoint=endpoint)
+path = os.path.join(state, "pulls", endpoint.rsplit("/", 1)[1] + ".json")
+if not os.path.exists(path):
+    sys.exit(1)
+sys.stdout.write(open(path, encoding="utf-8").read())
+"""
+
+
+class _FakeGh:
+    """A `gh` on PATH that serves PR fixtures and records every call it receives."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        self.state = tmp_path / "fake-gh"
+        bin_dir = self.state / "bin"
+        (self.state / "pulls").mkdir(parents=True)
+        bin_dir.mkdir()
+        script = self.state / "fake_gh.py"
+        script.write_text(_FAKE_GH_SCRIPT, encoding="utf-8", newline="\n")
+        for name, target in (("gh", script), ("python", None)):
+            shim = bin_dir / name
+            command = f'"{sys.executable}" "{target}"' if target else f'"{sys.executable}"'
+            shim.write_text(f'#!/bin/sh\nexec {command} "$@"\n', encoding="utf-8", newline="\n")
+            shim.chmod(0o755)
+        self.env = os.environ | {
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_GH_DIR": str(self.state),
+            "GH_REPO": "somewhere/else",
+        }
+
+    def serve_pull(
+        self, number: int, *, head_sha: str, head_repo_id: int | None, association: str
+    ) -> None:
+        pull = {
+            "author_association": association,
+            "head": {"sha": head_sha, "repo": {"id": head_repo_id} if head_repo_id else None},
+            "base": {"repo": {"id": 1}},
+        }
+        (self.state / "pulls" / f"{number}.json").write_text(json.dumps(pull), encoding="utf-8")
+
+    def serve_comments(self, comments: list[dict]) -> None:
+        (self.state / "comments.json").write_text(json.dumps(comments), encoding="utf-8")
+
+    def fail(self, endpoint_suffix: str | None) -> None:
+        marker = self.state / "fail"
+        marker.unlink(missing_ok=True)
+        if endpoint_suffix is not None:
+            marker.write_text(endpoint_suffix, encoding="utf-8")
+
+    def calls(self) -> list[dict]:
+        log = self.state / "calls.jsonl"
+        if not log.exists():
+            return []
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+    def posts(self, endpoint_suffix: str) -> list[dict]:
+        return [
+            call
+            for call in self.calls()
+            if call["method"] == "POST" and call["endpoint"].endswith(endpoint_suffix)
+        ]
+
+    def reset(self) -> None:
+        (self.state / "calls.jsonl").unlink(missing_ok=True)
+
+
+def _expect_exit(result: subprocess.CompletedProcess[str], expected: int) -> None:
+    assert result.returncode == expected, (
+        f"expected exit {expected}, got {result.returncode}: {result.stderr[-400:]}"
+    )
+
+
+def _pr_event(
+    *,
+    head: str,
+    base: str,
+    head_repo_id: int | None = 2,
+    association: str = "NONE",
+    user: dict | None = None,
+    ref: str = "topic",
+    title: str = "public",
+    body: str = "",
+) -> dict:
+    """A trusted `pull_request_target` payload; repository 1 is the base repository."""
+    return {
+        "pull_request": {
+            "number": 7,
+            "title": title,
+            "body": body,
+            "author_association": association,
+            "user": user or {"id": 99, "type": "User"},
+            "head": {
+                "ref": ref,
+                "sha": head,
+                "repo": {"id": head_repo_id} if head_repo_id is not None else None,
+            },
+            "base": {
+                "ref": "main",
+                "sha": base,
+                "repo": {"id": 1, "full_name": "boldaxolotl/booley"},
+            },
+        }
+    }
+
+
+def _pr_scenario(
+    tmp_path: Path, commits: list[tuple[tuple[str, str], dict[str, str]]]
+) -> tuple[Path, str, str]:
+    """A repository whose base commit holds the vocabulary; `commits` form the PR branch."""
+    repo, _initial = _repository(tmp_path)
+    _sealed_fixture(repo, _encoded_config())
+    base = _commit(repo, "add vocabulary")
+    return repo, base, _branch_commits(repo, "topic", commits, start=base)
+
+
+def _scan_step() -> dict:
+    steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["confidential-content"][
+        "steps"
+    ]
+    return next(step for step in steps if step.get("name") == "Scan pull-request commits")
+
+
+def _run_pr_scan_step(
+    repo: Path, event: dict, gh: _FakeGh, *, base: str
+) -> subprocess.CompletedProcess[str]:
+    """Run the shipped `Scan pull-request commits` script; its exit status is the required status."""
+    step = _scan_step()
+    script = step["run"]
+    assert "--pull-request-event" in script and "post-advisory" in script, (
+        "the scan step must pass the pull-request event to the scanner and post advisories"
+    )
+    scripts = repo / ".github/scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name in ("confidential_content_guard.py", "confidential_vocabulary.py"):
+        shutil.copy(SCANNER.parent / name, scripts / name)
+    event_path = repo.parent / "event.json"
+    event_path.write_text(json.dumps(event), encoding="utf-8")
+    runner_temp = repo.parent / "runner-temp"
+    runner_temp.mkdir(exist_ok=True)
+    env = gh.env | {
+        "BASE_SHA": base,
+        "BASE_REF": "main",
+        "HEAD_SHA": event["pull_request"]["head"]["sha"],
+        "GITHUB_EVENT_PATH": str(event_path),
+        "RUNNER_TEMP": str(runner_temp),
+        "BOOLEY_LEAK_GUARD_KEY_DIR": str(repo / ".git/guard-keys"),
+        "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": step["env"]["BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS"],
+    }
+    return subprocess.run(
+        ["bash", "-e", "-c", script],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+_CLEAN_FILE = {"a.txt": "clean\n"}
+_TERM_FILE = {"a.txt": TERM_TEXT}
+_SENTINEL_AUTHOR = (f"Outsider {SENTINEL}", "outsider@example.test")
+
+# name -> (commits, event overrides, expected status, text expected in stderr)
+_STATUS_CASES: dict[str, tuple[list, dict, int, str]] = {
+    "outside-unlisted-identity": ([(OUTSIDER, _CLEAN_FILE)], {}, 0, "identity not allowed"),
+    "outside-term": ([(OUTSIDER, _TERM_FILE)], {}, 0, "confidential term"),
+    "outside-term-in-identity": ([(_SENTINEL_AUTHOR, _CLEAN_FILE)], {}, 0, "confidential term"),
+    "same-repository-term": (
+        [(SAFE, _TERM_FILE)],
+        {"head_repo_id": 1, "association": "CONTRIBUTOR"},
+        1,
+        "confidential term",
+    ),
+    "same-repository-unlisted-identity": (
+        [(OUTSIDER, _CLEAN_FILE)],
+        {"head_repo_id": 1, "association": "CONTRIBUTOR"},
+        1,
+        "identity not allowed",
+    ),
+    "owner-fork-term": ([(SAFE, _TERM_FILE)], {"association": "OWNER"}, 1, "confidential term"),
+    "member-fork-term": ([(SAFE, _TERM_FILE)], {"association": "MEMBER"}, 1, "confidential term"),
+    "collaborator-fork-unlisted-identity": (
+        [(OUTSIDER, _CLEAN_FILE)],
+        {"association": "COLLABORATOR"},
+        1,
+        "identity not allowed",
+    ),
+    "deleted-fork-head": ([(SAFE, _TERM_FILE)], {"head_repo_id": None}, 1, "confidential term"),
+}
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("case", sorted(_STATUS_CASES))
+def test_pr_scan_step_status_follows_provenance(tmp_path: Path, case: str) -> None:
+    commits, overrides, status, expected_text = _STATUS_CASES[case]
+    repo, base, head = _pr_scenario(tmp_path, commits)
+    gh = _FakeGh(tmp_path)
+
+    result = _run_pr_scan_step(repo, _pr_event(head=head, base=base, **overrides), gh, base=base)
+
+    _expect_exit(result, status)
+    assert expected_text in result.stderr
+    assert SENTINEL not in result.stdout + result.stderr
+    labels, comments = gh.posts("/labels"), gh.posts("/comments")
+    if case.startswith("outside-term"):
+        assert [call["body"] for call in labels] == [{"labels": ["confidential-review"]}]
+        body = comments[0]["body"]["body"]
+        assert len(comments) == 1
+        assert "<!-- confidential-content-advisory " in body
+        assert "confidential term" in body
+        # Identity-allowlist advisories are logged only (decision d3331-1).
+        assert "identity not allowed" not in body
+        assert SENTINEL not in body
+        assert ("author identity" in body) is (case == "outside-term-in-identity")
+        assert "WARNING" in result.stderr
+    else:
+        assert labels == comments == []
+    if status == 1:
+        assert "blocked this operation" in result.stderr
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("failing", ["label", "comment"])
+def test_pr_scan_step_fails_when_advisory_cannot_be_posted(tmp_path: Path, failing: str) -> None:
+    repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
+    gh = _FakeGh(tmp_path)
+    event = _pr_event(head=head, base=base)
+    gh.fail("/labels" if failing == "label" else "/comments")
+
+    result = _run_pr_scan_step(repo, event, gh, base=base)
+
+    _expect_exit(result, 1)
+    assert f"the GitHub advisory {failing} failed" in result.stderr
+    assert "blocked this operation" not in result.stderr
+    attempted = [
+        call["endpoint"].rsplit("/", 1)[1] for call in gh.calls() if call["method"] == "POST"
+    ]
+    # The label goes first; a failed label never reaches the comment.
+    assert attempted == (["labels"] if failing == "label" else ["labels", "comments"])
+
+    gh.fail(None)
+    gh.reset()
+    retried = _run_pr_scan_step(repo, event, gh, base=base)
+
+    _expect_exit(retried, 0)
+    assert len(gh.posts("/labels")) == len(gh.posts("/comments")) == 1
+
+
+@POSIX_ONLY
+def test_pr_scan_step_posts_one_comment_per_finding_set(tmp_path: Path) -> None:
+    repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
+    gh = _FakeGh(tmp_path)
+    _expect_exit(_run_pr_scan_step(repo, _pr_event(head=head, base=base), gh, base=base), 0)
+    posted = gh.posts("/comments")[0]["body"]["body"]
+
+    # An amend keeps the findings but changes the commit id and message.
+    _git(repo, "checkout", "topic")
+    _git(repo, "commit", "--amend", "-m", "amended", env=_identity_env(*OUTSIDER))
+    amended = _git(repo, "rev-parse", "HEAD")
+    event = _pr_event(head=amended, base=base)
+    bot = {"user": {"login": "github-actions[bot]", "type": "Bot"}, "body": posted}
+    gh.serve_comments([bot])
+    gh.reset()
+
+    _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
+    assert [call["method"] for call in gh.calls()] == ["GET"]
+
+    # A contributor posting the marker must not suppress the advisory.
+    gh.serve_comments([{"user": {"login": "someone", "type": "User"}, "body": posted}])
+    gh.reset()
+
+    _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
+    assert len(gh.posts("/labels")) == len(gh.posts("/comments")) == 1
+
+
+def _write_event(repo: Path, event: dict) -> Path:
+    path = repo.parent / "event.json"
+    path.write_text(json.dumps(event), encoding="utf-8")
+    return path
+
+
+def _run_guard(
+    repo: Path, args: list[str], env: dict[str, str], stdin: str = ""
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(repo), *args],
+        input=stdin,
+        capture_output=True,
+        check=False,
+        env=env | {"BOOLEY_LEAK_GUARD_KEY_DIR": str(repo / ".git/guard-keys")},
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def _scan_with_event(
+    repo: Path, command: str, event: dict, *, base: str, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run `pre-push` or `verify-candidate` against a PR event, reporting advisories."""
+    event_path = _write_event(repo, event)
+    report = repo.parent / "report.jsonl"
+    head = event["pull_request"]["head"]["sha"]
+    if command == "pre-push":
+        return _run_guard(
+            repo,
+            [
+                "pre-push",
+                "--pull-request-event",
+                str(event_path),
+                "--advisory-report",
+                str(report),
+            ],
+            env,
+            stdin=f"refs/heads/topic {head} refs/heads/main {base}\n",
+        )
+    return _run_guard(
+        repo,
+        [
+            "verify-candidate",
+            "--rev",
+            head,
+            "--base",
+            base,
+            "--event",
+            str(event_path),
+            "--advisory-report",
+            str(report),
+        ],
+        env,
+    )
+
+
+def _candidate_repository(tmp_path: Path, order: list[str], files: dict[str, dict]) -> tuple:
+    """A Mergify-style candidate merging queued PR branches in `order`, one `Merge of #N` each.
+
+    Returns (repo, base, candidate head, branch tips by PR number).
+    """
+    repo, _initial = _repository(tmp_path)
+    _sealed_fixture(repo, _encoded_config())
+    base = _commit(repo, "add vocabulary")
+    identities = {"11": OUTSIDER, "12": SAFE}
+    tips = {
+        number: _branch_commits(
+            repo, f"pr-{number}", [(identities[number], files[number])], start=base
+        )
+        for number in sorted(files)
+    }
+    _git(repo, "checkout", "-b", "mergify/merge-queue/abc123", base)
+    for number in order:
+        _git(
+            repo,
+            "merge",
+            "--no-ff",
+            "-m",
+            f"Merge of #{number}",
+            f"pr-{number}",
+            env=_identity_env(),
+        )
+    return repo, base, _git(repo, "rev-parse", "HEAD"), tips
+
+
+def _candidate_event(head: str, base: str, **overrides: object) -> dict:
+    event = _pr_event(head=head, base=base, head_repo_id=1, association="CONTRIBUTOR")
+    event["pull_request"]["user"] = MERGIFY_USER
+    event["pull_request"]["head"]["ref"] = "mergify/merge-queue/abc123"
+    event["pull_request"].update(overrides)
+    return event
+
+
+def _error_and_warning_blocks(stderr: str) -> tuple[str, str]:
+    errors = stderr[stderr.index("ERROR:") :] if "ERROR:" in stderr else ""
+    warnings = stderr[stderr.index("WARNING:") :] if "WARNING:" in stderr else ""
+    return errors.split("WARNING:")[0], warnings
+
+
+_OUTSIDE_FILES = {"outside.txt": TERM_TEXT + "outside\n"}
+_MAINTAINER_FILES = {"maint.txt": TERM_TEXT}
+
+
+_CANDIDATE_NOTES = {
+    "outside-head-mismatch": "head mismatch",
+    "lookup-fails": "lookup failed",
+    "member-fork-pr": "not an outside PR",
+}
+
+
+def _candidate_case(tmp_path: Path, case: str) -> tuple[Path, str, dict, _FakeGh]:
+    """Build one candidate scenario: the repository, base, PR event, and fake gh."""
+    clean_maintainer = case == "outside-and-clean-maintainer"
+    order = ["12", "11"] if case == "maintainer-then-outside-term" else ["11", "12"]
+    if case in {*_CANDIDATE_NOTES, "pushed-commit-on-candidate"}:
+        order = ["11"]
+    maintainer_files = {"maint.txt": "clean\n"} if clean_maintainer else _MAINTAINER_FILES
+    repo, base, head, tips = _candidate_repository(
+        tmp_path, order, {"11": _OUTSIDE_FILES, "12": maintainer_files}
+    )
+    if case == "pushed-commit-on-candidate":
+        (repo / "pushed.txt").write_bytes(TERM_TEXT.encode())
+        head = _commit(repo, "pushed after the queue", name=SAFE[0], email=SAFE[1])
+    gh = _FakeGh(tmp_path)
+    served_head = "0" * 40 if case == "outside-head-mismatch" else tips["11"]
+    if case != "lookup-fails":
+        association = "MEMBER" if case == "member-fork-pr" else "NONE"
+        gh.serve_pull(11, head_sha=served_head, head_repo_id=2, association=association)
+    gh.serve_pull(12, head_sha=tips["12"], head_repo_id=1, association="OWNER")
+    event = _candidate_event(head, base)
+    if case == "not-mergify-user-type":
+        event["pull_request"]["user"] = {"id": 37929162, "type": "User"}
+    return repo, base, event, gh
+
+
+def _assert_candidate_outcome(
+    case: str, result: subprocess.CompletedProcess[str], repo: Path, gh: _FakeGh
+) -> None:
+    errors, warnings = _error_and_warning_blocks(result.stderr)
+    assert SENTINEL not in result.stdout + result.stderr
+    report = repo.parent / "report.jsonl"
+    assert not report.exists() or not report.read_text(encoding="utf-8"), (
+        "candidate advisories are logged only"
+    )
+    if case == "outside-and-clean-maintainer":
+        _expect_exit(result, 0)
+        assert "outside.txt" in warnings
+        return
+    _expect_exit(result, 1)
+    if case in {"outside-and-maintainer-term", "maintainer-then-outside-term"}:
+        assert "maint.txt" in errors and "outside.txt" not in errors
+        assert "outside.txt" in warnings and "maint.txt" not in warnings
+    elif case == "pushed-commit-on-candidate":
+        assert "pushed.txt" in errors and "outside.txt" not in errors
+        assert "outside.txt" in warnings
+        assert "NOTE" not in result.stderr
+    elif case == "not-mergify-user-type":
+        assert "outside.txt" in errors
+        assert "NOTE" not in result.stderr
+        assert not [call for call in gh.calls() if call["method"] == "GET"]
+    else:
+        assert "outside.txt" in errors
+        assert f"stays enforced: {_CANDIDATE_NOTES[case]}" in result.stderr
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize(
+    "case",
+    [
+        "outside-and-clean-maintainer",
+        "outside-and-maintainer-term",
+        "maintainer-then-outside-term",
+        "outside-head-mismatch",
+        "lookup-fails",
+        "member-fork-pr",
+        "pushed-commit-on-candidate",
+        "not-mergify-user-type",
+    ],
+)
+def test_candidate_enforces_only_maintainer_commits(tmp_path: Path, case: str) -> None:
+    repo, base, event, gh = _candidate_case(tmp_path, case)
+
+    for command in ("pre-push", "verify-candidate"):
+        gh.reset()
+        result = _scan_with_event(repo, command, event, base=base, env=gh.env)
+        _assert_candidate_outcome(case, result, repo, gh)
+
+
+@POSIX_ONLY
+def test_candidate_without_merge_commits_exempts_nothing(tmp_path: Path) -> None:
+    repo, base, _head, _tips = _candidate_repository(tmp_path, [], {"11": _OUTSIDE_FILES})
+    (repo / "plain.txt").write_bytes(TERM_TEXT.encode())
+    head = _commit(repo, "plain commit", name=SAFE[0], email=SAFE[1])
+    gh = _FakeGh(tmp_path)
+
+    result = _scan_with_event(
+        repo, "pre-push", _candidate_event(head, base), base=base, env=gh.env
+    )
+
+    _expect_exit(result, 1)
+    assert "no 'Merge of #N' commit" in result.stderr
+    assert "plain.txt" in result.stderr
+
+
+@POSIX_ONLY
+def test_candidate_metadata_is_advisory(tmp_path: Path) -> None:
+    repo, base, head = _pr_scenario(tmp_path, [(SAFE, _CLEAN_FILE)])
+    event = _candidate_event(head, base, title=f"Queue {SENTINEL}")
+    event_path = _write_event(repo, event)
+    env = os.environ.copy()
+
+    candidate = _run_guard(repo, ["pull-request", "--event", str(event_path)], env)
+
+    _expect_exit(candidate, 0)
+    assert "WARNING" in candidate.stderr and "pull request title" in candidate.stderr
+    assert SENTINEL not in candidate.stdout + candidate.stderr
+    # The same text on a PR that is not a Mergify candidate stays enforced.
+    event["pull_request"]["user"] = {"id": 5, "type": "User"}
+    event_path = _write_event(repo, event)
+    maintainer = _run_guard(repo, ["pull-request", "--event", str(event_path)], env)
+    _expect_exit(maintainer, 1)
+    assert "ERROR" in maintainer.stderr
+
+
+@POSIX_ONLY
+def test_outside_pr_enforced_finding_survives_advisory_cap(tmp_path: Path) -> None:
+    allowlisted_term = {"maintainer.txt": TERM_TEXT}
+    many_paths = {f"{SENTINEL}-{index}.txt": "clean\n" for index in range(101)}
+    repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, many_paths), (SAFE, allowlisted_term)])
+    gh = _FakeGh(tmp_path)
+
+    result = _scan_with_event(
+        repo, "pre-push", _pr_event(head=head, base=base), base=base, env=gh.env
+    )
+
+    _expect_exit(result, 1)
+    assert "maintainer.txt" in result.stderr
+    assert "output limited to 100 advisory findings" in result.stderr
+    assert SENTINEL not in result.stdout + result.stderr
+
+
+@POSIX_ONLY
+def test_outside_pr_invalid_proposed_vocabulary_still_fails(tmp_path: Path) -> None:
+    repo, base, _head = _pr_scenario(tmp_path, [(OUTSIDER, _CLEAN_FILE)])
+    (repo / ".github/confidential-vocabulary.enc").write_bytes(b"corrupt\n")
+    _git(repo, "checkout", "-b", "tampered", base)
+    head = _commit(repo, "tamper with the vocabulary", name=OUTSIDER[0], email=OUTSIDER[1])
+    gh = _FakeGh(tmp_path)
+
+    result = _scan_with_event(
+        repo, "verify-candidate", _pr_event(head=head, base=base), base=base, env=gh.env
+    )
+
+    _expect_exit(result, 1)
+    assert "could not complete" in result.stderr
+
+
+@POSIX_ONLY
+def test_advisory_report_write_failure_fails_closed(tmp_path: Path) -> None:
+    repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
+    event_path = _write_event(repo, _pr_event(head=head, base=base))
+
+    result = _run_guard(
+        repo,
+        [
+            "pull-request",
+            "--event",
+            str(event_path),
+            "--advisory-report",
+            str(repo / "no/such/dir"),
+        ],
+        os.environ.copy(),
+    )
+
+    # A clean title and body write no report row, so the missing directory is never touched.
+    _expect_exit(result, 0)
+    event = _pr_event(head=head, base=base, title=f"fix {SENTINEL}")
+    event_path = _write_event(repo, event)
+    failed = _run_guard(
+        repo,
+        [
+            "pull-request",
+            "--event",
+            str(event_path),
+            "--advisory-report",
+            str(repo / "no/such/dir"),
+        ],
+        os.environ.copy(),
+    )
+    _expect_exit(failed, 1)
+    assert "the advisory report cannot be written" in failed.stderr
+    assert SENTINEL not in failed.stdout + failed.stderr
+
+
+@POSIX_ONLY
+def test_no_plaintext_term_in_advisory_outputs(tmp_path: Path) -> None:
+    repo, base, _head = _pr_scenario(tmp_path, [(OUTSIDER, _CLEAN_FILE)])
+    _git(repo, "checkout", "-b", f"leaky-{SENTINEL}", base)
+    (repo / f"{SENTINEL}.txt").write_bytes(TERM_TEXT.encode())
+    head = _commit(
+        repo, f"fix {SENTINEL}", name=f"Outsider {SENTINEL}", email="outsider@example.test"
+    )
+    gh = _FakeGh(tmp_path)
+    event = _pr_event(
+        head=head,
+        base=base,
+        title=f"fix {SENTINEL}",
+        body=f"details {SENTINEL}",
+        ref=f"leaky-{SENTINEL}",
+    )
+
+    result = _run_pr_scan_step(repo, event, gh, base=base)
+
+    _expect_exit(result, 0)
+    report = (repo.parent / "runner-temp/confidential-advisory.jsonl").read_text(encoding="utf-8")
+    calls = (gh.state / "calls.jsonl").read_text(encoding="utf-8")
+    assert gh.posts("/comments") and report
+    for output in (result.stdout, result.stderr, report, calls):
+        assert SENTINEL not in output
+        assert SENTINEL.upper() not in output.upper()
+
+
+@POSIX_ONLY
+def test_verify_candidate_redacts_with_trusted_vocabulary(tmp_path: Path) -> None:
+    repo, _initial = _repository(tmp_path)
+    _sealed_fixture(repo, _encoded_config())
+    base = _commit(repo, "add vocabulary")
+    # The proposal drops the trusted term, so only the trusted vocabulary can redact it.
+    other = "other-term-xyz"
+    proposed = base64.b64encode(
+        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["{other}"]\n'.encode()
+    ).decode()
+    _sealed_fixture(repo, proposed)
+    (repo / f"{SENTINEL}-{other}.txt").write_bytes(b"clean\n")
+    head = _commit(repo, "drop the trusted term")
+    _git(repo, "checkout", base)
+    event_path = _write_event(repo, _pr_event(head=head, base=base, head_repo_id=1))
+
+    result = _run_guard(
+        repo,
+        ["verify-candidate", "--rev", head, "--base", base, "--event", str(event_path)],
+        os.environ.copy(),
+    )
+
+    _expect_exit(result, 1)
+    assert "confidential term" in result.stderr
+    assert SENTINEL not in result.stdout + result.stderr, "plaintext term printed"
+
+
+def _post_advisory(
+    repo: Path, rows: list[dict] | str, gh: _FakeGh, event: dict | None = None
+) -> subprocess.CompletedProcess[str]:
+    report = repo.parent / "post-report.jsonl"
+    report.write_text(
+        rows if isinstance(rows, str) else "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    event_path = _write_event(repo, event or _pr_event(head="a" * 40, base="b" * 40))
+    return _run_guard(
+        repo, ["post-advisory", "--event", str(event_path), "--report", str(report)], gh.env
+    )
+
+
+@POSIX_ONLY
+def test_post_advisory_bounds_and_neutralises_rows(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    gh = _FakeGh(tmp_path)
+    hostile = "commit abcdef012345 `x`|@maintainer\nline" + "p" * 300
+    rows = [{"kind": "confidential term", "location": hostile, "term_id": "t0"}]
+    rows += [
+        {
+            "kind": "confidential term",
+            "location": f"commit abcdef012345 f{index}.txt:1",
+            "term_id": "t",
+        }
+        for index in range(109)
+    ]
+
+    result = _post_advisory(repo, rows, gh)
+
+    _expect_exit(result, 0)
+    body = gh.posts("/comments")[0]["body"]["body"]
+    assert len(body) < 65_536
+    assert "10 more findings not shown" in body
+    cell = next(line for line in body.splitlines() if "@maintainer" in line)
+    assert "`x`" not in cell and "\\|" in cell and "?line" in cell
+    assert "p" * 201 not in body
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        ("", "No advisory findings to post"),
+        ("not json\n", "the advisory report cannot be read"),
+        ('{"kind": "confidential term"}\n', "the advisory report is malformed"),
+    ],
+)
+def test_post_advisory_reads_the_report_strictly(
+    tmp_path: Path, report: str, expected: str
+) -> None:
+    repo, _base = _repository(tmp_path)
+    gh = _FakeGh(tmp_path)
+
+    result = _post_advisory(repo, report, gh)
+
+    _expect_exit(result, 0 if not report else 1)
+    assert expected in result.stdout + result.stderr
+    assert gh.calls() == []
+
+
+@POSIX_ONLY
+def test_post_advisory_requires_a_valid_pull_request_target(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    gh = _FakeGh(tmp_path)
+    event = _pr_event(head="a" * 40, base="b" * 40)
+    event["pull_request"]["number"] = True
+    row = [{"kind": "confidential term", "location": "x", "term_id": "t"}]
+
+    result = _post_advisory(repo, row, gh, event)
+
+    _expect_exit(result, 1)
+    assert "the pull-request repository or number is invalid" in result.stderr
+    assert gh.calls() == []
+
+
+def test_workflow_grants_pull_request_write_and_token_to_scan() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["confidential-content"]["steps"]
+    scan = _scan_step()
+
+    assert workflow["permissions"] == {
+        "contents": "read",
+        "pull-requests": "write",
+        "statuses": "write",
+    }
+    assert scan["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert scan["id"] == "scan-pr"
+    # Posting runs in the step whose outcome publishes the status, and nowhere else.
+    assert [step["name"] for step in steps if "post-advisory" in step.get("run", "")] == [
+        scan["name"]
+    ]
+    publish = next(step for step in steps if step["name"] == "Publish scan status")
+    assert publish["env"]["PR_OUTCOME"] == "${{ steps.scan-pr.outcome }}"
