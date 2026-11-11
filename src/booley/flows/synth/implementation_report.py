@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 
 from booley.flows.implementation_report import (
@@ -14,8 +13,6 @@ from booley.flows.implementation_report import (
 )
 
 if TYPE_CHECKING:
-    from booley.criteria.templates import TargetPair
-
     from .flow import SynthMetrics
 
 _SYNTH_DELTA_METRICS = (
@@ -97,30 +94,13 @@ def _run(metrics: SynthMetrics, *, fatal_timing: bool) -> ImplementationRun:
 
 
 def build_synth_implementation_report(
-    *,
-    target: str,
-    pair: TargetPair,
+    context: ImplementationContext,
     current: SynthMetrics,
     baseline: SynthMetrics | None,
-    baseline_ref: str | None,
-    resolved_baseline_ref: str | None,
-    eda_tool: str | None,
+    *,
     fatal_timing: bool,
-    baseline_target_identity: str | None = None,
-    candidate_target_identity: str | None = None,
 ) -> ImplementationReport:
     """Normalize synthesis evidence and build its canonical v1 report."""
-    context = ImplementationContext(
-        flow="synth",
-        target=target,
-        eda_tool=eda_tool,
-        invocation_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-        baseline_target=pair.baseline,
-        baseline_target_identity=baseline_target_identity,
-        candidate_target_identity=candidate_target_identity,
-        requested_baseline_ref=baseline_ref,
-        resolved_baseline_ref=resolved_baseline_ref,
-    )
     policy = MetricPolicy(
         delta_metrics=_SYNTH_DELTA_METRICS,
         required_comparison_metrics=("area_kge",),

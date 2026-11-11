@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+
 REPOSITORY_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
 
@@ -496,7 +498,7 @@ def test_riscv_image_lane_is_path_gated() -> None:
     )
     job = workflow["jobs"]["riscv-image"]
     assert job["if"] == "fromJSON(needs.changes.outputs.jobs)['riscv-image']"
-    assert job["needs"] == ["changes", "package-artifacts"]
+    assert job["needs"] == ["changes", "build-dist"]
     assert "riscv-image" in workflow["jobs"]["ci-required"]["needs"]
 
     smoke = yaml.safe_dump(workflow["jobs"]["bwave-smoke"])
@@ -611,13 +613,44 @@ def test_pr_compatibility_matrix_is_pairwise() -> None:
     assert workflow["jobs"]["changes"]["outputs"]["test_matrix"] == (
         "${{ steps.classify.outputs.test_matrix }}"
     )
-    assert shard_input["default"] == "10"
+    assert shard_input["default"] == "4"
     assert shard_input["options"] == ["4", "6", "8", "10"]
     assert benchmark_input["default"] is False
     classify_step = next(
         step for step in jobs["changes"]["steps"] if step.get("name") == "Classify changed paths"
     )
     assert "--windows-shard-benchmark" in classify_step["run"]
+    assert "${{ inputs.windows_shard_count || '4' }}" in classify_step["run"]
+
+
+def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
+    """Sandbox-only tests skip on Windows only; no `-m` expression may drop them anywhere."""
+    from tests.sandbox_only import SANDBOX_ONLY_PATHS, is_sandbox_only
+
+    workflows = (REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")
+    mentions = [path.name for path in workflows if "sandbox_only" in path.read_text("utf-8")]
+    assert not mentions, f"workflows must not select on sandbox_only: {mentions}"
+    compatibility = _named_step(
+        _test_workflow()["jobs"]["test"], "Run focused Windows compatibility suite"
+    )
+    paths = [word for word in shlex.split(compatibility["run"]) if word.startswith("tests/")]
+    assert paths
+    # A compatibility leg whose paths are all skipped on Windows would pass while testing nothing.
+    # A test file is judged by the registry (its Windows exceptions included); a directory
+    # overlaps when any registry entry sits inside it or contains it.
+    skipped = [
+        path
+        for path in paths
+        if (
+            is_sandbox_only(path)
+            if path.endswith(".py")
+            else any(
+                path.startswith(entry) or entry.startswith(path.rstrip("/") + "/")
+                for entry in SANDBOX_ONLY_PATHS
+            )
+        )
+    ]
+    assert not skipped, f"Windows compatibility paths overlap the Sandbox-only registry: {skipped}"
 
 
 def test_main_push_tier_keeps_a_nightly_full_run_on_main() -> None:
@@ -655,7 +688,7 @@ def test_windows_shards_are_exactly_verified() -> None:
         if step.get("name") == "Prove every sharded test ran exactly once"
     )
     assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == (
-        "${{ inputs.windows_shard_count || '10' }}"
+        "${{ inputs.windows_shard_count || '4' }}"
     )
 
 
@@ -1145,7 +1178,6 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
         "Run Coverage Campaign release matrix and production collector",
         "Run simulator ground-truth tests",
         "Run cocotb Icarus/Verilator production-image flows",
-        "Run Goal Mode production-image smoke",
     }
 
     assert {step["name"] for step in validations} == expected_names
@@ -1163,16 +1195,22 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "test_verilator_compiler_cache_smoke.py" in coverage["run"]
     assert "assert_junit.py" in coverage["run"]
     assert "--min-tests 1 --max-skips 0" in coverage["run"]
-    goal_mode = next(step for step in validations if step["name"].startswith("Run Goal Mode"))
-    assert "BOOLEY_GOAL_MODE_SMOKE=1" in goal_mode["run"]
-    assert "test_goal_mode_image_smoke.py" in goal_mode["run"]
-    assert "--junitxml=/validation-tmp/goal-mode.xml" in goal_mode["run"]
-    assert "assert_junit.py" in goal_mode["run"]
-    assert "--min-tests 1 --max-skips 0" in goal_mode["run"]
     upload = next(
         step for step in steps if step.get("name") == "Upload coverage release test timing"
     )
-    assert "${{ runner.temp }}/bwave-smoke/goal-mode/goal-mode.xml" in upload["with"]["path"]
+    assert "goal-mode" not in "\n".join(step["run"] for step in validations)
+    assert "goal-mode" not in upload["with"]["path"]
+    # The temp-dir loop prepares exactly the directories the validations use.
+    prepare = next(
+        step
+        for step in steps
+        if step.get("name") == "Prepare isolated validation temp directories"
+    )
+    prepared = re.search(r"for validation in ([^;]+);", prepare["run"])
+    assert prepared is not None
+    assert set(prepared[1].split()) == {
+        step["env"]["VALIDATION_TMP"].rsplit("/", 1)[-1] for step in validations
+    }
     assert "native_fst_verilator_test.py" in rendered
     assert "simulator_ground_truth_test.py" in rendered
     assert "cd /validation-tmp/project" in rendered
@@ -1384,12 +1422,73 @@ def test_other_unraisable_exceptions_still_fail_the_suite() -> None:
             )
 
 
+def test_goal_mode_unit_tests_run_only_when_named(
+    pytestconfig: pytest.Config, tmp_path: Path
+) -> None:
+    """A bare ``pytest tests/`` skips the Goal Mode unit tests; naming them still runs them (#3329)."""
+    goal_tests = REPOSITORY_ROOT / "tests" / "goals"
+    assert pytestconfig.hook.pytest_ignore_collect(collection_path=goal_tests, config=pytestconfig)
+    other_tests = REPOSITORY_ROOT / "tests" / "harness"
+    assert not pytestconfig.hook.pytest_ignore_collect(
+        collection_path=other_tests, config=pytestconfig
+    )
+
+    # Collect-only on one runtime-picked module: no Goal test body runs in CI.
+    module = sorted(goal_tests.glob("test_*.py"))[0]
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("PYTEST_XDIST_", "BOOLEY_PYTEST_"))
+        and name not in {"PYTEST_ADDOPTS", "BOOLEY_DIR"}
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:xdist",
+            "-p",
+            "no:cacheprovider",
+            f"--basetemp={tmp_path / 'child'}",
+            "--collect-only",
+            "-q",
+            str(module),
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "tests/goals/" in result.stdout.replace("\\", "/")
+
+
+def test_goal_mode_source_is_omitted_from_coverage() -> None:
+    """Goal Mode source is not measured while its tests are not collected (#3329)."""
+    from coverage import Coverage
+    from coverage.files import GlobMatcher
+
+    omit = Coverage(config_file=str(REPOSITORY_ROOT / "pyproject.toml")).get_option("run:omit")
+    assert isinstance(omit, list)
+    omitted = GlobMatcher(omit)
+
+    assert omitted.match(str(REPOSITORY_ROOT / "src/booley/goals/store.py"))
+    # Subprocess data from a temporary checkout carries a different root.
+    assert omitted.match("/checkout/src/booley/goals/store.py")
+    assert not omitted.match(str(REPOSITORY_ROOT / "src/booley/harness/__init__.py"))
+
+
 def test_booley_never_uses_sqlite() -> None:
     """The SQLite unraisable ignore is safe only while Booley owns no connections."""
     offenders = [
         str(path.relative_to(REPOSITORY_ROOT))
         for root in ("src", "tests")
         for path in (REPOSITORY_ROOT / root).rglob("*.py")
+        if not path.is_relative_to(REPOSITORY_ROOT / "tests/goals")  # not run in CI (#3329)
         if re.search(r"^\s*(import|from)\s+sqlite3\b", path.read_text(encoding="utf-8"), re.M)
     ]
 

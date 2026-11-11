@@ -114,17 +114,6 @@ def test_acceptance_and_run_state_saves_reach_the_strategy(tmp_path: Path) -> No
     assert saved.timeline[-1]["mcp_tool"] == "sim"
 
 
-def test_optional_done_approval_policy_accepts_neutral_recorders():
-    from booley.flows.execution_persistence import done_findings_require_approval_for
-
-    class IndependentRecorder(NoAcceptanceRecorder):
-        def done_findings_require_approval(self) -> bool:
-            return False
-
-    assert not done_findings_require_approval_for(IndependentRecorder())
-    assert done_findings_require_approval_for(NoAcceptanceRecorder())
-
-
 def test_recorders_without_durable_state_have_no_acceptance_identity() -> None:
     assert NoAcceptanceRecorder().acceptance_identity() is None
     assert StandaloneFlowExecution().acceptance_identity() is None

@@ -18,11 +18,10 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.harness.setup.common import InitContext, current, err, hint, info, ok, skip, warn
+from booley.harness.setup.common import InitContext, current, err, hint, info, ok, warn
 from booley.runtime import interactive_docker as idk
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
@@ -68,12 +67,10 @@ LOCAL_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
 
 # Booley-SHIPPED sandbox flavors: purpose-built images a project selects by name
 # via ``[sandbox].image``, each ``FROM booley-sandbox`` plus a domain toolchain.
-# They are Booley's images, not the user's, so init owns their lifecycle exactly
-# like the base's — mapping the tag to the Dockerfile shipped beside this module
-# in ``booley/data/docker/``. Without this registry a flavor fell through
-# ``_project_image_setup_gate``'s "not the generated name -> user-managed" branch
-# and was skipped, so init would rebuild the base for 20 minutes and leave the
-# image the project actually runs frozen on the base's *previous* layers.
+# They are Booley's images, not the user's: this registry maps each tag to the
+# Dockerfile shipped beside this module in ``booley/data/docker/``. Init's
+# base-image note and Doctor read it to recognise a shipped flavor; the image
+# lifecycle (``booley.harness.image_lifecycle``) builds and refreshes them.
 FLAVOR_IMAGES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
 
 # Docker image label carrying a content hash of the sources baked into the
@@ -81,7 +78,6 @@ FLAVOR_IMAGES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
 # re-run so an image built from now-stale source is rebuilt instead of skipped
 # (the failure that hid the container-side skill deployment from a stale image).
 LABEL_FINGERPRINT = "booley.build-fingerprint"
-LABEL_BASE_IMAGE_ID = "booley.base-image-id"
 LABEL_VERSION = "org.opencontainers.image.version"
 DEFAULT_IMAGE_PULL_TIMEOUT_S = 7200
 DEFAULT_IMAGE_TAG_TIMEOUT_S = 30
@@ -145,14 +141,13 @@ def _docker_image_exists(image: str = DOCKER_IMAGE) -> bool:
 
 @dataclass(frozen=True)
 class _DockerBuildSpec:
-    """Inputs that vary between sandbox, runtime-base, and flavor builds."""
+    """Inputs that vary between sandbox, runtime-base, and image-lifecycle builds."""
 
     dockerfile: Path
     context: Path
     exists: bool
     fingerprint: str | None = None
     image: str = DOCKER_IMAGE
-    record_key: str = "docker_image"
     build_note: str = "this can take 20-30 minutes on first build"
     build_contexts: tuple[tuple[str, str], ...] = ()
     build_args: tuple[str, ...] = ()
@@ -205,19 +200,18 @@ def _image_label(image: str, label: str) -> str | None:
     return val if val and val != "<no value>" else None
 
 
-def _installed_image_version(image: str = DOCKER_IMAGE) -> str | None:
+def _installed_image_version() -> str | None:
     """Return release provenance for a pulled or locally built image."""
-    fingerprint = _image_label(image, LABEL_FINGERPRINT)
+    fingerprint = _image_label(DOCKER_IMAGE, LABEL_FINGERPRINT)
     if fingerprint and fingerprint.startswith("pulled:"):
         version = fingerprint.removeprefix("pulled:").strip()
         if version:
             return version
-    return _image_label(image, LABEL_VERSION)
+    return _image_label(DOCKER_IMAGE, LABEL_VERSION)
 
 
 def _image_is_stale(
     fingerprint: str | None,
-    image: str = DOCKER_IMAGE,
     expected_version: str | None = None,
 ) -> bool:
     """Whether the present sandbox image no longer matches the local source.
@@ -228,29 +222,17 @@ def _image_is_stale(
       stale-image bug this fixes) -> stale.
     - ``pulled:*`` label: current only when it names *expected_version*.
     - otherwise: stale iff the stamped hash differs from the current source.
-
-    Also asked of a :data:`FLAVOR_IMAGES` flavor, which carries the *base's*
-    fingerprint (``build-riscv.sh`` stamps the same label from the same sources).
-    That is what makes derived-image drift detectable: the source change that
-    restamps the base leaves the flavor's label behind, so it reads as stale.
     """
     if fingerprint is None:
         return False
-    label = _image_label(image, LABEL_FINGERPRINT)
+    label = _image_label(DOCKER_IMAGE, LABEL_FINGERPRINT)
     if label is None:
         return True
     if label.startswith("pulled:"):
         return bool(expected_version and label != f"pulled:{expected_version}")
-    source_or_version_stale = label != fingerprint or bool(
-        expected_version and _image_label(image, LABEL_VERSION) != expected_version
+    return label != fingerprint or bool(
+        expected_version and _image_label(DOCKER_IMAGE, LABEL_VERSION) != expected_version
     )
-    if source_or_version_stale:
-        return True
-    if image not in FLAVOR_IMAGES:
-        return False
-    stamped_base = _image_label(image, LABEL_BASE_IMAGE_ID)
-    current_base = idk.image_id(DOCKER_IMAGE)
-    return not stamped_base or not current_base or stamped_base != current_base
 
 
 def source_fingerprint_mismatch(image: str) -> bool | None:
@@ -416,21 +398,17 @@ def _base_image_note(selected_image: str) -> None:
 
 def _report_incompatible_image(
     ctx: InitContext,
-    image: str,
     installed_version: str | None,
     expected_version: str,
-    *,
-    record_key: str,
-    detail: str,
 ) -> None:
-    """Warn that *image* could not be refreshed to the required release."""
+    """Warn that the base image could not be refreshed to the required release."""
     found = f"v{installed_version}" if installed_version else "of unknown version"
     warn(
-        f"{image} is {found}, but Booley v{expected_version} requires sandbox image "
+        f"{DOCKER_IMAGE} is {found}, but Booley v{expected_version} requires sandbox image "
         f"v{expected_version}; the existing image was left unchanged and may be incompatible"
     )
-    info(f"  retry: docker pull {remote_tag(image, expected_version)}")
-    ctx.record(record_key, "warn", detail)
+    info(f"  retry: docker pull {remote_tag(DOCKER_IMAGE, expected_version)}")
+    ctx.record("docker_image", "warn", "compatible image pull failed")
 
 
 def _refresh_installed_base_image(ctx: InitContext, expected_version: str) -> bool:
@@ -447,14 +425,7 @@ def _refresh_installed_base_image(ctx: InitContext, expected_version: str) -> bo
         ok(f"{DOCKER_IMAGE} pulled from registry (v{expected_version})")
         ctx.record("docker_image", "ok", "pulled")
         return True
-    _report_incompatible_image(
-        ctx,
-        DOCKER_IMAGE,
-        installed_version,
-        expected_version,
-        record_key="docker_image",
-        detail="compatible image pull failed",
-    )
+    _report_incompatible_image(ctx, installed_version, expected_version)
     return True
 
 
@@ -1030,12 +1001,6 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
         build_cmd += _local_parent_label_args(spec.parent_artifact)
     for name, value in spec.labels:
         build_cmd += ["--label", f"{name}={value}"]
-    if spec.image in FLAVOR_IMAGES:
-        base_image_id = spec.parent_artifact or idk.image_id(DOCKER_IMAGE)
-        if base_image_id:
-            build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
-            if spec.parent_artifact is None:
-                build_cmd += _local_parent_label_args(base_image_id)
     if spec.image == DOCKER_IMAGE:
         build_cmd += _image_build_metadata_args(spec.context)
     build_cmd += spec.build_args
@@ -1073,7 +1038,7 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
                 f"docker build timed out after {format_duration(timeout_seconds)} "
                 "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
             )
-            ctx.record(spec.record_key, "err", "build timed out")
+            ctx.record("docker_image", "err", "build timed out")
             return None
         return result.returncode
     except DockerCapacityError:
@@ -1083,208 +1048,9 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
             f"docker build timed out after {format_duration(timeout_seconds)} "
             "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
         )
-        ctx.record(spec.record_key, "err", "build timed out")
+        ctx.record("docker_image", "err", "build timed out")
         return None
     except (FileNotFoundError, OSError) as e:
         err(f"docker build failed: {e}")
-        ctx.record(spec.record_key, "err", str(e))
+        ctx.record("docker_image", "err", str(e))
         return None
-
-
-# ---------------------------------------------------------------------------
-# Booley-shipped sandbox flavors (record key: flavor_image) — booley-sandbox-riscv, ...
-# ---------------------------------------------------------------------------
-
-
-def _flavor_build(
-    ctx: InitContext,
-    image: str,
-    dockerfile: Path,
-    exists: bool,
-    fingerprint: str | None,
-) -> bool:
-    """``docker build`` a flavor from its shipped Dockerfile; True once it exists."""
-    parent_image_id = idk.image_id(DOCKER_IMAGE)
-    if parent_image_id is None:
-        err(f"verified standard parent {DOCKER_IMAGE} could not be resolved")
-        ctx.record("project_image", "err", "verified standard parent could not be resolved")
-        return False
-    docker_dir = dockerfile.parent
-    build = _DockerBuildSpec(
-        dockerfile=dockerfile,
-        # Context is docker_dir, not the Booley repository root build-riscv.sh passes: a
-        # flavor Dockerfile has no COPY (it only layers toolchains onto the
-        # base), so the context is unused — and a pip-installed Booley has no
-        # Booley repository root to point at while data/docker/ always exists. This is why
-        # flavor Dockerfiles must stay COPY-free.
-        context=docker_dir,
-        exists=exists,
-        fingerprint=fingerprint,
-        image=image,
-        record_key="project_image",
-        build_note="this can take 10-20 minutes",
-        # BuildKit resolves this local tag independently from the immutable ID
-        # captured for provenance. Both observations assume the default Docker
-        # builder and a stable managed tag for the duration of this build.
-        build_contexts=(("booley-standard-substrate", f"docker-image://{DOCKER_IMAGE}"),),
-        parent_artifact=parent_image_id,
-    )
-    returncode = _docker_build_image(ctx, build)
-    if returncode is None:
-        return False  # error already recorded
-    if returncode != 0:
-        err(f"failed to build {image} — re-run with -v for full output")
-        ctx.record("project_image", "err", f"{image} build failed")
-        return False
-    ok(f"{image} image built successfully")
-    _report_build_cache()
-    ctx.record("project_image", "ok", f"flavor {image} built")
-    return True
-
-
-def _prepare_flavor_without_build(
-    ctx: InitContext,
-    image: str,
-    *,
-    exists: bool,
-    fingerprint: str | None,
-    expected_version: str,
-    allow_pull: bool,
-) -> bool | None:
-    """Return changed/current when handled, or ``None`` when a local build is needed."""
-    inspect_existing = exists and not ctx.force
-    installed_release_mismatch = (
-        inspect_existing
-        and fingerprint is None
-        and (_installed_image_version(image) != expected_version)
-    )
-    source_stale = (
-        inspect_existing
-        and fingerprint is not None
-        and _image_is_stale(fingerprint, image, expected_version)
-    )
-    if inspect_existing and not installed_release_mismatch and not source_stale:
-        current(f"{image} is a Booley-shipped sandbox flavor and is up to date")
-        ctx.record("project_image", "current", f"flavor {image} current")
-        return False
-    if ctx.check_only:
-        if installed_release_mismatch and allow_pull:
-            warn(f"would pull compatible image for the {image} sandbox flavor")
-            ctx.record("project_image", "warn", "would pull compatible image")
-            return False
-        verb = "rebuild (stale)" if exists else "build"
-        if allow_pull and not exists:
-            verb = "pull or build"
-        warn(f"would {verb} the {image} sandbox flavor")
-        ctx.record("project_image", "warn", f"would {verb}")
-        return False
-    should_pull = allow_pull and (not exists or installed_release_mismatch)
-    if should_pull and not ctx.force and _try_pull_image(expected_version, image):
-        ok(f"{image} pulled from registry")
-        ctx.record("project_image", "ok", f"flavor {image} pulled")
-        return True
-    return None
-
-
-def _flavor_base_ready(ctx: InitContext, ensure_base: Callable[[], None] | None) -> bool:
-    """Provision a flavor's local-build base on demand and report whether it succeeded."""
-    if ensure_base is None:
-        return True
-    result_count = len(ctx.results)
-    ensure_base()
-    base_results = ctx.results[result_count:]
-    return not any(result.status in {"warn", "err"} for result in base_results)
-
-
-def _handle_flavor_without_dockerfile(
-    ctx: InitContext,
-    image: str,
-    dockerfile_name: str,
-    *,
-    exists: bool,
-    fingerprint: str | None,
-    expected_version: str,
-) -> bool:
-    """Handle a flavor whose local build recipe is unavailable."""
-    if not exists:
-        err(f"{image} is missing and cannot be built — no shipped {dockerfile_name}")
-        info(f"  pull it: docker pull {remote_tag(image, expected_version)}")
-        ctx.record("project_image", "err", f"flavor {image} unavailable")
-        return False
-    installed_version = (
-        _installed_image_version(image) if fingerprint is None else expected_version
-    )
-    if installed_version != expected_version:
-        _report_incompatible_image(
-            ctx,
-            image,
-            installed_version,
-            expected_version,
-            record_key="project_image",
-            detail=f"flavor {image} compatible image pull failed",
-        )
-        return False
-    skip(f"{image} present; no shipped {dockerfile_name} to rebuild from — trusting it")
-    ctx.record("project_image", "skip", f"flavor {image} unverifiable")
-    return False
-
-
-def ensure_flavor_image(
-    ctx: InitContext,
-    image: str,
-    *,
-    ensure_base: Callable[[], None] | None = None,
-    allow_pull: bool = True,
-) -> bool:
-    """Pull, build, or refresh the selected Booley-shipped sandbox flavor.
-    Return whether this run changed the image.
-    """
-    dockerfile, exists, fingerprint, expected_version = _flavor_inputs(image)
-    prepared = _prepare_flavor_without_build(
-        ctx,
-        image,
-        exists=exists,
-        fingerprint=fingerprint,
-        expected_version=expected_version,
-        allow_pull=allow_pull,
-    )
-    if prepared is not None:
-        return prepared
-    if not dockerfile.is_file():
-        return _handle_flavor_without_dockerfile(
-            ctx,
-            image,
-            dockerfile.name,
-            exists=exists,
-            fingerprint=fingerprint,
-            expected_version=expected_version,
-        )
-
-    if not _flavor_base_ready(ctx, ensure_base):
-        installed_version = _installed_image_version(image) if fingerprint is None else None
-        if exists and installed_version != expected_version:
-            _report_incompatible_image(
-                ctx,
-                image,
-                installed_version,
-                expected_version,
-                record_key="project_image",
-                detail=f"flavor {image} compatible image pull failed",
-            )
-        return False
-    if exists:
-        warn(f"{image} is stale (its {DOCKER_IMAGE} base or Booley's sources changed)")
-        warn("  rebuilding — a session left on the old image keeps serving pre-rebuild code")
-    return _flavor_build(ctx, image, dockerfile, exists, fingerprint)
-
-
-def _flavor_inputs(image: str) -> tuple[Path, bool, str | None, str]:
-    docker_dir = docker_data_dir()
-    dockerfile = docker_dir / FLAVOR_IMAGES[image]
-    booley_root = docker_dir.parent.parent.parent.parent
-    return (
-        dockerfile,
-        _docker_image_exists(image),
-        _image_build_fingerprint(booley_root),
-        _expected_version(booley_root),
-    )

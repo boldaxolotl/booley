@@ -17,6 +17,13 @@ Packaged release history starts at 0.2.7. For older changes, see
   Icarus-only project is probed with Icarus even when Verilator is installed. The
   `[flows.sim].standalone_frontend` key is retired: every Flow refuses to run
   while it is set, so delete it.
+- A failed Simulation run of a Target without registered Tests is now listed as
+  `<default>` (`<default>@N` when seeded) in `simulation.json` and the "Test
+  Runs" lines, and its rerun command is `booley flow sim --target <name>
+  [--seed N]` instead of an unrunnable `--test=<name>@N`.
+- `[flows.sim].output_dir` is retired. It has had no effect; Doctor now warns
+  `config.flow-key-retired` while it is set. Delete it. `[flows.synth].output_dir`
+  is unchanged.
 - `booley init` now runs inside a hand-written Sandbox (such as a Codespace)
   and performs Project Initialization only, so a spec can call it from
   `onCreateCommand` on every create: guidance links, Dashboard task, Git

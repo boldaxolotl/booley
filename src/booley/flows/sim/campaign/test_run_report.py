@@ -131,9 +131,7 @@ def _observed_run(
     observation: Mapping[str, object], recorded: Mapping[tuple[object, str], TestRun]
 ) -> TestRun | None:
     """The Test Run an observation names, as the manifest recorded it."""
-    name = observation.get("test_run")
-    if not isinstance(name, str):
-        return None
+    name = cast(str, observation["test_run"])
     item = observation["work_item_id"]
     run = recorded.get((item, name))
     if run is not None:
@@ -142,7 +140,8 @@ def _observed_run(
     test = observation["test"]
     if unnamed is None or not isinstance(test, str):
         return None
-    return discovered_test_run(test, unnamed)
+    selector = cast(Mapping[str, object], observation["target"])["selector"]
+    return discovered_test_run(test, unnamed, target=cast(str, selector))
 
 
 def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
@@ -150,8 +149,7 @@ def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
 
     Each row holds the recorded ``name``, ``test``, ``variant``, ``seed``,
     ``args``, ``env`` and ``fingerprint`` plus ``grade``. A campaign whose
-    facts do not name Test Runs (written before they were recorded) has no
-    rows.
+    manifest cannot be read has no rows.
     """
     recorded = _recorded_test_runs(outcome.manifest_path)
     rows: list[dict[str, object]] = []
@@ -179,8 +177,7 @@ def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]
     ``fingerprint`` must not take them from a file that merely sits where the
     manifest should be. The manifest read here must be the one the acceptance
     facts name by digest, and every row must carry the fingerprint its
-    observation recorded. Facts that do not name Test Runs (written before
-    they were recorded) have no rows.
+    observation recorded.
 
     Raises :class:`SimulationCampaignIntegrityError` when the manifest is
     missing or is not the campaign's, or when an observation has no recorded
@@ -188,8 +185,6 @@ def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]
     """
     facts = outcome.acceptance_facts.document
     observations = cast(tuple[Mapping[str, object], ...], facts["observations"])
-    if any("test_run" not in observation for observation in observations):
-        return []
     try:
         manifest = decode_simulation_campaign_manifest(outcome.manifest_path.read_bytes())
     except OSError as exc:
@@ -208,12 +203,9 @@ def observation_test_run_rows(
 ) -> list[dict[str, object]]:
     """One row per observation fact, from the Test Runs the authenticated *manifest* records.
 
-    Observation facts that do not name Test Runs have no rows. Raises
-    :class:`SimulationCampaignIntegrityError` when an observation has no
+    Raises :class:`SimulationCampaignIntegrityError` when an observation has no
     recorded Test Run with the fingerprint it bound.
     """
-    if any("test_run" not in observation for observation in observations):
-        return []
     recorded = _manifest_test_runs(manifest)
     rows: list[dict[str, object]] = []
     for observation in observations:

@@ -131,6 +131,8 @@ def test_validate_one_flow_table_accepts_lint_timeout_ms():
         ("warnings_as_errors", "lint", "sim", False),
         # trace_files declares the TB's own dump path; only simulate reads it.
         ("trace_files", "sim", "lint", ["fpu.vcd"]),
+        # Only synth reads output_dir; the retired sim key is reported as retired.
+        ("output_dir", "synth", "sim", "util/sim"),
     ],
 )
 def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, value):
@@ -144,18 +146,44 @@ def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, 
 
     _record_audit(
         flow_schema.audit_flow_table(non_reader, {knob: value}),
-        warned=warns.append,
+        warned=lambda msg, fix="": warns.append(msg),
         failed=lambda msg, fix="": fails.append(msg),
     )
-    assert any(f"[flows.{non_reader}].{knob}" in m and "ignores it" in m for m in warns)
+    # The retired sim output_dir is reported as retired, not as an ignored knob.
+    non_reader_message = "is retired" if knob == "output_dir" else "ignores it"
+    assert any(f"[flows.{non_reader}].{knob}" in m and non_reader_message in m for m in warns)
 
     warns.clear()
     _record_audit(
         flow_schema.audit_flow_table(reader, {knob: value}),
-        warned=warns.append,
+        warned=lambda msg, fix="": warns.append(msg),
         failed=lambda msg, fix="": fails.append(msg),
     )
-    assert not any(knob in m and "ignores it" in m for m in warns)
+    assert not any(knob in m and ("ignores it" in m or "is retired" in m) for m in warns)
+
+
+def test_sim_output_dir_is_retired_without_failing_doctor():
+    """``[flows.sim].output_dir`` never changed a run: Doctor warns once, never fails."""
+    fails: list[str] = []
+    warns: list[str] = []
+    audit = flow_schema.audit_flow_tables(
+        {"flows": {"sim": {"output_dir": "util/sim"}, "lint": {}, "synth": {}}},
+        ("sim", "lint", "synth"),
+    )
+
+    ok = _record_audit(
+        audit,
+        warned=lambda msg, fix="": warns.append(msg),
+        failed=lambda msg, fix="": fails.append(msg),
+    )
+
+    assert ok is True
+    assert fails == []
+    assert len(warns) == 1
+    assert "[flows.sim].output_dir is retired" in warns[0]
+    (finding,) = [f for f in audit.findings if f.check_id == "config.flow-key-retired"]
+    assert finding.subject == "sim.output_dir"
+    assert "delete [flows.sim].output_dir" in finding.fix
 
 
 @pytest.mark.parametrize(

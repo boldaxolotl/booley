@@ -38,10 +38,13 @@ SELECTIVE_FLOW_KNOBS = {
     "run_cwd": frozenset({"sim"}),
     "trace_args": frozenset({"sim"}),
     "trace_files": frozenset({"sim"}),
-    "output_dir": frozenset({"sim", "synth"}),
+    "output_dir": frozenset({"synth"}),
     "expected_latches": frozenset({"synth"}),
     "timing_report_paths": frozenset({"synth"}),
 }
+
+# Retired (Flow, key) pair: it never changed a run, so Doctor warns instead of failing.
+_RETIRED_SIM_OUTPUT_DIR = ("sim", "output_dir")
 
 _MOVED_TARGET_RECIPE_KEYS = frozenset(
     {
@@ -214,6 +217,16 @@ def _retired_flow_key_findings(
                 "delete it; the shared untraced Simulation build cache is always retained",
             )
         )
+    retired_flow, retired_key = _RETIRED_SIM_OUTPUT_DIR
+    if flow_name == retired_flow and retired_key in section:
+        findings.append(
+            warn_finding(
+                f"booley.toml [flows.{retired_flow}].{retired_key} is retired and has no effect",
+                "config.flow-key-retired",
+                subject=f"{retired_flow}.{retired_key}",
+                fix=f"delete [flows.{retired_flow}].{retired_key}",
+            )
+        )
     for retired in (RETIRED_TARGET_KEY, DEFAULT_TARGET_KEY, "calibration_target"):
         if retired not in section:
             continue
@@ -301,6 +314,8 @@ def _ignored_flow_knob_findings(
     for knob, readers in SELECTIVE_FLOW_KNOBS.items():
         if knob not in section or flow_name in readers:
             continue
+        if (flow_name, knob) == _RETIRED_SIM_OUTPUT_DIR:
+            continue  # already reported as retired
         findings.append(
             warn_finding(
                 f"booley.toml [flows.{flow_name}].{knob} is set but {flow_name} "
