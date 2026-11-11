@@ -107,7 +107,7 @@ The structured result Finish produces for a Goal Mode: diff summary against the 
 _Avoid_: triage package, run report, acceptance report
 
 **Session**:
-In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. It feeds the Dashboard and the shared-worktree warning, and its process's checkout, when that is a linked worktree of the server's repository, is the default checkout of its calls that omit `work_dir`. It never selects a Goal Record.
+In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. It feeds the Dashboard and the shared-worktree warning, and its process's checkout, when that is a linked worktree of the server's repository and the client is Claude Code or a Codex that `booley chat` started, is the default checkout of its calls that omit `work_dir`. It never selects a Goal Record.
 _Avoid_: connection, tab, MCP session, Sandbox session
 
 **Sandbox Attachment**:
@@ -187,7 +187,7 @@ A codebase on which Project Initialization has run, with a **Booley Directory** 
 _Avoid_: repo, workspace
 
 **Booley Directory**:
-The directory that holds everything Booley keeps for a **Project**: configuration, Goalsets, Goal Records, evidence, logs, and worktrees. Its default location is `.booley/` at the **Project Root**; a Project may select another location.
+The directory that holds everything Booley keeps for a **Project**: configuration, Goalsets, Goal Records, evidence, logs, and worktrees. Its default location is `.booley/` at the **Project Root**; a Project may select another location. Its contents divide into **Common Booley State** and **Checkout Booley State**; a **Worktree Booley Directory** holds only the latter.
 _Avoid_: Project directory, Project dir, Project data, Project data directory, state dir
 
 **Project Root**:
@@ -195,8 +195,16 @@ The top directory of a **Project**'s codebase checkout, and the default home of 
 _Avoid_: Project directory, Project checkout, repo root
 
 **Main Booley Directory**:
-The **Booley Directory** that owns a **Project**'s Goal Records, Goalsets, and lifecycle files. It is the main checkout's Booley Directory.
+The **Booley Directory** of the main checkout. It holds the **Common Booley State** and the main checkout's **Checkout Booley State**, and so owns the **Project**'s Goal Records, Goalsets, and lifecycle files.
 _Avoid_: control Project, control Project directory, session Project
+
+**Common Booley State**:
+The part of a **Project**'s **Booley Directory** that every checkout shares, kept only in the **Main Booley Directory**: what coordinates Sessions and Jobs, Goal Records, Project-wide records and evidence, and shared caches. A command run in any worktree reaches it there. The path-by-path split is in ADR 0082's appendix.
+_Avoid_: global state, shared Booley Directory, main state, Git common dir
+
+**Checkout Booley State**:
+The part of a **Booley Directory** that belongs to one checkout: configuration versioned with that checkout's code (`booley.toml`, `cores/`, hooks, Goal and Ticket history) and the build trees and Flow reports of its sources. A **Worktree Booley Directory** holds only this part.
+_Avoid_: worktree state, local state, per-worktree config
 
 **Worktree Booley Directory**:
 A linked worktree's own **Booley Directory**. It is either a **Paired Checkout** or a **Snapshot**.
@@ -207,7 +215,7 @@ The **Worktree Booley Directory** of a **Versioned Booley Directory**: a Git che
 _Avoid_: paired Project checkout, paired Project repository
 
 **Snapshot**:
-The **Worktree Booley Directory** of a non-versioned **Booley Directory**: a copy of its configuration taken when the worktree is created. Results, logs, and Common Booley State stay in the Main Booley Directory.
+The **Worktree Booley Directory** of a non-versioned **Booley Directory**: a copy of its configuration taken when the worktree is created. Results, logs, and **Common Booley State** stay in the Main Booley Directory.
 _Avoid_: clean snapshot, project copy
 
 **Versioned Booley Directory**:

@@ -1,6 +1,6 @@
 # Give each concurrent Interactive session its own worktree
 
-Status: proposed (2026-11-03)
+Status: accepted (2026-11-11; proposed 2026-11-03; amended 2026-11-11: as built, see Amendments)
 
 ## Context
 
@@ -162,7 +162,7 @@ whose worktree is gone resumes in the main checkout, with a notice.
 Implemented by #2610 (2026-11-10): the records. The hook writes
 `worktrees/.conversations/<hash>.json`. See ADR 0068 Amendments (2026-11-10).
 
-Implemented by #2614: `booley chat` reads the records (`runtime/conversation_records.py`).
+Implemented by #2614 (2026-11-11): `booley chat` reads the records (`runtime/conversation_records.py`).
 A launch from the main checkout without `--here`/`--new-worktree` that carries a
 resume form (Claude `--resume <id>`, `--resume=<id>`, `-r <id>`, `-c`,
 `--continue`; Codex `resume <id>` with the id right after `resume`, `resume
@@ -414,3 +414,68 @@ becomes common.
     Directory (`runtime/worktree_create.sh:104,150`,
     `harness/worktree_cmd.py:96`, `core/build_paths.py:12`,
     `fusesoc/core_projection.py:75`).
+
+## Amendments
+
+### 2026-11-11: As built
+
+All feature tickets of #2599 have shipped. Where the shipped behavior differs
+from the Decision above, these points supersede it; the Decision text is kept
+as written.
+
+- **Snapshot contents** (What the worktree looks like; #2849, #2873). A
+  Snapshot copies only the versioned part of Checkout Booley State. Build trees
+  and Flow reports start empty in the new worktree. A path no classification
+  row covers is not copied, and the creation names it.
+- **Classification** (Appendix; #2849, #2873). The table in
+  `core/booley_dir_parts.py` is finer than the appendix and is authoritative:
+  for example `runtime/jobs/` is Common as a whole, and `tmp/doctor/`,
+  `.managed/` and `runtime/doctor/core-resolve/` are Checkout. It lacks a row
+  for the main-checkout lock that the appendix lists; that gap is a defect,
+  not a decision.
+- **Booley Directory outside the checkout** (What the worktree looks like;
+  #2850). `booley worktree new`, and so `booley chat`, refuses to create a
+  worktree when the Booley Directory lies outside the checkout.
+- **Where placement applies** (When `booley chat` creates a worktree).
+  `--new-worktree` run anywhere but the main checkout exits 2. A launch outside
+  Git runs in place, like one from a linked worktree.
+- **Without `os.fork`** (Launching the agent; #2601). When `os.fork` is missing,
+  or fork or pipe creation fails, the agent CLI replaces `booley chat`: no lock
+  is held for the session and there is no exit step. Placement in a new
+  worktree needs `os.fork` (POSIX) and is unsupported without it.
+- **Terminal handling** (Launching the agent; #2601). On a terminal the parent
+  installs a repair handler for SIGINT, SIGQUIT and SIGTSTP instead of ignoring
+  them. On a pipe or in the background the child stays in Booley's process
+  group and the wait does not use `WUNTRACED`. A signal during worktree setup
+  rolls the worktree back and `booley chat` exits 128 plus the signal number.
+- **Setup logs** (What the worktree looks like). Only the post-setup hook
+  writes a log. A failed submodule fill prints its error without a log path.
+- **Merged commits** (Exit; #2609). Besides `git cherry`, a branch squashed
+  into one upstream commit counts as merged (cumulative patch-id). Paired
+  Checkout commits are compared with the Main Booley Directory's checked-out
+  branch. Commits of a detached HEAD that are already in the main checkout's
+  branch count as merged, which refines "unmerged until they are on a branch"
+  (Lifecycle commands).
+- **`rm`** (Lifecycle commands; #2609). Evidence moves to
+  `worktrees/.evidence/<name>-<UTC time>/` in the Main Booley Directory, one
+  new directory per attempt, not merged into the Common Booley State
+  directories. `rm` also refuses a worktree with another worktree registered
+  inside it, a `.booley/` that is a link or lies outside it, and a removal run
+  from inside it, all even with `--force`; and, unless forced, a damaged
+  checkout or a Git lock. `rm` deletes the worktree's last-used stamp.
+- **`gc`** (Lifecycle commands; #2611). The age comes from
+  `[worktree] gc_older_than` (default `7d`) or `--older-than`. A worktree with
+  no last-used stamp (`never`) and the worktree `gc` runs from are kept. The
+  launch-time `gc` runs on every launch, before placement, and is silent when
+  it fails.
+- **Last-used stamp** (Lifecycle commands). It is written when the worktree is
+  created, on every Booley tool call routed to or naming it, when a
+  `booley chat` session in a worktree it created ends, and when `booley chat`
+  is launched inside it. A resumed session counts through its tool calls only.
+- **`list` sessions** (Lifecycle commands). The `SESSION` column shows Session
+  Registry rows only, so an agent that has made no Booley tool call yet is not
+  shown, although `rm` already refuses its worktree through the handle holder.
+- **Lock and resume** (When `booley chat` creates a worktree; Resume). A
+  main-checkout lock file that cannot be opened or locked counts as held by
+  someone else, so `auto` picks a worktree, after a `NOTE`. A `--last`/`--continue` resume
+  while the main checkout is busy picks the newest free worktree.
