@@ -160,6 +160,10 @@ elif VARIANT == "bg":
 elif VARIANT == "bg-fg-read":
     wait_until(lambda: state["resumed"] and (OUT / "fg-done").exists())
     sys.stdin.readline()
+elif VARIANT == "hup-exit":
+    # Exits normally (status 0) once its terminal hangs up, as an agent that handles SIGHUP does.
+    wait_until(lambda: counts["HUP"] > 0)
+    sys.exit(0)
 elif VARIANT == "wait":
     wait_until(lambda: state["first"] is not None)
     wait_until(lambda: time.monotonic() > state["first"] + SETTLE)
@@ -198,6 +202,8 @@ from types import SimpleNamespace
 provider = sys.argv[1]
 os.chdir(os.environ["DRIVER_ROOT"])  # the shell the user launched `booley chat` from
 OUT = Path(os.environ["DRIVER_OUT"])
+if os.environ.get("DRIVER_STDERR"):  # stderr off the terminal, as in `booley chat 2>log`
+    os.dup2(os.open(os.environ["DRIVER_STDERR"], os.O_WRONLY | os.O_CREAT | os.O_APPEND), 2)
 (OUT / "driver.json").write_text(json.dumps({"pid": os.getpid(), "pgrp": os.getpgrp()}))
 
 from booley.harness import chat_cmd, codex_chat
@@ -470,8 +476,13 @@ class _Scene:
         assert probe.returncode == 0, f"relocated interpreter copy failed: {probe.stderr}"
         return env
 
-    def env(self, variant: str, provider: str, slot: str = "", flag: str = "") -> dict[str, str]:
-        """The environment of one launch; its markers go to `out/<slot>` (a second chat's own)."""
+    def env(
+        self, variant: str, provider: str, slot: str = "", flag: str = "", stderr_log: str = ""
+    ) -> dict[str, str]:
+        """The environment of one launch; its markers go to `out/<slot>` (a second chat's own).
+
+        *stderr_log* names a file in that directory that receives Booley's stderr.
+        """
         out = self.out / slot
         out.mkdir(exist_ok=True)
         return {
@@ -481,6 +492,7 @@ class _Scene:
             "DRIVER_OUT": str(out),
             "AGENT_OUT": str(out),
             "DRIVER_FLAG": flag,
+            "DRIVER_STDERR": str(out / stderr_log) if stderr_log else "",
         }
 
     def start(
@@ -491,13 +503,14 @@ class _Scene:
         shell: str | None = None,
         slot: str = "",
         flag: str = "",
+        stderr_log: str = "",
         ready: bool = True,
     ) -> _Terminal:
         """Start the driver (or the job-control shell around it) and wait for the agent."""
         argv = [sys.executable, str(self.driver), provider]
         if shell is not None:
             argv = [sys.executable, str(self.shell), shell, str(self.driver), provider]
-        terminal = _Terminal(argv, self.env(variant, provider, slot, flag))
+        terminal = _Terminal(argv, self.env(variant, provider, slot, flag, stderr_log))
         self.terminals.append(terminal)
         if ready:
             terminal.expect("AGENT-READY")
@@ -595,6 +608,15 @@ def _assert_forked(scene: _Scene) -> tuple[dict[str, Any], dict[str, Any]]:
 
 def _finish_with_line(terminal: _Terminal) -> None:
     terminal.write("done\n")
+    assert os.waitstatus_to_exitcode(terminal.wait_exit()) == _AGENT_EXIT_CODE
+
+
+def _finish_worktree_session(terminal: _Terminal) -> None:
+    """End a worktree session: the agent reads its line and exits, then Enter keeps the worktree."""
+    terminal.write("done\n")
+    terminal.expect("Keep or discard worktree")
+    terminal.write("\n")
+    terminal.expect("Kept worktree")
     assert os.waitstatus_to_exitcode(terminal.wait_exit()) == _AGENT_EXIT_CODE
 
 
@@ -884,7 +906,92 @@ def test_second_concurrent_chat_runs_in_the_worktree_named_after_its_handle(
         "(the main checkout is in use by another booley chat)."
     ) in " ".join(second.output.split())
     _finish_with_line(first)
-    _finish_with_line(second)
+    # A session in the main checkout gets neither the prompt nor the `Kept` line.
+    first.drain()
+    assert "Keep or discard" not in first.output
+    assert "Kept worktree" not in first.output
+    _finish_worktree_session(second)
+
+
+def test_worktree_session_exit_lists_losses_and_discard_forces_after_refusal(
+    scene: _Scene,
+) -> None:
+    # Bug caught: no prompt on a real terminal after the agent exits (or one shown before
+    # the terminal is back), a discard that skips `rm`'s refusal, or a changed exit code.
+    scene.git_project()
+    terminal = scene.start("claude", flag="always")
+    worktree = scene.booley_dir / "worktrees" / "s1"
+    (worktree / "unsaved.txt").write_bytes(b"work\n")
+
+    terminal.write("done\n")
+    terminal.expect("Work not in main yet:")
+    terminal.expect("  - 1 uncommitted change(s) in the worktree")
+    terminal.expect("Keep or discard worktree s1? [K/d]")
+    terminal.write("d\n")
+    terminal.expect("cannot be removed safely")
+    terminal.expect("Remove it anyway and lose this work? [y/N]")
+    assert (worktree / "unsaved.txt").is_file(), "removed before the second question"
+    terminal.write("y\n")
+    terminal.expect("Removed worktree s1.")
+
+    assert os.waitstatus_to_exitcode(terminal.wait_exit()) == _AGENT_EXIT_CODE
+    assert scene.worktree_names() == ["booley/s1"]  # the branch outlives the worktree
+
+
+def test_worktree_session_without_a_terminal_keeps_it(scene: _Scene) -> None:
+    # Bug caught: a piped launch prompting (and hanging on) a question nobody can answer.
+    scene.git_project()
+    process = subprocess.Popen(
+        [sys.executable, str(scene.driver), "claude"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=scene.env("read", "claude", flag="always"),
+        process_group=0,
+    )
+    scene.processes.append(process)
+    assert process.stdout is not None
+    assert process.stdin is not None
+    assert process.stderr is not None
+    _read_until(process.stdout.fileno(), b"AGENT-READY")
+
+    process.stdin.write(b"done\n")
+    process.stdin.flush()
+    assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
+
+    err = process.stderr.read().decode()
+    worktree = scene.booley_dir / "worktrees" / "s1"
+    assert f"Kept worktree s1: {worktree}" in err
+    assert "Keep or discard" not in err
+    assert scene.worktree_names() == ["s1", "booley/s1"]
+
+
+def test_closing_the_terminal_of_a_worktree_session_keeps_it(scene: _Scene) -> None:
+    # Bug caught: Booley prompting on the hung terminal, or removing the worktree, after an
+    # agent that exits normally on SIGHUP. Stderr goes to a file so the outcome can be read.
+    scene.git_project()
+    terminal = scene.start("claude", "hup-exit", flag="always", stderr_log="stderr.log")
+
+    terminal.hang_up()
+    status = terminal.wait_exit()
+
+    assert os.waitstatus_to_exitcode(status) == 0
+    log = (scene.out / "stderr.log").read_text()
+    assert f"Kept worktree s1: {scene.booley_dir / 'worktrees' / 's1'}" in log
+    assert "Keep or discard" not in log
+    assert scene.worktree_names() == ["s1", "booley/s1"]
+
+
+def test_closing_the_terminal_keeps_the_agents_exit_code_with_stderr_on_it(scene: _Scene) -> None:
+    # Bug caught: the `Kept` line that cannot reach the hung-up terminal stays in Python's
+    # buffer, so the interpreter exits with 120 instead of the agent's status.
+    scene.git_project()
+    terminal = scene.start("claude", "hup-exit", flag="always")
+
+    terminal.hang_up()
+
+    assert os.waitstatus_to_exitcode(terminal.wait_exit()) == 0
+    assert scene.worktree_names() == ["s1", "booley/s1"]
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])
@@ -914,7 +1021,7 @@ def test_worktree_session_calls_without_work_dir_route_to_its_worktree(
 
     assert routed == (scene.booley_dir / "worktrees" / "s2").resolve()
     _finish_with_line(first)
-    _finish_with_line(second)
+    _finish_worktree_session(second)
 
 
 @pytest.mark.parametrize("interrupt", ["SIGINT", "SIGHUP"])

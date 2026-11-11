@@ -36,6 +36,7 @@ import signal
 import sys
 import traceback
 from collections.abc import Callable, Set
+from dataclasses import dataclass
 from typing import Any
 
 _RESTORED_NAMES = (
@@ -60,7 +61,19 @@ def _signal_numbers(names: tuple[str, ...]) -> list[signal.Signals]:
     return [getattr(signal, name) for name in names]
 
 
-def _foreground_tty() -> bool:
+@dataclass(frozen=True)
+class ChildExit:
+    """How the agent ended, as the exit hook of `run_foreground_child` sees it.
+
+    `status` is the raw wait status. `forwarded` says the parent relayed SIGHUP or SIGTERM
+    to the agent: the terminal was closed or Booley was asked to stop.
+    """
+
+    status: int
+    forwarded: bool
+
+
+def foreground_tty() -> bool:
     """Return whether stdin/stdout are a terminal on which Booley is the foreground group.
 
     A pipe on stdout (`booley chat | less`) or a tty that is not our controlling
@@ -104,9 +117,14 @@ def _propagate(status: int) -> int:
 class _ForegroundRun:
     """One supervised launch: fork, hand over the terminal, wait, report."""
 
-    def __init__(self, launch: Callable[[], int]) -> None:
+    def __init__(
+        self, launch: Callable[[], int], after_exit: Callable[[ChildExit], None] | None = None
+    ) -> None:
         self._launch = launch
-        self._terminal = _foreground_tty()
+        self._after_exit = after_exit
+        # Set by `_forward`: a hang-up or termination request reached the agent.
+        self._forwarded = False
+        self._terminal = foreground_tty()
         self._entry = {
             number: signal.getsignal(number) for number in _signal_numbers(_RESTORED_NAMES)
         }
@@ -175,6 +193,9 @@ class _ForegroundRun:
 
     def _forward(self, number: int, _frame: Any) -> None:
         """Relay SIGTERM/SIGHUP to the agent's group (terminal mode) or the agent."""
+        # Recorded even when the agent is already reaped: a hang-up that races the reap
+        # still means the terminal is gone.
+        self._forwarded = True
         if self._child is None:
             return
         send = os.killpg if self._terminal else os.kill
@@ -371,6 +392,9 @@ class _ForegroundRun:
             self._restore_entry()
         if status is None:  # fork failed: today's in-process exec
             return self._launch()
+        # Before `_propagate`, which may end this process by the agent's own signal.
+        if self._after_exit is not None:
+            self._after_exit(ChildExit(status, self._forwarded))
         return _propagate(status)
 
 
@@ -408,13 +432,20 @@ def exec_agent(executable: str, argv: list[str]) -> None:
             signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
-def run_foreground_child(launch: Callable[[], int]) -> int:
+def run_foreground_child(
+    launch: Callable[[], int], *, after_exit: Callable[[ChildExit], None] | None = None
+) -> int:
     """Run *launch* in a forked child and return the child's exit status.
 
     *launch* execs the agent and does not return on success; on failure it
     returns the exit code. Without `os.fork` (Windows), or when forking fails,
     it runs in this process, exactly like the previous in-process exec.
+
+    *after_exit* runs once the agent was reaped, with the terminal handed back and
+    Booley's own signal dispositions restored, and before Booley takes on the agent's
+    status. It does not run when the launch ran in this process. It must not change
+    the status Booley exits with.
     """
     if not hasattr(os, "fork"):
         return launch()
-    return _ForegroundRun(launch).execute()
+    return _ForegroundRun(launch, after_exit).execute()
