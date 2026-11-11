@@ -3146,6 +3146,59 @@ class TestDownAndStatus:
         with pytest.raises(sr.SessionError, match="VS Code owns"):
             sr.down(workspace)
 
+    @pytest.mark.parametrize("running", [True, False], ids=["running", "stopped-container"])
+    def test_down_runs_before_stop_then_stops(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, running: bool
+    ) -> None:
+        from booley.runtime import session_admission
+
+        events: list[str] = []
+        item = SimpleNamespace(container_id="sandbox-id", name="sb", running=True, vscode=False)
+        found = (item,) if running else ()
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: found
+        )
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        monkeypatch.setattr(
+            sr,
+            "_run",
+            lambda argv, **_kwargs: (
+                events.append(" ".join(argv[:2])) or subprocess.CompletedProcess(argv, 0, "", "")
+            ),
+        )
+
+        result = sr.down(workspace, before_stop=lambda sandbox: events.append(f"hook {sandbox}"))
+
+        assert result.headless is True
+        assert events == [f"hook {item if running else None}", "docker stop", "docker rm"]
+
+    @pytest.mark.parametrize("case", ["no-container", "vscode-owned"])
+    def test_down_skips_before_stop_when_it_will_not_stop(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, case: str
+    ) -> None:
+        from booley.runtime import session_admission
+
+        found = (
+            (SimpleNamespace(container_id="id", name="ed", running=True, vscode=True),)
+            if case == "vscode-owned"
+            else ()
+        )
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: found
+        )
+        monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
+        hook = Mock()
+
+        if case == "vscode-owned":
+            with pytest.raises(sr.SessionError, match="VS Code owns"):
+                sr.down(workspace, before_stop=hook)
+        else:
+            assert not sr.down(workspace, before_stop=hook)
+
+        hook.assert_not_called()
+
     @pytest.mark.parametrize("failure", ["stop", "rm"])
     def test_down_reports_headless_docker_failure(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch, failure: str
@@ -4046,7 +4099,7 @@ class TestSessionRefresh:
         from booley.harness import doctor as doctor_module
         from booley.harness.booley import _build_parser
 
-        monkeypatch.setattr(sr, "down", lambda _root: sr.DownResult(headless=True))
+        monkeypatch.setattr(sr, "down", lambda _root, **_kwargs: sr.DownResult(headless=True))
         monkeypatch.setattr(sr, "session_container_name", lambda _root: "session")
         down_args = _build_parser().parse_args(["session", "down"])
         assert booley._cmd_session(down_args, tmp_path) == 0
