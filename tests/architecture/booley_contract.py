@@ -240,6 +240,7 @@ DIRECTION_RULES = (
             exact("booley.runtime.inspection"),
             exact("booley.runtime.vaporview"),
             exact("booley.flows.target_test_plan_inspection"),
+            exact("booley.runtime.project_image"),
         ),
         (
             exact("booley.harness.doctor"),

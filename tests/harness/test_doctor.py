@@ -2505,12 +2505,14 @@ class TestCoreAudit:
             return result
 
         monkeypatch.setattr(doctor.TargetCatalog, "inspect", inspect)
-        monkeypatch.setattr(doctor, "_audit_native_dependencies", lambda *_args: None)
 
         rec = _audit(tmp_path)
 
         assert rec.fails() == []
-        assert sorted(calls) == ["lint", "sim"]
+        # The core audit reads each root partition once; the native-dependency
+        # source collection runs last and reads the seed Target (sim) again.
+        assert sorted(calls[:-1]) == ["lint", "sim"]
+        assert calls[-1] == "sim"
 
     def _cpp_target_project(self, tmp_path: Path, include_line: str) -> doctor.ProjectAudit:
         (tmp_path / "design.core").write_text(
@@ -2544,85 +2546,64 @@ targets:
             first_target="sim",
         )
 
-    def test_native_dependency_is_flagged(self, tmp_path: Path):
-        """F-9: Ibex's dpi_memutil.cc includes <libelf.h> and links -lelf.
+    def test_core_audit_hands_native_dependency_report_to_diagnostics(self, tmp_path: Path):
+        """Doctor selects the Targets' sources and only forwards the owner's report.
 
-        Requirements baking is Python-only, so the derived image shipped
-        only the runtime libelf.so.1 — no header, no linker input — and the
-        failure surfaced deep inside a simulation build.
+        The fixture's missing ``tb/dpi_memutil.cc`` also exercises the owner's
+        unreadable-file skip through the real Target path.
         """
         project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
         rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
+        reports: list[DiagnosticReport] = []
 
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("libelf-dev" in m for m in warns)
-        assert any("tb/harness.cc" in m for m in warns)
-        # Advisory only — this is a curated hint list, not a resolver.
-        assert rec.fails() == []
+        doctor._run_core_audit(project, rec.p, rec.w, rec.s, rec.f, _diagnostics=reports.append)
 
-    def test_clean_cpp_sources_pass(self, tmp_path: Path):
-        project = self._cpp_target_project(
-            tmp_path, "#include <cstdint>\n#include <verilated.h>\n"
-        )
-        rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
+        owner_report = reports[-1]
+        assert [(f.severity, f.check_id, f.subject) for f in owner_report.findings] == [
+            (Severity.WARN, "sandbox.native-dependency-missing", "libelf-dev")
+        ]
+        assert "tb/harness.cc" in owner_report.findings[0].message
+        assert [m for lvl, m in rec.events if "libelf" in m] == []
 
-        assert [m for lvl, m in rec.events if lvl == "warn"] == []
-        assert any("no known-missing native build" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_native_dependency_declared_in_project_dockerfile_passes(self, tmp_path: Path):
+    def test_native_dependency_warning_renders_waived_after_tests_toml(self, tmp_path: Path):
         project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        docker_dir = project.booley_dir / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text(
-            "FROM booley-sandbox-riscv\n"
-            "RUN apt-get update \\\n"
-            "    && apt-get install -y --no-install-recommends libelf-dev\n",
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+        (tmp_path / "tb" / "tb_dut.sv").write_text(
+            '$display("[SIM_RESULT] PASSED");\n', encoding="utf-8"
+        )
+        (project.booley_dir / "doctor-waivers.toml").write_text(
+            "version = 1\n\n"
+            "[[waiver]]\n"
+            'check = "sandbox.native-dependency-missing"\n'
+            'subject = "libelf-dev"\n'
+            'reason = "image built elsewhere"\n'
+            "permanent = true\n",
             encoding="utf-8",
         )
-        rec = _Rec()
+        reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
 
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-
-        assert [m for lvl, m in rec.events if lvl == "warn"] == []
-        assert any("libelf-dev" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_native_dependency_in_dockerfile_comment_still_warns(self, tmp_path: Path):
-        project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        docker_dir = project.booley_dir / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text(
-            "FROM booley-sandbox-riscv\n# install libelf-dev later\n",
-            encoding="utf-8",
+        doctor._run_core_audit(
+            project,
+            reporter.pass_,
+            reporter.warn_,
+            reporter.skip_,
+            reporter.fail_,
+            _note=reporter.note_,
+            _diagnostics=reporter.diagnostics,
         )
-        rec = _Rec()
 
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-
-        assert any("libelf-dev" in m for lvl, m in rec.events if lvl == "warn")
-
-    def test_headers_present_in_the_base_image_are_not_flagged(self, tmp_path: Path):
-        """zlib1g-dev is installed in the base sandbox — warning would be noise."""
-        project = self._cpp_target_project(tmp_path, "#include <zlib.h>\n")
-        rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-        assert [m for lvl, m in rec.events if lvl == "warn"] == []
-
-    def test_project_without_cpp_sources_is_silent(self, tmp_path: Path):
-        (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        pd = tmp_path / ".booley"
-        pd.mkdir(exist_ok=True)
-        project = doctor.ProjectAudit(
-            project_root=tmp_path,
-            booley_dir=pd,
-            booley_toml={"flows": {"sim": {}}},
-            configs_toml={"sim": {}},
-            first_target="sim",
+        findings = reporter.result(0).findings
+        start = next(i for i, f in enumerate(findings) if f.message.startswith("tests.toml not"))
+        tail = findings[start:]
+        assert [f.severity for f in tail] == [Severity.SKIP, Severity.WAIVED]
+        assert (tail[1].check_id, tail[1].subject) == (
+            "sandbox.native-dependency-missing",
+            "libelf-dev",
         )
-        rec = _Rec()
-        doctor._audit_native_dependencies(project, rec.p, rec.w)
-        assert rec.events == []
+        assert "tb/harness.cc" in tail[1].message
+        assert reporter.counts["waived"] == 1
+        assert reporter.finish() == 0
 
     def test_in_scope_script_is_advisory_not_a_hard_fail(self, tmp_path: Path):
         """F-10: doctor's Scope is synthetic, so it cannot hard-fail on it.
