@@ -17,6 +17,7 @@ from types import MappingProxyType
 from booley.core.boundary import BoundaryError, require_int, require_positive_int
 from booley.flows.mutation.operators import (
     OPERATOR_NAMES,
+    PYSLANG_MISSING_MESSAGE,
     MissingPyslangError,
     MutantGeneratorError,
     Site,
@@ -36,7 +37,7 @@ def parser_version() -> str:
     try:
         return metadata.version("pyslang")
     except metadata.PackageNotFoundError as exc:
-        raise MissingPyslangError("pyslang is not installed") from exc
+        raise MissingPyslangError(PYSLANG_MISSING_MESSAGE) from exc
 
 
 @dataclass(frozen=True)

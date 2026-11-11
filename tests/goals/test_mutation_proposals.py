@@ -119,6 +119,17 @@ def test_modern_mutation_relaxation_uses_implicit_floor_and_existing_evidence(la
     assert sum(row["producer"] == "mutation_tester" for row in rows) == 1
 
 
+def test_relaxing_to_an_omitted_floor_replaces_the_stored_explicit_floor(layout, monkeypatch):
+    before = {**MUTATION, "total": 10, "min_detected": 9}
+    publish_mutation(layout, before)
+    # Dropping the floor orders as the implicit 8, so the relaxation is accepted ...
+    asyncio.run(approve_through_modern_client(layout, monkeypatch, {**MUTATION, "total": 10}))
+    path = record_paths(layout.control, layout.record.id).state_file
+    state = DevelopmentState.load(path, None)
+    # ... and the producer must then order 8, not the old explicit 9.
+    assert state.criteria[KEY].params["min_detected"] == 8
+
+
 def test_mutation_relaxation_refuses_stricter_explicit_or_implicit_floor(layout):
     # The omitted floor is the 80 % implicit one: ceil(0.8 x 10) = 8, below an explicit 9 or 10.
     layout.record = enter_goals(layout, [{**MUTATION, "total": 10}])

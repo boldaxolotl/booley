@@ -1326,6 +1326,19 @@ def test_leftover_lock_file_is_ignored(tmp_path: Path, monkeypatch) -> None:
     assert not lock_dir.exists()  # its old builds do not stay on disk
 
 
+def test_a_smaller_count_drops_the_builds_of_an_earlier_larger_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    stale = tmp_path / "logs" / ".runtime" / "mutation_tester" / "campaign" / "builds" / "mutant_9"
+    stale.mkdir(parents=True)
+    (stale / "image").write_bytes(b"stale")
+
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert not stale.exists()
+
+
 def test_same_rtl_count_and_seed_reproduce_mutants_and_identity(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1552,6 +1565,8 @@ def test_missing_pyslang_refuses_with_its_name(tmp_path: Path, monkeypatch) -> N
 
     assert result.exit_code == EXIT_ERROR
     assert "pyslang is not installed" in result.report_text
+    assert "hdl-parser" in result.report_text  # the install guidance reaches the user
+    assert "--scope" not in result.report_text  # a scope cannot fix a missing parser
     assert fake.builds == []
 
 

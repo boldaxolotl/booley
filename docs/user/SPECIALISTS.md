@@ -1,8 +1,8 @@
 # Specialists
 
 A **Specialist** is a helper (an LLM agent, except the Mutation Tester) that checks the Developer Agent's
-work for one focused task. Booley runs it as a separate agent with a fresh
-context. It didn't write the code and doesn't know the reasoning behind it, so
+work for one focused task. Booley runs an LLM Specialist as a separate agent with
+a fresh context; the Mutation Tester runs no agent. It didn't write the code and doesn't know the reasoning behind it, so
 it judges the code as it is, not as it was meant to be. Use a Specialist when
 you want a second opinion on RTL or tests. For a pass/fail verdict from an EDA
 tool, use a [Flow](FLOW_REFERENCE.md) instead.
@@ -46,8 +46,9 @@ Runs you start yourself never count as Goal evidence.
 Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
 it applies, `--target`. Two options exist only on the command line:
 
-- `--max-turns N` caps the conversation length.
-- `--timeout DURATION` limits each model call, not the whole run.
+- `--max-turns N` caps the conversation length (LLM Specialists only).
+- `--timeout DURATION` limits each model call, not the whole run. The Mutation
+  Tester makes no model calls: it only uses it to cap the `auto` Mutant count.
 
 Reports go to `mcp-tool-reports/` in the Booley Directory, or under
 `--report-dir`.

@@ -201,7 +201,15 @@ def prepare_params(
             raise ProposalError(
                 "the existing Goal runtime params are missing; cannot preserve its pins"
             )
-        return {**entry.params, **params[after.key]}
+        kept = {**entry.params, **params[after.key]}
+        if after.family is GoalFamily.MUTATION and "min_detected" not in after.params:
+            # An omitted floor is the implicit 80 % one: never keep the old explicit floor.
+            floor = _ordered_bounds(after)["min_detected"]
+            if floor is None:
+                kept.pop("min_detected", None)
+            else:
+                kept["min_detected"] = floor
+        return kept
     root = Path(record.worktree_path)
     relative = has_relative_threshold(after.params)
     if relative:

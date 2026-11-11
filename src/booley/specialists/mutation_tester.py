@@ -51,7 +51,7 @@ from booley.flows import artifacts as _artifacts
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.mutation.generator import GENERATOR_VERSION, generate_mutants, parser_version
-from booley.flows.mutation.operators import MutantGeneratorError
+from booley.flows.mutation.operators import MissingPyslangError, MutantGeneratorError
 from booley.flows.mutation.score import default_min_detected
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
 from booley.flows.sim.backends.cocotb_results import (
@@ -138,8 +138,8 @@ _MUTANT_TIMEOUT_CAP_S = 300
 
 
 #: Per-mutant sim-log cap. Deliberately small: this file is written once per
-#: mutant per verification round, the mutant count has no upper bound, and a
-#: chatty testbench can emit megabytes per run. What a reader needs from a
+#: mutant, the mutant count has no upper bound, and a chatty testbench can emit
+#: megabytes per run. What a reader needs from a
 #: mutant log is the verdict and the last thing the design did, both in the
 #: tail — the full transcript of a run that has already been graded is not
 #: worth unbounded disk (cf. the 20 GB trace.fst incident).
@@ -215,7 +215,7 @@ def _record_build_markers(
 
 
 # ---------------------------------------------------------------------------
-# Data classes (unchanged from previous flow — JSON shape is the same)
+# Data classes
 # ---------------------------------------------------------------------------
 
 
@@ -394,8 +394,8 @@ def compute_source_size_budget(scope_files: list[str], work_dir: Path) -> dict:
 
 #: Said once after the survivors: why the default threshold is not "all".
 EQUIVALENT_MUTANT_NOTE = (
-    "Some surviving Mutants may be equivalent (they change no observable behavior); "
-    "the default threshold of 80 % of the count allows for them."
+    "Some surviving Mutants may be equivalent (they change no observable behavior), "
+    "which is why the default threshold is 80 % of the count, not all of it."
 )
 
 
@@ -1095,6 +1095,8 @@ class MutationTesterSpecialist(Specialist):
         """Generate the Mutants, build and run the baseline, then sweep every Mutant."""
         # Earlier releases kept a proposal lock (and its builds) here; nothing reads it.
         shutil.rmtree(workspace.legacy_lock_dir(), ignore_errors=True)
+        # A smaller --count than the last run must not leave its extra builds behind.
+        shutil.rmtree(workspace.builds_dir(), ignore_errors=True)
         shutil.rmtree(workspace.variants_dir(), ignore_errors=True)
         generated = self._generate(plan)
         if isinstance(generated, McpToolResult):
@@ -1197,7 +1199,11 @@ class MutationTesterSpecialist(Specialist):
             ]
             variants = MutationVariantPlan.resolve(specs, plan.work_dir, plan.scope_files)
         except (MutantGeneratorError, BoundaryError, MutationVariantError) as exc:
-            reason = f"{exc}\npass --scope to choose the files to mutate"
+            reason = (
+                str(exc)
+                if isinstance(exc, MissingPyslangError)
+                else f"{exc}\npass --scope to choose the files to mutate"
+            )
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=f"mutation_tester: cannot generate Mutants: {reason}",
@@ -2388,9 +2394,7 @@ class MutationTesterSpecialist(Specialist):
         valid_count = summary.detected_count + summary.not_detected_count
         passed = summary.detected_count >= min_detected
         gate = "PASS" if passed else "FAIL"
-        source = (
-            "set by --min-detected" if plan.explicit_min_detected else "default 80% of --count"
-        )
+        source = "explicit" if plan.explicit_min_detected else "default 80% of --count"
         lines: list[str] = [self._identity_header(inputs)]
         if inputs.shortfall:
             lines.append(f"[mutation_test] {inputs.shortfall}")

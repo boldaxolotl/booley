@@ -12,8 +12,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 - The Mutation Tester now generates Mutants deterministically and runs no LLM:
   the same RTL, `--count`, and the new `--seed` (default 0) give identical
   Mutants. `--scope` is optional and defaults to the Target's own RTL. The
-  default pass threshold is 80 % of the count, rounded up, also for a Goal
-  without `min_detected`. Each Mutant's per-test timeout scales with the
+  default pass threshold is 80 % of the count, rounded up, also for an
+  existing Goal without `min_detected` (it used to require every Mutant). Each Mutant's per-test timeout scales with the
   baseline run (10 x, 30 s minimum, 300 s cap), and a timed-out Mutant counts
   as detected and is reported as `detected (timeout)`. Results record scope
   file hashes, generator and pyslang versions, seed, and count. `--steer` and

@@ -355,7 +355,7 @@ def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
         data / "selftest/sim/bad-overlay",
         data / ".baseline-wt-stale",
         data / "worktrees/case",
-        data / ".runtime/mutation_tester/lock/variants",
+        data / ".runtime/mutation_tester/campaign/variants",
         repo / "custom-logs/reverted",
         repo / "custom-runtime",
         repo / "custom-output",

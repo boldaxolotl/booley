@@ -424,7 +424,7 @@ output set.
 |---|---|
 | `log` | This run's primary log, often outside the build-artifact directory |
 | `report` | The durable structured report itself |
-| `dirs` | `{role: path}` for artifact directories, such as `build`, `timing`, `impl`, `synth`, `mutant_logs`, or `verification_rounds` |
+| `dirs` | `{role: path}` for artifact directories, such as `build`, `timing`, `impl`, `synth`, or `mutant_logs` |
 
 A multi-target Flow nests one block per Target (`artifacts[target]`). Two rules
 make every pointer trustworthy:
