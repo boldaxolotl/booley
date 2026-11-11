@@ -166,7 +166,7 @@ def test_second_family_runs_through_request_job_and_evidence(baseline, monkeypat
         execution, "_child_watchdog", lambda _output: SimpleNamespace(cancel=lambda: None)
     )
     monkeypatch.setattr(jobs.signal, "signal", lambda *_args: None)
-    assert jobs.main([str(path)]) == 0
+    assert jobs.supervise(path) == 0
 
     report = store.read_document(path, probe)
     assert report["status"] == "complete"
