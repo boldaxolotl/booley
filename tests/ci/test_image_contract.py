@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import dockerfile_syntax
 
@@ -166,6 +167,7 @@ def test_container_probe_records_absence_hard_links_and_behavior(tmp_path: Path)
         "probes": [{"name": "shell", "command": "test 2 -eq 2", "timeout_seconds": 5}],
     }
 
+    # Kept on subprocess.run: feeds the contract on stdin.
     result = subprocess.run(
         [sys.executable, "-c", image_contract._CONTAINER_PROBE],
         input=json.dumps(contract),
@@ -196,6 +198,7 @@ def test_container_probe_reports_missing_hard_link_without_losing_evidence(tmp_p
         "probes": [],
     }
 
+    # Kept on subprocess.run: feeds the contract on stdin.
     result = subprocess.run(
         [sys.executable, "-c", image_contract._CONTAINER_PROBE],
         input=json.dumps(contract),
@@ -289,11 +292,9 @@ def test_coreutils_contract_rejects_non_gnu_default(tmp_path: Path, command: str
     # An explicit environment excludes inherited BASH_ENV and other startup hooks.
     default_path = f"/usr/local/bin{os.pathsep}{os.defpath}"
     environment = {"PATH": default_path, "HOME": str(tmp_path), "LANG": "C", "LC_ALL": "C"}
-    identity = subprocess.run(
+    identity = run_bounded_child(
         ["stat", "--version"],
         env=environment,
-        capture_output=True,
-        text=True,
         timeout=5,
         check=False,
     )
@@ -310,11 +311,9 @@ def test_coreutils_contract_rejects_non_gnu_default(tmp_path: Path, command: str
             )
             replacement.chmod(0o755)
             environment["PATH"] = f"{tmp_path}{os.pathsep}{default_path}"
-        result = subprocess.run(
+        result = run_bounded_child(
             ["bash", "-euo", "pipefail", "-c", probe["command"]],
             env=environment,
-            capture_output=True,
-            text=True,
             check=False,
             timeout=10,
         )
@@ -651,12 +650,9 @@ def test_package_inventory_probe_changes_contract_status(
         .replace("python -I", f"{sys.executable} -I")
     )
 
-    result = subprocess.run(
+    result = run_bounded_child(
         ["bash", "-euo", "pipefail", "-c", command],
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=probe["timeout_seconds"],
     )
 
     assert (result.returncode == 0) is passes, result.stderr
