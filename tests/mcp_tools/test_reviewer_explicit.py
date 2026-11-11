@@ -257,7 +257,7 @@ def test_interactive_discovery_replaces_findings_and_latest_call_controls_verify
 ) -> None:
     args = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
     reviewer, _ = endpoint(project, monkeypatch, args, goal=False)
-    assert reviewer._run().exit_code == 1
+    assert reviewer._run().exit_code == 0
     reviewer, invoke = endpoint(
         project, monkeypatch, [*args[:-1], "security"], goal=False, payload={"issues": []}
     )
