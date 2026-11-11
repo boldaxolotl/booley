@@ -9,7 +9,6 @@ from booley.criteria.templates import (
     CriteriaTemplate,
     CriterionDef,
     CriterionSpec,
-    TargetPair,
     _param_base_metric,
     _split_clock_scope,
     _validate_criterion_params,
@@ -18,6 +17,7 @@ from booley.criteria.templates import (
     load_project_criteria,
     parse_target_pair,
 )
+from booley.targets.domain import TargetPair
 
 
 class TestCriterionSpec:

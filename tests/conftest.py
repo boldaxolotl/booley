@@ -58,7 +58,7 @@ def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -
 # rewrites command scope.
 #
 # Known gaps (not covered by this setting):
-# - ``src/booley/goals/committed_bytes.py`` replaces command scope with
+# - ``src/booley/runtime/commit_export.py`` replaces command scope with
 #   ``GIT_CONFIG_COUNT=0`` / ``GIT_CONFIG_PARAMETERS=""`` for its shadow-repository Git.
 # - ``src/booley/runtime/incontainer_git_identity_cleanup.py`` strips every
 #   ``GIT_CONFIG_*`` for its ``git config --file`` reads.

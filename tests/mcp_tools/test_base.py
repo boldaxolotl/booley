@@ -12,7 +12,7 @@ from unittest import mock
 
 import pytest
 
-from booley.criteria.categories import CATEGORY_RTL, CATEGORY_TB
+from booley.core.source_categories import CATEGORY_RTL, CATEGORY_TB
 from booley.criteria.state import DevelopmentState
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.endpoint_diff import _classify_files, read_source_dirs_from_toml

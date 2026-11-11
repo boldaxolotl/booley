@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from booley.criteria.categories import (
-    CATEGORY_RTL,
-    CATEGORY_TB,
-)
+from booley.core.source_categories import CATEGORY_RTL, CATEGORY_TB
 
 # ---------------------------------------------------------------------------
 # Source-directory resolution — now sourced from the .core tags:[tb] partition

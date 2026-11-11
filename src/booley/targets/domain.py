@@ -14,6 +14,15 @@ TARGET_AWARE_FLOWS: tuple[str, ...] = ("synth", "fpga", "lint", "sim")
 TARGET_IDENTITY_PARAM = "target"
 TARGET_SELECTOR_PARAM = "_target_selector"
 
+
+@dataclass(frozen=True)
+class TargetPair:
+    """One frozen baseline/candidate Target relationship for a relative Criterion."""
+
+    baseline: str
+    candidate: str
+
+
 _SIM_EDA_TOOLS = frozenset({"verilator", "icarus", "iverilog"})
 # Authored spellings remain case-sensitive; parser normalization is separate.
 LINT_EDA_TOOL_FAMILIES: Mapping[str, str] = MappingProxyType(
