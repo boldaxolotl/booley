@@ -153,3 +153,23 @@ def test_resource_policy_does_not_depend_on_presentation_layers() -> None:
     assert not {
         module for module in imports if any(module.startswith(prefix) for prefix in forbidden)
     }
+
+
+def test_memory_budget_override_parses_size() -> None:
+    assert (
+        resource_policy.configured_memory_budget({"jobs": {"memory_budget": "24g"}}) == 24 * _GIB
+    )
+    assert resource_policy.configured_memory_budget({"jobs": {"memory_budget": " 512M "}}) == (
+        512 * 1024**2
+    )
+
+
+@pytest.mark.parametrize("config", [{}, {"jobs": {}}, {"jobs": []}, {"jobs": {"max_heavy": 2}}])
+def test_memory_budget_override_is_absent_without_the_key(config: dict) -> None:
+    assert resource_policy.configured_memory_budget(config) is None
+
+
+def test_memory_budget_override_rejects_invalid_values() -> None:
+    for value in ["0", "0g", "-1g", "1.5g", "abc", "", 0, -5, 24, 2.5, True]:
+        with pytest.raises(ValueError, match=r"\[jobs\]\.memory_budget"):
+            resource_policy.configured_memory_budget({"jobs": {"memory_budget": value}})
