@@ -46,6 +46,14 @@ from booley.flows.eda_failures import (
     strip_failure_markers,
 )
 from booley.flows.job_resources import SYNTH_PHASES, resource_phase
+from booley.flows.metric_declarations import (
+    Better,
+    CostTier,
+    FlowMetricValues,
+    MetricDeclaration,
+    MetricKind,
+    metric_values,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -281,6 +289,21 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 # ---------------------------------------------------------------------------
 
 
+# Metrics the synthesis Flow declares; names match the Goal thresholds they gate.
+_SYNTH_COST_TIER = CostTier.HIGH
+SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
+    MetricDeclaration("area_um2", "μm²", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("area_kge", "kGE", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("cell_count", "cells", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
+    MetricDeclaration("fmax_mhz", "MHz", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration(
+        "critical_path_ps", "ps", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK
+    ),
+    MetricDeclaration("wns_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+    MetricDeclaration("whs_ns", "ns", Better.HIGHER, _SYNTH_COST_TIER, MetricKind.PER_CLOCK),
+)
+
+
 @dataclass
 class SynthMetrics:
     """Parsed synthesis metrics for a single config run."""
@@ -372,6 +395,18 @@ class SynthMetrics:
         """Normalize string-compatible construction at the metrics interface."""
         if isinstance(self.synth_mode, str):
             self.synth_mode = SynthMode(self.synth_mode)
+
+    def flow_metrics(self) -> FlowMetricValues:
+        """Return this run's typed values for :data:`SYNTH_METRIC_DECLARATIONS`."""
+        return metric_values(
+            SYNTH_METRIC_DECLARATIONS,
+            plain={
+                "area_um2": self.area_um2,
+                "area_kge": self.area_kge,
+                "cell_count": self.cells,
+            },
+            per_clock=self.per_clock,
+        )
 
     def qor_detail(self) -> dict[str, Any]:
         """Return the canonical QoR fields shared by every report surface."""
