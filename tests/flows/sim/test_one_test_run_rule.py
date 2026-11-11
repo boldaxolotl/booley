@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
@@ -14,15 +13,12 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_grade,
     test_run_row,
 )
-from booley.flows.sim.execution.engine import _observed_test_run
 from booley.flows.test_runs import (
     build_test_run,
     discovered_test_run,
     test_run_document,
 )
-from booley.targets.domain import TargetHandle
 
-_HANDLE = cast(TargetHandle, SimpleNamespace(selector="sim"))
 _TARGET = {"selector": "sim"}
 
 
@@ -34,17 +30,16 @@ def _item(unnamed):
 @pytest.mark.parametrize("seed", [None, 9])
 @pytest.mark.parametrize("test", ["found_a", "default", "has space"])
 def test_results_facts_and_reports_name_a_discovered_test_the_same_way(test, seed):
-    """One rule, three readers: the engine, the facts binding and the report rows."""
+    """One rule, two readers: the facts binding and the report rows."""
     unnamed = build_test_run(None, seed=seed)
     expected = discovered_test_run(test, unnamed, target="sim")
 
-    engine = _observed_test_run(test, _HANDLE, (unnamed,))
     item = _item(unnamed)
     ((bound_name, bound_fingerprint),) = observation_test_runs(item, ({"test": test},)) or ()
     observation = {"work_item_id": "w", "target": _TARGET, "test": test, "test_run": bound_name}
     report = _observed_run(observation, {("w", unnamed.name): unnamed, ("w", ""): unnamed})
 
-    assert engine == report == expected
+    assert report == expected
     assert (bound_name, bound_fingerprint) == (expected.name, expected.fingerprint)
 
 
@@ -62,13 +57,12 @@ def test_results_facts_and_reports_bind_the_unnamed_invocations_own_result_to_it
     """A result named after the Target (or nothing) is the unnamed run, not a discovered Test."""
     unnamed = build_test_run(None, seed=seed)
 
-    engine = _observed_test_run(name, _HANDLE, (unnamed,))
     ((bound_name, bound_fingerprint),) = observation_test_runs(_item(unnamed), ({"test": name},))
     # "test_run" names no recorded run, so the report must bind through the Test name.
     observation = {"work_item_id": "w", "target": _TARGET, "test": name, "test_run": "unrecorded"}
     report = _observed_run(observation, {("w", unnamed.name): unnamed, ("w", ""): unnamed})
 
-    assert engine is unnamed and report is unnamed
+    assert report is unnamed
     assert (bound_name, bound_fingerprint) == (unnamed.name, unnamed.fingerprint)
 
 
