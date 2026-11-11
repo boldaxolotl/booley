@@ -1,6 +1,6 @@
 # Specialists
 
-A **Specialist** is an LLM-powered helper that checks the Developer Agent's
+A **Specialist** is a helper (an LLM agent, except the Mutation Tester) that checks the Developer Agent's
 work for one focused task. Booley runs it as a separate agent with a fresh
 context. It didn't write the code and doesn't know the reasoning behind it, so
 it judges the code as it is, not as it was meant to be. Use a Specialist when
@@ -12,7 +12,7 @@ Booley ships three:
 - **Reviewer** reviews RTL or testbench code for one concern at a time, such as
   bugs, protocol, or spec compliance.
 - **Mutation Tester** plants small bugs in the RTL and checks that your tests
-  catch them.
+  catch them. It runs no LLM, and the same RTL and `seed` give the same bugs.
 - **Coverage Analyst** explains a coverage report and suggests what to test
   next. See [Analyzing a Campaign](COVERAGE.md#analyzing-a-campaign).
 

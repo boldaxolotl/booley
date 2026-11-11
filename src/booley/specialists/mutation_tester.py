@@ -1,25 +1,24 @@
-"""MutationTesterSpecialist — proposal-locked, isolated mutation testing.
+"""MutationTesterSpecialist — deterministic, isolated mutation testing.
 
-Cold start (no valid proposal lock):
-  1. A read-only creator proposes N exact source replacements as JSON.
-  2. Booley validates each replacement against the pristine source bytes.
-  3. The untouched project is built and run as the campaign baseline.
-  4. Each proposal is applied only to private build source copies and simulated.
-     The compiler decides whether
-     the proposed variant is valid.
-  5. Valid proposals are persisted in the lock for later reuse.
+A run needs no model and no agent CLI:
 
-Warm reuse (lock matches current scope by content hash) skips only the creator.
-The pristine baseline and every isolated mutant are rebuilt and observed again,
-so a result never depends on stale instrumented RTL or selector-zero semantics.
+  1. The Mutant generator selects ``--count`` Mutants of the scope files for
+     ``--seed`` (default 0): the same RTL, count and seed give the same Mutants.
+  2. The untouched project is built and run as the campaign baseline; every
+     test of the Target must pass on it.
+  3. Each Mutant is applied only to private build source copies and simulated.
+     The compiler decides whether a Mutant is valid; an invalid Mutant is
+     reported and not scored.
+  4. A Mutant is detected when a Target test fails on it or runs past its
+     baseline-scaled time limit ("detected (timeout)").
 
-Lock invariants — scope set + per-file content hash + schema_version.  Any
-change wipes the lock on next invocation.  ``--regen-lock`` forces a wipe.
+The scope defaults to the Target's own RTL.  Every run rebuilds the baseline
+and every Mutant, so a result never depends on stale builds.
 
 Exit codes:
-  0 — detection rate >= threshold (pass)
-  1 — detection rate < threshold (fail)
-  2 — error (agent failure, infra error, lock baseline broken, ...)
+  0 — detected Mutants >= threshold (pass)
+  1 — detected Mutants < threshold (fail)
+  2 — error (generator, baseline or infrastructure failure, ...)
 """
 
 from __future__ import annotations
@@ -30,21 +29,19 @@ import json
 import logging
 import math
 import os
-import re
 import shutil
 import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 from urllib.parse import quote
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
-from booley.core.boundary import BoundaryError, as_int, as_str, require_int, require_str
-from booley.core.models import AgentCallParams
-from booley.dev_support import mutation_lock as lock_mod
+from booley.core.boundary import BoundaryError, as_int
+from booley.dev_support import mutation_workspace as workspace
 from booley.dev_support.mutation_build_sources import (
     materialize_build_mutation,
     validate_mutation_closure,
@@ -52,8 +49,10 @@ from booley.dev_support.mutation_build_sources import (
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
 from booley.flows import artifacts as _artifacts
 from booley.flows.cli_help import CliHelp, SurfaceHelp
-from booley.flows.execution_persistence import execution_goal_name
 from booley.flows.flow_config import tb_top_for_target
+from booley.flows.mutation.generator import GENERATOR_VERSION, generate_mutants, parser_version
+from booley.flows.mutation.operators import MutantGeneratorError
+from booley.flows.mutation.score import default_min_detected
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
@@ -78,7 +77,11 @@ from booley.flows.sim.execution.engine import (
     simulation_plusargs,
     target_test_plan,
 )
-from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
+from booley.flows.sim.result import (
+    SIM_INFRA_ERROR_PREFIX,
+    has_infra_error,
+    has_simulation_timeout,
+)
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, unstaged_runtime_input_diagnostic
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
@@ -102,12 +105,11 @@ from booley.flows.target_test_suite import (
 )
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.runtime.exception_diagnostics import exception_report_text, log_exception
-from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
-from booley.targets.selection import TargetSectionConflictError, selector_target_name
+from booley.targets.domain import TargetInspection
+from booley.targets.selection import TargetSectionConflictError
 
 from .specialist import Specialist
 
@@ -120,6 +122,20 @@ def _target_environment(work_dir: Path, identity: str) -> dict[str, str]:
 
 logger = logging.getLogger(__name__)
 
+# The clock that times each test run; tests replace it, never ``time.monotonic``.
+_monotonic = time.monotonic
+
+#: Source suffixes the generator and the variant applier accept.
+_MUTATION_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
+#: ``file_type`` prefixes of Verilog and SystemVerilog sources.
+_HDL_FILE_TYPES = ("verilogSource", "systemVerilogSource")
+#: Tags (besides the testbench role) that take a Target input out of the default scope.
+_UNMUTATED_FILE_TAGS = frozenset({"vendored", "generated"})
+#: Baseline-scaled Mutant time limit: ``max(10 x baseline, 30 s)``, capped at 300 s.
+_MUTANT_TIMEOUT_FACTOR = 10
+_MUTANT_TIMEOUT_FLOOR_S = 30
+_MUTANT_TIMEOUT_CAP_S = 300
+
 
 #: Per-mutant sim-log cap. Deliberately small: this file is written once per
 #: mutant per verification round, the mutant count has no upper bound, and a
@@ -130,17 +146,13 @@ logger = logging.getLogger(__name__)
 _MUTANT_LOG_MAX_BYTES = 256 * 1024
 
 
-def _mutation_guide_path() -> str:
-    return str(refs_dir() / "rtl-mutation-testing.md")
-
-
 def _infra_failure_reason(proc: subprocess.CompletedProcess) -> str:
     """The run-half's infra-failure reason, or ``""`` when the sim really ran.
 
     A run-half that never started the simulator (no built binary, missing
     cocotb install) prints ``[SIM_INFRA_ERROR] <reason>`` and exits non-zero.
     That exit code says nothing about the design, so both graders here — the
-    cold-start verification round and the kill/survive sweep — must ask this
+    baseline run and the kill/survive sweep — must ask this
     first and treat a non-empty answer as "no observation" (SETUP-F-41).
     """
     combined = (proc.stdout or "") + (proc.stderr or "")
@@ -202,34 +214,6 @@ def _record_build_markers(
     return rel
 
 
-# The creator can inspect source but cannot modify it or invoke shell tools.
-# Booley alone materializes variants after validating the returned proposals.
-def _configured_testbench_files(work_dir: Path) -> list[str]:
-    """Return exact testbench source/include paths for creator boundaries."""
-    from booley.fusesoc.fusesoc_registry import classified_sources
-
-    return list(classified_sources(work_dir).tb_files)
-
-
-_CREATOR_TOOLS = ["Read", "Grep", "Glob"]
-
-_CREATOR_JSON_EXAMPLE = """\
-```json
-{
-  "mutations": [
-    {
-      "index": 1,
-      "category": "operator_change",
-      "file": "mod_a.sv",
-      "line": 42,
-      "original_code": "a + b",
-      "mutated_code": "a - b",
-      "detectability_argument": "Flipping addition to subtraction corrupts every result"
-    }
-  ]
-}
-```"""
-
 # ---------------------------------------------------------------------------
 # Data classes (unchanged from previous flow — JSON shape is the same)
 # ---------------------------------------------------------------------------
@@ -237,39 +221,26 @@ _CREATOR_JSON_EXAMPLE = """\
 
 @dataclass
 class MutationSpec:
+    """One generated Mutant, in the form the variant applier consumes."""
+
     index: int
-    category: str
+    category: str  # the Mutation Operator's name
     file: str
     line: int
     original_code: str
     mutated_code: str
-    detectability_argument: str = ""
+    mutant_id: str = ""  # the generator's stable ID of this Mutant
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "index": self.index,
+            "id": self.mutant_id,
             "category": self.category,
             "file": self.file,
             "line": self.line,
             "original_code": self.original_code,
             "mutated_code": self.mutated_code,
-            "detectability_argument": self.detectability_argument,
         }
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> MutationSpec:
-        detectability_argument = as_str(d.get("detectability_argument", ""))
-        if detectability_argument is None:
-            raise BoundaryError("detectability_argument must be a string")
-        return cls(
-            index=require_int(d.get("index"), field="mutation index"),
-            category=require_str(d, "category"),
-            file=require_str(d, "file"),
-            line=require_int(d.get("line"), field="mutation line"),
-            original_code=require_str(d, "original_code"),
-            mutated_code=require_str(d, "mutated_code"),
-            detectability_argument=detectability_argument,
-        )
 
 
 @dataclass
@@ -287,6 +258,9 @@ class MutationResult:
     #: batches are recovered from their structured results line; classic
     #: Targets use the first failing campaign unit.
     first_killing_test: str = ""
+    #: The Mutant was detected because a test ran past its time limit, not
+    #: because a test failed.
+    timed_out: bool = False
 
 
 @dataclass
@@ -299,6 +273,8 @@ class MutationTestRun:
     error: str = ""
     output: str = ""
     requires_cocotb_results: bool = False
+    #: Wall-clock seconds the test took; the baseline's scale the Mutant limits.
+    duration_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -308,6 +284,7 @@ class VariantSuiteVerdict:
     detected: bool = False
     first_killing_test: str = ""
     inconclusive_reason: str = ""
+    timed_out: bool = False
 
 
 @dataclass
@@ -318,6 +295,11 @@ class MutationSummary:
     @property
     def detected_count(self) -> int:
         return sum(1 for r in self.results if r.detected and not r.invalid)
+
+    @property
+    def detected_timeout_count(self) -> int:
+        """Detected Mutants whose detection was a timeout (a subset of ``detected_count``)."""
+        return sum(1 for r in self.results if r.detected and r.timed_out and not r.invalid)
 
     @property
     def not_detected_count(self) -> int:
@@ -357,10 +339,12 @@ class MutationSummary:
             classified.append(
                 {
                     "index": spec.index,
+                    "id": spec.mutant_id,
                     "category": spec.category,
                     "file": spec.file,
                     "line": spec.line,
                     "status": status,
+                    "timed_out": bool(r and r.detected and r.timed_out),
                     "sim_output_snippet": r.sim_output_snippet if r else "",
                     "log": (r.log_path if r else "") or None,
                     "first_killing_test": (r.first_killing_test if r else "") or None,
@@ -405,115 +389,29 @@ def compute_source_size_budget(scope_files: list[str], work_dir: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Parsing helpers (unchanged: shared with cold-start agent output)
+# Artifact generation (markdown summaries)
 # ---------------------------------------------------------------------------
 
-
-def parse_creator_output(output: str) -> list[MutationSpec]:
-    """Extract mutation specs from Mutation Tester Specialist output."""
-    data = _extract_json(output)
-    if data is None:
-        return []
-    mutations_raw = data.get("mutations", [])
-    if not isinstance(mutations_raw, list):
-        return []
-    specs: list[MutationSpec] = []
-    for item in mutations_raw:
-        if isinstance(item, dict):
-            try:
-                specs.append(MutationSpec.from_dict(item))
-            except (BoundaryError, KeyError, TypeError):
-                logger.warning("Skipping malformed mutation spec: %s", item)
-    return specs
-
-
-def _sanitize_json_text(text: str) -> str:
-    return re.sub(r",(\s*[}\]])", r"\1", text)
-
-
-def _try_parse_json(text: str) -> dict[str, Any] | None:
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            return data
-    except (json.JSONDecodeError, ValueError):
-        pass
-    sanitized = _sanitize_json_text(text)
-    if sanitized != text:
-        try:
-            data = json.loads(sanitized)
-            if isinstance(data, dict):
-                return data
-        except (json.JSONDecodeError, ValueError):
-            pass
-    return None
-
-
-def _extract_json(text: str) -> dict[str, Any] | None:
-    """Extract the first valid JSON object from agent output."""
-    result = _try_parse_json(text)
-    if result is not None:
-        return result
-    for match in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL):
-        result = _try_parse_json(match.group(1))
-        if result is not None:
-            return result
-    for i, ch in enumerate(text):
-        if ch == "{":
-            block = _extract_balanced_braces(text, i)
-            if block:
-                result = _try_parse_json(block)
-                if result is not None:
-                    return result
-    return None
-
-
-def _extract_balanced_braces(text: str, start: int) -> str | None:
-    if start >= len(text) or text[start] != "{":
-        return None
-    depth = 0
-    in_string = False
-    escape = False
-    for i in range(start, min(start + 50_000, len(text))):
-        ch = text[i]
-        if escape:
-            escape = False
-            continue
-        if ch == "\\":
-            if in_string:
-                escape = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    return None
-
-
-# Artifact generation (markdown summaries; unchanged shape)
-# ---------------------------------------------------------------------------
+#: Said once after the survivors: why the default threshold is not "all".
+EQUIVALENT_MUTANT_NOTE = (
+    "Some surviving Mutants may be equivalent (they change no observable behavior); "
+    "the default threshold of 80 % of the count allows for them."
+)
 
 
 def generate_specs_markdown(specs: list[MutationSpec]) -> str:
     lines = [
         "# Mutation Specifications",
         "",
-        "| # | Category | File:Line | Original | Mutated | Detectability |",
-        "|---|----------|-----------|----------|---------|---------------|",
+        "| # | ID | Operator | File:Line | Original | Mutated |",
+        "|---|----|----------|-----------|----------|---------|",
     ]
     for s in specs:
         lines.append(
-            f"| {s.index} | {s.category} | "
+            f"| {s.index} | {s.mutant_id} | {s.category} | "
             f"{s.file}:{s.line} | "
-            f"`{s.original_code}` | `{s.mutated_code}` | "
-            f"{s.detectability_argument} |"
+            f"`{_markdown_table_cell(s.original_code)}` | "
+            f"`{_markdown_table_cell(s.mutated_code)}` |"
         )
     return "\n".join(lines) + "\n"
 
@@ -531,11 +429,42 @@ def _markdown_table_cell(value: object) -> str:
     return " ".join(str(value).split()).replace("|", r"\|")
 
 
+def _status_label(row: dict[str, Any]) -> str:
+    """The human wording of a classified Mutant's status."""
+    if row["timed_out"]:
+        return "detected (timeout)"
+    return str(row["status"]).replace("_", " ")
+
+
+def _invalid_mutants_line(invalid_count: int) -> str:
+    """Say that invalid Mutants use up the threshold's margin (they can never be detected)."""
+    return (
+        f"{invalid_count} invalid Mutants could not be judged and count as not "
+        "detected toward the threshold."
+    )
+
+
+def _identity_lines(identity: Mapping[str, Any]) -> list[str]:
+    """Markdown lines naming everything that reproduces this run's Mutants."""
+    lines = [
+        "## Identity",
+        "",
+        f"- Seed: {identity['seed']}",
+        f"- Count: {identity['count']}",
+        f"- Generator version: {identity['generator_version']}",
+        f"- pyslang version: {identity['pyslang_version']}",
+        "- Scope file hashes:",
+    ]
+    lines += [f"  - `{name}`: {digest}" for name, digest in identity["scope_hashes"].items()]
+    return [*lines, ""]
+
+
 def generate_results_markdown(
     summary: MutationSummary,
     min_detected: int,
     *,
     variant_paths: dict[int, str] | None = None,
+    identity: Mapping[str, Any] | None = None,
 ) -> str:
     variant_paths = variant_paths or {}
     classified = summary.classify()
@@ -549,21 +478,21 @@ def generate_results_markdown(
         f"(required: {min_detected}/{valid}) -- **{status}**",
         "",
         f"- Detected: {summary.detected_count}",
-        f"- Coverage gaps: {summary.not_detected_count}",
+        f"- Detected (timeout): {summary.detected_timeout_count} (included in Detected)",
+        f"- Not detected: {summary.not_detected_count}",
         f"- Invalid: {summary.invalid_count}",
         "",
     ]
-    # Call out the surviving mutants explicitly — the actionable output of the
-    # run (QA_REPORT C2.4). Each is a real testbench coverage gap: this exact
-    # code change went undetected.
+    if summary.invalid_count:
+        lines += [_invalid_mutants_line(summary.invalid_count), ""]
+    # Call out the survivors explicitly: the actionable output of the run.
     survivors = summary.surviving_specs()
     if survivors:
         # Each survivor cites its own sim log: a killed mutant leaves a failure
         # message to read, a survivor leaves a clean passing run, so the log is
         # the only way to see what the design actually did under the mutation.
         log_by_index = {r.index: r.log_path for r in summary.results}
-        lines.append("## Surviving mutants (coverage gaps)")
-        lines.append("")
+        lines += ["## Not detected", ""]
         for s in survivors:
             log = log_by_index.get(s.index)
             where = f" — sim log: {log}" if log else ""
@@ -571,7 +500,7 @@ def generate_results_markdown(
                 f"- **{_mutation_source_link(s, variant_paths)}** ({s.category}): "
                 f"`{s.original_code}` -> `{s.mutated_code}`{where}"
             )
-        lines.append("")
+        lines += ["", EQUIVALENT_MUTANT_NOTE, ""]
     lines += [
         "| # | Mutation | Mutated RTL | Status | First killing test | Snippet |",
         "|---|----------|-------------|--------|--------------------|---------|",
@@ -583,25 +512,28 @@ def generate_results_markdown(
             f"`{_markdown_table_cell(spec.original_code)}` → "
             f"`{_markdown_table_cell(spec.mutated_code)}` | "
             f"{_mutation_source_link(spec, variant_paths)} | "
-            f"{c['status']} | "
+            f"{_status_label(c)} | "
             f"{_markdown_table_cell(c['first_killing_test'] or '')} | "
             f"{_markdown_table_cell(c['sim_output_snippet'][:60])} |"
         )
-    return "\n".join(lines) + "\n"
+    lines.append("")
+    if identity is not None:
+        lines += _identity_lines(identity)
+    return "\n".join(lines).rstrip("\n") + "\n"
 
 
 # ---------------------------------------------------------------------------
-# Verification round outcome (used by cold-start)
+# Run configuration
 # ---------------------------------------------------------------------------
 
 
 class UnsupportedSimTargetError(RuntimeError):
     """The mutation loop cannot drive this sim Target, and says why.
 
-    Raised at ``_run`` time (before any agent work) so an unsupported Target
-    costs one ``.core`` read instead of three creator rounds. The message is
-    surfaced verbatim as the Specialist's ``report_text`` — it must name the Target
-    and the concrete reason (SETUP-F-40).
+    Raised at ``_run`` time (before any build) so an unsupported Target costs
+    one ``.core`` read. The message is surfaced verbatim as the Specialist's
+    ``report_text`` — it must name the Target and the concrete reason
+    (SETUP-F-40).
     """
 
 
@@ -620,28 +552,12 @@ class CocotbSimTarget:
 
 
 @dataclass
-class VerificationOutcome:
-    """Result of one cold-start verification round."""
-
-    ok: bool
-    baseline_passed: bool
-    pinned_passed: bool
-    log_tail: str = ""
-    reason: str = ""
-    #: Non-empty when the round failed because the *harness* broke (no built
-    #: binary, missing simulator) rather than because a proposed variant
-    #: misbehaved. Retrying the creator cannot fix this, so the caller aborts
-    #: instead of burning further rounds re-prompting it (SETUP-F-41a).
-    infra_error: str = ""
-
-
-@dataclass
 class MutationRunPlan:
-    """Resolved run configuration, shared across the cold + warm chains.
+    """Resolved run configuration.
 
     Bundles the scope + budget cluster computed once in ``_run`` and threaded
-    unchanged through ``_run_cold`` / ``_run_warm`` down to result assembly,
-    instead of re-listing all ten fields at every hop.
+    unchanged down to result assembly, instead of re-listing the fields at
+    every hop.
     """
 
     scope_files: list[str]
@@ -655,6 +571,10 @@ class MutationRunPlan:
     auto_mode: bool
     formula_count: int
     source_size_budget: dict | None
+    seed: int = 0
+    #: ``min_detected`` came from the caller or the criterion, so a generator
+    #: shortfall does not recompute it.
+    explicit_min_detected: bool = True
 
 
 @dataclass
@@ -662,19 +582,19 @@ class RunResultInputs:
     """Per-run outcome fed to ``_build_run_result``.
 
     The run-specific counterpart to :class:`MutationRunPlan`: values produced by
-    an individual cold or warm run (timings, cache/reuse flags, the summary)
-    that the plan config alone cannot supply.
+    the run (timings, the summary, the identity) that the plan config alone
+    cannot supply.
     """
 
     summary: MutationSummary
     count: int  # mutations actually run this invocation (may be < plan.count)
     tester_elapsed: float
-    creator_elapsed: float
-    reused_lock: bool
-    lock_created_at: str | None
-    verification_rounds: int
-    build_cached: bool
     variants: MutationVariantPlan
+    #: What reproduces the Mutants: scope hashes, generator and pyslang
+    #: versions, seed and requested count.
+    identity: dict[str, Any] = field(default_factory=dict)
+    #: The generator's note when fewer candidate Mutants exist than requested.
+    shortfall: str | None = None
     #: Nothing was killed, yet every mutation is provably live — the Target's
     #: tests simply never exercise this scope (SETUP-F-38).
     coverage_gap: bool = False
@@ -682,28 +602,15 @@ class RunResultInputs:
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class PreparedMutationRound:
-    """Creator output resolved far enough to decide whether to test or retry."""
-
-    specs: list[MutationSpec]
-    variants: MutationVariantPlan | None
-    creator_elapsed: float
-    retry_prompt: str = ""
-    error: McpToolResult | None = None
-    failure: VerificationOutcome | None = None
-
-
 @dataclass(frozen=True)
-class ColdVariantOutcome:
-    """Completed cold variant sweep ready for durable result assembly."""
+class GeneratedMutants:
+    """The run's Mutants, ready to build, with the plan their count settled."""
 
+    plan: MutationRunPlan
     specs: list[MutationSpec]
-    summary: MutationSummary
     variants: MutationVariantPlan
-    creator_elapsed: float
-    tester_elapsed: float
-    verification_rounds: int
+    identity: dict[str, Any]
+    shortfall: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -712,12 +619,12 @@ class ColdVariantOutcome:
 
 
 class MutationTesterSpecialist(Specialist):
-    """Lock-based mutation testing."""
+    """Deterministic mutation testing; it runs no model."""
 
     name: str = "mutation_tester"
     description: str = (
-        "Proposal-locked mutation testing: creator selects exact replacements, "
-        "tester builds isolated variants"
+        "Deterministic mutation testing: seeded Mutants from fixed Mutation "
+        "Operators, each built and tested in isolation"
     )
     code_modifying: bool = False
     workspace_access: Literal["read_only"] = "read_only"
@@ -734,12 +641,14 @@ class MutationTesterSpecialist(Specialist):
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
             "Measure how well the testbench catches bugs. Small deliberate faults "
-            "(mutations) are injected into the RTL files in --scope, the Simulation "
-            "Target's tests run against each one, and the report says how many were "
-            "detected. Use it once the tests pass, to find checks the testbench is "
-            "missing. Mutations are built in private staged copies; your sources are not changed."
+            "(Mutants) are generated deterministically from the Target's RTL (or the "
+            "files in --scope), the Simulation Target's tests run against each one, "
+            "and the report says how many were detected. No model is involved: the "
+            "same RTL, --count and --seed give the same Mutants. Use it once the "
+            "tests pass, to find checks the testbench is missing. Mutants are built "
+            "in private staged copies; your sources are not changed."
         ),
-        example="booley specialist mutation_tester --target sim_soc --scope rtl/fifo.sv",
+        example="booley specialist mutation_tester --target sim_soc --count 10 --seed 0",
     )
     non_persisting_dry_run: bool = True
     announce_success_report: bool = True
@@ -747,16 +656,15 @@ class MutationTesterSpecialist(Specialist):
     min_timeout: int = 1200
     satisfies: ClassVar[list[str]] = ["mutation_score"]
 
-    # Cross-invocation session key for Mutation Tester Specialist resume during retry rounds.
-    SESSION_KEY: ClassVar[str] = "mutation_tester_creator"
-
-    # Maximum verification rounds during cold start (1 happy path + 2 retries).
-    MAX_VERIFICATION_ROUNDS: ClassVar[int] = 3
-
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
-        self._add_scope_arg(
-            parser,
-            help_text="Comma-separated RTL files eligible for mutation",
+        parser.add_argument(
+            "--scope",
+            default=None,
+            help=(
+                "Comma-separated RTL files eligible for mutation "
+                "(default: the Target's own RTL, without testbench, vendored "
+                "and generated files)"
+            ),
         )
 
         def _count_type(v: str) -> int | str:
@@ -766,28 +674,28 @@ class MutationTesterSpecialist(Specialist):
             "--count",
             type=_count_type,
             default=None,
-            help="Number of mutations: integer or 'auto' (default: 10)",
+            help="Number of Mutants: integer or 'auto' (default: 10)",
         )
         parser.add_argument(
             "--min-detected",
             type=int,
             default=None,
             help=(
-                "Pass threshold: minimum mutations that must be killed "
-                "(default: all of --count, i.e. all-or-nothing). Lower it to "
-                "accept a partial mutation score."
+                "Pass threshold: minimum Mutants that must be detected "
+                "(default: ceil(0.8 x --count); some survivors may be equivalent "
+                "Mutants). Raise it to demand more, lower it to accept less."
             ),
         )
-        self._add_steer_arg(
-            parser,
-            help_text="Developer Agent context for mutation targeting.",
+        parser.add_argument(
+            "--seed",
+            type=int,
+            default=0,
+            help=(
+                "Non-negative integer that selects the Mutants (default: 0). "
+                "The same RTL, --count and --seed give the same Mutants."
+            ),
         )
         self._add_dry_run_arg(parser)
-        parser.add_argument(
-            "--regen-lock",
-            action="store_true",
-            help="Wipe the mutation lock dir and re-run the Mutation Tester Specialist from scratch.",
-        )
 
     # ------------------------------------------------------------------
     # Abstract method stubs — _run() drives the flow directly.
@@ -803,102 +711,6 @@ class MutationTesterSpecialist(Specialist):
         raise NotImplementedError("MutationTesterSpecialist overrides _run() directly")
 
     # ------------------------------------------------------------------
-    # Prompt building — cold start
-    # ------------------------------------------------------------------
-
-    def _build_creator_prompt(self) -> str:
-        """Build the read-only proposal prompt for a cold start."""
-        scope_files = self._scope_files()
-        scope_str = ", ".join(scope_files)
-        count = self.args.count
-        steer_section = ""
-        steer_text = self.steering_text()
-        if steer_text:
-            steer_section = f"\n## Developer Agent Context\n\n{steer_text}\n"
-
-        boundary_section = self._mutation_boundary_section()
-        task_section = self._creator_task_section(count)
-        tb_files = ", ".join(_configured_testbench_files(self.args.work_dir))
-
-        return f"""You are a Mutation Tester Specialist.
-You are read-only. Do not edit any file or run simulators. Use provider-native
-read tools when available. If file inspection is exposed only through a shell,
-you may use read-only shell commands (for example: sed, rg, nl, head, tail, or
-find). Never use a command that writes or modifies files or executes project
-code. You MUST NOT read testbench files ({tb_files}). Inspect only the authorized RTL scope;
-other files sharing those parent directories do not acquire a testbench role.
-
-Read the mutation testing guide at `{_mutation_guide_path()}` before starting.
-
-## RTL Files in Scope
-
-{scope_str}
-{boundary_section}
-{task_section}
-{steer_section}
-## Output Format (MANDATORY)
-
-Return a JSON object with a "mutations" array in the form below. `original_code`
-must be the exact UTF-8 source slice beginning on `line`; Booley locates that
-slice byte-for-byte and rejects missing or ambiguous proposals.
-
-{_CREATOR_JSON_EXAMPLE}
-"""
-
-    @staticmethod
-    def _creator_task_section(count: int) -> str:
-        return f"""## Task
-
-Design {count} single-point RTL mutations that a reasonable testbench
-SHOULD detect. Return proposals only; do not modify the source.
-
-Read each scope file thoroughly, following submodule instantiations into
-their source, to map the datapath, control logic, and output ports.
-
-For each mutation k = 1 .. {count}:
-1. Pick a single mutation site per the categories in the guide.
-2. Copy the exact source text to replace into `original_code`, preserving its
-   whitespace, punctuation, and capitalization. Set `line` to its first line.
-3. Put only the replacement text in `mutated_code`; do not add muxes, markers,
-   packages, selectors, or surrounding context.
-4. Distribute proposals across the authorized scope files.
-
-Booley applies one exact replacement at a time, compiles that isolated source
-variant in private build source copies and runs the complete Target suite. The
-untouched project—not a selector branch—is the campaign baseline."""
-
-    def _mutation_boundary_section(self) -> str:
-        files = self._dut_files()
-        if not files:
-            return ""
-        lines = ["\n## Mutation Boundary\n"]
-        lines.append(f"- Target RTL closure: {', '.join(files)}")
-        lines.append("- Mutation proposals remain limited to the declared RTL scope above.")
-        lines.append("")
-        return "\n".join(lines)
-
-    def _build_retry_prompt(self, outcome: VerificationOutcome) -> str:
-        """Ask for a complete replacement proposal list after validation fails."""
-        steer = self.steering_text()
-        steer_section = f"\nDeveloper Agent context:\n{steer}\n" if steer else ""
-        return f"""Your mutation proposals failed exact replacement validation or
-isolated compilation.
-
-Reason: {outcome.reason}
-
-Diagnostic tail:
-
-```
-{outcome.log_tail}
-```
-{steer_section}
-
-Do not edit any file. Return a complete fresh JSON mutation list. Every
-`original_code` must be copied exactly from the declared starting line, every
-replacement must differ, and every proposal must remain a single source edit.
-"""
-
-    # ------------------------------------------------------------------
     # Scope / DUT helpers
     # ------------------------------------------------------------------
 
@@ -909,39 +721,54 @@ replacement must differ, and every proposal must remain a single source edit.
             if (raw := value.strip())
         ]
 
-    def _apply_campaign_defaults(self) -> McpToolResult | None:
-        """Default mutation controls from this Target's criterion parameters."""
-        key = f"mutation_score_{selector_target_name(self.args.target)}"
+    def _resolve_campaign(self, scope: str | None) -> TargetCampaign | McpToolResult | None:
+        """Resolve this Target's campaign for *scope*; ``None`` when no scope is known."""
         try:
-            campaign = resolve_target_campaign(
+            return resolve_target_campaign(
                 self.args.target,
                 self.satisfies,
                 self.state.criteria,
-                explicit_scope=self.args.scope,
+                explicit_scope=scope,
                 **self._registered_tests(self.args.target),
                 enforce_scope_match=(
                     self.state.strict_criteria and not getattr(self.args, "diagnostic", False)
                 ),
             )
         except CampaignScopeError as exc:
-            if exc.reason == "mismatch":
-                return McpToolResult(
-                    exit_code=EXIT_FAILURE,
-                    report_text=(
-                        "mutation_tester: --scope does not match the sealed Target criterion scope"
-                    ),
-                )
+            if exc.reason == "missing":
+                return None
             return McpToolResult(
                 exit_code=EXIT_FAILURE,
                 report_text=(
-                    f"mutation_tester: {execution_goal_name(self._acceptance_recorder, key)} must declare scope: [rtl/file.sv, ...] "
-                    "or the invocation must pass --scope."
+                    "mutation_tester: --scope does not match the sealed Target criterion scope"
                 ),
             )
         except UnsupportedSimTargetError as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
         except (NoRunnableTestsError, TargetSectionConflictError) as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=f"mutation_tester: {exc}")
+
+    def _apply_campaign_defaults(self) -> McpToolResult | None:
+        """Default mutation controls from this Target's criterion parameters.
+
+        With neither ``--scope`` nor a criterion scope, the scope is the Target's own RTL.
+        """
+        campaign = self._resolve_campaign(self.args.scope)
+        if campaign is None:
+            default_scope = self._default_scope()
+            if not default_scope:
+                return McpToolResult(
+                    exit_code=EXIT_FAILURE,
+                    report_text=(
+                        f"mutation_tester: Target {self.args.target!r} has no mutable RTL "
+                        "(only testbench, vendored, generated or non-Verilog inputs); "
+                        "pass --scope."
+                    ),
+                )
+            campaign = self._resolve_campaign(",".join(default_scope))
+        if isinstance(campaign, McpToolResult):
+            return campaign
+        assert campaign is not None, "an explicit scope is never missing"
         self._target_campaign = campaign
         self.args.scope = campaign.scope_arg
         params = campaign.params_for("mutation_score")
@@ -954,26 +781,49 @@ replacement must differ, and every proposal must remain a single source edit.
             self.args.min_detected = as_int(params.get("min_detected"))
         return None
 
-    @staticmethod
-    def _canonicalize_spec_paths(specs: list[MutationSpec], work_dir: Path) -> None:
-        """Normalize validated creator paths for downstream artifact lookups."""
-        for spec in specs:
-            spec.file = fusesoc_registry.canonical_project_path(work_dir, spec.file)
+    def _default_scope(self) -> list[str]:
+        """The Project's own mutable RTL in the Target's closure, in Target order.
+
+        "Own RTL" spans the ``depend`` closure, not only the root core's
+        filesets: in a layered Project the root fileset owns the harness while
+        the DUT arrives through a dependency (see :meth:`_dut_files`).  Testbench,
+        vendored and generated files, include headers, inputs outside the Project
+        and non-Verilog inputs are not mutable.  A Target that cannot be
+        inspected has no scope; the run's own validation reports why.
+        """
+        inspection = self._inspect_target()
+        if inspection is None:
+            return []
+        inputs = inspection.inputs
+        unmutable = fusesoc_registry.files_tagged(self.args.work_dir, _UNMUTATED_FILE_TAGS)
+        scope: dict[str, None] = {}  # ordered set
+        for item in inputs:
+            path = fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)
+            if (
+                item.file_type.startswith(_HDL_FILE_TYPES)
+                and not item.is_include
+                and "tb" not in item.tags
+                and path not in unmutable
+                and not Path(path).is_absolute()
+                and Path(path).suffix.lower() in _MUTATION_SUFFIXES
+            ):
+                scope[path] = None
+        return list(scope)
 
     def _validate_scope_against_target(self, scope_files: list[str]) -> McpToolResult | None:
         """Fail fast when a ``--scope`` entry isn't a source file of ``--target``.
 
         A plausible-but-wrong scope (classically the stealth-cores mirror
         ``.booley/cores/rtl/foo.sv`` instead of the repo-relative
-        ``rtl/foo.sv``) would otherwise be discovered only after proposal
-        validation. Resolving the scope against the Target's fileset up front (a
+        ``rtl/foo.sv``) would otherwise be discovered only after Mutant
+        generation. Resolving the scope against the Target's fileset up front (a
         subprocess-free ``.core`` read, <1s) turns that into an instant,
         self-correcting error with a "did you mean" hint.
 
-        Inspection failures and empty source sets refuse before model/build work.
+        Inspection failures and empty source sets refuse before build work.
         """
         for entry in scope_files:
-            if Path(entry).suffix.lower() not in {".v", ".vh", ".sv", ".svh"}:
+            if Path(entry).suffix.lower() not in _MUTATION_SUFFIXES:
                 return McpToolResult(
                     exit_code=EXIT_FAILURE,
                     report_text=f"mutation_tester: --scope entry '{entry}' is not an HDL RTL mutation source",
@@ -1018,7 +868,7 @@ replacement must differ, and every proposal must remain a single source edit.
         return None
 
     def _dut_files(self) -> list[str]:
-        """Resolve the Target RTL closure exposed as creator context.
+        """Resolve the Target RTL closure, reported by the dry-run preview.
 
         The read spans the ``depend`` closure, not just the root core's own
         filesets. In a layered repo the sim Target's root fileset owns the
@@ -1086,11 +936,11 @@ replacement must differ, and every proposal must remain a single source edit.
 
         if auto_mode:
             self.emit_progress(
-                f"auto-scaled: {count} mutations "
+                f"auto-scaled: {count} Mutants "
                 f"(source-size formula {formula_count}, budget cap {budget_cap})",
             )
         else:
-            self.emit_progress(f"target: {count} mutations")
+            self.emit_progress(f"target: {count} Mutants")
         return count, source_size_budget, formula_count, auto_mode
 
     def _run(self) -> McpToolResult:
@@ -1099,13 +949,7 @@ replacement must differ, and every proposal must remain a single source edit.
         prepared = self._prepare_run_plan()
         if isinstance(prepared, McpToolResult):
             return prepared
-        existing_lock = self._load_reusable_lock(prepared)
-        if existing_lock is not None:
-            result = self._run_warm(existing_lock, prepared)
-        else:
-            # ``_run_cold`` finishes its git rollback before returning, so the
-            # residue check below sees the post-rollback scope files.
-            result = self._run_cold(prepared)
+        result = self._run_campaign(prepared)
         self._add_residue_warning(result, prepared.scope_hashes, prepared.work_dir)
         return result
 
@@ -1131,12 +975,15 @@ replacement must differ, and every proposal must remain a single source edit.
             scope_files,
             work_dir,
         )
-        min_detected = self.args.min_detected if self.args.min_detected is not None else count
-        if count_error := self._validate_count(count, min_detected):
+        explicit_min_detected = self.args.min_detected is not None
+        min_detected = (
+            self.args.min_detected if explicit_min_detected else default_min_detected(count)
+        )
+        if count_error := self._validate_count(count, min_detected, self.args.seed):
             return count_error
         plan = MutationRunPlan(
             scope_files=scope_files,
-            scope_hashes=lock_mod.compute_scope_hashes(scope_files, work_dir),
+            scope_hashes=workspace.compute_scope_hashes(scope_files, work_dir),
             work_dir=work_dir,
             target=target,
             tb_top=tb_top,
@@ -1146,6 +993,8 @@ replacement must differ, and every proposal must remain a single source edit.
             auto_mode=auto_mode,
             formula_count=formula_count,
             source_size_budget=source_size_budget,
+            seed=self.args.seed,
+            explicit_min_detected=explicit_min_detected,
         )
         if getattr(self.args, "dry_run", False):
             return self._dry_run_preview(plan)
@@ -1161,7 +1010,7 @@ replacement must differ, and every proposal must remain a single source edit.
         summary = (
             f"mutation_tester dry-run: target={plan.target}; "
             f"scope={len(plan.scope_files)} file(s); top={plan.tb_top}; "
-            f"count={plan.count}; min_detected={plan.min_detected}"
+            f"count={plan.count}; min_detected={plan.min_detected}; seed={plan.seed}"
         )
         lines = (
             self._auto_count_explanation(plan, budget)
@@ -1179,6 +1028,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 "tests": [unit.display_name for unit in self._target_campaign.execution_units()],
                 "count": plan.count,
                 "min_detected": plan.min_detected,
+                "seed": plan.seed,
                 "source_size_budget": budget,
             },
         )
@@ -1202,9 +1052,13 @@ replacement must differ, and every proposal must remain a single source edit.
         ]
 
     @staticmethod
-    def _validate_count(count: int, min_detected: int) -> McpToolResult | None:
+    def _validate_count(count: int, min_detected: int, seed: int) -> McpToolResult | None:
         if count <= 0:
             return McpToolResult(exit_code=EXIT_ERROR, report_text="--count must be positive")
+        if seed < 0:
+            return McpToolResult(
+                exit_code=EXIT_ERROR, report_text="--seed must be a non-negative integer"
+            )
         if min_detected < 0 or min_detected > count:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -1233,307 +1087,137 @@ replacement must differ, and every proposal must remain a single source edit.
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
         return None
 
-    def _load_reusable_lock(self, plan: MutationRunPlan) -> lock_mod.LockMeta | None:
-        if getattr(self.args, "regen_lock", False):
-            logger.info("--regen-lock requested: wiping existing lock dir")
-            lock_mod.wipe_lock()
-            self._clear_session_id(self.SESSION_KEY)
-        existing_lock = lock_mod.load_lock()
-        if existing_lock is None:
-            return None
-        if not lock_mod.is_lock_valid(
-            existing_lock,
-            plan.scope_files,
-            plan.scope_hashes,
-        ):
-            logger.info("mutation proposal lock is stale — wiping before cold start")
-            lock_mod.wipe_lock()
-            return None
-        if existing_lock.count < plan.count:
-            logger.info(
-                "lock has %d mutations but %d requested — forcing cold start",
-                existing_lock.count,
-                plan.count,
-            )
-            lock_mod.wipe_lock()
-            self._clear_session_id(self.SESSION_KEY)
-            return None
-        return existing_lock
-
     # ------------------------------------------------------------------
-    # Cold start
+    # Campaign
     # ------------------------------------------------------------------
 
-    def _run_cold(self, plan: MutationRunPlan) -> McpToolResult:
-        """Create exact proposals, then build the pristine and mutant variants."""
-        self.emit_progress("cold start: read-only mutation proposal phase")
-        with contextlib.suppress(OSError):
-            shutil.rmtree(lock_mod.verification_rounds_dir(), ignore_errors=True)
-            shutil.rmtree(lock_mod.variants_dir(), ignore_errors=True)
-        pre_dirty = self._git_modified_tracked(plan.work_dir)
-        result: McpToolResult | None = None
-        try:
-            result = self._create_and_run_variants(plan, pre_dirty)
-        finally:
-            self._revert_stray_tracked_edits(plan.work_dir, pre_dirty, keep=[])
-        assert result is not None
-        return result
-
-    def _create_and_run_variants(
-        self,
-        plan: MutationRunPlan,
-        pre_dirty: set[str] | None,
-    ) -> McpToolResult:
-        baseline_error = self._run_pristine_baseline(plan)
-        if baseline_error is not None:
-            return baseline_error
-
-        outcome = self._run_cold_variant_rounds(plan, pre_dirty)
-        if isinstance(outcome, McpToolResult):
-            return outcome
-        return self._complete_cold_campaign(plan, outcome)
-
-    def _run_cold_variant_rounds(
-        self,
-        plan: MutationRunPlan,
-        pre_dirty: set[str] | None,
-    ) -> ColdVariantOutcome | McpToolResult:
-        creator_prompt = self._build_creator_prompt()
-        retry_prompt = ""
-        creator_elapsed = 0.0
-        tester_elapsed = 0.0
-        last_specs: list[MutationSpec] = []
-        last_summary: MutationSummary | None = None
-        last_failure: VerificationOutcome | None = None
-        for round_idx in range(1, self.MAX_VERIFICATION_ROUNDS + 1):
-            prompt = creator_prompt if round_idx == 1 else retry_prompt
-            prepared = self._prepare_mutation_round(plan, prompt, round_idx, pre_dirty)
-            creator_elapsed += prepared.creator_elapsed
-            if prepared.error is not None:
-                return prepared.error
-            last_specs = prepared.specs
-            if prepared.variants is None:
-                last_failure = prepared.failure
-                retry_prompt = prepared.retry_prompt
-                continue
-
-            variants = prepared.variants
-            results, elapsed, infra = self._run_variant_sweep(plan, prepared.specs, variants)
-            tester_elapsed += elapsed
-            last_summary = MutationSummary(specs=prepared.specs, results=results)
-            if infra:
-                return self._variant_infra_error(
-                    plan,
-                    prepared.specs,
-                    round_idx,
-                    infra,
-                    last_summary,
-                    variants=variants,
-                )
-            if last_summary.invalid_count:
-                last_failure = self._invalid_variant_failure(round_idx, results)
-                retry_prompt = self._build_retry_prompt(last_failure)
-                continue
-            return ColdVariantOutcome(
-                specs=prepared.specs,
-                summary=last_summary,
-                variants=variants,
-                creator_elapsed=creator_elapsed,
-                tester_elapsed=tester_elapsed,
-                verification_rounds=round_idx,
-            )
-        return self._proposal_rounds_exhausted(plan, last_specs, last_summary, last_failure)
-
-    def _prepare_mutation_round(
-        self,
-        plan: MutationRunPlan,
-        prompt: str,
-        round_idx: int,
-        pre_dirty: set[str] | None,
-    ) -> PreparedMutationRound:
-        self.emit_progress(f"proposal round {round_idx}/{self.MAX_VERIFICATION_ROUNDS}")
-        specs, elapsed, error = self._proposal_round(prompt, round_idx)
-        if error is not None:
-            return PreparedMutationRound([], None, elapsed, error=error)
-        if not specs:
-            return PreparedMutationRound(
-                [], None, elapsed, error=self._creator_output_error(plan, round_idx)
-            )
-        self._canonicalize_spec_paths(specs, plan.work_dir)
-        variants, reason = self._resolve_proposals(specs, plan)
-        if not reason:
-            return PreparedMutationRound(specs, variants, elapsed)
-        failure = self._proposal_failure(round_idx, reason)
-        return PreparedMutationRound(
-            specs,
-            None,
-            elapsed,
-            retry_prompt=self._build_retry_prompt(failure),
-            failure=failure,
+    def _run_campaign(self, plan: MutationRunPlan) -> McpToolResult:
+        """Generate the Mutants, build and run the baseline, then sweep every Mutant."""
+        # Earlier releases kept a proposal lock (and its builds) here; nothing reads it.
+        shutil.rmtree(workspace.legacy_lock_dir(), ignore_errors=True)
+        shutil.rmtree(workspace.variants_dir(), ignore_errors=True)
+        generated = self._generate(plan)
+        if isinstance(generated, McpToolResult):
+            return generated
+        plan = generated.plan
+        timeouts = self._run_pristine_baseline(plan)
+        if isinstance(timeouts, McpToolResult):
+            return timeouts
+        specs = generated.specs
+        results, elapsed, infra = self._run_variant_sweep(
+            plan, specs, generated.variants, timeouts
         )
-
-    @staticmethod
-    def _creator_output_error(plan: MutationRunPlan, round_idx: int) -> McpToolResult:
-        reason = "Mutation Tester Specialist returned no parseable mutation specs"
-        return McpToolResult(
-            exit_code=EXIT_ERROR,
-            report_text=reason,
-            detail=_failure_detail(
-                phase="creator_output",
-                reason=reason,
-                specs=[],
-                work_dir=plan.work_dir,
-                verification_rounds=round_idx,
-            ),
-        )
-
-    def _invalid_variant_failure(
-        self,
-        round_idx: int,
-        results: list[MutationResult],
-    ) -> VerificationOutcome:
-        invalid = "; ".join(
-            f"#{result.index}: {result.sim_output_snippet}" for result in results if result.invalid
-        )
-        return self._proposal_failure(
-            round_idx,
-            f"isolated variant(s) did not compile or yield a verdict: {invalid}",
-        )
-
-    def _complete_cold_campaign(
-        self,
-        plan: MutationRunPlan,
-        outcome: ColdVariantOutcome,
-    ) -> McpToolResult:
-        self._persist_lock(plan, outcome.specs)
-        self._clear_session_id(self.SESSION_KEY)
-        summary = outcome.summary
+        summary = MutationSummary(specs=specs, results=results)
+        if infra:
+            return self._variant_infra_error(generated, summary, infra)
         self.emit_progress(
-            f"cold done: {summary.detected_count}/"
+            f"done: {summary.detected_count}/"
             f"{summary.detected_count + summary.not_detected_count} detected"
         )
-        persisted = lock_mod.load_lock()
         return self._build_run_result(
             plan,
             RunResultInputs(
                 summary=summary,
-                count=len(outcome.specs),
-                tester_elapsed=outcome.tester_elapsed,
-                creator_elapsed=outcome.creator_elapsed,
-                reused_lock=False,
-                lock_created_at=persisted.created_at if persisted else None,
-                verification_rounds=outcome.verification_rounds,
-                build_cached=False,
-                variants=outcome.variants,
+                count=len(specs),
+                tester_elapsed=elapsed,
+                variants=generated.variants,
+                identity=generated.identity,
+                shortfall=generated.shortfall,
                 coverage_gap=self._is_variant_coverage_gap(summary, plan.min_detected),
-                evidence=self._variant_evidence(outcome.variants),
+                evidence=self._variant_evidence(generated.variants),
             ),
         )
 
-    @staticmethod
-    def _resolve_proposals(
-        specs: list[MutationSpec],
-        plan: MutationRunPlan,
-    ) -> tuple[MutationVariantPlan | None, str]:
-        expected = set(range(1, plan.count + 1))
-        actual = {spec.index for spec in specs}
-        if len(specs) != plan.count or actual != expected:
-            return None, f"expected mutation indices 1..{plan.count}; got {sorted(actual)}"
+    def _inspect_target(self) -> TargetInspection | None:
+        """The Target's declared inputs and parameters, or ``None`` when it cannot be read."""
         try:
-            return MutationVariantPlan.resolve(specs, plan.work_dir, plan.scope_files), ""
-        except MutationVariantError as exc:
-            return None, str(exc)
+            catalog = TargetCatalog.build(self.args.work_dir)
+            return catalog.inspect(catalog.select(self.args.target))
+        except fusesoc_registry.FuseSocError:
+            return None
 
-    def _proposal_round(
-        self,
-        prompt: str,
-        round_idx: int,
-    ) -> tuple[list[MutationSpec], float, McpToolResult | None]:
+    def _generator_inputs(self) -> tuple[dict[str, str], list[str]]:
+        """The preprocessor ``defines`` and ``include_dirs`` the Target's build gives its sources.
+
+        Include directories are those of the Project's non-testbench include
+        headers, as :attr:`ResolvedTarget.rtl_include_dirs` takes them.
+        """
+        inspection = self._inspect_target()
+        if inspection is None:
+            return {}, []
+        defines: dict[str, str] = {}
+        for name, spec in inspection.parameters.items():
+            if not isinstance(spec, Mapping) or spec.get("paramtype") != "vlogdefine":
+                continue
+            default = spec.get("default")
+            if default is True:
+                defines[name] = ""
+            elif default not in (False, None, ""):
+                defines[name] = str(default)
+        include_dirs: dict[str, None] = {}  # ordered set
+        for item in inspection.inputs:
+            if item.is_include and "tb" not in item.tags:
+                path = fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)
+                if not Path(path).is_absolute():
+                    include_dirs[PurePosixPath(path).parent.as_posix()] = None
+        return defines, list(include_dirs)
+
+    def _generate(self, plan: MutationRunPlan) -> GeneratedMutants | McpToolResult:
+        """Select the run's Mutants with the deterministic generator and resolve their variants."""
+        defines, include_dirs = self._generator_inputs()
         try:
-            specs, elapsed = self._invoke_creator(prompt, resume=round_idx > 1, attempt=round_idx)
-        except Exception as exc:  # noqa: BLE001 — normalize the creator-provider boundary
-            log_exception(logger, exc, summary=f"Creator invocation failed on round {round_idx}")
-            diagnostic_path = self._write_provider_diagnostic(exc, self.transcript_path())
-            error = McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=exception_report_text("mutation creator", exc, diagnostic_path),
+            identity = {
+                "scope_hashes": plan.scope_hashes,
+                "generator_version": GENERATOR_VERSION,
+                "pyslang_version": parser_version(),
+                "seed": plan.seed,
+                "count": plan.count,
+            }
+            selection = generate_mutants(
+                plan.work_dir,
+                plan.scope_files,
+                plan.count,
+                plan.seed,
+                defines=defines,
+                include_dirs=include_dirs,
             )
-            return [], 0.0, error
-        return specs, elapsed, None
-
-    def _reasoning_effort(self, cli: str) -> str | None:
-        """Only the gateway pin sets an effort here; otherwise the CLI's own default."""
-        from booley.config.settings import get_agent_settings
-
-        return get_agent_settings().effort_pin
-
-    def _invoke_creator(
-        self,
-        prompt: str,
-        *,
-        resume: bool,
-        attempt: int,
-    ) -> tuple[list[MutationSpec], float]:
-        """Invoke the Mutation Tester Specialist.  Returns (parsed_specs, elapsed_s)."""
-        start = time.monotonic()
-        params = AgentCallParams(
-            prompt=prompt,
-            model=self._resolve_model(),
-            reasoning_effort=self._reasoning_effort(self._resolve_cli()),
-            cwd=self.args.work_dir,
-            allowed_agent_capabilities=_CREATOR_TOOLS,
-            system_prompt=None,
-            output_format=None,
-            max_turns=self.args.max_turns,
-            timeout_seconds=self.timeout_seconds((self.args.timeout_ms * 4 + 4) // 5),
-            transcript_path=_make_transcript_path(
-                self.args.transcript_dir,
-                f"mutation_creator_round{attempt}",
-            ),
-            label=f"mutation_creator_round{attempt}",
-            needs_skills=False,
-        )
-        if resume:
-            sid = self._load_session_id(self.SESSION_KEY)
-            if sid:
-                params = self._build_resume_params(params, sid)
-            else:
-                logger.warning(
-                    "no persisted session_id for resume on round %d",
-                    attempt,
+            if not selection.mutants:
+                raise MutantGeneratorError("no Mutation Operator site in the scope files")
+            specs = [
+                MutationSpec(
+                    index,
+                    mutant.operator,
+                    mutant.file,
+                    mutant.line,
+                    mutant.original_code,
+                    mutant.mutated_code,
+                    mutant.id,
                 )
+                for index, mutant in enumerate(selection.mutants, start=1)
+            ]
+            variants = MutationVariantPlan.resolve(specs, plan.work_dir, plan.scope_files)
+        except (MutantGeneratorError, BoundaryError, MutationVariantError) as exc:
+            reason = f"{exc}\npass --scope to choose the files to mutate"
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"mutation_tester: cannot generate Mutants: {reason}",
+                detail=_failure_detail(
+                    phase="mutant_generation",
+                    reason=reason,
+                    specs=[],
+                    work_dir=plan.work_dir,
+                ),
+            )
+        if not plan.explicit_min_detected:
+            # A generator shortfall lowers the default threshold with the count.
+            plan = replace(plan, min_detected=default_min_detected(len(specs)))
+        return GeneratedMutants(plan, specs, variants, identity, selection.shortfall)
 
-        result = self._invoke_agent_with_resume(params)
-        # _last_session_id was set inside _invoke_agent; persist for next round.
-        self._persist_session_id(self.SESSION_KEY)
+    def _run_pristine_baseline(self, plan: MutationRunPlan) -> dict[str, int] | McpToolResult:
+        """Build and run the byte-identical project before any Mutant is applied.
 
-        # Always try to parse — the retry path for forbidden-category fails
-        # asks the agent to emit a fresh spec list, while sim/elab retries
-        # ask it to edit source only.  Empty parse on a resume round is
-        # the normal "no JSON, just source edits" case.
-        raw_output = result.output if hasattr(result, "output") else str(result)
-        specs = self._relative_proposal_paths(parse_creator_output(raw_output))
-        return specs, time.monotonic() - start
-
-    def _relative_proposal_paths(self, specs: list[MutationSpec]) -> list[MutationSpec]:
-        """Translate current live absolute paths while preserving invalid scope paths."""
-        root = Path(self.args.work_dir).resolve()
-        normalized = []
-        for spec in specs:
-            normalized_spec = spec
-            path = Path(spec.file)
-            if path.is_absolute():
-                try:
-                    relative = path.resolve().relative_to(root).as_posix()
-                except ValueError:
-                    pass
-                else:
-                    normalized_spec = replace(spec, file=relative)
-            normalized.append(normalized_spec)
-        return normalized
-
-    def _run_pristine_baseline(self, plan: MutationRunPlan) -> McpToolResult | None:
-        """Build and run the byte-identical project before any proposal is applied."""
+        Returns each test's Mutant time limit, scaled from its baseline duration.
+        """
         run_cwd_problem = literal_run_cwd_problem(plan.work_dir)
         if run_cwd_problem is not None:
             return McpToolResult(
@@ -1547,7 +1231,7 @@ replacement must differ, and every proposal must remain a single source edit.
                     log_tail="",
                 ),
             )
-        build_path = lock_mod.baseline_build_dir()
+        build_path = workspace.baseline_build_dir()
         shutil.rmtree(build_path, ignore_errors=True)
         build_path.mkdir(parents=True, exist_ok=True)
         elab = self._run_elab(plan.target, plan.work_dir, build_path)
@@ -1586,30 +1270,15 @@ replacement must differ, and every proposal must remain a single source edit.
                 exit_code=EXIT_ERROR,
                 report_text="mutation baseline failed on pristine source\n" + _tail(output, 50),
             )
-        return None
-
-    def _proposal_failure(self, round_idx: int, reason: str) -> VerificationOutcome:
-        outcome = VerificationOutcome(
-            ok=False,
-            baseline_passed=True,
-            pinned_passed=False,
-            reason=reason,
-            log_tail=reason,
-        )
-        self._write_round_log(round_idx, outcome)
-        return outcome
+        return {run.test_name: _mutant_timeout(run.duration_s) for run in runs}
 
     def _variant_infra_error(
         self,
-        plan: MutationRunPlan,
-        specs: list[MutationSpec],
-        round_idx: int,
-        reason: str,
+        generated: GeneratedMutants,
         summary: MutationSummary,
-        *,
-        variants: MutationVariantPlan | None = None,
+        reason: str,
     ) -> McpToolResult:
-        variants = variants or MutationVariantPlan.resolve(specs, plan.work_dir, plan.scope_files)
+        plan, specs, variants = generated.plan, generated.specs, generated.variants
         detail = _failure_detail(
             phase="variant_infrastructure",
             reason=reason,
@@ -1618,18 +1287,14 @@ replacement must differ, and every proposal must remain a single source edit.
             summary=summary,
             min_detected=plan.min_detected,
             count=plan.count,
-            verification_rounds=round_idx,
         )
         inputs = RunResultInputs(
             summary=summary,
             count=len(specs),
             tester_elapsed=0.0,
-            creator_elapsed=0.0,
-            reused_lock=round_idx == 0,
-            lock_created_at=None,
-            verification_rounds=round_idx,
-            build_cached=False,
             variants=variants,
+            identity=generated.identity,
+            shortfall=generated.shortfall,
             evidence=self._variant_evidence(variants),
         )
         self._attach_campaign_artifacts(plan, inputs, detail)
@@ -1642,48 +1307,6 @@ replacement must differ, and every proposal must remain a single source edit.
             report_text=report_text,
             detail=detail,
             display_lines=artifact_lines,
-        )
-
-    def _proposal_rounds_exhausted(
-        self,
-        plan: MutationRunPlan,
-        specs: list[MutationSpec],
-        summary: MutationSummary | None,
-        outcome: VerificationOutcome | None,
-    ) -> McpToolResult:
-        reason = outcome.reason if outcome else "no valid mutation proposals"
-        return McpToolResult(
-            exit_code=EXIT_ERROR,
-            report_text=(
-                f"creator mutation proposals failed after {self.MAX_VERIFICATION_ROUNDS} "
-                f"rounds: {reason}"
-            ),
-            detail=_failure_detail(
-                phase="proposal_validation",
-                reason=reason,
-                specs=specs,
-                work_dir=plan.work_dir,
-                summary=summary,
-                min_detected=plan.min_detected,
-                count=plan.count,
-                verification_rounds=self.MAX_VERIFICATION_ROUNDS,
-                log_tail=outcome.log_tail if outcome else "",
-            ),
-        )
-
-    def _write_round_log(
-        self,
-        round_idx: int,
-        outcome: VerificationOutcome,
-    ) -> None:
-        round_logs_dir = lock_mod.verification_rounds_dir()
-        round_logs_dir.mkdir(parents=True, exist_ok=True)
-        (round_logs_dir / f"round_{round_idx}.log").write_text(
-            f"baseline_passed={outcome.baseline_passed}\n"
-            f"variants_valid={outcome.pinned_passed}\n"
-            f"reason={outcome.reason}\n"
-            f"---log_tail---\n{outcome.log_tail}\n",
-            encoding="utf-8",
         )
 
     @staticmethod
@@ -1708,89 +1331,6 @@ replacement must differ, and every proposal must remain a single source edit.
     def _is_variant_coverage_gap(summary: MutationSummary, min_detected: int) -> bool:
         valid = summary.detected_count + summary.not_detected_count
         return min_detected > 0 and valid > 0 and summary.detected_count == 0
-
-    @staticmethod
-    def _persist_lock(plan: MutationRunPlan, specs: list[MutationSpec]) -> None:
-        lock_mod.save_lock(
-            lock_mod.LockMeta(
-                schema_version=lock_mod.LOCK_SCHEMA_VERSION,
-                created_at=lock_mod.now_iso(),
-                scope=list(plan.scope_files),
-                scope_hashes=plan.scope_hashes,
-                count=len(specs),
-                mutations=[spec.to_dict() for spec in specs],
-            )
-        )
-
-    def _run_warm(
-        self,
-        lock: lock_mod.LockMeta,
-        plan: MutationRunPlan,
-    ) -> McpToolResult:
-        """Reuse validated proposals while rebuilding every isolated variant."""
-        self.emit_progress(
-            f"warm reuse: proposal lock from {lock.created_at}, {lock.count} mutations"
-        )
-        try:
-            specs = [MutationSpec.from_dict(item) for item in lock.mutations][: plan.count]
-            self._canonicalize_spec_paths(specs, plan.work_dir)
-            variants = MutationVariantPlan.resolve(specs, plan.work_dir, plan.scope_files)
-        except (BoundaryError, MutationVariantError) as exc:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=f"mutation proposal lock is stale or invalid: {exc}; use --regen-lock",
-            )
-
-        baseline_error = self._run_pristine_baseline(plan)
-        if baseline_error is not None:
-            return baseline_error
-        results, tester_elapsed, infra = self._run_variant_sweep(plan, specs, variants)
-        summary = MutationSummary(specs=specs, results=results)
-        if infra:
-            return self._variant_infra_error(
-                plan,
-                specs,
-                0,
-                infra,
-                summary,
-                variants=variants,
-            )
-        if summary.invalid_count:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "warm reuse: one or more isolated variants no longer compile; "
-                    "use --regen-lock to replace the proposals"
-                ),
-                detail=_failure_detail(
-                    phase="warm_variant_validation",
-                    reason="isolated variant did not compile or yield a verdict",
-                    specs=specs,
-                    work_dir=plan.work_dir,
-                    summary=summary,
-                    min_detected=plan.min_detected,
-                    count=plan.count,
-                    verification_rounds=0,
-                ),
-            )
-
-        evidence = self._variant_evidence(variants)
-        return self._build_run_result(
-            plan,
-            RunResultInputs(
-                summary=summary,
-                count=len(specs),
-                tester_elapsed=tester_elapsed,
-                creator_elapsed=0.0,
-                reused_lock=True,
-                lock_created_at=lock.created_at,
-                verification_rounds=0,
-                build_cached=False,
-                variants=variants,
-                coverage_gap=self._is_variant_coverage_gap(summary, plan.min_detected),
-                evidence=evidence,
-            ),
-        )
 
     def _run_elab(
         self,
@@ -1872,7 +1412,7 @@ replacement must differ, and every proposal must remain a single source edit.
 
         ADR 0034 decision 2: cocotb-ness lives in the Target's ``.core`` flow
         options, so this is a subprocess-free YAML read — cheap enough to run
-        before any agent work, which is exactly where the mutation loop needs
+        before any build, which is exactly where the mutation loop needs
         it (a Cocotb Target must never reach the ``V<top>`` run-half).
 
         Raises :class:`UnsupportedSimTargetError` for a Cocotb Target the mutation
@@ -2211,21 +1751,25 @@ replacement must differ, and every proposal must remain a single source edit.
         build_path: Path,
         tb_top: str,
         *,
-        timeout: int = 300,
+        timeouts: Mapping[str, int] | None = None,
     ) -> list[MutationTestRun]:
-        """Run one built source variant against the Target's complete test suite."""
+        """Run one built source variant against the Target's complete test suite.
+
+        ``timeouts`` maps a test's display name to its wall-clock limit in
+        seconds; the baseline passes none and gets the cap for every test.
+        """
         campaign = self._campaign_for_target(target)
         batched = self.cocotb_target(target, work_dir) is not None
         batches = self._cocotb_suite_batches(target, work_dir, campaign) if batched else None
 
-        def _run_unit(unit: CampaignUnit) -> MutationTestRun:
+        def _launch(unit: CampaignUnit) -> MutationTestRun:
             try:
                 proc = self._run_sim_pinned(
                     target,
                     work_dir,
                     build_path,
                     tb_top,
-                    timeout=timeout,
+                    timeout=(timeouts or {}).get(unit.display_name, _MUTANT_TIMEOUT_CAP_S),
                     test_name=unit.test_name,
                     cocotb_tests=unit.selected_tests,
                 )
@@ -2254,6 +1798,12 @@ replacement must differ, and every proposal must remain a single source edit.
                     error=str(exc),
                     requires_cocotb_results=batched,
                 )
+
+        def _run_unit(unit: CampaignUnit) -> MutationTestRun:
+            started = _monotonic()
+            run = _launch(unit)
+            run.duration_s = _monotonic() - started
+            return run
 
         return list(campaign.execute(_run_unit, batched=batched, batches=batches).values)
 
@@ -2308,10 +1858,12 @@ replacement must differ, and every proposal must remain a single source edit.
         prefix = f"{run.test_name}: "
         if run.error:
             return VariantSuiteVerdict(inconclusive_reason=prefix + run.error)
-        if run.timed_out:
+        if run.timed_out or has_simulation_timeout(run.output):
             if timeout_is_inconclusive:
                 return VariantSuiteVerdict(inconclusive_reason=prefix + "simulation timed out")
-            return VariantSuiteVerdict(detected=True, first_killing_test=run.test_name)
+            return VariantSuiteVerdict(
+                detected=True, first_killing_test=run.test_name, timed_out=True
+            )
         if run.process is None:
             return VariantSuiteVerdict(
                 inconclusive_reason=prefix + "runner produced no process result"
@@ -2364,7 +1916,9 @@ replacement must differ, and every proposal must remain a single source edit.
         ]
         if reasons:
             return VariantSuiteVerdict(inconclusive_reason="; ".join(reasons))
-        return next((verdict for verdict in verdicts if verdict.detected), VariantSuiteVerdict())
+        detected = [verdict for verdict in verdicts if verdict.detected]
+        # A test that failed outright outranks one that merely timed out.
+        return min(detected, key=lambda verdict: verdict.timed_out, default=VariantSuiteVerdict())
 
     @staticmethod
     def _baseline_suite_passed(runs: list[MutationTestRun]) -> bool:
@@ -2383,14 +1937,14 @@ replacement must differ, and every proposal must remain a single source edit.
     def _persist_mutant_log(self, index: int, output: str) -> str:
         """Write one isolated variant's simulator output."""
         return self._persist_capped_log(
-            lock_mod.mutant_logs_dir() / f"mutant_{index}.log",
+            workspace.mutant_logs_dir() / f"mutant_{index}.log",
             output,
             f"mutation {index}",
         )
 
     def _persist_baseline_log(self, output: str) -> str:
         """Persist this invocation's pristine-baseline output."""
-        return self._persist_capped_log(lock_mod.baseline_log_path(), output, "baseline")
+        return self._persist_capped_log(workspace.baseline_log_path(), output, "baseline")
 
     def _persist_capped_log(self, path: Path, output: str, label: str) -> str:
         """Best-effort capped transcript persistence shared by all variants."""
@@ -2413,23 +1967,22 @@ replacement must differ, and every proposal must remain a single source edit.
         """Drop the previous sweep's mutant logs before this one writes any.
 
         Without this a run with a smaller ``--count`` leaves the earlier
-        generation's ``mutant_7.log … mutant_25.log`` in place, physically
+        run's ``mutant_7.log … mutant_25.log`` in place, physically
         indistinguishable from this run's — and the ``mutant_logs`` artifact
         key advertises the whole directory, which would make it a "present but
         wrong" pointer under a contract that says pointers are never wrong.
-        The lock dir survives across runs by design (that is the point of the
-        lock), so this cannot ride on ``wipe_lock``.
 
         Best-effort, like every other log operation here.
         """
         with contextlib.suppress(OSError):
-            shutil.rmtree(lock_mod.mutant_logs_dir(), ignore_errors=True)
+            shutil.rmtree(workspace.mutant_logs_dir(), ignore_errors=True)
 
     def _run_variant_sweep(
         self,
         plan: MutationRunPlan,
         specs: list[MutationSpec],
         variants: MutationVariantPlan,
+        timeouts: Mapping[str, int],
     ) -> tuple[list[MutationResult], float, str]:
         """Build and run every exact replacement in complete isolation."""
         start = time.monotonic()
@@ -2437,8 +1990,8 @@ replacement must differ, and every proposal must remain a single source edit.
         results: list[MutationResult] = []
         inconclusive: list[str] = []
         for spec in specs:
-            self.emit_progress(f"build and test mutation {spec.index}/{len(specs)}")
-            result, reason = self._run_one_variant(plan, spec, variants)
+            self.emit_progress(f"build and test Mutant {spec.index}/{len(specs)}")
+            result, reason = self._run_one_variant(plan, spec, variants, timeouts)
             results.append(result)
             if reason:
                 inconclusive.append(f"mutation #{spec.index}: {reason}")
@@ -2449,8 +2002,9 @@ replacement must differ, and every proposal must remain a single source edit.
         plan: MutationRunPlan,
         spec: MutationSpec,
         variants: MutationVariantPlan,
+        timeouts: Mapping[str, int],
     ) -> tuple[MutationResult, str]:
-        build_path = lock_mod.variant_build_dir(spec.index)
+        build_path = workspace.variant_build_dir(spec.index)
         shutil.rmtree(build_path, ignore_errors=True)
         build_path.mkdir(parents=True, exist_ok=True)
         elab = self._run_elab(plan.target, plan.work_dir, build_path, (variants, spec.index))
@@ -2471,6 +2025,7 @@ replacement must differ, and every proposal must remain a single source edit.
             plan.work_dir,
             build_path,
             plan.tb_top,
+            timeouts=timeouts,
         )
         combined = self._suite_output(runs)
         verdict = self._classify_variant_suite(runs)
@@ -2487,6 +2042,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 sim_output_snippet=snippet,
                 log_path=self._persist_mutant_log(spec.index, combined),
                 first_killing_test=verdict.first_killing_test,
+                timed_out=verdict.timed_out,
             ),
             verdict.inconclusive_reason,
         )
@@ -2501,7 +2057,7 @@ replacement must differ, and every proposal must remain a single source edit.
         predates the run and survives it untouched is not residue. A file that
         disappeared counts, and no git repository is needed.
         """
-        current = lock_mod.compute_scope_hashes(list(baseline), work_dir)
+        current = workspace.compute_scope_hashes(list(baseline), work_dir)
         return sorted(rel for rel, digest in baseline.items() if current[rel] != digest)
 
     def _add_residue_warning(
@@ -2524,89 +2080,6 @@ replacement must differ, and every proposal must remain a single source edit.
         result.report_text = "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # Git-based rollback net + scope boundary enforcement (QA-11)
-    #
-    # The creator has no write capability, but this rollback net is a defense
-    # against a misconfigured agent transport: any tracked file the run dirtied
-    # beyond pre-existing WIP is restored to its index state via git.
-    # ------------------------------------------------------------------
-
-    def _run_git(self, args: list[str], work_dir: Path) -> subprocess.CompletedProcess | None:
-        """Run a git command in *work_dir*; ``None`` when git is unavailable."""
-        try:
-            return subprocess.run(
-                ["git", *args],
-                cwd=work_dir,
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            return None
-
-    def _git_modified_tracked(self, work_dir: Path) -> set[str] | None:
-        """Worktree-relative paths of tracked files git reports as modified.
-
-        Excludes untracked files (``--untracked-files=no``) so we only ever act
-        on files git can restore. Returns ``None`` when git is unavailable or
-        *work_dir* is not a repo — callers then rely on the content snapshot
-        alone.
-        """
-        proc = self._run_git(
-            ["status", "--porcelain", "--untracked-files=no"],
-            work_dir,
-        )
-        if proc is None or proc.returncode != 0:
-            return None
-        modified: set[str] = set()
-        for line in proc.stdout.splitlines():
-            if len(line) < 4:
-                continue
-            path = line[3:]
-            # Renames/copies render as "old -> new"; the new path is what exists.
-            if " -> " in path:
-                path = path.split(" -> ", 1)[1]
-            modified.add(path.strip().strip('"'))
-        return modified
-
-    def _revert_stray_tracked_edits(
-        self,
-        work_dir: Path,
-        pre_dirty: set[str] | None,
-        keep: list[str],
-    ) -> list[str]:
-        """Restore tracked files this run dirtied outside *keep* to pre-run state.
-
-        ``pre_dirty`` is the set of tracked files already modified *before* the
-        run (captured by :meth:`_git_modified_tracked`); those are pre-existing
-        WIP and are never touched. ``keep`` names files the caller restores by
-        other means (the content snapshot) and so should be left alone here.
-        Everything else that became modified during the run is ``git checkout``-ed
-        back to the index. Returns the reverted paths.
-
-        No-op (``[]``) when git is unavailable — the content snapshot remains
-        the guard for the enumerated candidate set.
-        """
-        if pre_dirty is None:
-            return []
-        now_modified = self._git_modified_tracked(work_dir)
-        if now_modified is None:
-            return []
-        stray = sorted(now_modified - pre_dirty - set(keep))
-        if not stray:
-            return []
-        proc = self._run_git(["checkout", "--", *stray], work_dir)
-        if proc is None or proc.returncode != 0:
-            logger.error(
-                "mutation_tester: failed to git-revert stray edits %s (%s)",
-                stray,
-                proc.stderr.strip() if proc else "git unavailable",
-            )
-            return []
-        return stray
-
-    # ------------------------------------------------------------------
     # Result assembly
     # ------------------------------------------------------------------
 
@@ -2623,8 +2096,6 @@ replacement must differ, and every proposal must remain a single source edit.
             plan.source_size_budget,
         )
         summary, count = inputs.summary, inputs.count
-        reused_lock, lock_created_at = inputs.reused_lock, inputs.lock_created_at
-        verification_rounds, build_cached = inputs.verification_rounds, inputs.build_cached
 
         valid_count = summary.detected_count + summary.not_detected_count
         passed = summary.detected_count >= min_detected
@@ -2634,12 +2105,13 @@ replacement must differ, and every proposal must remain a single source edit.
             {
                 "target": target,
                 "tests": list(self._campaign_for_target(target).suite.display_names),
-                "reused_lock": reused_lock,
-                "lock_created_at": lock_created_at,
-                "verification_rounds": verification_rounds,
-                "build_cached": build_cached,
+                "seed": plan.seed,
+                "identity": inputs.identity,
+                "detected_timeout": summary.detected_timeout_count,
             }
         )
+        if inputs.shortfall:
+            detail["shortfall"] = inputs.shortfall
         if auto_mode:
             detail["auto"] = True
             detail["formula_count"] = formula_count
@@ -2694,7 +2166,7 @@ replacement must differ, and every proposal must remain a single source edit.
     ) -> None:
         invocation_dir = self.reserve_invocation_dir() if plan.report_dir else None
         if invocation_dir is None:
-            variant_root = lock_mod.variants_dir()
+            variant_root = workspace.variants_dir()
             shutil.rmtree(variant_root, ignore_errors=True)
             variants = inputs.variants.write_variants(variant_root)
             detail["variant_files"] = self._variant_detail(
@@ -2735,30 +2207,28 @@ replacement must differ, and every proposal must remain a single source edit.
         campaign_dir: Path,
         variants: dict[int, Path],
     ) -> dict[str, Path | None]:
-        if plan.source_size_budget and not inputs.reused_lock:
+        if plan.source_size_budget:
             (staging_dir / "source-size-budget.json").write_text(
                 json.dumps(plan.source_size_budget, indent=2), encoding="utf-8"
             )
         baseline_log = self._copy_campaign_file(
-            lock_mod.baseline_log_path(), staging_dir / "baseline.log"
+            workspace.baseline_log_path(), staging_dir / "baseline.log"
         )
         mutant_logs = self._copy_campaign_dir(
-            lock_mod.mutant_logs_dir(), staging_dir / "mutant-logs"
+            workspace.mutant_logs_dir(), staging_dir / "mutant-logs"
         )
         self._retarget_log_paths(inputs.summary, mutant_logs, campaign_dir, plan.work_dir)
         links = {index: posix_relpath(path, staging_dir) for index, path in variants.items()}
         (staging_dir / "mutation-results.md").write_text(
-            generate_results_markdown(inputs.summary, plan.min_detected, variant_paths=links),
+            generate_results_markdown(
+                inputs.summary,
+                plan.min_detected,
+                variant_paths=links,
+                identity=inputs.identity,
+            ),
             encoding="utf-8",
         )
-        verification = self._copy_verification_rounds(
-            inputs.verification_rounds, staging_dir / "verification-rounds"
-        )
-        return {
-            "baseline_log": baseline_log,
-            "mutant_log_dir": mutant_logs,
-            "verification_dir": verification,
-        }
+        return {"baseline_log": baseline_log, "mutant_log_dir": mutant_logs}
 
     @staticmethod
     def _retarget_log_paths(
@@ -2803,19 +2273,6 @@ replacement must differ, and every proposal must remain a single source edit.
         shutil.copytree(source, destination)
         return destination
 
-    @staticmethod
-    def _copy_verification_rounds(count: int, destination: Path) -> Path | None:
-        source = lock_mod.verification_rounds_dir()
-        copied = False
-        for round_idx in range(1, count + 1):
-            round_log = source / f"round_{round_idx}.log"
-            if not round_log.is_file():
-                continue
-            destination.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(round_log, destination / round_log.name)
-            copied = True
-        return destination if copied else None
-
     def _campaign_manifest(
         self,
         plan: MutationRunPlan,
@@ -2823,7 +2280,6 @@ replacement must differ, and every proposal must remain a single source edit.
         *,
         baseline_log: Path | None,
         mutant_log_dir: Path | None,
-        verification_dir: Path | None,
     ) -> dict[str, Any]:
         mutants = inputs.summary.classify()
         for row in mutants:
@@ -2836,10 +2292,11 @@ replacement must differ, and every proposal must remain a single source edit.
             "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
             "target": plan.target,
             "eda_tool": self.target_eda_tool(
-                plan.target, plan.work_dir, lock_mod.baseline_build_dir()
+                plan.target, plan.work_dir, workspace.baseline_build_dir()
             ),
             "source_fingerprint": inputs.variants.source_fingerprint(),
             "scope_hashes": plan.scope_hashes,
+            "identity": inputs.identity,
             "baseline": {
                 "status": "passed",
                 "log": baseline_log.name if baseline_log is not None else None,
@@ -2849,9 +2306,6 @@ replacement must differ, and every proposal must remain a single source edit.
                 "specs": "mutation-specs.md",
                 "results": "mutation-results.md",
                 "variants": "variants",
-                "verification_rounds": (
-                    verification_dir.name if verification_dir is not None else None
-                ),
             },
         }
 
@@ -2860,13 +2314,8 @@ replacement must differ, and every proposal must remain a single source edit.
         detail: dict[str, Any],
         artifact_dir: Path | None,
     ) -> None:
-        variants_dir = artifact_dir / "variants" if artifact_dir else lock_mod.variants_dir()
-        mutant_logs = artifact_dir / "mutant-logs" if artifact_dir else lock_mod.mutant_logs_dir()
-        verification_rounds = (
-            artifact_dir / "verification-rounds"
-            if artifact_dir
-            else lock_mod.verification_rounds_dir()
-        )
+        variants_dir = artifact_dir / "variants" if artifact_dir else workspace.variants_dir()
+        mutant_logs = artifact_dir / "mutant-logs" if artifact_dir else workspace.mutant_logs_dir()
         _artifacts.merge_artifacts(
             detail,
             _artifacts.artifacts_block(
@@ -2874,7 +2323,6 @@ replacement must differ, and every proposal must remain a single source edit.
                 dirs={
                     "variants": variants_dir,
                     "mutant_logs": mutant_logs,
-                    "verification_rounds": verification_rounds,
                 },
             ),
         )
@@ -2915,17 +2363,20 @@ replacement must differ, and every proposal must remain a single source edit.
         base = f"{summary.detected_count}/{valid_count} detected (need {plan.min_detected})"
         if inputs.coverage_gap:
             base += " [coverage gap: Target's tests never exercise this scope]"
-        if inputs.reused_lock:
-            suffix = (
-                f" [reused lock from {inputs.lock_created_at}]"
-                if inputs.build_cached
-                else f" [reused lock + rebuilt from {inputs.lock_created_at}]"
-            )
-        else:
-            suffix = " [cold: Specialist designed]"
+        suffix = f" [seed {plan.seed}]"
         if plan.auto_mode and inputs.count < plan.formula_count:
             suffix += f" [auto: {plan.formula_count} requested, {inputs.count} budget-capped]"
         return base + suffix
+
+    @staticmethod
+    def _identity_header(inputs: RunResultInputs) -> str:
+        """The first report line: how many Mutants ran and what reproduces them."""
+        identity = inputs.identity
+        return (
+            f"[mutation_test] {len(inputs.summary.specs)} Mutants "
+            f"(seed {identity['seed']}, count {identity['count']}, "
+            f"generator {identity['generator_version']}, pyslang {identity['pyslang_version']})"
+        )
 
     def _format_report_text(
         self,
@@ -2937,28 +2388,27 @@ replacement must differ, and every proposal must remain a single source edit.
         valid_count = summary.detected_count + summary.not_detected_count
         passed = summary.detected_count >= min_detected
         gate = "PASS" if passed else "FAIL"
-        lines: list[str] = []
-        if inputs.reused_lock:
-            cache_tag = "build cached" if inputs.build_cached else "rebuilt"
-            lines.append(f"[mutation_test] warm reuse ({cache_tag})")
-        else:
-            lines.append(
-                f"[mutation_test] cold start: creator {inputs.creator_elapsed / 60:.0f}m, "
-                f"{inputs.verification_rounds} verification round(s)",
-            )
+        source = (
+            "set by --min-detected" if plan.explicit_min_detected else "default 80% of --count"
+        )
+        lines: list[str] = [self._identity_header(inputs)]
+        if inputs.shortfall:
+            lines.append(f"[mutation_test] {inputs.shortfall}")
         lines.append(
             f"[mutation_test] sim sweep: {len(summary.results)}/{len(summary.specs)} "
             f"tested              {inputs.tester_elapsed / 60:.0f}m",
         )
         lines.append(
-            f"  {summary.detected_count} detected, "
+            f"  {summary.detected_count} detected ({summary.detected_timeout_count} timeout), "
             f"{summary.invalid_count} invalid, "
-            f"{summary.not_detected_count} coverage gap",
+            f"{summary.not_detected_count} not detected",
         )
         lines.append(
             f"  detected: {summary.detected_count}/{valid_count} "
-            f"(required: {min_detected}/{valid_count}, set by --min-detected)",
+            f"(required: {min_detected}/{valid_count}, {source})",
         )
+        if summary.invalid_count:
+            lines.append(f"  {_invalid_mutants_line(summary.invalid_count)}")
         if inputs.coverage_gap:
             # Name the diagnosis instead of leaving a bare 0/N to be misread as
             # a broken mutation harness (SETUP-F-38).
@@ -2968,21 +2418,22 @@ replacement must differ, and every proposal must remain a single source edit.
                     f"    Evidence: {_describe_evidence(inputs.evidence)} — every "
                     "mutation was applied and reached the design, and the tests "
                     "still passed.",
-                    "    Nothing here is a mutation-harness or creator defect. "
+                    "    Nothing here is a mutation-harness defect. "
                     "Either extend the Target's stimulus to exercise the scope, "
                     "run --scope against a Target whose tests drive it, or lower "
                     "--min-detected if a partial score is acceptable.",
                 ],
             )
-        # Name every surviving mutant (file:line + the code change). Reporting a
-        # bare "N coverage gap" left the one datum the run exists to produce
-        # unrecoverable (QA_REPORT C2.4).
+        # Name every survivor (file:line + the code change): the one datum the
+        # run exists to produce (QA_REPORT C2.4).
         for spec in summary.surviving_specs():
             orig = " ".join(spec.original_code.split())
             mut = " ".join(spec.mutated_code.split())
             lines.append(
-                f"  SURVIVED [{spec.category}] {spec.file}:{spec.line}: {orig!r} -> {mut!r}"
+                f"  NOT DETECTED [{spec.category}] {spec.file}:{spec.line}: {orig!r} -> {mut!r}"
             )
+        if summary.surviving_specs():
+            lines.append(f"  {EQUIVALENT_MUTANT_NOTE}")
         reason = f"{summary.detected_count}/{valid_count} detected" + (
             "" if passed else f", need {min_detected}"
         )
@@ -3015,7 +2466,6 @@ def _failure_detail(
     summary: MutationSummary | None = None,
     min_detected: int = 0,
     count: int = 0,
-    verification_rounds: int = 0,
     log_tail: str = "",
     evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -3030,7 +2480,6 @@ def _failure_detail(
         "failed": True,
         "phase": phase,
         "reason": reason,
-        "verification_rounds": verification_rounds,
         "mutations": [s.to_dict() for s in specs],
     }
     if summary is not None:
@@ -3050,9 +2499,8 @@ def _failure_detail(
         _artifacts.artifacts_block(
             work_dir,
             dirs={
-                "variants": lock_mod.variants_dir(),
-                "mutant_logs": lock_mod.mutant_logs_dir(),
-                "verification_rounds": lock_mod.verification_rounds_dir(),
+                "variants": workspace.variants_dir(),
+                "mutant_logs": workspace.mutant_logs_dir(),
             },
         ),
     )
@@ -3075,11 +2523,15 @@ def _mutation_detail(
     }
 
 
-def _make_transcript_path(transcript_dir: Path | None, label: str) -> Path | None:
-    if transcript_dir is None:
-        return None
-    transcript_dir.mkdir(parents=True, exist_ok=True)
-    return transcript_dir / f"{label}.jsonl"
+def _mutant_timeout(baseline_s: float) -> int:
+    """The wall-clock limit of one test on a Mutant, in whole seconds.
+
+    ``max(10 x the test's baseline duration, 30 s)``, capped at 300 s: a Mutant
+    that makes the design loop forever is cut off long before the cap, while a
+    slow test still gets room.
+    """
+    scaled = math.ceil(_MUTANT_TIMEOUT_FACTOR * baseline_s)
+    return min(_MUTANT_TIMEOUT_CAP_S, max(_MUTANT_TIMEOUT_FLOOR_S, scaled))
 
 
 def _timeout_output(exc: subprocess.TimeoutExpired) -> str:

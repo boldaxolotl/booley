@@ -52,6 +52,20 @@ def publish_mutation(layout, argument):
     return store, observations(layout)[0]
 
 
+def refuse_stricter_floor(layout, after_floor, total=None):
+    """A relaxation to an explicit floor above the omitted 80 % one is refused."""
+    total = total or {}
+    env = ChangeEnvironment(EntryEnvironment(layout.control))
+    after = {**MUTATION, **total, "min_detected": after_floor}
+    with pytest.raises(ProposalError, match="weaken"):
+        create_proposal(
+            env,
+            layout.record.id,
+            {"kind": "relax", "goal_key": KEY, "after": after, "rationale": "stricter"},
+            session_key=None,
+        )
+
+
 async def approve_through_modern_client(layout, monkeypatch, after):
     async with Client(sdk(layout, monkeypatch), mode="2026-07-28") as client:
         response = await client.call_tool(
@@ -81,12 +95,11 @@ async def approve_through_modern_client(layout, monkeypatch, after):
         assert json.loads(response.content[0].text)["state"] == "applied"
 
 
-@pytest.mark.parametrize("explicit_total", [False, True])
-def test_modern_mutation_relaxation_uses_implicit_floor_and_existing_evidence(
-    layout, monkeypatch, explicit_total
-):
-    argument = {**MUTATION, **({"total": 10} if explicit_total else {})}
+def test_modern_mutation_relaxation_uses_implicit_floor_and_existing_evidence(layout, monkeypatch):
+    argument = MUTATION
     store, original = publish_mutation(layout, argument)
+    # The omitted floor is ceil(0.8 x 10) = 8: an explicit 9 would tighten it.
+    refuse_stricter_floor(layout, 9)
     asyncio.run(
         approve_through_modern_client(layout, monkeypatch, {**argument, "min_detected": 8})
     )
@@ -106,19 +119,11 @@ def test_modern_mutation_relaxation_uses_implicit_floor_and_existing_evidence(
     assert sum(row["producer"] == "mutation_tester" for row in rows) == 1
 
 
-@pytest.mark.parametrize("after_floor", [None, 9])
-def test_mutation_relaxation_refuses_stricter_explicit_or_implicit_floor(layout, after_floor):
-    before = {**MUTATION, "total": 10, "min_detected": 8}
-    layout.record = enter_goals(layout, [before])
-    after = {**MUTATION, "total": 10, **({"min_detected": after_floor} if after_floor else {})}
-    env = ChangeEnvironment(EntryEnvironment(layout.control))
-    with pytest.raises(ProposalError, match="weaken"):
-        create_proposal(
-            env,
-            layout.record.id,
-            {"kind": "relax", "goal_key": KEY, "after": after, "rationale": "stricter"},
-            session_key=None,
-        )
+def test_mutation_relaxation_refuses_stricter_explicit_or_implicit_floor(layout):
+    # The omitted floor is the 80 % implicit one: ceil(0.8 x 10) = 8, below an explicit 9 or 10.
+    layout.record = enter_goals(layout, [{**MUTATION, "total": 10}])
+    for after_floor in (9, 10):
+        refuse_stricter_floor(layout, after_floor, {"total": 10})
 
 
 def test_unresolved_auto_mutation_floor_is_a_policy_error_not_an_ordering_error():

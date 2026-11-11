@@ -287,28 +287,42 @@ def _render_mutation_tester_reference() -> list[str]:
     return [
         "#### `mutation_tester`",
         "",
-        "Proposal-locked mutation testing. A read-only LLM creator returns exact "
-        "source replacements; Booley runs a pristine baseline, then compiles and "
-        "tests each replacement in isolation. It does not parse HDL or inject "
-        "runtime selectors.",
+        "Deterministic mutation testing; it runs no LLM. Booley generates Mutants "
+        "from the RTL, runs a pristine baseline, then compiles and tests each Mutant "
+        "in isolation. The same RTL, `count`, and `seed` give identical Mutants, so "
+        "results are reproducible.",
         "",
         "**Mutation campaign modes:**",
         "",
         "| Campaign | Goal arguments | Interactive Mode arguments |",
         "|----------|-----------------------------------------|------------------------|",
-        "| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |",
-        '| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |',
-        '| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |',
+        "| Default fixed | Target campaign with `target` — generate 10 Mutants and require 8 detected (80 %) | _(no goal arguments)_ — the same 10-Mutant, 8-detected campaign |",
+        '| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires 80 % of N, rounded up; add `min_detected=K` to require K |',
+        '| Size-scaled | add `auto: true` — choose 3-25 Mutants from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |',
+        "",
+        "The default threshold is ceil(0.8 x count) detected Mutants, also for a Goal "
+        "without `min_detected`; an explicit `min_detected` overrides it. Survivors are "
+        "reported as `not detected`, with one note that some survivors may be "
+        "equivalent Mutants, which the threshold allows for. An invalid (non-elaborating) "
+        "Mutant is reported `invalid` and not scored.",
         "",
         "`dry_run=true` validates Target metadata and prints the source-size breakdown "
-        "and proposed auto count without invoking a Specialist or simulator.",
+        "and proposed auto count without running a simulator.",
         "",
-        'Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; '
-        '`target="<sim-target>"` chooses exactly one complete runnable Target suite; '
-        '`steer=["<context>"]` biases mutation selection. A valid lock '
-        "is reused on later runs, so new steering takes effect only with "
-        "`regen_lock=true`. The Target supplies the testbench top and complete RTL "
-        "closure; they are not separate caller inputs.",
+        'Call the `mutation_tester` Specialist from your Developer Agent session: `target="<sim-target>"` '
+        "chooses exactly one complete runnable Target suite; "
+        '`scope="<rtl-file,...>"` optionally chooses mutation sites (default: the '
+        "Target's own RTL, meaning the Project's Verilog/SystemVerilog sources in the "
+        "Target closure, minus testbench, vendored, and generated files and include "
+        "headers); `seed=<int>` (default 0) picks a different reproducible Mutant set. "
+        "The Target supplies the testbench top and complete RTL closure; they are not "
+        "separate caller inputs.",
+        "",
+        "Each Mutant's per-test timeout is max(10 x that test's baseline duration, "
+        "30 s), capped at 300 s. A timed-out Mutant counts as detected and is "
+        "reported separately as `detected (timeout)`. Results and criterion detail "
+        "record the reproducibility identity: scope file hashes, generator version, "
+        "pyslang version, seed, and count.",
     ]
 
 
@@ -339,7 +353,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         key=lambda t: t.name,
     )
     lines = [
-        "LLM-powered Specialists running in scoped, isolated workspaces:",
+        "Specialists (the Mutation Tester runs no LLM) running in scoped, isolated workspaces:",
         "",
         "Ask your Developer Agent session to invoke a Specialist by name with the arguments below. "
         "Or run `booley specialist <name> [args...]` inside the Sandbox. "

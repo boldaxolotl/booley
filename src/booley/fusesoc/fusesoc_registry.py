@@ -1413,6 +1413,31 @@ def vendored_files(project_root: Path | str) -> set[str]:
     return vendored
 
 
+def files_tagged(project_root: Path | str, tags: Collection[str]) -> set[str]:
+    """Canonical project paths any ``.core`` fileset or file tags with one of *tags*.
+
+    A cheap ``.core`` YAML read, no resolve: a Target inspection keeps only a
+    file's testbench role, so ``vendored`` and ``generated`` tags are read here.
+    """
+    root = Path(project_root)
+    wanted = set(tags)
+    found: set[str] = set()
+    for core_file in discover_cores(root):
+        try:
+            filesets = read_core(core_file).get("filesets")
+        except FuseSocError:
+            continue
+        for fileset in filesets.values() if isinstance(filesets, Mapping) else ():
+            for name, file_tags, _include in _fileset_entries(fileset):
+                if wanted & set(file_tags):
+                    found.add(
+                        canonical_project_path(
+                            root, core_relative_to_project(core_file, root, name)
+                        )
+                    )
+    return found
+
+
 def effective_source_tags(tags: tuple[str, ...], file_type: str, *, sim: bool) -> tuple[str, ...]:
     """Preserve explicit roles; typed C/C++ Sim inputs otherwise belong to TB."""
     if sim and file_type.lower() in {"cppsource", "csource"} and not ({"tb", "rtl"} & set(tags)):

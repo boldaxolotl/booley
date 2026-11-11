@@ -1,17 +1,22 @@
-"""Tests for MutationTesterSpecialist — lock-based creator + sim sweep.
+"""Tests for MutationTesterSpecialist — deterministic Mutants + sim sweep.
 
-Covers parsing, prompts, forbidden-category gating, argparse, and the
-cold/warm development with mocked agent + sim subprocess.  The old
-two-phase apply/revert tests were deleted along with their helpers.
+Covers argparse, the default scope and threshold, the baseline-scaled timeout,
+the reproducibility identity and the sweep, with the real Mutant generator and
+fake elaboration and simulation results.
 """
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
+import itertools
 import json
 import os
+import re
 import subprocess
 import sys
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -29,23 +34,17 @@ from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
     MutationResult,
-    MutationRunPlan,
     MutationSpec,
     MutationSummary,
     MutationTesterSpecialist,
     UnsupportedSimTargetError,
-    VerificationOutcome,
-    _extract_json,
-    _sanitize_json_text,
     generate_results_markdown,
     generate_specs_markdown,
-    parse_creator_output,
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.flows.sim.launched_work import launched_work
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 from tests.target_test_support import write_two_core_sim_project
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
@@ -112,12 +111,11 @@ def _make_endpoint(
     monkeypatch=None,
     *,
     target: str = "lite",
-    scope: str = "rtl/mod_a.sv,rtl/mod_b.sv",
+    scope: str | None = "rtl/mod_a.sv,rtl/mod_b.sv",
     tb_top: str = "design_top_tb",
     count: int | str | None = 10,
     min_detected: int | None = None,
-    steer: str | None = None,
-    regen_lock: bool = False,
+    seed: int | None = None,
     dut_top_module: str = "design_top",
     dut_files: tuple[str, ...] = ("rtl/design_top.sv",),
     extra_args: list[str] | None = None,
@@ -125,7 +123,7 @@ def _make_endpoint(
     """Build a endpoint with parsed args and loaded state.
 
     When *monkeypatch* is supplied, the BOOLEY_LOGS_DIR env var is set for
-    the lifetime of the test so mutation_lock writes land in tmp_path.
+    the lifetime of the test so the run's scratch files land in tmp_path.
     """
     state_file = _make_state(tmp_path)
     logs_dir = tmp_path / "logs"
@@ -138,17 +136,15 @@ def _make_endpoint(
         str(report_dir),
         "--target",
         target,
-        "--scope",
-        scope,
     ]
+    if scope is not None:
+        argv.extend(["--scope", scope])
     if count is not None:
         argv.extend(["--count", str(count)])
     if min_detected is not None:
         argv.extend(["--min-detected", str(min_detected)])
-    if steer:
-        argv.extend(["--steer", steer])
-    if regen_lock:
-        argv.append("--regen-lock")
+    if seed is not None:
+        argv.extend(["--seed", str(seed)])
     if extra_args:
         argv.extend(extra_args)
     env = _env_with_state(state_file, logs_dir)
@@ -180,42 +176,10 @@ def _sample_specs(n: int = 3, category: str = "operator_change") -> list[Mutatio
             line=i + 1,
             original_code=f"a + b_{i}",
             mutated_code=f"a - b_{i}",
-            detectability_argument="dx",
+            mutant_id=f"id{i}",
         )
         for i in range(1, n + 1)
     ]
-
-
-def test_creator_provider_failure_has_durable_debug_traceback(
-    tmp_path: Path, monkeypatch, caplog
-) -> None:
-    transcript_dir = tmp_path / "transcripts"
-    endpoint = _make_endpoint(
-        tmp_path,
-        monkeypatch,
-        extra_args=["--transcript-dir", str(transcript_dir)],
-    )
-    monkeypatch.setattr(
-        endpoint,
-        "_invoke_creator",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("creator boom")),
-    )
-    caplog.set_level("DEBUG")
-
-    specs, elapsed, error = endpoint._proposal_round("prompt", 1)
-
-    assert specs == []
-    assert elapsed == 0.0
-    assert error is not None and error.exit_code == EXIT_ERROR
-    assert error.report_text.startswith("mutation creator failed: RuntimeError: creator boom")
-    assert "Diagnostic:" in error.report_text
-    ordinary = [record for record in caplog.records if record.levelno >= 20]
-    assert all(record.exc_info is None for record in ordinary)
-    assert any(record.exc_info for record in caplog.records if record.levelno == 10)
-    diagnostics = list(transcript_dir.glob("mutation_tester.*.error.log"))
-    assert len(diagnostics) == 1
-    assert "RuntimeError: creator boom" in diagnostics[0].read_text(encoding="utf-8")
-    assert str(diagnostics[0]) in error.report_text
 
 
 def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch) -> None:
@@ -331,107 +295,45 @@ def test_qualified_target_criterion_resolution_guards(
     assert (endpoint.args.scope, endpoint.args.count, endpoint.args.min_detected) == expected
 
 
-def test_qualified_target_missing_scope_names_target_criterion(
+def test_qualified_target_without_any_scope_defaults_to_its_own_rtl(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The missing-scope error names the Target-name criterion, not the raw selector."""
+    """A criterion that declares no scope leaves the scope to the Target's own RTL."""
     endpoint = _two_core_endpoint(
         tmp_path, monkeypatch, {"mutation_score_first": {"total": 7}}, scope=""
     )
 
+    assert endpoint._apply_campaign_defaults() is None
+    assert (endpoint.args.scope, endpoint.args.count) == ("x.v", 7)
+
+
+def test_target_with_no_mutable_rtl_has_no_default_scope(tmp_path: Path, monkeypatch) -> None:
+    """A Target of only testbench files refuses instead of mutating nothing."""
+    write_two_core_sim_project(
+        tmp_path, '["vendor:a:x:1.0#first"]\ntests = ["one"]\n', target="first"
+    )
+    core = tmp_path / "x.core"
+    core.write_text(
+        core.read_text().replace(
+            "{files: [x.v], file_type: verilogSource}",
+            "{files: [x.v], file_type: verilogSource, tags: [tb]}",
+        )
+    )
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target=_CORE_A_FIRST, scope=None, count=None)
+
     result = endpoint._apply_campaign_defaults()
 
     assert result is not None and result.exit_code == EXIT_FAILURE
-    assert "mutation_score_first must declare scope" in result.report_text
+    assert "has no mutable RTL" in result.report_text
 
 
-def _sample_creator_json(specs: list[MutationSpec]) -> str:
-    return json.dumps({"mutations": [s.to_dict() for s in specs]})
-
-
-@dataclass
-class FakeAgentResult:
-    output: str = ""
-    structured: dict[str, Any] | None = None
-    session_id: str | None = "fake-sid"
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cached_tokens: int = 0
-    cost_usd: float = 0.0
+def _eighty_percent(count: int) -> int:
+    """``ceil(0.8 * count)`` in integers (float ``ceil(0.8 * 15)`` gives 13)."""
+    return -(-4 * count // 5)
 
 
 def _fake_proc(rc: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=rc, stdout=stdout, stderr=stderr)
-
-
-# ---------------------------------------------------------------------------
-# Parsing
-# ---------------------------------------------------------------------------
-
-
-class TestCreatorOutputParsing:
-    def test_valid_json(self):
-        specs = _sample_specs(3)
-        out = _sample_creator_json(specs)
-        parsed = parse_creator_output(out)
-        assert len(parsed) == 3
-        assert parsed[0].index == 1
-
-    def test_json_in_code_fence(self):
-        raw = _sample_creator_json(_sample_specs(2))
-        out = f"Here you go:\n```json\n{raw}\n```\nDone."
-        assert len(parse_creator_output(out)) == 2
-
-    def test_empty_output(self):
-        assert parse_creator_output("") == []
-
-    def test_empty_mutations(self):
-        assert parse_creator_output('{"mutations": []}') == []
-
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [
-            ("index", "1"),
-            ("line", "42"),
-            ("original_code", 7),
-            ("mutated_code", False),
-        ],
-    )
-    def test_rejects_wrongly_typed_proposal_fields(self, field: str, value: object):
-        proposal = {
-            "index": 1,
-            "category": "operator_change",
-            "file": "rtl/mod_a.sv",
-            "line": 42,
-            "original_code": "a + b",
-            "mutated_code": "a - b",
-            "detectability_argument": "changes arithmetic",
-        }
-        proposal[field] = value
-
-        assert parse_creator_output(json.dumps({"mutations": [proposal]})) == []
-
-
-class TestExtractJson:
-    def test_direct(self):
-        assert _extract_json('{"key": "value"}') == {"key": "value"}
-
-    def test_code_fence(self):
-        assert _extract_json('```json\n{"k": 42}\n```') == {"k": 42}
-
-    def test_trailing_comma(self):
-        assert _extract_json('{"key": "v",}') == {"key": "v"}
-
-    def test_no_json(self):
-        assert _extract_json("no json") is None
-
-
-class TestSanitizeJson:
-    def test_removes_trailing_comma_brace(self):
-        assert _sanitize_json_text('{"a": 1,}') == '{"a": 1}'
-
-    def test_removes_trailing_comma_bracket(self):
-        assert _sanitize_json_text("[1, 2,]") == "[1, 2]"
 
 
 # ---------------------------------------------------------------------------
@@ -463,141 +365,7 @@ class TestMutationSummary:
         assert c[1]["status"] == "untested"
 
 
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-
-
-class TestCreatorPrompt:
-    def test_includes_scope(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path, scope="rtl/mod_a.sv,rtl/mod_b.sv")
-        p = endpoint._build_creator_prompt()
-        assert "rtl/mod_a.sv" in p and "rtl/mod_b.sv" in p
-
-    def test_includes_count(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path, count=7)
-        p = endpoint._build_creator_prompt()
-        assert "7" in p
-
-    def test_includes_harness_section(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path)
-        p = endpoint._build_creator_prompt()
-        assert "exact source" in p
-        assert "read-only" in p
-
-    def test_no_revert_instruction(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path)
-        p = endpoint._build_creator_prompt()
-        assert "do not modify the source" in p
-
-    def test_allows_provider_read_only_shell_inspection(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path)
-        p = endpoint._build_creator_prompt()
-        assert "read-only shell commands" in p
-        assert "Do not edit any file" in p
-        assert "do not run shell commands" not in p
-
-    def test_steer_injected(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path, steer="Focus on FSMs")
-        p = endpoint._build_creator_prompt()
-        assert "Focus on FSMs" in p
-        assert "Developer Agent Context" in p
-
-    def test_no_steer_omits_section(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path)
-        p = endpoint._build_creator_prompt()
-        assert "Developer Agent Context" not in p
-
-    def test_uses_configured_testbench_files_for_boundary(self, tmp_path: Path):
-        # The read boundary names exact TB sources and include headers from
-        # the .core tags:[tb] partition, rather than their parent directories.
-        (tmp_path / "design.core").write_text(
-            "CAPI=2:\n"
-            "name: ::demo\n"
-            "filesets:\n"
-            "  rtl: {files: [rtl/mod_a.sv]}\n"
-            "  tb:\n"
-            "    files:\n"
-            "      - verif/tb_top.sv: {file_type: systemVerilogSource}\n"
-            "      - checks/asserts.svh: {is_include_file: true}\n"
-            "    tags: [tb]\n"
-            "targets:\n"
-            "  sim: {filesets: [rtl, tb], toplevel: tb_top}\n",
-            encoding="utf-8",
-        )
-
-        endpoint = _make_endpoint(tmp_path, scope="rtl/mod_a.sv")
-        p = endpoint._build_creator_prompt()
-
-        assert "verif/tb_top.sv" in p
-        assert "checks/asserts.svh" in p
-        assert "tb/ or any configured" not in p
-
-    def test_flat_repo_boundary_names_testbench_file_not_directory(self, tmp_path: Path):
-        (tmp_path / "picorv32.v").write_text("module picorv32; endmodule\n")
-        (tmp_path / "testbench.v").write_text("module testbench; endmodule\n")
-        (tmp_path / "design.core").write_text(
-            "CAPI=2:\n"
-            "name: ::demo\n"
-            "filesets:\n"
-            "  rtl: {files: [picorv32.v]}\n"
-            "  tb: {files: [testbench.v], tags: [tb]}\n"
-            "targets:\n"
-            "  sim: {filesets: [rtl, tb], toplevel: testbench}\n"
-        )
-
-        endpoint = _make_endpoint(tmp_path, scope="picorv32.v")
-        prompt = endpoint._build_creator_prompt()
-
-        assert "testbench.v" in prompt
-        assert "testbench.v/" not in prompt
-
-
-class TestRetryPrompt:
-    def test_forbidden_path_asks_for_new_json(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path)
-        outcome = VerificationOutcome(
-            ok=False,
-            baseline_passed=False,
-            pinned_passed=False,
-            log_tail="",
-            reason="forbidden category in spec list",
-        )
-        p = endpoint._build_retry_prompt(outcome)
-        assert "fresh JSON" in p or "JSON spec list" in p
-
-    def test_sim_failure_says_no_json(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path)
-        outcome = VerificationOutcome(
-            ok=False,
-            baseline_passed=False,
-            pinned_passed=True,
-            log_tail="some elab error",
-            reason="isolated variant did not elaborate",
-        )
-        p = endpoint._build_retry_prompt(outcome)
-        assert "Return a complete fresh JSON mutation list" in p
-
-
-# ---------------------------------------------------------------------------
-# Argparse
-# ---------------------------------------------------------------------------
-
-
-class TestArgparse:
-    def test_defaults(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path)
-        assert endpoint.args.count == 10
-        assert endpoint.args.min_detected is None
-        assert endpoint.args.steer is None
-        assert endpoint.args.regen_lock is False
-
-    def test_regen_lock_flag(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path, regen_lock=True)
-        assert endpoint.args.regen_lock is True
-
-
-def test_dry_run_does_not_touch_agents_simulators_or_locks(
+def test_dry_run_does_not_generate_or_build_anything(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -618,15 +386,13 @@ def test_dry_run_does_not_touch_agents_simulators_or_locks(
         patch.object(endpoint, "_validate_target_runner"),
         patch.object(endpoint, "cocotb_target"),
         patch.object(endpoint, "_target_test_suite"),
-        patch.object(endpoint, "_load_reusable_lock") as load_lock,
-        patch.object(endpoint, "_run_cold") as run_cold,
+        patch("booley.specialists.mutation_tester.subprocess.run") as build_or_run,
     ):
         result = endpoint._run()
 
     assert result.exit_code == EXIT_SUCCESS
     assert result.detail["mode"] == "dry_run"
-    load_lock.assert_not_called()
-    run_cold.assert_not_called()
+    build_or_run.assert_not_called()
 
 
 def _run_count_preview(endpoint, monkeypatch, *, params=None):
@@ -646,14 +412,12 @@ def _run_count_preview(endpoint, monkeypatch, *, params=None):
         patch.object(endpoint, "cocotb_target"),
         patch.object(endpoint, "_target_test_suite"),
         patch.object(endpoint, "emit_progress") as progress,
-        patch.object(endpoint, "_load_reusable_lock") as load_lock,
-        patch.object(endpoint, "_run_cold") as run_cold,
+        patch("booley.specialists.mutation_tester.subprocess.run") as build_or_run,
     ):
         before = set(endpoint.args.work_dir.rglob("*"))
         result = endpoint._run()
         assert set(endpoint.args.work_dir.rglob("*")) == before
-    load_lock.assert_not_called()
-    run_cold.assert_not_called()
+    build_or_run.assert_not_called()
     return result, progress
 
 
@@ -665,7 +429,9 @@ def _assert_preview_lines(result, count):
     assert len(result.display_lines) > 1
     assert all("\n" not in line for line in result.display_lines)
     assert result.display_lines[-1].startswith("mutation_tester dry-run:")
-    assert result.display_lines[-1].endswith(f"count={count}; min_detected={count}")
+    assert result.display_lines[-1].endswith(
+        f"count={count}; min_detected={_eighty_percent(count)}; seed=0"
+    )
 
 
 @pytest.mark.parametrize(
@@ -766,7 +532,7 @@ class TestArtifacts:
 
         assert "[rtl/mod (wide).sv:12](variants/mutant_1/rtl/mod%20%28wide%29.sv)" in md
         assert "`a \\| b` → `a & b`" in md
-        assert "not_detected" in md
+        assert "not detected" in md
 
     def test_results_markdown_names_the_first_killing_test(self):
         spec = _sample_specs(1)[0]
@@ -791,21 +557,20 @@ class TestArtifacts:
 # ---------------------------------------------------------------------------
 
 
-def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
-    """Make _invoke_agent_with_resume return successive FakeAgentResults."""
-    state = {"i": 0}
+def _fake_inspection(work_dir) -> SimpleNamespace:
+    """What the fake catalog reports: every ``rtl/*.sv`` is an untagged RTL input."""
+    from booley.targets.domain import TargetInput
 
-    def _fake(self, params, on_event=None):
-        i = state["i"]
-        state["i"] = i + 1
-        r = results[min(i, len(results) - 1)]
-        # Mimic Specialist._invoke_agent's side-effect.
-        self._last_session_id = r.session_id
-        return r
-
-    monkeypatch.setattr(
-        "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
-        _fake,
+    paths = sorted(
+        path.relative_to(work_dir).as_posix() for path in (Path(work_dir) / "rtl").glob("*.sv")
+    )
+    return SimpleNamespace(
+        parameters=dict(_TARGET_PARAMETERS),
+        rtl_files=tuple(paths),
+        inputs=tuple(
+            TargetInput(path, "acme:test:fixture:1", "systemVerilogSource", (), False, {})
+            for path in paths
+        ),
     )
 
 
@@ -900,13 +665,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
                         work_dir, target, **kwargs
                     ),
                     "core_closure": lambda _self, _handles: frozenset(),
-                    "inspect": lambda _self, _handle: SimpleNamespace(
-                        parameters=dict(_TARGET_PARAMETERS),
-                        rtl_files=tuple(
-                            path.relative_to(work_dir).as_posix()
-                            for path in (Path(work_dir) / "rtl").glob("*.sv")
-                        ),
-                    ),
+                    "inspect": lambda _self, _handle: _fake_inspection(work_dir),
                 },
             )()
         ),
@@ -917,33 +676,64 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
     )
 
 
-def _patch_sim_runner(monkeypatch, sim_returncode: int = 0):
-    """Stub the edalize build+run mutation_tester drives (Unit A.3).
+@dataclass
+class FakeSimulation:
+    """What a faked run asked the simulator to do: builds and adapter runs, in order."""
 
-    Behaviour:
-      * ``_resolve_target`` → fake (no FuseSoC CLI).
-      * a ``make`` build returns rc=0.
-      * a ``verilator_run`` per-mutant invocation returns the chosen rc, so
-        baseline + pinned + sweep all "pass" by default.
-      * ``git checkout`` is forwarded as a no-op success.
+    builds: list[int | None] = field(default_factory=list)  # Mutant index; None: baseline
+    runs: list[int | None] = field(default_factory=list)
+    run_timeouts: list[float] = field(default_factory=list)
+    agent_calls: list[str] = field(default_factory=list)  # entry points a run must not reach
+
+
+def _mutant_index(text: str) -> int | None:
+    """The Mutant a build directory or launched work names, or ``None`` for the baseline."""
+    match = re.search(r"mutant_(\d+)", text)
+    return int(match.group(1)) if match else None
+
+
+def _patch_fake_simulation(
+    monkeypatch,
+    *,
+    run: Callable[[int | None], subprocess.CompletedProcess] | None = None,
+    build: Callable[[int | None], subprocess.CompletedProcess] | None = None,
+) -> FakeSimulation:
+    """Fake every build and simulator run of a mutation campaign; no agent may be called.
+
+    ``run(index)`` and ``build(index)`` return the process for the baseline
+    (``index`` is ``None``) or Mutant ``index``; by default everything passes.
+    A ``run`` may raise ``subprocess.TimeoutExpired``.
     """
     _patch_resolve_target(monkeypatch)
+    from booley.specialists.specialist import Specialist
+
+    fake = FakeSimulation()
+
+    def _no_agent_named(name: str):
+        def refuse(*_args, **_kwargs):
+            fake.agent_calls.append(name)
+            raise RuntimeError("a mutation run must not call an agent")
+
+        return refuse
+
+    for entry_point in ("_invoke_agent", "_invoke_agent_with_resume"):
+        monkeypatch.setattr(Specialist, entry_point, _no_agent_named(entry_point))
     original = subprocess.run
 
     def _fake(cmd, *args, **kwargs):
-        joined = " ".join(cmd) if isinstance(cmd, list) else ""
-        if "booley.flows.sim.backends.verilator" in joined:
-            return _fake_proc(rc=sim_returncode, stdout="[sim] ok", stderr="")
         if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
-            return _fake_proc(rc=0, stdout="[make] ok", stderr="")
-        if isinstance(cmd, list) and cmd[:2] == ["git", "checkout"]:
-            return _fake_proc(rc=0)
+            index = _mutant_index(" ".join(cmd))
+            fake.builds.append(index)
+            return build(index) if build else _fake_proc(rc=0, stdout="[make] ok")
+        if isinstance(cmd, list) and "booley.flows.sim.backends.verilator" in " ".join(cmd):
+            index = _mutant_index(repr(launched_work(cmd)))
+            fake.runs.append(index)
+            fake.run_timeouts.append(kwargs["timeout"])
+            return run(index) if run else _fake_proc(rc=0, stdout="[sim] ok")
         return original(cmd, *args, **kwargs)
 
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.subprocess.run",
-        _fake,
-    )
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake)
+    return fake
 
 
 def test_elab_and_sim_run_verilator_binary(tmp_path: Path, monkeypatch):
@@ -1421,8 +1211,9 @@ def _assert_durable_campaign(tmp_path: Path, result: McpToolResult) -> None:
     results_path = tmp_path / result.detail["artifacts"]["results"]
     assert results_path.is_file()
     results = results_path.read_text(encoding="utf-8")
-    assert "[rtl/mod_a.sv:2](variants/mutant_1/rtl/mod_a.sv)" in results
-    assert "not_detected" in results
+    first = result.detail["classified"][0]
+    assert f"[rtl/mod_a.sv:{first['line']}](variants/mutant_1/rtl/mod_a.sv)" in results
+    assert "not detected" in results
     assert "campaign/mutant-logs/mutant_1.log" in results
     assert result.detail["classified"][0]["log"].endswith("campaign/mutant-logs/mutant_1.log")
 
@@ -1440,560 +1231,523 @@ def _assert_durable_campaign(tmp_path: Path, result: McpToolResult) -> None:
     assert not any(path.name.endswith(".tmp") for path in manifest_path.parents[1].iterdir())
 
 
-class TestColdStart:
-    def test_inconclusive_campaign_publishes_complete_manifest(
-        self,
-        tmp_path: Path,
-        monkeypatch,
-    ) -> None:
-        scope = "rtl/mod_a.sv"
-        _prepare_scope_files(tmp_path, [scope])
-        specs = _sample_specs(2)
-        summary = MutationSummary(
-            specs=specs,
-            results=[
-                MutationResult(index=1, invalid=True, sim_output_snippet="missing results"),
-                MutationResult(index=2, detected=True, first_killing_test="corner"),
-            ],
-        )
-        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2)
-        monkeypatch.setattr(endpoint, "target_eda_tool", lambda *_args: "verilator")
-        plan = MutationRunPlan(
-            scope_files=[scope],
-            scope_hashes={},
-            work_dir=tmp_path,
-            target="lite",
-            tb_top="design_top_tb",
-            report_dir=endpoint.args.report_dir,
-            min_detected=2,
-            count=2,
-            auto_mode=False,
-            formula_count=2,
-            source_size_budget=None,
-        )
+# ---------------------------------------------------------------------------
+# Deterministic campaign: real generator, fake builds and simulator runs
+# ---------------------------------------------------------------------------
 
-        result = endpoint._variant_infra_error(
-            plan,
-            specs,
-            1,
-            "cocotb result line is missing or malformed",
-            summary,
-        )
+_SCOPE = "rtl/mod_a.sv"
+_GENERATOR_OPERATORS = {"arithmetic-logical", "deletion"}  # what _prepare_scope_files offers
 
-        assert len(result.detail["classified"]) == 2
-        manifest_path = tmp_path / result.detail["artifacts"]["manifest"]
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assert [row["status"] for row in manifest["mutants"]] == ["invalid", "detected"]
 
-    def test_happy_path_writes_lock(self, tmp_path: Path, monkeypatch):
-        scope = "rtl/mod_a.sv"
-        _prepare_scope_files(tmp_path, [scope])
-        _write_dut_top(tmp_path)
+def _campaign(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    scope: str = _SCOPE,
+    run: Callable[[int | None], subprocess.CompletedProcess] | None = None,
+    build: Callable[[int | None], subprocess.CompletedProcess] | None = None,
+    **endpoint_args: Any,
+) -> tuple[MutationTesterSpecialist, McpToolResult, FakeSimulation]:
+    """Run one whole campaign of the scope file ``rtl/mod_a.sv`` (30 sites) on fake results."""
+    _prepare_scope_files(tmp_path, [scope])
+    fake = _patch_fake_simulation(monkeypatch, run=run, build=build)
+    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, **endpoint_args)
+    return endpoint, endpoint._run(), fake
 
-        specs = _sample_specs(2)
-        for spec in specs:
-            spec.file = f"./{scope}"
-        _patch_invoke_agent(
-            monkeypatch,
-            [
-                FakeAgentResult(output=_sample_creator_json(specs)),
-            ],
-        )
-        _patch_sim_runner(monkeypatch, sim_returncode=0)
 
-        endpoint = _make_endpoint(
-            tmp_path,
-            monkeypatch,
-            scope=scope,
-            count=2,
-            min_detected=0,
-            dut_top_module="design_top",
-            dut_files=("rtl/design_top.sv",),
-        )
-        result = endpoint._run()
+def _detects_every_mutant(index: int | None) -> subprocess.CompletedProcess:
+    """The baseline passes; every Mutant's test fails."""
+    return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
 
-        from booley.dev_support import mutation_lock as lm
 
-        assert lm.load_lock() is not None
-        # When the sim returns rc=0, baseline + pinned + sweep all "pass" —
-        # which means *nothing* is detected in the sweep.  min_detected=0
-        # keeps the run a PASS.
-        assert result.exit_code == EXIT_SUCCESS
-        assert result.detail["reused_lock"] is False
-        assert result.detail["verification_rounds"] == 1
-        assert "worktree not clean after sim sweep" not in result.report_text
-        variants = result.detail["variant_files"]
-        assert variants == [
+def _results_markdown(tmp_path: Path, result: McpToolResult) -> str:
+    return (tmp_path / result.detail["artifacts"]["results"]).read_text(encoding="utf-8")
+
+
+def _mutant_keys(result: McpToolResult) -> list[tuple[Any, ...]]:
+    return [
+        (row["id"], row["category"], row["file"], row["line"], row["status"])
+        for row in result.detail["classified"]
+    ]
+
+
+@pytest.mark.parametrize("removed", ["--steer", "--regen-lock"])
+def test_removed_llm_options_are_rejected(removed: str) -> None:
+    argv = ["--target", "sim", "--scope", "rtl/design.sv", removed]
+    if removed == "--steer":
+        argv.append("guidance")
+    with pytest.raises(SystemExit):
+        MutationTesterSpecialist().parse_args(argv)
+
+
+def test_campaign_never_calls_an_agent(tmp_path: Path, monkeypatch) -> None:
+    _, result, fake = _campaign(tmp_path, monkeypatch, count=2, min_detected=0)
+
+    assert fake.agent_calls == [], "the mutation run called an agent"
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert fake.runs == [None, 1, 2]  # the baseline, then each Mutant
+
+
+def test_leftover_lock_file_is_ignored(tmp_path: Path, monkeypatch) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    digest = "sha256:" + hashlib.sha256((tmp_path / _SCOPE).read_bytes()).hexdigest()
+    lock_dir = tmp_path / "logs" / ".runtime" / "mutation_tester" / "lock"
+    lock_dir.mkdir(parents=True)
+    legacy_mutations = [
+        {
+            "index": number,
+            "category": "legacy-lock-only",
+            "file": _SCOPE,
+            "line": number + 1,
+            "original_code": f"a + b_{number}",
+            "mutated_code": f"a * b_{number}",
+            "detectability_argument": "from an old lock",
+        }
+        for number in (1, 2)
+    ]
+    (lock_dir / "lock.json").write_text(
+        json.dumps(
             {
-                "index": 1,
-                "path": "reports/mutation_tester/1/campaign/variants/mutant_1/rtl/mod_a.sv",
-            },
-            {
-                "index": 2,
-                "path": "reports/mutation_tester/1/campaign/variants/mutant_2/rtl/mod_a.sv",
-            },
-        ]
-        assert all((tmp_path / row["path"]).is_file() for row in variants)
-        _assert_durable_campaign(tmp_path, result)
-        assert "mutation variant: reports/mutation_tester/1/campaign/variants/" in (
-            result.report_text
-        )
-        assert result.criterion_key == "mutation_score_lite"
-        criterion_detail = endpoint.state.criteria[result.criterion_key].detail
-        assert criterion_detail["artifacts"]["results"] == result.detail["artifacts"]["results"]
-        assert criterion_detail["variant_files"] == variants
+                "schema_version": "2.0",
+                "created_at": "2026-01-01T00:00:00Z",
+                "scope": [_SCOPE],
+                "scope_hashes": {_SCOPE: digest},
+                "count": 2,
+                "mutations": legacy_mutations,
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    def test_auto_count_publishes_source_size_budget(self, tmp_path: Path, monkeypatch):
-        scope = "rtl/mod_a.sv"
-        _prepare_scope_files(tmp_path, [scope])
-        _write_dut_top(tmp_path)
-        specs = _sample_specs(6)
-        _patch_invoke_agent(
-            monkeypatch,
-            [FakeAgentResult(output=_sample_creator_json(specs))],
-        )
-        _patch_sim_runner(monkeypatch, sim_returncode=0)
-        endpoint = _make_endpoint(
-            tmp_path,
-            monkeypatch,
-            scope=scope,
-            count="auto",
-            min_detected=0,
-        )
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0)
 
-        result = endpoint._run()
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert {row["category"] for row in result.detail["classified"]} <= _GENERATOR_OPERATORS
+    assert not lock_dir.exists()  # its old builds do not stay on disk
 
-        budget = result.detail["source_size_budget"]
-        assert budget["method"] == "language_neutral_source_size"
-        assert "complexity" not in result.detail
-        manifest_path = tmp_path / result.detail["artifacts"]["manifest"]
-        assert (manifest_path.parent / "source-size-budget.json").is_file()
-        assert not (manifest_path.parent / "complexity-breakdown.json").exists()
 
-    def test_warm_lock_reuses_only_proposals_and_rebuilds_variants(
-        self,
-        tmp_path: Path,
-        monkeypatch,
+def test_same_rtl_count_and_seed_reproduce_mutants_and_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, first, _ = _campaign(tmp_path, monkeypatch, count=4, min_detected=0, seed=3)
+    _, second, _ = _campaign(tmp_path, monkeypatch, count=4, min_detected=0, seed=3)
+
+    assert first.exit_code == second.exit_code == EXIT_SUCCESS, first.report_text
+    assert _mutant_keys(first) == _mutant_keys(second)
+    assert len({row[0] for row in _mutant_keys(first)}) == 4  # distinct Mutants
+    assert first.detail["identity"] == second.detail["identity"]
+    assert first.detail["artifacts"]["results"] != second.detail["artifacts"]["results"]
+
+
+def test_seed_defaults_to_zero_and_changes_the_selection(tmp_path: Path, monkeypatch) -> None:
+    endpoint, default_run, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
+    _, explicit_zero, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0, seed=0)
+    _, other_seed, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0, seed=1)
+
+    assert endpoint.args.seed == 0
+    assert default_run.exit_code == other_seed.exit_code == EXIT_SUCCESS, default_run.report_text
+    assert _mutant_keys(default_run) == _mutant_keys(explicit_zero)
+    assert _mutant_keys(default_run) != _mutant_keys(other_seed)
+    assert [run.detail["identity"]["seed"] for run in (default_run, other_seed)] == [0, 1]
+
+
+def test_negative_seed_is_refused(tmp_path: Path, monkeypatch) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    endpoint = _make_endpoint(tmp_path, monkeypatch, count=2, seed=-1, extra_args=["--dry-run"])
+
+    result, _ = _run_count_preview(endpoint, monkeypatch)
+
+    assert result.exit_code == EXIT_ERROR
+    assert "--seed must be a non-negative integer" in result.report_text
+
+
+_DEFAULT_SCOPE_CORE = """\
+CAPI=2:
+name: ::demo_core:0
+filesets:
+  rtl:
+    files:
+      - rtl/a.sv: {file_type: systemVerilogSource}
+      - rtl/b.v: {file_type: verilogSource}
+      - rtl/defs.svh: {file_type: systemVerilogSource, is_include_file: true}
+      - rtl/notes.cpp: {file_type: cppSource}
+      - rtl/table.mem: {file_type: user}
+  imported:
+    files:
+      - vendor/v.sv: {file_type: systemVerilogSource, tags: [vendored]}
+  built:
+    files: [gen/g.sv]
+    file_type: systemVerilogSource
+    tags: [generated]
+  tb:
+    files: [tb/tb_top.sv]
+    file_type: systemVerilogSource
+    tags: [tb]
+targets:
+  sim:
+    default_tool: verilator
+    flow: sim
+    flow_options: {tool: verilator}
+    filesets: [rtl, imported, built, tb]
+    toplevel: tb_top
+"""
+
+
+def test_omitted_scope_defaults_to_the_targets_own_rtl(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "design.core").write_text(_DEFAULT_SCOPE_CORE, encoding="utf-8")
+    for rel in (
+        "rtl/a.sv",
+        "rtl/b.v",
+        "rtl/defs.svh",
+        "rtl/notes.cpp",
+        "rtl/table.mem",
+        "vendor/v.sv",
+        "gen/g.sv",
+        "tb/tb_top.sv",
     ):
-        scope = "rtl/mod_a.sv"
-        _prepare_scope_files(tmp_path, [scope])
-        _write_dut_top(tmp_path)
-        _patch_invoke_agent(
-            monkeypatch,
-            [FakeAgentResult(output=_sample_creator_json(_sample_specs(2)))],
-        )
-        build_calls: list[list[str]] = []
-        _patch_resolve_target(monkeypatch)
-        original = subprocess.run
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("// stub\n", encoding="utf-8")
+    _write_tests_toml(tmp_path, '[sim]\ntests = ["smoke"]\n')
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="sim", scope=None, count=None)
 
-        def fake_run(cmd, *args, **kwargs):
-            joined = " ".join(cmd) if isinstance(cmd, list) else ""
-            if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
-                build_calls.append(cmd)
-                return _fake_proc(rc=0)
-            if "booley.flows.sim.backends.verilator" in joined:
-                return _fake_proc(rc=0)
-            return original(cmd, *args, **kwargs)
+    assert endpoint._apply_campaign_defaults() is None
 
-        monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", fake_run)
-        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2, min_detected=0)
-        cold = endpoint._run()
-        assert cold.detail["reused_lock"] is False
-        cold_builds = len(build_calls)
+    # The testbench, the vendored and generated files, the include header and the
+    # non-Verilog inputs are not mutable.
+    assert endpoint.args.scope == "rtl/a.sv,rtl/b.v"
+    assert endpoint._validate_scope_against_target(endpoint._scope_files()) is None
 
-        monkeypatch.setattr(
-            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
-            lambda *_args, **_kwargs: pytest.fail("warm reuse invoked the creator"),
-        )
-        warm_endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2, min_detected=0)
-        warm = warm_endpoint._run()
 
-        assert warm.exit_code == EXIT_SUCCESS
-        assert warm.detail["reused_lock"] is True
-        assert warm.detail["build_cached"] is False
-        assert len(build_calls) == cold_builds + 3  # pristine + two isolated variants
+def test_omitted_scope_with_a_declared_criterion_scope_uses_the_criterion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    endpoint = _two_core_endpoint(
+        tmp_path, monkeypatch, {"mutation_score_first": {"scope": ["y.v"], "total": 3}}, scope=""
+    )
 
-    def test_creator_no_specs_errors(self, tmp_path: Path, monkeypatch):
-        scope = "rtl/mod_a.sv"
-        _prepare_scope_files(tmp_path, [scope])
-        _write_dut_top(tmp_path)
-        _patch_invoke_agent(monkeypatch, [FakeAgentResult(output="no json here")])
-        _patch_sim_runner(monkeypatch, sim_returncode=0)
-        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2)
-        result = endpoint._run()
-        assert result.exit_code == EXIT_ERROR
+    assert endpoint._apply_campaign_defaults() is None
+    assert endpoint.args.scope == "y.v"
 
-    def test_forbidden_category_eventually_fails(self, tmp_path: Path, monkeypatch):
-        scope = "rtl/mod_a.sv"
-        _prepare_scope_files(tmp_path, [scope])
-        _write_dut_top(tmp_path)
-        # All 3 attempts return forbidden categories.
-        bad = [
-            MutationSpec(
-                index=1,
-                category="module_instantiation_swap",
-                file="rtl/mod_a.sv",
-                line=1,
-                original_code="a",
-                mutated_code="b",
-            )
-        ]
-        bad_json = json.dumps({"mutations": [s.to_dict() for s in bad]})
-        _patch_invoke_agent(
-            monkeypatch,
-            [
-                FakeAgentResult(output=bad_json),
-            ]
-            * 3,
-        )
-        _patch_sim_runner(monkeypatch, sim_returncode=0)
-        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=1)
-        result = endpoint._run()
-        assert result.exit_code == EXIT_ERROR
+
+@pytest.mark.parametrize("count, expected", [(10, 8), (15, 12), (5, 4)])
+def test_default_threshold_is_eighty_percent_of_count(
+    tmp_path: Path, monkeypatch, count: int, expected: int
+) -> None:
+    _prepare_scope_files(tmp_path, ["rtl/mod_a.sv", "rtl/mod_b.sv"])
+    endpoint = _make_endpoint(tmp_path, monkeypatch, count=count, extra_args=["--dry-run"])
+
+    result, _ = _run_count_preview(endpoint, monkeypatch)
+
+    assert result.detail["min_detected"] == expected
+    assert (4 * count + 4) // 5 == expected
+
+
+def test_explicit_min_detected_overrides_the_default(tmp_path: Path, monkeypatch) -> None:
+    _prepare_scope_files(tmp_path, ["rtl/mod_a.sv", "rtl/mod_b.sv"])
+    omitted = _make_endpoint(tmp_path, monkeypatch, count=10, extra_args=["--dry-run"])
+    from_cli = _make_endpoint(
+        tmp_path, monkeypatch, count=10, min_detected=3, extra_args=["--dry-run"]
+    )
+    from_criterion = _make_endpoint(tmp_path, monkeypatch, count=None, extra_args=["--dry-run"])
+
+    default_result, _ = _run_count_preview(omitted, monkeypatch)
+    cli_result, _ = _run_count_preview(from_cli, monkeypatch)
+    criterion_result, _ = _run_count_preview(
+        from_criterion, monkeypatch, params={"total": 7, "min_detected": 5}
+    )
+
+    assert default_result.detail["min_detected"] == 8  # what the overrides replace
+    assert cli_result.detail["min_detected"] == 3
+    assert (criterion_result.detail["count"], criterion_result.detail["min_detected"]) == (7, 5)
+
+
+def test_survivors_are_not_detected_with_one_equivalence_note(tmp_path: Path, monkeypatch) -> None:
+    def survive_first_three(index: int | None) -> subprocess.CompletedProcess:
+        return _fake_proc(rc=0 if index in (None, 1, 2, 3) else 1, stdout="[sim] run")
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count=5, min_detected=0, run=survive_first_three
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    markdown = _results_markdown(tmp_path, result)
+    assert markdown.count("## Not detected") == 1
+    assert markdown.count("may be equivalent") == 1
+    assert "| not detected |" in markdown
+    assert "coverage gap" not in markdown.lower()
+    assert result.report_text.count("NOT DETECTED [") == 3
+    assert result.report_text.count("may be equivalent") == 1
+    assert "3 not detected" in result.report_text
+
+    _, all_killed, _ = _campaign(
+        tmp_path, monkeypatch, count=3, min_detected=0, run=_detects_every_mutant
+    )
+
+    assert "may be equivalent" not in all_killed.report_text
+    assert "may be equivalent" not in _results_markdown(tmp_path, all_killed)
+
+
+def test_invalid_mutants_are_named_against_the_threshold(tmp_path: Path, monkeypatch) -> None:
+    def three_do_not_build(index: int | None) -> subprocess.CompletedProcess:
+        return _fake_proc(rc=2 if index in (2, 5, 8) else 0, stderr="error: does not elaborate")
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count=10, run=_detects_every_mutant, build=three_do_not_build
+    )
+
+    # ceil(0.8 x 10) = 8 of the 10 Mutants run: the 3 invalid ones use up the margin.
+    assert result.exit_code == EXIT_FAILURE, result.report_text
+    assert result.detail["min_detected"] == 8
+    assert (result.detail["detected"], result.detail["invalid"]) == (7, 3)
+    assert "3 invalid Mutants could not be judged" in result.report_text
+    assert "RESULT: FAIL (7/7 detected, need 8)" in result.report_text
+    assert "3 invalid Mutants could not be judged" in _results_markdown(tmp_path, result)
+
+
+def test_generator_shortfall_lowers_the_default_threshold(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / _SCOPE).write_text("module m;\n  assign y = a + b;\nendmodule\n", encoding="utf-8")
+
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=10, run=_detects_every_mutant)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert "only 2 candidate Mutants exist" in result.detail["shortfall"]
+    assert "only 2 candidate Mutants exist" in result.report_text
+    assert (result.detail["min_detected"], result.detail["total_valid"]) == (2, 2)
+    assert result.detail["identity"]["count"] == 10  # what was asked for
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("module m(;\n  assign = ;\nendmodule\n", "cannot parse 1 source file"),
+        ("module m;\nendmodule\n", "no Mutation Operator site in the scope files"),
+    ],
+    ids=["parse-error", "no-site"],
+)
+def test_generator_failures_refuse_before_any_build(
+    tmp_path: Path, monkeypatch, source: str, message: str
+) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / _SCOPE).write_text(source, encoding="utf-8")
+
+    _, result, fake = _campaign(tmp_path, monkeypatch, count=3)
+
+    assert result.exit_code == EXIT_ERROR
+    assert message in result.report_text
+    assert "pass --scope to choose the files to mutate" in result.report_text
+    assert result.detail["phase"] == "mutant_generation"
+    assert fake.builds == []
+
+
+def test_missing_pyslang_refuses_with_its_name(tmp_path: Path, monkeypatch) -> None:
+    from importlib import metadata
+
+    def _not_installed(_name: str) -> str:
+        raise metadata.PackageNotFoundError
+
+    monkeypatch.setattr(metadata, "version", _not_installed)
+
+    _, result, fake = _campaign(tmp_path, monkeypatch, count=2)
+
+    assert result.exit_code == EXIT_ERROR
+    assert "pyslang is not installed" in result.report_text
+    assert fake.builds == []
+
+
+@pytest.mark.parametrize(
+    ("baseline_seconds", "limit"), [(1.2, 30), (12.5, 125), (40, 300)], ids=str
+)
+def test_mutant_timeout_scales_with_the_tests_baseline_duration(
+    tmp_path: Path, monkeypatch, baseline_seconds: float, limit: int
+) -> None:
+    readings = [0.0, baseline_seconds]  # the baseline test starts and ends
+    later = itertools.count(1000)
+
+    def clock() -> float:
+        return readings.pop(0) if readings else float(next(later))
+
+    monkeypatch.setattr("booley.specialists.mutation_tester._monotonic", clock, raising=False)
+
+    _, result, fake = _campaign(tmp_path, monkeypatch, count=1, min_detected=0)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    # The baseline keeps the 300 s cap; the Mutant's limit is max(10 x baseline, 30 s), capped.
+    assert fake.run_timeouts == [300, limit]
+
+
+def test_timed_out_mutant_counts_as_detected_timeout(tmp_path: Path, monkeypatch) -> None:
+    def timeouts(index: int | None) -> subprocess.CompletedProcess:
+        if index == 1:  # the run was killed
+            raise subprocess.TimeoutExpired(cmd="run", timeout=30)
+        if index == 2:  # the adapter cut the run off first
+            return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (25s)\n")
+        return _fake_proc(rc=0 if index is None else 1, stdout="[sim] a test failed")
+
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=3, run=timeouts)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert result.detail["detected"] == 3  # a timed-out Mutant is detected
+    assert result.detail.get("detected_timeout") == 2  # and reported separately
+    assert [row["timed_out"] for row in result.detail["classified"]] == [True, True, False]
+    markdown = _results_markdown(tmp_path, result)
+    assert markdown.count("detected (timeout)") == 2
+    assert "- Detected (timeout): 2" in markdown
+    assert "3 detected (2 timeout)" in result.report_text
+
+
+def test_baseline_that_times_out_is_inconclusive(tmp_path: Path, monkeypatch) -> None:
+    def baseline_times_out(index: int | None) -> subprocess.CompletedProcess:
+        return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (295s)\n")
+
+    _, result, fake = _campaign(tmp_path, monkeypatch, count=1, run=baseline_times_out)
+
+    assert result.exit_code == EXIT_ERROR
+    assert "mutation baseline was inconclusive" in result.report_text
+    assert "simulation timed out" in result.report_text
+    assert fake.runs == [None]  # no Mutant ran
+
+
+def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch) -> None:
+    from booley.flows.mutation.generator import GENERATOR_VERSION
+
+    endpoint, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0, seed=5)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    digest = "sha256:" + hashlib.sha256((tmp_path / _SCOPE).read_bytes()).hexdigest()
+    expected = {
+        "scope_hashes": {_SCOPE: digest},
+        "generator_version": GENERATOR_VERSION,
+        "pyslang_version": importlib.metadata.version("pyslang"),
+        "seed": 5,
+        "count": 2,
+    }
+    criterion = endpoint.state.criteria[result.criterion_key].detail
+    manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
+    assert result.detail["identity"] == criterion["identity"] == manifest["identity"] == expected
+    markdown = _results_markdown(tmp_path, result)
+    for line in (
+        "- Seed: 5",
+        "- Count: 2",
+        f"- Generator version: {GENERATOR_VERSION}",
+        f"- pyslang version: {expected['pyslang_version']}",
+        f"`{_SCOPE}`: {digest}",
+    ):
+        assert line in markdown
+    assert f"seed 5, count 2, generator {GENERATOR_VERSION}" in result.report_text
+
+
+def test_happy_path_publishes_campaign_artifacts(tmp_path: Path, monkeypatch) -> None:
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert "worktree not clean after sim sweep" not in result.report_text
+    variants = result.detail["variant_files"]
+    assert variants == [
+        {
+            "index": index,
+            "path": f"reports/mutation_tester/1/campaign/variants/mutant_{index}/rtl/mod_a.sv",
+        }
+        for index in (1, 2)
+    ]
+    assert all((tmp_path / row["path"]).is_file() for row in variants)
+    _assert_durable_campaign(tmp_path, result)
+    assert "mutation variant: reports/mutation_tester/1/campaign/variants/" in result.report_text
+    assert result.criterion_key == "mutation_score_lite"
+
+
+def test_mutant_logs_of_an_earlier_run_do_not_survive_a_smaller_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, _, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
+    logs = tmp_path / "logs" / ".runtime" / "mutation_tester" / "campaign" / "mutant_logs"
+    assert sorted(path.name for path in logs.iterdir()) == [f"mutant_{i}.log" for i in (1, 2, 3)]
+
+    _campaign(tmp_path, monkeypatch, count=1, min_detected=0)
+
+    assert [path.name for path in logs.iterdir()] == ["mutant_1.log"]
+
+
+def test_auto_count_publishes_source_size_budget(tmp_path: Path, monkeypatch) -> None:
+    _, result, _ = _campaign(tmp_path, monkeypatch, count="auto", min_detected=0)
+
+    budget = result.detail["source_size_budget"]
+    assert budget["method"] == "language_neutral_source_size"
+    manifest_path = tmp_path / result.detail["artifacts"]["manifest"]
+    assert (manifest_path.parent / "source-size-budget.json").is_file()
+
+
+def test_a_run_without_a_verdict_publishes_a_complete_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def first_mutant_has_no_observation(index: int | None) -> subprocess.CompletedProcess:
+        if index == 1:
+            return _fake_proc(rc=1, stdout="[SIM_INFRA_ERROR] the harness broke\n")
+        return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count=2, min_detected=0, run=first_mutant_has_no_observation
+    )
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.report_text.startswith("mutation campaign produced no trustworthy verdict")
+    assert result.detail["phase"] == "variant_infrastructure"
+    assert len(result.detail["classified"]) == 2
+    manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
+    assert [row["status"] for row in manifest["mutants"]] == ["invalid", "detected"]
+    assert manifest["identity"]["count"] == 2
 
 
 class TestResidueWarning:
     """The residue warning compares against the pre-run snapshot, not HEAD (#2777)."""
 
-    SCOPE = "rtl/mod_a.sv"
     WARNING = "WARNING: worktree not clean after sim sweep"
 
-    def _arrange(
-        self,
-        tmp_path: Path,
-        monkeypatch,
-        *,
-        in_git: bool = True,
-        dirty_before: bool = False,
-    ) -> dict[str, bool]:
-        """Build a scope file, a creator, and a sim fake; return the run-edit switch.
-
-        While ``switch["edit_scope"]`` is true, a verilator call on the last
-        mutant (count=2) appends a line to the scope file, standing in for a
-        run that leaves residue. By then every private build has copied the
-        scope file, so the resolved proposals still match.
-        """
-        _prepare_scope_files(tmp_path, [self.SCOPE])
-        _write_dut_top(tmp_path)
-        if in_git:
-            _init_repo_with(
-                tmp_path,
-                {
-                    self.SCOPE: (tmp_path / self.SCOPE).read_text(encoding="utf-8"),
-                    "rtl/design_top.sv": (tmp_path / "rtl/design_top.sv").read_text(
-                        encoding="utf-8"
-                    ),
-                },
-            )
-        if dirty_before:
-            with (tmp_path / self.SCOPE).open("a", encoding="utf-8") as handle:
+    def _run(self, tmp_path: Path, monkeypatch, *, edit_during_run: bool, edit_before: bool):
+        """Run two Mutants; ``edit_during_run`` makes the second one's run append to the scope file."""
+        _prepare_scope_files(tmp_path, [_SCOPE])
+        if edit_before:
+            with (tmp_path / _SCOPE).open("a", encoding="utf-8") as handle:
                 handle.write("// uncommitted edit made before the run\n")
-        _patch_invoke_agent(
-            monkeypatch,
-            [FakeAgentResult(output=_sample_creator_json(_sample_specs(2)))],
-        )
-        _patch_resolve_target(monkeypatch)
-        switch = {"edit_scope": False}
-        original = subprocess.run
 
-        def fake_run(cmd, *args, **kwargs):
-            joined = " ".join(cmd) if isinstance(cmd, list) else ""
-            if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
-                return _fake_proc(rc=0)
-            if "booley.flows.sim.backends.verilator" in joined:
-                if switch["edit_scope"] and "mutant_2" in repr(launched_work(cmd)):
-                    with (tmp_path / self.SCOPE).open("a", encoding="utf-8") as handle:
-                        handle.write("// edit left by the run\n")
-                return _fake_proc(rc=0)
-            return original(cmd, *args, **kwargs)
+        def run(index: int | None) -> subprocess.CompletedProcess:
+            if edit_during_run and index == 2:
+                with (tmp_path / _SCOPE).open("a", encoding="utf-8") as handle:
+                    handle.write("// edit left by the run\n")
+            return _fake_proc(rc=0)
 
-        monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", fake_run)
-        return switch
+        return _campaign(tmp_path, monkeypatch, count=2, min_detected=0, run=run)[1]
 
-    def _cold(self, tmp_path: Path, monkeypatch) -> McpToolResult:
-        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=self.SCOPE, count=2, min_detected=0)
-        result = endpoint._run()
-        assert result.detail["reused_lock"] is False, result.report_text
-        return result
+    def test_run_ignores_scope_edit_that_predates_run(self, tmp_path: Path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, edit_during_run=False, edit_before=True)
 
-    def _warm(self, tmp_path: Path, monkeypatch) -> McpToolResult:
-        monkeypatch.setattr(
-            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
-            lambda *_args, **_kwargs: pytest.fail("warm reuse invoked the creator"),
-        )
-        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=self.SCOPE, count=2, min_detected=0)
-        result = endpoint._run()
-        assert result.detail["reused_lock"] is True
-        return result
-
-    @pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
-    def test_run_ignores_scope_edit_that_predates_run(
-        self, tmp_path: Path, monkeypatch, warm: bool
-    ):
-        self._arrange(tmp_path, monkeypatch, dirty_before=True)
-        result = self._cold(tmp_path, monkeypatch)
-        if warm:
-            result = self._warm(tmp_path, monkeypatch)
-
+        assert result.exit_code == EXIT_SUCCESS, result.report_text
         assert self.WARNING not in result.report_text
 
-    def test_cold_run_warns_naming_dirty_scope_file_the_run_changed(
-        self, tmp_path: Path, monkeypatch
-    ):
-        switch = self._arrange(tmp_path, monkeypatch, dirty_before=True)
-        switch["edit_scope"] = True
-
-        result = self._cold(tmp_path, monkeypatch)
+    def test_run_warns_naming_the_scope_file_it_changed(self, tmp_path: Path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, edit_during_run=True, edit_before=True)
 
         warnings = [line for line in result.report_text.splitlines() if self.WARNING in line]
-        assert [line.strip() for line in warnings] == [f"{self.WARNING}: {self.SCOPE}"]
+        assert [line.strip() for line in warnings] == [f"{self.WARNING}: {_SCOPE}"]
         lines = result.report_text.splitlines()
         assert lines.index(warnings[0]) < next(
             i for i, line in enumerate(lines) if line.startswith("RESULT: ")
         )
 
-    def test_warm_run_warns_naming_clean_scope_file_the_run_changed(
-        self, tmp_path: Path, monkeypatch
-    ):
-        switch = self._arrange(tmp_path, monkeypatch)
-        self._cold(tmp_path, monkeypatch)
-        switch["edit_scope"] = True
+    def test_scope_residue_detects_deleted_scope_file(self, tmp_path: Path):
+        from booley.dev_support import mutation_workspace
 
-        result = self._warm(tmp_path, monkeypatch)
-
-        warnings = [line for line in result.report_text.splitlines() if self.WARNING in line]
-        assert [line.strip() for line in warnings] == [f"{self.WARNING}: {self.SCOPE}"]
-
-    def test_cold_rollback_of_clean_scope_file_leaves_no_warning(
-        self, tmp_path: Path, monkeypatch
-    ):
-        switch = self._arrange(tmp_path, monkeypatch)
-        switch["edit_scope"] = True
-
-        result = self._cold(tmp_path, monkeypatch)
-
-        assert self.WARNING not in result.report_text
-        assert "edit left by the run" not in (tmp_path / self.SCOPE).read_text(encoding="utf-8")
-
-    def test_cold_run_outside_git_warns_naming_changed_scope_file(
-        self, tmp_path: Path, monkeypatch
-    ):
-        switch = self._arrange(tmp_path, monkeypatch, in_git=False)
-        switch["edit_scope"] = True
-
-        result = self._cold(tmp_path, monkeypatch)
-
-        assert f"{self.WARNING}: {self.SCOPE}" in result.report_text
-
-    def test_scope_residue_detects_deleted_scope_file(self, tmp_path: Path, monkeypatch):
-        from booley.dev_support import mutation_lock as lm
-
-        _prepare_scope_files(tmp_path, [self.SCOPE])
-        baseline = lm.compute_scope_hashes([self.SCOPE], tmp_path)
+        _prepare_scope_files(tmp_path, [_SCOPE])
+        baseline = mutation_workspace.compute_scope_hashes([_SCOPE], tmp_path)
         assert MutationTesterSpecialist._scope_residue(baseline, tmp_path) == []
 
-        (tmp_path / self.SCOPE).unlink()
+        (tmp_path / _SCOPE).unlink()
 
-        assert MutationTesterSpecialist._scope_residue(baseline, tmp_path) == [self.SCOPE]
-
-
-# ---------------------------------------------------------------------------
-# QA-11: git rollback net + scope boundary enforcement
-# ---------------------------------------------------------------------------
-
-
-def _git(*args: str, cwd: Path) -> None:
-    subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-
-
-def _init_repo_with(tmp_path: Path, files: dict[str, str]) -> None:
-    """Init a git repo in *tmp_path* and commit *files* (rel path -> content)."""
-    _git("init", cwd=tmp_path)
-    _git("config", "user.email", "t@example.com", cwd=tmp_path)
-    _git("config", "user.name", "Tester", cwd=tmp_path)
-    for rel, content in files.items():
-        p = tmp_path / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-    _git("add", "-A", cwd=tmp_path)
-    _git("commit", "-m", "init", cwd=tmp_path)
-
-
-class TestGitRollbackNet:
-    def test_modified_tracked_lists_only_tracked_changes(self, tmp_path: Path):
-        endpoint = _make_endpoint(tmp_path, scope="rtl/mod_a.sv")
-        _init_repo_with(tmp_path, {"rtl/mod_a.sv": "module a; endmodule\n"})
-        assert endpoint._git_modified_tracked(tmp_path) == set()
-        # Modify the tracked file + drop an untracked one.
-        (tmp_path / "rtl/mod_a.sv").write_text("module a; wire x; endmodule\n")
-        (tmp_path / "rtl/untracked.sv").write_text("module u; endmodule\n")
-        modified = endpoint._git_modified_tracked(tmp_path)
-        assert modified == {"rtl/mod_a.sv"}  # untracked excluded
-
-    def test_reverts_stray_out_of_scope_tracked_file(self, tmp_path: Path):
-        """The QA-11 blast radius: creator strays into a tracked file off-scope."""
-        endpoint = _make_endpoint(tmp_path, scope="rtl/mod_a.sv")
-        _init_repo_with(
-            tmp_path,
-            {
-                "rtl/mod_a.sv": "module a; endmodule\n",
-                "rtl/mod_x.sv": "module x; endmodule\n",
-            },
-        )
-        pre_dirty = endpoint._git_modified_tracked(tmp_path)
-        # Simulate the creator dirtying the scope file AND an out-of-scope file.
-        (tmp_path / "rtl/mod_a.sv").write_text("module a; /*mut*/ endmodule\n")
-        (tmp_path / "rtl/mod_x.sv").write_text(
-            "module x; import booley_mut_pkg::*; endmodule\n",
-        )
-        reverted = endpoint._revert_stray_tracked_edits(
-            tmp_path,
-            pre_dirty,
-            keep=["rtl/mod_a.sv"],
-        )
-        assert reverted == ["rtl/mod_x.sv"]
-        # Stray rolled back; the kept scope file left untouched.
-        assert "booley_mut_pkg" not in (tmp_path / "rtl/mod_x.sv").read_text()
-        assert "/*mut*/" in (tmp_path / "rtl/mod_a.sv").read_text()
-
-    def test_full_rollback_keep_empty_reverts_everything_this_run_dirtied(
-        self,
-        tmp_path: Path,
-    ):
-        endpoint = _make_endpoint(tmp_path, scope="rtl/mod_a.sv")
-        _init_repo_with(
-            tmp_path,
-            {
-                "rtl/mod_a.sv": "module a; endmodule\n",
-                "rtl/mod_x.sv": "module x; endmodule\n",
-            },
-        )
-        pre_dirty = endpoint._git_modified_tracked(tmp_path)
-        (tmp_path / "rtl/mod_a.sv").write_text("module a; changed endmodule\n")
-        (tmp_path / "rtl/mod_x.sv").write_text("module x; changed endmodule\n")
-        reverted = endpoint._revert_stray_tracked_edits(tmp_path, pre_dirty, keep=[])
-        assert reverted == ["rtl/mod_a.sv", "rtl/mod_x.sv"]
-        assert "changed" not in (tmp_path / "rtl/mod_a.sv").read_text()
-        assert "changed" not in (tmp_path / "rtl/mod_x.sv").read_text()
-
-    def test_preserves_pre_existing_wip(self, tmp_path: Path):
-        """Pre-run dirty files (unrelated WIP) are never clobbered by the net."""
-        endpoint = _make_endpoint(tmp_path, scope="rtl/mod_a.sv")
-        _init_repo_with(
-            tmp_path,
-            {
-                "rtl/mod_a.sv": "module a; endmodule\n",
-                "rtl/wip.sv": "module wip; endmodule\n",
-            },
-        )
-        # Pre-existing uncommitted edit — captured as the baseline.
-        (tmp_path / "rtl/wip.sv").write_text("module wip; my_wip endmodule\n")
-        pre_dirty = endpoint._git_modified_tracked(tmp_path)
-        assert "rtl/wip.sv" in pre_dirty
-        # The run then strays into mod_a.
-        (tmp_path / "rtl/mod_a.sv").write_text("module a; stray endmodule\n")
-        reverted = endpoint._revert_stray_tracked_edits(tmp_path, pre_dirty, keep=[])
-        assert reverted == ["rtl/mod_a.sv"]
-        # WIP survived; stray reverted.
-        assert "my_wip" in (tmp_path / "rtl/wip.sv").read_text()
-        assert "stray" not in (tmp_path / "rtl/mod_a.sv").read_text()
-
-    def test_no_git_is_graceful_noop(self, tmp_path: Path):
-        """Outside a git repo the net degrades to the content snapshot alone."""
-        endpoint = _make_endpoint(tmp_path, scope="rtl/mod_a.sv")
-        assert endpoint._git_modified_tracked(tmp_path) is None
-        assert endpoint._revert_stray_tracked_edits(tmp_path, None, keep=[]) == []
-
-
-class TestColdScopeEnforcement:
-    def test_cold_run_reverts_out_of_scope_creator_edits(
-        self,
-        tmp_path: Path,
-        monkeypatch,
-    ):
-        """End-to-end: a creator that mutates a tracked file OUTSIDE --scope has
-        that edit reverted (scope guard + rollback net), leaving a clean tree."""
-        scope = "rtl/mod_a.sv"
-        _init_repo_with(
-            tmp_path,
-            {
-                "rtl/mod_a.sv": "module mod_a; endmodule\n",
-                "rtl/off_scope.sv": "module off_scope; endmodule\n",
-                "rtl/design_top.sv": (
-                    "module design_top(input logic clk);\n"
-                    "  logic [3:0] r;\n"
-                    "  always_ff @(posedge clk) r <= r + 1;\n"
-                    "endmodule\n"
-                ),
-            },
-        )
-
-        specs = _sample_specs(1)
-        specs[0].file = scope
-
-        def _fake_agent(self, params, on_event=None):
-            # Creator ignores scope and strays into a DIFFERENT tracked file.
-            (tmp_path / "rtl/off_scope.sv").write_text(
-                "module off_scope; /* unauthorized edit */ endmodule\n",
-                encoding="utf-8",
-            )
-            self._last_session_id = "fake-sid"
-            return FakeAgentResult(output=_sample_creator_json(specs))
-
-        monkeypatch.setattr(
-            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
-            _fake_agent,
-        )
-
-        # Sim/make fakes, but forward real git so the rollback actually runs.
-        _patch_resolve_target(monkeypatch)
-        original = subprocess.run
-
-        def _fake_run(cmd, *args, **kwargs):
-            joined = " ".join(cmd) if isinstance(cmd, list) else ""
-            if "booley.flows.sim.backends.verilator" in joined:
-                return _fake_proc(rc=0, stdout="[sim] ok")
-            if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
-                return _fake_proc(rc=0, stdout="[make] ok")
-            return original(cmd, *args, **kwargs)
-
-        monkeypatch.setattr(
-            "booley.specialists.mutation_tester.subprocess.run",
-            _fake_run,
-        )
-
-        endpoint = _make_endpoint(
-            tmp_path,
-            monkeypatch,
-            scope=scope,
-            count=1,
-            min_detected=0,
-            dut_top_module="design_top",
-            dut_files=("rtl/design_top.sv",),
-        )
-        endpoint._run()
-
-        # The stray out-of-scope edit must be gone; the working tree clean.
-        assert "unauthorized edit" not in (tmp_path / "rtl/off_scope.sv").read_text()
-        status = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert status.stdout.strip() == "", f"tree left dirty: {status.stdout!r}"
+        assert MutationTesterSpecialist._scope_residue(baseline, tmp_path) == [_SCOPE]
 
 
 # ---------------------------------------------------------------------------
-# Warm reuse
+# Scope validation against the Target
 # ---------------------------------------------------------------------------
 
 
@@ -2313,7 +2067,7 @@ class TestCocotbSimDispatch:
             endpoint.cocotb_target("default", tmp_path)
         assert "icarus and verilator only" in str(exc.value)
 
-    def test_unsupported_target_aborts_before_any_agent_call(
+    def test_unsupported_target_aborts_before_any_build(
         self,
         tmp_path: Path,
         monkeypatch,
@@ -2322,24 +2076,19 @@ class TestCocotbSimDispatch:
         _prepare_scope_files(tmp_path, [scope])
         _write_dut_top(tmp_path)
         _patch_cocotb_target(monkeypatch, module="tb.test_noc", eda_tool="vcs")
-        calls: list[int] = []
-        monkeypatch.setattr(
-            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
-            lambda self, params, on_event=None: calls.append(1),
-        )
-
         endpoint = _make_endpoint(tmp_path, monkeypatch, target="default", scope=scope, count=1)
         # This test isolates runner compatibility; inspection refusal has its own tests.
         monkeypatch.setattr(endpoint, "_validate_scope_against_target", lambda _scope: None)
-        result = endpoint._run()
+        with patch.object(endpoint, "_run_elab") as build:
+            result = endpoint._run()
 
         assert result.exit_code == EXIT_ERROR
         assert "vcs" in result.report_text
-        assert calls == []  # the creator agent was never invoked
+        build.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# SETUP-F-41 — infra failures are not the creator's fault, and never a kill
+# SETUP-F-41 — infra failures are not the design's fault, and never a kill
 # ---------------------------------------------------------------------------
 
 _INFRA_OUT = (
@@ -2460,31 +2209,29 @@ def test_cpp_sim_harness_is_not_mutation_scope(tmp_path):
     assert result.exit_code != 0
 
 
-def test_cpp_scope_refuses_before_creator_and_build(tmp_path):
+def test_cpp_scope_refuses_before_generation_and_build(tmp_path):
     _author_scope_core(tmp_path)
     source = tmp_path / "tb/sim_main.cpp"
     source.write_text("int main() {}\n")
     endpoint = _make_endpoint(tmp_path, target="sim", scope="tb/sim_main.cpp")
     with (
-        patch.object(endpoint, "_invoke_creator") as creator,
+        patch("booley.specialists.mutation_tester.generate_mutants") as generate,
         patch.object(endpoint, "_run_elab") as build,
     ):
         result = endpoint._run()
     assert result.exit_code != 0
     assert "not an HDL RTL mutation source" in result.report_text
-    creator.assert_not_called()
+    generate.assert_not_called()
     build.assert_not_called()
 
 
-def test_creator_boundary_uses_exact_tb_files_in_shared_directory(tmp_path):
+def test_default_scope_keeps_rtl_that_shares_a_directory_with_testbench_files(tmp_path):
     from tests.test_target_catalog import _category_sim_core
 
     _category_sim_core(tmp_path)
-    endpoint = _make_endpoint(tmp_path, target="sim", scope="shared/dut.sv")
+    endpoint = _make_endpoint(tmp_path, target="sim", scope=None)
     assert endpoint._validate_scope_against_target(["shared/dut.sv"]) is None
-    prompt = endpoint._build_creator_prompt()
-    assert "shared/main.cpp" in prompt
-    assert "testbench source/include directory" not in prompt
+    assert endpoint._default_scope() == ["shared/dut.sv"]
 
 
 @pytest.mark.parametrize("cocotb", [False, True])

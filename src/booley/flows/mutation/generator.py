@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from importlib import metadata
 from itertools import zip_longest
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -16,6 +17,7 @@ from types import MappingProxyType
 from booley.core.boundary import BoundaryError, require_int, require_positive_int
 from booley.flows.mutation.operators import (
     OPERATOR_NAMES,
+    MissingPyslangError,
     MutantGeneratorError,
     Site,
     SourceParseError,
@@ -27,6 +29,14 @@ from booley.flows.mutation.operators import (
 GENERATOR_VERSION = "2"
 
 _ID_LENGTH = 20  # hex characters of the SHA-256 digest kept in a Mutant ID
+
+
+def parser_version() -> str:
+    """The installed pyslang version, which a run records as part of its identity."""
+    try:
+        return metadata.version("pyslang")
+    except metadata.PackageNotFoundError as exc:
+        raise MissingPyslangError("pyslang is not installed") from exc
 
 
 @dataclass(frozen=True)
