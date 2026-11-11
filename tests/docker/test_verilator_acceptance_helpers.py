@@ -35,6 +35,7 @@ def test_ignored_sigterm_is_killed_and_timeout_remains_a_failure() -> None:
     finally:
         if child.poll() is None:
             child.kill()
+            # Unbounded child: the test drives this Popen itself
             child.wait(timeout=5)
         if child.stdout is not None:
             child.stdout.close()
