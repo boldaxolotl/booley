@@ -408,6 +408,7 @@ def _assert_headless_lifecycle(docker: str, workspace: Path) -> None:
 
 
 @pytest.mark.slow()
+# Integration budget: ~70 s per Flow plus provisioning; child bounds (up to 660 s) sit inside it
 @pytest.mark.timeout(3600)
 def test_host_provisioned_vivado_completes_issued_session_runtime_flow_twice(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

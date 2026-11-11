@@ -107,7 +107,7 @@ def test_docker_client_stall_fails_with_elapsed_time_and_partial_output(
 ) -> None:
     """A stalled Docker child fails through the shared bounded helper, not a bare timeout."""
     fake_docker = tmp_path / "docker"
-    fake_docker.write_bytes(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n".encode())
+    fake_docker.write_bytes(b"#!/bin/sh\necho partial-docker-output\nexec sleep 60\n")
     fake_docker.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
 
@@ -117,6 +117,7 @@ def test_docker_client_stall_fails_with_elapsed_time_and_partial_output(
     message = str(stalled.value)
     assert "docker info timed out after 1 s" in message
     assert "elapsed" in message
+    assert "partial-docker-output" in message
 
 
 def test_isolated_daemon_routes_commands_and_cleans_up(monkeypatch, tmp_path: Path) -> None:

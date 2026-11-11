@@ -209,7 +209,7 @@ def _run_paid_flow_with_vendor_evidence(container: str, p: Prerequisites) -> Non
                     active_status = status.stdout
                     break
         time.sleep(1)
-    # Unbounded child: the test drives this Popen itself while sampling lmstat.
+    # Unbounded child: the test drives this Popen itself while sampling lmstat
     output, _ = process.communicate(timeout=690)
     assert process.returncode == 0, output
     assert active_status, "FlexNet never reported this Session's paid checkout"
@@ -232,6 +232,7 @@ def _run_paid_flow_with_vendor_evidence(container: str, p: Prerequisites) -> Non
 
 
 @pytest.mark.slow()
+# Integration budget: ~70 s per Flow plus licence checkout; child bounds (up to 690 s) sit inside it
 @pytest.mark.timeout(1800)
 def test_paid_vivado_checkout_uses_production_relay_and_vendor_status_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
