@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.subprocess_budget import run_bounded_child
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness.setup import docker_image as init_docker_image
@@ -48,7 +50,6 @@ from booley.runtime.build_stamp import (
     wheel_embedded_source_fingerprint,
     write_build_stamp,
 )
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -67,12 +68,7 @@ def _write_wheel(root: Path, name: str = WHEEL_NAME) -> Path:
 
 
 def _git(root: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(root), *args],
-        check=True,
-        capture_output=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "-C", str(root), *args], check=True)
 
 
 @pytest.fixture
@@ -193,11 +189,9 @@ class TestWriteBuildStamp:
         """Add a commit whose committer date is pinned to *committed_at*."""
         (repo / "README").write_text(f"at {committed_at}\n", encoding="utf-8")
         _git(repo, "add", ".")
-        subprocess.run(
+        run_bounded_child(
             ["git", "-C", str(repo), "commit", "-m", "dated"],
             check=True,
-            capture_output=True,
-            timeout=60,
             # Ignore the developer's global git config (signing, hooks).
             env={
                 **os.environ,

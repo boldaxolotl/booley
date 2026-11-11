@@ -25,6 +25,7 @@ pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
 
 def _git(root: Path, *args: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
+    # Kept on subprocess.run: needs stdin (`hash-object --stdin`) and binary output.
     return subprocess.run(
         ["git", "-C", str(root), *args],
         input=input_bytes,

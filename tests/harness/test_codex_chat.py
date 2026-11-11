@@ -161,7 +161,7 @@ def test_shim_preserves_arguments_environment_and_exit_status(tmp_path, monkeypa
     shim = Path(codex_chat.__file__).parents[1] / "data/codex_chat.mjs"
     result = run_bounded_child(
         [node, str(shim), "S123", str(entrypoint), "argument with spaces", "--no-daemon"],
-        timeout=30,  # Node startup headroom; sized for slow CI runners.
+        # Node startup headroom: the default bound is sized for slow CI runners.
     )
     assert result.returncode == 17
     assert json.loads(result.stdout) == {

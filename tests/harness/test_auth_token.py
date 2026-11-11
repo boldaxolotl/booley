@@ -1090,28 +1090,23 @@ def test_cli_auth_from_non_project_linked_worktree_is_not_refused(
     tmp_path, monkeypatch, capsys, repo
 ):
     """Only a proven linked Project checkout refuses; other linked worktrees keep auth."""
-    import subprocess
     import sys
+
+    from tests.subprocess_budget import run_bounded_child
 
     _linked_auth(tmp_path, monkeypatch)
     main = tmp_path / "plain"
     git = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com"]
-    subprocess.run([*git, "init", str(main)], check=True, capture_output=True, timeout=30)
+    run_bounded_child([*git, "init", str(main)], check=True)
     if repo == "source-checkout":
         (main / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
-        subprocess.run([*git, "-C", str(main), "add", "-A"], check=True, capture_output=True)
-    subprocess.run(
-        [*git, "-C", str(main), "commit", "--allow-empty", "-m", "initial"],
-        check=True,
-        capture_output=True,
-        timeout=30,
+        run_bounded_child([*git, "-C", str(main), "add", "-A"], check=True)
+    run_bounded_child(
+        [*git, "-C", str(main), "commit", "--allow-empty", "-m", "initial"], check=True
     )
     linked = tmp_path / "plain-linked"
-    subprocess.run(
-        [*git, "-C", str(main), "worktree", "add", "--detach", str(linked)],
-        check=True,
-        capture_output=True,
-        timeout=30,
+    run_bounded_child(
+        [*git, "-C", str(main), "worktree", "add", "--detach", str(linked)], check=True
     )
     monkeypatch.chdir(linked)
     monkeypatch.setattr(sys, "argv", ["booley", "auth", "--clear"])
@@ -1144,9 +1139,9 @@ def test_uninitialized_nested_checkout_is_not_adopted_as_ancestor_project(tmp_pa
     root, _, _ = _linked_auth(tmp_path, monkeypatch)
     nested = root / "unrelated"
     nested.mkdir()
-    import subprocess
+    from tests.subprocess_budget import run_bounded_child
 
-    subprocess.run(["git", "init", str(nested)], check=True, capture_output=True, timeout=30)
+    run_bounded_child(["git", "init", str(nested)], check=True)
     assert discover_project_root(nested) == nested
 
 
