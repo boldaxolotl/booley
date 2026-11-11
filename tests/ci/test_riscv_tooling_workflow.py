@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 _CONTEXT = "docker-image://ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "d" * 64
@@ -104,7 +105,7 @@ def _run(
     log.touch()
     runner_temp = tmp_path / "runner"
     runner_temp.mkdir(exist_ok=True)
-    result = subprocess.run(
+    result = run_bounded_child(
         ["bash", "-e", "-c", _expressions_removed(step["run"])],
         cwd=cwd,
         env={
@@ -116,10 +117,8 @@ def _run(
             "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
             **env,
         },
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=60,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result, log.read_text(encoding="utf-8").splitlines()
 
@@ -462,6 +461,7 @@ def _run_prefetch_wait_step(tmp_path: Path, pid: int | None) -> subprocess.Compl
 
 
 def test_wait_returns_once_the_prefetch_has_exited(tmp_path: Path) -> None:
+    # The test needs this exited child's PID, so it drives the Popen itself.
     done = subprocess.Popen(["true"])
     done.wait(timeout=10)
 
@@ -474,6 +474,7 @@ def test_wait_returns_once_the_prefetch_has_exited(tmp_path: Path) -> None:
 
 def test_wait_gives_up_on_a_stuck_prefetch_without_failing(tmp_path: Path) -> None:
     """The prefetch is an optimization; a stuck pull must never fail the lane."""
+    # The test drives this Popen itself (kill, wait).
     stuck = subprocess.Popen(["sleep", "30"])
     try:
         result = _run_prefetch_wait_step(tmp_path, stuck.pid)

@@ -9,12 +9,12 @@ including the Docker storage filesystem the image-build preflight measures.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 _ACTION = _ROOT / ".github/actions/free-runner-disk/action.yml"
@@ -57,7 +57,7 @@ def test_free_runner_disk_logs_docker_storage_around_removal(tmp_path: Path) -> 
     docker_root = tmp_path / "docker-root"
     docker_root.mkdir()
     sudo_log = tmp_path / "sudo.log"
-    result = subprocess.run(
+    result = run_bounded_child(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", steps[0]["run"]],
         env={
             # BASH_ENV would make a non-interactive bash source a host file.
@@ -66,10 +66,7 @@ def test_free_runner_disk_logs_docker_storage_around_removal(tmp_path: Path) -> 
             "DOCKER_ROOT": str(docker_root),
             "SUDO_LOG": str(sudo_log),
         },
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=60,
     )
 
     assert result.returncode == 0, result.stderr

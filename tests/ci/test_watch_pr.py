@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/watch_pr.py"
 SPEC = importlib.util.spec_from_file_location("watch_pr", SCRIPT)
@@ -60,13 +60,10 @@ def write_fake_gh(tmp_path: Path, source: str) -> Path:
 
 
 def run_script(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_bounded_child(
         ["python3", str(SCRIPT), *args],
         env=env,
-        capture_output=True,
-        text=True,
         check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -1146,6 +1143,7 @@ def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
         "elif sys.argv[1] == 'api':\n"
         "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n",
     )
+    # The test drives this Popen itself (SIGTERM, communicate).
     process = subprocess.Popen(
         [
             "python3",
