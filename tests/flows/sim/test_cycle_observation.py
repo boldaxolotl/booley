@@ -194,6 +194,30 @@ def test_cycle_baseline_planning_materializes_project_topologies(tmp_path, monke
     assert roots and all(not path.exists() for path in roots)
 
 
+def test_baseline_planning_reports_a_refused_selection_and_a_refused_checkout(monkeypatch):
+    from booley.flows.baseline_worktree import BaselineWorktreeError
+
+    flow, _key = _criterion_flow(relative=True)
+    _pin_baseline(flow, "missing")
+    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: None)
+
+    baselines, errors = flow._plan_baseline_targets(["sim_core"], {})
+
+    assert baselines is None
+    assert errors == ["sim: Cycle Count pinned baseline ref cannot be resolved to a commit"]
+
+    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
+
+    def refuse(_revision):
+        raise BaselineWorktreeError("checkout refused")
+
+    monkeypatch.setattr(flow, "_shared_baseline_worktree", refuse)
+    assert flow._plan_baseline_targets(["sim_core"], {}) == (
+        None,
+        ["sim: Cycle Count baseline planning failed: checkout refused"],
+    )
+
+
 def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeypatch):
     """Every baseline consumer of one ``sim`` run reuses one checkout (#1959).
 
