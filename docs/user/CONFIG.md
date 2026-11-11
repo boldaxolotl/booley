@@ -133,7 +133,10 @@ Projects.
 ### Job resource history
 
 Booley measures every Job's peak memory, CPU time, and wall-clock time, and
-keeps the newest 20 runs per Target and Job phase. `booley resources` prints
+keeps the newest 20 runs per Target and Job phase, with no overall cap. A
+Target and Job phase with no run in the last 90 days is deleted the next time
+any Job records. Peak memory counts the Job's temporary files only when
+`TMPDIR` is on tmpfs. `booley resources` prints
 the run count and the minimum, median, and maximum peak memory and wall-clock
 time for each (`--json` for scripts). Use it to choose `heavy_memory` and
 `[sandbox].memory`.

@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Job resource history keeps the newest 20 runs per Target and Job phase with
+  no overall cap, and deletes a Target and Job phase that has had no run in
+  90 days. Peak memory now includes processes forked by any thread of a Job
+  command, and counts the Job's temporary files only when `TMPDIR` is on
+  tmpfs (they are still recorded as the temporary-file peak).
 - A second `booley chat` while the main checkout is in use now starts in its
   own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
   and prints a line saying where it works. The first session and a lone
