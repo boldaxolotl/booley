@@ -128,11 +128,11 @@ def test_project_alias_doctor_executes_real_simulation(
     doctor._run_deep_checks(
         audit,
         doctor._DoctorFlowRuntime(flow_project, "docker"),
-        False,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
+        _diagnostics=reporter.diagnostics,
         completeness=tracker,
     )
     assert len(executions) == 3
@@ -180,11 +180,11 @@ def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path
     doctor._run_deep_checks(
         project,
         doctor._DoctorFlowRuntime(tmp_path, None),
-        False,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
+        _diagnostics=reporter.diagnostics,
         completeness=tracker,
     )
     assert tracker.missing == ()
@@ -199,11 +199,11 @@ def test_missing_targets_are_incomplete_even_without_health_warning(tmp_path, mo
     doctor._run_deep_checks(
         project,
         doctor._DoctorFlowRuntime(tmp_path, None),
-        False,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
+        _diagnostics=reporter.diagnostics,
         completeness=tracker,
     )
     assert "sim.doctor-targets" in tracker.missing
@@ -252,7 +252,7 @@ def test_clean_host_deep_probe_is_incomplete_and_omitted_agents_are_named(
         profile=doctor._DoctorProfile.from_args(argparse.Namespace(skip_agent_checks=skip_agents))
     )
     summary = doctor._run_deep_phase(
-        project, "docker", doctor._DoctorFlowRuntime(tmp_path, "docker"), False, reporter
+        project, "docker", doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
     )
     assert reporter.result(0).clean
     assert not summary.complete
@@ -275,7 +275,7 @@ def test_start_identity_controls_qualification(tmp_path, monkeypatch, identity, 
     monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *_args, **_kw: None)
     runtime = doctor._DoctorFlowRuntime(tmp_path, "docker", "sandbox")
     summary = doctor._run_deep_phase(
-        _project(tmp_path), "docker", runtime, False, doctor._Reporter.create()
+        _project(tmp_path), "docker", runtime, doctor._Reporter.create()
     )
     assert summary.identity_reasons == (reason,)
     assert not summary.complete

@@ -21,7 +21,9 @@ import pytest
 
 from booley.flows.synth.backends.openroad.reporting import reg2reg_timing_tcl
 from booley.flows.synth.backends.openroad.timing import OpenRoadPdk, write_openroad_script
+from booley.flows.synth.backends.pipeline import SynthSpec
 from booley.flows.synth.backends.yosys import core as syn_core
+from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.timing import StaTimingConfig
 from tests.golden.conftest import assert_matches_golden, normalize_work_dir
 
@@ -117,16 +119,37 @@ _SV2V_OUT = Path("/work/syn_result/dut/sv2v_converted.v")
 _YS_WORK_DIR = Path("/work/syn_result/dut")
 
 
+def _spec(
+    *,
+    flatten: bool = False,
+    params: dict | None = None,
+    abc_recipe: str | None = None,
+    frontend: str = "sv2v",
+    defines: tuple[str, ...] = (),
+) -> SynthSpec:
+    """Build a SynthSpec carrying the recipe knobs the script builder reads."""
+    return SynthSpec(
+        design_name="dut",
+        sources=(),
+        inc_dirs=(),
+        defines=defines,
+        params=params or {},
+        liberty=_LIBERTY,
+        liberty_found=True,
+        flatten=flatten,
+        abc_recipe=abc_recipe,
+        frontend=frontend,
+        timing=StaTimingConfig(mode=SynthMode.LOGICAL),
+    )
+
+
 def test_yosys_script_bare_golden() -> None:
     """Snapshot the minimal script: `synth` unflattened, no params, default ABC."""
     script = syn_core._build_yosys_script(
-        [_SV2V_OUT],
-        "dut",
-        _LIBERTY,
-        _YS_WORK_DIR,
-        flatten=False,
-        params=None,
-        abc_recipe=None,
+        _spec(),
+        sources=[_SV2V_OUT],
+        inc_dirs=[],
+        work_dir=_YS_WORK_DIR,
     )
     assert_matches_golden("yosys/yosys_script_bare.txt", script)
 
@@ -134,13 +157,10 @@ def test_yosys_script_bare_golden() -> None:
 def test_yosys_script_flatten_params_fast_golden() -> None:
     """Snapshot the fully-loaded script: `synth -flatten` + chparam + fast ABC."""
     script = syn_core._build_yosys_script(
-        [_SV2V_OUT],
-        "dut",
-        _LIBERTY,
-        _YS_WORK_DIR,
-        flatten=True,
-        params={"WIDTH": "8", "DEPTH": "16"},
-        abc_recipe="fast",
+        _spec(flatten=True, params={"WIDTH": "8", "DEPTH": "16"}, abc_recipe="fast"),
+        sources=[_SV2V_OUT],
+        inc_dirs=[],
+        work_dir=_YS_WORK_DIR,
     )
     assert_matches_golden("yosys/yosys_script_flatten_params_fast.txt", script)
 
@@ -156,16 +176,10 @@ _SLANG_INC_DIRS = [Path("/work/src/dut/include")]
 def test_yosys_script_slang_bare_golden() -> None:
     """Snapshot the slang-frontend script: read_slang, chformal, unflattened."""
     script = syn_core._build_yosys_script(
-        _SLANG_SOURCES,
-        "dut",
-        _LIBERTY,
-        _YS_WORK_DIR,
-        flatten=False,
-        params=None,
-        abc_recipe=None,
-        frontend="slang",
+        _spec(frontend="slang", defines=("SYNTHESIS",)),
+        sources=_SLANG_SOURCES,
         inc_dirs=_SLANG_INC_DIRS,
-        defines=["SYNTHESIS"],
+        work_dir=_YS_WORK_DIR,
     )
     assert_matches_golden("yosys/yosys_script_slang_bare.txt", script)
 
@@ -173,16 +187,16 @@ def test_yosys_script_slang_bare_golden() -> None:
 def test_yosys_script_slang_flatten_params_golden() -> None:
     """Snapshot the slang script with `synth -flatten` + -G parameter overrides."""
     script = syn_core._build_yosys_script(
-        _SLANG_SOURCES,
-        "dut",
-        _LIBERTY,
-        _YS_WORK_DIR,
-        flatten=True,
-        params={"WIDTH": "8", "DEPTH": "16"},
-        abc_recipe="fast",
-        frontend="slang",
+        _spec(
+            flatten=True,
+            params={"WIDTH": "8", "DEPTH": "16"},
+            abc_recipe="fast",
+            frontend="slang",
+            defines=("SYNTHESIS", "SYNC_RESET"),
+        ),
+        sources=_SLANG_SOURCES,
         inc_dirs=_SLANG_INC_DIRS,
-        defines=["SYNTHESIS", "SYNC_RESET"],
+        work_dir=_YS_WORK_DIR,
     )
     assert_matches_golden("yosys/yosys_script_slang_flatten_params.txt", script)
 

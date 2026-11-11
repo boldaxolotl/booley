@@ -15,6 +15,20 @@ Packaged release history starts at 0.2.7. For older changes, see
   waived points left out. `--metric` and `--source` narrow the list. It works
   on the host and in the Sandbox, and the coverage guide uses it instead of the
   `jq` recipes.
+- A failed Simulation run of a Target without registered Tests is now listed as
+  `<default>` (`<default>@N` when seeded) in `simulation.json` and the "Test
+  Runs" lines, and its rerun command is `booley flow sim --target <name>
+  [--seed N]` instead of an unrunnable `--test=<name>@N`.
+- `[flows.sim].output_dir` is retired. It has had no effect; Doctor now warns
+  `config.flow-key-retired` while it is set. Delete it. `[flows.synth].output_dir`
+  is unchanged.
+- `booley init` now runs inside a hand-written Sandbox (such as a Codespace)
+  and performs Project Initialization only, so a spec can call it from
+  `onCreateCommand` on every create: guidance links, Dashboard task, Git
+  settings, and line endings, with no Docker or image work. It is idempotent
+  and exits 0 when nothing changes. A Booley-issued Sandbox still refuses it
+  and names the host command. The Dashboard attach refusal and Doctor hints
+  now say where to run `booley init`.
 - Stealth Mode is now off unless `.booley/booley.toml` sets
   `[stealth] enabled = true`; a missing key means off. A fresh `booley init`
   no longer hides `.booley/` or gives it its own repository before setup

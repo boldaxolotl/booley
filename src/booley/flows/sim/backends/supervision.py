@@ -228,6 +228,12 @@ def _run(launch: SimulatorLaunch) -> tuple[deque[str], subprocess.Popen[str], Ru
     supervisor = _Supervisor(launch, proc, disk_baseline)
     try:
         supervisor.drain()
+    except BaseException:
+        # Streaming did not finish: close() is about to cancel the deadline timer and
+        # stop the guards, which would leave nothing bounding a silent simulator.
+        if proc.poll() is None:
+            kill_process_tree(proc)
+        raise
     finally:
         supervisor.close(cpu_started)
     return supervisor.lines, proc, supervisor.resolve()

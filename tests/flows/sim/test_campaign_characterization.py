@@ -653,6 +653,56 @@ def test_infrastructure_without_tests_retains_selected_identities(
     assert all(item["functional"] == "not_observed" for item in result.document["observations"])
 
 
+class _NativeNoVerdictExecution(_NativeAdapterExecution):
+    """A native launch whose adapter protocol broke: infrastructure failure, no Test outcome."""
+
+    def _completed_group(self, *args, **kwargs):
+        outcome = super()._completed_group(*args, **kwargs)
+        return replace(
+            outcome,
+            tests=(),
+            infrastructure_failure=SimulationInfrastructureFailure(
+                "adapter_protocol", "simulator returned no verdict"
+            ),
+            artifacts=(),
+        )
+
+
+def test_infrastructure_failure_of_the_unnamed_invocation_is_one_observation_of_it(
+    tmp_path: Path,
+) -> None:
+    """A native Target without Tests has no names to retain: the run itself is the observation."""
+    handle, inspection, preview = _facts(tmp_path, cocotb=False, preview_names=())
+    (tmp_path / "dut.core").write_text(
+        "CAPI=2:\nname: acme:lib:dut:1\nfilesets:\n  tb:\n    files: [tb.sv]\n"
+        "    file_type: systemVerilogSource\ntargets:\n  sim:\n    flow: sim\n"
+        "    filesets: [tb]\n    flow_options: {tool: verilator}\n    toplevel: tb\n",
+        encoding="utf-8",
+    )
+    unnamed = (build_test_run(None, seed=9),)
+    preview = replace(preview, groups=((),), run_groups=(unnamed,), commands=(("run",),))
+    plan = plan_ordinary_hdl_campaign(
+        handle=handle,
+        inspection=inspection,
+        preview=preview,
+        groups=((),),
+        required_suite=(),
+        revision="abc123",
+        invocation_id=7,
+        execution_id="7" * 32,
+        trace=False,
+    )
+    execution = _NativeNoVerdictExecution(eda_tool="verilator", cocotb=False)
+    result = _run_campaign_result(tmp_path, plan, execution)
+
+    assert result.document["grade"] == "error"
+    (observation,) = result.document["observations"]
+    assert observation["test_run"] == "<default>@9"
+    assert observation["failure_class"] == "infrastructure"
+    (record,) = (tmp_path / "reports/1/targets/sim/campaign").rglob("*infrastructure-failure*")
+    assert json.loads(record.read_text(encoding="utf-8"))["selected_tests"] == [None]
+
+
 def test_cleanup_failure_preserves_completed_tests_and_guard(tmp_path, monkeypatch) -> None:
     unlink = Path.unlink
 

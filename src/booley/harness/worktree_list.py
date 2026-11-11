@@ -304,6 +304,20 @@ def _describe(
     )
 
 
+def interactive_registrations(main: Path, common: Path) -> list[Registration]:
+    """Registered worktrees that are named direct children of ``<common>/worktrees``, by name."""
+    container = (common / "worktrees").resolve()
+    return sorted(
+        (
+            registration
+            for registration in registered_worktrees(main)
+            if registration.path.parent.resolve() == container
+            and WORKTREE_NAME.fullmatch(registration.path.name)
+        ),
+        key=lambda registration: registration.path.name,
+    )
+
+
 def collect_worktrees(project_root: Path, *, now: float) -> tuple[list[WorktreeState], list[str]]:
     """Describe every interactive worktree of the Project; return ``(states, diagnostics)``.
 
@@ -319,12 +333,9 @@ def collect_worktrees(project_root: Path, *, now: float) -> tuple[list[WorktreeS
         sessions=_session_labels(common, now, diagnostics),
         goals=GoalStore(common, lock_timeout_s=0),
     )
-    container = (common / "worktrees").resolve()
     states: list[WorktreeState] = []
-    for registration in registered_worktrees(main):
+    for registration in interactive_registrations(main, common):
         path = registration.path
-        if path.parent.resolve() != container or not WORKTREE_NAME.fullmatch(path.name):
-            continue
         if not path.exists():
             diagnostics.append(f"worktree {path.name} is registered but its directory is missing")
             continue

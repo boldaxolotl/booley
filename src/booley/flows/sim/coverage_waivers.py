@@ -1,12 +1,13 @@
-"""Transactional loading of project-wide approved coverage waivers."""
+"""Transactional loading and matching of project-wide approved coverage waivers."""
 
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Container, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import Literal
 
 from booley.config.coverage_waiver_inputs import (
     APPROVAL_DOCUMENT_FIELDS,
@@ -21,12 +22,15 @@ from booley.config.coverage_waiver_inputs import (
 )
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_list, require_str
 from booley.flows.sim.coverage_campaign import (
+    CoverageCampaign,
     CoverageFinding,
+    CoveragePoint,
     DurableTargetIdentity,
     decode_coverage_point_id,
 )
 from booley.flows.sim.coverage_json import (
     WAIVER_SET_JSON,
+    FrozenJson,
     content_digest,
     freeze_coverage_mapping,
 )
@@ -37,7 +41,6 @@ from booley.flows.sim.coverage_waiver_files import (
     SecurePathProblem,
     SecureTree,
 )
-from booley.flows.sim.coverage_waiver_matching import ApprovedWaiver, ApprovedWaiverSet
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 _SET_SCHEMA = "booley.approved-waiver-set/v1"
@@ -61,6 +64,71 @@ class CoverageWaiverValidationError(ValueError):
 
 def _error(code: str, pointer: str, message: str) -> CoverageFinding:
     return CoverageFinding(severity="error", code=code, pointer=pointer, message=message)
+
+
+@dataclass(frozen=True)
+class ApprovedWaiver:
+    """One validated exact Target-and-point exclusion."""
+
+    target: DurableTargetIdentity
+    point_id: str
+    reason: str
+    waiver_id: str
+    waiver_file: str
+    waiver_fingerprint: str
+    provenance: Mapping[str, FrozenJson]
+    source: str
+
+
+@dataclass(frozen=True)
+class ApprovedWaiverMatch:
+    """All applicable waivers, or findings and no waivers."""
+
+    waivers: tuple[ApprovedWaiver, ...]
+    findings: tuple[CoverageFinding, ...]
+
+
+@dataclass(frozen=True)
+class ApprovedWaiverSet:
+    """Immutable project-wide approved waiver input."""
+
+    configuration: Mapping[str, FrozenJson]
+    digest: str
+    waivers: tuple[ApprovedWaiver, ...]
+
+    def match(self, campaign: CoverageCampaign) -> ApprovedWaiverMatch:
+        """Resolve applicable exact matches transactionally for one Campaign."""
+        return _match_campaign(self.waivers, campaign)
+
+
+WaivablePointProblem = Literal["missing", "ambiguous", "source", "ineligible", "hit"]
+
+
+def waivable_point_problem(
+    matches: Sequence[CoveragePoint],
+    sources: Container[str],
+    *,
+    zero_hits: bool = False,
+) -> WaivablePointProblem | None:
+    """Why the points sharing one requested id cannot be waived, or None.
+
+    *matches* are the Campaign points with the requested id. *sources* is the
+    accepted RTL sources: one named source for an approval or a Waiver
+    Candidate, the Campaign's whole RTL closure for Coverage Analysis.
+    *zero_hits* also rejects a point with observed hits.
+    """
+    if not matches:
+        return "missing"
+    if len(matches) > 1:
+        return "ambiguous"
+    point = matches[0]
+    if point.identity.source not in sources:
+        return "source"
+    if point.disposition.get("kind") != "eligible":
+        return "ineligible"
+    if zero_hits and sum(point.hits_by_run.values()) > 0:
+        return "hit"
+    return None
 
 
 def _config_findings(config: CoverageWaiverConfig) -> tuple[CoverageFinding, ...]:
@@ -737,3 +805,44 @@ def load_approved_waiver_set(
     if findings:
         raise CoverageWaiverValidationError(findings)
     return _load_enabled_set(config, roots, known_targets)
+
+
+# Matching never passes zero_hits, so "hit" cannot occur here.
+_MATCH_FINDINGS: Mapping[WaivablePointProblem, tuple[str, str]] = {
+    "missing": ("COV_WAIVER_POINT_STALE", "Approval no longer matches a point."),
+    "ambiguous": ("COV_WAIVER_MATCH_AMBIGUOUS", "Approval matches multiple points."),
+    "source": (
+        "COV_WAIVER_POINT_SOURCE_MISMATCH",
+        "Matched point belongs to a different RTL source.",
+    ),
+    "ineligible": (
+        "COV_WAIVER_POINT_UNSCORABLE",
+        "Only V1-scored eligible RTL points can be waived.",
+    ),
+}
+
+
+def _match_finding(waiver: ApprovedWaiver, campaign: CoverageCampaign) -> CoverageFinding | None:
+    points = [point for point in campaign.points if point.id == waiver.point_id]
+    problem = waivable_point_problem(points, {waiver.source})
+    if problem is None:
+        return None
+    code, message = _MATCH_FINDINGS[problem]
+    return _error(code, f"/approved_waivers/{waiver.waiver_file}#{waiver.waiver_id}", message)
+
+
+def _match_campaign(
+    waivers: tuple[ApprovedWaiver, ...], campaign: CoverageCampaign
+) -> ApprovedWaiverMatch:
+    if campaign.normalization.get("status") not in {
+        "complete",
+        "complete_with_unknown_records",
+    }:
+        return ApprovedWaiverMatch(waivers=(), findings=())
+    applicable = [item for item in waivers if str(item.target) == campaign.target.identity]
+    findings = tuple(
+        finding for item in applicable if (finding := _match_finding(item, campaign)) is not None
+    )
+    if findings:
+        return ApprovedWaiverMatch(waivers=(), findings=findings)
+    return ApprovedWaiverMatch(waivers=tuple(applicable), findings=())
