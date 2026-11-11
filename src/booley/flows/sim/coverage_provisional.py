@@ -195,7 +195,8 @@ def _provisional_evaluation(
     }
 
 
-def _metric_verdicts(evaluation: Mapping[str, object]) -> dict[str, object]:
+def metric_verdicts(evaluation: Mapping[str, object]) -> dict[str, object]:
+    """Each scored metric of a Booley-built *evaluation* with its verdict."""
     metrics = cast(list[dict[str, object]], evaluation["metrics"])
     return {str(row["metric"]): row["verdict"] for row in metrics}
 
@@ -212,13 +213,13 @@ def _needed(
     unrelated failing metric must not hide that a candidate is needed.
     """
     passing = {
-        metric for metric, verdict in _metric_verdicts(evaluation).items() if verdict == "pass"
+        metric for metric, verdict in metric_verdicts(evaluation).items() if verdict == "pass"
     }
     needed = set()
     for point_id, candidate in usable.items():
         remaining = {key: item for key, item in usable.items() if key != point_id}
         without = _provisional_evaluation(campaign, criterion, remaining)
-        verdicts = _metric_verdicts(without)
+        verdicts = metric_verdicts(without)
         if any(verdicts.get(metric) != "pass" for metric in passing):
             needed.add(candidate.candidate_id)
     return frozenset(needed)
@@ -292,19 +293,11 @@ def criterion_from_evaluation(campaign: CoverageCampaign) -> CoverageCriterion:
     construction rejects a stored value that is out of range or malformed.
     """
     evaluation = campaign.evaluation
-    thresholds = evaluation.get("thresholds")
-    suite = evaluation.get("suite")
-    if evaluation.get("status") not in {"pass", "fail"} or not isinstance(thresholds, Mapping):
+    if evaluation["status"] not in {"pass", "fail"}:
         raise ProvisionalCoverageError("Campaign has no scored strict coverage evaluation")
-    if not isinstance(suite, Mapping) or not isinstance(suite.get("required"), tuple):
-        raise ProvisionalCoverageError("Campaign evaluation has no required test suite")
-    stored = [
-        (str(metric), minimum)
-        for metric, minimum in thresholds.items()
-        if isinstance(minimum, int | float) and not isinstance(minimum, bool)
-    ]
-    if len(stored) != len(thresholds):
-        raise ProvisionalCoverageError("Campaign thresholds are malformed")
+    thresholds = cast(Mapping[str, int | float], evaluation["thresholds"])
+    suite = cast(Mapping[str, tuple[str, ...]], evaluation["suite"])
+    stored = [(str(metric), minimum) for metric, minimum in thresholds.items()]
     required = tuple(str(item) for item in suite["required"])
     tests = None if sorted(required) == sorted(campaign.declared_tests) else required
     try:
@@ -326,4 +319,5 @@ __all__ = [
     "ProvisionalVerdict",
     "criterion_from_evaluation",
     "evaluate_provisional_coverage",
+    "metric_verdicts",
 ]

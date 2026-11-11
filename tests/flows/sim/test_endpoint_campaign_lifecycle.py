@@ -1029,7 +1029,11 @@ def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) 
 
 
 def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
-    from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
+    from booley.flows.sim.acceptance import (
+        AcceptanceContext,
+        SimulationAcceptanceCoordinator,
+        _OutcomeEvidence,
+    )
     from tests.flows.report_headline import final_report_omits_headline
     from tests.flows.sim.campaign_test_support import _observation, _simulation_outcome
     from tests.mcp_tools.test_base import unbound_specialist
@@ -1056,7 +1060,7 @@ def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
         observer=tool.record_report_criteria,
     )
     with pytest.raises(OSError):
-        SimulationAcceptanceCoordinator().reconcile(outcome, context)
+        SimulationAcceptanceCoordinator().reconcile(_OutcomeEvidence(outcome), context)
     report = final_report_omits_headline(tool, EndpointOutcome(exit_code=2))
     assert report["passed"] is False
     assert tool.state.criteria["sim_pass_sim"].met is False
@@ -1066,7 +1070,7 @@ def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
 def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_path, conclusive):
     from dataclasses import replace
 
-    from booley.flows.sim.acceptance import _record_standalone_campaign
+    from booley.flows.sim.acceptance import _OutcomeEvidence, _record_standalone_campaign
     from tests.flows.report_headline import final_report_omits_headline
     from tests.flows.sim.campaign_test_support import _observation, _simulation_outcome
     from tests.mcp_tools.test_base import unbound_specialist
@@ -1075,7 +1079,7 @@ def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_pa
     outcome = _simulation_outcome(tmp_path, [_observation("smoke")], required=("smoke",))
     if not conclusive:
         outcome = replace(outcome, complete=False)
-    _record_standalone_campaign(tool, outcome)
+    _record_standalone_campaign(tool, _OutcomeEvidence(outcome))
     final_report_omits_headline(tool, EndpointOutcome())
     if conclusive:
         assert tool.state.criteria["sim_pass_sim"].met is True

@@ -22,6 +22,7 @@ from booley.flows.prepared_invocation import OrdinaryRunInvocation
 from booley.flows.sim.acceptance import (
     AcceptanceContext,
     SimulationAcceptanceCoordinator,
+    _OutcomeEvidence,
     record_campaign_acceptance,
 )
 from booley.flows.sim.campaign.codec import (
@@ -76,7 +77,7 @@ def _simulation_changes(
     state.save()
     recorder = Recorder()
     result = SimulationAcceptanceCoordinator().reconcile(
-        outcome,
+        _OutcomeEvidence(outcome),
         AcceptanceContext(
             "ticket",
             {"slug": "ticket"},
@@ -204,7 +205,7 @@ def _cycle_reconciliation(
     state.save()
     recorder = Recorder()
     result = SimulationAcceptanceCoordinator().reconcile(
-        outcome,
+        _OutcomeEvidence(outcome),
         AcceptanceContext(
             "ticket",
             {"slug": "ticket"},
@@ -375,7 +376,7 @@ def test_acceptance_coordinator_records_selected_test_detail(tmp_path: Path) -> 
         _recovery_status(tmp_path),
     )
     result = SimulationAcceptanceCoordinator().reconcile(
-        outcome,
+        _OutcomeEvidence(outcome),
         AcceptanceContext(
             "ticket",
             {"slug": "ticket"},
@@ -428,7 +429,7 @@ def test_passing_subset_does_not_change_target_level_simulation_criterion(
     )
 
     result = SimulationAcceptanceCoordinator().reconcile(
-        outcome,
+        _OutcomeEvidence(outcome),
         AcceptanceContext(
             "ticket",
             {"slug": "ticket"},
@@ -981,7 +982,7 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
 
 
 def test_infrastructure_abort_preserves_simulation_criterion(tmp_path: Path) -> None:
-    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator
+    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator, _OutcomeEvidence
 
     original, _invocation = _named_campaign_outcome(tmp_path)
     document = json.loads(original.acceptance_facts.canonical_bytes())
@@ -1015,5 +1016,5 @@ def test_infrastructure_abort_preserves_simulation_criterion(tmp_path: Path) -> 
         },
     )
     before = state.to_dict()
-    assert SimulationAcceptanceCoordinator._derive_changes(outcome, state) == []
+    assert SimulationAcceptanceCoordinator._derive_changes(_OutcomeEvidence(outcome), state) == []
     assert state.to_dict() == before

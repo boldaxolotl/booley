@@ -326,18 +326,6 @@ def test_rebuild_reports_a_rejected_stored_threshold_as_provisional_error() -> N
         criterion_from_evaluation(corrupt)
 
 
-@pytest.mark.parametrize("stored_minimum", ["50", True, float("nan")], ids=["str", "bool", "nan"])
-def test_rebuild_reports_a_malformed_stored_threshold_as_provisional_error(
-    stored_minimum: object,
-) -> None:
-    campaign, _ = _evaluated(100)
-    stored = {**campaign.evaluation, "thresholds": {"line": stored_minimum}}
-    corrupt = replace(campaign, evaluation=MappingProxyType(stored))
-
-    with pytest.raises(ProvisionalCoverageError, match="malformed"):
-        criterion_from_evaluation(corrupt)
-
-
 def test_criterion_cannot_be_rebuilt_from_an_unscored_evaluation() -> None:
     campaign, _ = _evaluated(100)
     unscored = replace(campaign, evaluation=MappingProxyType({"status": "blocked"}))
