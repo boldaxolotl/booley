@@ -945,6 +945,7 @@ def test_standalone_live_probe_has_module_and_build_only_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.flows.sim.live_progress import LiveProgressSink, install_progress
+    from booley.flows.sim.standalone import _StandaloneProbe
 
     flow = _flow_with_state(tmp_path, ["sim_dut"])
     invocation = flow.reserve_invocation_dir()
@@ -966,7 +967,7 @@ def test_standalone_live_probe_has_module_and_build_only_stage(
     with flow.publication_resources, install_progress(sink):
         flow._write_elab_only_progress(["sim_dut"], [], phase="starting")
         finding, _log, error = flow._run_standalone_probe(
-            "dut", "dut.sv", [], "verilator", timeout_s=5
+            _StandaloneProbe("dut", "dut.sv", "verilator", (), False, ()), timeout_s=5
         )
     assert finding is None
     assert error == ""

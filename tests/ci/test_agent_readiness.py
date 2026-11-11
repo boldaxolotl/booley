@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.core import file_lock
 from booley.core.host_probes import HostProbe, ProbeState, probe_docker
@@ -137,14 +138,11 @@ def test_packaged_copies_check_runs_as_reported():
     command = next((item for item in commands if item.id == "packaged-copies.check"), None)
     assert command is not None
     environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
-    result = subprocess.run(
-        command.argv,
+    result = run_bounded_child(
+        list(command.argv),
         cwd=command.cwd,
         env=environment,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     assert (result.returncode, result.stdout) == (0, "")
 
@@ -319,14 +317,11 @@ def _run_launcher(*args: str) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.pop("PYTHONDONTWRITEBYTECODE", None)
     environment.pop("BOOLEY_AGENT_GIT_WRITE_POLICY", None)
-    return subprocess.run(
+    return run_bounded_child(
         [sys.executable, str(LAUNCHER), *args],
         cwd=LAUNCHER.parents[2],
         env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -546,7 +541,7 @@ def _run_console_script(environment: Path) -> subprocess.CompletedProcess[str]:
     name = "demo-tool.exe" if sys.platform == "win32" else "demo-tool"
     launcher = str(readiness.venv_python(environment).with_name(name))
     try:
-        return subprocess.run((launcher,), capture_output=True, text=True, check=False, timeout=60)
+        return run_bounded_child([launcher], timeout=60)
     except OSError as error:
         return subprocess.CompletedProcess((launcher,), 127, "", str(error))
 

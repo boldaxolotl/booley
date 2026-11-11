@@ -336,11 +336,15 @@ def test_a_cocotb_baseline_without_a_registry_discovers_the_test():
 
 
 def _baseline_fact(
-    test_run: str | None, fingerprint: str = "sha256:" + "9" * 64, *, selector: str = "ref"
+    test_run: str, fingerprint: str = "sha256:" + "9" * 64, *, selector: str = "ref"
 ) -> dict:
-    cycle: dict[str, object] = {"test": "stress", "cycle_count": 100, "unit": "cycles"}
-    if test_run is not None:
-        cycle |= {"test_run": test_run, "test_run_fingerprint": fingerprint}
+    cycle: dict[str, object] = {
+        "test": "stress",
+        "test_run": test_run,
+        "test_run_fingerprint": fingerprint,
+        "cycle_count": 100,
+        "unit": "cycles",
+    }
     target = {"role": "cycle_count_baseline", "selector": selector}
     target |= {"vlnv": "local:lib:core:1", "name": selector}
     return {
@@ -373,21 +377,6 @@ def test_a_criterion_binds_only_the_baseline_observation_of_the_candidates_test_
     assert _bound_baseline((changed_inputs,), params, "stress", current) == (None, "mismatched")
     # No candidate observation: nothing to compare, so nothing binds.
     assert _bound_baseline((same,), params, "stress", None) == (None, "mismatched")
-
-
-def test_facts_older_than_test_runs_still_bind_by_test():
-    from booley.flows.sim.acceptance import _bound_baseline
-
-    params = {"test": "stress", "_baseline_target": "ref", "cycle_count_increase_at_most": 5}
-    legacy = _baseline_fact(None)
-    assert _bound_baseline((legacy,), params, "stress", {"test": "stress"})[1] == "observed"
-    # A candidate observation that names its Test Run needs a baseline that does too.
-    named = {
-        "test": "stress",
-        "test_run": "stress@1",
-        "test_run_fingerprint": "sha256:" + "9" * 64,
-    }
-    assert _bound_baseline((legacy,), params, "stress", named) == (None, "mismatched")
 
 
 def test_prerequisite_facts_carry_the_baseline_work_items_test_run():

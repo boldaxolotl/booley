@@ -29,10 +29,13 @@ from .codec import (
     decode_simulation_campaign_manifest,
 )
 from .planning import manifest_digest
+from .test_run_files import TestRunFiles, campaign_test_run_files
 
 __all__ = [
+    "PATH_ROW_LIMIT",
     "ROW_LIMIT",
     "TEST_RUN_GRADES",
+    "campaign_test_run_files_by_row",
     "campaign_test_run_rows",
     "evidence_test_run_rows",
     "informative_test_run_lines",
@@ -44,6 +47,12 @@ __all__ = [
 
 #: Most rows (and most rerun commands) one Target's report shows.
 ROW_LIMIT = 32
+
+#: Most Test Runs of one Target whose log and waveform paths the card prints.
+#: An absolute evidence path is long: every row of a full report would push the
+#: card's head out of the tail an MCP client keeps. ``simulation.json`` carries
+#: the paths of every Test Run.
+PATH_ROW_LIMIT = 8
 
 
 class _Outcome(Protocol):
@@ -144,6 +153,17 @@ def _observed_run(
     return discovered_test_run(test, unnamed, target=cast(str, selector))
 
 
+def _observed_rows(outcome: _Outcome) -> list[tuple[dict[str, object], int]]:
+    """Each observed Test Run's row with the index of its observation."""
+    recorded = _recorded_test_runs(outcome.manifest_path)
+    rows: list[tuple[dict[str, object], int]] = []
+    for index, observation in enumerate(outcome.observations):
+        run = _observed_run(observation, recorded)
+        if run is not None:
+            rows.append((test_run_row(run, _grade(observation)), index))
+    return rows
+
+
 def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
     """One row per observed Test Run: what it is, and how it ended.
 
@@ -151,13 +171,13 @@ def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
     ``args``, ``env`` and ``fingerprint`` plus ``grade``. A campaign whose
     manifest cannot be read has no rows.
     """
-    recorded = _recorded_test_runs(outcome.manifest_path)
-    rows: list[dict[str, object]] = []
-    for observation in outcome.observations:
-        run = _observed_run(observation, recorded)
-        if run is not None:
-            rows.append(test_run_row(run, _grade(observation)))
-    return rows
+    return [row for row, _ in _observed_rows(outcome)]
+
+
+def campaign_test_run_files_by_row(outcome: _EvidenceOutcome) -> tuple[TestRunFiles, ...]:
+    """The evidence files of each row of :func:`campaign_test_run_rows`, in its order."""
+    files = campaign_test_run_files(outcome)
+    return tuple(files[index] for _, index in _observed_rows(outcome))
 
 
 class _EvidenceOutcome(_Outcome, Protocol):
@@ -229,14 +249,20 @@ def observation_test_run_rows(
 
 
 def informative_test_run_lines(
-    selector: str, rows: Sequence[Mapping[str, object]], *, default_seed: int | None
+    selector: str,
+    rows: Sequence[Mapping[str, object]],
+    *,
+    default_seed: int | None,
+    files: Sequence[TestRunFiles] = (),
 ) -> list[str]:
     """Report rows only where they say more than the Target's own line.
 
     One passing Test Run per Test at the Default Seed is what the Target line
     already reports. The rows appear when a Test Run did not pass (a failure
-    with its rerun command), or when the Target ran a Test more than once or
-    under a name other than its own.
+    with its rerun command), when the Target ran a Test more than once or
+    under a name other than its own, or when a passing Test Run captured a
+    waveform (a ``--trace`` run) whose path the rows then name. *files* holds
+    each row's evidence files, in the rows' order.
     """
     tests = [row["test"] for row in rows]
     informative = (
@@ -245,24 +271,41 @@ def informative_test_run_lines(
         or any(
             row["variant"] is not None or row["seed"] not in {None, default_seed} for row in rows
         )
+        or any(found.trace is not None for found in files)
     )
-    return test_run_report_lines(selector, rows) if informative else []
+    return test_run_report_lines(selector, rows, files=files) if informative else []
 
 
 def test_run_report_lines(
-    selector: str, rows: Sequence[Mapping[str, object]], *, limit: int = ROW_LIMIT
+    selector: str,
+    rows: Sequence[Mapping[str, object]],
+    *,
+    limit: int = ROW_LIMIT,
+    files: Sequence[TestRunFiles] = (),
 ) -> list[str]:
-    """The Test Run rows of *selector*'s report, and a rerun command per failure."""
+    """The Test Run rows of *selector*'s report, and a rerun command per failure.
+
+    *files*, aligned with *rows*, adds the evidence paths under the first
+    :data:`PATH_ROW_LIMIT` rows that have any: ``log:`` and ``waveform:`` under a
+    Test Run that did not pass, only ``waveform:`` under one that passed.
+    """
     if not rows:
         return []
     counts = {grade: sum(1 for row in rows if row["grade"] == grade) for grade in TEST_RUN_GRADES}
     summary = ", ".join(
         f"{count} {TEST_RUN_GRADES[grade]}" for grade, count in counts.items() if count
     )
+    paths, omitted = _path_lines(rows[:limit], files)
     lines = [f"  Test Runs: {len(rows)} ({summary})"]
-    lines += [f"    {str(row['grade']).upper():<12} {row['name']}" for row in rows[:limit]]
+    for index, row in enumerate(rows[:limit]):
+        lines.append(f"    {str(row['grade']).upper():<12} {row['name']}")
+        lines += paths.get(index, [])
     if len(rows) > limit:
         lines.append(f"    ... and {len(rows) - limit} more")
+    if omitted:
+        lines.append(
+            f"  Log and waveform paths of {omitted} more Test Runs: simulation.json tests[]"
+        )
     failed = [row for row in rows if row["grade"] == "fail"]
     if failed:
         lines.append("  Rerun a failed Test Run with the same seed:")
@@ -270,6 +313,35 @@ def test_run_report_lines(
         if len(failed) > limit:
             lines.append(f"    ... and {len(failed) - limit} more")
     return lines
+
+
+def _row_path_lines(row: Mapping[str, object], found: TestRunFiles) -> list[str]:
+    """The evidence lines under one row: ``log:`` only for a Test Run that did not pass."""
+    lines: list[str] = []
+    if found.log is not None and row["grade"] != "pass":
+        lines.append(f"      log: {found.log.resolve()}")
+    if found.trace is not None:
+        lines.append(f"      waveform: {found.trace.resolve()}")
+    return lines
+
+
+def _path_lines(
+    rows: Sequence[Mapping[str, object]], files: Sequence[TestRunFiles]
+) -> tuple[dict[int, list[str]], int]:
+    """The evidence lines to print by row index, and how many rows lost theirs to the budget.
+
+    At most :data:`PATH_ROW_LIMIT` rows print paths. A Test Run that did not
+    pass has first claim, so a long traced run never hides a failure's log
+    behind passing waveforms.
+    """
+    found = {
+        index: _row_path_lines(row, files[index]) for index, row in enumerate(rows[: len(files)])
+    }
+    wanted = {index: lines for index, lines in found.items() if lines}
+    failing = [index for index in wanted if rows[index]["grade"] != "pass"]
+    passing = [index for index in wanted if rows[index]["grade"] == "pass"]
+    chosen = (failing + passing)[:PATH_ROW_LIMIT]
+    return {index: wanted[index] for index in sorted(chosen)}, len(wanted) - len(chosen)
 
 
 def _rerun(selector: str, row: Mapping[str, object]) -> str:
