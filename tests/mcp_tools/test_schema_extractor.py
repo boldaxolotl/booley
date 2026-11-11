@@ -244,8 +244,8 @@ class TestRequired:
         ),
         (
             MutationTesterSpecialist,
-            {"target", "scope"},
-            {"tb_top", "dut_top", "dut_files"},
+            {"target"},
+            {"tb_top", "dut_top", "dut_files", "steer", "regen_lock"},
         ),
     ],
 )
@@ -256,9 +256,13 @@ def test_specialist_input_contracts_are_unified(specialist, required, removed) -
     assert schema["additionalProperties"] is False
     assert required <= set(schema.get("required", []))
     assert {"model", "max_turns", "timeout_ms"}.isdisjoint(properties)
-    assert {"scope", "steer", "dry_run"} <= set(properties)
-    assert properties["steer"]["type"] == "array"
+    assert {"scope", "dry_run"} <= set(properties)
     assert properties["dry_run"]["type"] == "boolean"
+    if specialist is MutationTesterSpecialist:
+        assert properties["seed"]["type"] == "integer"
+    else:
+        assert "seed" not in properties
+        assert properties["steer"]["type"] == "array"
     assert removed.isdisjoint(properties)
 
 

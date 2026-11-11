@@ -223,7 +223,7 @@ class TestCheatCommand:
         specialists_out = capsys.readouterr().out
         assert "Specialists" in specialists_out
         assert "REVIEW:rtl_protocol" in specialists_out
-        assert "Target campaign with target + scope" in specialists_out
+        assert "Target campaign with target" in specialists_out
         assert "\n  sim " not in specialists_out
 
     def _stub_terminal(self, monkeypatch, *, tty: bool, columns: int = 100, color: bool = False):

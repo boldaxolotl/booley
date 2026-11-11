@@ -56,6 +56,11 @@ def has_infra_error(output: str) -> bool:
     return SIM_INFRA_ERROR_PREFIX in output
 
 
+def has_simulation_timeout(output: str) -> bool:
+    """True when a run-half printed its own ``<EDA-tool> simulation timed out`` line."""
+    return _SIMULATION_TIMEOUT_RE.search(output) is not None
+
+
 # ---------------------------------------------------------------------------
 # Output scanners
 # ---------------------------------------------------------------------------
@@ -106,6 +111,9 @@ def parse_sim_verdict(
 # *design*; treating it as infra drops it from the SVA count and turns a FAIL
 # with rc=0 into an INCONCLUSIVE — a false-PASS-adjacent lie.
 _HARNESS_EDA_TOOL = r"(?i:verilator|iverilog|icarus|cocotb)"
+_SIMULATION_TIMEOUT_RE = re.compile(
+    rf"^ERROR: {_HARNESS_EDA_TOOL} simulation timed out", re.MULTILINE
+)
 
 # Harness-emitted *infrastructure* markers — every ``ERROR:`` line Booley's own
 # build/run/trace/guard machinery prints. They all begin "ERROR: ...", which the

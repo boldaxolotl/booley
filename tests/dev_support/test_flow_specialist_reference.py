@@ -159,13 +159,19 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     assert "| Size-scaled |" in rendered
     assert "Mutation goals in a ticket" not in rendered
     assert "Direct goal controls" not in rendered
-    assert "Target campaign with `target` + `scope`" in rendered
+    assert "Target campaign with `target`" in rendered
     assert "`total: N` and `min_detected: K`" in rendered
     assert "`auto: true`" in rendered
     assert 'count="N"' in rendered
     assert 'count="auto"' in rendered
     assert "min_detected=K" in rendered
-    assert "regen_lock=true" in rendered
+    assert "`seed=<int>` (default 0)" in rendered
+    assert "ceil(0.8 x count)" in rendered
+    assert "max(10 x that test's baseline duration, 30 s), capped at 300 s" in rendered
+    assert "detected (timeout)" in rendered
+    mutation_section = rendered.split("#### `mutation_tester`", maxsplit=1)[1]
+    assert "regen_lock" not in mutation_section
+    assert "steer" not in mutation_section
 
 
 def test_specialist_examples_use_connected_session_arguments_without_cli_flags() -> None:
