@@ -1,11 +1,16 @@
 """Project discovery distinguishes the checkout from its data repositories."""
 
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
+
+
+def _git(*args: str) -> None:
+    """Run ``git`` with *args*, failing the test if it stalls or exits non-zero."""
+    run_bounded_child(["git", *args], check=True)
 
 
 @pytest.mark.parametrize("name", [".booley", "custom-data"])
@@ -16,7 +21,7 @@ def test_all_checkout_local_data_selections(tmp_path, monkeypatch, name):
     data = outer / name
     data.mkdir(parents=True)
     for root in (outer, data):
-        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+        _git("init", str(root))
     if name == "custom-data":
         (outer / "booley.toml").write_text('[project]\ndir = "custom-data"\n')
     child = data / "child"
@@ -34,7 +39,7 @@ def test_unrelated_nested_checkout_keeps_identity(tmp_path, monkeypatch):
     nested = tmp_path / "nested"
     nested.mkdir()
     for root in (tmp_path, nested):
-        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+        _git("init", str(root))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     assert discover_project_root(nested) == nested
@@ -47,35 +52,24 @@ def test_ticket_design_worktree_inside_data_keeps_checkout(tmp_path, monkeypatch
     outer = tmp_path / "checkout"
     data = outer / ".booley"
     data.mkdir(parents=True)
-    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(outer),
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "initial",
-        ],
-        check=True,
-        capture_output=True,
-        timeout=30,
+    _git("init", str(outer))
+    _git(
+        "-C",
+        str(outer),
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
     )
     worktree = data / "worktrees/ticket"
-    subprocess.run(
-        ["git", "-C", str(outer), "worktree", "add", "--detach", str(worktree)],
-        check=True,
-        capture_output=True,
-        timeout=30,
-    )
+    _git("-C", str(outer), "worktree", "add", "--detach", str(worktree))
     snapshot = worktree / ".booley"
     snapshot.mkdir()
-    subprocess.run(["git", "init", str(snapshot)], check=True, capture_output=True, timeout=30)
+    _git("init", str(snapshot))
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     if explicit:
         monkeypatch.setenv("RTL_PROJECT_ROOT", str(worktree))
@@ -143,7 +137,7 @@ def test_source_stale_data_refuses_goal_but_feedback_routes(
     data = tmp_path / ".booley"
     data.mkdir()
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
-    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True, timeout=30)
+    _git("init", str(tmp_path))
     monkeypatch.chdir(data if stale_data else tmp_path)
     for name in ("RTL_PROJECT_ROOT", "BOOLEY_DIR", "BOOLEY_CONTAINER", "BOOLEY_PROJECT_DIR"):
         monkeypatch.delenv(name, raising=False)
@@ -169,7 +163,7 @@ def test_checkout_owned_external_symlink_data_resolves_logical_parent(
     data.mkdir()
     symlink_or_skip(outer / ".booley", data, target_is_directory=True)
     for root in (outer, data):
-        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+        _git("init", str(root))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.chdir(data)
@@ -181,7 +175,7 @@ def test_checkout_owned_external_symlink_data_resolves_logical_parent(
 def test_malformed_project_selection_does_not_crash_discovery(tmp_path, monkeypatch, config):
     from booley.runtime.project_discovery import discover_project_root
 
-    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True, timeout=30)
+    _git("init", str(tmp_path))
     (tmp_path / "booley.toml").write_text(config)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
@@ -198,7 +192,7 @@ def test_explicit_external_data_symlink_is_refused(tmp_path, monkeypatch):
     alias = outer / ".booley"
     symlink_or_skip(alias, data, target_is_directory=True)
     for root in (outer, data):
-        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+        _git("init", str(root))
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setenv("RTL_PROJECT_ROOT", str(alias))
     with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
@@ -257,7 +251,7 @@ def test_sandbox_requires_checkout_local_ownership(tmp_path, monkeypatch, owned)
     data = tmp_path / "data"
     outer.mkdir()
     data.mkdir()
-    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
+    _git("init", str(outer))
     if owned:
         (outer / "booley.toml").write_text(f'[project]\ndir = "{data.as_posix()}"\n')
     monkeypatch.setattr(discovery, "WORK_DIR", str(outer))
@@ -328,18 +322,8 @@ def test_session_owner_git_administration(tmp_path, monkeypatch, admin):
     root, linked = _linked_project(tmp_path, monkeypatch, external=True)
     if admin == "separate":
         # A separate Git directory has no owning checkout to adopt.
-        subprocess.run(
-            ["git", "init", "--separate-git-dir", str(tmp_path / "administration"), str(root)],
-            check=True,
-            capture_output=True,
-            timeout=30,
-        )
-        subprocess.run(
-            ["git", "-C", str(root), "worktree", "repair", str(linked)],
-            check=True,
-            capture_output=True,
-            timeout=30,
-        )
+        _git("init", "--separate-git-dir", str(tmp_path / "administration"), str(root))
+        _git("-C", str(root), "worktree", "repair", str(linked))
         with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
             discover_session_context(linked)
         return
@@ -449,7 +433,7 @@ def test_unpinned_linked_ancestor_does_not_block_nested_discovery(tmp_path, monk
     (outer / ".booley").symlink_to(external, target_is_directory=True)
     (inner / ".booley").mkdir()
     for root in (outer, inner):
-        subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
+        _git("init", str(root))
 
     assert discover_project_root(inner) == inner
 
@@ -463,8 +447,8 @@ def test_relocated_paired_checkout_is_not_a_checkout_candidate(tmp_path, monkeyp
     (outer / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
     data = outer / "state"
     data.mkdir()
-    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
-    subprocess.run(["git", "init", str(data)], check=True, capture_output=True, timeout=30)
+    _git("init", str(outer))
+    _git("init", str(data))
     # A Paired Checkout's ``.git`` is a file; model one without needing a commit.
     (data / ".git").rename(tmp_path / "project.git")
     (data / ".git").write_text(f"gitdir: {tmp_path / 'project.git'}\n", encoding="utf-8")
@@ -511,7 +495,7 @@ def test_unreadable_configuration_means_no_configured_booley_directory(tmp_path)
 
     outer = tmp_path / "checkout"
     outer.mkdir()
-    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
+    _git("init", str(outer))
     (outer / "booley.toml").write_text('[project]\ndir = ".booley_project"\n', encoding="utf-8")
 
     assert not _is_configured_booley_dir(outer / ".booley_project")
