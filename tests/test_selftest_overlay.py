@@ -44,6 +44,7 @@ def test_stage_bad_overlay_invalidates_newer_make_artifact(tmp_path: Path) -> No
 
     assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", build_root) == 1
     assert staged.stat().st_mtime_ns > artifact.stat().st_mtime_ns
+    # Kept on subprocess.run: needs stdin data (makefile on `-f -`), which the bounded helper does not take.
     result = subprocess.run(
         ["make", "-f", "-", "compiled.ok"],
         cwd=build_root,

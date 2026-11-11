@@ -290,8 +290,9 @@ def test_spec_from_declared_goal_is_resolved_by_specialist(layout):
 
 
 def test_module_entrypoint_defines_dispatch_before_main(goal_mode):
-    import subprocess
     import sys
+
+    from tests.subprocess_budget import run_bounded_child
 
     # Execute the actual module entrypoint in another interpreter. Replace only
     # the outer event loop so the test checks definitions before service startup.
@@ -310,14 +311,7 @@ runpy.run_module("booley.mcp.server", run_name="__main__")
     env = dict(os.environ)
     env.pop("CLAUDECODE", None)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    result = run_bounded_child([sys.executable, "-c", script], env=env, timeout=20)
     assert result.returncode == 0, result.stderr
 
 
