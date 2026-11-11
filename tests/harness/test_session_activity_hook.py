@@ -365,6 +365,7 @@ def test_worktree_hook_writes_main_activity(tmp_path, monkeypatch):
     """Run as the image runs it, from a linked worktree with no BOOLEY_DIR (#2603)."""
     main, worktree = enter_worktree(tmp_path, monkeypatch)
     payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "t1", "tool_name": "x"})
+    # Kept on subprocess.run: needs stdin data and binary output.
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SCRIPT), "codex"],
         input=payload.encode(),
@@ -421,6 +422,7 @@ def test_script_runs_standalone_without_site_packages_or_booley(tmp_path):
     project.mkdir()
     (project / "booley.toml").write_text("# Project\n")
     payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "t1", "tool_name": "x"})
+    # Kept on subprocess.run: needs stdin data and binary output.
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SCRIPT), "codex"],
         input=payload.encode(),
@@ -688,6 +690,7 @@ def test_session_start_from_a_real_worktree_records_via_main(tmp_path, monkeypat
     """Run as the image runs it, from a linked worktree with no BOOLEY_DIR."""
     main, worktree = enter_worktree(tmp_path, monkeypatch)
     payload = json.dumps(session_start("conv-9", worktree)).encode()
+    # Kept on subprocess.run: needs stdin data and binary output.
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SCRIPT), "claude"],
         input=payload,

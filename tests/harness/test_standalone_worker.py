@@ -10,7 +10,6 @@ import contextlib
 import json
 import os
 import signal
-import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -29,6 +28,7 @@ from booley.mcp import sim_baseline_jobs
 from booley.runtime import job_records, job_slots
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.timefmt import utc_now_rfc3339
+from tests.subprocess_budget import run_bounded_child
 
 linux_only = pytest.mark.skipif(
     sys.platform != "linux",
@@ -196,7 +196,7 @@ def submit_and_exit(
         "name": name,
         "argv": list(argv),
     }
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             "-c",
@@ -205,11 +205,7 @@ def submit_and_exit(
             json.dumps(request),
             "" if wait_for is None else str(wait_for),
         ],
-        capture_output=True,
-        text=True,
-        timeout=TIMEOUT_S,
         env=os.environ | (env or {}),
-        check=False,
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
