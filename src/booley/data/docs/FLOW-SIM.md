@@ -145,6 +145,9 @@ Each Test Run gets one verdict:
 | Timeout | The simulation ran past its time limit (`timeout_ms`, ten minutes by default). It counts as a failure: look for a deadlock in the RTL or testbench, or raise the limit if the test really needs longer. | `1` |
 | Error | An infrastructure problem stopped the test, such as a build timeout, a build failure with no recognised design error, a missing tool, or Pre-Sim Commands that can't start; the result says nothing about the design. An RTL compile error or a simulator crash is a failure instead. | `2` |
 
+If every Test Run comes back inconclusive, see
+[Every simulation test comes back INCONCLUSIVE](TROUBLESHOOTING.md#every-simulation-test-comes-back-inconclusive).
+
 The card doesn't print log or waveform paths. Each run has its own numbered
 directory (`sim/12/` above; see [Running Flows](FLOW_REFERENCE.md#reading-results)).
 These are the files to open, relative to
