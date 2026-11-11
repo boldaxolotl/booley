@@ -1177,6 +1177,7 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
     import json
 
     from booley.flows import endpoint_reporting
+    from booley.flows.sim import campaign_presentation
     from booley.flows.sim import flow as module
 
     original_dumps, original_write = json.dumps, endpoint_reporting.atomic_write_json
@@ -1204,11 +1205,13 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
     if failure == "acceptance":
         monkeypatch.setattr(flow, "record_campaign_acceptance", fail)
     if failure in {"render", "structured"}:
-        monkeypatch.setattr(
-            module,
-            "_campaign_test_run_lines" if failure == "render" else "_campaign_structured_details",
-            fail,
+        # "render" is looked up by the presentation helpers; "structured" by the flow.
+        target, name = (
+            (campaign_presentation, "_campaign_test_run_lines")
+            if failure == "render"
+            else (module, "_campaign_structured_details")
         )
+        monkeypatch.setattr(target, name, fail)
     return writes
 
 
@@ -1880,7 +1883,8 @@ def _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault):
     monkeypatch.setattr(flow, "_prepare_campaign_resume_dependency", lambda *_args: None)
     monkeypatch.setattr(flow, "_run_validated_resume_campaign", resumed)
     monkeypatch.setattr(
-        "booley.flows.sim.flow._fresh_campaign_recovery_detail", lambda *_args: {"pending": []}
+        "booley.flows.sim.flow_resume._fresh_campaign_recovery_detail",
+        lambda *_args: {"pending": []},
     )
     return flow._resume_campaign_run(validated, recovery), manifest
 

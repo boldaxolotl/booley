@@ -21,7 +21,8 @@ from booley.flows.sim.campaign.flow_planning import (
 )
 from booley.flows.sim.campaign.planning import compare_manifests
 from booley.flows.sim.campaign.serial_execution import _work_item_test_runs
-from booley.flows.sim.flow import SimulateFlow, _manifest_run_groups
+from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow_resume import _manifest_run_groups
 from booley.flows.sim.request import SimRequest
 from booley.flows.test_runs import (
     TestRun,

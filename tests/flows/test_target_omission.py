@@ -16,7 +16,8 @@ from booley.flows.cli_selection import CliInvocation
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow
 from booley.flows.plan import FlowPlan
-from booley.flows.sim.flow import SimulateFlow, resolve_sim_campaign_work_units
+from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.watchdog_sizing import resolve_sim_campaign_work_units
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp import server
 from booley.mcp.flow_adapter import flow_schema
@@ -417,7 +418,7 @@ def test_resume_budget_does_not_discover_unrelated_target(project, monkeypatch):
     context = server.resolve_call_context({"work_dir": str(project)})
     estimates = []
     monkeypatch.setattr(
-        "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+        "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
         lambda *args, **kwargs: pytest.fail("resume sized unrelated Target"),
     )
     for count in (0, 1, 2):

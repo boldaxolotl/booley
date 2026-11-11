@@ -1224,7 +1224,7 @@ def test_combined_prepared_mode_freezes_both_eligible_families(
         _headline_state(runtime, monkeypatch, criteria, strict=ticket == "strict")
 
     from booley.flows.sim.build import BuildOutcome
-    from booley.flows.sim.flow import ElabOnlyTargetResult
+    from booley.flows.sim.elab_only import ElabOnlyTargetResult
     from booley.flows.sim.standalone import _StandaloneOutcome
 
     def build(self, target):

@@ -42,7 +42,8 @@ from booley.flows.sim.campaign.resume import (
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
-from booley.flows.sim.flow import SimulateFlow, _unfinished_coverage_work
+from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow_resume import _unfinished_coverage_work
 from booley.flows.test_runs import build_test_run, test_run_document
 from booley.targets.catalog import TargetCatalog
 from tests.fusesoc_test_support import symlinked_booley_dir
@@ -778,7 +779,9 @@ def test_hdl_resume_with_interrupted_item_is_not_refused(
     def forbidden(*_args: object) -> None:
         raise AssertionError("non-coverage resume must not be inspected by the guard")
 
-    monkeypatch.setattr("booley.flows.sim.flow.SimulationCampaign.inspect_resume", forbidden)
+    monkeypatch.setattr(
+        "booley.flows.sim.flow_resume.SimulationCampaign.inspect_resume", forbidden
+    )
 
     assert SimulateFlow()._refuse_unfinished_coverage_resume(validated) is None
 

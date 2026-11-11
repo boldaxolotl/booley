@@ -19,8 +19,10 @@ from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
 from booley.flows.sim.build import BuildOutcome
+from booley.flows.sim.campaign_presentation import _campaign_report_lines
 from booley.flows.sim.coverage_campaign import CoverageRollup
-from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow, _campaign_report_lines
+from booley.flows.sim.elab_only import ElabOnlyTargetResult
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
