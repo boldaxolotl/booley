@@ -78,7 +78,8 @@ def _error_text(stderr: str, returncode: int) -> str:
 
 def check(worktree: Path, flow: str, argv: tuple[str, ...]) -> str:
     """Why the shell would reject ``booley flow <flow> *argv`` in *worktree*; empty when valid."""
-    command = [sys.executable, "-B", "-m", __name__, flow, "--", *argv]
+    # -P: the Project's own modules never shadow what the check imports, as in the shell's script.
+    command = [sys.executable, "-B", "-P", "-m", __name__, flow, "--", *argv]
     # The worker's environment, so the check sees the code and settings the Job will run with.
     environment = {**detached_job.worker_environment(), "PYTHONDONTWRITEBYTECODE": "1"}
     try:

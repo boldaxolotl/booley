@@ -93,7 +93,7 @@ HELP = (
     "←→ switch between the Sessions, Jobs and Targets windows; each keeps its place\n"
     "↑ on the first row (an empty list, or the top of a detail view) reaches the top bar:"
     " ←→ choose, Enter apply, ↓ or Esc back\n"
-    "The top bar holds the window tabs and Help; in the Jobs window also its filters:\n"
+    "The top bar holds the window tabs, Run and Help; in the Jobs window also its filters:\n"
     f"Running, Finished (newest {FINISHED_JOBS}) and All, and the owner"
     " (Enter cycles All sessions, each session, Standalone)\n"
     "The Jobs tab counts unfinished Jobs; the Jobs window always opens on All sessions\n"
@@ -1040,7 +1040,7 @@ class DashboardApp(App[None]):
         self._load_worktrees()
         choices, message = self._wizard_worktrees()
         self.push_screen(
-            RunWizard(self.launcher, choices, message, self._default_worktree(choices)),
+            RunWizard(self.launcher, choices, message, self._default_worktree),
             lambda key: self._after_run(origin, key),
         )
 
@@ -1066,6 +1066,7 @@ class DashboardApp(App[None]):
         self._pending_job = key
         self._run_origin = origin
         self._focus_content()  # the top bar had the keyboard when Run was chosen
+        self._update_footer()  # Esc now goes back to where Run started
         self.call_later(self.refresh_snapshot)
 
     def action_open_path(self, path: str) -> None:
@@ -1857,7 +1858,8 @@ class DashboardApp(App[None]):
                     enter_opens=self._enter_target() is not None,
                     jobs_list=self.navigation.view == "jobs",
                     targets_list=self.navigation.view == "targets",
-                    nested=len(self.windows[self.window]) > 1,
+                    nested=len(self.windows[self.window]) > 1
+                    or (self.window == "jobs" and self._run_origin is not None),
                     scrolling=self.focused is self.query_one("#aside"),
                     back_to=_back_target(self.navigation.view),
                     on_run=self.query_one(TopBar).current_kind() == RUN_ITEM,

@@ -28,7 +28,7 @@ from booley.harness.standalone_job import standalone_jobs_dir, standalone_reques
 from booley.mcp.registry import discover_mcp_tools
 from booley.runtime import detached_job, job_records
 from tests.harness.test_dashboard import STAMP, choose_in_bar, snapshot
-from tests.harness.test_dashboard_targets import init_repository, session, settle, world
+from tests.harness.test_dashboard_targets import git, init_repository, session, settle, world
 
 if TYPE_CHECKING:
     from booley.harness.dashboard.wizard import RunWizard
@@ -441,6 +441,7 @@ async def test_esc_after_run_returns_to_where_the_wizard_started(checkout, origi
         await pilot.pause()
         assert (app.window, app.navigation.view) == ("jobs", "jobs")
         assert app.navigation.job_filter == "running"
+        assert "esc back" in str(app.query_one("#footer", Static).render())  # Esc has a way back
         await pilot.press("escape")
         await pilot.pause()
         if origin == "session-detail":
@@ -641,3 +642,47 @@ def test_error_text_falls_back_to_the_exit_code():
     from booley.harness.dashboard import launch
 
     assert launch._error_text("", 3) == "argument check failed (exit 3)"
+
+
+# --- review fixes: preselection, Submit highlight, a crashed check ---------------
+
+
+@pytest.mark.asyncio
+async def test_main_checkout_is_preselected_when_linked_worktrees_exist(checkout):
+    """The list is read after the wizard opens, and the main checkout sorts last in it."""
+    git(checkout, "worktree", "add", "-q", "-b", "wt-a", str(checkout.parent / "wt-a"))
+    launcher = FakeLauncher()
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await start_run(app, pilot)
+        worktrees = wizard.query_one("#run-worktrees", OptionList)
+        assert worktrees.highlighted == worktrees.option_count - 1
+        await pilot.press("enter", "enter")  # that worktree, then the first Flow
+        await check_arguments(app, pilot, wizard, "")
+        assert shown(wizard, "#run-command").startswith(f"cd {checkout} &&")
+
+
+@pytest.mark.asyncio
+async def test_stepping_back_to_the_form_and_on_again_highlights_submit(checkout):
+    launcher = FakeLauncher()
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        await check_arguments(app, pilot, wizard, "")
+        await pilot.press("down", "escape")  # Copy highlighted, back to the form
+        await check_arguments(app, pilot, wizard, "")
+        assert wizard.query_one("#run-actions", OptionList).highlighted == 0
+
+
+@pytest.mark.asyncio
+async def test_a_crashed_check_is_reported_in_the_form(checkout):
+    class Crashing(FakeLauncher):
+        def check(self, worktree, flow, argv):
+            raise ValueError("embedded null byte")
+
+    app = make_app(checkout, Crashing())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        await check_arguments(app, pilot, wizard, "--target t")
+        assert "Argument check failed: embedded null byte" in shown(wizard, "#run-error")
+        assert wizard.query_one("#run-arguments", Input).display

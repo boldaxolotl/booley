@@ -6,6 +6,7 @@ key once submitted, or ``None`` when the human backs out of the first stage.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -75,14 +76,14 @@ class RunWizard(ModalScreen[str | None]):
         launcher: Launcher,
         choices: tuple[WorktreeChoice, ...],
         message: str,
-        preselected: Path | None,
+        preselect: Callable[[tuple[WorktreeChoice, ...]], Path | None],
     ) -> None:
         super().__init__()
         self._launcher = launcher
         self._flows = launcher.flows()
         self._choices = choices
         self._message = message
-        self._preselected = preselected
+        self._preselect = preselect
         self._stage = "worktree"
         self._worktree: Path | None = None
         self._flow = ""
@@ -109,16 +110,24 @@ class RunWizard(ModalScreen[str | None]):
         self._show_stage("worktree")
 
     def set_worktrees(self, choices: tuple[WorktreeChoice, ...], message: str) -> None:
-        """Replace the worktree list (``message`` stands in while there is none), keeping the highlight."""
+        """Replace the worktree list (``message`` stands in while there is none), keeping the highlight.
+
+        Until the human moves the highlight, the preselected worktree is worked out from the
+        list as it is now: a list that arrives after the wizard opened still preselects.
+        """
         options = self.query_one("#run-worktrees", OptionList)
-        kept = self._choices[options.highlighted].path if options.highlighted is not None else None
+        kept = (
+            self._choices[options.highlighted].path
+            if self._choices and options.highlighted is not None
+            else None
+        )
         self._choices = choices
         options.clear_options()
         if not choices:
             options.add_option(Option(message or NO_WORKTREES, disabled=True))
             return
         options.add_options([Option(choice.label) for choice in choices])
-        wanted = kept or self._preselected
+        wanted = kept or self._preselect(choices)
         options.highlighted = next(
             (index for index, choice in enumerate(choices) if choice.path == wanted), 0
         )
@@ -147,6 +156,10 @@ class RunWizard(ModalScreen[str | None]):
         self.query_one("#run-title", Static).update(self._title())
         self.query_one("#run-error", Static).update("")
         self.query_one("#run-footer", Static).update(_STAGES[stage])
+        if (
+            stage == "review"
+        ):  # Enter submits, whatever was highlighted when the human stepped back
+            self.query_one("#run-actions", OptionList).highlighted = 0
         self.query_one(shown[stage][-1], Widget).focus()
 
     def action_back(self) -> None:
@@ -201,7 +214,16 @@ class RunWizard(ModalScreen[str | None]):
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Apply a finished check unless the human moved on or changed the arguments meanwhile."""
-        if event.state is not WorkerState.SUCCESS or event.worker.group != CHECK_GROUP:
+        if event.worker.group != CHECK_GROUP:
+            return
+        if (
+            event.state is WorkerState.ERROR
+        ):  # the check itself crashed: say so, never hang on "Checking…"
+            event.stop()
+            self._checking = None
+            self._show_error(f"Argument check failed: {event.worker.error}")
+            return
+        if event.state is not WorkerState.SUCCESS:
             return
         event.stop()
         checked = event.worker.result
