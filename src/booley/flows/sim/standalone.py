@@ -300,6 +300,9 @@ class _StandalonePlanRecipe:
 class StandaloneMixin:
     """Standalone module sweep mixed into :class:`SimulateFlow`."""
 
+    # Planned at work-unit time, reused by the run; restarts with each invocation.
+    _standalone_plan_recipe: _StandalonePlanRecipe | None
+
     def _standalone_requested(self) -> bool:
         """Whether the caller explicitly requested the standalone sweep."""
         mode = getattr(self.args, "mode", None)
@@ -583,8 +586,8 @@ class StandaloneMixin:
             "standalone",
             work_root_for(self.args.work_dir, "sim", "standalone", variant="sweep"),
         )
-        planned = getattr(self, "_standalone_plan_recipe", None)
-        if isinstance(planned, _StandalonePlanRecipe):
+        planned = self._standalone_plan_recipe
+        if planned is not None:
             return planned
         try:
             return self._plan_standalone_check(targets)

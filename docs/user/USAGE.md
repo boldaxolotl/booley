@@ -252,9 +252,18 @@ The Dashboard has three windows; press `←` or `→` to switch:
   Variants, and constraints. The **Worktree** item in the top bar picks the
   worktree: those with a connected session come first, the main checkout last.
 
+The **Run** item in the top bar starts a built-in Booley Flow as a Standalone
+Job. Pick the worktree, the Flow, and its arguments (the Project comes from the
+worktree, so `-C`, `--project`, and `--work-dir` are refused); the Dashboard
+checks them and shows the equivalent `cd … && booley flow …` command. **Submit**
+starts the Job, **Copy command** asks your terminal to copy the command instead.
+The Jobs window then opens on All sessions with the new Job selected; a
+Finished filter switches to Running, which keeps the Job listed after it
+finishes. `Esc` returns to where you started.
+
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
-the first row to reach the top bar with the tabs, filters, and Help; the footer
-shows the keys you can use.
+the first row to reach the top bar with the tabs, filters, Run, and Help; the
+footer shows the keys you can use.
 
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
 `J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new

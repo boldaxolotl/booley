@@ -22,7 +22,7 @@ from booley.flows.sim.execution.pre_sim import (
     _pre_sim_environment,
     test_run_environment,
 )
-from booley.flows.sim.flow import _resolve_sim_campaign_work_units
+from booley.flows.sim.flow import resolve_sim_campaign_work_units
 from booley.flows.test_runs import build_test_run
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.test_execution_engine import _handle, _prepared
@@ -260,7 +260,7 @@ class TestWatchdogSizing:
     )
     def test_hdl_target_counts_one_process_per_test_run(self, project, selectors, units):
         with patch("booley.flows.sim.flow._target_is_cocotb", return_value=False):
-            assert _resolve_sim_campaign_work_units(project, "sim", selectors) == units
+            assert resolve_sim_campaign_work_units(project, "sim", selectors) == units
 
     @pytest.fixture
     def cocotb_project(self, tmp_path: Path) -> Path:
@@ -291,7 +291,7 @@ class TestWatchdogSizing:
         self, cocotb_project, selectors, seed, units
     ):
         with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
-            counted = _resolve_sim_campaign_work_units(cocotb_project, "sim", selectors, seed=seed)
+            counted = resolve_sim_campaign_work_units(cocotb_project, "sim", selectors, seed=seed)
         assert counted == units
 
     def test_cocotb_default_suite_whose_default_variants_differ_in_env_needs_several(
@@ -305,19 +305,19 @@ class TestWatchdogSizing:
             '[sim.variants.b]\ndefault = "y"\ny = { env = { MODE = "B" } }\n',
         )
         with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
-            assert _resolve_sim_campaign_work_units(project, "sim") == 3
-            assert _resolve_sim_campaign_work_units(project, "sim", ["a", "b"]) == 2
-            assert _resolve_sim_campaign_work_units(project, "sim", ["c"]) == 1
+            assert resolve_sim_campaign_work_units(project, "sim") == 3
+            assert resolve_sim_campaign_work_units(project, "sim", ["a", "b"]) == 2
+            assert resolve_sim_campaign_work_units(project, "sim", ["c"]) == 1
 
     @pytest.mark.parametrize(("seed", "units"), [("random", 2), (9, 2), ("bogus", 2), (0, 2)])
     def test_hdl_target_counts_do_not_depend_on_the_seed(self, project, seed, units):
         with patch("booley.flows.sim.flow._target_is_cocotb", return_value=False):
-            assert _resolve_sim_campaign_work_units(project, "sim", seed=seed) == units
+            assert resolve_sim_campaign_work_units(project, "sim", seed=seed) == units
 
     def test_a_request_the_flow_refuses_is_counted_from_the_registry(self, cocotb_project):
         with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
-            assert _resolve_sim_campaign_work_units(cocotb_project, "sim", ["nope+x@x3"]) == 1
-            assert _resolve_sim_campaign_work_units(cocotb_project, "sim", ["stress+nope"]) == 1
+            assert resolve_sim_campaign_work_units(cocotb_project, "sim", ["nope+x@x3"]) == 1
+            assert resolve_sim_campaign_work_units(cocotb_project, "sim", ["stress+nope"]) == 1
 
 
 def test_target_environment_is_never_another_cores_env(tmp_path):

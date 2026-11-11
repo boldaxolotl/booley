@@ -299,8 +299,9 @@ def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
         patch.object(SimulateFlow, "_candidate_campaign_requests", return_value=[]),
         patch.object(SimulateFlow, "_publish_and_run_campaign_requests", side_effect=error),
     ):
-        endpoint = flow._run_ordinary_campaigns(
-            OrdinaryCampaignPlanning((), None, {"sim": []}), _admission()
+        endpoint = flow._execute_campaign(
+            _admission(),
+            flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {"sim": []})),
         )
 
     assert endpoint.exit_code == EXIT_ERROR

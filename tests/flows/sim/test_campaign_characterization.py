@@ -726,7 +726,7 @@ def test_backend_timeout_on_campaign_path_preserves_detail_and_adds_hint(
     flow = SimulateFlow()
     # Planning and execution share the fake build, so the planned source
     # disclosure matches what execution later prepares.
-    flow._simulation_execution_override = execution
+    monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
     result = flow.execute_cli(argv)
 
     assert result.exit_code == EXIT_FAILURE, result.outcome.report_text
