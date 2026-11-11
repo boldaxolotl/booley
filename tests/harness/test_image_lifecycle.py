@@ -407,7 +407,7 @@ def test_legacy_host_adapter_passes_complete_plan_to_local_base_build(
     base = DockerBuildRequest("base", lifecycle.BASE_IMAGE)
     proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
     plan = DockerBuildPlan((base, proxy))
-    observed = []
+    observed: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr(
         booley,
         "version_attribution",
@@ -416,7 +416,7 @@ def test_legacy_host_adapter_passes_complete_plan_to_local_base_build(
     monkeypatch.setattr(
         docker_image,
         "_step_docker_image",
-        lambda *_args, **kwargs: observed.append(kwargs["capacity_plan"]),
+        lambda *args, **kwargs: observed.append((args, kwargs)),
     )
     adapter = harness_lifecycle._LegacyBuildAdapter(
         tmp_path,
@@ -425,9 +425,14 @@ def test_legacy_host_adapter_passes_complete_plan_to_local_base_build(
         capacity_plan=plan,
     )
 
-    adapter._build_base(SimpleNamespace(reference=lifecycle.BASE_IMAGE), SimpleNamespace())
+    context = SimpleNamespace()
+    adapter._build_base(SimpleNamespace(reference=lifecycle.BASE_IMAGE), context)
 
-    assert observed == [plan]
+    assert len(observed) == 1
+    args, kwargs = observed[0]
+    # The setup step takes only the context positionally: no image argument.
+    assert args == (context,)
+    assert kwargs["capacity_plan"] == plan
 
 
 class FakeBuilder:
@@ -2238,7 +2243,7 @@ def test_source_reconcile_separates_outer_replacement_from_runtime_base_refresh(
     _install_stale_outer_base(docker)
     calls: list[tuple[bool, bool]] = []
 
-    def build_base(context, _selected, *, rebuild_runtime_base, **_kwargs) -> None:
+    def build_base(context, *, rebuild_runtime_base, **_kwargs) -> None:
         calls.append((context.force, rebuild_runtime_base))
         payload = lifecycle.PayloadProvenance(
             lifecycle.PROVENANCE_SCHEMA,
@@ -2973,7 +2978,7 @@ def test_local_builder_reports_step_failure(
         lifecycle.BuildProvenance("recipe", None),
     )
 
-    def fail_step(context, _reference, **_kwargs) -> None:
+    def fail_step(context, **_kwargs) -> None:
         context.results.append(SimpleNamespace(status="err", detail="base build failed"))
 
     monkeypatch.setattr(init_docker_image, "_step_docker_image", fail_step)
