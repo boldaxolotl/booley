@@ -28,6 +28,7 @@ from booley.bwave import vaporview_bridge as bwave_bridge
 from booley.bwave.cli import SESSION_FILE
 from booley.runtime import vaporview
 from tests.conftest import MINIMAL_FST_BYTES
+from tests.subprocess_budget import run_bounded_child
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -2215,13 +2216,9 @@ def test_gui_subprocess_smoke(tmp_path):
     env["BOOLEY_CONTAINER"] = "1"
     env["HOME"] = str(tmp_path / "home")  # no bridge sockets: editor-CLI fallback
 
-    r = subprocess.run(
+    r = run_bounded_child(
         [sys.executable, "-m", "booley.bwave.cli", "gui", "@dut"],
-        capture_output=True,
-        text=True,
-        timeout=60,
         env=env,
-        check=False,
     )
 
     assert r.returncode == 0, f"stderr: {r.stderr}"
@@ -2318,12 +2315,7 @@ def test_issue_1108_real_json_cap_preserves_native_warnings(monkeypatch, tmp_pat
         "$var wire 1 ! a $end\n$var wire 1 ! alias $end\n"
         "$upscope $end\n$enddefinitions $end\n#0\n0!\n#1000\n1!\n#2000\n"
     )
-    subprocess.run(
-        [str(binary), "build", str(vcd), "-o", str(fst)],
-        check=True,
-        capture_output=True,
-        timeout=30,
-    )
+    run_bounded_child([str(binary), "build", str(vcd), "-o", str(fst)], check=True)
     monkeypatch.setattr(bwave, "_resolve_trace", lambda args: str(fst))
     monkeypatch.setattr(bwave, "_resolve_markers_in_args", lambda *args: None)
     monkeypatch.setattr(bwave, "_inject_marker_flags", lambda *args: None)

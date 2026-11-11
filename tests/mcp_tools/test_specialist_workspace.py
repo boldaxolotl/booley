@@ -20,7 +20,7 @@ from booley.specialists.specialist_workspace import (
     isolated_agent_workspace,
     restore_result_paths,
 )
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 
 def _git(args: list[str], cwd: Path) -> None:
@@ -236,7 +236,7 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
     bundle = data / ".managed/project-git-hooks.pyz"
     bundle.parent.mkdir()
     bundle.write_bytes(build_project_git_hook_bundle().content)
-    subprocess.run(
+    run_bounded_child(
         [
             "git",
             "-C",
@@ -247,9 +247,8 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
             ".booley/booley.toml",
             ".booley/hooks/check.py",
         ],
-        check=True,
-        capture_output=True,
         timeout=10,
+        check=True,
     )
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
     with isolated_agent_workspace(params, "read_only") as (isolated, _snapshot):
