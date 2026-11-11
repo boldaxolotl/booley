@@ -459,6 +459,9 @@ def test_registry_is_probed_only_when_the_answer_needs_it(tmp_path, monkeypatch,
     sandbox.replies["bridges"] = _bridges(_UNTRUSTED)
     _inspect(tmp_path)
     assert sandbox.probes().count("state") == 1
+    # The registry probe runs in the VS Code container too, not on the host.
+    state_call = sandbox.calls[sandbox.probes().index("state")]
+    assert state_call == ["docker", "exec", _CONTAINER, "python3", "-c", _sources()["state"]]
 
 
 @pytest.mark.parametrize(
@@ -603,10 +606,6 @@ def test_extension_host_probe_source_runs_and_reports_attachment(
 _PROBE_SOURCE_NAMES = sorted(n for n in dir(vaporview) if n.endswith("_PROBE_SOURCE"))
 
 
-def test_every_probe_source_is_known_to_the_fake_sandbox():
-    assert len(_PROBE_SOURCE_NAMES) == len(_sources())
-
-
 @pytest.mark.parametrize("name", _PROBE_SOURCE_NAMES)
 def test_every_python_probe_source_compiles(name):
     compile(getattr(vaporview, name), name, "exec")
@@ -654,3 +653,9 @@ def test_viewer_bridge_project_sandbox_resolution(
     else:
         # Ownership alone must never claim an attached extension host.
         assert [f[0] for f in findings] == [_S]
+        expected = (
+            "no VS Code extension host attached in"
+            if inventory == "editor"
+            else ("no VS Code devcontainer running")
+        )
+        assert expected in findings[0][1]

@@ -342,7 +342,7 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
             return _owner_report(check_id, subject)
 
         monkeypatch.setattr(vaporview, "inspect_viewer_bridge", inspect_bridge)
-        # Public owner calls run immediately before and after the Viewer Bridge.
+        # Public owner calls bracket the Viewer Bridge (credential checks sit between).
         monkeypatch.setattr(
             inspection, "inspect_interactive_git", lambda *_a, **_k: marker("before-marker")
         )
