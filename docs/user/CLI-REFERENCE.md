@@ -16,7 +16,7 @@ in the wrong place stops and prints how to run it in the right one.
 | Location | Public commands, in order |
 |---|---|
 | Sandbox | `chat`, `dashboard`, `flow`, `specialist`, `worktree` |
-| Either | `cheat`, `doctor`, `help`, `init`, `resources`, `targets` |
+| Either | `cheat`, `coverage`, `doctor`, `help`, `init`, `resources`, `targets` |
 | Host-only | `auth`, `bootstrap`, `eda`, `projects` |
 
 `booley flow` and `booley specialist` run and list only in the Sandbox, but
@@ -74,6 +74,8 @@ The Dashboard opens by itself when you attach to the container; see
 booley cheat                      # list the cheatsheet sections
 booley cheat --all                # the whole cheatsheet
 booley cheat --goals              # Goal Mode, the Goal catalog, and thresholds
+booley coverage uncovered <coverage.json>   # uncovered points of a coverage run
+booley coverage uncovered <coverage.json> --metric branch --source rtl/fifo.sv
 booley doctor                     # check setup and environment health
 booley doctor --concise           # show only problems
 booley doctor --deep              # also run short real simulations, lints, and syntheses
@@ -86,8 +88,9 @@ booley resources --json           # the same, machine-readable
 ```
 
 Doctor also runs by itself at certain points; see [Doctor](DOCTOR.md).
-Targets are explained in [TARGETS.md](TARGETS.md), and resource history in
-[Job resource history](CONFIG.md#job-resource-history).
+Targets are explained in [TARGETS.md](TARGETS.md), resource history in
+[Job resource history](CONFIG.md#job-resource-history), and the coverage
+listing in [Finding uncovered points](COVERAGE.md#finding-uncovered-points).
 
 ### Projects on this machine · host
 
