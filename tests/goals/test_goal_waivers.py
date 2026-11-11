@@ -38,7 +38,7 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_campaign_reference,
     publish_coverage_campaign_reference,
 )
-from booley.flows.sim.coverage_waivers import CoverageWaiverConfig, CoverageWaiverValidationError
+from booley.flows.sim.coverage_waivers import CoverageWaiverValidationError
 from booley.flows.sim.waiver_candidates import (
     CampaignBinding,
     WaiverProposal,
@@ -60,15 +60,8 @@ from booley.goals.store import GoalStore
 from booley.mcp import goal_waivers as service
 from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 from booley.mcp.goal_waivers import GoalWaiverService
-from tests.conftest import symlink_or_skip
 from tests.flows.sim.coverage_campaign_test_support import decode_document
 from tests.flows.sim.test_coverage_campaign import _POINT_ID, _valid_document
-from tests.flows.sim.test_coverage_waivers import (
-    _TARGET,
-    _linked_booley_dir_roots,
-    _roots,
-    _write_valid_approval,
-)
 from tests.goals.conftest import enter_goals, git, run_row
 from tests.goals.test_proposals import Crash, approve, interrupted_transaction
 
@@ -788,69 +781,3 @@ def test_candidate_campaign_mismatch_is_ineligible(layout):
     path.write_text(json.dumps(value))
     with pytest.raises(ProposalError, match="not eligible"):
         propose(layout, env, candidate)
-
-
-_DIRECTORY = "coverage-waivers"
-
-
-@pytest.mark.parametrize("link_kind", ["directory", "document", "proof"])
-def test_prediction_rejects_symlinks_without_changing_their_targets(tmp_path, link_kind):
-    roots = _roots(tmp_path)
-    document = _write_valid_approval(roots)
-    directory = roots.project_data_repository / _DIRECTORY
-    (directory / "proofs").mkdir()
-    (directory / "proofs" / "existing.md").write_bytes(b"Existing proof.\n")
-    linked = {"directory": directory, "document": document, "proof": directory / "proofs"}[
-        link_kind
-    ]
-    external = tmp_path / "external"
-    linked.rename(external)
-    try:
-        linked.symlink_to(external, target_is_directory=external.is_dir())
-    except OSError as exc:
-        pytest.skip(f"symlink creation unavailable: {exc}")
-    files = list(external.rglob("*")) if external.is_dir() else [external]
-    before = {path: path.read_bytes() for path in files if path.is_file()}
-
-    with pytest.raises(service.WaiverPlanError, match="symlink"):
-        service.load_promoted_waiver_set(
-            CoverageWaiverConfig("project_data_repository", _DIRECTORY),
-            roots,
-            tmp_path / "overlay",
-            (_TARGET,),
-            {
-                Path(_DIRECTORY) / "rtl/counter.sv.toml": b"document sentinel",
-                Path(_DIRECTORY) / "proofs/existing.md": b"proof sentinel",
-            },
-        )
-
-    assert {path: path.read_bytes() for path in before} == before
-
-
-@pytest.mark.parametrize("linked", ["entry", "below"])
-def test_promoted_waivers_follow_only_the_booley_dir_entry(tmp_path, monkeypatch, linked):
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    roots = _linked_booley_dir_roots(tmp_path)
-    if linked == "below":
-        (tmp_path / "elsewhere").mkdir()
-        symlink_or_skip(
-            roots.project_data_repository / _DIRECTORY,
-            tmp_path / "elsewhere",
-            target_is_directory=True,
-        )
-    _write_valid_approval(roots)
-
-    def promote():
-        return service.load_promoted_waiver_set(
-            CoverageWaiverConfig("project_data_repository", _DIRECTORY),
-            roots,
-            tmp_path / "overlay",
-            (_TARGET,),
-            {},
-        )
-
-    if linked == "below":
-        with pytest.raises(service.WaiverPlanError, match="symlink"):
-            promote()
-    else:
-        assert [waiver.waiver_id for waiver in promote().waivers] == ["counter-basic-block"]

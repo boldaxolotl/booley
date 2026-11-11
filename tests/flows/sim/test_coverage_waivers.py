@@ -31,6 +31,7 @@ from booley.flows.sim.coverage_policy import (
     CoverageCriterion,
     CoverageThreshold,
     evaluate_coverage_campaign,
+    evaluation_json,
     strict_reevaluation,
 )
 from booley.flows.sim.coverage_waivers import (
@@ -1026,6 +1027,7 @@ def test_strict_reevaluation(tmp_path: Path, already_waived: bool) -> None:
     assert evaluated.evaluation["status"] == "pass"
     assert evaluated.evaluation["approved_waiver_set_digest"] == approved.digest
     assert evaluated.evaluation["diagnostics"] == ()
+    assert evaluation_json(evaluated)["status"] == "pass"
 
 
 def test_known_other_target_approval_is_valid_but_inapplicable(tmp_path: Path) -> None:
