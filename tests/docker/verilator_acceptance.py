@@ -22,6 +22,7 @@ from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "verilator_acceptance"
 FLAGS = [
     "--coverage-line",
+    "--coverage-branch",
     "--coverage-toggle",
     "--coverage-expr",
     "--coverage-user",
