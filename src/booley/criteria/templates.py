@@ -1,4 +1,4 @@
-"""Criteria templates — default criteria sets per ticket type.
+"""Criteria templates — default Criteria sets for the built-in Goalsets.
 
 Handles per-target expansion: a single logical criterion like ``lint_clean``
 with targets ``[lite, full, combo]`` expands into ``lint_clean_lite``,
@@ -104,11 +104,11 @@ def has_relative_qor_threshold(params: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 # Criterion keys removed or renamed by past migrations, each mapped to a
-# specific, actionable hint. This is the single source of truth consulted at
-# the Ticket-document authoring boundary and by Ticket validation so a Ticket
-# authored before a rename fails fast with the exact fix. An unrecognized key
-# is otherwise silently created as *optional*, downgrading a mandatory
-# Criterion to a no-op; hence a hard error, not a warning.
+# specific, actionable hint. This is the single source of truth for the
+# retired-key lookup; the Coverage Flow rejects a retired ``coverage_`` key
+# with it. An unrecognized key is otherwise silently created as *optional*,
+# downgrading a mandatory Criterion to a no-op; hence a hard error, not a
+# warning.
 _COVERAGE_MIGRATION_HINT = f"replace it with {COVERAGE_MIGRATION_SKELETON!r}"
 RETIRED_CRITERIA: dict[str, str] = {
     "plan_done": "remove it; the planner specialists were pruned",
@@ -134,7 +134,7 @@ def find_retired_criteria(keys: Iterable[str]) -> list[tuple[str, str]]:
 
     Review criteria expand with a verdict suffix (``review_x`` ->
     ``review_x_done``/``_clean``), so a retired base matches both its bare form
-    and any suffixed form of it — this accepts either raw ticket-YAML keys or
+    and any suffixed form of it — this accepts either raw authoring keys or
     post-expansion keys.
     """
     keys = list(keys)
@@ -168,7 +168,7 @@ class CriterionDef:
     # True for a family whose public binding is one Target and one named test.
     per_test: bool = False
     # Omitted from the generated reference/cheatsheet, but still fully usable if a
-    # ticket declares it. For criteria whose producing Flow is de-registered, so
+    # Goal declares it. For criteria whose producing Flow is de-registered, so
     # listing them would advertise a criterion nothing can currently satisfy.
     hidden: bool = False
 
@@ -626,7 +626,7 @@ class CriterionSpec:
     category: str | None = None
     # Extra parameters (e.g. max_percent for synthesis delta)
     params: dict[str, Any] = field(default_factory=dict)
-    # Explicit target names from YAML (used by expand when available)
+    # Explicit target names from the authoring entry (used by expand when available)
     targets: list[str] | None = None
     # Flow alias: the generic per-target key a Flow would set for this
     # file-specific criterion.  E.g. "sim_pass_default" for a spec whose
@@ -636,7 +636,7 @@ class CriterionSpec:
     def expand(self, targets: list[str]) -> list[tuple[str, bool]]:
         """Expand into (key, mandatory) pairs.
 
-        Uses self.targets (from YAML) when available, falling back to
+        Uses self.targets (from the authoring entry) when available, falling back to
         the passed targets list.
         """
         if not self.per_target:
@@ -679,7 +679,7 @@ TEMPLATE_REGISTRY: dict[str, list[CriterionSpec]] = {
 }
 
 # Criteria that Flows always set with a target suffix (e.g. sim_pass_default).
-# A ticket declaring these as bare scalars (sim_pass: true) will never match.
+# A Goal declaring these as bare scalars (sim_pass: true) will never match.
 PER_TARGET_CRITERIA: frozenset[str] = (
     frozenset(
         spec.name for specs in TEMPLATE_REGISTRY.values() for spec in specs if spec.per_target
@@ -697,28 +697,26 @@ class CriteriaTemplate:
 
     @classmethod
     def for_ticket_type(cls, ticket_type: str) -> CriteriaTemplate:
-        """Load default template for a ticket type."""
+        """Load the default template for a built-in Goalset key."""
         specs = TEMPLATE_REGISTRY.get(ticket_type, _BUGFIX_CRITERIA)
         return cls(specs=list(specs))
 
     @classmethod
     def from_yaml(cls, criteria_section: dict[str, Any]) -> CriteriaTemplate:
-        """Parse criteria from ticket YAML ``criteria:`` section.
+        """Parse Goal criteria entries from a mapping with ``mandatory``/``optional`` keys.
 
-        Expected format::
+        Each section maps a Criterion key to its authored value::
 
-            criteria:
-              mandatory:
-                lint_clean: [lite, full, combo]
-                sim_pass:
-                  - alu_tb@lite@all
-                review_rtl_spec_done: approved
-              optional:
-                mutation_score:
-                  - target: sim_alu
-                    scope: [rtl/alu.sv]
-                    min_detected: 8
-                    total: 10
+            mandatory:
+              lint_clean: [lite, full, combo]
+              sim_pass:
+                - alu_tb@lite@all
+            optional:
+              mutation_score:
+                - target: sim_alu
+                  scope: [rtl/alu.sv]
+                  min_detected: 8
+                  total: 10
         """
         specs: list[CriterionSpec] = []
         cycle_bindings: set[tuple[str, str]] = set()
@@ -776,7 +774,7 @@ class CriteriaTemplate:
     def flow_key_aliases(self) -> dict[str, list[str]]:
         """Return {generic_flow_key: [file_specific_key, ...]} mapping.
 
-        When a ticket uses structured sim entries like
+        When a Goal uses structured sim entries like
         ``verif/tb.sv @ default @ fail -> pass``, the expanded key is
         file-specific (``sim_pass_verif_tb.sv_default``) but the Flow
         only knows the generic per-target key (``sim_pass_default``).
@@ -813,7 +811,7 @@ class CriteriaTemplate:
 def _is_review_base_key(key: str) -> bool:
     """True if *key* is a review criterion base (no verdict suffix).
 
-    Bare YAML review criteria mean "currently clean" and therefore expand to
+    Bare review criteria mean "currently clean" and therefore expand to
     ``_clean``. Authors who intentionally want a terminal advisory review that
     reports findings without fixing them can spell ``_done`` explicitly.
     """
@@ -834,7 +832,7 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
     *,
     mandatory: bool,
 ) -> list[CriterionSpec]:
-    """Parse a single criterion entry from YAML into CriterionSpec(s).
+    """Parse a single Goal criteria entry into CriterionSpec(s).
 
     Value forms:
       - list of strings (targets): per-target expansion
@@ -1245,7 +1243,7 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> dict[str, An
 
 
 def _normalize_criterion_param_value(key: str, param: str, value: Any) -> Any:
-    """Validate one parameter and normalize ticket percentages to numbers."""
+    """Validate one parameter and normalize authored percentages to numbers."""
     _clock, base_param = _split_clock_scope(param)
     descriptor = describe_threshold(base_param)
     percentage = key.startswith("coverage_") and base_param == "min_pct"

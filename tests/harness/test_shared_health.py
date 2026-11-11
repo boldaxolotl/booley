@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Findings, Severity
 from booley.harness import auto_doctor, doctor, upgrade_review
 from booley.harness import booley as cli
 from booley.harness.dashboard import model as dashboard
@@ -257,8 +257,9 @@ def test_automatic_crash_becomes_shared_machinery_failure(project, monkeypatch):
 def test_interpreted_lint_design_findings_remain_healthy(project):
     root, directory = project
     reporter = doctor._Reporter.create()
+    findings = Findings()
     result = subprocess.CompletedProcess(["lint"], 1, "RESULT: WARN (58 warnings)", "")
-    doctor._report_flow_check_result(
+    doctor._grade_flow_check_result(
         None,
         "lint",
         result,
@@ -266,12 +267,10 @@ def test_interpreted_lint_design_findings_remain_healthy(project):
         dry_run=False,
         label="lint smoke",
         report_dir=directory / "unused",
-        verbose=False,
-        _pass=reporter.pass_,
-        _warn=reporter.warn_,
-        _skip=reporter.skip_,
-        _fail=reporter.fail_,
+        findings=findings,
     )
+    # Persisted-record test: the manual result stores what the reporter rendered.
+    reporter.diagnostics(findings.report())
     outcome = reporter.result(reporter.finish())
     doctor.record_manual_result(root, outcome)
     assert health.read_health(root).assessment.clean

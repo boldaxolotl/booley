@@ -355,7 +355,7 @@ def test_string_guard_precedes_cache_lookup(tmp_path, monkeypatch, datatype):
         fpga_cache, "load", lambda *_args, **_kwargs: pytest.fail("string reached cache")
     )
     monkeypatch.setattr(
-        fpga_edam, "build_fpga_edam", lambda **_kwargs: pytest.fail("string reached EDAM")
+        fpga_edam, "build_fpga_edam", lambda *_args, **_kwargs: pytest.fail("string reached EDAM")
     )
     with pytest.raises(ValueError, match="Vivado does not support string/file"):
         flow._prepare_fpga_command("fpga_demo")

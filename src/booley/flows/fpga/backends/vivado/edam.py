@@ -27,6 +27,7 @@ from typing import Any
 
 from booley.evidence.timing import CLOCK_TIMING_FIELDS, make_clock_timing
 from booley.flows.fpga.profiles import VivadoProfile, validate_vivado_profile
+from booley.flows.fpga.recipe import ResolvedFpgaRecipe
 from booley.flows.target_parameters import ParameterValue
 
 logger = logging.getLogger(__name__)
@@ -49,33 +50,27 @@ def validate_vivado_parameter_types(parameters: dict[str, ParameterValue]) -> No
 
 
 def build_fpga_edam(
+    recipe: ResolvedFpgaRecipe,
     *,
     name: str,
-    toplevel: str,
-    part: str,
-    sv_files: list[Path],
-    v_files: list[Path],
-    include_dirs: list[Path],
-    xdc_files: list[Path],
-    defines: list[str],
-    vlogparams: dict[str, Any],
     workspace_root: Path,
     work_root: Path,
     extra_eda_tool_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the flow-API EDAM for one target's Vivado implementation run.
 
-    Resolved Booley inputs in, a flow-API EDAM out, with file names relative to
+    The validated *recipe* in, a flow-API EDAM out, with file names relative to
     *work_root* so the materialized Vivado build directory is relocatable within
     the Sandbox workspace.
 
-    ``part`` is the only edalize ``vivado`` flow option Booley forwards by
+    ``recipe.part`` is the only edalize ``vivado`` flow option Booley forwards by
     default (it is in the :mod:`edam` whitelist and unambiguously safe). The XDC
-    constraint files (``xdc_files``, per-target and sourced from the Target's
+    constraint files (``recipe.xdc_files``, per-target and sourced from the Target's
     ``file_type: xdc`` fileset since ADR 0031) are each carried as a typed
-    constraint file (``file_type: xdc``, inferred from suffix), defines become
-    ``vlogdefine`` parameters, ``vlogparams`` remain top-level parameter
-    overrides, and the top module is the EDAM ``toplevel``.
+    constraint file (``file_type: xdc``, inferred from suffix), ``recipe.defines`` become
+    ``vlogdefine`` parameters, ``recipe.vlogparams`` remain top-level parameter
+    overrides, and ``recipe.top`` is the EDAM ``toplevel``. *name* names the
+    EDAM project; the caller owns that choice.
     ``extra_eda_tool_options`` is an internal, typed extension seam for
     whitelisted Edalize flow options. The built-in FPGA Flow does not forward
     Target ``synth`` or ``pnr`` values through it: those are Edalize engine
@@ -87,7 +82,7 @@ def build_fpga_edam(
     """
     from booley.flows import edam as edam_layer
 
-    eda_tool_options: dict[str, Any] = {"part": part}
+    eda_tool_options: dict[str, Any] = {"part": recipe.part}
     if extra_eda_tool_options:
         eda_tool_options.update(extra_eda_tool_options)
 
@@ -95,11 +90,11 @@ def build_fpga_edam(
         name=name,
         flow="vivado",
         eda_tool="vivado",
-        files=[*sv_files, *v_files, *xdc_files],
-        include_dirs=include_dirs,
-        toplevel=toplevel,
-        defines=defines,
-        vlogparams=vlogparams,
+        files=[*recipe.sv_files, *recipe.v_files, *recipe.xdc_files],
+        include_dirs=list(recipe.include_dirs),
+        toplevel=recipe.top,
+        defines=list(recipe.defines),
+        vlogparams=recipe.vlogparams,
         eda_tool_options=eda_tool_options,
         workspace_root=workspace_root,
         relative_to=work_root,

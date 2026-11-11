@@ -273,30 +273,18 @@ def _write_yosys_script(spec: SynthSpec, build_dir: Path) -> None:
     if spec.frontend == "sv2v":
         yosys_sources = [Path(syn_core.SV2V_OUTPUT_NAME)]
         inc_dirs: list[Path] = []
-        # sv2v has already consumed these defines, so read_verilog ignores
-        # them; the post-frontend parameter guard still needs the original
-        # list to detect an enabled macro that left a same-named top parameter
-        # at zero.
-        defines = list(spec.defines)
     else:
         yosys_sources = [Path(_rel(f, build_dir)) for f in spec.sources]
         inc_dirs = [Path(_rel(d, build_dir)) for d in spec.inc_dirs]
-        defines = list(spec.defines)
+    # The builder reads ``spec.defines`` in both branches. sv2v has already
+    # consumed them, so read_verilog ignores them; the post-frontend parameter
+    # guard still needs the original list to detect an enabled macro that left
+    # a same-named top parameter at zero.
     script = syn_core._build_yosys_script(
-        yosys_sources,
-        spec.design_name,
-        spec.liberty,
-        Path(),  # work_dir "." — netlist/stat paths come out build-dir-relative
-        spec.flatten,
-        spec.params,
-        spec.abc_recipe,
-        frontend=spec.frontend,
+        spec,
+        sources=yosys_sources,
         inc_dirs=inc_dirs,
-        defines=defines,
-        slang_options=list(spec.slang_options),
-        generic_abc_before_mapping=spec.generic_abc_before_mapping,
-        abc_script=spec.abc_script,
-        abc_delay_ps=spec.abc_delay_ps,
+        work_dir=Path(),  # "." — netlist/stat paths come out build-dir-relative
     )
     # One command per line: the "; " separators join top-level commands only
     # (ABC's "+strash;balance;..." recipe token has no space after ';', and

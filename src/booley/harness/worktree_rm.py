@@ -92,6 +92,13 @@ class WorktreeRemovalError(Exception):
     """Removal cannot start or continue; nothing destructive happened for this cause."""
 
 
+class WorktreeRemovalBlockedError(WorktreeRemovalError):
+    """The worktree's layout makes removal unsafe; fix the layout first.
+
+    ``--force`` does not override it. Like a refusal, it keeps the worktree.
+    """
+
+
 @dataclass(frozen=True)
 class Removal:
     """What a completed removal left behind, for the report."""
@@ -214,14 +221,17 @@ def _locate(project_root: Path, main: Path, name: str) -> _Target:
     gone = outer.state == "gone" and (paired is None or paired.state == "gone")
     if gone and not target.record_exists:
         raise WorktreeRemovalError(f"no worktree named {name}")
-    if _is_inside(project_root, path) or _cwd_inside(path):
+    if running_inside(project_root, path):
         raise WorktreeRemovalError(
             "run booley worktree rm from the main checkout or another worktree"
         )
     return target
 
 
-def _cwd_inside(path: Path) -> bool:
+def running_inside(project_root: Path, path: Path) -> bool:
+    """Whether the project root or the current directory is inside worktree *path*."""
+    if _is_inside(project_root, path):
+        return True
     try:
         return _is_inside(Path.cwd(), path)
     except OSError:
@@ -240,7 +250,7 @@ def _refuse_nested(target: _Target) -> None:
     ]
     if nested:
         listed = "\n".join(f"  - {path}" for path in nested)
-        raise WorktreeRemovalError(
+        raise WorktreeRemovalBlockedError(
             f"worktree {target.name} contains other worktrees:\n{listed}\n"
             "Remove them first with booley worktree rm or git worktree remove."
         )
@@ -260,7 +270,7 @@ def _refuse_foreign_booley_dir(target: _Target) -> None:
         or not _is_inside(booley_dir, target.path)
         or booley_dir.resolve() == target.common.resolve()
     ):
-        raise WorktreeRemovalError(
+        raise WorktreeRemovalBlockedError(
             f"the Booley Directory of worktree {target.name} is a link or lies outside it: "
             f"{booley_dir}\nRemove that link first; removal would otherwise touch the "
             "Main Booley Directory."
@@ -547,6 +557,17 @@ def remove_worktree(project_root: Path, name: str, *, force: bool) -> Removal:
 # ---------------------------------------------------------------------------
 
 
+# Failures reported as one line; anything else is a defect and propagates.
+REMOVAL_FAILURES = (
+    WorktreeRemovalError,
+    WorktreeListError,
+    ProjectPairingError,
+    BooleyLayoutError,
+    OSError,
+    ValueError,
+)
+
+
 def _refusal_text(refusal: WorktreeRemovalRefusedError) -> str:
     lines = [f"ERROR: refusing to remove worktree {refusal.name}:"]
     lines += [f"  - {reason}" for reason in refusal.reasons]
@@ -557,7 +578,8 @@ def _refusal_text(refusal: WorktreeRemovalRefusedError) -> str:
     return "\n".join(lines)
 
 
-def _report(name: str, removal: Removal) -> str:
+def report_removal(name: str, removal: Removal) -> str:
+    """Render a completed removal: what was moved aside or kept."""
     lines = [f"Removed worktree {name}."]
     if removal.evidence is not None:
         lines.append(f"Evidence kept in {removal.evidence}")
@@ -575,15 +597,8 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     except WorktreeRemovalRefusedError as refusal:
         print(_refusal_text(refusal), file=sys.stderr)
         return 1
-    except (
-        WorktreeRemovalError,
-        WorktreeListError,
-        ProjectPairingError,
-        BooleyLayoutError,
-        OSError,
-        ValueError,
-    ) as exc:
+    except REMOVAL_FAILURES as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    print(_report(args.name, removal))
+    print(report_removal(args.name, removal))
     return 0
