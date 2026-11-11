@@ -117,7 +117,6 @@ def test_tool_identity_does_not_leak_between_invocations(tmp_path, monkeypatch):
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim"])
     assert flow._eda_tool is None
     assert flow._eda_tools == {"sim": None}
-    assert flow._target_eda_tools == {"sim": None}
 
 
 def test_simulation_outcomes_belong_to_simulation_flow(tmp_path, monkeypatch):

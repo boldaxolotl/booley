@@ -462,11 +462,20 @@ unique log directory under the Simulation work root for a bare CLI run), while
 the shared build cache remains mutable and reusable.
 
 The standalone sweep covers the selected Targets' RTL filesets, excludes TB-only
-sources, and includes package/interface files as shared prerequisites. Configure
-its probe with `[flows.sim].standalone_frontend` (`auto`, `iverilog`, or
-`verilator`). A genuine module rejection is exit 1; an unavailable or
-untrustworthy probe is exit 2 and leaves prior standalone Criterion state
-unchanged.
+sources, and includes package/interface files as shared prerequisites. Each
+module is probed with the simulator of every selected Target whose RTL fileset
+contains it ([ADR 0089](../adr/0089-probe-standalone-modules-with-each-targets-simulator.md)):
+`inspection.eda_tool` maps `icarus`/`iverilog` to `iverilog` and `verilator` to
+`verilator`. A probe compiles only the shared package/interface files of the
+Targets that contribute its frontend. A Target with any other simulator needs a
+fallback probe (Verilator when on PATH, else Icarus); the sim Flow can select
+only Icarus and Verilator Targets today, so this path is unreachable until a
+commercial simulator Target exists. A fallback probe whose compiler already is
+a covering Target's own runs once and is graded normally. A genuine module
+rejection is exit 1; only a fallback probe's parse error, when the per-Target
+builds passed, is "ungraded" (exit 2, prior standalone Criterion state
+unchanged). The retired `[flows.<flow>].standalone_frontend` key is a hard
+migration error for every Flow.
 
 ## `lint`
 
