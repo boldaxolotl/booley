@@ -365,7 +365,10 @@ def test_request_carries_only_targets_and_sections():
     request_type = cocotb_target_checks.CocotbTargetRequest
     fields = dataclasses.fields(request_type)
     assert {field.name for field in fields} == {"targets", "tests_sections"}
-    assert not any("ProjectAudit" in str(field.type) for field in fields)
+    assert {field.name: field.type for field in fields} == {
+        "targets": "tuple[TargetHandle, ...]",
+        "tests_sections": "Mapping[str, Any]",
+    }
 
 
 def test_project_has_cocotb_target(tmp_path: Path):

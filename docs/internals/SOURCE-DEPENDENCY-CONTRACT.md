@@ -258,11 +258,13 @@ prevents these three shared mechanisms from acquiring caller policy.
 Doctor composes and renders complete typed reports. `runtime.inspection` owns
 Runtime evidence collection and validation; `harness.host_diagnostics` owns host
 health composition; `harness.setup.readiness` owns Project loading and explicit
-inspection/reconciliation operations. These owners do not accept Doctor callbacks
+inspection/reconciliation operations; `flows.sim.backends.cocotb_target_checks`
+owns the cocotb Target rules. These owners do not accept Doctor callbacks
 or import command orchestration or rendering. D1/D6 protect audit/Runtime; D26
 protects the four request-taking, report-returning owners
 (`harness.host_diagnostics`, `harness.setup.readiness`, `runtime.inspection`,
-`flows.sim.backends.cocotb_target_checks`), including deferred and type-only imports. A new owner follows
+`flows.sim.backends.cocotb_target_checks`), including deferred and type-only
+imports. A new owner follows
 [Adding a diagnostic owner](DOCTOR-HEALTH.md#adding-a-diagnostic-owner).
 
 Inspection retains bounded subprocess and conditional authority-lock effects;

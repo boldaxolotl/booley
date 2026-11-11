@@ -160,13 +160,13 @@ def _module_file(target: TargetHandle, module: str) -> tuple[Path, bool] | None:
     return None
 
 
-# A cocotb module can generate rendered test IDs at import time through legacy
-# ``TestFactory`` or cocotb 2's ``@cocotb.parametrize`` decorator. Those IDs
-# are registered at import time. Static inspection must never execute a module.
-
-
 def _symbol(node: ast.expr, aliases: dict[str, str]) -> str:
-    """Resolve source-visible import aliases for a decorator or factory call."""
+    """Resolve source-visible import aliases for a decorator or factory call.
+
+    A cocotb module can generate rendered test IDs at import time through legacy
+    ``TestFactory`` or cocotb 2's ``@cocotb.parametrize`` decorator, so these
+    helpers recognise them from source; static inspection never executes a module.
+    """
     if isinstance(node, ast.Call):
         return _symbol(node.func, aliases)
     if isinstance(node, ast.Name):

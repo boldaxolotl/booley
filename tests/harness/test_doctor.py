@@ -2396,27 +2396,17 @@ targets:
 """
 
 
-def _write_cocotb_project(
-    root: Path,
-    *,
-    tb_body: str,
-    tests: list[str] | None = None,
-) -> None:
+def _write_cocotb_project(root: Path, *, tb_body: str) -> None:
     """A minimal project whose only sim Target is a Cocotb Target (ADR 0034).
 
-    *tb_body* is the Python testbench; *tests* (if given) is the tests.toml
-    ``tests = [...]`` list declared on the Target.
+    *tb_body* is the Python testbench.
     """
     (root / "design.core").write_text(_COCOTB_SIM_CORE, encoding="utf-8")
     (root / "rtl").mkdir(exist_ok=True)
     (root / "tb").mkdir(exist_ok=True)
     (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (root / "tb" / "test_dut.py").write_text(tb_body, encoding="utf-8")
-    pd = root / ".booley"
-    pd.mkdir(exist_ok=True)
-    if tests is not None:
-        names = ", ".join(f'"{t}"' for t in tests)
-        (pd / "tests.toml").write_text(f"[sim]\ntests = [{names}]\n", encoding="utf-8")
+    (root / ".booley").mkdir(exist_ok=True)
 
 
 class TestCoreAudit:

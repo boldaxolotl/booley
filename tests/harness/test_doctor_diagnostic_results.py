@@ -372,8 +372,9 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
         before = next(
             i for i, m in enumerate(messages) if m.startswith(".core Targets enumerated")
         )
-        after = owned_warn + 1
-        assert after < len(messages)
+        after = next(
+            i for i, m in enumerate(messages) if m == "sim Target 'sim_fast' TB fileset tagged"
+        )
         assert owned_warn == owned_pass + 1
     else:
         before, after = messages.index("before-marker"), messages.index("after-marker")
