@@ -24,7 +24,7 @@ from fnmatch import fnmatchcase
 # stamp (``runtime/doctor_stamp.json``), the developer probe, and the job-slot
 # store all live there (F-6: it is a distinct dir from ``.runtime/``, not a
 # typo — do not "dedupe" the two away).  ``worktrees/`` holds per-run git
-# worktrees.  Project-configurable output dirs (``[flows.sim].output_dir``
+# worktrees.  Project-configurable output dirs (``[flows.synth].output_dir``
 # etc.) are deliberately NOT listed — they vary per project and often live
 # outside ``.booley/``.
 #

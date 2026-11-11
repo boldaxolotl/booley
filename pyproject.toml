@@ -302,7 +302,8 @@ filterwarnings = [
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 source = ["booley"]
-omit = ["tests/*"]
+# Goal Mode source is not measured while its tests are not collected: see tests/conftest.py.
+omit = ["tests/*", "*/booley/goals/*"]
 branch = true
 # Raw shard artifacts are reported from a different runner. Canonical relative
 # paths also fold subprocess imports from temporary source checkouts back onto

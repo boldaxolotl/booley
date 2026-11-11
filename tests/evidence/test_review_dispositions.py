@@ -284,8 +284,8 @@ def test_legacy_package_disposition_with_clean_lifecycle_remains_valid(
     assert row["disposition"] == expected
 
 
-def test_outstanding_done_rows_include_optional_legacy_and_all_severities() -> None:
-    from booley.evidence.review_dispositions import outstanding_done_findings
+def test_corrective_done_rows_include_optional_legacy_and_all_severities() -> None:
+    from booley.evidence.review_dispositions import corrective_done_findings
 
     rows = [
         {"finding_id": "current", "severity": "MINOR", "disposition": "current"},
@@ -295,7 +295,7 @@ def test_outstanding_done_rows_include_optional_legacy_and_all_severities() -> N
         {"finding_id": "fixed", "status": "fixed"},
     ]
     criteria = {"review_rtl_bugs_done": {"required": "optional", "detail": {"issue_list": rows}}}
-    assert [row["finding_id"] for row in outstanding_done_findings(criteria)] == [
+    assert [row["finding_id"] for row in corrective_done_findings(criteria)] == [
         "current",
         "legacy",
     ]
@@ -303,11 +303,11 @@ def test_outstanding_done_rows_include_optional_legacy_and_all_severities() -> N
 
 @pytest.mark.parametrize("status", [None, 1, {}, []])
 def test_raw_legacy_status_remains_conservative_without_crashing(status):
-    from booley.evidence.review_dispositions import outstanding_done_findings
+    from booley.evidence.review_dispositions import corrective_done_findings
 
     criteria = {
         "review_removed_done": {
             "detail": {"issue_list": [{"summary": "historical", "status": status}]}
         }
     }
-    assert outstanding_done_findings(criteria)[0]["status"] == status
+    assert corrective_done_findings(criteria)[0]["status"] == status
