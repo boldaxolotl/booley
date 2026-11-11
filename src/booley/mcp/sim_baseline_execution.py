@@ -583,7 +583,7 @@ def execute_child(
     The child runs under the supervisor's background slot claim, so its own
     Flow admission claims nothing (``INHERITED_SLOT_ENV``).
     """
-    from booley.mcp.sim_baseline_jobs import baseline_environment
+    from booley.runtime.detached_job import detached_environment
 
     request_path = output / "request.json"
     owner = read_document(request_path, None)
@@ -601,7 +601,7 @@ def execute_child(
     )
     command = [sys.executable, "-m", "booley.mcp.sim_baseline_execution", str(document)]
     with _background_slot(owner, output) as token:
-        environment = baseline_environment() | {
+        environment = detached_environment() | {
             job_slots.INHERITED_SLOT_ENV: f"{token.job_class}/{token.path.name}"
         }
         process = subprocess.Popen(command, env=environment, **new_group_kwargs())

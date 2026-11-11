@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +22,7 @@ from booley.goals.sim_baseline_store import (
 )
 from booley.mcp import sim_baseline_jobs
 from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
-from booley.runtime import job_records
+from booley.runtime import detached_job, job_records
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.goals.conftest import enter_goals
 
@@ -152,7 +153,14 @@ def test_startup_failure_publishes_the_request_before_the_job_record(baseline, m
 
     monkeypatch.setattr(job_records, "write_record", spy)
 
-    sim_baseline_jobs._reap_unstarted(SimpleNamespace(wait=lambda: 3), path)
+    raw = json.loads(path.read_bytes())
+    detached_job._reap_unstarted(
+        SimpleNamespace(wait=lambda: 3),
+        path.parent / "job.log",
+        Path(raw["jobs_root"]),
+        raw["job_id"],
+        partial(sim_baseline_jobs._publish_unstarted, path),
+    )
 
     assert seen == [(job_records.STATUS_FAILED, "unavailable")]
     request = json.loads(path.read_bytes())

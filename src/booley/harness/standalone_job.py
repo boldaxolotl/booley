@@ -63,6 +63,23 @@ def standalone_log_path(booley_dir: Path, run_id: str) -> Path:
     return standalone_log_root(booley_dir) / run_id / JOB_LOG_NAME
 
 
+def standalone_request_path(booley_dir: Path, run_id: str) -> Path:
+    """Where a detached Standalone Job's request is written, beside its ``job.log``."""
+    return standalone_log_root(booley_dir) / run_id / "request.json"
+
+
+def checkout_report_root(project_root: Path) -> str | None:
+    """The Project's resolved checkout Booley Directory, where this run's reports land."""
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
+
+    try:
+        # Resolved like the common directory the Dashboard scans from: a symlinked
+        # ``.booley`` is outside that scan root under its lexical name.
+        return str(resolve_checkout_booley_dir(project_root).resolve())
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
 def _exit_code(code: object) -> int:
     """The process exit status a ``SystemExit`` payload means."""
     if code is None:
@@ -73,11 +90,23 @@ def _exit_code(code: object) -> int:
 class StandaloneJob:
     """One shell run's Job record and ``job.log``, from :meth:`prepare` to the terminal state."""
 
-    def __init__(self, booley_dir: Path, record: job_records.JobRecord) -> None:
+    def __init__(
+        self, booley_dir: Path, record: job_records.JobRecord, *, adopted: bool = False
+    ) -> None:
         self._booley_dir = booley_dir
         self._record = record
         self._root = standalone_jobs_dir(booley_dir)
         self._finished = False
+        # An adopted Job's fds 1 and 2 already are its ``job.log``: nothing to tee.
+        self._adopted = adopted
+
+    @classmethod
+    def adopt(cls, booley_dir: Path, run_id: str) -> StandaloneJob | None:
+        """The Job a detached worker runs: the record its submitter wrote, or ``None``."""
+        record = job_records.read_record(run_id, standalone_jobs_dir(booley_dir))
+        if record is None:
+            return None
+        return cls(booley_dir, record, adopted=True)
 
     @classmethod
     def prepare(
@@ -89,10 +118,7 @@ class StandaloneJob:
         origin), a run inside another Job's process tree (``BOOLEY_RUN_ID`` is set),
         or a Project whose common Booley Directory cannot be resolved.
         """
-        from booley.runtime.booley_dir import (
-            resolve_checkout_booley_dir,
-            resolve_common_booley_dir,
-        )
+        from booley.runtime.booley_dir import resolve_common_booley_dir
 
         if os.environ.get(INVOCATION_ORIGIN_ENV) == "transport" or os.environ.get(RUN_ID_ENV):
             return None
@@ -100,12 +126,6 @@ class StandaloneJob:
             booley_dir = resolve_common_booley_dir(project_root)
         except (OSError, ValueError, RuntimeError):
             return None
-        try:
-            # Resolved like the common directory the Dashboard scans from: a symlinked
-            # ``.booley`` is outside that scan root under its lexical name.
-            report_root: str | None = str(resolve_checkout_booley_dir(project_root).resolve())
-        except (OSError, ValueError, RuntimeError):
-            report_root = None
         started_at = utc_now_rfc3339()
         record = job_records.JobRecord(
             run_id=job_records.make_run_id(name, compact_utc_now(), 1),
@@ -116,7 +136,7 @@ class StandaloneJob:
             pid=os.getpid(),
             run_started_at=started_at,
             work_dir=str(project_root),
-            report_root=report_root,
+            report_root=checkout_report_root(project_root),
         )
         os.environ[RUN_ID_ENV] = record.run_id
         return cls(booley_dir, record)
@@ -129,6 +149,9 @@ class StandaloneJob:
         """Run *run* as this Job; its result, exit and exceptions pass through unchanged."""
         restore_signals = self._install_signal_handlers()
         try:
+            if self._adopted:
+                self._start_adopted()
+                return self._run_recorded(run)
             log = self._start()
             if log is None:
                 return run()
@@ -145,6 +168,14 @@ class StandaloneJob:
             sys.stdout = JobLogStream(stdout, log)
         if stderr is not None:
             sys.stderr = JobLogStream(stderr, log)
+        try:
+            return self._run_recorded(run)
+        finally:
+            sys.stdout, sys.stderr = original
+            log.close()
+
+    def _run_recorded(self, run: Callable[[], int]) -> int:
+        """Run *run* and write the terminal record its outcome means."""
         status, exit_code = job_records.STATUS_FAILED, 1
         try:
             exit_code = run()
@@ -159,8 +190,16 @@ class StandaloneJob:
             if status == job_records.STATUS_FAILED:  # no Ctrl-C: the exit code decides
                 status = job_records.terminal_status(exit_code, False)
             self._end(status, exit_code)
-            sys.stdout, sys.stderr = original
-            log.close()
+
+    def _start_adopted(self) -> None:
+        """Stamp the submitter's pid-less record with this process and leave it ``running``."""
+        self._reconcile_dead_records()
+        record = self._record
+        identity = capture_process_identity(os.getpid()) if sys.platform == "linux" else None
+        record.pid = os.getpid()
+        record.process_identity = None if identity is None else identity.to_payload()
+        record.run_started_at = record.run_started_at or utc_now_rfc3339()
+        job_records.write_record(record, self._root)
 
     def _start(self) -> BinaryIO | None:
         """Write the running record and open ``job.log``; ``None`` leaves the run unrecorded."""
