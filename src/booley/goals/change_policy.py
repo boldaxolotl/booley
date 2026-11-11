@@ -25,6 +25,7 @@ from typing import Any
 from booley.criteria.thresholds import describe_threshold, has_relative_threshold
 from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows.baseline_worktree import baseline_worktree
+from booley.flows.mutation.score import default_min_detected
 from booley.goals.changes import ChangeKind
 from booley.goals.checkout import GoalCheckout
 from booley.goals.entry import EntryEnvironment, check_goal_targets, pin_goal_baselines
@@ -111,8 +112,9 @@ def _ordered_bounds(goal: GoalSpec) -> dict[str, Any]:
     if goal.family is GoalFamily.COVERAGE:
         return {key: value["min_pct"] for key, value in goal.params["metrics"].items()}
     if goal.family is GoalFamily.MUTATION:
-        # The producer's omitted fixed count is 10; its omitted floor is that count.
-        default = None if goal.params.get("auto") else goal.params.get("total", 10)
+        # The producer's omitted fixed count is 10; its omitted floor is 80 % of it.
+        total = None if goal.params.get("auto") else goal.params.get("total", 10)
+        default = None if total is None else default_min_detected(total)
         return {"min_detected": goal.params.get("min_detected", default)}
     return {
         key: value
@@ -199,7 +201,15 @@ def prepare_params(
             raise ProposalError(
                 "the existing Goal runtime params are missing; cannot preserve its pins"
             )
-        return {**entry.params, **params[after.key]}
+        kept = {**entry.params, **params[after.key]}
+        if after.family is GoalFamily.MUTATION and "min_detected" not in after.params:
+            # An omitted floor is the implicit 80 % one: never keep the old explicit floor.
+            floor = _ordered_bounds(after)["min_detected"]
+            if floor is None:
+                kept.pop("min_detected", None)
+            else:
+                kept["min_detected"] = floor
+        return kept
     root = Path(record.worktree_path)
     relative = has_relative_threshold(after.params)
     if relative:

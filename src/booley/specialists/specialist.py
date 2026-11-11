@@ -163,11 +163,6 @@ class Specialist(McpTool):
         """Hook for subclasses to add additional arguments."""
 
     @staticmethod
-    def _add_scope_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
-        """Register the shared, explicit source-scope interface."""
-        parser.add_argument("--scope", required=True, help=help_text)
-
-    @staticmethod
     def _add_steer_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
         """Register repeatable caller context with one MCP array shape."""
         parser.add_argument(
