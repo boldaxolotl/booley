@@ -30,6 +30,7 @@ from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.timing import StaTimingConfig
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 
 def _spec(
@@ -758,12 +759,9 @@ def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
         path.write_text(script)
         path.chmod(0o755)
     started = time.time()
-    result = subprocess.run(
+    result = run_bounded_child(
         ["make", "-C", str(plan.build_dir)],
         env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-        capture_output=True,
-        text=True,
-        check=False,
         timeout=5,
     )
     assert f"kind=missing_output stage={failing_stage}" in result.stdout
@@ -831,12 +829,9 @@ def test_generated_fake_generic_master_latch_design_failure(tmp_path, monkeypatc
     plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
     fake_bin = _fake_generic_master_bin(tmp_path)
     started = time.time()
-    result = subprocess.run(
+    result = run_bounded_child(
         ["make", "-C", str(plan.build_dir)],
         env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-        capture_output=True,
-        text=True,
-        check=False,
         timeout=5,
     )
     assert "ORD-2013" in result.stdout
@@ -1001,13 +996,10 @@ def test_1095_generated_make_usage_failure(tmp_path, monkeypatch, tool):
             )
         )
         shim.chmod(0o755)
-    proc = subprocess.run(
+    proc = run_bounded_child(
         ["make", "-C", str(plan.build_dir)],
         env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-        capture_output=True,
-        text=True,
         timeout=5,
-        check=False,
     )
     assert proc.returncode == 2
     outcome = syn_make.boundary_output(plan, proc.returncode, is_stale=_fresh, stdout=proc.stdout)

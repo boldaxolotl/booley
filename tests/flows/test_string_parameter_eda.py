@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.target_parameters import ParameterValue
 from booley.targets.catalog import TargetCatalog
+from tests.subprocess_budget import run_bounded_child
 
 pytestmark = pytest.mark.string_parameter_eda
 
@@ -35,9 +35,7 @@ def prerequisites():
 
 def _run(argv, cwd):
     args = [str(arg) for arg in argv]
-    result = subprocess.run(
-        args, cwd=cwd, text=True, capture_output=True, timeout=120, check=False
-    )
+    result = run_bounded_child(args, cwd=cwd)
     assert result.returncode == 0, f"{argv!r}\n{result.stdout}\n{result.stderr}"
     return result
 
