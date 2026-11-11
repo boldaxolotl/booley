@@ -10,7 +10,7 @@ the context that owns the work at hand.
 | Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Projects, Booley Directory and Project Root, Targets, Booley Flows, EDA provisioning, simulation evidence, and presentation |
 | Goal Mode | [src/booley/goals/GLOSSARY.md](src/booley/goals/GLOSSARY.md) | Goal States, Worktree Identity, Goal Origins, Goal Changes, and Interrupted Applies inside one Goal Record |
 | B-Wave | [crates/bwave/GLOSSARY.md](crates/bwave/GLOSSARY.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
-| Simulation Coverage | [src/booley/flows/sim/GLOSSARY.md](src/booley/flows/sim/GLOSSARY.md) | Coverage campaigns, measurement points, evaluation policy, waivers, and analysis |
+| Simulation Coverage | [src/booley/flows/sim/GLOSSARY.md](src/booley/flows/sim/GLOSSARY.md) | Coverage Records, measurement points, evaluation policy, waivers, and analysis |
 | Feedback | [src/booley/feedback/GLOSSARY.md](src/booley/feedback/GLOSSARY.md) | Findings, friction, impressions, and their durable log |
 | Public QA | [qa/GLOSSARY.md](qa/GLOSSARY.md) | QA Missions, Mission Areas, QA Runs, Release Smoke List, and Capability Map |
 
@@ -20,8 +20,9 @@ the context that owns the work at hand.
   evidence on shared Targets; the Goal Record holds that evidence.
 - **Shared Booley → B-Wave**: a traced Simulation Flow produces a shared
   Trace Artifact, which B-Wave queries or opens in a Waveform Viewer.
-- **Simulation Coverage → Shared Booley**: a coverage Campaign measures one
-  shared Target through one Simulation Flow invocation.
+- **Simulation Coverage → Shared Booley**: a Coverage Record measures one
+  shared Target through one Simulation Flow invocation; a Simulation Record may
+  contain a Coverage Record.
 - **Simulation Coverage → Goal Mode**: a Coverage Criterion supplies the
   evaluation policy for a coverage Goal; its evidence is stored in the Goal Record.
 - **Shared Booley and Public QA → Feedback**: product use records observations; Public
@@ -38,7 +39,7 @@ the context that owns the work at hand.
   context glossary may refer to shared terms with their shared meaning.
 - An unqualified term means the definition owned by the current context. When
   writing across boundaries, qualify colliding concepts; for example, Public
-  QA's **Capability Map** is not a Simulation Coverage **Coverage Campaign**.
+  QA's **Capability Map** is not a Simulation Coverage **Coverage Record**.
 - Detailed behavior, schemas, commands, and implementation decisions belong in
   the relevant reference documentation rather than these glossaries.
 
