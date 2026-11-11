@@ -2076,11 +2076,11 @@ if "--method" in arguments:
 if "--paginate" in arguments:
     selector = arguments[arguments.index("--jq") + 1]
     endpoint = arguments[arguments.index("--paginate") + 1]
-    if "/commits/" in endpoint:
+    if "/pulls?" in endpoint:
         record(method="GET", endpoint=endpoint, jq=selector)
-        if os.path.exists(os.path.join(state, "fail-commit-lookup")):
+        if os.path.exists(os.path.join(state, "fail-pulls-lookup")):
             sys.exit(1)
-        pulls = os.path.join(state, "commit-pulls.jsonl")
+        pulls = os.path.join(state, "open-pulls.jsonl")
         sys.stdout.write(open(pulls, encoding="utf-8").read() if os.path.exists(pulls) else "")
         sys.exit(0)
     path = os.path.join(state, "comments.json")
@@ -2135,14 +2135,14 @@ class _FakeGh:
         }
         (self.state / "pulls" / f"{number}.json").write_text(json.dumps(pull), encoding="utf-8")
 
-    def serve_commit_pulls(self, *pulls: dict | None) -> None:
-        """Serve the pull requests the commit lookup returns; `None` makes it fail."""
-        failure = self.state / "fail-commit-lookup"
+    def serve_open_pulls(self, *pulls: dict | None) -> None:
+        """Serve the open pull requests the list returns; `None` makes the lookup fail."""
+        failure = self.state / "fail-pulls-lookup"
         failure.unlink(missing_ok=True)
         if None in pulls:
             failure.write_text("", encoding="utf-8")
         lines = "".join(json.dumps(pull) + "\n" for pull in pulls if pull is not None)
-        (self.state / "commit-pulls.jsonl").write_text(lines, encoding="utf-8", newline="\n")
+        (self.state / "open-pulls.jsonl").write_text(lines, encoding="utf-8", newline="\n")
 
     def serve_raw_comments(self, text: str) -> None:
         (self.state / "comments.raw").write_text(text, encoding="utf-8", newline="\n")
@@ -2380,35 +2380,24 @@ def test_pr_scan_step_posts_unless_the_bot_posted_this_set(tmp_path: Path, case:
     assert len(gh.posts("/labels")) == len(gh.posts("/comments")) == 1
 
 
-def _associated_pull(number: int, *, head_repo_id: int, association: str) -> dict:
+def _open_pull(*, head: str, head_repo_id: int, association: str) -> dict:
+    """An open pull request as the list projection returns it; base repository is 1."""
     return {
-        "number": number,
         "author_association": association,
-        "head": {"repo": {"id": head_repo_id}},
+        "head": {"sha": head, "repo": {"id": head_repo_id}},
         "base": {"repo": {"id": 1}},
     }
 
 
-# name -> (pull requests sharing the head commit, expected status, expected NOTE)
-_SHARED_HEAD_CASES: dict[str, tuple[list[dict | None], int, str]] = {
-    "only-itself": ([_associated_pull(7, head_repo_id=2, association="NONE")], 0, ""),
-    "another-outside-pr": ([_associated_pull(9, head_repo_id=3, association="NONE")], 0, ""),
-    "same-repository-pr": (
-        [_associated_pull(9, head_repo_id=1, association="CONTRIBUTOR")],
-        1,
-        "another non-outside pull request",
-    ),
-    "maintainer-fork-pr": (
-        [_associated_pull(9, head_repo_id=2, association="MEMBER")],
-        1,
-        "another non-outside pull request",
-    ),
-    "unreadable-association": (
-        [{"number": 9, "head": {"repo": {"id": 2}}, "base": {"repo": {"id": 1}}}],
-        1,
-        "another non-outside pull request",
-    ),
-    "lookup-fails": ([None], 1, "the head-commit lookup failed"),
+_OTHER_HEAD = "f" * 40
+# name -> (open pull requests, whether each shares the head commit, expected status, NOTE)
+_SHARED_HEAD_CASES: dict[str, tuple[list[tuple[int, str] | None], bool, int, str]] = {
+    "only-itself": ([(2, "NONE")], True, 0, ""),
+    "another-outside-pr": ([(3, "NONE")], True, 0, ""),
+    "maintainer-pr-with-another-head": ([(1, "OWNER"), (2, "MEMBER")], False, 0, ""),
+    "same-repository-pr": ([(1, "CONTRIBUTOR")], True, 1, "another non-outside pull request"),
+    "maintainer-fork-pr": ([(2, "MEMBER")], True, 1, "another non-outside pull request"),
+    "lookup-fails": ([None], True, 1, "the head-commit lookup failed"),
 }
 
 
@@ -2417,20 +2406,34 @@ _SHARED_HEAD_CASES: dict[str, tuple[list[dict | None], int, str]] = {
 def test_outside_pr_sharing_its_head_commit_with_other_work_stays_enforced(
     tmp_path: Path, case: str
 ) -> None:
-    pulls, status, note = _SHARED_HEAD_CASES[case]
+    pulls, shares_head, status, note = _SHARED_HEAD_CASES[case]
     repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
     gh = _FakeGh(tmp_path)
-    gh.serve_commit_pulls(*pulls)
+    gh.serve_open_pulls(
+        *(
+            None
+            if pull is None
+            else _open_pull(
+                head=head if shares_head else _OTHER_HEAD,
+                head_repo_id=pull[0],
+                association=pull[1],
+            )
+            for pull in pulls
+        )
+    )
 
     result = _run_pr_scan_step(repo, _pr_event(head=head, base=base), gh, base=base)
 
     _expect_exit(result, status)
-    assert note in result.stderr
-    lookups = [call for call in gh.calls() if "/commits/" in call.get("endpoint", "")]
-    assert lookups and all(f"/commits/{head}/pulls" in call["endpoint"] for call in lookups)
     if status:
+        assert note in result.stderr
         assert "ERROR" in result.stderr
         assert gh.posts("/labels") == gh.posts("/comments") == []
+    else:
+        assert "NOTE" not in result.stderr
+    lookups = [call for call in gh.calls() if "/pulls?" in call.get("endpoint", "")]
+    assert lookups
+    assert all(call["endpoint"].startswith("repos/boldaxolotl/booley/pulls?") for call in lookups)
 
 
 @POSIX_ONLY
@@ -2494,6 +2497,13 @@ def test_pr_scan_step_posts_one_comment_per_finding_set(tmp_path: Path) -> None:
 
     _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
     assert not [call for call in gh.calls() if call["method"] == "POST"]
+
+    # A comment stored with CRLF line ends still counts as already posted.
+    gh.serve_comments([{**bot, "body": posted.replace("\n", "\r\n")}])
+    gh.reset()
+
+    _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
+    assert not gh.posts("/comments")
 
     # A contributor posting the marker must not suppress the advisory.
     gh.serve_comments([{"user": {"login": "someone", "type": "User"}, "body": posted}])

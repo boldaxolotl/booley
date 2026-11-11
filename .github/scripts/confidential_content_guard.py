@@ -89,9 +89,9 @@ _REVIEW_LABEL = "confidential-review"
 _ADVISORY_MARKER = "confidential-content-advisory"
 _TERM_KIND = "confidential term"
 _BOT_LOGIN = "github-actions[bot]"
-# Per associated pull request, only the fields `_is_outside` and the head check read.
-_COMMIT_PULLS_JQ = (
-    ".[] | {number, author_association, head: {repo: {id: .head.repo.id}}, "
+# Per open pull request, only the fields `_is_outside` and the head-commit check read.
+_OPEN_PULLS_JQ = (
+    ".[] | {author_association, head: {sha: .head.sha, repo: {id: .head.repo.id}}, "
     "base: {repo: {id: .base.repo.id}}} | @json"
 )
 _MAX_ADVISORY_ROWS = 100
@@ -911,12 +911,14 @@ def _pull_request_scope(pull_request: object) -> PullRequestScope:
 
 
 def _shares_head_with_other_work(pull_request: object) -> bool:
-    """True when another PR with this head commit is not outside work, or the lookup fails.
+    """True when another open PR has this head commit and is not outside work, or the lookup fails.
 
     The required status is published on the head commit, which several PRs can
     share. An outside PR whose head is a maintainer PR's (or a Mergify
     candidate's) head commit would otherwise overwrite that PR's status with its
-    own advisory success, so such a PR is enforced like maintainer work.
+    own advisory success, so such a PR is enforced like maintainer work. The
+    open pull requests are listed from the base repository, because a commit
+    that exists only in forks has no entry in the per-commit lookup.
     """
     try:
         if not isinstance(pull_request, dict):
@@ -929,13 +931,17 @@ def _shares_head_with_other_work(pull_request: object) -> bool:
         output = _gh_api(
             [
                 "--paginate",
-                f"repos/{full_name}/commits/{head_sha}/pulls",
+                f"repos/{full_name}/pulls?state=open&per_page=100",
                 "--jq",
-                _COMMIT_PULLS_JQ,
+                _OPEN_PULLS_JQ,
             ],
             "head-commit lookup",
         )
-        associated = _json_lines(output, "head-commit lookup")
+        associated = [
+            row
+            for row in _json_lines(output, "head-commit lookup")
+            if str(_nested(row, "head", "sha")).casefold() == head_sha.casefold()
+        ]
     except GuardError:
         print(
             "NOTE: the head-commit lookup failed; this pull request stays enforced",

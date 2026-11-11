@@ -99,9 +99,12 @@ and term id, never the term); it never skips a check silently.
   vocabulary, still fails. Advisory findings never displace enforced ones under
   the finding cap. Same-repository PRs and maintainer fork PRs keep full
   enforcement. The required status is published on the head commit, which
-  several PRs can share, so an outside PR whose head commit another non-outside
-  PR also has (found through GitHub, using the workflow token) is enforced like
-  maintainer work; a failed lookup enforces too, and the scan prints a `NOTE`.
+  several PRs can share, so an outside PR whose head commit another open
+  non-outside PR also has (found in the open pull request list through the
+  workflow token) is enforced like maintainer work; a failed lookup enforces too,
+  and the scan prints a `NOTE`. A closed PR, or a maintainer PR opened while the
+  outside scan runs, is not seen; the candidate scan still enforces its commits
+  before anything merges.
 - **Mergify candidates.** A candidate is a same-repository PR opened by the
   Mergify bot (user ID `37929162`, type `Bot`) from a `mergify/merge-queue/`
   branch. The scanner walks its first-parent chain down to the PR base. For each

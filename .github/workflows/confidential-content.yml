@@ -9,8 +9,9 @@ on:
 
 permissions:
   contents: read
-  # Read queued PRs when scanning a Mergify candidate; comment and label an
-  # outside PR through the issues endpoints.
+  # Read queued PRs when scanning a Mergify candidate and open PRs sharing an
+  # outside PR's head commit; comment and label an outside PR through the
+  # issues endpoints.
   pull-requests: write
   statuses: write
 
