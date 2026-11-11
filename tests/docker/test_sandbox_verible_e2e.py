@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 from tests.docker.isolation.container_names import next_ci_container_name
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _IMAGE = "booley-sandbox"
 
@@ -65,7 +66,9 @@ def _docker() -> str | None:
     return shutil.which("docker")
 
 
-def _run_in_sandbox(args: list[str], mounts: list[str] | None = None, timeout: int = 300):
+def _run_in_sandbox(
+    args: list[str], mounts: list[str] | None = None, timeout: int = SUBPROCESS_TIMEOUT_S
+):
     docker = _docker()
     cmd = [docker, "run", "--rm"]
     container_name = next_ci_container_name()
@@ -74,13 +77,14 @@ def _run_in_sandbox(args: list[str], mounts: list[str] | None = None, timeout: i
     for m in mounts or []:
         cmd += ["-v", m]
     cmd += [_IMAGE, *args]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    return run_bounded_child(cmd, timeout=timeout)
 
 
 def _require_verible_sandbox() -> None:
     if _docker() is None:
         pytest.skip("docker not available")
     try:
+        # Unbounded child: the test handles TimeoutExpired itself to skip on Windows
         probe = subprocess.run(
             [_docker(), "image", "inspect", _IMAGE],
             capture_output=True,
@@ -94,7 +98,9 @@ def _require_verible_sandbox() -> None:
         pytest.skip(f"Sandbox Image probe unavailable: {error}")
     if probe.returncode != 0:
         pytest.skip(f"{_IMAGE} image not built")
-    have_bin = _run_in_sandbox(["sh", "-c", "command -v verible-verilog-lint"], timeout=120)
+    have_bin = _run_in_sandbox(
+        ["sh", "-c", "command -v verible-verilog-lint"], timeout=SUBPROCESS_TIMEOUT_S
+    )
     if have_bin.returncode != 0:
         pytest.skip(
             f"{_IMAGE} image predates Verible support (ADR 0033) — rebuild it "
@@ -102,7 +108,7 @@ def _require_verible_sandbox() -> None:
         )
     have_node = _run_in_sandbox(
         ["python3", "-c", "import edalize.tools.verible"],
-        timeout=120,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     if have_node.returncode != 0:
         pytest.skip(
@@ -183,7 +189,7 @@ def test_sandbox_runs_use_unique_ci_container_names(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setenv("BOOLEY_DOCKER_NAME_PREFIX", "booley-ci-123-1-verible")
     monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(f"{__name__}.run_bounded_child", fake_run)
 
     _run_in_sandbox(["true"])
     _run_in_sandbox(["true"])

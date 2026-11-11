@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from mcp import Client
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.criteria.state import DevelopmentState
 from booley.goals.model import GoalState, parse_goal_args
@@ -41,9 +42,7 @@ _FIXTURE = Path(__file__).parents[1] / "fixtures" / "goal_mode_smoke"
 
 
 def _run_git(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args], cwd=project, check=True, capture_output=True, text=True, timeout=30
-    )
+    return run_bounded_child(["git", *args], cwd=project, check=True)
 
 
 def test_fresh_asic_scaffold_has_clean_timing_baseline(tmp_path: Path) -> None:
@@ -69,7 +68,7 @@ def test_fresh_asic_scaffold_has_clean_timing_baseline(tmp_path: Path) -> None:
     report_dir = project / "reports"
     env = os.environ.copy()
     env["BOOLEY_DIR"] = str(project / ".booley")
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             "booley",
             "flow",
@@ -81,10 +80,7 @@ def test_fresh_asic_scaffold_has_clean_timing_baseline(tmp_path: Path) -> None:
         ],
         cwd=project,
         env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     output = f"{result.stdout}\n{result.stderr}"
