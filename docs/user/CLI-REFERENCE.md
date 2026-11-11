@@ -147,8 +147,8 @@ A worktree is a second checkout of your Project where a separate Developer
 Agent can work without touching your files, for example one per Goal Mode
 session. `booley chat` creates one (`s<N>`, on branch `booley/s<N>`) when the
 main checkout is in use; see
-[Several agents at once](USAGE.md#several-agents-at-once). You can also ask the
-agent to create one, or run, in a container terminal from the main checkout:
+[Several agents at once](USAGE.md#several-agents-at-once). You can also run, in
+a container terminal from the main checkout:
 
 ```bash
 booley worktree new <name>
@@ -200,7 +200,7 @@ under `.booley/worktrees/`, from the main checkout or from any worktree:
 | `UNMERGED` | Commits not yet in the main checkout's branch. Commits whose change is already there count as merged, including a branch merged by squash. A Paired Checkout reads `N, paired M` |
 | `SESSION` | Handles of live sessions in the worktree |
 | `GOAL` | Its active Goal, if any |
-| `LAST USED` | When the worktree was created or a Booley tool call last ran there; `never` for a worktree that predates the record |
+| `LAST USED` | When the worktree was created, a Booley tool call last ran there, `booley chat` was last launched inside it, or the session of a worktree that `booley chat` created ended (a resumed session counts through its tool calls); `never` for a worktree that predates the record |
 
 A worktree whose directory is gone is not listed; a warning names it.
 
