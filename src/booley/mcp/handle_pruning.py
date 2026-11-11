@@ -19,7 +19,6 @@ from hashlib import sha256
 from pathlib import Path
 
 from booley.core.booley_dir import resolve_common_booley_dir
-from booley.mcp.session_registry import DEAD_PROCESS_STATES
 from booley.runtime import job_records
 from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.handles import (
@@ -29,7 +28,7 @@ from booley.runtime.handles import (
     job_handle_expired,
     run_id_submitted_at,
 )
-from booley.runtime.pid import observe_process
+from booley.runtime.pid import DEAD_PROCESS_STATES, observe_process
 from booley.runtime.session_activity import process_identity_from_session_key
 from booley.runtime.session_paths import project_job_roots, session_jobs_dir
 from booley.runtime.worktree_usage import handle_worktree
