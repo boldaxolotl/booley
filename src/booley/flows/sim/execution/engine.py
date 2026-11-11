@@ -25,9 +25,8 @@ from booley.config.tests_toml_rules import (
 )
 from booley.core.booley_dir import in_checkout_booley_dir
 from booley.core.booley_dir_links import lexical_booley_path
-from booley.flows import artifacts as flow_artifacts
 from booley.flows import edam as edam_layer
-from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
+from booley.flows.base import SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.run_log import RunLogIdentity, write_run_log
 from booley.flows.sim import trace_overlay
@@ -62,7 +61,6 @@ from booley.flows.sim.build_session import (
 from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
-    literal_run_cwd_problem,
     resolve_cycle_sentinels,
     resolve_max_rundir_bytes,
     resolve_pre_sim_commands,
@@ -76,9 +74,7 @@ from booley.flows.sim.config import (
 )
 from booley.flows.sim.live_progress import attempt_scope, observe_stage, prepare_attempt_log
 from booley.flows.sim.runtime_inputs import (
-    RuntimeInputError,
     declared_runtime_inputs,
-    materialize_runtime_inputs,
     preview_runtime_inputs,
 )
 from booley.flows.sim.trace_recipe import TraceMode
@@ -96,14 +92,13 @@ from booley.flows.target_test_plan_loading import (
     simulation_adapter_kind,
 )
 from booley.flows.terminal_progress import announce_unit
-from booley.flows.test_runs import TestRun, discovered_test_run
+from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
-from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
-from .artifacts import CompatibilityArtifactPolicy, TraceArtifactPolicy, artifact_path_component
+from .artifacts import CompatibilityArtifactPolicy, TraceArtifactPolicy
 from .attempt import (
     AdapterAttemptOutcome,
     AdapterAttemptRequest,
@@ -114,8 +109,6 @@ from .composition import UnsupportedSimulationAdapterError, prepare_adapter_invo
 from .contract import (
     DefaultSelection,
     NamedTests,
-    PreSimEvidence,
-    PreSimScopeStoppedError,
     SelectedTestRuns,
     SimulationArtifactEvidence,
     SimulationInfrastructureFailure,
@@ -124,13 +117,12 @@ from .contract import (
     SimulationSelection,
     SimulationTargetOutcome,
     SimulationTestOutcome,
-    pre_sim_failure_message,
 )
 from .freshness import (
     ArtifactValidationError,
     validate_fresh_artifact,
 )
-from .pre_sim import run_pre_sim_commands, test_run_environment
+from .pre_sim import test_run_environment
 from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
@@ -256,7 +248,6 @@ class _Attempt:
     simulator_environment: tuple[tuple[str, str], ...]
     cycle_sentinels: tuple[str, ...]
     workload_inputs: tuple[Mapping[str, Any], ...]
-    configured_run_cwd: Path
     setup_s: float
     log: RunLogIdentity | None = None
     build_inputs: Mapping[str, str] = field(default_factory=dict)
@@ -524,7 +515,7 @@ class PreparedOrdinaryGroup:
             raise SimulationBuildSlotError("successful build requires a snapshot launch")
         executed = AdapterAttemptOutcome(process, None, None)
         early = _adapter_failure_outcome(
-            self._handle, self._attempt, executed, build, None, self._started
+            self._handle, self._attempt, executed, build, self._started
         )
         if early is not None:
             return early
@@ -535,10 +526,8 @@ class PreparedOrdinaryGroup:
             process,
             build,
             None,
-            None,
             trace_policy,
             compatibility_policy,
-            time.monotonic(),
             self._started,
         )
 
@@ -597,28 +586,16 @@ class PreparedOrdinaryGroup:
         self._build_process = recovered_process
         self._build = recovered_build
 
-    def launch_snapshot(
-        self, snapshot_root: Path, run_cwd: Path, *, materialize_runtime_inputs: bool = False
-    ) -> SimulationTargetOutcome:
+    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome:
         """Observe one isolated launch until all evidence processing returns."""
         with attempt_scope(
             self._handle.selector,
             identity=self._handle.identity,
             tests=self._attempt.test_names,
         ):
-            return self._launch_snapshot(
-                snapshot_root,
-                run_cwd,
-                materialize_runtime_inputs=materialize_runtime_inputs,
-            )
+            return self._launch_snapshot(snapshot_root, run_cwd)
 
-    def _launch_snapshot(
-        self,
-        snapshot_root: Path,
-        run_cwd: Path,
-        *,
-        materialize_runtime_inputs: bool = False,
-    ) -> SimulationTargetOutcome:
+    def _launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome:
         """Launch only the supplied snapshot and normalize the resulting evidence."""
         if self._lease_active:
             raise SimulationBuildSlotError(
@@ -629,10 +606,7 @@ class PreparedOrdinaryGroup:
             raise SimulationBuildSlotError("cannot launch a failed Simulation build")
         attempt = self._snapshot_attempt(snapshot_root, run_cwd)
         trace_policy, compatibility_policy = _artifact_policies(self._handle, attempt)
-        try:
-            executed = self._launch(attempt, materialize_runtime_inputs)
-        except RuntimeInputError as exc:
-            return _runtime_input_failure(self._handle, attempt, None, str(exc), self._started)
+        executed = self._launch(attempt)
         process = replace(
             executed.process,
             stdout=build_process.stdout + "\n" + executed.process.stdout,
@@ -640,9 +614,7 @@ class PreparedOrdinaryGroup:
             duration_s=build_process.duration_s + executed.process.duration_s,
         )
         executed = replace(executed, process=process)
-        early = _adapter_failure_outcome(
-            self._handle, attempt, executed, build, None, self._started
-        )
+        early = _adapter_failure_outcome(self._handle, attempt, executed, build, self._started)
         if early is not None:
             return early
         adapter = None if build.design_failed else executed.result
@@ -653,15 +625,15 @@ class PreparedOrdinaryGroup:
                 process,
                 build,
                 adapter,
-                None,
                 trace_policy,
                 compatibility_policy,
-                time.monotonic(),
                 self._started,
             )
             return _with_cleanup_diagnostic(outcome, executed)
         except SimulationArtifactPersistenceError as exc:
-            return _artifact_failure(self._handle, attempt, build, None, str(exc), self._started)
+            return _infrastructure_outcome(
+                self._handle, attempt, build, "artifact_persistence", str(exc), self._started
+            )
 
     def _compiled(self) -> tuple[SubprocessResult, BuildOutcome]:
         if self._build_process is None or self._build is None:
@@ -703,21 +675,14 @@ class PreparedOrdinaryGroup:
             log=log,
         )
 
-    def _launch(
-        self, attempt: _Attempt, should_materialize_runtime_inputs: bool
-    ) -> AdapterAttemptOutcome:
+    def _launch(self, attempt: _Attempt) -> AdapterAttemptOutcome:
         request = AdapterAttemptRequest(
             _adapter_shell_command(attempt),
             attempt.wrapper_timeout_s,
             attempt.identity,
             attempt.identity.result_path.parent,
         )
-        if not should_materialize_runtime_inputs:
-            return self._execution._observed_adapter(self._handle, attempt, request)
-        with materialize_runtime_inputs(
-            Path(attempt.work.build_dir), Path(attempt.work.run_cwd), attempt.work.runtime_inputs
-        ):
-            return self._execution._observed_adapter(self._handle, attempt, request)
+        return self._execution._observed_adapter(self._handle, attempt, request)
 
     def _release_lease(self) -> None:
         self._lease_active = False
@@ -770,20 +735,17 @@ def _planning_disclosure(entries: tuple[dict[str, object], ...]) -> dict[str, ob
 
 
 class SimulationExecution:
-    """Resolve, preview, and execute one Target behind a two-method interface."""
+    """Preview, plan and prepare ordinary Simulation groups of one Target."""
 
     def __init__(
         self,
         *,
         invoke: ProcessInvoker,
         options: SimulationOptions,
-        artifact_root: Path | None = None,
     ) -> None:
         self._invoke = invoke
         self._options = options
-        self._artifact_root = artifact_root
         self._build_session: SimulationBuildSession | None = None
-        self._pre_sim_firings: list[PreSimEvidence] = []
 
     @contextmanager
     def ordinary_group(
@@ -850,111 +812,6 @@ class SimulationExecution:
                     group._release_lease()
                 self._build_session = None
 
-    def run(
-        self,
-        handle: TargetHandle,
-        selection: SimulationSelection,
-        *,
-        planned_groups: tuple[tuple[str, ...], ...] | None = None,
-        planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
-    ) -> SimulationTargetOutcome:
-        """Observe one compatibility Target without changing returned authority.
-
-        *planned_runs* gives each planned group its concrete Test Runs.
-        """
-        with attempt_scope(handle.selector, identity=handle.identity):
-            return self._run_observed(
-                handle, selection, planned_groups=planned_groups, planned_runs=planned_runs
-            )
-
-    def _run_observed(
-        self,
-        handle: TargetHandle,
-        selection: SimulationSelection,
-        *,
-        planned_groups: tuple[tuple[str, ...], ...] | None = None,
-        planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
-    ) -> SimulationTargetOutcome:
-        """Execute the selected Target and return immutable normalized evidence."""
-        started = time.monotonic()
-        self._pre_sim_firings.clear()
-        run_cwd_problem = literal_run_cwd_problem(handle.project_root)
-        if run_cwd_problem is not None:
-            return _setup_failure(handle, run_cwd_problem, started)
-        try:
-            inspection = TargetCatalog.build(handle.project_root).inspect(handle)
-        except fusesoc_registry.FuseSocError as exc:
-            return _setup_failure(handle, str(exc), started)
-        if planned_groups is None:
-            try:
-                run_groups = _selection_run_groups(handle, inspection, selection)
-            except ValueError as exc:
-                return _setup_failure(handle, str(exc), started)
-            planned_groups = tuple(_group_names(group) for group in run_groups)
-            # Defaults are derived again per group; only named Test Runs travel.
-            planned_runs = run_groups if isinstance(selection, SelectedTestRuns) else None
-        groups = planned_groups
-        if planned_runs is not None and len(planned_runs) != len(groups):
-            return _setup_failure(
-                handle, "planned Test Runs disagree with the planned groups", started
-            )
-        try:
-            results = (
-                self._run_groups_with_session(handle, groups)
-                if planned_runs is None
-                else self._run_groups_with_session(handle, groups, planned_runs=planned_runs)
-            )
-        except (
-            SimulationBuildSlotError,
-            SimulationBuildPreparationError,
-            PreSimScopeStoppedError,
-        ) as exc:
-            return self._group_exception_outcome(handle, exc, started)
-        return _aggregate_group_results(handle, inspection.toplevel, results, started)
-
-    def _group_exception_outcome(self, handle, error, started) -> SimulationTargetOutcome:
-        if isinstance(error, SimulationBuildSlotError):
-            outcome = _build_slot_failure(handle, error, started)
-        elif isinstance(error, PreSimScopeStoppedError):
-            failure = SimulationInfrastructureFailure(
-                "build", "Simulation execution scope stopped", detail=str(error)
-            )
-            outcome = _setup_infrastructure_failure(handle, failure, started)
-        else:
-            outcome = _setup_failure(handle, str(error), started)
-        return replace(outcome, pre_sim_runs=tuple(self._pre_sim_firings))
-
-    def _run_groups_with_session(
-        self,
-        handle: TargetHandle,
-        groups: tuple[tuple[str, ...], ...],
-        *,
-        planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
-    ) -> list[SimulationTargetOutcome]:
-        """Hold the Target lease through every group and artifact capture."""
-        with SimulationBuildSession(handle, _build_variant(self._options.trace)) as session:
-            self._build_session = session
-            try:
-                return self._run_planned_groups(handle, groups, planned_runs=planned_runs)
-            finally:
-                self._build_session = None
-
-    def _run_planned_groups(
-        self,
-        handle: TargetHandle,
-        groups: tuple[tuple[str, ...], ...],
-        *,
-        planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
-    ) -> list[SimulationTargetOutcome]:
-        """Run each group in order, with its concrete Test Runs when planned."""
-        runs = planned_runs if planned_runs is not None else (None,) * len(groups)
-        return [
-            self._run_group(handle, names)
-            if group_runs is None
-            else self._run_group(handle, names, group_runs)
-            for names, group_runs in zip(groups, runs, strict=True)
-        ]
-
     def preview(
         self,
         handle: TargetHandle,
@@ -1001,97 +858,6 @@ class SimulationExecution:
             group.discard_prepared_generation()
         return disclosure
 
-    def plan_campaign_group(
-        self,
-        handle: TargetHandle,
-        test_names: tuple[str, ...],
-        test_runs: tuple[TestRun, ...] | None = None,
-    ) -> dict[str, object]:
-        """Disclose one durable ordinary-HDL or Cocotb campaign build."""
-        return self.plan_ordinary_group(handle, test_names, test_runs)
-
-    def _run_group(
-        self,
-        handle: TargetHandle,
-        test_names: tuple[str, ...],
-        test_runs: tuple[TestRun, ...] | None = None,
-    ) -> SimulationTargetOutcome:
-        started = time.monotonic()
-        compile_surface = resolve_target_compile_surface(handle)
-        sources_before = project_compile_surface(compile_surface)
-        attempt = self._prepare_attempt(handle, test_names, test_runs=test_runs)
-        try:
-            with self._runtime_view(handle, attempt):
-                outcome = self._run_group_body(
-                    handle, attempt, compile_surface, sources_before, started
-                )
-        except selftest_overlay.SelftestOverlayError as exc:
-            raise SimulationBuildSlotError(str(exc)) from exc
-        return _with_test_runs(outcome, handle, attempt.work.test_runs)
-
-    def _run_group_body(
-        self,
-        handle: TargetHandle,
-        attempt: _Attempt,
-        compile_surface: TargetCompileSurface,
-        sources_before: Mapping[str, str],
-        started: float,
-    ) -> SimulationTargetOutcome:
-        """Run one prepared attempt while its Doctor view is owned."""
-        try:
-            _require_attempt_log(handle, attempt)
-        except OSError as exc:
-            detail = f"could not establish current run log: {exc}"
-            return _artifact_failure(handle, attempt, None, None, detail, started)
-        prepared_surface = project_compile_surface(compile_surface, include_operational_cores=True)
-        prepared_inputs = snapshot_build_inputs(attempt.prepared)
-        generation_before = snapshot_generation_files(attempt.prepared)
-        pre_sim = self._run_pre_sim(handle, attempt)
-        if pre_sim is not None:
-            self._pre_sim_firings.append(pre_sim)
-            scope = current_supervised_execution()
-            if scope is not None and scope.cancelled():
-                raise PreSimScopeStoppedError("execution scope stopped after Pre-Sim Commands")
-        if pre_sim is not None and pre_sim.status != "passed":
-            failure = (
-                _pre_sim_infrastructure_failure
-                if pre_sim.status == "spawn_error"
-                else _pre_sim_failure
-            )
-            return failure(handle, attempt, pre_sim, started)
-        verify_existing_build_inputs(attempt.prepared, prepared_inputs)
-        if project_compile_surface(compile_surface) != sources_before:
-            raise SimulationBuildSlotError(
-                "Project compile inputs changed during setup or Pre-Sim Commands; rerun the attempt"
-            )
-        if (
-            project_compile_surface(compile_surface, include_operational_cores=True)
-            != prepared_surface
-        ):
-            raise SimulationBuildSlotError(
-                "Project compile inputs changed during Pre-Sim Commands"
-            )
-        attempt = self._select_generation_for_group(handle, attempt, generation_before)
-        attempt = _with_workload_inputs(handle, attempt)
-        return self._run_authorized_group(handle, attempt, pre_sim, started)
-
-    @contextmanager
-    def _runtime_view(self, handle: TargetHandle, attempt: _Attempt) -> Iterator[None]:
-        """Own the Doctor runtime view for the complete attempt lifecycle."""
-        if not selftest_overlay.bad_selftest_requested(os.environ):
-            yield
-            return
-        booley_dir = resolve_booley_dir(handle.project_root)
-        with selftest_overlay.managed_runtime_view(
-            handle.project_root,
-            booley_dir,
-            "sim",
-            attempt.configured_run_cwd,
-            attempt.prepared.work_root.parent,
-            attempt.identity.attempt_token,
-        ):
-            yield
-
     def _select_generation_for_group(
         self,
         handle: TargetHandle,
@@ -1136,49 +902,6 @@ class SimulationExecution:
             raise SimulationBuildSlotError(f"cannot open retained generation log: {exc}") from exc
         return replace(reused, cache_key=key, reused=True, cache_decision=decision)
 
-    def _run_authorized_group(
-        self,
-        handle: TargetHandle,
-        attempt: _Attempt,
-        pre_sim: PreSimEvidence | None,
-        started: float,
-    ) -> SimulationTargetOutcome:
-        """Execute one selected image and normalize its evidence."""
-        trace_policy, compatibility_policy = _artifact_policies(handle, attempt)
-        try:
-            executed = self._execute_adapter(handle, attempt)
-        except RuntimeInputError as exc:
-            return _runtime_input_failure(handle, attempt, pre_sim, str(exc), started)
-        process = executed.process
-        processing_started = time.monotonic()
-        build = (
-            _reused_build_outcome(attempt)
-            if attempt.reused
-            else _fresh_build_outcome(attempt, process, self._build_timeout_s())
-        )
-        early_failure = _adapter_failure_outcome(
-            handle, attempt, executed, build, pre_sim, started
-        )
-        if early_failure is not None:
-            return early_failure
-        adapter = None if build.design_failed else executed.result
-        try:
-            outcome = self._completed_group(
-                handle,
-                attempt,
-                process,
-                build,
-                adapter,
-                pre_sim,
-                trace_policy,
-                compatibility_policy,
-                processing_started,
-                started,
-            )
-            return _with_cleanup_diagnostic(outcome, executed)
-        except SimulationArtifactPersistenceError as exc:
-            return _artifact_failure(handle, attempt, build, pre_sim, str(exc), started)
-
     def _observed_adapter(
         self, handle: TargetHandle, attempt: _Attempt, request: AdapterAttemptRequest
     ) -> AdapterAttemptOutcome:
@@ -1199,76 +922,6 @@ class SimulationExecution:
                 attempt_token=attempt.identity.attempt_token,
                 tests=attempt.test_names,
             )
-
-    def _execute_adapter(self, handle: TargetHandle, attempt: _Attempt) -> AdapterAttemptOutcome:
-        announce_unit(
-            "verified build reuse" if attempt.reused else "build/simulation",
-            target=handle.selector,
-        )
-        if attempt.reused:
-            return self._execute_reused_adapter(handle, attempt)
-        return self._execute_fresh_adapter(handle, attempt, self._leased_session())
-
-    def _execute_reused_adapter(
-        self, handle: TargetHandle, attempt: _Attempt
-    ) -> AdapterAttemptOutcome:
-        run_cwd = Path(attempt.work.run_cwd)
-        if not run_cwd.is_absolute():
-            run_cwd = handle.project_root / run_cwd
-        request = AdapterAttemptRequest(
-            _adapter_shell_command(attempt),
-            attempt.wrapper_timeout_s,
-            attempt.identity,
-            attempt.prepared.build_root,
-        )
-        with materialize_runtime_inputs(
-            attempt.prepared.build_root, run_cwd, attempt.work.runtime_inputs
-        ):
-            return self._observed_adapter(handle, attempt, request)
-
-    def _execute_fresh_adapter(
-        self, handle: TargetHandle, attempt: _Attempt, session: SimulationBuildSession
-    ) -> AdapterAttemptOutcome:
-        """Record compilation and its image before dispatching the adapter."""
-        run_cwd = Path(attempt.work.run_cwd)
-        if not run_cwd.is_absolute():
-            run_cwd = handle.project_root / run_cwd
-        with materialize_runtime_inputs(
-            attempt.prepared.build_root, run_cwd, attempt.work.runtime_inputs
-        ):
-            inputs = attempt.build_inputs or session.capture_inputs(attempt.prepared)
-            script = simulation_build_script(attempt.prepared, attempt.identity.attempt_token)
-            timeout_s = self._build_timeout_s()
-            announce_unit("build/elaboration", target=handle.selector)
-            observe_stage(
-                handle.selector,
-                "building",
-                evidence_root=attempt.prepared.build_root,
-                attempt_token=attempt.identity.attempt_token,
-            )
-            build_process = self._invoke(["sh", "-c", script], timeout=timeout_s)
-            build = classify_build_outcome(
-                build_process,
-                attempt.identity.attempt_token,
-                timeout_s=timeout_s,
-            )
-            if not build.passed or build_process.returncode != 0 or build_process.timed_out:
-                return AdapterAttemptOutcome(build_process, None, None)
-            session.authorize_fresh_image(attempt.prepared, inputs, attempt.cache_key)
-            request = AdapterAttemptRequest(
-                _adapter_shell_command(attempt),
-                attempt.wrapper_timeout_s,
-                attempt.identity,
-                attempt.prepared.build_root,
-            )
-            executed = self._observed_adapter(handle, attempt, request)
-            process = replace(
-                executed.process,
-                stdout=build_process.stdout + "\n" + executed.process.stdout,
-                stderr=build_process.stderr + "\n" + executed.process.stderr,
-                duration_s=build_process.duration_s + executed.process.duration_s,
-            )
-            return replace(executed, process=process)
 
     def _prepare_attempt(
         self,
@@ -1327,7 +980,6 @@ class SimulationExecution:
             simulator_environment=tuple(simulation_target_environment(handle).items()),
             cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
             workload_inputs=(),
-            configured_run_cwd=configured_run_cwd,
             setup_s=time.monotonic() - started,
             test_runs=test_runs,
         )
@@ -1356,19 +1008,6 @@ class SimulationExecution:
             if overlay is not None:
                 overlay.cleanup()
 
-    def _run_pre_sim(self, handle: TargetHandle, attempt: _Attempt) -> PreSimEvidence | None:
-        return run_pre_sim_commands(
-            handle,
-            test_names=attempt.test_names,
-            build_root=attempt.prepared.build_root,
-            eda_tool=attempt.prepared.eda_tool,
-            timeout_s=DEFAULT_TIMEOUT_S,
-            simulator_environment=dict(attempt.simulator_environment),
-            commands=attempt.pre_sim_commands,
-            run_cwd=attempt.work.run_cwd,
-            test_runs=attempt.work.test_runs,
-        )
-
     def _completed_group(
         self,
         handle: TargetHandle,
@@ -1376,14 +1015,13 @@ class SimulationExecution:
         process: SubprocessResult,
         build: BuildOutcome,
         adapter: AdapterResult | None,
-        pre_sim: PreSimEvidence | None,
         trace_policy: TraceArtifactPolicy | None,
         compatibility_policy: CompatibilityArtifactPolicy,
-        processing_started: float,
         started: float,
     ) -> SimulationTargetOutcome:
+        processing_started = time.monotonic()
         output = process.stdout + ("\n" + process.stderr if process.stderr else "")
-        logs = _persist_run_logs(handle, attempt, output, self._artifact_root)
+        logs = _persist_run_logs(attempt, output)
         trace = _trace_artifact(attempt, adapter, trace_policy)
         compatibility = _compatibility_artifacts(attempt, compatibility_policy)
         if adapter is not None:
@@ -1399,14 +1037,6 @@ class SimulationExecution:
                     attempt.test_names,
                 ),
             )
-        archived = _archive_file_evidence(
-            handle,
-            attempt,
-            (*compatibility, *((trace,) if trace is not None else ())),
-            self._artifact_root,
-        )
-        trace = next((item for item in archived if item.kind == "trace"), trace)
-        compatibility = tuple(item for item in archived if item.kind != "trace")
         if attempt.trace_requested and trace is None and adapter is not None and adapter.passed:
             adapter = _missing_trace_result(adapter)
         if attempt.trace_requested and trace is None and _is_artifact_failure(adapter):
@@ -1429,7 +1059,6 @@ class SimulationExecution:
             attempt,
             process,
             build,
-            pre_sim,
             output,
             time.monotonic() - processing_started,
         )
@@ -1439,7 +1068,6 @@ class SimulationExecution:
             attempt,
             tests,
             build,
-            pre_sim,
             artifacts,
             started,
             adapter.diagnostics if adapter is not None else (),
@@ -1545,38 +1173,6 @@ def _selection_run_groups(
         raise TypeError(f"unsupported Simulation selection: {type(selection).__name__}")
     runs = group_test_runs(plan, selection.names, None)
     return batch_test_runs(runs, one_process_per_run=not cocotb)
-
-
-def _with_test_runs(
-    outcome: SimulationTargetOutcome, handle: TargetHandle, runs: tuple[TestRun, ...]
-) -> SimulationTargetOutcome:
-    """Name the Test Run each result of one simulator process observed."""
-    if not runs:
-        return outcome
-    tests = tuple(
-        replace(test, test_run=_observed_test_run(test.name, handle, runs))
-        for test in outcome.tests
-    )
-    return replace(outcome, tests=tests)
-
-
-def _observed_test_run(name: str, handle: TargetHandle, runs: tuple[TestRun, ...]) -> TestRun:
-    """The Test Run of *runs* that the result called *name* observed.
-
-    A process runs each Test at most once, so a result is bound by its Test
-    name. A result that is not named after a selected Test stands for the
-    process as a whole (the unnamed invocation, or a failure before any Test
-    reported) and takes the first Test Run. A Test that an unfiltered Cocotb
-    batch discovered ran under the batch's unnamed invocation: it is that
-    Test at the batch's seed and environment.
-    """
-    by_test = {run.test: run for run in runs}
-    if name in by_test:
-        return by_test[name]
-    first = runs[0]
-    if first.test is not None or name in {"", handle.selector}:
-        return first
-    return discovered_test_run(name, first)
 
 
 def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:
@@ -1887,41 +1483,6 @@ def _preview_exports(
     return [_export_line(name, value) for name, value in values.items()]
 
 
-def _pre_sim_failure(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    evidence: PreSimEvidence,
-    started: float,
-) -> SimulationTargetOutcome:
-    names = attempt.test_names or (handle.selector,)
-    detail = evidence.detail or f"pre-sim commands {evidence.status}"
-    tests = tuple(
-        SimulationTestOutcome(
-            name=name,
-            verdict="elab_error",
-            passed=False,
-            elapsed_s=evidence.elapsed_s,
-            error_tail=pre_sim_failure_message(evidence.status, detail),
-            elab_failed=True,
-        )
-        for name in names
-    )
-    tests = (
-        replace(
-            tests[0],
-            phase_timings_s={
-                "setup": round(attempt.setup_s, 3),
-                "pre_sim": round(evidence.elapsed_s, 3),
-                "build": 0.0,
-                "run": 0.0,
-                "result_processing": 0.0,
-            },
-        ),
-        *tests[1:],
-    )
-    return _group_outcome(handle, attempt, tests, None, evidence, (), started)
-
-
 def _artifact_policies(
     handle: TargetHandle,
     attempt: _Attempt,
@@ -1929,38 +1490,6 @@ def _artifact_policies(
     trace = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
     compatibility = CompatibilityArtifactPolicy.capture(Path(attempt.work.build_dir))
     return trace, compatibility
-
-
-def _pre_sim_infrastructure_failure(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    evidence: PreSimEvidence,
-    started: float,
-) -> SimulationTargetOutcome:
-    detail = evidence.detail or "could not start Pre-Sim Commands"
-    failure = SimulationInfrastructureFailure(
-        "pre_sim",
-        "Pre-Sim Commands could not start",
-        missing_executable=find_missing_executable(detail) or "",
-        detail=detail,
-    )
-    return _error_outcome(handle, attempt, None, evidence, failure, started)
-
-
-def _infrastructure_failure(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    build: BuildOutcome,
-    pre_sim: PreSimEvidence | None,
-    started: float,
-) -> SimulationTargetOutcome:
-    failure = SimulationInfrastructureFailure(
-        "build",
-        build.reason,
-        missing_executable=find_missing_executable(build.output) or "",
-        detail=build_failure_report(build),
-    )
-    return _error_outcome(handle, attempt, build, pre_sim, failure, started)
 
 
 def _with_cleanup_diagnostic(
@@ -1977,72 +1506,47 @@ def _adapter_failure_outcome(
     attempt: _Attempt,
     executed: AdapterAttemptOutcome,
     build: BuildOutcome,
-    pre_sim: PreSimEvidence | None,
     started: float,
 ) -> SimulationTargetOutcome | None:
     adapter_error = _adapter_attempt_error(executed, build)
     if build.failure_kind == "infrastructure":
-        return _infrastructure_failure(handle, attempt, build, pre_sim, started)
+        return _infrastructure_outcome(handle, attempt, build, "build", "", started)
     if adapter_error is not None:
-        return _transport_failure(
+        return _infrastructure_outcome(
             handle,
             attempt,
             build,
-            pre_sim,
-            adapter_error,
-            started,
             "artifact_persistence"
             if executed.error_kind == "cleanup" and executed.result is None
             else "adapter_protocol",
+            adapter_error,
+            started,
         )
     return None
 
 
-def _transport_failure(
+def _infrastructure_outcome(
     handle: TargetHandle,
     attempt: _Attempt,
     build: BuildOutcome,
-    pre_sim: PreSimEvidence | None,
-    detail: str,
-    started: float,
-    kind: str = "adapter_protocol",
-) -> SimulationTargetOutcome:
-    failure = SimulationInfrastructureFailure(kind, detail, detail=detail)
-    return _error_outcome(handle, attempt, build, pre_sim, failure, started)
-
-
-def _runtime_input_failure(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    pre_sim: PreSimEvidence | None,
+    kind: str,
     detail: str,
     started: float,
 ) -> SimulationTargetOutcome:
-    message = f"Simulation runtime input setup failed: {detail}"
-    failure = SimulationInfrastructureFailure("runtime_input", message, detail=message)
-    return _error_outcome(handle, attempt, None, pre_sim, failure, started)
+    """Normalize an infrastructure failure of *kind* that produced no design verdict.
 
-
-def _artifact_failure(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    build: BuildOutcome | None,
-    pre_sim: PreSimEvidence | None,
-    detail: str,
-    started: float,
-) -> SimulationTargetOutcome:
-    failure = SimulationInfrastructureFailure("artifact_persistence", detail, detail=detail)
-    return _error_outcome(handle, attempt, build, pre_sim, failure, started)
-
-
-def _error_outcome(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    build: BuildOutcome | None,
-    pre_sim: PreSimEvidence | None,
-    failure: SimulationInfrastructureFailure,
-    started: float,
-) -> SimulationTargetOutcome:
+    A ``build`` failure carries its build's reason, report and missing executable;
+    any other kind reports *detail*.
+    """
+    if kind == "build":
+        failure = SimulationInfrastructureFailure(
+            kind,
+            build.reason,
+            missing_executable=find_missing_executable(build.output) or "",
+            detail=build_failure_report(build),
+        )
+    else:
+        failure = SimulationInfrastructureFailure(kind, detail, detail=detail)
     return SimulationTargetOutcome(
         target=handle.selector,
         target_identity=handle.identity,
@@ -2052,8 +1556,7 @@ def _error_outcome(
         verdict="error",
         elapsed_s=time.monotonic() - started,
         tests=(),
-        builds=(build,) if build is not None else (),
-        pre_sim_runs=(pre_sim,) if pre_sim is not None else (),
+        builds=(build,),
         infrastructure_failure=failure,
     )
 
@@ -2083,86 +1586,11 @@ def _adapter_invocation(work: PreparedSimulationWork) -> tuple[str, ...]:
         raise SimulationBuildPreparationError(str(exc)) from exc
 
 
-def _build_slot_failure(
-    handle: TargetHandle, exc: SimulationBuildSlotError, started: float
-) -> SimulationTargetOutcome:
-    failure = SimulationInfrastructureFailure(
-        "build", "Simulation build provenance failed", detail=str(exc)
-    )
-    return _setup_infrastructure_failure(handle, failure, started)
-
-
-def _aggregate_group_results(
-    handle: TargetHandle,
-    toplevel: str,
-    results: list[SimulationTargetOutcome],
-    started: float,
-) -> SimulationTargetOutcome:
-    failure = next(
-        (result.infrastructure_failure for result in results if result.infrastructure_failure),
-        None,
-    )
-    tests = tuple(test for result in results for test in result.tests)
-    builds = tuple(build for result in results for build in result.builds)
-    pre_sim_runs = tuple(item for result in results for item in result.pre_sim_runs)
-    artifacts = tuple(item for result in results for item in result.artifacts)
-    return _aggregate(
-        handle,
-        toplevel,
-        results,
-        tests,
-        builds,
-        pre_sim_runs,
-        artifacts,
-        failure,
-        started,
-    )
-
-
-def _setup_infrastructure_failure(
-    handle: TargetHandle,
-    failure: SimulationInfrastructureFailure,
-    started: float,
-) -> SimulationTargetOutcome:
-    return SimulationTargetOutcome(
-        target=handle.selector,
-        target_identity=handle.identity,
-        toplevel="",
-        eda_tool="",
-        passed=False,
-        verdict="error",
-        elapsed_s=time.monotonic() - started,
-        tests=(),
-        infrastructure_failure=failure,
-    )
-
-
-def _setup_failure(handle: TargetHandle, detail: str, started: float) -> SimulationTargetOutcome:
-    test = SimulationTestOutcome(
-        name=handle.selector,
-        verdict="elab_error",
-        passed=False,
-        error_tail=f"sim setup failed: {detail}",
-        elab_failed=True,
-    )
-    return SimulationTargetOutcome(
-        target=handle.selector,
-        target_identity=handle.identity,
-        toplevel="",
-        eda_tool="",
-        passed=False,
-        verdict="fail",
-        elapsed_s=time.monotonic() - started,
-        tests=(test,),
-    )
-
-
 def _group_outcome(
     handle: TargetHandle,
     attempt: _Attempt,
     tests: tuple[SimulationTestOutcome, ...],
     build: BuildOutcome | None,
-    pre_sim: PreSimEvidence | None,
     artifacts: tuple[SimulationArtifactEvidence, ...],
     started: float,
     diagnostics: tuple[str, ...] = (),
@@ -2187,7 +1615,6 @@ def _group_outcome(
         elapsed_s=elapsed_s,
         tests=tests,
         builds=(build,) if build is not None else (),
-        pre_sim_runs=(pre_sim,) if pre_sim is not None else (),
         artifacts=artifacts,
         diagnostics=diagnostics,
         infrastructure_failure=failure,
@@ -2214,47 +1641,6 @@ def _group_verdict(failure, passed: bool, inconclusive: bool):
     if passed:
         return "pass"
     return "inconclusive" if inconclusive else "fail"
-
-
-def _aggregate(
-    handle: TargetHandle,
-    toplevel: str,
-    groups: list[SimulationTargetOutcome],
-    tests: tuple[SimulationTestOutcome, ...],
-    builds: tuple[BuildOutcome, ...],
-    pre_sim_runs: tuple[PreSimEvidence, ...],
-    artifacts: tuple[SimulationArtifactEvidence, ...],
-    failure: SimulationInfrastructureFailure | None,
-    started: float,
-) -> SimulationTargetOutcome:
-    inconclusive = any(test.inconclusive for test in tests)
-    passed = (
-        bool(tests)
-        and all(test.passed for test in tests)
-        and all(group.passed for group in groups)
-        and failure is None
-    )
-    eda_tool = next((group.eda_tool for group in groups if group.eda_tool), "")
-    verdict = (
-        "error" if failure else "pass" if passed else "inconclusive" if inconclusive else "fail"
-    )
-    elapsed_s = time.monotonic() - started
-    return SimulationTargetOutcome(
-        target=handle.selector,
-        target_identity=handle.identity,
-        toplevel=toplevel,
-        eda_tool=eda_tool,
-        passed=passed,
-        verdict=verdict,
-        elapsed_s=elapsed_s,
-        tests=tests,
-        builds=builds,
-        pre_sim_runs=pre_sim_runs,
-        artifacts=artifacts,
-        diagnostics=tuple(note for group in groups for note in group.diagnostics),
-        infrastructure_failure=failure,
-        phase_timings_s=_target_phase_timings(tests, elapsed_s),
-    )
 
 
 def _target_phase_timings(
@@ -2529,99 +1915,17 @@ def _run_log_for(
     )
 
 
-def _persist_run_logs(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    output: str,
-    artifact_root: Path | None,
-) -> tuple[SimulationArtifactEvidence, ...]:
+def _persist_run_logs(attempt: _Attempt, output: str) -> tuple[SimulationArtifactEvidence, ...]:
     build_root = attempt.prepared.build_root
     try:
         live_path = write_run_log(build_root, output)
         live = validate_fresh_artifact(live_path, roots=(build_root,), before=None)
-        archives = _archive_run_logs(handle, attempt, output, artifact_root)
     except (OSError, ArtifactValidationError) as exc:
         raise SimulationArtifactPersistenceError(f"could not preserve run log: {exc}") from exc
     live_evidence = SimulationArtifactEvidence(
         "live_run_log", str(live.path), live.size, attempt.test_names
     )
-    return (live_evidence, *archives)
-
-
-def _archive_run_logs(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    output: str,
-    artifact_root: Path | None,
-) -> tuple[SimulationArtifactEvidence, ...]:
-    if artifact_root is None or not output:
-        return ()
-    names = attempt.test_names or (handle.selector,)
-    target = artifact_path_component(f"sim_{handle.selector}")
-    if attempt.adapter == "cocotb":
-        relative = flow_artifacts.publish_bytes(
-            artifact_root,
-            (target, "tests", _evidence_group(handle, attempt), "run.log"),
-            output.encode(),
-            work_dir=artifact_root,
-        )
-        path = artifact_root / relative
-        return (SimulationArtifactEvidence("run_log", str(path), path.stat().st_size, names),)
-    evidence: list[SimulationArtifactEvidence] = []
-    for name in names:
-        test = _evidence_group(handle, attempt, name)
-        relative = flow_artifacts.publish_bytes(
-            artifact_root,
-            (target, "tests", test, "run.log"),
-            output.encode(),
-            work_dir=artifact_root,
-        )
-        path = artifact_root / relative
-        evidence.append(
-            SimulationArtifactEvidence("run_log", str(path), path.stat().st_size, (name,))
-        )
-    return tuple(evidence)
-
-
-def _evidence_group(handle: TargetHandle, attempt: _Attempt, name: str | None = None) -> str:
-    """The evidence directory of *attempt* (of its Test *name*) under its Target.
-
-    The Test Run name where the work resolved one, so ``test@xN`` and two Test
-    Variants of one Test keep separate evidence; otherwise the bare Test name.
-    """
-    if attempt.adapter == "cocotb":
-        return artifact_path_component(attempt.work.artifact_group or "batch")
-    fallback = name or (attempt.test_names or (handle.selector,))[0]
-    return artifact_path_component(attempt.work.artifact_group or fallback)
-
-
-def _archive_file_evidence(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    evidence: tuple[SimulationArtifactEvidence, ...],
-    artifact_root: Path | None,
-) -> tuple[SimulationArtifactEvidence, ...]:
-    """Snapshot report-projected adapter files into the invocation namespace."""
-    if artifact_root is None:
-        return evidence
-    target = artifact_path_component(f"sim_{handle.selector}")
-    group = _evidence_group(handle, attempt)
-    archived: list[SimulationArtifactEvidence] = []
-    try:
-        for item in evidence:
-            source = Path(item.path)
-            relative = flow_artifacts.publish_file(
-                artifact_root,
-                (target, "tests", group, item.kind, source.name),
-                source,
-                work_dir=artifact_root,
-            )
-            archived.append(replace(item, path=str(artifact_root / relative)))
-    except (OSError, ValueError) as exc:
-        raise SimulationArtifactPersistenceError(
-            f"could not preserve Simulation artifact: {exc}"
-        ) from exc
-    return tuple(archived)
+    return (live_evidence,)
 
 
 def _trace_artifact(
@@ -2794,7 +2098,6 @@ def _attach_group_telemetry(
     attempt: _Attempt,
     process: SubprocessResult,
     build: BuildOutcome,
-    pre_sim: PreSimEvidence | None,
     output: str,
     result_processing_s: float,
 ) -> tuple[SimulationTestOutcome, ...]:
@@ -2806,7 +2109,7 @@ def _attach_group_telemetry(
         run_s = max(0.0, process.duration_s - build_s) if build.passed else 0.0
     phases = {
         "setup": round(attempt.setup_s, 3),
-        "pre_sim": round(pre_sim.elapsed_s if pre_sim else 0.0, 3),
+        "pre_sim": 0.0,
         "build": round(build_s, 3),
         "run": round(run_s, 3),
         "result_processing": round(result_processing_s, 3),

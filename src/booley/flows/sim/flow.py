@@ -1099,7 +1099,7 @@ def _group_disclosures(
 ) -> tuple[dict[str, object], ...]:
     """Disclose the build of each group's Test Runs, not of their Tests' defaults."""
     return tuple(
-        execution.plan_campaign_group(handle, group, runs)
+        execution.plan_ordinary_group(handle, group, runs)
         for group, runs in zip(groups, run_groups, strict=True)
     )
 
