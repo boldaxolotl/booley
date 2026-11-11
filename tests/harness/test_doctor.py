@@ -2499,11 +2499,11 @@ class TestCoreAudit:
             encoding="utf-8",
         )
         original = doctor.TargetCatalog.inspect
-        calls: list[tuple[int, str]] = []
+        calls: list[str] = []
 
         def inspect(self, handle):
             result = original(self, handle)
-            calls.append((id(self), handle.name))
+            calls.append(handle.name)
             return result
 
         monkeypatch.setattr(doctor.TargetCatalog, "inspect", inspect)
@@ -2511,15 +2511,10 @@ class TestCoreAudit:
         rec = _audit(tmp_path)
 
         assert rec.fails() == []
-        # The core audit's catalog is the first one seen and reads each root
-        # partition once. The native-dependency source collection reads seed
-        # Targets through its own catalog (``_native_dependency_sources``).
-        core_catalog = calls[0][0]
-        assert sorted(name for catalog, name in calls if catalog == core_catalog) == [
-            "lint",
-            "sim",
-        ]
-        assert len(calls) == len(set(calls))
+        # The core audit reads each root partition once; the native-dependency
+        # source collection runs last and reads the seed Target (sim) again.
+        assert sorted(calls[:-1]) == ["lint", "sim"]
+        assert calls[-1] == "sim"
 
     def _cpp_target_project(self, tmp_path: Path, include_line: str) -> doctor.ProjectAudit:
         (tmp_path / "design.core").write_text(
