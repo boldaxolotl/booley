@@ -287,7 +287,7 @@ def test_primary_pytest_commands_emit_timing_and_junit_data() -> None:
 def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     """The coverage leg is parallel without dropping child-process data."""
     project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    dev_dependencies = project["project"]["optional-dependencies"]["dev"]
+    test_dependencies = project["project"]["optional-dependencies"]["test"]
     coverage_config = project["tool"]["coverage"]["run"]
     coverage_paths = project["tool"]["coverage"]["paths"]["source"]
     workflow = _test_workflow()
@@ -298,8 +298,10 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     )
     command = coverage_step["run"]
 
-    assert "pytest-cov==7.1.0" in dev_dependencies
-    assert "coverage==7.17.0" in dev_dependencies
+    # Exact pins only: Renovate owns the versions (the coverage hold is guarded in
+    # tests/ci/test_renovate_config.py), so repeating them here would go stale.
+    for name in ("pytest-cov", "coverage"):
+        assert any(re.fullmatch(rf"{name}==\S+", item) for item in test_dependencies), name
     assert coverage_config["patch"] == ["subprocess"]
     assert "coverage run" not in command
     assert "pytest tests/" in command

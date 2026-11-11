@@ -86,6 +86,16 @@ _STALE_CASES = {
 }
 
 
+def test_self_referencing_extras_need_no_pin() -> None:
+    """#3475: ``dev = ["booley-rtl[test]"]`` composes extras; uv writes no line for it."""
+    checker = _checker()
+    project = _MINIMAL_PROJECT | {
+        "name": "booley-rtl",
+        "optional-dependencies": {"test": ["gamma>=3"], "dev": ["booley-rtl[test]"]},
+    }
+    assert checker.stale_reasons(project, _minimal_constraints()) == []
+
+
 def test_stale_constraints_name_the_regenerate_command(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
