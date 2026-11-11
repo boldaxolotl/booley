@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,6 +40,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim.test_verilator_build_reuse_engine import _edit_keeping_mtime
 from tests.flows.test_isolated_build_headers import real_fusesoc  # noqa: F401  (fixture)
+from tests.subprocess_budget import run_bounded_child
 
 pytest.importorskip("fusesoc")
 pytest.importorskip("edalize")
@@ -279,14 +279,7 @@ def test_isolated_sim_tool_error_names_unlisted_header(tmp_path: Path, tool: str
         '`include "unlisted.vh"\nmodule top; endmodule\n', encoding="utf-8"
     )
     prepared = _prepare(root, "sim_verilator" if tool == "verilator" else "sim_icarus")
-    result = subprocess.run(
-        list(prepared.make_argv),
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+    result = run_bounded_child(list(prepared.make_argv), cwd=root)
     assert result.returncode != 0
     assert "unlisted.vh" in result.stdout + result.stderr
 

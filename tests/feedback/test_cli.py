@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 
 import pytest
 
@@ -17,6 +16,7 @@ from booley.feedback.findings import read_log
 from booley.feedback.storage import feedback_storage_dir
 from booley.runtime import booley_dir as booley_dir_mod
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture
@@ -79,7 +79,7 @@ def test_source_feedback_uses_shared_git_metadata(tmp_path):
         "[tool.booley]\nsource_checkout = true\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "init", "-q", str(source)], check=True, timeout=10)
+    run_bounded_child(["git", "init", "-q", str(source)], timeout=10, check=True)
     parser = argparse.ArgumentParser()
     cli.add_subparser(parser.add_subparsers(dest="command"))
 
@@ -99,8 +99,8 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
         "[tool.booley]\nsource_checkout = true\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True, timeout=10)
-    subprocess.run(
+    run_bounded_child(["git", "init", "-q", "-b", "main", str(source)], timeout=10, check=True)
+    run_bounded_child(
         [
             "git",
             "-C",
@@ -112,10 +112,10 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
             "add",
             "pyproject.toml",
         ],
-        check=True,
         timeout=10,
+        check=True,
     )
-    subprocess.run(
+    run_bounded_child(
         [
             "git",
             "-C",
@@ -128,14 +128,14 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
             "-qm",
             "fixture",
         ],
-        check=True,
         timeout=10,
+        check=True,
     )
     linked = tmp_path / "linked"
-    subprocess.run(
+    run_bounded_child(
         ["git", "-C", str(source), "worktree", "add", "-q", "-b", "linked", str(linked)],
-        check=True,
         timeout=10,
+        check=True,
     )
 
     assert feedback_storage_dir(source) == feedback_storage_dir(linked)
