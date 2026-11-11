@@ -289,7 +289,8 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 # ---------------------------------------------------------------------------
 
 
-# Metrics the synthesis Flow declares; names match the Goal thresholds they gate.
+# Metrics the synthesis Flow declares; names are the ones Goal thresholds are built from.
+# area_um2/area_kge are the mapped area in logical mode and the placed area in OpenROAD modes.
 _SYNTH_COST_TIER = CostTier.HIGH
 SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
     MetricDeclaration("area_um2", "μm²", Better.LOWER, _SYNTH_COST_TIER, MetricKind.PLAIN),
