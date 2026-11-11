@@ -25,7 +25,7 @@ import logging
 import os
 import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -2512,8 +2512,14 @@ class DownResult:
         return self.headless or self.relay or self.claim_cleared
 
 
-def _down_unlocked(workspace: Path) -> DownResult:
-    """Stop this Project's Sandboxes and clear pending editor capacity."""
+def _down_unlocked(
+    workspace: Path, before_stop: Callable[[Sandbox | None], None] | None = None
+) -> DownResult:
+    """Stop this Project's Sandboxes and clear pending editor capacity.
+
+    ``before_stop`` runs once, with the running Sandbox (``None`` when the container exists
+    but is not running), after every refusal and before the stop actually proceeds.
+    """
     from booley.runtime import session_admission
 
     selected = resolve_running_sandbox(workspace)
@@ -2526,6 +2532,8 @@ def _down_unlocked(workspace: Path) -> DownResult:
     relay = _relay_resources(workspace)
     session_exists = selected is not None or idk.container_exists(name)
     relay_exists = _relay_objects_exist(relay)
+    if session_exists and before_stop is not None:
+        before_stop(selected)
     if resolve_running_sandbox(workspace) != selected:
         raise SessionError("Sandbox identity changed before stop; retry")
     if session_exists:
@@ -2543,13 +2551,19 @@ def _down_unlocked(workspace: Path) -> DownResult:
     return DownResult(session_exists, relay_exists, claim_cleared)
 
 
-def down(workspace: Path) -> DownResult:
-    """Stop one Session while excluding other host mutations."""
+def down(
+    workspace: Path, *, before_stop: Callable[[Sandbox | None], None] | None = None
+) -> DownResult:
+    """Stop one Session while excluding other host mutations.
+
+    ``before_stop`` is called under the lifecycle lock when a Sandbox container will be
+    stopped; see ``_down_unlocked``.
+    """
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session down"):
         _recover_before_lifecycle(workspace, "booley session down")
-        return _down_unlocked(workspace)
+        return _down_unlocked(workspace, before_stop)
 
 
 def status(workspace: Path) -> str:

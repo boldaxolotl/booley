@@ -26,7 +26,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.goals.sim_baseline_store import SCHEMA, write_document
 from booley.mcp import sim_baseline_execution as execution
 from booley.mcp import sim_baseline_jobs as jobs
-from booley.runtime import job_records, job_slots
+from booley.runtime import detached_job, job_records, job_slots
 from booley.runtime.job_observation import JobObserver
 from booley.runtime.job_observation import _observer as observer_module
 from booley.runtime.pid import ProcessObservation, ProcessState
@@ -224,7 +224,7 @@ def _rewind_job_start(scene, remaining_s: float) -> None:
 
 def test_baseline_supervisor_does_not_inherit_the_launching_executions_identity(monkeypatch):
     monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "launching-session-execution")
-    assert "BOOLEY_RUNTIME_EXECUTION_ID" not in jobs.baseline_environment()
+    assert "BOOLEY_RUNTIME_EXECUTION_ID" not in detached_job.detached_environment()
 
 
 def test_baseline_gives_up_its_slot_wait_at_its_budget(scene, foreign_owner):
@@ -280,7 +280,7 @@ def test_waiting_baseline_job_reads_as_queued_in_job_status(scene, foreign_owner
     driver.start()
     with _sigterm_restored():
         try:
-            assert jobs.main([str(scene.path)]) == 0
+            assert jobs.supervise(scene.path) == 0
         finally:
             finished.set()
             driver.finish()

@@ -62,6 +62,13 @@ started inside the container.
 `refresh`, `down`, and `up --rebuild` refuse to touch a VS Code-owned Sandbox:
 close the window, or use **Dev Containers: Rebuild Container**.
 
+Before stopping, `session down` warns on stderr about each running or queued
+Standalone Job (a `booley flow` or `booley specialist` run typed in a Sandbox
+shell), because it stops with the Sandbox. The warning names the Flow or
+Specialist, the Target when the run gave one, the worktree (a Sandbox path), and
+how long it has run. `down` does not ask or wait. If it cannot read the Job
+records, it says the check was skipped and still stops the Sandbox.
+
 `session refresh` rebuilds only what changed and keeps the current Sandbox if
 nothing did. If the Sandbox replacement fails or you interrupt it, Booley
 restores the previous Sandbox. The Sandbox is unavailable while the new

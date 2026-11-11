@@ -15,7 +15,7 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.config.host_config import SandboxHostPolicy
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
-from booley.runtime import doctor_stamp, inspection, session_admission
+from booley.runtime import doctor_stamp, inspection, session_admission, vaporview
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.harness.test_doctor import (
     _disable_line_ending_stealth,
@@ -312,7 +312,7 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     assert (tmp_path / "AGENTS.md").exists() is (valid and not read_only)
 
 
-@pytest.mark.parametrize("owner", ["line-endings", "interactive-git"])
+@pytest.mark.parametrize("owner", ["line-endings", "interactive-git", "viewer-bridge"])
 def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
     """An owner's report is rendered where the old inline check ran, waivers applied."""
     booley_dir = _write_project(tmp_path)
@@ -332,6 +332,22 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
             doctor,
             "_check_worktree_core_shadow_guard",
             lambda _dir, ok, *_a, **_k: ok("after-marker"),
+        )
+    elif owner == "viewer-bridge":
+        check_id, subject = "project.git-excludes-missing", ".booley"
+        requests: list[vaporview.ViewerBridgeRequest] = []
+
+        def inspect_bridge(request):
+            requests.append(request)
+            return _owner_report(check_id, subject)
+
+        monkeypatch.setattr(vaporview, "inspect_viewer_bridge", inspect_bridge)
+        # Public owner calls bracket the Viewer Bridge (credential checks sit between).
+        monkeypatch.setattr(
+            inspection, "inspect_interactive_git", lambda *_a, **_k: marker("before-marker")
+        )
+        monkeypatch.setattr(
+            inspection, "inspect_retained_resources", lambda *_a, **_k: marker("after-marker")
         )
     else:
         check_id, subject = "project.git-excludes-missing", ".booley"
@@ -360,6 +376,48 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
         messages.index("after-marker"),
     )
     assert before < owned_pass < owned_warn < after
+    waived = result.findings[owned_warn]
+    assert (waived.severity, waived.check_id, waived.subject) == (
+        Severity.WAIVED,
+        check_id,
+        subject,
+    )
+    assert result.exit_code == 0
+    if owner == "viewer-bridge":
+        assert requests == [vaporview.ViewerBridgeRequest(tmp_path, "docker")]
+
+
+def test_doctor_renders_tests_toml_report_after_core_security(tmp_path, monkeypatch):
+    """The tests.toml owner's report follows the core security finding, waived through Doctor."""
+    # Imported here so an absent owner fails this test body, not the module's collection.
+    from booley.flows import target_test_plan_inspection
+
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    check_id, subject = "sim.tests-toml-fixture", "tests.toml"
+    requests = []
+
+    def stub(request):
+        requests.append(request)
+        return _owner_report(check_id, subject)
+
+    monkeypatch.setattr(target_test_plan_inspection, "inspect_target_test_plans", stub)
+    (booley_dir / "doctor-waivers.toml").write_text(
+        f'version = 1\n[[waiver]]\ncheck = "{check_id}"\nsubject = "{subject}"\n'
+        'reason = "Accepted for this fixture"\npermanent = true\n'
+    )
+
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+
+    # The request carries the checkout's Project Root and Booley Directory only.
+    assert requests == [
+        target_test_plan_inspection.TargetTestPlanInspectionRequest(tmp_path, booley_dir)
+    ]
+    messages = [f.message for f in result.findings]
+    owned_pass, owned_warn = messages.index("owner pass"), messages.index("owner warn")
+    assert owned_warn == owned_pass + 1
+    # The finding right before the owner's is the real core-audit security finding.
+    assert messages[owned_pass - 1].startswith(".core security validation passed (")
     waived = result.findings[owned_warn]
     assert (waived.severity, waived.check_id, waived.subject) == (
         Severity.WAIVED,

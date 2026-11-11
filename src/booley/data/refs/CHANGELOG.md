@@ -9,6 +9,20 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- New `booley coverage uncovered <coverage.json>` lists every uncovered scored
+  point of one retained coverage run as `source:line  metric  detail  hierarchy`,
+  sorted by source, line, and metric, with a summary count and the number of
+  waived points left out. `--metric` and `--source` narrow the list. It works
+  on the host and in the Sandbox, and the coverage guide uses it instead of the
+  `jq` recipes.
+- `booley flow sim --mode elab-only-standalone` now probes each module with the
+  simulator of the Targets that use it: Icarus for an Icarus Target, Verilator
+  for a Verilator Target, and both for a module shared by the two (a
+  mixed-simulator project can take up to twice as long). A parse error from the
+  Target's own compiler is now a design failure instead of "ungraded"; an
+  Icarus-only project is probed with Icarus even when Verilator is installed. The
+  `[flows.sim].standalone_frontend` key is retired: every Flow refuses to run
+  while it is set, so delete it.
 - A failed Simulation run of a Target without registered Tests is now listed as
   `<default>` (`<default>@N` when seeded) in `simulation.json` and the "Test
   Runs" lines, and its rerun command is `booley flow sim --target <name>

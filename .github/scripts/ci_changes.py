@@ -55,6 +55,7 @@ CONDITIONAL_JOBS = (
     "coverage",
     "rust-test",
     "bwave-integration",
+    "build-dist",
     "package-artifacts",
     "sidecar-smoke",
     "bwave-smoke",
@@ -69,6 +70,11 @@ STRESS_JOB = "flake-stress"
 # Selected exactly when the `riscv_image` category is: main and manual runs
 # leave that category to its compatibility inputs, so `full` must not force it.
 RISCV_IMAGE_JOB = "riscv-image"
+# Builds the wheel and sdist once and uploads them as `pr-dist`. Selected
+# exactly when a job that consumes `pr-dist` is: the image jobs then start
+# on the bare build instead of waiting for package-artifacts' validations.
+DIST_JOB = "build-dist"
+DIST_CONSUMERS = frozenset({"package-artifacts", "bwave-smoke", RISCV_IMAGE_JOB})
 ALWAYS_JOBS = ("changes", "release-semantic")
 # A push to main runs only these jobs. Mergify merges a batch's PRs one by one:
 # the merge of the batch's last PR reproduces the tree its queue candidate
@@ -76,9 +82,9 @@ ALWAYS_JOBS = ("changes", "release-semantic")
 # before it are untested intermediate trees; the nightly full run covers main's
 # tip.
 # `bwave-smoke` stays because only a main push may write the shared substrate
-# build cache, and it installs the wheel from `package-artifacts`. The nightly
+# build cache, and it installs the wheel from `build-dist`. The nightly
 # scheduled run and manual runs still select every job.
-MAIN_PUSH_JOBS = (*ALWAYS_JOBS, "package-artifacts", "bwave-smoke")
+MAIN_PUSH_JOBS = (*ALWAYS_JOBS, DIST_JOB, "package-artifacts", "bwave-smoke")
 MAIN_REF = "refs/heads/main"
 CI_TOOLING_JOBS = (
     "package-artifacts",
@@ -402,7 +408,11 @@ def required_jobs(
     if main_push:
         return set(MAIN_PUSH_JOBS)
     jobs = _category_jobs(categories)
-    return jobs | {STRESS_JOB} if stress else jobs
+    if stress:
+        jobs.add(STRESS_JOB)
+    if jobs & DIST_CONSUMERS:
+        jobs.add(DIST_JOB)
+    return jobs
 
 
 def is_main_push(event_name: str, ref: str) -> bool:

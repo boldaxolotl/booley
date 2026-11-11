@@ -1,5 +1,9 @@
 # Split Coverage Campaign summary from point storage
 
+This ADR's campaign terminology is superseded by
+[ADR 0090](0090-rename-simulation-and-coverage-campaigns-to-records.md): read
+Coverage Campaign as Coverage Record. Its other decisions stand.
+
 A Coverage Campaign remains one immutable, lossless record, but its V2 persistence separates the
 small `coverage.json` manifest from required `coverage-points.jsonl.gz` point evidence. The manifest
 is published last as the crash-durable commit marker and records the point store's exact path, schema,

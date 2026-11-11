@@ -100,3 +100,11 @@ def test_load_eda_config_uses_external_project_data_dir(
         assert load_eda_config(project) == {"vivado": EdaConfig("vivado", "host")}
     finally:
         reset_cache()
+
+
+def test_retired_standalone_frontend_has_hard_migration_error() -> None:
+    for flow in ("sim", "lint"):
+        message = retired_config_error({"flows": {flow: {"standalone_frontend": "auto"}}})
+        assert message is not None
+        assert f"[flows.{flow}].standalone_frontend is retired" in message
+        assert "each Target's simulator" in message

@@ -65,24 +65,20 @@ from booley.config.gateway import (
 )
 from booley.config.jobs import parse_caps
 from booley.config.project_config import (
-    TESTS_SECTION_KEYS,
     lookup_target_section,
     normalize_tests_toml,
 )
-from booley.config.tests_toml_rules import TEST_NAME_RULES
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
     require_bool,
-    require_bool_value,
     require_dict,
     require_int,
     require_list,
-    require_opt_str,
     require_str,
 )
-from booley.flows import execution
+from booley.flows import execution, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -93,8 +89,7 @@ from booley.flows.sim.config import (
     resolve_run_cwd,
     resolve_trace_files,
 )
-from booley.flows.simulator_family import normalize_eda_tool
-from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
+from booley.flows.target_test_plan_inspection import TargetTestPlanInspectionRequest
 from booley.flows.test_runs import parse_test_selector
 from booley.fusesoc import (
     core_security,
@@ -167,11 +162,7 @@ from booley.targets.domain import (
     flow_can_drive,
 )
 from booley.targets.flow_names import config_section
-from booley.targets.selection import (
-    TargetSectionConflictError,
-    section_key_names,
-    target_section_key,
-)
+from booley.targets.selection import TargetSectionConflictError
 
 if TYPE_CHECKING:
     from booley.config.agent import AgentSettings, DeclaredAgent
@@ -194,8 +185,6 @@ _SIM_DEEP_FINALIZE_MARGIN_S = 30
 # The three core Flow tables remain required project configuration. FPGA is an
 # optional axis: plain Doctor covers it when configured or selected by Target
 # metadata, while deep Doctor deliberately stops short of implementation.
-# Doctor line label for the `bwave gui` Viewer Bridge probe.
-_VIEWER_BRIDGE_DESCRIPTION = "Viewer Bridge answers in the attached VS Code window (`bwave gui`)"
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
 _DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
@@ -1397,6 +1386,7 @@ def _run_flow_and_core_phase(
             reporter.warn_,
             reporter.skip_,
             reporter.fail_,
+            _diagnostics=reporter.diagnostics,
             _note=reporter.note_,
             _detail=info if verbose else None,
         )
@@ -2829,7 +2819,11 @@ def _run_mcp_checks(
         )
     )
     _run_agent_credential_checks(project, reporter)
-    _check_viewer_bridge(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
+    reporter.diagnostics(
+        vaporview.inspect_viewer_bridge(
+            vaporview.ViewerBridgeRequest(project.project_root, docker_exe)
+        )
+    )
     reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))
 
     if not docker_exe:
@@ -3510,309 +3504,6 @@ def _check_subscription_creds_health(
             "recreate the container to re-bind the current host file — or store a "
             f"rotation-free credential: booley auth --cli {app}",
         )
-
-
-# Recovery when no attached window's bridge answers. The Booley workspace
-# extension starts the Viewer Bridge when a window loads; an extension host
-# that predates a spec refresh (or a spec that predates the bridge) has none.
-_BRIDGE_RELOAD_FIX = (
-    "run 'Developer: Reload Window' in the attached VS Code window so the Booley "
-    "extension starts its Viewer Bridge; if Doctor also reports devcontainer drift, "
-    "refresh the Sandbox so its spec installs the Booley Sandbox Integration extension"
-)
-
-_BRIDGE_MISSING_EXTENSION_FIX = vaporview.install_guidance()
-_BRIDGE_UNKNOWN_EXTENSION_FIX = (
-    "could not determine whether VaporView is installed; verify it in the attached "
-    "remote window, then install it if absent or run 'Developer: Reload Window' if present"
-)
-
-_VAPORVIEW_STATE_PROBE_SOURCE = (
-    "import sys;from pathlib import Path;"
-    "from booley.runtime.vaporview import ExtensionState,probe_home;"
-    "s=probe_home(Path.home());"
-    "sys.exit(0 if s is ExtensionState.INSTALLED else 3 if s is ExtensionState.MISSING else 4)"
-)
-
-# Prints the live VaporView versions as JSON; exit 4 means the registry could
-# not be read. An older in-container Booley without installed_versions fails the
-# import, which the runner also treats as unknown.
-_VAPORVIEW_VERSIONS_PROBE_SOURCE = (
-    "import json,sys;from pathlib import Path;"
-    "from booley.runtime.vaporview import installed_versions;"
-    "v=installed_versions(Path.home());"
-    "print(json.dumps(v)) if v is not None else sys.exit(4)"
-)
-
-# Prints every live bridge's VaporView report as JSON. An in-container Booley
-# without the bridge client fails the import, which the runner treats as
-# "probe could not run" rather than as a dark window.
-_VIEWER_BRIDGE_PROBE_SOURCE = (
-    "import json;from booley.bwave.vaporview_bridge import doctor_summary;"
-    "print(json.dumps(doctor_summary()))"
-)
-
-# Exit 0 when a VS Code extension host process runs, 3 when none does. Any
-# other exit (an interpreter error, a missing python3) stays "unknown", so a
-# broken probe can never pass for "no window attached".
-_VSCODE_EXTENSION_HOST_PROBE_SOURCE = """\
-import sys
-from pathlib import Path
-
-marker = b"bootstrap-fork\\x00--type=extensionHost"
-attached = False
-for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
-    try:
-        attached = marker in cmdline.read_bytes()
-    except OSError:
-        continue
-    if attached:
-        break
-sys.exit(0 if attached else 3)
-"""
-
-
-def _vscode_extension_host_running(argv_prefix: list[str]) -> bool | None:
-    """True/False when a live VS Code extension host can be detected, else None."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VSCODE_EXTENSION_HOST_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode == 0:
-        return True
-    if result.returncode == 3:
-        return False
-    return None
-
-
-def _vaporview_extension_state(argv_prefix: list[str]) -> vaporview.ExtensionState:
-    """Probe the remote extension registry; unexpected failures remain unknown."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VAPORVIEW_STATE_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return vaporview.ExtensionState.UNKNOWN
-    if result.returncode == 0:
-        return vaporview.ExtensionState.INSTALLED
-    if result.returncode == 3:
-        return vaporview.ExtensionState.MISSING
-    return vaporview.ExtensionState.UNKNOWN
-
-
-def _vaporview_installed_versions(argv_prefix: list[str]) -> list[str] | None:
-    """Live VaporView versions in the remote registry, or None when unknown."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VAPORVIEW_VERSIONS_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        versions = json.loads(result.stdout)
-    except ValueError:
-        return None
-    if not is_str_list(versions):
-        return None
-    return versions
-
-
-def _vaporview_version_fix() -> str:
-    """Recovery for an installed VaporView build other than the verified one."""
-    return (
-        "in the attached remote window's terminal run "
-        f"`code --install-extension {vaporview.BUNDLED_VSIX}`, then "
-        "'Developer: Reload Window'; for a lasting fix refresh the Sandbox so "
-        "its generated spec installs the bundled verified build"
-    )
-
-
-def _check_vaporview_version(
-    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
-) -> None:
-    """Report whether the attached window runs the VaporView build Booley verified.
-
-    The bridge answers for any VaporView build, but Booley's compatibility
-    patch and its readback rules are verified against exactly one; only the
-    installed version separates them.
-    """
-    description = f"VaporView version is the verified {vaporview.VERIFIED_VERSION}"
-    versions = _vaporview_installed_versions(argv_prefix)
-    if versions is None:
-        _skip(f"{description} - version probe could not run{where}")
-        return
-    if not versions:
-        # Absence is reported by the bridge check with install guidance.
-        _skip(f"{description} - VaporView not installed{where}")
-        return
-    other = [version for version in versions if version != vaporview.VERIFIED_VERSION]
-    if not other:
-        _pass(description)
-        return
-    _fail(
-        f"VaporView {', '.join(other)} is installed{where}; Booley verifies only "
-        f"{vaporview.VERIFIED_VERSION}",
-        _vaporview_version_fix(),
-    )
-
-
-def _viewer_bridges(argv_prefix: list[str]) -> list[dict] | None:
-    """Live bridge reports (``vaporview``/``error``), or None when the probe failed."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VIEWER_BRIDGE_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        report = require_dict(json.loads(result.stdout), field="bridge probe")
-        entries = require_list(report.get("bridges"), field="bridge probe bridges")
-        return [_bridge_entry(require_dict(item, field="bridge entry")) for item in entries]
-    except (ValueError, BoundaryError):
-        return None
-
-
-def _bridge_entry(entry: dict) -> dict:
-    """Validate one bridge report; ``trusted`` is None when the bridge omits it."""
-    trusted = entry.get("trusted")
-    return {
-        "vaporview": require_opt_str(entry, "vaporview"),
-        "error": require_opt_str(entry, "error"),
-        "trusted": None if trusted is None else require_bool_value(trusted, field="trusted"),
-    }
-
-
-def _bridge_dark_fix(argv_prefix: list[str], state: vaporview.ExtensionState | None = None) -> str:
-    """Choose recovery from an authoritative remote extension observation.
-
-    ``state`` is a registry observation the caller already made; None probes.
-    """
-    state = _vaporview_extension_state(argv_prefix) if state is None else state
-    if state is vaporview.ExtensionState.MISSING:
-        return "VaporView extension is not installed. " + _BRIDGE_MISSING_EXTENSION_FIX
-    if state is vaporview.ExtensionState.UNKNOWN:
-        return _BRIDGE_UNKNOWN_EXTENSION_FIX
-    return _BRIDGE_RELOAD_FIX
-
-
-def _report_viewer_bridges(
-    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
-) -> None:
-    """Turn the bridge inventory into one pass/skip/fail line."""
-    description = _VIEWER_BRIDGE_DESCRIPTION
-    bridges = _viewer_bridges(argv_prefix)
-    if bridges is None:
-        _skip(f"{description} - probe could not run{where}")
-        return
-    if not bridges:
-        _fail(f"{description}: no window answered{where}", _bridge_dark_fix(argv_prefix))
-        return
-    # Restricted Mode disables VaporView, so a window that reports itself
-    # untrusted cannot show it: that is waiting for the user, not a fault.
-    broken = [entry for entry in bridges if entry["vaporview"] is None]
-    waiting = [entry for entry in broken if entry["trusted"] is False]
-    state = _vaporview_extension_state(argv_prefix) if waiting else None
-    # The registry does not depend on trust, so a really absent VaporView
-    # (MISSING) is never hidden behind a window that is not yet trusted.
-    if state is vaporview.ExtensionState.MISSING:
-        waiting = []
-    if len(broken) > len(waiting):
-        reasons = "; ".join(sorted({entry["error"] or "no detail" for entry in broken}))
-        _fail(
-            f"{description}: {len(broken)} of {len(bridges)} window(s){where} report no "
-            f"usable VaporView ({reasons})",
-            _bridge_dark_fix(argv_prefix, state),
-        )
-        return
-    _report_waiting_for_trust(description, len(bridges), len(waiting), where, _pass, _skip)
-
-
-def _report_waiting_for_trust(
-    description: str, windows: int, waiting: int, where: str, _pass: Check, _skip: Check
-) -> None:
-    """Pass or skip a bridge inventory in which no window is broken."""
-    if not waiting:
-        count = f" ({windows} windows)" if windows > 1 else ""
-        _pass(f"{description}{count}")
-    elif waiting < windows:
-        _pass(f"{description} ({windows} windows; {waiting} waiting for workspace trust)")
-    else:
-        _skip(
-            f"{description} - VaporView waits for workspace trust in {waiting} "
-            f"window(s){where}; trust the folder, then run `booley doctor`"
-        )
-
-
-def _check_viewer_bridge(
-    project: ProjectAudit,
-    docker_exe: str | None,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Live probe: does an attached window's Viewer Bridge answer, with VaporView ready?
-
-    The spec check (:func:`_check_devcontainer_spec`) is static — it proves the
-    devcontainer *asks* for the viewer and the Booley Sandbox Integration extension, never that a
-    window is running them. Without this probe the failure surfaces only when
-    a human runs `bwave gui` in a Doctor-clean project.
-
-    From the host, scope the probe to a VS Code-created devcontainer: a headless
-    `booley session up` container has no extension host by design. From inside a
-    runtime, probe its own socket directory because Docker metadata is
-    unavailable there.
-    """
-    from booley.runtime import runtime_context
-
-    description = _VIEWER_BRIDGE_DESCRIPTION
-    if runtime_context.inside_session_runtime():
-        if _vscode_extension_host_running([]) is False:
-            _skip(f"{description} - no VS Code extension host attached")
-            return
-        _check_vaporview_version([], "", _pass, _skip, _fail)
-        _report_viewer_bridges([], "", _pass, _skip, _fail)
-        return
-
-    if not docker_exe:
-        _skip(f"{description} - container runtime unavailable")
-        return
-    try:
-        container = session_runtime.vscode_session_container(project.project_root)
-    except session_runtime.SessionError as exc:
-        _fail(f"{description} - {exc}", "resolve the Sandbox inventory before retrying")
-        return
-    if container is None:
-        _skip(f"{description} - no VS Code devcontainer running for this project")
-        return
-    argv_prefix = [docker_exe, "exec", container]
-    if _vscode_extension_host_running(argv_prefix) is False:
-        _skip(f"{description} - no VS Code extension host attached in '{container}'")
-        return
-    where = f" in '{container}'"
-    _check_vaporview_version(argv_prefix, where, _pass, _skip, _fail)
-    _report_viewer_bridges(argv_prefix, where, _pass, _skip, _fail)
 
 
 def _run_mcp_probe(
@@ -5265,6 +4956,7 @@ def _run_core_audit(
     _skip: Check,
     _fail: Fail,
     *,
+    _diagnostics: Diagnostics,
     _note: Check | None = None,
     _detail: Check | None = None,
 ) -> None:
@@ -5282,7 +4974,11 @@ def _run_core_audit(
         _check_target_sources(audit, refs, inputs)
         _check_core_repository_hygiene(audit)
     _run_core_security_audit(audit, refs)
-    _audit_tests_toml(project, _pass, _skip, _fail)
+    _diagnostics(
+        target_test_plan_inspection.inspect_target_test_plans(
+            TargetTestPlanInspectionRequest(project.project_root, project.booley_dir)
+        )
+    )
     _audit_native_dependencies(project, _pass, _warn)
 
 
@@ -6419,8 +6115,8 @@ def _project_has_cocotb_target(project: ProjectAudit | None) -> bool:
 def _load_tests_toml_normalized(project: ProjectAudit) -> dict[str, dict]:
     """The normalized tests.toml sections, or empty when absent/invalid.
 
-    Invalidity is _audit_tests_toml's finding, not this reader's — the cocotb
-    checks just degrade to the no-tests view.
+    Invalidity is reported by ``target_test_plan_inspection``, not this reader — the
+    cocotb checks just degrade to the no-tests view.
     """
     tests_path = project.booley_dir / "tests.toml"
     if not tests_path.exists():
@@ -6790,130 +6486,6 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
         _pass(f"no known-missing native build dependencies in {scanned} C/C++ source(s)")
         return
     _report_native_dependencies(project, needed, _pass, _warn)
-
-
-def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: Fail) -> None:
-    """Validate the project's ``tests.toml``: section keys, Test names, selectors."""
-    tests_path = project.booley_dir / "tests.toml"
-    if not tests_path.exists():
-        _skip("tests.toml not present (each sim Target runs its testbench's default test)")
-        return
-    try:
-        with tests_path.open("rb") as f:
-            raw = tomllib.load(f)
-        sections = normalize_tests_toml(raw)
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        _fail(
-            f"tests.toml invalid: {exc}",
-            "fix the tests.toml entry named above (a Target section holds only "
-            f"{', '.join(TESTS_SECTION_KEYS)}; {TEST_NAME_RULES})",
-        )
-        return
-    _pass(
-        "tests.toml valid (section keys, Test names, Test Variants, select and seed "
-        "templates well-formed)"
-    )
-    _audit_tests_toml_targets(project, sections, _fail)
-    _audit_test_run_plans(project, sections, _pass, _fail)
-
-
-def _audit_test_run_plans(
-    project: ProjectAudit, sections: dict, _pass: Check, _fail: Fail
-) -> None:
-    """Check each sim Target can apply what tests.toml declares for it (ADR 0072).
-
-    These are the checks the loader cannot make without the resolved ``.core``
-    Target: a Test Variant that overrides a Target plusarg, arguments or a
-    ``seed`` template on a Cocotb Target, ``default_seed`` on a Target that
-    cannot be seeded. A Target that passes gets one line naming how its Test
-    Runs are seeded; "unseeded" is a fact about the Target, not a problem.
-    """
-    try:
-        catalog = TargetCatalog.build(project.project_root)
-        handles = catalog.list(for_flow="sim")
-    except FuseSocError:
-        return  # enumeration failure is already reported by the structural audit
-    for handle in handles:
-        try:
-            inspection = catalog.inspect(handle)
-        except FuseSocError:
-            continue  # the resolve check reports a Target that does not inspect
-        adapter = (
-            "cocotb"
-            if inspection.flow_options.get("cocotb_module")
-            else _eda_family(inspection.eda_tool)
-        )
-        plusargs = [
-            str(name)
-            for name, spec in inspection.parameters.items()
-            if isinstance(spec, Mapping) and spec.get("paramtype") == "plusarg"
-        ]
-        try:
-            section = lookup_target_section(sections, handle.identity)
-        except TargetSectionConflictError:
-            continue  # the section-key audit reports the duplicate keys once
-        try:
-            plan = build_target_test_plan(
-                handle.selector,
-                section,
-                adapter=adapter,
-                target_plusargs=plusargs,
-            )
-        except ValueError as exc:
-            _fail(
-                f"tests.toml cannot apply to Target '{handle.selector}': {exc}",
-                "fix the tests.toml entry named above",
-            )
-            continue
-        _pass(_test_run_plan_line(handle.selector, plan))
-
-
-def _eda_family(eda_tool: str | None) -> str:
-    """The simulator family of a Target, or its raw tool name when unknown."""
-    try:
-        return normalize_eda_tool(eda_tool)
-    except ValueError:
-        return str(eda_tool or "")
-
-
-def _test_run_plan_line(selector: str, plan: TargetTestPlan) -> str:
-    """One PASS line: how *selector*'s Test Runs are seeded."""
-    if not plan.mechanism.seeded:
-        return f"Target '{selector}' Test Runs are unseeded ({plan.unseeded_cause()})"
-    return (
-        f"Target '{selector}' Test Runs are seeded through {plan.mechanism.describe()} "
-        f"(Default Seed {plan.default_seed})"
-    )
-
-
-def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail) -> None:
-    """Check every tests.toml section key names one Target, and no Target has two.
-
-    A key naming no Target is dead config that looks live: the lookup misses,
-    no selector reaches the binary, and the testbench runs its *default* test
-    to a green PASS. Two keys naming one Target make the choice of section
-    ambiguous. Both use the lookup rule the Simulation Flow uses.
-    """
-    try:
-        handles = TargetCatalog.build(project.project_root).list()
-    except FuseSocError:
-        return  # enumeration failure is already reported by the structural audit
-    if not handles:
-        return
-    for key in sections:
-        if not any(
-            section_key_names(key, handle.identity) or key == handle.name for handle in handles
-        ):
-            _fail(
-                f"tests.toml section [{key}] names no declared .core Target",
-                "fix the section key (a dead key runs the testbench's default "
-                "test and reports a false PASS)",
-            )
-    for handle in handles:
-        try:
-            target_section_key(sections, handle.identity)
-        except TargetSectionConflictError as exc:
-            _fail(str(exc), "keep one tests.toml section per Target")
 
 
 def _report_core_resolve(
@@ -8228,7 +7800,7 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
             with tests_path.open("rb") as f:
                 sections = normalize_tests_toml(tomllib.load(f))
         except (OSError, ValueError, tomllib.TOMLDecodeError):
-            sections = {}  # _audit_tests_toml already reported the breakage
+            sections = {}  # target_test_plan_inspection already reported the breakage
         try:
             handle = TargetCatalog.build(project.project_root).select(target, for_flow="sim")
             section = lookup_target_section(sections, handle.identity)

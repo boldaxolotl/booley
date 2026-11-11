@@ -305,6 +305,10 @@ _Avoid_: mutation (for one change), variant, fault
 One rule in Booley's fixed table that turns a source site into Mutants, such as swapping a relational operator or deleting an assignment. Projects cannot add or disable operators.
 _Avoid_: mutator, mutation rule
 
+**Mutation Campaign**:
+One **Mutation Flow** run on one **Target**: each selected **Mutant** is judged against the Target's selected tests, and the run reports how many are detected.
+_Avoid_: mutation run, mutation session
+
 ### Simulation evidence
 
 **Test**:
@@ -323,12 +327,12 @@ _Avoid_: simulator default seed, random seed
 One **Test Variant** simulated with one seed, written `test+variant@seed`: `test@seed` for a **Test** without Variants, and without `@seed` on a Target that cannot apply seeds. It is the unit that simulation evidence records and that Goals name; a multi-seed Goal (`test+variant@xN`) names N Test Runs whose seeds are drawn at random once and frozen with the Goal. Only a Test Run that exactly matches a Goal's resolved form counts toward that Goal; every other Test Run is diagnostic.
 _Avoid_: run (bare), iteration, seed run, QA Run
 
-**Simulation Campaign**:
-The durable execution record for one immutable, exact simulation workload on one **Target**. A Simulation Campaign may span multiple Simulation Flow invocations through explicit resume and records the strict aggregate outcome of all selected work. It is distinct from a [**Coverage Campaign**](../src/booley/flows/sim/GLOSSARY.md), which records native RTL coverage for one Target and one Simulation Flow invocation; a coverage-collecting Simulation Campaign may contain a separate Coverage Campaign as evidence for an attempt.
-_Avoid_: Campaign, regression run, test batch, Coverage Campaign
+**Simulation Record**:
+The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**. An explicit resume continues the same Simulation Record in a later invocation, and the record holds the strict aggregate outcome of all selected work. A coverage-collecting Simulation Record may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md) for an attempt. Code, messages, persisted formats, and docs outside the glossaries still say "campaign" until the rename in [#2711](https://github.com/boldaxolotl/booley/issues/2711) lands; Goal-side names (the Goal Record's campaign accounting and the `campaign` criterion freshness category) are left to the redesign in [#3045](https://github.com/boldaxolotl/booley/issues/3045), which replaced #2811 and may remove them.
+_Avoid_: Simulation Campaign, campaign, regression run, test batch
 
 **Simulator Bundle**:
-An authenticated simulator executable and its supporting build outputs, built for a declared build variant of one **Simulation Campaign**. Its scope is either shared by compatible work items in that Simulation Campaign or private to one simulation attempt; it is not a cross-campaign cache.
+An authenticated simulator executable and its supporting build outputs, built for a declared build variant of one **Simulation Record**. Its scope is either shared by compatible work items in that Simulation Record or private to one simulation attempt; it is not a cross-record cache.
 _Avoid_: binary cache, global build cache, simulator image
 
 **Trace Artifact**:
@@ -391,6 +395,8 @@ You will not need these unless you are reading older work records, code, or docs
 - **Ticket Preflight** → **Goal entry refusals** and **Doctor** "Project checks": The old Ticket-intake gate is retired; entry enforces Goal worktree and input requirements, while Doctor diagnoses shared Project machinery. They are separate checks, not a one-for-one reproduction of Ticket Preflight.
 - **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the Goal Record, evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code.
 - **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Goals, Jobs, and health across the Sandbox.
+- **Simulation Campaign** → **Simulation Record**: Renamed; code, messages, persisted formats, and docs keep "campaign" until #2711 lands, and older ADRs keep it as historical records (see ADR 0090).
+- **Coverage Campaign** → [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md): Renamed on the same terms.
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.
 - **"agent"**: Name the **Developer Agent** in full at its first mention in a document or section, and in every sentence that discusses it alongside a **Specialist**. After that first mention, "the agent" is an allowed short form within the same section when no Specialist is a possible referent. Never use "agent" for a Specialist.
