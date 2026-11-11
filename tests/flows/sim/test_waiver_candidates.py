@@ -33,6 +33,7 @@ from booley.flows.sim.waiver_candidates import (
 )
 from booley.goals.apply_effects import FileEffect
 from booley.mcp.goal_waivers import GoalWaiverService
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 NOW = datetime(2026, 9, 30, 12, 0, 0, tzinfo=UTC)
 LATER = NOW + timedelta(minutes=5)
@@ -360,7 +361,8 @@ def test_concurrent_writers_never_lose_updates(tmp_path: Path) -> None:
         for name in ("A", "B")
     ]
     for writer in writers:
-        _, stderr = writer.communicate(timeout=120)
+        # Kept on Popen: the test drives two concurrent writer processes itself.
+        _, stderr = writer.communicate(timeout=SUBPROCESS_TIMEOUT_S)
         assert writer.returncode == 0, stderr.decode()
 
     record = store.load(tmp_path)

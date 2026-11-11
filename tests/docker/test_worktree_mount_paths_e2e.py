@@ -11,10 +11,11 @@ from uuid import uuid4
 
 import pytest
 from tests.docker.isolation.container_names import next_ci_container_name
+from tests.subprocess_budget import run_bounded_child
 
 
 def _run(args: list[str], *, cwd: Path | None = None):
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=90, check=False)
+    return run_bounded_child(args, cwd=cwd, timeout=90)
 
 
 @pytest.fixture(scope="module")

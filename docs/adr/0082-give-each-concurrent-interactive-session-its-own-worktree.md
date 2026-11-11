@@ -159,9 +159,28 @@ when it still exists, and alias the new process key to the old handle through
 the existing `predecessors` mechanism, so S3 resumes as S3. A conversation
 whose worktree is gone resumes in the main checkout, with a notice.
 
-Implemented by #2610 (2026-11-10): the records only. The hook writes
-`worktrees/.conversations/<hash>.json`; nothing resumes from it yet. See ADR
-0068 Amendments (2026-11-10).
+Implemented by #2610 (2026-11-10): the records. The hook writes
+`worktrees/.conversations/<hash>.json`. See ADR 0068 Amendments (2026-11-10).
+
+Implemented by #2614: `booley chat` reads the records (`runtime/conversation_records.py`).
+A launch from the main checkout without `--here`/`--new-worktree` that carries a
+resume form (Claude `--resume <id>`, `--resume=<id>`, `-r <id>`, `-c`,
+`--continue`; Codex `resume <id>` with the id right after `resume`, `resume
+--last`) is placed by the conversation, not by `[chat] worktree`. The id form
+reads the record: a live record (worktree `.git` modification time equal to
+`git_stamp`) starts in the recorded directory, a gone or replaced worktree
+resumes in main with a notice, no record resumes in main. The latest form
+compares recency from the agent CLI's own storage (`runtime/agent_transcripts.py`:
+Claude transcript mtimes per directory slug, Codex rollout mtimes, ordering by
+last update) between main and the free worktrees; a worktree wins only when
+strictly newer, the latest form is then rewritten into the id form, and an
+undeterminable main recency keeps the CLI's own pick. A worktree with a running
+recorded session is never resumed into (exit 2); neither is a busy main
+checkout (exit 2, `--here` hint), except under `never`. The old handle is kept
+by passing the record's process key (and, for Codex, `codex:<id>`) as
+`predecessors` to the handle reservation; the Codex ownership marker is then set
+to the new key explicitly, and `HandleMap.drop` removes aliases of a dropped
+alias.
 
 ### Exit
 
@@ -179,6 +198,25 @@ When the agent exits, the parent asks: keep or discard.
 - No prompt means keep: a non-interactive exit, and a closed terminal (the
   parent gets SIGHUP). Closing the terminal is the commonest exit, so kept
   worktrees are normal; `gc` and `list` handle them.
+
+Implemented by #2613 (2026-11-11):
+
+- The prompt lists the loss reasons of `rm`, so the two never disagree; they
+  include commits of a populated submodule that the main checkout lacks and
+  untracked files of a Snapshot's Booley Directory that are not evidence.
+  Ignored files are not counted. A live Session, an active Goal Record and a Git
+  lock are blockers, not losses: they appear as `rm`'s refusal at the second
+  question. A running agent that holds the session handle `S<N>` also blocks
+  `rm` and `gc` of worktree `s<N>`, even before its first Booley tool call.
+- A prompt needs the agent to have exited by itself, Booley to be the terminal's
+  foreground group, and stderr to be a terminal. A forwarded SIGHUP or SIGTERM,
+  a death by signal, a pipe or a redirect keep the worktree and print one
+  `Kept worktree` line.
+- Only a worktree that this launch created is offered: a launch from inside an
+  existing linked worktree, and a session in the main checkout, get no prompt.
+- The exit step runs after the agent was reaped and before Booley takes on the
+  agent's status, so the exit code stays the agent's. Closing the terminal while
+  the prompt waits ends Booley by SIGHUP, as for any program.
 
 ### Lifecycle commands
 

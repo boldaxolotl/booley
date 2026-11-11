@@ -3,8 +3,9 @@
 The history lives at ``<Booley Directory>/runtime/resources/history.json``
 (``runtime/`` is Git-ignored). Writers serialize on a sibling lock file and
 publish the whole document with one atomic replacement, so concurrent Jobs
-never lose or corrupt a record. Each history key keeps its newest samples;
-older ones roll off.
+never lose or corrupt a record. Each history key keeps its newest
+``MAX_SAMPLES_PER_KEY`` samples, with no overall cap. A key whose newest
+record is older than ``MAX_KEY_AGE`` is deleted on the next write.
 """
 
 from __future__ import annotations
@@ -13,20 +14,23 @@ import json
 import logging
 import statistics
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import as_dict
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.atomic_files import atomic_replace_bytes
-from booley.runtime.timefmt import format_duration
+from booley.runtime.timefmt import format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)
 
 SCHEMA = "booley.job-resource-history/v1"
 MAX_SAMPLES_PER_KEY = 20
-MAX_RECORDS = 2000
+MAX_KEY_AGE = timedelta(days=90)
 _LOCK_TIMEOUT_S = 10.0
+# Set by Doctor on every Flow run it starts; such runs write no records.
+DOCTOR_RUN_ENV = "BOOLEY_INTERNAL_DOCTOR_RUN"
 
 
 def history_path(booley_dir: Path) -> Path:
@@ -50,21 +54,26 @@ def load_records(booley_dir: Path) -> list[dict[str, Any]]:
     return list(document["records"])
 
 
-def _bounded(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep the newest samples of each key, then the newest records overall."""
+def _retained(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep each key's newest samples, minus keys idle for longer than ``MAX_KEY_AGE``."""
     per_key: Counter[tuple[str, str, tuple[str, ...], str]] = Counter()
+    newest_run: dict[tuple[str, str, tuple[str, ...], str], datetime] = {}
     kept: list[dict[str, Any]] = []
     for record in reversed(records):
         key = _key(record)
         if per_key[key] < MAX_SAMPLES_PER_KEY:
             per_key[key] += 1
             kept.append(record)
+            # The max, not the position: concurrent appends can land slightly out of order.
+            finished = parse_timestamp(record["finished_at"])
+            newest_run[key] = max(finished, newest_run.get(key, finished))
+    cutoff = datetime.now(UTC) - MAX_KEY_AGE
     kept.reverse()
-    return kept[-MAX_RECORDS:]
+    return [record for record in kept if newest_run[_key(record)] >= cutoff]
 
 
 def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
-    """Add *records* under the history lock and publish the bounded result."""
+    """Add *records* under the history lock and publish the retained result."""
     path = history_path(booley_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.with_suffix(".lock").open("a+", encoding="utf-8") as handle:
@@ -75,7 +84,7 @@ def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
             except ValueError as exc:
                 logger.warning("Starting a new Job resource history: %s", exc)
                 existing = []
-            document = {"$schema": SCHEMA, "records": _bounded([*existing, *records])}
+            document = {"$schema": SCHEMA, "records": _retained([*existing, *records])}
             atomic_replace_bytes(path, json.dumps(document, separators=(",", ":")).encode("utf-8"))
         finally:
             release_file_lock(handle)
@@ -153,7 +162,7 @@ def _line(summary: dict[str, Any]) -> str:
             if ratio is None
             else " / ".join(f"{ratio[n]:.2f}" for n in ("min", "median", "max"))
         )
-        parts.append(f"solo runs {summary['solo_runs']}: container peak / (RSS+TMPDIR) {shown}")
+        parts.append(f"solo runs {summary['solo_runs']}: container peak / peak memory {shown}")
     return "; ".join(parts)
 
 
@@ -164,7 +173,7 @@ def render_report(summaries: list[dict[str, Any]]) -> str:
     return "\n".join(
         [
             *(_line(summary) for summary in summaries),
-            "Peak memory = process-tree RSS + the Job's own TMPDIR files; "
-            "files a tool writes outside TMPDIR are not counted.",
+            "Peak memory = process-tree RSS, plus the Job's own TMPDIR files when "
+            "TMPDIR is on tmpfs; files a tool writes outside TMPDIR are not counted.",
         ]
     )

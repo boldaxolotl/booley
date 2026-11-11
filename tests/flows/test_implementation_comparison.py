@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.flows.baseline_worktree import resolve_ticket_baseline
 from booley.flows.implementation_comparison import (
     ImplementationComparisonError,

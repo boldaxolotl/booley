@@ -108,12 +108,9 @@ quality = [
     # `ruff check .` + `ruff format --check .`.
     "ruff==0.17.2",
 ]
-mutation = [
-    "mutmut==3.8.1",
-]
 # Every development tool: the union of the extras above.
 dev = [
-    "booley-rtl[test,quality,mutation]",
+    "booley-rtl[test,quality]",
 ]
 
 [project.scripts]

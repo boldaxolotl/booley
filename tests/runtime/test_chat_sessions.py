@@ -235,3 +235,24 @@ async def test_observer_migrates_thread_rows_without_a_false_shared_warning(
         )
     finally:
         observer.close()
+
+
+def test_resumed_tab_keeps_the_old_handle_and_codex_ownership(tmp_path):
+    # Bug caught: a resumed Codex launch got a new handle, or its ownership marker pointed
+    # at the old key, so `codex_chat_owner` no longer found the launch that owns the tab.
+    proc = tmp_path / "proc"
+    old = process(proc, 100, 1, executable="node")
+    new = process(proc, 200, 1, executable="node")
+    peer = process(proc, 201, 200)
+    old_key, new_key = process_session_key(old), process_session_key(new)
+    assert chat_sessions.reserve_codex_chat(tmp_path, old) == "S1"
+
+    label = chat_sessions.reserve_codex_chat(tmp_path, new, predecessors=(old_key, "codex:conv-1"))
+
+    assert label == "S1"
+    handles = HandleStore(tmp_path).load()
+    assert handles.labels()[new_key] == "S1"
+    assert handles.aliases[new_key] == old_key
+    assert handles.aliases["chat:codex:" + new_key] == new_key
+    assert handles.next_number == 2
+    assert chat_sessions.codex_chat_owner(tmp_path, peer, proc_root=proc) == new

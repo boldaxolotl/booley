@@ -200,7 +200,7 @@ def test_project_runner_pins_match_the_readiness_contract():
         if name not in readiness.RUNNER_EXTRAS["quality"]:
             assert declared.get(name) == f"{name}=={version}"
     # dev composes the narrow extras by self-reference instead of repeating their pins.
-    assert extras["dev"] == [f"{project['name']}[test,quality,mutation]"]
+    assert extras["dev"] == [f"{project['name']}[test,quality]"]
     quality = {item.split("==", 1)[0]: item for item in extras["quality"]}
     for name in readiness.RUNNER_EXTRAS["quality"]:
         assert quality[name] == f"{name}=={pins[name]}"

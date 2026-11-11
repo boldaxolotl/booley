@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,7 +18,7 @@ from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.test_project_initialization import HOST_PRIVATE_ENVIRONMENT, _repository_state
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 # A Sandbox is always Linux; the fixtures rely on symlink guidance links and POSIX Git checkouts.
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="a Sandbox is always Linux")
@@ -33,12 +32,9 @@ TASKS_JSON = b'{"version": "2.0.0", "tasks": [{"label": "build", "command": "mak
 
 def _git(repository: Path, *args: str) -> str:
     """Run git in *repository* and return stdout."""
-    completed = subprocess.run(
+    completed = run_bounded_child(
         ["git", *GIT_IDENTITY, "-C", str(repository), *args],
-        capture_output=True,
         check=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return completed.stdout
 
@@ -209,7 +205,7 @@ def test_sandbox_init_fills_missing_default_cli_from_agent_app(
         assert _booley_init(project, monkeypatch) == 0, app
 
         assert booley_dir.joinpath("booley.toml").read_bytes() == (
-            original + f'\n[agent]\nprovider = "{app}"\n'.encode()
+            original + f'\n[agent]\ndefault = "{app}"\n'.encode()
         )
         assert _git(booley_dir, "status", "--porcelain") == " M booley.toml\n"
 

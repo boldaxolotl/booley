@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import os
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 from types import ModuleType
@@ -12,6 +15,9 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
+from booley.runtime.handles import reserve_session_handle
+from booley.runtime.pid import ProcessIdentity, capture_process_identity
+from booley.runtime.session_activity import process_session_key
 from tests.goals.conftest import git
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
@@ -192,6 +198,48 @@ def test_rm_refuses_unmerged_commits_on_a_goal_branch(
     assert _rm(repo, "g") == 1
 
     assert "1 commit(s) on booley/goal-fix-20261006T101500Z not in main" in capsys.readouterr().err
+
+
+def _hold_handle(root: Path, identity: ProcessIdentity) -> str:
+    """Reserve the Session handle of *identity*'s process, as the agent's launch does."""
+    return reserve_session_handle(root / ".booley", process_session_key(identity))
+
+
+def test_rm_refuses_a_worktree_whose_handle_holder_is_alive(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Bug caught: a running agent that made no Booley tool call has no registry row, so
+    # `rm` (and launch-time `gc`) would remove its worktree from under it.
+    _pin_namespace(monkeypatch)
+    identity = capture_process_identity(os.getpid())
+    assert identity is not None
+    assert _hold_handle(repo, identity) == "S1"  # before the worktree: a taken number is skipped
+    path = _add(repo, "s1")
+
+    assert _rm(repo, "s1") == 1
+
+    assert "  - live Session S1\n" in capsys.readouterr().err
+    assert path.is_dir()
+
+
+def test_rm_ignores_a_handle_whose_holder_has_exited(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The reaped agent of a finished session must not block its own worktree's removal.
+    _pin_namespace(monkeypatch)
+    holder = subprocess.Popen([sys.executable, "-c", "input()"], stdin=subprocess.PIPE)
+    try:
+        identity = capture_process_identity(holder.pid)
+        assert identity is not None
+        assert _hold_handle(repo, identity) == "S1"
+    finally:
+        holder.communicate(b"\n", timeout=30)
+    path = _add(repo, "s1")
+
+    assert _rm(repo, "s1") == 0
+
+    assert "Removed worktree s1." in capsys.readouterr().out
+    assert not path.exists()
 
 
 def test_rm_refuses_when_goal_state_is_unreadable(

@@ -60,7 +60,7 @@ from tests.diagnostic_helpers import (
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -739,12 +739,7 @@ def test_init_fix_hints_name_where_to_run_init(
         "ISSUED_SANDBOX": "booley init on the host",
     }
     # A Booley Directory without .gitignore, in a repository that lacks the projection exclude.
-    subprocess.run(
-        ["git", "init", str(tmp_path)],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", str(tmp_path)], check=True)
     for name, where in wording.items():
         kind = runtime_context.RuntimeLocation[name]
         monkeypatch.setattr(runtime_context, "runtime_location", lambda kind=kind: kind)
@@ -856,14 +851,7 @@ def _history_probe(booley_dir: Path) -> doctor._Reporter:
 
 
 def _history_git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", *args], cwd=repo, check=True)
 
 
 def _history_repo(tmp_path: Path, monkeypatch) -> Path:
@@ -1700,6 +1688,9 @@ def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monke
     from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 
     assert f"{INVOCATION_ORIGIN_ENV}=transport" in cmd
+    # Doctor's Flow runs write no Resource History records (#3235).
+    assert "BOOLEY_INTERNAL_DOCTOR_RUN=1" in cmd
+    assert doctor._doctor_subprocess_env(project)["BOOLEY_INTERNAL_DOCTOR_RUN"] == "1"
 
 
 def _tests_toml_project_audit(tmp_path, tests_toml_text: str) -> doctor.ProjectAudit:
@@ -3833,7 +3824,7 @@ targets:
 def test_core_files_tracked_judges_relocated_state_repo(tmp_path):
     """#2917: files under a relocated (two-component) Booley Directory are judged by
     that directory's own repo, not the host's."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "booley.toml").write_text('[project]\ndir = "tools/booley"\n', encoding="utf-8")
     state_dir = tmp_path / "tools" / "booley"
     state_cores = state_dir / "cores"
@@ -3852,18 +3843,15 @@ targets:
   sim: {flow: sim, filesets: [fw]}
 """,
     )
-    subprocess.run(["git", "init", "-q"], cwd=state_dir, check=True, timeout=SUBPROCESS_TIMEOUT_S)
-    subprocess.run(["git", "add", "-A"], cwd=state_dir, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "init", "-q"], cwd=state_dir, check=True)
+    run_bounded_child(["git", "add", "-A"], cwd=state_dir, check=True)
 
     c = _Collector()
     doctor._check_core_files_tracked(tmp_path, c._pass, c._warn)
     assert not c.warned
 
-    subprocess.run(
-        ["git", "rm", "--cached", "-q", "cores/fw/boot.hex"],
-        cwd=state_dir,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
+    run_bounded_child(
+        ["git", "rm", "--cached", "-q", "cores/fw/boot.hex"], cwd=state_dir, check=True
     )
     c2 = _Collector()
     doctor._check_core_files_tracked(tmp_path, c2._pass, c2._warn)
@@ -3872,7 +3860,7 @@ targets:
 
 def _readmem_repo(tmp_path) -> None:
     """A repo whose TB boots via $readmemh from a memory image NOT in any .core."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "tb").mkdir()
     (tmp_path / "tb" / "tb.sv").write_text(
         'module tb; reg [7:0] mem[0:255];\n  initial $readmemh("fw/boot.vmem", mem);\nendmodule\n',
@@ -3951,7 +3939,7 @@ def _artifact_repo(tmp_path, *, with_source: bool, vendored: bool = False) -> No
     "upstream blob, no rebuildable source" opt-out of the heuristic — the
     CAPI2-valid marker, not the fusesoc-rejected bare ``vendored: true`` key).
     """
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (tmp_path / "firmware").mkdir()
@@ -3975,7 +3963,7 @@ targets:
   sim: {{flow: sim, filesets: [rtl]}}
 """,
     )
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "add", "-A"], cwd=tmp_path, check=True)
 
 
 def test_committed_build_artifact_with_sibling_source_warns(tmp_path):
@@ -4601,12 +4589,7 @@ def test_image_bakes_current_booley_silent_when_undeterminable(tmp_path, monkeyp
 
 
 def _git_init(root: Path) -> None:
-    subprocess.run(
-        ["git", "init", "-q", str(root)],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", "-q", str(root)], check=True)
 
 
 class TestWorktreePruneGuard:
@@ -4852,12 +4835,11 @@ class TestWorktreePortability:
         elif source == "file":
             monkeypatch.setenv("GIT_CONFIG", str(config))
         elif source == "worktree":
-            subprocess.run(
+            run_bounded_child(
                 ["git", "-C", str(tmp_path), "config", "extensions.worktreeConfig", "true"],
                 check=True,
-                timeout=SUBPROCESS_TIMEOUT_S,
             )
-            subprocess.run(
+            run_bounded_child(
                 [
                     "git",
                     "-C",
@@ -4868,7 +4850,6 @@ class TestWorktreePortability:
                     "true",
                 ],
                 check=True,
-                timeout=SUBPROCESS_TIMEOUT_S,
             )
         elif source == "foreign":
             monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
@@ -4958,15 +4939,13 @@ class TestWorktreePortability:
         if hazard != "extension-only":
             assert git_hooks._set_local_config(tmp_path, "true") is None
         if hazard in ("format", "extension-only"):
-            subprocess.run(
+            run_bounded_child(
                 ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"],
                 check=True,
-                timeout=SUBPROCESS_TIMEOUT_S,
             )
-            subprocess.run(
+            run_bounded_child(
                 ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
                 check=True,
-                timeout=SUBPROCESS_TIMEOUT_S,
             )
             if hazard == "format":
                 # The format diagnostic boundary remains authoritative even when
@@ -6958,29 +6937,16 @@ class TestLineEndingsCheck:
 
     @staticmethod
     def _repo(root: Path, *, autocrlf: str) -> None:
-        subprocess.run(
-            ["git", "init", "-q", str(root)],
-            capture_output=True,
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        subprocess.run(
-            ["git", "-C", str(root), "config", "core.autocrlf", autocrlf],
-            capture_output=True,
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
+        run_bounded_child(["git", "init", "-q", str(root)], check=True)
+        run_bounded_child(
+            ["git", "-C", str(root), "config", "core.autocrlf", autocrlf], check=True
         )
 
     @staticmethod
     def _commit(root: Path, name: str, data: bytes) -> None:
         (root / name).write_bytes(data)
-        subprocess.run(
-            ["git", "-C", str(root), "add", "-f", name],
-            capture_output=True,
-            check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        subprocess.run(
+        run_bounded_child(["git", "-C", str(root), "add", "-f", name], check=True)
+        run_bounded_child(
             [
                 "git",
                 "-C",
@@ -6993,9 +6959,7 @@ class TestLineEndingsCheck:
                 "-qm",
                 "c",
             ],
-            capture_output=True,
             check=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
         )
 
     def test_lf_tree_with_autocrlf_off_passes(self, tmp_path: Path):
@@ -7706,11 +7670,10 @@ def test_doctor_reuses_one_target_source_inspector(
 
 def _git_commit_all(root: Path, message: str = "add") -> None:
     """Commit everything staged under ``root`` with a throwaway identity."""
-    subprocess.run(
+    run_bounded_child(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", message],
         cwd=root,
         check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -7729,7 +7692,7 @@ def _committed_repo(root: Path) -> None:
     """A git repo with one unrelated committed file, so HEAD exists."""
     _git_init(root)
     (root / "README").write_text("x\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    run_bounded_child(["git", "add", "README"], cwd=root, check=True)
     _git_commit_all(root)
 
 
@@ -8268,7 +8231,7 @@ def test_mixed_lint_doctor_rejects_but_keeps_inventory(tmp_path, eda_tool):
             "FAIL",
         ),
         ('[feedback]\nmode = "off"\n', "[feedback].mode", "delete [feedback].mode", "FAIL"),
-        ('[interactive]\napp = "codex"\n', "[interactive].app", "[agent].provider", "FAIL"),
+        ('[interactive]\napp = "codex"\n', "[interactive].app", "[agent].default", "FAIL"),
     ],
 )
 def test_doctor_renders_removed_documentation_item_with_fix(
@@ -9245,7 +9208,7 @@ def test_doctor_fails_on_booley_dir_pin_mismatch(tmp_path, monkeypatch):
     # An ancestor's untrusted link is not this checkout's FAIL to report.
     inner = project / "inner"
     inner.mkdir()
-    subprocess.run(["git", "init", str(inner)], check=True, capture_output=True, timeout=30)
+    run_bounded_child(["git", "init", str(inner)], check=True)
     with pytest.raises(booley_dir_pin.BooleyDirPinError):
         cli._require_command_project("doctor", inner)
 

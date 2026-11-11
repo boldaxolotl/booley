@@ -315,7 +315,7 @@ def audit_interactive_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         return ConfigTableAudit()
     return failure(
         "booley.toml [interactive].app is retired",
-        "delete it and select the runtime with [agent].provider",
+        "delete it and select the runtime with [agent].default",
     )
 
 

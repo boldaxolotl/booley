@@ -18,6 +18,7 @@ import pytest
 
 from booley.bwave import cli
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
+from tests.subprocess_budget import run_bounded_child
 
 pytestmark = pytest.mark.native_bwave
 
@@ -89,13 +90,7 @@ ALL_DUT_NAMED = DUT_TREE | {"TOP.tb.other.dut.flag"}
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(_native_bwave_binary()), *args],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    return run_bounded_child([str(_native_bwave_binary()), *args])
 
 
 @pytest.fixture(scope="module")

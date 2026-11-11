@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import configparser
 import fnmatch
 import ntpath
 import os
@@ -536,7 +535,7 @@ def test_riscv_image_lane_is_path_gated() -> None:
 
 
 def test_matrix_uses_test_only_dependencies() -> None:
-    """Compatibility legs do not install linting or mutation-only packages."""
+    """Compatibility legs do not install linting-only packages."""
     workflow = _test_workflow()
     install_step = next(
         step
@@ -869,7 +868,7 @@ def test_full_cartesian_matrix_remains_scheduled_and_manual() -> None:
 
 
 def test_lint_job_uses_quality_only_dependencies() -> None:
-    """The fast lint job does not install test or mutation dependencies."""
+    """The fast lint job does not install test dependencies."""
     workflow = _test_workflow()
     install_step = next(
         step
@@ -956,185 +955,6 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
         assert "BOOLEY_REQUIRE_WORKTREE_DOCKER" not in (
             REPOSITORY_ROOT / ".github/workflows" / filename
         ).read_text(encoding="utf-8")
-
-
-def test_scheduled_mutation_campaign_treats_its_time_budget_as_success() -> None:
-    """A bounded scheduled campaign reports incomplete mutants without failing."""
-    job = _deep_tests_workflow()["jobs"]["mutation"]
-    run_campaign = _named_step(job, "Run bounded mutation campaign")["run"]
-    report_results = _named_step(job, "Record mutation results")["run"]
-
-    assert "campaign_status" in run_campaign
-    assert "!= 124" in run_campaign
-    assert "non-killed mutants" not in report_results
-
-
-def test_scheduled_mutation_campaign_runs_mutmut_as_a_module() -> None:
-    """Spawned test helpers must not re-execute the mutmut console script.
-
-    A spawn child re-runs a console-script ``__main__`` from the test's
-    temporary working directory, where mutmut cannot find its configuration.
-    """
-    job = _deep_tests_workflow()["jobs"]["mutation"]
-    run_campaign = _named_step(job, "Run bounded mutation campaign")["run"]
-
-    assert "python -m mutmut run" in run_campaign
-    assert re.search(r"(?<!-m )\bmutmut run\b", run_campaign) is None
-
-
-def test_scheduled_mutation_campaign_generates_its_copy_list_first() -> None:
-    """mutmut's sandbox copy list is generated before anything else runs.
-
-    A hand-kept ``also_copy`` list broke the campaign whenever the tracked
-    layout changed (issue #3114). The generator runs before the install, so no
-    install byproduct exists yet, and before ``mutmut run``.
-    """
-    job = _deep_tests_workflow()["jobs"]["mutation"]
-    names = [step.get("name") for step in job["steps"]]
-    generate = names.index("Generate mutation sandbox copy list")
-
-    assert generate < names.index("Install pinned mutation environment")
-    assert generate < names.index("Run bounded mutation campaign")
-    assert job["steps"][generate]["run"] == "python .github/scripts/mutmut_also_copy.py"
-    assert job["steps"][generate]["id"] == "also-copy"
-    # A generator failure is the only red step; results are not read after it.
-    assert _named_step(job, "Record mutation results")["if"] == (
-        "always() && steps.also-copy.outcome == 'success'"
-    )
-    assert (REPOSITORY_ROOT / ".github/scripts/mutmut_also_copy.py").is_file()
-
-
-def _mutmut_config() -> dict[str, list[str]]:
-    """Read setup.cfg's ``[mutmut]`` lists the way mutmut's own reader does."""
-    parser = configparser.ConfigParser()
-    parser.read(REPOSITORY_ROOT / "setup.cfg", encoding="utf-8")
-    return {
-        key: [line for line in value.split("\n") if line] for key, value in parser.items("mutmut")
-    }
-
-
-def test_mutmut_configuration_lives_only_in_setup_cfg() -> None:
-    """pyproject.toml bytes define the Sandbox base contract; mutmut stays out.
-
-    mutmut reads setup.cfg only when pyproject.toml has no ``[tool.mutmut]``
-    table, so a reintroduced table would silently shadow the real campaign
-    configuration as well as rebuild the base image on every tuning edit.
-    """
-    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-
-    assert "mutmut" not in project.get("tool", {})
-    # The campaign generates also_copy from the tracked layout (issue #3114).
-    assert "also_copy" not in _mutmut_config()
-    assert _mutmut_config()["only_mutate"] == ["src/booley/harness/setup/*.py"]
-    assert _mutmut_config()["pytest_add_cli_args_test_selection"] == ["tests/harness/"]
-
-
-@pytest.mark.parametrize(
-    ("initial", "expected"),
-    [
-        pytest.param("stats", None, id="stats"),
-        pytest.param(
-            "booley.harness.setup.x.x_foo__mutmut_1",
-            "booley.harness.setup.x.x_foo__mutmut_1",
-            id="mutant",
-        ),
-        pytest.param(None, None, id="unset"),
-    ],
-)
-def test_mutmut_stats_mode_is_hidden_from_child_processes(
-    monkeypatch: pytest.MonkeyPatch, initial: str | None, expected: str | None
-) -> None:
-    """Only mutmut's stats marker is removed; mutant names still reach children."""
-    from tests import conftest
-
-    if initial is None:
-        monkeypatch.delenv("MUTANT_UNDER_TEST", raising=False)
-    else:
-        monkeypatch.setenv("MUTANT_UNDER_TEST", initial)
-
-    conftest.hide_mutmut_stats_mode_from_children()
-
-    assert os.environ.get("MUTANT_UNDER_TEST") == expected
-
-
-_STATS_MODE_PROBE = '''\
-"""Pytest plugin: record the stats-mode variable a session sees after configuration."""
-
-import os
-import pathlib
-
-
-def pytest_collection_finish(session):
-    value = os.environ.get("MUTANT_UNDER_TEST")
-    pathlib.Path(os.environ["STATS_MODE_PROBE_OUT"]).write_text(repr(value), encoding="utf-8")
-'''
-
-
-def test_pytest_session_hides_mutmut_stats_mode_from_children(tmp_path: Path) -> None:
-    """The real ``pytest_configure`` boundary strips the marker before any test runs.
-
-    The unit cases above call the helper directly; this one fails if the call is
-    ever dropped from ``tests/conftest.py``'s configure hook.
-    """
-    probe_dir = tmp_path / "probe"
-    probe_dir.mkdir()
-    (probe_dir / "mutmut_env_probe.py").write_bytes(_STATS_MODE_PROBE.encode("utf-8"))
-    probe_out = tmp_path / "probe-out.txt"
-    environment = dict(os.environ)
-    for name in (
-        "BOOLEY_DIR",
-        "BOOLEY_PYTEST_EVIDENCE_DIR",
-        "BOOLEY_PYTEST_TIMING_FILE",
-        "PYTEST_ADDOPTS",
-        "PYTEST_XDIST_WORKER",
-        "PYTEST_XDIST_TESTRUNUID",
-    ):
-        environment.pop(name, None)
-    environment["MUTANT_UNDER_TEST"] = "stats"
-    environment["STATS_MODE_PROBE_OUT"] = str(probe_out)
-    environment["PYTHONPATH"] = os.pathsep.join(
-        [str(probe_dir), *filter(None, [environment.get("PYTHONPATH")])]
-    )
-
-    result = run_bounded_child(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-p",
-            "no:xdist",
-            "-p",
-            "no:cacheprovider",
-            "-p",
-            "mutmut_env_probe",
-            "--test-profile",
-            "python",
-            f"--basetemp={tmp_path / 'child'}",
-            "--collect-only",
-            "-q",
-            "tests/test_pytest_configuration.py::test_mutmut_configuration_lives_only_in_setup_cfg",
-        ],
-        cwd=REPOSITORY_ROOT,
-        env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert probe_out.read_text(encoding="utf-8") == "None"
-
-
-def test_mutmut_pytest_options_show_failing_test_traceback() -> None:
-    """A stats-collection failure must print a short traceback and a summary.
-
-    ``--tb=no`` hid the cause of every failed campaign, and mutmut already adds
-    ``-x`` to each of its runs, so repeating it is redundant.
-    """
-    options = _mutmut_config()["pytest_add_cli_args"]
-
-    assert "--tb=short" in options
-    assert "-rfE" in options
-    assert "--tb=no" not in options
-    assert "-x" not in options
 
 
 def test_bwave_differential_installs_the_simulators_it_must_not_skip() -> None:

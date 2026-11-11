@@ -11,11 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.goals.model import WorktreeIdentity
 from booley.mcp import session_peer, session_registry
 from booley.mcp.session_observer import SessionObserver
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime.pid import ProcessIdentity, ProcessObservation, ProcessState
+from booley.runtime.worktree_identity import WorktreeIdentity
 from tests.conftest import symlink_or_skip
 
 SCOPE = "pid:[17]"
@@ -455,7 +455,7 @@ async def test_first_call_without_workdir_never_associates_server_cwd(registry, 
 
 
 def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
-    from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     work = tmp_path / "work"
     git = work / ".git"
@@ -475,9 +475,26 @@ def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
     assert after.branch == "goal/fixture"
 
 
+def test_nested_checkout_name_keeps_path_key(tmp_path, monkeypatch):
+    """A linked git dir that is not a plain checkout name falls back to the ``path:`` key."""
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
+
+    common = tmp_path / "common"
+    git = common / "worktrees" / "a" / "b"
+    git.mkdir(parents=True)
+    (common / REPOSITORY_ID_FILE).parent.mkdir()
+    (common / REPOSITORY_ID_FILE).write_text("00000000-0000-4000-8000-000000000001\n")
+    monkeypatch.setattr(
+        session_registry, "git_checkout_metadata", lambda root: (root, git, common)
+    )
+    _, key, branch = session_registry._worktree_facts(tmp_path)
+    assert key == "path:" + str(tmp_path.resolve())
+    assert branch == ""
+
+
 @pytest.mark.asyncio
 async def test_busy_fallback_uses_same_worktree_key_and_namespace(tmp_path, monkeypatch):
-    from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     git = tmp_path / ".git"
     (git / REPOSITORY_ID_FILE).parent.mkdir(parents=True)
@@ -545,7 +562,7 @@ async def test_pruning_does_not_block_request_attribution(registry, monkeypatch)
 
 
 def test_fallback_row_migration_preserves_started_time_and_one_visible_row(tmp_path):
-    from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     work = tmp_path / "work"
     git = work / ".git"

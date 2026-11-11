@@ -14,6 +14,7 @@ FILTERS = "↑ filters"
 WORKTREE = "↑ worktree"
 BACK = "esc back"
 TOP_BAR_KEYS = "←→ choose · ⏎ apply"
+RUN_KEYS = "←→ choose · ⏎ run a Flow"
 SCROLL = "↑↓ PgUp/PgDn scroll"
 SEPARATOR = " · "
 
@@ -27,6 +28,7 @@ def footer_hints(
     nested: bool,
     scrolling: bool,
     back_to: BackTarget,
+    on_run: bool,
 ) -> str:
     """The one footer line for the current cursor position.
 
@@ -36,10 +38,10 @@ def footer_hints(
     inside a detail, so Esc goes back.
     ``scrolling``: the side panel holds the keyboard, so arrows scroll it and
     Enter does nothing. ``back_to``: what Down returns to from the top bar
-    ("list", "detail" or "Help").
+    ("list", "detail" or "Help"). ``on_run``: the top bar's cursor is on Run.
     """
     if top_bar:
-        return f"{TOP_BAR_KEYS}{SEPARATOR}↓ back to {back_to}"
+        return f"{RUN_KEYS if on_run else TOP_BAR_KEYS}{SEPARATOR}↓ back to {back_to}"
     if scrolling:
         hints = [SCROLL, WINDOWS]
         if nested:

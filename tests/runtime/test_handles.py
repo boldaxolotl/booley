@@ -600,3 +600,18 @@ def test_every_session_allocation_path_skips_taken_numbers(tmp_path, monkeypatch
         allocate()
         labels = store.load().labels()
         assert set(labels.values()) == {"S3"}, (key, labels)
+
+
+def test_dropping_an_entry_drops_the_marker_of_a_resumed_tab():
+    # Bug caught: the Codex ownership marker of a resumed tab (an alias of an alias) outlived
+    # the entry it hangs off, so a later launch could inherit ownership of a dead tab.
+    handles_map = handles.HandleMap()
+    handles_map.reserve("pid:old", "S")
+    handles_map.reserve("pid:new", "S", predecessors=("pid:old",))
+    handles_map.aliases["chat:codex:pid:new"] = "pid:new"
+    handles_map.reserve("pid:other", "S")
+
+    handles_map.drop({"pid:old"})
+
+    assert handles_map.aliases == {}
+    assert handles_map.entries == {"pid:other": "S2"}
