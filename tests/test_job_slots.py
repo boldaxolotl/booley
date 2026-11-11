@@ -1513,6 +1513,10 @@ OUTLOOK_SCENARIOS = {
 }
 
 
+# Scenarios whose entry the reap keeps because its recovery fails, though its owner is gone.
+OWNER_GONE_RECOVERY_FAILS = {"dead-owner-recovery-fails"}
+
+
 class TestSnapshot:
     def test_snapshot_orders_holders_then_waiters(self, root, world):
         spawn(world, 100)
@@ -1591,8 +1595,22 @@ class TestOutlook:
 
         predicted = store.outlook(CLASS_HEAVY).ahead
         token = store.submit(CLASS_HEAVY, pid=200)
-        # The new claim ranks behind exactly the entries submit left standing after its reap.
-        assert predicted == store._rank(token)
+        # The new claim ranks behind the entries submit left standing after its reap; the
+        # preview skips an entry whose owner is gone even where the reap's recovery fails.
+        assert predicted + (scenario in OWNER_GONE_RECOVERY_FAILS) == store._rank(token)
+
+    def test_outlook_skips_a_dead_owned_execution_no_waiter_reaps(self, root, world):
+        """An idle class holding only a dead-owner execution runs the next Job now, as submit does."""
+        spawn(world, 100)
+        spawn(world, 200)
+        store = make_execution_store(
+            root, world, execution_terminal=lambda _execution_id: False, cancellations=[]
+        )
+        holder = store.submit(CLASS_HEAVY, pid=100, execution_id="a" * 32)
+        assert store.refresh(holder).state == HOLDING
+        del world.alive[100]
+        outlook = store.outlook(CLASS_HEAVY)
+        assert (outlook.ahead, outlook.runs_now) == (0, True)
 
     @pytest.mark.parametrize(
         ("age_s", "owner_alive", "counted"),
@@ -1620,10 +1638,11 @@ class TestOutlook:
     def test_outlook_changes_nothing_in_the_store(self, root, world):
         for pid in (100, 200):
             spawn(world, pid)
-        store = make_store(root, world, SlotCaps(max_heavy=1))
+        store = make_store(root, world, SlotCaps(max_heavy=2))
         dead_owner = store.submit(CLASS_HEAVY, pid=100)
         assert store.refresh(dead_owner).state == HOLDING
         expired = store.submit(CLASS_HEAVY, pid=200)
+        assert store.refresh(expired).state == HOLDING  # only a holder has a lease deadline
         edit_entry(expired, lease_expires_at=None)
         del world.alive[100]  # a holder whose owner is gone
         world.clock += job_slots.LEASE_DURATION_SECONDS + 1  # and a lease that ran out

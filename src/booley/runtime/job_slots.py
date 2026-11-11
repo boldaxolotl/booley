@@ -153,6 +153,7 @@ class QueueFullError(RuntimeError):
 _VERDICT_LIVE = "live"  # stays; counts toward admission
 _VERDICT_GONE = "gone"  # a reap removes it with no recovery outcome to wait for
 _VERDICT_RECOVERABLE = "recoverable"  # a reap removes it only if a recovery call succeeds
+_VERDICT_ORPHANED = "orphaned"  # as recoverable, and its owner process is gone
 
 
 @dataclass(frozen=True)
@@ -503,14 +504,17 @@ class SlotStore:
     def outlook(self, job_class: str) -> AdmissionOutlook:
         """What an ``interactive`` claim on *job_class* would meet now, changing nothing.
 
-        Counts like :meth:`submit` after its reap, except that entries a reap
-        removes only after a recovery call count too: recovery is a mutation
-        this reader may not make, so it can predict a wait that recovery would
-        avoid. Never creates the class directory (an absent one is an empty queue).
+        Counts like :meth:`submit` after its reap, except that an entry whose
+        owner process is gone is not counted even when its removal needs a
+        recovery call: recovery is a mutation this reader may not make, so it
+        can predict a run now where that call fails. Entries a reap removes
+        only after a recovery call, with their owner alive, count. Never
+        creates the class directory (an absent one is an empty queue).
         """
         cls_dir = self.root / job_class
         names = self._live_entry_names(job_class)
-        names = [name for name in names if self._entry_verdict(cls_dir / name) != _VERDICT_GONE]
+        uncounted = {_VERDICT_GONE, _VERDICT_ORPHANED}
+        names = [name for name in names if self._entry_verdict(cls_dir / name) not in uncounted]
         return self._outlook_of(job_class, names, _ROLE_PRIORITY[ROLE_INTERACTIVE])
 
     def _outlook_of(self, job_class: str, names: list[str], priority: int) -> AdmissionOutlook:
@@ -1281,9 +1285,9 @@ class SlotStore:
             return _VERDICT_LIVE  # never reaped: nothing to ask about its owner
         if self._recovery.execution_is_terminal(tok.execution_id):
             return _VERDICT_GONE
-        recovery_due = (
-            self._owner_is_stale(tok) or deadline_reached or tok.lease_state == LEASE_CANCELLING
-        )
+        if self._owner_is_stale(tok):
+            return _VERDICT_ORPHANED
+        recovery_due = deadline_reached or tok.lease_state == LEASE_CANCELLING
         return _VERDICT_RECOVERABLE if recovery_due else _VERDICT_LIVE
 
     def _token_is_stale(self, tok: SlotToken, state: str) -> bool:
