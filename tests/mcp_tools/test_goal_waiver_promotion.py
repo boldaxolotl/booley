@@ -1,21 +1,18 @@
-"""Captured-byte prediction preserves strict evaluation and symlink isolation."""
+"""Promotion loading and evaluation JSON, tested outside the Goal Mode test lane."""
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.coverage_policy import evaluate_coverage_campaign
-from booley.flows.sim.coverage_waiver_application import (
-    WaiverPlanError,
-    load_promoted_waiver_set,
-    strict_reevaluation,
-)
-from booley.flows.sim.coverage_waivers import CoverageWaiverConfig, load_approved_waiver_set
+from booley.config.coverage_waiver_inputs import CoverageWaiverConfig
+from booley.flows.sim.coverage_waivers import CoverageRepositoryRoots
+from booley.mcp.goal_waivers import WaiverPlanError, load_promoted_waiver_set
 from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_coverage_waivers import (
     _TARGET,
-    _campaign,
-    _criterion,
     _linked_booley_dir_roots,
     _roots,
     _write_valid_approval,
@@ -24,22 +21,43 @@ from tests.flows.sim.test_coverage_waivers import (
 _DIRECTORY = "coverage-waivers"
 
 
-@pytest.mark.parametrize("already_waived", [False, True])
-def test_strict_reevaluation(tmp_path, already_waived):
-    roots = _roots(tmp_path)
-    config = CoverageWaiverConfig("project_data_repository", _DIRECTORY)
-    (roots.project_data_repository / _DIRECTORY).mkdir()
-    empty = load_approved_waiver_set(config, roots, (_TARGET,))
-    _write_valid_approval(roots)
-    approved = load_approved_waiver_set(config, roots, (_TARGET,))
-    persisted = evaluate_coverage_campaign(
-        _campaign(), _criterion(), approved if already_waived else empty
+def _promote(
+    roots: CoverageRepositoryRoots, anchor: str, overlay: Path, after_bytes: Mapping[Path, bytes]
+):
+    return load_promoted_waiver_set(
+        CoverageWaiverConfig(anchor, _DIRECTORY), roots, overlay, (_TARGET,), after_bytes
     )
-    assert persisted.evaluation["status"] == ("pass" if already_waived else "fail")
-    evaluated = strict_reevaluation(persisted, approved)
-    assert evaluated.evaluation["status"] == "pass"
-    assert evaluated.evaluation["approved_waiver_set_digest"] == approved.digest
-    assert evaluated.evaluation["diagnostics"] == ()
+
+
+def test_promotion_loads_captured_bytes_into_the_overlay_without_publishing(
+    tmp_path: Path,
+) -> None:
+    roots = _roots(tmp_path)
+    document = _write_valid_approval(roots)
+    original = document.read_bytes()
+    relative = Path(_DIRECTORY) / "rtl/counter.sv.toml"
+    captured = original.replace(b"counter-basic-block", b"captured-block")
+
+    waivers = _promote(
+        roots, "project_data_repository", tmp_path / "overlay", {relative: captured}
+    )
+
+    assert [waiver.waiver_id for waiver in waivers.waivers] == ["captured-block"]
+    assert document.read_bytes() == original
+    assert (tmp_path / "overlay" / relative).read_bytes() == captured
+
+
+def test_rtl_anchored_promotion_mirrors_only_named_sources(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    shared = CoverageRepositoryRoots(roots.rtl_repository, roots.rtl_repository)
+    _write_valid_approval(shared)
+    (roots.rtl_repository / "rtl" / "unrelated.sv").write_bytes(b"module other; endmodule\n")
+
+    waivers = _promote(shared, "rtl_repository", tmp_path / "overlay", {})
+
+    assert [waiver.waiver_id for waiver in waivers.waivers] == ["counter-basic-block"]
+    assert (tmp_path / "overlay" / "rtl" / "counter.sv").is_file()
+    assert not (tmp_path / "overlay" / "rtl" / "unrelated.sv").exists()
 
 
 @pytest.mark.parametrize("link_kind", ["directory", "document", "proof"])

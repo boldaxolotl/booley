@@ -144,10 +144,6 @@ class GoalFlowExecution:
             raise ValueError(f"Review Goal declaration cannot be read: {exc}") from exc
         return ReviewInputs(scope, params.get("spec"), surface)
 
-    def done_findings_require_approval(self) -> bool:
-        """Goal completion exposes findings without changing its accepted completion policy."""
-        return False
-
     def criterion_source_target(self, key: str, fallback: str | None) -> str | None:
         """Stamp against a declared Goal Target before the producer samples sources.
 

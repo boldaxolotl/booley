@@ -268,7 +268,7 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
 def test_campaign_criterion_names_why_the_comparison_is_inconclusive(tmp_path: Path):
     from booley.criteria.state import DevelopmentState
     from booley.criteria.templates import cycle_count_criterion_key
-    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator
+    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator, _OutcomeEvidence
     from booley.flows.test_runs import build_test_run
     from tests.flows.sim.test_campaign_test_runs import _hdl_plan, _run_campaign
 
@@ -286,7 +286,9 @@ def test_campaign_criterion_names_why_the_comparison_is_inconclusive(tmp_path: P
     state.init_criteria({key: True}, criterion_params={key: params}, strict=True)
 
     def detail(refusals):
-        (change,) = SimulationAcceptanceCoordinator._derive_changes(outcome, state, refusals)
+        (change,) = SimulationAcceptanceCoordinator._derive_changes(
+            _OutcomeEvidence(outcome), state, refusals
+        )
         return change.met, change.detail
 
     assert detail({(selector, "count@1"): "baseline revision abc cannot apply the seed"}) == (

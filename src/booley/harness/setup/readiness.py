@@ -654,6 +654,7 @@ def _validate_booley_toml(data: dict[str, Any], booley_dir: Path, report: Findin
     valid &= _add_config_audit(project_schema.audit_sandbox_table(data), report)
     valid &= _add_config_audit(project_schema.audit_goals_table(data), report)
     valid &= _add_config_audit(project_schema.audit_chat_table(data), report)
+    valid &= _add_config_audit(project_schema.audit_worktree_table(data), report)
     valid &= _add_config_audit(project_schema.audit_interactive_table(data), report)
     valid &= _add_config_audit(project_schema.audit_ignored_settings(data), report)
     valid &= _add_config_audit(project_schema.audit_known_tables(data), report)

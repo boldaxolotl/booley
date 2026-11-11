@@ -23,14 +23,20 @@ combination before merge.
 ## Main pushes and the nightly run
 
 A push to `main` runs a narrow tier: `changes`, `release-semantic`,
-`package-artifacts`, `bwave-smoke`, then `ci-required` and `ci-metrics`
+`build-dist`, `package-artifacts`, `bwave-smoke`, then `ci-required` and `ci-metrics`
 (`MAIN_PUSH_JOBS` in `.github/scripts/ci_changes.py`). Mergify merges a batch's
 PRs one by one; the merge of the batch's last PR reproduces the tree its queue
 candidate already passed, so the suite would only repeat that result. The
 commits before it are untested intermediate trees that no later run tests on
 their own (the nightly run below covers `main`'s tip). `bwave-smoke` stays because
 only a `main` push may write the shared `sandbox-substrate` build cache, and it
-installs the wheel `package-artifacts` builds.
+installs the wheel `build-dist` builds.
+
+`build-dist` builds the wheel and sdist once and uploads them as `pr-dist`;
+the classifier selects it whenever `package-artifacts`, `bwave-smoke` or
+`riscv-image` runs. The image jobs start from it directly instead of waiting
+for `package-artifacts`' install and sdist validations (issue #2867), so a
+wheel that later fails those validations still costs image-job minutes.
 
 A scheduled run on `main` every night at 01:47 UTC selects every job except
 `riscv-image`, which stays path-gated on every event (see RISC-V on-demand
@@ -203,11 +209,10 @@ No pytest marker or change-classifier category selects recovery tests.
 `pyproject.toml` registers only the `string_parameter_eda`, `native_bwave`,
 `slow`, and `sandbox_only` markers, and every complete-suite run uses
 `-m "not native_bwave"`; no mark expression selects on `sandbox_only`.
-Whenever a pull request runs the `test` job, its Ubuntu 3.11 shards and the
-Ubuntu 3.14 `coverage-shards` jobs each run every Goal recovery and authority
-permutation, and its Windows 3.14 shards together run the same set except
-POSIX-only cases and Sandbox-only tests; all of them use the same mark expression. The Windows 3.11
-and 3.13 compatibility legs run a fixed focused subset. The change classifier
+Whenever a pull request runs the `test` job, its complete-suite legs use the
+same mark expression and skip `tests/goals/` (see "Goal Mode unit tests"), so
+the Goal recovery and authority permutations that live there do not run in CI.
+The Windows 3.11 and 3.13 compatibility legs run a fixed focused subset. The change classifier
 (`required_jobs` in `.github/scripts/ci_changes.py`) selects the `test` job for any path classified
 `python_source`, `python_tests`, `workflow`, `packaging`, `release`, or
 `ci_tooling`, and for unclassified paths. `ci_tooling` is
@@ -216,16 +221,26 @@ in workflows; it runs the jobs that install those pins and the Python lane that
 keeps them in step with `pyproject.toml`, but not `full`. README, website and
 documentation-only changes run `docs-check` instead: `git diff --check` plus the
 content tests that `.github/scripts/ci_docs_tests.py` derives from the files that read
-documentation. They add `package-artifacts` when `README.md` changed, and
+documentation. They add `package-artifacts` (with `build-dist`) when `README.md` changed, and
 `site-build` and `lint` for `website/` and `docs/user/`. The nightly run on
 `main` selects every job (a `main` push runs only its narrow tier), and the
 weekly `full-python-matrix.yml` workflow runs the same mark expression.
 
-Goal and review code select standard and RISC-V image validation. Goal tests
-(`tests/goals/`) select standard image validation only. The RISC-V prefixes are
-`.github/actions/prepare-picorv32-demo/`, `demo/`, `src/booley/goals/`,
-`src/booley/review/`, `src/booley/evidence/`, and
+Goal and review code select standard and RISC-V image validation. The RISC-V
+prefixes are `.github/actions/prepare-picorv32-demo/`, `demo/`,
+`src/booley/goals/`, `src/booley/review/`, `src/booley/evidence/`, and
 `tests/fixtures/goal_mode_smoke/`.
+
+### Goal Mode unit tests
+
+Temporary, until Goal Mode removal (#3276). `tests/` collection skips
+`tests/goals/` (`collect_ignore` in `tests/conftest.py`); run them by naming the
+path, for example `pytest tests/goals`. Goal source (`src/booley/goals/`) is
+omitted from coverage. `docs-check` and `flake-stress` never select those
+modules. A `tests/goals/` change selects only `lint`, unless a test outside
+`tests/goals/` imports that file; then it is an ordinary test change. The
+goal-mode image smoke no longer runs: `tests/smoke/test_goal_mode_image_smoke.py`
+is opt-in only, via `BOOLEY_GOAL_MODE_SMOKE=1`.
 
 ## Expensive test inventory
 

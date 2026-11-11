@@ -21,7 +21,7 @@ from booley.core.booley_dir import resolve_main_checkout_root
 from booley.harness import chat_checkout, codex_chat, worktree_cmd
 from booley.harness.chat_checkout import Placement
 from booley.runtime.booley_dir import resolve_checkout_booley_dir, resolve_common_booley_dir
-from booley.runtime.foreground_child import run_foreground_child
+from booley.runtime.foreground_child import exec_agent, run_foreground_child
 from booley.runtime.handles import reserve_session_handle
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
@@ -131,11 +131,16 @@ def _signals_interrupt_setup() -> Iterator[None]:
         raise _SetupInterruptedError(signum)
 
     previous = {number: signal.signal(number, interrupt) for number in signals}
+    # The launch window holds SIGINT blocked until the agent's exec; setup must see it now,
+    # or a Ctrl-C would wait out the whole creation and then kill the launch with the
+    # worktree already made. The held state returns when setup ends.
+    held_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, signals)
     try:
         yield
     finally:
         for number, handler in previous.items():
             signal.signal(number, handler)
+        signal.pthread_sigmask(signal.SIG_SETMASK, held_mask)
 
 
 def _agent_command(
@@ -227,7 +232,7 @@ def _launch(provider: str, project_root: Path, agent_args: list[str], placement:
         # Last statement before the process is replaced: the CLI exists and the
         # launch arguments are settled, so the notice only precedes a real start.
         print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
-        os.execvp(executable, [*argv, *agent_args])
+        exec_agent(executable, [*argv, *agent_args])
     except _NoHandleError as exc:
         print(
             f"ERROR: cannot name a worktree for this session: {exc}. "

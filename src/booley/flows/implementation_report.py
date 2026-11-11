@@ -9,11 +9,15 @@ in :mod:`booley.flows.implementation_publication`.
 from __future__ import annotations
 
 import copy
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from booley.runtime.timefmt import utc_now_rfc3339
+
+if TYPE_CHECKING:
+    from booley.flows.implementation_comparison import TargetPairPlan
 
 Grade = Literal["pass", "warn", "fail", "error"]
 
@@ -55,6 +59,35 @@ class ImplementationContext:
     def __post_init__(self) -> None:
         if not self.flow or not self.target:
             raise ValueError("implementation flow and target must be non-empty")
+
+
+def implementation_context(
+    plan: TargetPairPlan,
+    *,
+    target: str,
+    eda_tool: str | None,
+    baseline_ran: bool,
+    requested_baseline_ref: str | None,
+    resolved_baseline_ref: str | None,
+) -> ImplementationContext:
+    """Build the report context for *target* from its validated pair *plan*.
+
+    Flow name, baseline selector and both target identities come from *plan*;
+    the invocation run id comes from ``BOOLEY_RUN_ID``. The baseline refs are
+    recorded only when a baseline actually ran (*baseline_ran*), otherwise both
+    are ``None``.
+    """
+    return ImplementationContext(
+        flow=plan.flow,
+        target=target,
+        eda_tool=eda_tool,
+        invocation_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+        baseline_target=plan.baseline.selector,
+        baseline_target_identity=plan.baseline.identity,
+        candidate_target_identity=plan.candidate.identity,
+        requested_baseline_ref=requested_baseline_ref if baseline_ran else None,
+        resolved_baseline_ref=resolved_baseline_ref if baseline_ran else None,
+    )
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
 Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard and Goal presence, and feedback redaction. Settings for one Flow, the Sandbox, or
+Dashboard and Goal presence, worktree cleanup, and feedback redaction. Settings for one Flow, the Sandbox, or
 Stealth Mode live on their own pages; the table below says where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
@@ -15,7 +15,7 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[worktree]`, `[sandbox].dashboard`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
@@ -296,6 +296,19 @@ A Goal session that makes no Booley call for `quiet_after` seconds (default two
 hours) counts as quiet. The Dashboard may drop it from the Sessions list, and
 Doctor warns that the Goal has no recent activity. Quiet never ends or abandons
 a Goal.
+
+## Worktree cleanup (`[worktree]`)
+
+```toml
+[worktree]
+gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
+```
+
+`booley worktree gc` removes worktrees whose last use is older than this age,
+keeping any that `booley worktree rm` would refuse (default `"7d"`). The
+setting is read from the main checkout's `.booley/booley.toml`; a worktree's own
+copy is ignored. `booley worktree gc --older-than AGE` overrides it. See
+[Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
 
 ## Feedback (`[feedback]`)
 

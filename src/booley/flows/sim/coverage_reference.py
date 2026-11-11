@@ -41,13 +41,13 @@ class CoverageCampaignReferenceError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class CoverageCampaignReference:
-    """Validated immutable Coverage Campaign reference document."""
+    """Immutable Coverage Campaign reference document.
+
+    ``decode_coverage_campaign_reference`` validates bytes;
+    ``build_coverage_campaign_reference`` constructs one from values Booley owns.
+    """
 
     document: Mapping[str, object]
-
-    def __post_init__(self) -> None:
-        decoded = decode_coverage_campaign_reference(canonical_json(self.document))
-        object.__setattr__(self, "document", decoded.document)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,11 +62,7 @@ class ResolvedCoverageCampaign:
 
 def encode_coverage_campaign_reference(value: CoverageCampaignReference) -> bytes:
     """Encode one exact canonical reference."""
-    if type(value) is not CoverageCampaignReference:
-        raise CoverageCampaignReferenceError("expected CoverageCampaignReference")
-    raw = canonical_json(value.document)
-    decode_coverage_campaign_reference(raw)
-    return raw
+    return canonical_json(value.document)
 
 
 def decode_coverage_campaign_reference(raw: bytes) -> CoverageCampaignReference:
@@ -75,9 +71,7 @@ def decode_coverage_campaign_reference(raw: bytes) -> CoverageCampaignReference:
         raise CoverageCampaignReferenceError("Coverage Campaign reference exceeds size limit")
     value = parse_json_object(raw, error=CoverageCampaignReferenceError, canonical=True)
     _validate_reference(value)
-    instance = object.__new__(CoverageCampaignReference)
-    object.__setattr__(instance, "document", freeze_coverage_mapping(value))
-    return instance
+    return CoverageCampaignReference(freeze_coverage_mapping(value))
 
 
 def publish_coverage_campaign_reference(
@@ -245,24 +239,26 @@ def build_coverage_campaign_reference(
     loaded = load_coverage_campaign_bytes(coverage_campaign_path, raw)
     relative = coverage_campaign_path.relative_to(origin_target_directory).as_posix()
     return CoverageCampaignReference(
-        {
-            "$schema": REFERENCE_SCHEMA,
-            "simulation_campaign_id": simulation_campaign_id,
-            "simulation_manifest_sha256": simulation_manifest_sha256,
-            "target": {"identity": target_identity, "selector": target_selector},
-            "origin_invocation_id": origin_invocation_id,
-            "producer_invocation_id": producer_invocation_id,
-            "simulation_work_item_id": simulation_work_item_id,
-            "simulation_attempt_id": simulation_attempt_id,
-            "coverage_campaign": {
-                "path_base": "origin_target",
-                "path": relative,
-                "bytes": len(raw),
-                "sha256": content_digest(raw),
-                "campaign_id": loaded.campaign.campaign_id,
-                "schema": loaded.summary.source_schema,
-            },
-        }
+        freeze_coverage_mapping(
+            {
+                "$schema": REFERENCE_SCHEMA,
+                "simulation_campaign_id": simulation_campaign_id,
+                "simulation_manifest_sha256": simulation_manifest_sha256,
+                "target": {"identity": target_identity, "selector": target_selector},
+                "origin_invocation_id": origin_invocation_id,
+                "producer_invocation_id": producer_invocation_id,
+                "simulation_work_item_id": simulation_work_item_id,
+                "simulation_attempt_id": simulation_attempt_id,
+                "coverage_campaign": {
+                    "path_base": "origin_target",
+                    "path": relative,
+                    "bytes": len(raw),
+                    "sha256": content_digest(raw),
+                    "campaign_id": loaded.campaign.campaign_id,
+                    "schema": loaded.summary.source_schema,
+                },
+            }
+        )
     )
 
 

@@ -8,7 +8,8 @@ it inside the checkout), on a new branch
 ``booley/<name>`` at the workspace's current commit (an existing branch of that
 name is refused), unless the name uses the ``<branch>--<description>`` convention
 to check out an existing branch instead. ``booley worktree list`` reports each
-worktree's state and ``booley worktree rm`` removes one, keeping its evidence.
+worktree's state, ``booley worktree rm`` removes one, keeping its evidence, and
+``booley worktree gc`` removes the idle ones the same way.
 A Versioned Booley Directory gets a Paired Checkout on ``booley-worktree/<name>``
 at its last commit (uncommitted files are named in a warning and left out); a
 non-versioned Booley Directory gets a Snapshot.
@@ -27,6 +28,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.config.worktree import GcAge
 from booley.core.booley_dir import resolve_common_booley_dir
 from booley.flows.execution import FlowConfigError, flow_enabled
 from booley.runtime.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir
@@ -72,14 +74,14 @@ def worktree_name(value: str) -> str:
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Register ``booley worktree`` with its ``new``, ``list`` and ``rm`` commands."""
+    """Register ``booley worktree`` with its ``new``, ``list``, ``rm`` and ``gc`` commands."""
     parser = subparsers.add_parser(
         "worktree",
-        help="Create, list, or remove linked worktrees",
-        description="Create, list, or remove linked Git worktrees for this Project.",
+        help="Create, list, remove, or clean up linked worktrees",
+        description="Create, list, remove, or clean up linked Git worktrees for this Project.",
     )
     commands = parser.add_subparsers(
-        dest="worktree_command", metavar="{new,list,rm}", required=True
+        dest="worktree_command", metavar="{new,list,rm,gc}", required=True
     )
     new = commands.add_parser(
         "new",
@@ -140,6 +142,32 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "unmerged work, or a Git lock; evidence is still kept"
         ),
     )
+    garbage = commands.add_parser(
+        "gc",
+        help="Remove worktrees not used for a while, keeping any `rm` would refuse",
+        description=(
+            "Remove every worktree whose last use is older than AGE (default 7d, or "
+            "[worktree].gc_older_than in the main checkout's .booley/booley.toml) with "
+            "the same checks as `booley worktree rm`, never forced: a worktree with a "
+            "live Session, an active Goal Mode, or unsaved work is kept, as is one "
+            "with no last-used record or that you are inside. Prints each worktree "
+            "removed or kept and why."
+        ),
+    )
+    garbage.add_argument(
+        "--older-than",
+        type=_gc_age,
+        metavar="AGE",
+        help="idle age such as 7d, 36h or 1d12h (overrides [worktree].gc_older_than)",
+    )
+
+
+def _gc_age(value: str) -> GcAge:
+    """Argparse type: an idle age in d/h/m/s components."""
+    try:
+        return GcAge.of(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def worktree_path(project_root: Path, name: str) -> Path:
@@ -236,7 +264,7 @@ class _Created:
 
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
-    """Dispatch ``new``, ``list`` or ``rm``; ``new`` keeps registration atomic with directory migration."""
+    """Dispatch ``new``, ``list``, ``rm`` or ``gc``; ``new`` keeps registration atomic with directory migration."""
     if args.worktree_command == "list":
         from booley.harness import worktree_list
 
@@ -245,6 +273,10 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
         from booley.harness import worktree_rm
 
         return worktree_rm.run(args, project_root)
+    if args.worktree_command == "gc":
+        from booley.harness import worktree_gc
+
+        return worktree_gc.run(args, project_root)
 
     created = _create(project_root, args.name)
     if created is None:

@@ -461,6 +461,20 @@ def test_a_second_signal_cannot_abort_the_rollback(project, monkeypatch, capsys)
     assert started.code == 128 + int(signal.SIGHUP)
 
 
+def test_setup_sees_sigint_held_by_the_launch_window_then_holds_it_again(monkeypatch):
+    # Bug caught: the launch window keeps SIGINT blocked until the agent's exec, so a Ctrl-C
+    # during worktree setup waited out the creation and then killed the launch, worktree made.
+    held = {signal.SIGINT, signal.SIGQUIT}
+    outer = signal.pthread_sigmask(signal.SIG_BLOCK, held)
+    try:
+        with pytest.raises(chat_cmd._SetupInterruptedError):  # noqa: SLF001
+            with chat_cmd._signals_interrupt_setup():  # noqa: SLF001
+                signal.raise_signal(signal.SIGINT)
+        assert held <= signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, outer)
+
+
 def test_an_interrupt_that_leaves_the_worktree_behind_says_so(project, monkeypatch, capsys):
     # Bug caught: "was rolled back" printed after a signal killed the creation script before
     # it could undo its work, leaving s1 and its branch for the user to find.

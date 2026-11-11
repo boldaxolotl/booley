@@ -31,6 +31,7 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
         "eda",
         "stealth",
         "submodules",
+        "worktree",
     }
 )
 
@@ -376,6 +377,17 @@ def audit_chat_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         parse_chat_worktree(data)
     except ValueError as exc:
         return failure(str(exc), 'set [chat].worktree to "auto", "always" or "never"')
+    return ConfigTableAudit()
+
+
+def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Validate the ``booley worktree gc`` idle age."""
+    from booley.config.worktree import parse_gc_older_than
+
+    try:
+        parse_gc_older_than(data)
+    except ValueError as exc:
+        return failure(f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"')
     return ConfigTableAudit()
 
 

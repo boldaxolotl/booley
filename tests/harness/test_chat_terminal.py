@@ -226,6 +226,67 @@ args = SimpleNamespace(agent_args=[], chat_worktree=os.environ.get("DRIVER_FLAG"
 raise SystemExit(chat_cmd.run(args, Path(os.environ["DRIVER_ROOT"])))
 """
 
+# Runs `_DRIVER_SOURCE` after pinning the signal dispositions it starts with
+# and arranging one signal to hit the launch window at a known point. Every
+# injection is the driver signalling itself, so none races the terminal handover.
+_INJECTING_DRIVER_SOURCE = r"""
+import json, os, runpy, signal
+from pathlib import Path
+
+# The pytest worker's inherited dispositions must not decide the outcome.
+signal.signal(signal.SIGINT, signal.default_int_handler)
+signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+
+AT = os.environ["INJECT_AT"]
+NUMBER = getattr(signal, os.environ["INJECT_SIGNAL"])
+OUT = Path(os.environ["DRIVER_OUT"])
+
+from booley.harness import chat_cmd
+from booley.runtime import foreground_child
+
+real_fork = os.fork
+
+
+def fork_with_injection():
+    if AT == "before-fork":  # a copy only the parent can have: a tty signal before the fork
+        os.kill(os.getpid(), NUMBER)
+    pid = real_fork()
+    if AT == "after-fork-both" or (AT == "after-fork-parent" and pid != 0):
+        os.kill(os.getpid(), NUMBER)  # each branch signals itself: a group signal both got
+    return pid
+
+
+os.fork = fork_with_injection
+
+real_reserve = chat_cmd.reserve_session_handle
+
+
+def reserve_after_injection(*args, **kwargs):
+    # After the child restored its dispositions, before the agent's exec.
+    os.kill(os.getpid(), NUMBER)
+    return real_reserve(*args, **kwargs)
+
+
+if AT == "during-launch":
+    chat_cmd.reserve_session_handle = reserve_after_injection
+
+real_propagate = foreground_child._propagate
+
+
+def propagate_after_recording(status):
+    # Proof that Booley reached propagation instead of dying of its own copy.
+    (OUT / "child-status.json").write_text(json.dumps({
+        "signaled": os.WIFSIGNALED(status),
+        "signal": os.WTERMSIG(status) if os.WIFSIGNALED(status) else None,
+    }))
+    return real_propagate(status)
+
+
+foreground_child._propagate = propagate_after_recording
+runpy.run_path(os.environ["INJECT_DRIVER"], run_name="__main__")
+"""
+
 # A job-control shell: runs the driver as a foreground job, reacts to its stop.
 _SHELL_SOURCE = r"""
 import json, os, signal, sys, time
@@ -305,14 +366,14 @@ class _Terminal:
         self._cursor = found + len(marker)
 
     def drain(self) -> None:
-        """Read what the exited child left in the terminal."""
-        while select.select([self._fd], [], [], 0.5)[0]:
+        """Read what the terminal still holds once the child has ended."""
+        while self._fd >= 0 and select.select([self._fd], [], [], _SETTLE_SECONDS)[0]:
             try:
                 chunk = os.read(self._fd, 4096)
             except OSError:  # EIO: the slave side is closed
-                break
+                return
             if not chunk:
-                break
+                return
             self.output += chunk.decode(errors="replace")
 
     def hang_up(self) -> None:
@@ -357,6 +418,7 @@ class _Scene:
         for directory in (self.out, self.booley_dir, bin_dir):
             directory.mkdir()
         self.driver = self._program("driver.py", _DRIVER_SOURCE)
+        self.injecting_driver = self._program("injecting_driver.py", _INJECTING_DRIVER_SOURCE)
         self.shell = self._program("shell.py", _SHELL_SOURCE)
         self.agent_file = self._program("agent.py", _AGENT_SOURCE)
         claude = bin_dir / "claude"
@@ -371,6 +433,7 @@ class _Scene:
             PATH=f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
             PYTHONPATH=os.pathsep.join([str(_REPO / "src"), env.get("PYTHONPATH", "")]),
             DRIVER_OUT=str(self.out),
+            INJECT_DRIVER=str(self.driver),
             DRIVER_ROOT=str(root),
             DRIVER_CODEX_ENV=json.dumps(self.codex_env),
             AGENT_OUT=str(self.out),
@@ -894,3 +957,87 @@ def test_ended_session_releases_the_lock_despite_a_lingering_grandchild(scene: _
     assert scene.worktree_names() == []
     assert _main_lock_is_held(scene), "the next launch took main without holding the lock"
     _finish_with_line(second)
+
+
+# -- signals that arrive while the agent is being launched -----------------------
+
+# Where the signal lands: before the fork (only the parent can hold it), right
+# after it in both processes, right after it in the parent only (terminal mode:
+# after the child's setpgid, before the handover), or in the child after it
+# restored its dispositions and before the agent's exec.
+_SHARED_INJECTIONS = ["before-fork", "after-fork-both", "during-launch"]
+_TERMINAL_INJECTIONS = ["before-fork", "after-fork-both", "after-fork-parent", "during-launch"]
+
+
+def _injection_env(scene: _Scene, at: str, signal_name: str) -> dict[str, str]:
+    return {**scene.env("read", "claude"), "INJECT_AT": at, "INJECT_SIGNAL": signal_name}
+
+
+def _describe_status(status: int) -> str:
+    if os.WIFSIGNALED(status):
+        return f"death by {signal.Signals(os.WTERMSIG(status)).name}"
+    return f"exit status {os.waitstatus_to_exitcode(status)}"
+
+
+def _assert_died_of(status: int, number: signal.Signals) -> None:
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == number, (
+        f"expected death by {number.name}, got {_describe_status(status)}"
+    )
+
+
+def _assert_agent_was_the_signal_target(scene: _Scene, number: signal.Signals) -> None:
+    """Booley reached propagation with the agent's death by *number*, not its own."""
+    assert scene.read("child-status.json") == {"signaled": True, "signal": int(number)}
+
+
+@pytest.mark.parametrize("at", _SHARED_INJECTIONS)
+def test_launch_window_interrupt_without_a_terminal(scene: _Scene, at: str) -> None:
+    process = subprocess.Popen(
+        [sys.executable, str(scene.injecting_driver), "claude"],
+        stdin=subprocess.DEVNULL,  # EOF: a lost interrupt lets the agent run and exit 7
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_injection_env(scene, at, "SIGINT"),
+        process_group=0,
+    )
+    scene.processes.append(process)
+    assert process.stderr is not None
+    returncode = process.wait(timeout=_WAIT_SECONDS)
+    assert returncode == -signal.SIGINT, f"expected death by SIGINT, got exit status {returncode}"
+    assert "Traceback" not in process.stderr.read().decode(errors="replace")
+    _assert_agent_was_the_signal_target(scene, signal.SIGINT)
+
+
+@pytest.mark.parametrize("at", _TERMINAL_INJECTIONS)
+def test_launch_window_interrupt_on_a_terminal(scene: _Scene, at: str) -> None:
+    terminal = _Terminal(
+        [sys.executable, str(scene.injecting_driver), "claude"],
+        _injection_env(scene, at, "SIGINT"),
+    )
+    scene.terminals.append(terminal)
+    terminal.write("done\n")  # a lost interrupt lets the agent read it and exit 7
+
+    status = terminal.wait_exit()
+    terminal.drain()
+
+    _assert_died_of(status, signal.SIGINT)
+    assert "Traceback" not in terminal.output
+    _assert_agent_was_the_signal_target(scene, signal.SIGINT)
+
+
+def test_launch_window_ctrl_z_suspends_the_job_once(scene: _Scene) -> None:
+    terminal = _Terminal(
+        [sys.executable, str(scene.shell), "fg", str(scene.injecting_driver), "claude"],
+        _injection_env(scene, "after-fork-both", "SIGTSTP"),
+    )
+    scene.terminals.append(terminal)
+
+    terminal.expect("AGENT-READY")
+    # Two copies (Booley's and the agent's) must stop the job once, before the agent runs.
+    assert "SHELL-STOPPED" in terminal.output[: terminal.output.index("AGENT-READY")], (
+        f"the job was never suspended; saw {terminal.output!r}"
+    )
+    terminal.write("done\n")
+    terminal.wait_exit()
+
+    assert scene.read("shell.json") == {"stops": 1, "code": 7, "owner_is_shell": False}
