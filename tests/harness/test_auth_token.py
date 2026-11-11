@@ -21,6 +21,7 @@ from booley.runtime import auth_token, issuance_invalidation, runtime_context, s
 from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
 from tests.devcontainer_spec_support import build_spec
+from tests.subprocess_budget import run_bounded_child
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
 _API_KEY = "sk-proj-codex-abcdef123456"  # codex: API key (no setup-token exists)
@@ -1092,8 +1093,6 @@ def test_cli_auth_from_non_project_linked_worktree_is_not_refused(
     """Only a proven linked Project checkout refuses; other linked worktrees keep auth."""
     import sys
 
-    from tests.subprocess_budget import run_bounded_child
-
     _linked_auth(tmp_path, monkeypatch)
     main = tmp_path / "plain"
     git = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com"]
@@ -1139,8 +1138,6 @@ def test_uninitialized_nested_checkout_is_not_adopted_as_ancestor_project(tmp_pa
     root, _, _ = _linked_auth(tmp_path, monkeypatch)
     nested = root / "unrelated"
     nested.mkdir()
-    from tests.subprocess_budget import run_bounded_child
-
     run_bounded_child(["git", "init", str(nested)], check=True)
     assert discover_project_root(nested) == nested
 

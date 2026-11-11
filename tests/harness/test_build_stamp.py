@@ -21,8 +21,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.subprocess_budget import run_bounded_child
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness.setup import docker_image as init_docker_image
@@ -50,6 +48,7 @@ from booley.runtime.build_stamp import (
     wheel_embedded_source_fingerprint,
     write_build_stamp,
 )
+from tests.subprocess_budget import run_bounded_child
 
 BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
