@@ -1475,7 +1475,6 @@ def _retain_coverage_campaign(progress: CoverageProgress, outcome: CampaignOutco
             _coverage_campaign_exit_code([outcome], {str(outcome.target["selector"]): campaign})
             or _grade_exit_code(outcome.aggregate_grade),
             public,
-            public.with_name("simulation.json"),
             campaign.evaluation,
         )
     )

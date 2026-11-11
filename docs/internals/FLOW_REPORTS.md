@@ -343,8 +343,8 @@ with one of the options below. The algorithm is in
 
 - **`--native-target <target>`** removes that Target's `native/` directory (raw and
   merged Verilator databases). `coverage.json` and the point store stay, so the
-  Campaign can still be analyzed. `availability.json` in the Target directory
-  records the pruning.
+  Campaign can still be analyzed. `availability.json` in the nested Coverage Campaign
+  directory that `coverage.json` references records the pruning.
 - **`--full`** removes the whole run. It leaves an empty `.pruned-N` marker so
   the run number is not reused. It refuses when later resumed runs depend on
   this one, unless `--include-dependents` is given.
