@@ -212,10 +212,15 @@ def _is_standalone_coverage(public: Mapping[str, object]) -> bool:
 
 
 def _refuse_standalone_coverage(root: Path, target: Path) -> CampaignRetentionError:
-    """Refusal for the dead layout that kept the Coverage Campaign in the Target directory."""
+    """Refusal for a Target ``coverage.json`` that is not a Campaign reference.
+
+    The usual cause is the dead layout that kept the Coverage Campaign in the Target
+    directory; a damaged file reads the same, so the message names both.
+    """
     return CampaignRetentionError(
-        f"Coverage Campaign in {target} uses the standalone layout no supported Booley "
-        f"version writes; delete the Simulation invocation directory {root} by hand"
+        f"Coverage Campaign in {target} is not a Campaign reference: the standalone layout "
+        "no supported Booley version writes, or a damaged file; delete the Simulation "
+        f"invocation directory {root} by hand"
     )
 
 
@@ -935,7 +940,7 @@ def _validate_invocation_inventory(root: Path) -> None:
     for selector in targets:
         assert isinstance(selector, str)
         target = target_report_directory(root, selector)
-        expected.update(_target_owned_files(root, target, selector))
+        expected.update(_target_owned_files(root, target))
         simulation = target / "simulation.json"
         if simulation.exists():
             expected.update(_referenced_invocation_artifacts(root, _read_object(simulation)))
@@ -1013,7 +1018,7 @@ def _validate_invocation_artifact_layout(relative: Path) -> None:
         raise CampaignRetentionError(f"Unsafe invocation artifact path: {relative}")
 
 
-def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
+def _target_owned_files(root: Path, target: Path) -> set[Path]:
     expected = {(target / "simulation.json").absolute()}
     public = target / "coverage.json"
     if public.exists():

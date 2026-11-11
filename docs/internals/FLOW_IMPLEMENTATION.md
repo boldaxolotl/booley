@@ -1009,8 +1009,8 @@ suite, so any difference, including configured skips, is a suite mismatch
 during evaluation.
 Execution is sorted and sequential.
 
-`run_coverage_target(plan, execution, *, embedded_root)` collects through
-`SimulationExecutionPort`, assembles and validates the canonical Campaign,
+`run_coverage_target(plan, execution, *, embedded_root, publication_checkpoint=None)`
+collects through `SimulationExecutionPort`, assembles and validates the canonical Campaign,
 loads approved waivers unless `--no-waivers` is given, evaluates, publishes the
 Campaign under the attempt-owned root, and returns the outcome. The Simulation
 Campaign writes the projection and the Simulation Flow writes progress. Source/Target drift is
@@ -1199,9 +1199,9 @@ records `pruned`. Retrying the same exact selection completes interrupted cleanu
 and trusts the existing sidecar. Campaign manifest and point-store bytes,
 Simulation bytes, and hook evidence never change. Normalized Campaign evidence
 remains analyzable after native pruning; full pruning prevents re-analysis.
-A Target whose `coverage.json` is a full Campaign instead of a
-`booley.coverage-campaign-reference/v1` reference (a layout no supported Booley
-writes) is refused, naming its directory.
+A Target whose `coverage.json` is not a
+`booley.coverage-campaign-reference/v1` reference (a standalone layout no
+supported Booley writes, or a damaged file) is refused, naming its directory.
 
 Explicit maintenance entry points:
 

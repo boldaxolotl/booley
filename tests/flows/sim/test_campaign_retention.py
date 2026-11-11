@@ -346,8 +346,9 @@ def test_native_pruning_validates_every_path_before_deleting(tmp_path, defect, m
         document = json.loads(run.campaign_path.read_text())
         document["invocation"]["id"] = 2
         run.campaign_path.write_text(json.dumps(document))
-    # The tampered nested Campaign fails the reference digest (a ValueError) before retention.
-    with pytest.raises(ValueError):
+    # The tampered nested Campaign fails the reference digest, not retention's own checks.
+    expected = ValueError if defect == "wrong_invocation" else CampaignRetentionError
+    with pytest.raises(expected):
         prune_native_payload(tmp_path / "reports", 1, "sim_0")
     assert (native / "raw/001-reset@1.dat").is_file()
     assert not (root / "availability.json").exists()
@@ -816,6 +817,22 @@ def test_pruning_refuses_a_standalone_coverage_target_naming_its_directory(tmp_p
     assert before == {path: path.read_bytes() for path in invocation.rglob("*") if path.is_file()}
     assert not (target / "availability.json").exists()
     assert not (tmp_path / "reports/sim/.pruned-12").exists()
+
+
+def test_native_pruning_refuses_a_reference_target_without_its_simulation_campaign(
+    tmp_path, monkeypatch
+):
+    """A reference whose Simulation Campaign manifest is gone is not a completed Target."""
+    from booley.flows.sim.campaign_retention import prune_native_payload
+
+    run = coverage_invocation(tmp_path, monkeypatch)
+    (run.target / "campaign/manifest.json").unlink()
+
+    with pytest.raises(CampaignRetentionError, match="requires a completed Target"):
+        prune_native_payload(run.reports, 1, "sim_0")
+
+    assert (run.storage / "native").is_dir()
+    assert not (run.storage / "availability.json").exists()
 
 
 def test_interrupted_collection_owns_only_reserved_declaration_evidence(tmp_path):
