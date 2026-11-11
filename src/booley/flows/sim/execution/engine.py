@@ -1574,9 +1574,9 @@ def _observed_test_run(name: str, handle: TargetHandle, runs: tuple[TestRun, ...
     if name in by_test:
         return by_test[name]
     first = runs[0]
-    if first.test is not None or name in {"", handle.selector}:
+    if first.test is not None:
         return first
-    return discovered_test_run(name, first)
+    return discovered_test_run(name, first, target=handle.selector)
 
 
 def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:
