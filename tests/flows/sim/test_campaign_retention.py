@@ -32,19 +32,17 @@ from tests.flows.sim.campaign_test_support import (
 )
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
+from tests.subprocess_budget import run_bounded_child
 
 __all__ = ["project_alias"]
 
 
 def _run_retention_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
     """Run the maintenance CLI in a subprocess that imports this checkout's Booley."""
-    return subprocess.run(
+    return run_bounded_child(
         [sys.executable, "-m", "booley.flows.sim.campaign_retention", *arguments],
-        capture_output=True,
-        text=True,
         timeout=15,
         env={**os.environ, "PYTHONPATH": str(Path(booley.__file__).parent.parent)},
-        check=False,
     )
 
 
