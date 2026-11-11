@@ -60,7 +60,15 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
 
     configure_project_alias(monkeypatch, alias, data)
     monkeypatch.setattr(doctor._DoctorFlowRuntime, "inside", property(lambda _self: not host))
-    monkeypatch.setattr(doctor._DoctorFlowRuntime, "command", lambda _self, inner, **_kw: inner)
+
+    def command(_self, inner, *, env=None):
+        """Inside the Sandbox only the subprocess env reaches the Flow; from the host, docker -e."""
+        if not host:
+            return inner
+        pairs = [part for name, value in (env or {}).items() for part in ("-e", f"{name}={value}")]
+        return ["docker", "exec", *pairs, "booley-session", *inner]
+
+    monkeypatch.setattr(doctor._DoctorFlowRuntime, "command", command)
     return audit, data, alias
 
 
@@ -71,6 +79,9 @@ def _real_simulation_transport(monkeypatch, flow_project, alias, data, host):
 
     real_run = subprocess.run
     executions = []
+    # What each Doctor Flow run saw: its argv values, its environment, and the
+    # Common Booley Directory its Resource History would be written to.
+    launches = []
 
     def run(argv, **kwargs):
         if "booley.flows.sim" not in argv:
@@ -79,16 +90,24 @@ def _real_simulation_transport(monkeypatch, flow_project, alias, data, host):
         emitted = Path(values[values.index("--report-dir") + 1])
         assert emitted.is_relative_to(alias if host else data)
         values[values.index("--work-dir") + 1] = str(flow_project)
+        env = dict(kwargs.get("env", {}))
+        # A containerized Flow receives the docker ``-e NAME=VALUE`` pairs.
+        pairs = [argv[i + 1] for i, part in enumerate(argv) if part == "-e"]
+        env.update(pair.partition("=")[::2] for pair in pairs)
+        launches.append((values, env))
         with monkeypatch.context() as scoped:
-            for name, value in kwargs.get("env", {}).items():
+            for name, value in env.items():
                 scoped.setenv(name, value)
             flow = SimulateFlow()
             outcome = flow.execute_cli(values).outcome
+            from booley.runtime.booley_dir import resolve_common_booley_dir
+
+            launches[-1] += (resolve_common_booley_dir(),)
         executions.append(outcome)
         return subprocess.CompletedProcess(argv, outcome.exit_code, outcome.report_text, "")
 
     monkeypatch.setattr(doctor.subprocess, "run", run)
-    return executions
+    return executions, launches
 
 
 def _assert_real_bad_simulation_report(outcome, build_failure):
@@ -123,7 +142,7 @@ def test_project_alias_doctor_executes_real_simulation(
         (data / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl/tb.sv").write_text(
             "module tb;\n// [SIM_RESULT] FAILED\nendmodule\n"
         )
-    executions = _real_simulation_transport(monkeypatch, flow_project, alias, data, host)
+    executions, launches = _real_simulation_transport(monkeypatch, flow_project, alias, data, host)
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._run_deep_checks(
         audit,
@@ -160,6 +179,26 @@ def test_project_alias_doctor_executes_real_simulation(
     reports = data / doctor.DOCTOR_TMP_DIR / "flow-reports"
     assert len(list(reports.glob("sim/*/targets/sim/campaign/manifest.json"))) == 3
     assert len(list(reports.glob("sim/*/progress.json"))) == 3
+    _assert_doctor_runs_write_no_history(monkeypatch, launches)
+
+
+def _assert_doctor_runs_write_no_history(monkeypatch, launches) -> None:
+    """Doctor's three Flow runs add no Resource History record; the same run outside Doctor does."""
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.runtime import resource_history
+
+    assert len(launches) == 3
+    for _values, _env, history_dir in launches:
+        assert resource_history.load_records(history_dir) == []
+    values, env, history_dir = launches[0]
+    with monkeypatch.context() as scoped:
+        for name, value in env.items():
+            scoped.setenv(name, value)
+        scoped.delenv("BOOLEY_INTERNAL_DOCTOR_RUN")
+        assert SimulateFlow().execute_cli(values).outcome.exit_code == 0
+    # (The control reuses Doctor's retained image, so it records no build.)
+    phases = {record["key"]["phase"] for record in resource_history.load_records(history_dir)}
+    assert "sim_run" in phases
 
 
 def _project(root):

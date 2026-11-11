@@ -133,13 +133,16 @@ Projects.
 ### Job resource history
 
 Booley measures every Job's peak memory, CPU time, and wall-clock time, and
-keeps the newest 20 runs per Target, Job phase, flags, and Test Run, with no
-overall cap. A group with no run in the last 90 days is deleted the next time
-any Job records. Peak memory counts the Job's temporary files only when
-`TMPDIR` is on tmpfs; runs recorded before that rule keep their earlier peak.
-`booley resources` prints the run count and the minimum, median, and maximum
-peak memory and wall-clock time for each (`--json` for scripts). Use it to
-choose `heavy_memory` and `[sandbox].memory`.
+keeps the newest 20 runs per Target and Job phase, with no overall cap. A group
+with no run in the last 90 days is deleted the next time any Job records. Peak
+memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
+recorded before that rule keep their earlier peak. `booley resources` prints the
+run count and the minimum, median, and maximum peak memory and wall-clock time
+for each (`--json` for scripts). Use it to choose `heavy_memory` and
+`[sandbox].memory`. Each Test Variant of a simulation has its own entry
+(`tests=first+slow`; the default Variant keeps the bare Test name), and the
+seeds of one Variant share it. Flow runs that `booley doctor` starts are not
+recorded.
 
 ## Agent CLIs (`[agent]`)
 

@@ -102,6 +102,23 @@ def configured_sandbox_memory(config: Mapping[str, object]) -> str:
     return (as_str(memory, "") or "").strip()
 
 
+def configured_memory_budget(config: Mapping[str, object]) -> int | None:
+    """Return the ``[jobs].memory_budget`` override in bytes, or ``None`` when unset.
+
+    Only a positive size string such as ``"24g"`` is accepted. The schema audit
+    and the runtime budget share this parser so Doctor and admission reject the
+    same values.
+    """
+    section = as_dict(config.get("jobs"))
+    if section is None or "memory_budget" not in section:
+        return None
+    value = section["memory_budget"]
+    parsed = parse_memory_limit(value) if isinstance(value, str) else None
+    if parsed is None or parsed <= 0:
+        raise ValueError(f'[jobs].memory_budget = {value!r} must be a positive size such as "24g"')
+    return parsed
+
+
 def heavy_memory_reservation(
     configured_memory: object,
     calibration: SynthesisMemoryCalibration | None,

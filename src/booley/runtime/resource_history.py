@@ -29,6 +29,8 @@ SCHEMA = "booley.job-resource-history/v1"
 MAX_SAMPLES_PER_KEY = 20
 MAX_KEY_AGE = timedelta(days=90)
 _LOCK_TIMEOUT_S = 10.0
+# Set by Doctor on every Flow run it starts; such runs write no records.
+DOCTOR_RUN_ENV = "BOOLEY_INTERNAL_DOCTOR_RUN"
 
 
 def history_path(booley_dir: Path) -> Path:
