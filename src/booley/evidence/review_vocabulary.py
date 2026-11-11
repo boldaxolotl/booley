@@ -3,6 +3,11 @@
 from collections.abc import Mapping
 from types import MappingProxyType
 
+# Where a finding of a diff-scoped (``--base``) review comes from: the change
+# under review, or code that was already faulty at the merge-base.
+ORIGIN_INTRODUCED = "introduced"
+ORIGIN_PRE_EXISTING = "pre_existing"
+ALL_ORIGINS: frozenset[str] = frozenset({ORIGIN_INTRODUCED, ORIGIN_PRE_EXISTING})
 DISPOSITION_CURRENT = "current"
 DISPOSITION_ADVISORY = "advisory"
 DISPOSITION_DEFERRED = "deferred"

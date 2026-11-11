@@ -120,7 +120,13 @@ def test_review_paths_match_category_and_stay_inside_worktree(project: Path) -> 
 
 
 @pytest.mark.parametrize(
-    "option,value", [("--scope", "rtl/dut.sv"), ("--spec", "spec.md"), ("--steer", "skip reset")]
+    "option,value",
+    [
+        ("--scope", "rtl/dut.sv"),
+        ("--spec", "spec.md"),
+        ("--steer", "skip reset"),
+        ("--base", "main"),
+    ],
 )
 def test_goal_refuses_developer_review_inputs(
     project: Path, monkeypatch: pytest.MonkeyPatch, option: str, value: str
@@ -183,6 +189,7 @@ def test_goal_discovery_refuses_open_findings_and_verify_only_checks_fixes(
         ["--category", "rtl"],
         ["--focus", "bugs"],
         ["--scope", "rtl/dut.sv"],
+        ["--base", "main"],
         ["--steer", "waive"],
         ["--dry-run"],
         ["--instruction", "waive"],

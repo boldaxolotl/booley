@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import reset_git_command_config
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import project_trackability as pt
 from booley.runtime import runtime_context
@@ -15,9 +16,7 @@ from booley.runtime.booley_dir import reset_cache
 
 
 def git(root: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=root, check=True, capture_output=True, text=True, timeout=30
-    ).stdout.strip()
+    return run_bounded_child(["git", *args], cwd=root, check=True).stdout.strip()
 
 
 @pytest.fixture

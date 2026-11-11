@@ -777,21 +777,21 @@ def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
     assert "point_ids must contain canonical Coverage Point IDs" in result.outcome.report_text
 
 
-def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path):
+def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path, monkeypatch):
     from booley.flows.sim.campaign_retention import prune_invocation, prune_native_payload
-    from tests.flows.sim.test_campaign_retention import campaign
+    from tests.flows.sim.campaign_test_support import coverage_invocation
 
-    outcome = campaign(tmp_path)
+    run = coverage_invocation(tmp_path, monkeypatch)
     analyst = CoverageAnalystSpecialist(model=Model())
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(outcome.campaign_path)])
-    before = analyst.coverage_analyst(outcome.campaign_path).to_dict()
+    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(run.public)])
+    before = analyst.coverage_analyst(run.public).to_dict()
     prune_native_payload(tmp_path / "reports", 1, "sim_0")
-    after = analyst.coverage_analyst(outcome.campaign_path).to_dict()
+    after = analyst.coverage_analyst(run.public).to_dict()
     assert after == before
     assert after["source_access"] == "verified"
     prune_invocation(tmp_path / "reports", 1)
     with pytest.raises(CoverageAnalysisError, match="fully pruned"):
-        analyst.coverage_analyst(outcome.campaign_path)
+        analyst.coverage_analyst(run.public)
 
 
 def test_relative_campaign_resolves_against_selected_work_dir(tmp_path):

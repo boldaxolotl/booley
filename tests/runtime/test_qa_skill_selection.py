@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import qa_skill_selection as selection
 
@@ -22,19 +22,9 @@ def _checkout(tmp_path: Path) -> Path:
         skill = root / "qa" / name
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("# QA\n", encoding="utf-8")
-    subprocess.run(
-        ["git", "init", "-b", "feature", str(root)],
-        check=True,
-        capture_output=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    subprocess.run(
-        ["git", "-C", str(root), "add", "."],
-        check=True,
-        capture_output=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    subprocess.run(
+    run_bounded_child(["git", "init", "-b", "feature", str(root)], check=True)
+    run_bounded_child(["git", "-C", str(root), "add", "."], check=True)
+    run_bounded_child(
         [
             "git",
             "-C",
@@ -48,8 +38,6 @@ def _checkout(tmp_path: Path) -> Path:
             "fixture",
         ],
         check=True,
-        capture_output=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return root
 
