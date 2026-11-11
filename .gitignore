@@ -35,13 +35,6 @@ crates/bwave/tests/perf_real_baseline.json
 /.worktrees/
 /tmp/
 
-# Mutation testing cache and one-off helper scripts
-/mutants/
-src/.mutmut-results*.json
-src/_mutmut_check.py
-src/_run_wave*.py
-src/_test_one_mutant.py
-
 # Agent temp scripts (tmp/ is gitignored above)
 
 # Build/dist artifacts

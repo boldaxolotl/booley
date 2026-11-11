@@ -266,6 +266,10 @@ class Specialist(McpTool):
             if part.strip()
         )
 
+    def _workspace_shared_files(self) -> tuple[str, ...]:
+        """Project-relative non-HDL files both categories may read in a snapshot."""
+        return ()
+
     @abstractmethod
     def _build_prompt(self) -> str:
         """Build the agent prompt. Implemented by subclasses."""
@@ -346,6 +350,7 @@ class Specialist(McpTool):
             self.workspace_access,
             self._workspace_isolation_category(),
             scope=self._workspace_isolation_scope(),
+            shared_files=self._workspace_shared_files(),
             excluded_roots=(
                 (Path(self.args.report_dir).resolve(),)
                 if getattr(self.args, "report_dir", None)

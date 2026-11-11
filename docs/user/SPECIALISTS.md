@@ -21,6 +21,12 @@ other side. A reviewer looking at the testbench never reads the RTL, so it
 judges the tests against the spec rather than against what the RTL happens to
 do. [Features](FEATURES.md#independent-specialists) explains why this matters.
 
+Outside Goal Mode, firmware is the exception: both Reviewers can read it, as
+context. Firmware means non-HDL files under the project's `fw/` directory; HDL
+under `fw/` (backups like `rom.sv.orig` included) still counts as RTL. A Reviewer never reports findings in firmware (a finding it
+reports there is shown as out of scope and never counts as open), and a
+`--scope` made only of firmware files is refused.
+
 ## Running a Specialist
 
 Ask the agent, for example:
@@ -42,6 +48,11 @@ booley specialist reviewer --category rtl --focus bugs --scope rtl
 ```
 
 Runs you start yourself never count as Goal evidence.
+
+For a Reviewer run, pass the specification as a file with `--spec <path>` or
+as text with `--spec-text "<text>"` (not both). A completed review exits 0
+even with open findings; add `--fail-on critical|major|minor` to exit 1 when a
+finding at or above that severity is open. `--verify` accepts `--fail-on` too.
 
 Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
 it applies, `--target`. Two options exist only on the command line:

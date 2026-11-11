@@ -12,9 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
-from booley.evidence.fields import RECIPE_FINGERPRINT_PARAM
+from booley.evidence.fields import BASELINE_TARGET_PARAM, RECIPE_FINGERPRINT_PARAM
 from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
 from booley.goals.state_store import read_goal_state_file

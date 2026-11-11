@@ -92,6 +92,7 @@ def _vivado() -> Path:
 @pytest.mark.slow
 @pytest.mark.parametrize("profile", _PROFILES)
 def test_profile_completes_routed_characterization(profile: str, tmp_path: Path) -> None:
+    # Kept on subprocess.run: opt-in licensed-host Vivado routed run takes minutes, beyond the shared budget.
     completed = subprocess.run(
         [
             str(_vivado()),

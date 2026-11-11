@@ -14,10 +14,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, TYPE_CHECKING
 
 from booley.core.file_lock import LockContentionError, acquire_file_lock, release_file_lock
 from booley.runtime.safe_storage import refuse_symlinks
+
+if TYPE_CHECKING:  # chat_resume imports this module
+    from booley.harness.chat_resume import ResumeTarget
 
 LOCK_RELATIVE_PATH = Path("runtime") / "chat-main.lock"
 
@@ -38,10 +41,15 @@ class MainLock:
 
 @dataclass(frozen=True)
 class Placement:
-    """Where the agent starts; `reason` explains a worktree in the banner."""
+    """Where the agent starts; `reason` explains a worktree in the banner.
+
+    A *resume* places a resumed conversation (ADR 0082, Resume): in the worktree it ran in,
+    or, with no `cwd`, in the main checkout with its own arguments.
+    """
 
     worktree: bool
     reason: str | None = None
+    resume: ResumeTarget | None = None
 
 
 @contextmanager
@@ -96,11 +104,10 @@ def launch_checkout(cwd: Path, main_root: Path) -> str:
     return "main" if git_dir == common_dir and root.resolve() == main_root.resolve() else "other"
 
 
-def main_checkout_session(common: Path, main_root: Path) -> str | None:
-    """Return the handle of a live Session working in the main checkout, else ``None``.
+def _live_sessions(common: Path) -> list[tuple[Path, str]]:
+    """The work directory and handle of each live Session in the retained registry rows.
 
-    Uses the retained rows `worktree rm` and the Dashboard use. An unreadable registry
-    reads as no Session: the lock is the authority, this check only widens it.
+    An unreadable registry reads as no Session: the lock is the authority, this only widens it.
     """
     from booley.config.goals import quiet_after
     from booley.mcp.session_registry import SessionRegistry, namespace
@@ -110,13 +117,40 @@ def main_checkout_session(common: Path, main_root: Path) -> str | None:
         registry = SessionRegistry(common, quiet_after=quiet_after(common))
         snapshot = registry.visible_snapshot(now=time.time(), scope=namespace())
     except (OSError, ValueError):
-        return None
+        return []
     labels, _ = HandleStore(common).snapshot()
+    found: list[tuple[Path, str]] = []
     for row in snapshot.rows:
         work_dir = row.attribution.work_dir or row.attribution.default_work_dir
-        if work_dir and Path(work_dir).resolve() == main_root.resolve():
-            return labels.get(row.attribution.key, row.attribution.key)
+        if work_dir:
+            found.append(
+                (Path(work_dir).resolve(), labels.get(row.attribution.key, row.attribution.key))
+            )
+    return found
+
+
+def main_checkout_session(common: Path, main_root: Path) -> str | None:
+    """Return the handle of a live Session working in the main checkout, else ``None``.
+
+    Uses the retained rows `worktree rm` and the Dashboard use.
+    """
+    for work_dir, label in _live_sessions(common):
+        if work_dir == main_root.resolve():
+            return label
     return None
+
+
+def worktree_sessions(common: Path) -> dict[str, str]:
+    """Map each worktree name to the handle of a live Session working inside it.
+
+    Sees agents the conversation records miss: a Codex started by hand has no process key.
+    """
+    root = (common / "worktrees").resolve()
+    found: dict[str, str] = {}
+    for work_dir, label in _live_sessions(common):
+        if work_dir.is_relative_to(root) and work_dir != root:
+            found.setdefault(work_dir.relative_to(root).parts[0], label)
+    return found
 
 
 def choose_placement(

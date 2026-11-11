@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from enum import StrEnum
 from pathlib import Path
 
@@ -22,6 +23,15 @@ INTERACTIVE_LOGS_DIR_NAME = ".interactive_logs"
 # Goal Records inside the Booley Directory: one subdirectory per Goal id, whose Flow
 # reports live at ``<goal-id>/.runtime/flow-reports``.
 GOALS_DIR_NAME = "goals"
+# A Goal slug is a short lowercase path segment; a Goal id is ``<slug>-<compact UTC
+# timestamp>``. Leftover Goal Record directories can outlive Goal Mode, so code that
+# only needs to recognise one (Specialist workspace isolation; the Goal Record store and
+# recorder also reuse the id pattern) reads the names here.
+GOAL_SLUG_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+GOAL_SLUG_MAX_LENGTH = 64
+GOAL_ID_PATTERN = re.compile(rf"(?P<slug>{GOAL_SLUG_PATTERN.pattern})-\d{{8}}T\d{{6}}Z")
+# The per-record directory of receipts and reviewer inputs.
+GOAL_RECORD_LOGS_DIR = "logs"
 
 
 class BooleyLayoutError(RuntimeError):
@@ -145,3 +155,9 @@ def pending_journal(root: Path) -> Path | None:
     """Find a pending migration without invoking Git or creating files."""
     journal = layout_metadata(root) / "directory-migration.json"
     return journal if journal.is_file() else None
+
+
+def is_goal_record_name(name: str) -> bool:
+    """Whether *name* has the form of a Goal id, as opposed to ``history`` or ``locks``."""
+    match = GOAL_ID_PATTERN.fullmatch(name)
+    return match is not None and len(match["slug"]) <= GOAL_SLUG_MAX_LENGTH

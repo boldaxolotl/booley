@@ -19,6 +19,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   file hashes, generator and pyslang versions, seed, and count. `--steer` and
   `--regen-lock` are removed, and the mutation lock is no longer used.
 
+- A failed test function that a Cocotb Target without registered Tests discovered
+  now gets one `booley flow sim --target <name> --seed N` command that reruns the
+  whole batch, instead of a `--test=<name>@N` command that Booley refused with
+  exit 2.
+- `booley init` now records the default Agent CLI as `[agent] default` instead of
+  the older name `provider`, and the `--provider` conflict error names
+  `[agent] default`. An existing `provider` key is kept as written and still
+  works.
 - `booley resources` now keeps each Test Variant of a simulation apart
   (`tests=first+slow`; the default Variant keeps the bare Test name, and the
   seeds of one Variant share an entry). Flow runs that `booley doctor` starts

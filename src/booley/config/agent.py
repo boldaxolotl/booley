@@ -268,13 +268,13 @@ def _gateway_pin(auth: Mapping[str, str]) -> GatewayModelPin:
 def _unresolved_provider_error() -> BackendConfigError:
     return BackendConfigError(
         "Agent provider unresolved inside container: BOOLEY_PRIMARY_PROVIDER "
-        "is unset, no booley.toml with an [agent] provider was found at "
+        "is unset, no booley.toml with an [agent] default was found at "
         "BOOLEY_DIR, and BOOLEY_AGENT_APP names no provider. "
         "If you are running a specialist directly (e.g. "
         "`python -m booley.dev_support.reviewer ...`), pin the backend with one "
         "of:\n"
         "  * export BOOLEY_PRIMARY_PROVIDER=claude   # or codex\n"
-        '  * add an [agent] provider = "claude" block to booley.toml\n'
+        '  * add an [agent] default = "claude" block to booley.toml\n'
         "In a developer run this instead means the propagation broke — "
         "rebuild the sandbox image if it predates the provider hand-off."
     )

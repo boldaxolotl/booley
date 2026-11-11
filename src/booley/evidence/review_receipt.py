@@ -34,6 +34,7 @@ class ReviewInvocation:
     scope: tuple[str, ...]
     mode: str
     spec_path: Path | None = None
+    spec_text: str | None = None
     steering: str = ""
     tb_policy_digest: str = ""
 
@@ -66,6 +67,19 @@ def _document_digest(path: Path | None) -> str:
         raise ReviewContextError(f"Could not read persisted Reviewer context: {exc}") from exc
 
 
+def _text_digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _contract_document_digest(contract: Mapping[str, Any], name: str) -> str:
+    """Current digest of the document a contract names; inline spec text digests itself."""
+    inline = contract.get("spec_text") if name == "spec" else None
+    if isinstance(inline, str):
+        return _text_digest(inline)
+    raw_path = contract.get(f"{name}_source")
+    return _document_digest(Path(raw_path) if isinstance(raw_path, str) and raw_path else None)
+
+
 def _scope_hashes(work_dir: Path, scope: tuple[str, ...]) -> dict[str, str]:
     hashes: dict[str, str] = {}
     for raw in sorted(scope):
@@ -83,7 +97,7 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         invocation.work_dir,
     )
     scope = tuple(sorted(path.replace("\\", "/").removeprefix("./") for path in invocation.scope))
-    return {
+    contract: dict[str, Any] = {
         "version": REVIEW_DETAIL_VERSION,
         "filtering_semantics_revision": FILTERING_SEMANTICS_REVISION,
         "category": invocation.category,
@@ -98,6 +112,14 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         "tb_policy_digest": invocation.tb_policy_digest,
         "steering_digest": _digest(invocation.steering),
     }
+    if invocation.spec_text is not None:
+        # Inline text has no file: the contract carries it, so --verify and freshness reuse it.
+        contract.update(
+            spec_text=invocation.spec_text,
+            spec_source="",
+            spec_digest=_text_digest(invocation.spec_text),
+        )
+    return contract
 
 
 def finalize_review_detail(
@@ -147,7 +169,7 @@ def _persisted_document_changed(
     path = Path(raw_path) if isinstance(raw_path, str) and raw_path else None
     if path is not None and not path.is_file() and not allow_missing:
         raise ReviewContextError(f"Could not read persisted Reviewer context: {path}")
-    return contract.get(f"{name}_digest") != _document_digest(path)
+    return contract.get(f"{name}_digest") != _contract_document_digest(contract, name)
 
 
 def review_receipt_drift(
@@ -217,9 +239,7 @@ def current_review_receipt_identity(
     )
     documents = {}
     for name in ("ticket", "spec"):
-        raw_path = contract.get(f"{name}_source")
-        path = Path(raw_path) if isinstance(raw_path, str) and raw_path else None
-        documents[name] = _document_digest(path)
+        documents[name] = _contract_document_digest(contract, name)
     return {
         "version": contract.get("version"),
         "filtering_semantics_revision": FILTERING_SEMANTICS_REVISION,
