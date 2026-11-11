@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 from functools import cache
 from html.parser import HTMLParser
 from pathlib import Path
@@ -13,6 +12,7 @@ from urllib.parse import unquote, urlsplit
 import pytest
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime.docs_links import SITE_DOCS, SITE_URL, github_anchor
 
@@ -39,13 +39,10 @@ def _frozen_upstream_documents() -> set[Path]:
 
 def _markdown_files() -> list[Path]:
     """Return versioned and pending non-ignored Markdown, excluding worktrees."""
-    result = subprocess.run(
+    result = run_bounded_child(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.md"],
         cwd=REPO_ROOT,
         check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
     )
     frozen = _frozen_upstream_documents()
     return [
@@ -302,13 +299,9 @@ _RETIRED_HOST_ALLOWED = {
 
 def test_tracked_files_name_the_site_by_its_current_domain() -> None:
     """Old-host links pass the link check above (another host), so catch them here."""
-    result = subprocess.run(
-        ["git", "grep", "-l", "--fixed-strings", _RETIRED_SITE_HOST],
-        cwd=REPO_ROOT,
-        check=False,  # exit 1 means no match, checked below
-        capture_output=True,
-        text=True,
-        timeout=60,
+    # Exit 1 means no match, checked below.
+    result = run_bounded_child(
+        ["git", "grep", "-l", "--fixed-strings", _RETIRED_SITE_HOST], cwd=REPO_ROOT
     )
     assert result.returncode in (0, 1), result.stderr
     stale = sorted(set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED)
