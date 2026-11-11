@@ -672,6 +672,57 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
     assert log.read_text(encoding="utf-8") == result.outcome.output
 
 
+def test_elab_only_build_label_carries_source_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from booley.flows import job_resources
+    from booley.fusesoc.fusesoc_registry import ResolvedFile
+
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    (tmp_path / "dut.sv").write_bytes(b"module dut; endmodule\n")
+    (tmp_path / "tb.sv").write_bytes(b"module tb; endmodule\n")
+    expected_bytes = sum(len(path.read_bytes()) for path in tmp_path.glob("*.sv"))
+    prepared = PreparedSimulationBuild(
+        target="sim_dut",
+        target_identity="::dut:0#sim_dut",
+        resolved=SimpleNamespace(
+            build_root=tmp_path,
+            files=(
+                ResolvedFile("dut.sv", "systemVerilogSource"),
+                ResolvedFile("tb.sv", "systemVerilogSource"),
+            ),
+        ),
+        work_root=tmp_path,
+        build_root=tmp_path / "inner",
+        eda_tool="verilator",
+        toplevel="tb_dut",
+        make_argv=("make",),
+        environment={},
+        fileset={},
+    )
+    seen: list[job_resources.ResourceLabel | None] = []
+
+    def execute(command: list[str], *, timeout: int) -> SubprocessResult:
+        seen.append(job_resources.current_label())
+        return SubprocessResult(returncode=0)
+
+    monkeypatch.setattr(flow, "_execute_boundary", execute)
+    monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)
+    monkeypatch.setattr(flow, "_persist_elab_only_log", lambda *_args: "")
+    job_resources.clear_label()
+
+    flow._execute_elab_only_build("sim_dut", prepared)
+    job_resources.clear_label()
+
+    assert seen == [
+        job_resources.ResourceLabel("sim_dut", "sim_build", source_bytes=expected_bytes)
+    ]
+    assert expected_bytes > 0
+
+
 def test_elaboration_plan_discloses_build_budget_as_its_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -942,6 +993,7 @@ def test_standalone_live_probe_has_module_and_build_only_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.flows.sim.live_progress import LiveProgressSink, install_progress
+    from booley.flows.sim.standalone import _StandaloneProbe
 
     flow = _flow_with_state(tmp_path, ["sim_dut"])
     invocation = flow.reserve_invocation_dir()
@@ -963,7 +1015,32 @@ def test_standalone_live_probe_has_module_and_build_only_stage(
     with flow.publication_resources, install_progress(sink):
         flow._write_elab_only_progress(["sim_dut"], [], phase="starting")
         finding, _log, error = flow._run_standalone_probe(
-            "dut", "dut.sv", [], "verilator", timeout_s=5
+            _StandaloneProbe("dut", "dut.sv", "verilator", (), False, ()), timeout_s=5
         )
     assert finding is None
     assert error == ""
+
+
+def test_elab_only_dry_run_writes_flow_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Elaboration Check keeps printing its elaboration FlowPlan (ordinary runs have none)."""
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _ordinary_public_hook_fixture
+
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+
+    result = flow.execute(
+        SimRequest(
+            target="sim_a",
+            mode="elab_only",
+            dry_run=True,
+            work_dir=project,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
+    plan = json.loads((tmp_path / "reports/sim/flow_plan.json").read_text(encoding="utf-8"))
+    assert plan["mode"] == "elab_only"
+    assert [unit["selector"] for unit in plan["work_units"]] == ["sim_a"]

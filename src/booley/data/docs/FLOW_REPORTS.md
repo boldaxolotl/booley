@@ -96,11 +96,11 @@ A dry run runs no EDA tool, touches no Criteria, and fills no caches. It may
 run FuseSoC setup or generators in a throwaway directory when resolving the
 Target requires it; `planning_disclosures` says so when that happens.
 
-For Simulation, ordinary candidate and baseline units expose the simulator
-budget as `timeout_ms` and the invocation-carried build budget as recipe
-`build_timeout_ms`. Elaboration Check units expose their build budget in both
-fields because the Target build is their only subprocess. Standalone units
-retain the standalone-sweep `timeout_ms` and have no build field.
+For Simulation, only the Elaboration Check prints this plan: its units expose
+their build budget as `timeout_ms` and recipe `build_timeout_ms` because the
+Target build is their only subprocess. An ordinary or coverage dry run prints
+its Simulation Campaign preview instead. Standalone units retain the
+standalone-sweep `timeout_ms` and have no build field.
 
 ## `sim`
 
@@ -219,8 +219,10 @@ For `elab_only_standalone`, `report.json` also has `detail.standalone` with
 `modules_checked`, `shared_files`, `frontend`, `probes`, `failures`, any
 `unparsed` modules, and the log path. `frontend` is the `+`-joined probe
 frontends (`iverilog+verilator` for a mixed sweep, the plain name otherwise).
-`probes` groups the `{module, file}` pairs by `{frontend, fallback}`. Each
-`failures` and `unparsed` entry also carries `frontend` and `fallback`.
+`probes` groups the `{module, file}` pairs by `{frontend, dialect_flags,
+fallback}`; `dialect_flags` lists the language-dialect flags the probe ran with
+(empty for the compiler's default dialect). Each `failures` and `unparsed` entry
+also carries `frontend`, `dialect_flags` and `fallback`.
 
 ### Coverage Campaign files
 

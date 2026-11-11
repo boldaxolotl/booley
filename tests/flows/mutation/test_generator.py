@@ -1,4 +1,4 @@
-"""Contract tests for the deterministic Mutant generator (ADR 0088, issue #2933).
+"""Contract tests for the deterministic Mutant generator (ADR 0088, issues #2933, #2934).
 
 Fixtures are small Verilog (``.v``) and SystemVerilog (``.sv``) files beside this
 module; each test copies the ones it needs into ``tmp_path``.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,7 +49,16 @@ _EVERY_APPLICABLE_FIXTURE = (
     "repeat_on_line.v",
     "ifdef.sv",
     "latin1.v",
+    "constants.v",
+    "constants.sv",
+    "bit_select.v",
+    "bit_select.sv",
+    "deletion.v",
+    "deletion.sv",
 )
+_ARITHMETIC = ("arithmetic-logical",)
+_RELATIONAL = ("relational",)
+_OPERATORS_1_TO_3 = ("relational", "arithmetic-logical", "condition")
 _ALL = 10_000  # more than any fixture holds: selects every candidate
 
 
@@ -67,10 +77,28 @@ def _write(tmp_path: Path, name: str, text: str) -> str:
     return name
 
 
-def _sites(selection: MutantSelection) -> list[tuple[int, str, str]]:
-    """The (line, original, mutated) of every Mutant, in source order."""
-    ordered = sorted(selection.mutants, key=lambda m: (m.file, m.start, m.mutated_code))
+def _sites(selection: MutantSelection, operators: tuple[str, ...]) -> list[tuple[int, str, str]]:
+    """The (line, original, mutated) of every Mutant of ``operators``, in source order."""
+    chosen = [m for m in selection.mutants if m.operator in operators]
+    ordered = sorted(chosen, key=lambda m: (m.file, m.start, m.mutated_code))
     return [(m.line, m.original_code, m.mutated_code) for m in ordered]
+
+
+def _edited_lines(
+    root: Path, name: str, selection: MutantSelection, operator: str
+) -> list[tuple[int, str]]:
+    """The (line, whole line after applying the Mutant) of every Mutant of ``operator``.
+
+    Unlike ``_sites`` this does not depend on how far the applier's anchor widens
+    a site, so a select or a placeholder is read in its line.
+    """
+    pristine = (root / name).read_bytes()
+    edited: list[tuple[int, str]] = []
+    for mutant in selection.mutants:
+        if mutant.operator == operator:
+            text = pristine[: mutant.start] + mutant.mutated_code.encode() + pristine[mutant.end :]
+            edited.append((mutant.line, text.decode().splitlines()[mutant.line - 1]))
+    return sorted(edited)
 
 
 def _generate(tmp_path: Path, *names: str, **kwargs: object) -> MutantSelection:
@@ -119,7 +147,7 @@ def test_other_import_failures_are_not_reported_as_a_missing_package(
 
 
 def test_relational_operator_sites(tmp_path: Path) -> None:
-    assert _sites(_generate(tmp_path, "relational.v")) == [
+    assert _sites(_generate(tmp_path, "relational.v"), _RELATIONAL) == [
         (2, "<", "<="),
         (3, "<=", "<"),
         (4, ">", ">="),
@@ -132,7 +160,7 @@ def test_relational_operator_sites(tmp_path: Path) -> None:
 
 
 def test_wildcard_equality_sites(tmp_path: Path) -> None:
-    assert _sites(_generate(tmp_path, "relational_sv.sv")) == [
+    assert _sites(_generate(tmp_path, "relational_sv.sv"), _RELATIONAL) == [
         (2, "==?", "!=?"),
         (3, "!=?", "==?"),
     ]
@@ -140,7 +168,7 @@ def test_wildcard_equality_sites(tmp_path: Path) -> None:
 
 def test_arithmetic_logical_operator_sites(tmp_path: Path) -> None:
     # Division and unary minus on the last lines of the fixture yield nothing.
-    assert _sites(_generate(tmp_path, "arith_logic.sv")) == [
+    assert _sites(_generate(tmp_path, "arith_logic.sv"), _ARITHMETIC) == [
         (2, "+", "-"),
         (3, "-", "+"),
         (4, "*", "+"),
@@ -187,12 +215,287 @@ def test_excluded_contexts_yield_no_mutants(tmp_path: Path) -> None:
     # `<=`, part-select bound, block-local dimension, delays, event expression,
     # `for` initializer and step, `$display` argument, assertions (immediate,
     # assume, cover, and concurrent), macro-ended condition, `initial`, generate-for
-    # bound, and class methods at file level and inside a package.
-    assert _sites(selection) == [
+    # bound, replication count, size-cast width, and class methods at file level and
+    # inside a package.
+    assert _sites(selection, _OPERATORS_1_TO_3) == [
         (12, "==", "!="),
         (13, "==", "!="),
         (16, "+", "-"),
     ]
+    # Operators 4-6 find only the plain literals (the `IDLE macro adds none) and the
+    # assignments in design code; `a` has a parameterized range, so no select is moved.
+    assert _edited_lines(tmp_path, "exclusions.sv", selection, "constant") == [
+        (11, "    y = 1'b1;"),
+        (12, "    z = (a[0] == 1'b0);"),
+        (13, "    if (state == `IDLE) y = 1'b0;"),
+    ]
+    assert _edited_lines(tmp_path, "exclusions.sv", selection, "bit-select") == []
+    assert _edited_lines(tmp_path, "exclusions.sv", selection, "deletion") == [
+        (11, "    begin end"),
+        (12, "    begin end"),
+        (13, "    if (state == `IDLE) begin end"),
+        (14, "    begin end"),
+        (16, "  /* deleted */"),
+        (21, "  /* deleted */"),
+        (22, "  always @(a == b) begin end"),
+        (36, "  /* deleted */"),
+        (37, "  /* deleted */"),
+    ]
+
+
+# Operators 4-6 (issue #2934): constant, bit-select, deletion.
+
+_CONSTANT_SITES = {
+    "constants.v": [
+        (7, "00", "01"),  # reset value: only +1 / flip, never negative
+        (8, "1", "0"),  # unsized 1 never grows to 2
+        (11, "FF", "FE"),  # 255 + 1 does not fit in 8 bits; hex case kept
+        (12, "7", "6"),  # unsized 7 never grows to 8
+        (13, "A", "9"),
+        (13, "A", "B"),
+        (14, "01_01", "0100"),
+        (14, "01_01", "0110"),
+        (16, "2", "1"),
+        (16, "2", "3"),
+        (18, "0f", "0e"),
+        (18, "0f", "10"),
+        (19, "9", "10"),
+        (19, "9", "8"),
+    ],
+    "constants.sv": [
+        (6, "'0", "'1"),
+        (7, "1", "0"),
+        (7, "1", "2"),
+        (10, "'1", "'0"),
+        (11, "1_001", "1000"),
+        (11, "1_001", "1010"),
+        (14, "2", "1"),
+        (14, "2", "3"),
+        (14, "3", "2"),
+        (14, "3", "4"),
+        (16, "0F", "0E"),
+        (16, "0F", "10"),
+        (17, "9", "10"),
+        (17, "9", "8"),
+        (21, "4", "3"),
+        (21, "4", "5"),
+    ],
+}
+
+
+@pytest.mark.parametrize("name", ["constants.v", "constants.sv"])
+def test_constant_operator_sites(tmp_path: Path, name: str) -> None:
+    """Value digits change; sizes and bases stay.  Excluded literals sit in the fixtures.
+
+    Not mutated: parameter and localparam defaults, ranges, replication counts, size
+    casts, `x`/`z` digits, `'x`, a whole `if` condition, `case` labels, and every
+    literal under a `for`, `while` or `do` loop.
+    """
+    assert _sites(_generate(tmp_path, name), ("constant",)) == _CONSTANT_SITES[name]
+
+
+_BIT_SELECT_SITES = {
+    "bit_select.v": [
+        (2, "  assign o = i[1];"),
+        (8, "  assign ya = a[2];"),
+        (8, "  assign ya = a[4];"),
+        (9, "  assign yb = a[1];"),
+        (10, "  assign yc = a[6];"),
+        (11, "  assign yd = b[1];"),
+        (12, "  assign ye = b[6];"),
+        (13, "  assign yf = c[2];"),
+        (14, "  assign yg = c[7];"),
+        (15, "  assign yh = mem[0][0];"),
+        (15, "  assign yh = mem[0][2];"),
+        (15, "  assign yh = mem[1][1];"),
+        (21, "  assign sa = a[4:1];"),
+        (22, "  assign sb = a[6:3];"),
+        (24, "  assign sd = b[1:4];"),
+        (24, "  assign sd = b[3:6];"),
+        (27, "    r[0] = a[0];"),
+        (27, "    r[0] = a[2];"),
+        (28, "    {r[2], r[3]} = a[4:3];"),
+        (28, "    {r[2], r[3]} = a[6:5];"),
+    ],
+    "bit_select.sv": [
+        (3, "    return x[1];"),
+        (3, "    return x[3];"),
+        (7, "  return x[1];"),
+        (14, "  assign ya = a[2];"),
+        (14, "  assign ya = a[4];"),
+        (15, "  assign yb = u[0][0];"),
+        (15, "  assign yb = u[1][1];"),
+        (15, "  assign yb = u[2][0];"),
+        (16, "  assign yc = md[0][7];"),
+        (16, "  assign yc = md[1][6];"),
+        (16, "  assign yc = md[2][7];"),
+        (20, "  assign yg = md[1][6:3];"),
+        (20, "  assign yg = md[2][5:2];"),
+        (20, "  assign yg = md[2][7:4];"),
+        (20, "  assign yg = md[3][6:3];"),
+        (23, "    r[2] = a[3];"),
+        (23, "    r[2] = a[5];"),
+    ],
+}
+
+
+@pytest.mark.parametrize("name", ["bit_select.v", "bit_select.sv"])
+def test_bit_select_operator_sites(tmp_path: Path, name: str) -> None:
+    """Literal read selects move by one inside the declared range; a slice keeps its width.
+
+    Not moved: selects written by an assignment or a concatenation target, selects in
+    instance port connections (not design code), a full-width slice, `+:` selects,
+    non-literal or nested indices, and selects of a parameterized, typedef'd or
+    inherited-parameterized range, a parameter, or a queue.
+    """
+    selection = _generate(tmp_path, name)
+
+    assert _edited_lines(tmp_path, name, selection, "bit-select") == _BIT_SELECT_SITES[name]
+
+
+def test_bit_select_mutants_stay_within_declared_range(tmp_path: Path) -> None:
+    """Every index of a descending, ascending, offset and unpacked range moves only inward."""
+    declared = {"d": (0, 3), "e": (0, 3), "f": (2, 5), "u": (2, 5)}
+    lines = ["module r(input [3:0] d, input [0:3] e, input [5:2] f, input u [2:5], output y);"]
+    lines += [
+        f"  assign y = {var}[{i}];"
+        for var, (low, high) in declared.items()
+        for i in range(low, high + 1)
+    ]
+    name = _write(tmp_path, "r.sv", "\n".join([*lines, "endmodule", ""]))
+
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    moved = _edited_lines(tmp_path, name, selection, "bit-select")
+    # Four variables x (two edge indices with one move each, two inner indices with two).
+    assert len(moved) == 24
+    for _, text in moved:
+        var, index = re.findall(r"(\w)\[(\d+)\];", text)[0]
+        assert declared[var][0] <= int(index) <= declared[var][1], text
+
+
+_DELETION_SITES = {
+    "deletion.v": [
+        (2, "t = a & b", "t"),
+        (3, "u = a[0]", "u"),
+        (3, "v = b[0]", "v"),
+        (5, "assign y = a[0];", "/* deleted */"),
+        (8, "assign #1 w = b;", "/* deleted */"),
+        (10, "q = a;", "begin end"),
+        (11, "r = a;", "begin end"),
+        (11, "r = b;", "begin end"),
+        (13, "s <= a[3];", "begin end"),
+        (16, "4'd0: q <= b;", "/* deleted */"),
+        (16, "q <= b;", "begin end"),
+        (17, "4'd1: r <= b;", "/* deleted */"),
+        (17, "r <= b;", "begin end"),
+        (18, "q <= a;", "begin end"),
+        (21, "s <= 1'b1;", "begin end"),
+        (23, "q <= a;", "begin end"),
+        (33, "assign gx = a[0];", "begin end"),
+        (33, "assign gx = a[1];", "begin end"),
+        (34, "assign gw[g] = a[g];", "begin end"),
+        (36, "assign gy = a[2];", "begin end"),
+        (37, "assign gy = a[3];", "begin end"),
+        (40, "assign gz = a[0];", "/* deleted */"),
+    ],
+    "deletion.sv": [
+        (2, "t = a & b", "t"),
+        (3, "assign y = a[0];", "/* deleted */"),
+        (6, "q = a;", "begin end"),
+        (8, "r += 4'd1;", "begin end"),
+        (9, "lbl: s = a[1];", "begin end"),
+        (12, "(* keep *) q <= a;", "begin end"),
+        (14, "4'd0: r <= a;", "/* deleted */"),
+        (14, "r <= a;", "begin end"),
+        (15, "4'd1: begin r <= b; s <= a[0]; end", "/* deleted */"),
+        (15, "r <= b;", "begin end"),
+        (15, "s <= a[0];", "begin end"),
+        (19, "w[i] <= b[i];", "begin end"),
+        (23, "z = x;", "begin end"),
+    ],
+}
+
+
+@pytest.mark.parametrize("name", ["deletion.v", "deletion.sv"])
+def test_deletion_operator_sites(tmp_path: Path, name: str) -> None:
+    """One assignment, net initializer or non-default `case` item goes; `begin end` and a
+    comment stand in so the surrounding construct keeps a body.
+
+    Not deleted: a multi-assignment `assign`, `default` and a single `case` item,
+    declaration initializers, `++`, procedural `assign`, and anything in a loop body
+    (`repeat`, `foreach` and generate `for` bodies are bounded and stay).
+    """
+    assert _sites(_generate(tmp_path, name), ("deletion",)) == _DELETION_SITES[name]
+
+
+def test_awkward_contexts_neither_crash_nor_move_unsafe_sites(tmp_path: Path) -> None:
+    """Review regressions: a function's own return variable, a macro in a net initializer,
+    compound `case` labels, written selects (`++`, task output argument) and delays.
+    """
+    source = "\n".join(
+        [
+            "`define MASK 1'b1",
+            "module awk(input [3:0] a, input [1:0] u, input req, output reg [3:0] q, output reg c);",
+            "  wire en = `MASK & req;",
+            "  function [3:0] rev; input [3:0] x; begin rev[0] = x[3]; end endfunction",
+            "  task tk(output [1:0] o); o = 2'd1; endtask",
+            "  reg [3:0] r;",
+            "  always @* begin tk(r[1:0]); r[1]++; c = #5 ~c; q = rev(a); end",
+            "  always @* case (u)",
+            "    {1'b0, 1'b1}: q = 4'd2;",
+            "    (2'd2): q = 4'd3;",
+            "    default: q = 4'd4;",
+            "  endcase",
+            "endmodule",
+            "",
+        ]
+    )
+    name = _write(tmp_path, "awk.v", source)
+
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    # Only `x[3]` (a read) moves; the select of `rev` itself has no declared range to use.
+    bit_selects = [line for _, line in _edited_lines(tmp_path, name, selection, "bit-select")]
+    assert bit_selects == [
+        "  function [3:0] rev; input [3:0] x; begin rev[0] = x[2]; end endfunction"
+    ]
+    # Labels keep their constants; only the statements after them change.
+    for line, text in _edited_lines(tmp_path, name, selection, "constant"):
+        if line in (9, 10):
+            assert text.startswith(("    {1'b0, 1'b1}: q = 4'd", "    (2'd2): q = 4'd")), text
+    # The net initializer goes whole despite the macro; `c = #5 ~c` keeps its wait.
+    deletions = _edited_lines(tmp_path, name, selection, "deletion")
+    assert (3, "  wire en;") in deletions
+    assert all("c = #5 ~c;" in text for line, text in deletions if line == 7)
+    # Every Mutant of every operator still parses.
+    pristine = source.encode()
+    for mutant in selection.mutants:
+        edited = pristine[: mutant.start] + mutant.mutated_code.encode() + pristine[mutant.end :]
+        assert _error_count(edited.decode()) == 0, mutant
+
+
+def _error_count(text: str) -> int:
+    import pyslang
+
+    tree = pyslang.syntax.SyntaxTree.fromText(text)
+    return sum(1 for diagnostic in tree.diagnostics if diagnostic.isError())
+
+
+def test_deletion_mutants_reparse_cleanly(tmp_path: Path) -> None:
+    """Every deletion Mutant of every fixture, generate-body and `if` forms included, parses."""
+    for name in _EVERY_APPLICABLE_FIXTURE:
+        root = tmp_path / name
+        root.mkdir()
+        deletions = [m for m in _generate(root, name).mutants if m.operator == "deletion"]
+        assert deletions or not name.startswith("deletion"), name
+        pristine = (root / name).read_bytes()
+
+        for mutant in deletions:
+            edited = (
+                pristine[: mutant.start] + mutant.mutated_code.encode() + pristine[mutant.end :]
+            )
+            assert _error_count(edited.decode("utf-8", "replace")) == 0, (name, mutant)
 
 
 # AC3: every Mutant applies through the existing text-replacement applier.
@@ -249,7 +552,9 @@ def test_constant_condition_yields_only_variants_that_change_it(tmp_path: Path) 
     selection = generate_mutants(tmp_path, [name], _ALL, 1)
 
     # Forcing a constant true (or false) would be a no-op the applier rejects.
-    assert sorted((m.line, m.mutated_code) for m in selection.mutants) == [
+    assert sorted(
+        (m.line, m.mutated_code) for m in selection.mutants if m.operator == "condition"
+    ) == [
         (2, "!(1'b1)"),
         (2, "1'b0"),
     ]
@@ -280,9 +585,13 @@ def test_latin1_comment_keeps_offsets(tmp_path: Path) -> None:
     selection = _generate(tmp_path, "latin1.v")
     written = _apply_all(tmp_path, ["latin1.v"], selection.mutants)
 
-    assert _sites(selection) == [(3, "&", "|"), (4, "|", "&")]
+    assert _sites(selection, _ARITHMETIC) == [(3, "&", "|"), (4, "|", "&")]
     pristine = (tmp_path / "latin1.v").read_bytes()
-    line3 = next(i for i, m in enumerate(selection.mutants, start=1) if m.line == 3)
+    line3 = next(
+        i
+        for i, m in enumerate(selection.mutants, start=1)
+        if m.line == 3 and m.operator == "arithmetic-logical"
+    )
     assert written[line3].read_bytes() == pristine.replace(b"a & b", b"a | b")
 
 
@@ -293,10 +602,12 @@ module m1(input logic a, b, c, d, output logic y, z);
   assign y = a < b;
   assign z = a + b;
 endmodule
-module m2(input logic a, b, c, d, output logic y, z, w);
+module m2(input logic a, b, c, d, input logic [7:0] v, output logic y, z, w, x, k);
   assign y = a == b;
   assign z = a & b;
   assign w = c ? a : b;
+  assign x = v[3];
+  assign k = 4'd9;
 endmodule
 """
 _B_V = """module other(input a, b, c, output y, z, w, v);
@@ -330,7 +641,7 @@ def test_edit_in_one_file_keeps_other_files_ids_and_selection(tmp_path: Path) ->
     pool = generate_mutants(tmp_path, names, _ALL, 3)
     before = generate_mutants(tmp_path, names, 6, 3)
 
-    # An edit inside m1 adds one relational candidate.
+    # An edit inside m1 adds one relational and one deletion candidate.
     _write(tmp_path, "a.sv", _A_SV.replace("a + b;", "a + b;\n  assign z = a >= b;", 1))
     grown_pool = generate_mutants(tmp_path, names, _ALL, 3)
     after = generate_mutants(tmp_path, names, 6, 3)
@@ -339,7 +650,7 @@ def test_edit_in_one_file_keeps_other_files_ids_and_selection(tmp_path: Path) ->
     assert by_file(grown_pool, "b.v") == by_file(pool, "b.v")
     assert by_file(grown_pool, "a.sv") > by_file(pool, "a.sv")  # m2's IDs stayed, one was added
     new_ids = {m.id for m in grown_pool.mutants} - {m.id for m in pool.mutants}
-    assert len(new_ids) == 1
+    assert len(new_ids) == 2
     # Per operator the selection changes only where the new candidate outranks the last pick.
     picks_before, picks_after = _ids_by_operator(before), _ids_by_operator(after)
     for operator, ids in picks_before.items():
@@ -388,8 +699,8 @@ def test_ifdef_branch_follows_defines(tmp_path: Path) -> None:
     plain = _generate(tmp_path, "ifdef.sv")
     defined = _generate(tmp_path, "ifdef.sv", defines={"X": "1"})
 
-    assert _sites(plain) == [(4, "|", "&")]
-    assert _sites(defined) == [(2, "&", "|")]
+    assert _sites(plain, _ARITHMETIC) == [(4, "|", "&")]
+    assert _sites(defined, _ARITHMETIC) == [(2, "&", "|")]
 
 
 def test_include_directories_resolve_includes(tmp_path: Path) -> None:
@@ -410,13 +721,15 @@ def test_include_directories_resolve_includes(tmp_path: Path) -> None:
 
 # AC5: round-robin selection.
 
-_MIXED = """module mixed(input logic a, b, c, output logic p, q, r, s, t, u);
+_MIXED = """module mixed(input logic [3:0] a, b, c, output logic p, q, r, s, t, u, v, w);
   assign p = a < b;
   assign q = a > b;
   assign r = a + b;
   assign s = a - b;
   assign t = a & b;
   assign u = a ? b : c;
+  assign v = 4'd5;
+  assign w = a[1];
 endmodule
 """
 
@@ -424,22 +737,31 @@ endmodule
 def test_selection_is_round_robin_across_operators(tmp_path: Path) -> None:
     name = _write(tmp_path, "mixed.sv", _MIXED)
 
-    selection = generate_mutants(tmp_path, [name], 8, 5)
+    selection = generate_mutants(tmp_path, [name], 16, 5)
 
-    # 2 relational, 3 arithmetic-logical, 3 condition: the exhausted operator is skipped.
+    # 2 relational, 3 arithmetic-logical, 3 condition, 2 constant, 2 bit-select and 8
+    # deletion candidates: an exhausted operator is skipped.
     assert [m.operator for m in selection.mutants] == [
         "relational",
         "arithmetic-logical",
         "condition",
+        "constant",
+        "bit-select",
+        "deletion",
         "relational",
         "arithmetic-logical",
         "condition",
+        "constant",
+        "bit-select",
+        "deletion",
         "arithmetic-logical",
         "condition",
+        "deletion",
+        "deletion",
     ]
     assert selection.shortfall is None
     orders = {
-        tuple(m.id for m in generate_mutants(tmp_path, [name], 8, seed).mutants)
+        tuple(m.id for m in generate_mutants(tmp_path, [name], 16, seed).mutants)
         for seed in range(6)
     }
     assert len(orders) > 1  # the seed changes which candidates come first
@@ -447,13 +769,13 @@ def test_selection_is_round_robin_across_operators(tmp_path: Path) -> None:
 
 def test_fewer_candidates_than_count_returns_all_and_says_so(tmp_path: Path) -> None:
     _stage(tmp_path, "relational.v")
-    exact = generate_mutants(tmp_path, ["relational.v"], 8, 1)
+    exact = generate_mutants(tmp_path, ["relational.v"], 16, 1)  # 8 relational + 8 deletion
     asked = generate_mutants(tmp_path, ["relational.v"], 50, 1)
 
-    assert len(asked.mutants) == 8
-    assert (asked.requested, asked.available) == (50, 8)
+    assert len(asked.mutants) == 16
+    assert (asked.requested, asked.available) == (50, 16)
     assert asked.shortfall == (
-        "only 8 candidate Mutants exist; returning all of them (50 requested)"
+        "only 16 candidate Mutants exist; returning all of them (50 requested)"
     )
     assert exact.shortfall is None
 
