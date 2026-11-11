@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import docker_base_contract
 
@@ -61,12 +61,9 @@ def _remote_runner(documents: dict):
 
 
 def _fingerprint(repo: Path) -> str:
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, str(_SCRIPT), "--repo", str(repo), "--manifest", "inputs.txt"],
-        capture_output=True,
         check=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 
@@ -85,7 +82,7 @@ def test_contract_changes_with_content_but_not_mtime(tmp_path: Path) -> None:
 
 def test_contract_rejects_missing_or_unsafe_inputs(tmp_path: Path) -> None:
     (tmp_path / "inputs.txt").write_text("../outside\n", encoding="utf-8")
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             str(_SCRIPT),
@@ -94,10 +91,7 @@ def test_contract_rejects_missing_or_unsafe_inputs(tmp_path: Path) -> None:
             "--manifest",
             "inputs.txt",
         ],
-        capture_output=True,
         check=False,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 2
@@ -116,7 +110,7 @@ def test_contract_rejects_symlink_escape(tmp_path: Path) -> None:
     (tmp_path / "inputs.txt").write_text("linked.txt\n", encoding="utf-8")
     (tmp_path / "linked.txt").symlink_to(outside)
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             str(_SCRIPT),
@@ -125,10 +119,7 @@ def test_contract_rejects_symlink_escape(tmp_path: Path) -> None:
             "--manifest",
             "inputs.txt",
         ],
-        capture_output=True,
         check=False,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 2
