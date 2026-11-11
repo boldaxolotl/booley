@@ -190,6 +190,10 @@ def test_flow_emits_exactly_its_declarations(flow: str) -> None:
 
     # A Flow that declares metrics must be covered here, so a new one cannot go untested.
     assert set(_SAMPLE_RUNS) == set(flows_with_metric_declarations())
+    # ...and a Flow that declares metrics must have a reader, or its values read back as ``{}``.
+    from booley.measurement import flow_metrics
+
+    assert set(flow_metrics._READERS_BY_FLOW) == set(flows_with_metric_declarations())
 
     values = _SAMPLE_RUNS[flow]().flow_metrics()
 

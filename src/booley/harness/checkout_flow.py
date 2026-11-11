@@ -15,7 +15,7 @@ only endpoints on the shared CLI honour (built-in Flows and ``BooleyFlow`` Proje
 Flows); a Project Flow that overrides ``main`` is refused by the CLI with exit 2.
 
 The child half (:func:`child_main`) runs with the checkout as its working
-directory, so the checkout path is never part of the child's argv.
+directory, so the checkout path is never part of the child's exec argv.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -48,7 +48,7 @@ from booley.harness.standalone_job import (
 )
 from booley.measurement.environment import measurement_environment
 from booley.measurement.flow_metrics import report_metric_values
-from booley.runtime import job_records, runtime_context
+from booley.runtime import booley_dir, job_records, runtime_context
 from booley.runtime.handles import register_job
 from booley.runtime.process_group import (
     capture_process_group,
@@ -57,6 +57,7 @@ from booley.runtime.process_group import (
 )
 from booley.runtime.project_discovery import has_git_worktree_marker
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
+from booley.targets.flow_names import canonical
 
 # The Flow's tools run in sessions of their own: SIGINT lets the Flow reap them
 # before this grace period ends and the process group is killed.
@@ -122,6 +123,8 @@ def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path, Path]:
         )
     if not _FLOW_NAME.fullmatch(request.flow):
         raise CheckoutFlowError(f"invalid Flow name: {request.flow!r}")
+    if "\0" in request.target:
+        raise CheckoutFlowError(f"invalid Target name: {request.target!r}")
     checkout = request.checkout.resolve()
     if not checkout.is_dir():
         raise CheckoutFlowError(f"checkout is not a directory: {checkout}")
@@ -135,7 +138,10 @@ def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path, Path]:
     if os.environ.get("BOOLEY_DIR"):
         state_dirs.append(Path(os.environ["BOOLEY_DIR"]).resolve())
     for state_dir in state_dirs:
-        if checkout.is_relative_to(state_dir):
+        # Identity too: the Sandbox mounts its Booley Directory under two spellings.
+        if checkout.is_relative_to(state_dir) or booley_dir.contains(
+            checkout, booley_dir=state_dir
+        ):
             raise CheckoutFlowError(
                 f"checkout {checkout} is inside the Booley Directory {state_dir}"
             )
@@ -248,7 +254,10 @@ def _settle_record(
     record: job_records.JobRecord, jobs_root: Path, returncode: int | None, *, timed_out: bool
 ) -> job_records.JobRecord:
     """Return the final record, failing one the child left running or that timed out."""
-    final = job_records.read_record(record.run_id, jobs_root) or record
+    try:
+        final = job_records.read_record(record.run_id, jobs_root) or record
+    except OSError:  # unreadable record: settle what this process knows
+        final = record
     code = final.exit_code
     if code is None:
         code = _START_FAILURE_EXIT_CODE if returncode is None else _shell_status(returncode)
@@ -298,6 +307,7 @@ def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
         CheckoutFlowError: the request is refused or the child cannot be started.
     """
     checkout, main, report_dir = _refuse_unsafe(request)
+    request = replace(request, flow=canonical(request.flow))  # the CLI reports under this name
     run_id = job_records.make_run_id(request.flow, compact_utc_now(), 1)
     log_path = standalone_log_path(main, run_id)
     jobs_root = standalone_jobs_dir(main)

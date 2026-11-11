@@ -43,7 +43,7 @@ linux_only = pytest.mark.skipif(
 )
 
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
-TIMEOUT_S = 60
+TIMEOUT_S = 30
 FLOW = "checkout_stub"
 
 # The stub Flow's behavior follows ``--target``: ``pass`` runs one real command,
@@ -84,7 +84,7 @@ class CheckoutStub(BooleyFlow):
             signal.signal(signal.SIGINT, signal.SIG_IGN)  # only a kill ends this Flow
             (CTL / "ignoring").write_text("1", encoding="utf-8")
         if target in ("wait", "stubborn"):
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + 45
             while not (CTL / "release").exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
         else:
@@ -109,7 +109,12 @@ CALLER_ENV = {
     "BOOLEY_RUN_ID": "outer-run",
     "CALLER_ONLY_VARIABLE": "x",
 }
-KEPT_ENV = {"HTTP_PROXY": "http://proxy.invalid:3128", "LANG": "C.UTF-8"}
+KEPT_ENV = {
+    "HTTP_PROXY": "http://proxy.invalid:3128",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",  # the ``LC_`` prefix
+    "BOOLEY_FLEXNET_SERVER": "27000@license.invalid",  # the ``BOOLEY_FLEXNET_`` prefix
+}
 
 
 @dataclass(frozen=True)
@@ -241,7 +246,7 @@ def test_checkout_flow_returns_outcome_and_reports(
 
 
 @linux_only
-def test_checkout_flow_returns_typed_metrics_of_the_last_report(
+def test_checkout_flow_returns_typed_metrics_of_its_report(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.flows.metric_declarations import FlowMetricValues
@@ -309,7 +314,14 @@ def test_checkout_flow_refuses_live_state_paths(
 @linux_only
 @pytest.mark.parametrize(
     "case",
-    ["missing-checkout", "bad-flow-name", "zero-timeout", "infinite-timeout", "nan-timeout"],
+    [
+        "missing-checkout",
+        "bad-flow-name",
+        "bad-target",
+        "zero-timeout",
+        "infinite-timeout",
+        "nan-timeout",
+    ],
 )
 def test_checkout_flow_refuses_a_malformed_request(world: World, case: str) -> None:
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
@@ -317,12 +329,15 @@ def test_checkout_flow_refuses_a_malformed_request(world: World, case: str) -> N
     request = {
         "missing-checkout": world.request("pass", checkout=world.checkout / "gone"),
         "bad-flow-name": world.request("pass", flow="../escape"),
+        "bad-target": world.request("bad\0target"),
         "zero-timeout": world.request("pass", timeout_s=0),
         "infinite-timeout": world.request("pass", timeout_s=float("inf")),
         "nan-timeout": world.request("pass", timeout_s=float("nan")),
     }[case]
 
-    with pytest.raises(CheckoutFlowError, match=r"not a directory|invalid Flow name|positive"):
+    with pytest.raises(
+        CheckoutFlowError, match=r"not a directory|invalid Flow name|invalid Target|positive"
+    ):
         run_checkout_flow(request)
 
     assert not standalone_jobs_dir(world.main).exists()
@@ -489,7 +504,7 @@ def assert_no_record_names(main: Path, checkout: Path) -> None:
     needles = {str(checkout), str(checkout.resolve())}
     for path in main.rglob("*"):
         # Logs and the history are output, not records.
-        if path.is_file() and path.name != "job.log" and "resources" not in path.parts:
+        if path.is_file() and path.name != "job.log":
             text = path.read_text(encoding="utf-8", errors="replace")
             assert not any(needle in text for needle in needles), path
 
@@ -519,6 +534,8 @@ def test_deleted_checkout_is_named_by_no_job_record(world: World, outcome: str) 
     assert result.status is CheckoutFlowStatus(outcome)
     record = record_of(world, result)
     assert record.status != job_records.STATUS_RUNNING and record.ended_at
+    if outcome == "timed_out":
+        assert record.status == job_records.STATUS_FAILED
     shutil.rmtree(world.checkout)
 
     assert_no_record_names(world.main, world.checkout)
@@ -572,7 +589,8 @@ def test_interrupted_caller_stops_the_flow(world: World) -> None:
     assert caller.returncode != 0  # the Ctrl-C reached the caller
     poll(lambda: not Path(f"/proc/{running.pid}").exists(), "the Flow to be gone")
     (final,) = records_in(world.main)
-    assert final.status != job_records.STATUS_RUNNING and final.ended_at
+    assert final.status not in {job_records.STATUS_RUNNING, job_records.STATUS_DONE}
+    assert final.ended_at
     assert not list(world.checkout.parent.glob(".*env-*"))
 
 
@@ -690,7 +708,7 @@ def test_second_interrupt_during_the_stop_still_kills_the_group(
     )
 
     with pytest.raises(KeyboardInterrupt):
-        checkout_flow._stop(process)  # type: ignore[arg-type]
+        checkout_flow._stop(process)  # type: ignore[arg-type]  # a fake with Popen's used surface
 
     assert process.signals == [signal.SIGINT]
     assert process.killed
@@ -716,3 +734,58 @@ def test_a_child_that_finished_before_the_stop_keeps_its_done_record(tmp_path: P
         timed_out=True,
     )
     assert (result.status, result.exit_code) == (checkout_flow.CheckoutFlowStatus.PASSED, 0)
+
+
+@linux_only
+def test_legacy_flow_spelling_is_reported_under_its_canonical_name(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
+    from booley.targets import flow_names
+
+    monkeypatch.setitem(flow_names.LEGACY_TO_CANONICAL, "checkout_legacy", FLOW)
+
+    result = run_checkout_flow(world.request("pass", flow="checkout_legacy"))
+
+    assert result.status is CheckoutFlowStatus.PASSED
+    (report,) = result.reports
+    assert report.parent.parent.name == FLOW
+
+
+def test_child_selects_the_checkout_explicitly(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import booley as booley_cli
+    from booley.harness import checkout_flow
+
+    seen: list[list[str]] = []
+
+    def main() -> int:
+        seen.append(list(sys.argv))
+        return 0
+
+    monkeypatch.chdir(world.checkout)
+    monkeypatch.setattr(booley_cli, "main", main)
+
+    assert checkout_flow._run_flow_cli(FLOW, ["--target", "pass"]) == 0
+
+    # ``--project`` beats discovery, so no ancestor of the checkout can become the root.
+    assert seen == [
+        ["booley", "--project", str(world.checkout.resolve()), "flow", FLOW, "--target", "pass"]
+    ]
+
+
+def test_unreadable_record_settles_from_the_one_in_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import checkout_flow
+
+    def unreadable(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(checkout_flow.job_records, "read_record", unreadable)
+    record = job_records.JobRecord("flow-1", FLOW, "2026-11-07T00:00:00Z", 60)
+
+    final = checkout_flow._settle_record(record, tmp_path, 3, timed_out=False)
+
+    assert (final.status, final.exit_code) == ("failed", 3)
