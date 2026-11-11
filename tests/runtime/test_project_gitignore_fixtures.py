@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime.project_gitignore import (
     PROJECT_GITIGNORE,
@@ -48,7 +49,6 @@ def test_every_reinclude_follows_the_pattern_it_overrides() -> None:
 @pytest.fixture
 def verbose_ignore(tmp_path, isolated_git_attributes):
     import shutil
-    import subprocess
 
     if shutil.which("git") is None:
         pytest.skip("needs git for the canonical ignore oracle")
@@ -57,14 +57,7 @@ def verbose_ignore(tmp_path, isolated_git_attributes):
     empty.write_text("", encoding="utf-8")
 
     def git(*args):
-        return subprocess.run(
-            ["git", "-c", f"core.excludesFile={empty}", *args],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
+        return run_bounded_child(["git", "-c", f"core.excludesFile={empty}", *args], cwd=tmp_path)
 
     assert git("init", "-q").returncode == 0
 

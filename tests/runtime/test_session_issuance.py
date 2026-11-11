@@ -26,6 +26,7 @@ from tests.session_issuance_support import (
     plain_builder,
     stub_keeper,
 )
+from tests.subprocess_budget import run_bounded_child
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import host_config_path
@@ -2980,13 +2981,8 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
     )
 
     def git(*args, env=environment):
-        return subprocess.run(
-            [_HOST_GIT, "-C", str(project), *args],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
+        return run_bounded_child(
+            [_HOST_GIT, "-C", str(project), *args], timeout=10, env=env, check=True
         ).stdout.strip()
 
     git("init", "-q")
@@ -3000,13 +2996,13 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         "BOOLEY_DIR": stamp.project_data_source,
         "BOOLEY_MCP_MODE": "interactive",
     }
-    subprocess.run(
+    applied = run_bounded_child(
         [sys.executable, *dc.git_identity_command().split()[1:]],
         cwd=project,
         env=sandbox,
-        check=True,
         timeout=10,
     )
+    assert applied.returncode == 0, applied.stderr
     for env, expected in (
         (environment, "Human <human@example.invalid>"),
         (sandbox, "Dev <dev@localhost>"),

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.config import eda, project_config, settings
 
@@ -101,13 +101,7 @@ from booley.config import settings, project_config
 from booley.config import eda
 assert project_config._CONFIG_CACHE is None
 """
-    result = subprocess.run(
-        [sys.executable, "-c", script, str(source)],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    result = run_bounded_child([sys.executable, "-c", script, str(source)], timeout=20)
     assert result.returncode == 0, result.stderr
 
 
