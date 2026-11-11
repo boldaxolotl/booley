@@ -72,7 +72,29 @@ Dashboard task). It never rewrites tracked files: CRLF files and pending
 applies them. If that step fails, you keep the new Sandbox and the command
 exits non-zero. A Sandbox
 using a [floating license](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy)
-can't be refreshed in place: run `booley session down` first.
+can't be refreshed in place; see [Applying Sandbox changes](#applying-sandbox-changes).
+
+## Applying Sandbox changes
+
+Booley fixes a Sandbox's settings, `[agent]` CLIs and logins, EDA requests and
+Grants, and image when it issues the Sandbox. A running Sandbox keeps its
+previous values until you apply the change. Use the first case that applies:
+
+- **After an EDA Grant change** (`booley eda grant add` or `revoke`): Booley
+  withdraws the Sandbox's issuance, so the running Sandbox can't be refreshed. Stop
+  any VS Code Sandbox through its owning app, then on the host run
+  `booley session down`, `booley init --seed`, and `booley session up`.
+- **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
+  then **Dev Containers: Rebuild Container**.
+- **An image you manage yourself:** rebuild or pull it, then run
+  `booley session down`, `booley init --seed`, and `booley session up`.
+- **Floating license:** run `booley session down`, then
+  `booley session refresh`.
+- **Otherwise (headless Sandbox):** run `booley session refresh`.
+
+When `booley init` or Sandbox validation refuses because the issuance changed,
+its message names the case that applies. Switching `egress` has its own steps,
+described under [Host configuration](#host-configuration-configtoml).
 
 ## Agent CLI logins in the Sandbox
 
@@ -97,7 +119,8 @@ to move it); Specialists use whichever listed CLI their model needs.
 
 After you change `clis` or `auth`, or change `default` in a Project that sets
 no `clis` (the set is then just the default CLI), the Sandbox refuses to start until you run
-`booley session refresh` (or `booley init --seed` and rebuild the container).
+`booley session refresh` (see [Applying Sandbox
+changes](#applying-sandbox-changes)).
 `booley doctor` reports a Sandbox that was issued for a different set of CLIs.
 
 Adding a CLI to `clis` hands that CLI's login to the next refreshed Sandbox. The
@@ -192,9 +215,9 @@ hold (for example `unproxied` next to a non-empty `egress_allowlist`) and a
 file that still uses the `[interactive]` table, and changes nothing in
 either case. `booley bootstrap --check-only --egress unproxied` reports the
 pending change without writing it. After switching `egress` by any route, also
-run `booley init --seed` in each Project and recreate its Sandbox (**Dev
-Containers: Rebuild Container** in VS Code; `session down`,
-then `session up` headless). Until then the running Sandbox keeps its previous
+apply it in each Project: headless, run `booley session down`,
+`booley init --seed`, and `booley session up`; in VS Code, run
+`booley init --seed`, then **Dev Containers: Rebuild Container**. Until then the running Sandbox keeps its previous
 mode, and host-side Doctor warns about it; see
 [TROUBLESHOOTING](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
 
@@ -216,10 +239,9 @@ memory = "8g"                                  # container memory limit; unset =
 [`[jobs]`](CONFIG.md#jobs--concurrency-jobs) limits. `[sandbox] dashboard` is
 covered in [CONFIG.md](CONFIG.md#dashboard-and-quiet-goal-presence-goals).
 
-Changes to `mount_host_skills` and `mask_paths` take effect after
-`booley init --seed` and recreating the Sandbox; changes to `image` and
-`pip_requirements` need a rebuild (see [After changing the
-image](#after-changing-the-image)).
+Changes to `mount_host_skills`, `mask_paths`, `image` and `pip_requirements`
+take effect once you apply them; see [Applying Sandbox
+changes](#applying-sandbox-changes).
 
 ### Hiding directories (`[sandbox].mask_paths`)
 
@@ -295,7 +317,7 @@ See what survives a fresh clone (host doc, not shipped).
 </details>
 
 The file is read only when the image is built. After changing it, rebuild
-(see [After changing the image](#after-changing-the-image)). For cocotb 1.x
+(see [Applying Sandbox changes](#applying-sandbox-changes)). For cocotb 1.x
 and BFM packages, also read [Baking the cocotb stack into the
 image](#baking-the-cocotb-stack-into-the-image).
 
@@ -337,14 +359,6 @@ nor updates it: that image is yours to manage.
 
 For per-worktree preparation, such as building firmware, use
 [worktree setup hooks](CONFIG.md#worktree-setup-hooks) instead of the image.
-
-### After changing the image
-
-- **Headless Sandbox:** run `booley session refresh`.
-- **VS Code owns the Sandbox:** run `booley init --force`, then **Dev
-  Containers: Rebuild Container**.
-- **An image you manage yourself:** rebuild or pull it, run
-  `booley init --seed`, then recreate the Sandbox.
 
 ### RISC-V toolchain image (`booley-sandbox-riscv`)
 

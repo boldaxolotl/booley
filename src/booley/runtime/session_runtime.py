@@ -1688,7 +1688,7 @@ def plan_stopped_headless_runtime_reconciliation(
         if not current:
             raise SessionError(
                 f"running Sandbox {name!r} uses an older host issuance; "
-                "stop it and retry `booley init`"
+                f"{sandbox_remedy(workspace)}"
             )
         return StoppedHeadlessRuntimePlan()
     if current:

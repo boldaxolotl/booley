@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, NoReturn
 from unittest.mock import Mock, patch
 
 import pytest
@@ -1240,17 +1240,31 @@ class TestInitReconciliation:
         assert not changed
         remove.assert_not_called()
 
-    def test_stale_running_runtime_requires_shutdown(self, workspace: Path) -> None:
+    def test_stale_running_runtime_names_grant_change_remedy(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal names the workflow Sandbox validation prints after a Grant change."""
+        from booley.runtime import runtime_context, session_issuance
+
+        def withdrawn(_root: Path) -> NoReturn:
+            raise session_issuance.IssuanceUnavailableError("withdrawn")
+
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        monkeypatch.setattr(session_issuance, "load_issued_snapshot", withdrawn)
         state = _refresh_state(running=True)
         with (
             patch.object(sr, "_strict_refresh_container", return_value=state),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
             patch.object(sr, "_refresh_candidate_matches", return_value=False),
             patch.object(sr, "_remove_stopped_session_container") as remove,
-            pytest.raises(sr.SessionError, match=r"running.*older host issuance"),
+            pytest.raises(sr.SessionError) as refusal,
         ):
             sr.reconcile_stopped_headless_runtime(workspace, SimpleNamespace())
 
+        message = str(refusal.value)
+        assert "older host issuance; stop any VS Code Sandbox through its owning app" in message
+        assert "`booley session down`, `booley init --seed`, and `booley session up`" in message
+        assert "retry `booley init`" not in message
         remove.assert_not_called()
 
     def test_other_project_session_blocks_relay_mutation(self, workspace: Path) -> None:
