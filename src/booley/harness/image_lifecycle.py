@@ -124,7 +124,6 @@ class _LegacyBuildAdapter:
         if booley.version_attribution.origin is VersionOrigin.SOURCE:
             _step_docker_image(
                 context,
-                node.reference,
                 allow_pull=False,
                 rebuild_runtime_base=self.refresh_runtime_base,
                 capacity_plan=self.capacity_plan,
