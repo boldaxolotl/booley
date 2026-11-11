@@ -19,7 +19,11 @@ from booley.flows.lint.flow import (
     _target_summary_line,
 )
 from booley.flows.sim import flow as sim
-from booley.flows.sim.standalone import StandaloneMixin
+from booley.flows.sim.standalone import (
+    StandaloneMixin,
+    _StandalonePlanRecipe,
+    _StandaloneProbe,
+)
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 from booley.mcp.report_encoding import ReportEncoder
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -67,9 +71,19 @@ def test_human_sinks_use_adaptive_durations():
     standalone = object.__new__(StandaloneMixin)
     standalone.args = SimpleNamespace(mode=SimpleNamespace(value="elab-only"))
     standalone.set_criterion = lambda *_a, **_k: None
-    assert standalone._standalone_verdict(
-        "verilator", [("top", "top.sv")], [], [], [], None, 61
-    ).display.endswith("1m 01s")
+    assert standalone._standalone_verdict(_one_probe_recipe(), [], [], None, 61).display.endswith(
+        "1m 01s"
+    )
+
+
+def _one_probe_recipe():
+    """A single-module, single-frontend (Verilator) standalone recipe."""
+    probe = _StandaloneProbe("top", "top.sv", "verilator", False, ())
+    return _StandalonePlanRecipe(
+        probes=(probe,),
+        shared=(),
+        commands=(("verilator", "--lint-only", "top.sv"),),
+    )
 
 
 def _protected_outputs(root, monkeypatch):
@@ -94,9 +108,7 @@ def _protected_outputs(root, monkeypatch):
     standalone = object.__new__(StandaloneMixin)
     standalone.args = SimpleNamespace(mode=SimpleNamespace(value="elab-only"))
     standalone.set_criterion = lambda *_a, **_k: None
-    outcome = standalone._standalone_verdict(
-        "verilator", [("top", "top.sv")], [], [], [], None, 3661
-    )
+    outcome = standalone._standalone_verdict(_one_probe_recipe(), [], [], None, 3661)
     outputs.append(outcome.lines)
     report = {"report_text": "RESULT: PASS\n  elapsed 3661.0s", "elapsed_s": 3661, "passed": True}
     outputs.append(ReportEncoder.text_result(0, report["report_text"] + "\n", "", report))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -75,33 +76,56 @@ def _stub_sources(
     rtl: list[str],
     *,
     tb: list[str] | None = None,
+    eda_tool: str | None = "icarus",
+    targets: dict[str, tuple[list[str], str | None]] | None = None,
 ) -> None:
-    monkeypatch.setattr(SimulateFlow, "_target_handle", lambda *_args: MagicMock())
-    inspection = MagicMock(
-        rtl_files=tuple(rtl),
-        tb_files=tuple(tb or []),
+    """Stub Target resolution: ``targets`` maps name -> (rtl files, simulator).
+
+    Without ``targets`` a single ``sim_dut`` Target simulating with *eda_tool*
+    covers *rtl*. The simulator is never a ``MagicMock``: the probe selection
+    reads it as a string.
+    """
+    per_target = targets if targets is not None else {"sim_dut": (rtl, eda_tool)}
+    monkeypatch.setattr(
+        SimulateFlow, "_target_handle", lambda _self, name: SimpleNamespace(identity=name)
     )
+
+    def inspect(handle: SimpleNamespace) -> MagicMock:
+        files, tool = per_target[handle.identity]
+        return MagicMock(rtl_files=tuple(files), tb_files=tuple(tb or []), eda_tool=tool)
+
     monkeypatch.setattr(
         standalone_mod.TargetCatalog,
         "build",
-        classmethod(lambda _cls, _root: MagicMock(inspect=MagicMock(return_value=inspection))),
+        classmethod(lambda _cls, _root: MagicMock(inspect=MagicMock(side_effect=inspect))),
+    )
+
+
+def _stub_which(monkeypatch: pytest.MonkeyPatch, present: bool) -> None:
+    """Make ``shutil.which("verilator")`` report Verilator present or absent."""
+    monkeypatch.setattr(
+        standalone_mod.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if present else None,
     )
 
 
 def _stub_probes(
     monkeypatch: pytest.MonkeyPatch,
     flow: SimulateFlow,
-    results: dict[str, SubprocessResult] | None = None,
+    results: dict[str | tuple[str, str], SubprocessResult] | None = None,
 ) -> list[list[str]]:
+    """Capture probe argv; results key by ``(module, compiler)`` or bare module."""
     captured: list[list[str]] = []
-    by_module = results or {}
+    by_key = results or {}
 
     def execute(command: list[str], *, timeout: int) -> SubprocessResult:
         assert timeout > 0
         captured.append(command)
         flag = "-s" if command[0] == "iverilog" else "--top-module"
         module = command[command.index(flag) + 1]
-        return by_module.get(module, SubprocessResult(returncode=0))
+        result = by_key.get((module, command[0])) or by_key.get(module)
+        return result or SubprocessResult(returncode=0)
 
     monkeypatch.setattr(flow, "_execute", execute)
     return captured
@@ -134,14 +158,6 @@ class TestDeclarationScan:
 
 
 class TestStandaloneSweep:
-    @pytest.fixture(autouse=True)
-    def _pin_iverilog(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            SimulateFlow,
-            "_resolve_standalone_frontend",
-            lambda self: "iverilog",
-        )
-
     def test_declared_criterion_does_not_implicitly_enable_sweep(self, tmp_path: Path) -> None:
         flow = _make_flow(tmp_path, standalone=False)
 
@@ -175,6 +191,17 @@ class TestStandaloneSweep:
         )
         assert outcome.detail["mode"] == "elab_only_standalone"
         assert outcome.detail["modules_checked"] == 2
+        assert outcome.detail["frontend"] == "iverilog"
+        assert outcome.detail["probes"] == [
+            {
+                "frontend": "iverilog",
+                "fallback": False,
+                "modules": [
+                    {"module": "alu", "file": "rtl/alu.sv"},
+                    {"module": "top", "file": "rtl/top.sv"},
+                ],
+            }
+        ]
         by_module = {command[command.index("-s") + 1]: command for command in commands}
         assert [arg for arg in by_module["alu"] if arg.endswith(".sv")] == ["rtl/alu.sv"]
         assert [arg for arg in by_module["top"] if arg.endswith(".sv")] == ["rtl/top.sv"]
@@ -205,10 +232,11 @@ class TestStandaloneSweep:
         monkeypatch.setattr(flow, "_execute", execute)
 
         failures, unparsed, _logs, error = flow._run_standalone_probes(
-            [("one", "one.sv"), ("two", "two.sv")],
-            [],
-            "iverilog",
-            gap_is_credible=False,
+            (
+                standalone_mod._StandaloneProbe("one", "one.sv", "iverilog", False, ()),
+                standalone_mod._StandaloneProbe("two", "two.sv", "iverilog", False, ()),
+            ),
+            primary_ok=True,
         )
 
         assert not failures and not unparsed and not error
@@ -231,10 +259,8 @@ class TestStandaloneSweep:
         monkeypatch.setattr(flow, "_run_standalone_probe", probe)
 
         failures, unparsed, logs, error = flow._run_standalone_probes(
-            [("late", "late.sv")],
-            [],
-            "iverilog",
-            gap_is_credible=False,
+            (standalone_mod._StandaloneProbe("late", "late.sv", "iverilog", False, ()),),
+            primary_ok=True,
         )
 
         assert not failures and not unparsed and not logs
@@ -248,19 +274,22 @@ class TestStandaloneSweep:
     ) -> None:
         flow = _make_flow(tmp_path)
         recipe = standalone_mod._StandalonePlanRecipe(
-            frontend="iverilog",
-            modules=(("top", "rtl/top.sv"),),
+            probes=(
+                standalone_mod._StandaloneProbe(
+                    "top", "rtl/top.sv", "iverilog", False, ("rtl/pkg.sv",)
+                ),
+            ),
             shared=("rtl/pkg.sv",),
             commands=(("iverilog", "rtl/top.sv"),),
         )
         flow._standalone_plan_recipe = recipe
         monkeypatch.setattr(flow, "_open_run_log", MagicMock())
 
-        assert flow._prepare_standalone_check(["sim_dut"]) == (
-            "iverilog",
-            [("top", "rtl/top.sv")],
-            ["rtl/pkg.sv"],
-        )
+        prepared = flow._prepare_standalone_check(["sim_dut"])
+
+        assert prepared is recipe
+        assert recipe.modules == (("top", "rtl/top.sv"),)
+        assert recipe.frontend_label == "iverilog"
 
     def test_plan_reports_source_scope_resolution_failure(
         self,
@@ -268,7 +297,6 @@ class TestStandaloneSweep:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         flow = _make_flow(tmp_path)
-        monkeypatch.setattr(flow, "_resolve_standalone_frontend", lambda: "iverilog")
         monkeypatch.setattr(
             flow,
             "_standalone_rtl_scope",
@@ -305,7 +333,9 @@ class TestStandaloneSweep:
         assert not outcome.eda_tool_failed
         assert flow.state.criteria["elaborate_standalone"].met is False
         assert outcome.detail["failures"][0]["module"] == "top"
-        assert "top (rtl/top.sv)" in "\n".join(outcome.lines)
+        assert "top (rtl/top.sv) via iverilog" in "\n".join(outcome.lines)
+        assert outcome.detail["failures"][0]["frontend"] == "iverilog"
+        assert outcome.detail["failures"][0]["fallback"] is False
         log = tmp_path / outcome.detail["log"]
         assert "$ iverilog" in log.read_text(encoding="utf-8")
 
@@ -381,9 +411,10 @@ class TestStandaloneSweep:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
-        _stub_sources(monkeypatch, ["rtl/alu.sv"])
+        _stub_sources(monkeypatch, ["rtl/alu.sv"], eda_tool="xcelium")
+        _stub_which(monkeypatch, True)
         flow = _make_flow(tmp_path, criterion_met=True)
-        flow._record_eda_tool("sim_dut", "verilator")
+        flow._record_eda_tool("sim_dut", "xcelium")
         _stub_probes(
             monkeypatch,
             flow,
@@ -395,6 +426,7 @@ class TestStandaloneSweep:
 
         assert outcome.eda_tool_failed
         assert outcome.detail["unparsed"][0]["module"] == "alu"
+        assert outcome.detail["unparsed"][0]["fallback"] is True
         assert "not a design defect" in "\n".join(outcome.lines)
         assert flow.state.criteria["elaborate_standalone"].met is True
 
@@ -410,9 +442,10 @@ class TestStandaloneSweep:
                 "rtl/broken.sv": "module broken; endmodule\n",
             },
         )
-        _stub_sources(monkeypatch, ["rtl/gapped.sv", "rtl/broken.sv"])
+        _stub_sources(monkeypatch, ["rtl/gapped.sv", "rtl/broken.sv"], eda_tool="xcelium")
+        _stub_which(monkeypatch, True)
         flow = _make_flow(tmp_path, criterion_met=True)
-        flow._record_eda_tool("sim_dut", "verilator")
+        flow._record_eda_tool("sim_dut", "xcelium")
         _stub_probes(
             monkeypatch,
             flow,
@@ -434,39 +467,10 @@ class TestStandaloneSweep:
         assert [item["module"] for item in outcome.detail["failures"]] == ["broken"]
         assert [item["module"] for item in outcome.detail["unparsed"]] == ["gapped"]
         assert flow.state.criteria["elaborate_standalone"].met is False
+        assert "ungraded" in "\n".join(outcome.lines)
 
 
 class TestStandaloneFrontend:
-    def test_auto_prefers_verilator_and_falls_back_to_iverilog(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        flow = _make_flow(tmp_path)
-        monkeypatch.setattr(standalone_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-        assert flow._resolve_standalone_frontend() == "verilator"
-        monkeypatch.setattr(standalone_mod.shutil, "which", lambda name: None)
-        assert flow._resolve_standalone_frontend() == "iverilog"
-
-    def test_sim_config_pin_wins_and_unknown_value_is_rejected(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setattr(standalone_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-        pinned = _make_flow(
-            tmp_path,
-            config='[flows.sim]\nstandalone_frontend = "iverilog"\n',
-        )
-        assert pinned._resolve_standalone_frontend() == "iverilog"
-
-        (tmp_path / ".booley" / "booley.toml").write_text(
-            '[flows.sim]\nstandalone_frontend = "vcs"\n',
-            encoding="utf-8",
-        )
-        with pytest.raises(ValueError, match="standalone_frontend"):
-            pinned._resolve_standalone_frontend()
-
     def test_probe_command_shapes(self, tmp_path: Path) -> None:
         flow = _make_flow(tmp_path)
 
@@ -495,28 +499,259 @@ class TestStandaloneFrontend:
         assert iverilog[:4] == ["iverilog", "-g2012", "-o", os.devnull]
         assert iverilog[-2:] == ["rtl/pkg.sv", "rtl/alu.sv"]
 
+
+def _run_sweep(flow: SimulateFlow, targets: list[str], *, primary_ok: bool = True):
+    """Run the sweep over *targets* and return its outcome."""
+    with flow.publication_resources:
+        return flow._run_standalone_check(targets, primary_ok=primary_ok)
+
+
+_SYNTAX = SubprocessResult(returncode=1, stderr="rtl/alu.sv:1: syntax error\n")
+_UNKNOWN = SubprocessResult(
+    returncode=1, stderr="rtl/alu.sv:1: error: Unknown module type: missing_sub\n"
+)
+
+
+class TestProbeFrontendSelection:
+    """ADR 0089: each module is probed with the simulator of the Targets using it."""
+
     @pytest.mark.parametrize(
-        ("target_tools", "frontend", "primary_ok", "credible"),
+        ("eda_tool", "compiler", "verilator_on_path"),
         [
-            ({"sim": "verilator"}, "iverilog", True, True),
-            ({"sim": "verilator"}, "verilator", True, False),
-            ({"sim": "icarus"}, "iverilog", True, False),
-            ({"sim": "verilator"}, "iverilog", False, False),
+            pytest.param("icarus", "iverilog", True, id="icarus-verilator_on_path"),
+            pytest.param(
+                "verilator", "verilator", False, id="verilator-verilator_absent_from_path"
+            ),
         ],
     )
-    def test_parse_gap_credibility(
-        self,
-        tmp_path: Path,
-        target_tools: dict[str, str],
-        frontend: str,
-        primary_ok: bool,
-        credible: bool,
+    def test_target_simulator_selects_probe_frontend(
+        self, tmp_path, monkeypatch, eda_tool, compiler, verilator_on_path
     ) -> None:
+        _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
+        _stub_sources(monkeypatch, ["rtl/alu.sv"], eda_tool=eda_tool)
+        _stub_which(monkeypatch, verilator_on_path)
         flow = _make_flow(tmp_path)
-        for target, tool in target_tools.items():
-            flow._record_eda_tool(target, tool)
+        commands = _stub_probes(monkeypatch, flow)
 
-        assert flow._parse_gap_is_credible(frontend, primary_ok) is credible
+        outcome = _run_sweep(flow, ["sim_dut"])
+
+        assert outcome.passed
+        assert [command[0] for command in commands] == [compiler]
+
+    @staticmethod
+    def _two_simulator_project(tmp_path, monkeypatch, *, shared_packages=False):
+        files = {"rtl/alu.sv": "module alu; endmodule\n"}
+        ice_rtl, ver_rtl = ["rtl/alu.sv"], ["rtl/alu.sv"]
+        if shared_packages:
+            files["rtl/pkg_i.sv"] = "package pkg_i; endpackage\n"
+            files["rtl/pkg_v.sv"] = "package pkg_v; endpackage\n"
+            ice_rtl.insert(0, "rtl/pkg_i.sv")
+            ver_rtl.insert(0, "rtl/pkg_v.sv")
+        _write_sources(tmp_path, files)
+        _stub_sources(
+            monkeypatch,
+            [],
+            targets={"ice": (ice_rtl, "icarus"), "ver": (ver_rtl, "verilator")},
+        )
+        _stub_which(monkeypatch, True)
+        return _make_flow(tmp_path)
+
+    def test_module_shared_by_icarus_and_verilator_targets_is_probed_by_both(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        flow = self._two_simulator_project(tmp_path, monkeypatch)
+        commands = _stub_probes(monkeypatch, flow)
+
+        outcome = _run_sweep(flow, ["ice", "ver"])
+
+        assert outcome.passed
+        assert sorted(command[0] for command in commands) == ["iverilog", "verilator"]
+        assert outcome.detail["modules_checked"] == 1
+        assert outcome.detail["frontend"] == "iverilog+verilator"
+        assert "iverilog+verilator" in outcome.lines[0]
+        # A mixed sweep invents no run-level tool.
+        assert flow._eda_tool is None
+
+    @pytest.mark.parametrize("failing", ["iverilog", "verilator"])
+    def test_failure_under_either_frontend_fails_and_names_it(
+        self, tmp_path, monkeypatch, failing
+    ) -> None:
+        flow = self._two_simulator_project(tmp_path, monkeypatch)
+        _stub_probes(monkeypatch, flow, {("alu", failing): _UNKNOWN})
+
+        outcome = _run_sweep(flow, ["ice", "ver"])
+
+        assert not outcome.passed
+        assert not outcome.eda_tool_failed
+        assert flow.state.criteria["elaborate_standalone"].met is False
+        assert [f["frontend"] for f in outcome.detail["failures"]] == [failing]
+        assert f"via {failing}" in "\n".join(outcome.lines)
+
+    def test_module_failing_under_both_frontends_is_counted_once(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        flow = self._two_simulator_project(tmp_path, monkeypatch)
+        _stub_probes(monkeypatch, flow, {"alu": _UNKNOWN})
+
+        outcome = _run_sweep(flow, ["ice", "ver"])
+
+        assert not outcome.passed
+        assert len(outcome.detail["failures"]) == 2
+        assert "standalone: 1/1 modules FAIL" in outcome.display
+
+    def test_probe_only_includes_shared_files_of_targets_using_its_frontend(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        flow = self._two_simulator_project(tmp_path, monkeypatch, shared_packages=True)
+        commands = _stub_probes(monkeypatch, flow)
+
+        outcome = _run_sweep(flow, ["ice", "ver"])
+
+        assert outcome.passed
+        by_compiler = {command[0]: command for command in commands}
+        assert "rtl/pkg_i.sv" in by_compiler["iverilog"]
+        assert "rtl/pkg_v.sv" not in by_compiler["iverilog"]
+        assert "rtl/pkg_v.sv" in by_compiler["verilator"]
+        assert "rtl/pkg_i.sv" not in by_compiler["verilator"]
+        # The detail's shared list stays the union.
+        assert outcome.detail["shared_files"] == ["rtl/pkg_i.sv", "rtl/pkg_v.sv"]
+
+    @pytest.mark.parametrize(
+        ("eda_tool", "verilator_on_path"),
+        [
+            pytest.param("icarus", True, id="icarus-verilator_on_path"),
+            pytest.param("verilator", False, id="verilator-verilator_absent_from_path"),
+        ],
+    )
+    def test_single_simulator_parse_error_is_a_finding(
+        self, tmp_path, monkeypatch, eda_tool, verilator_on_path
+    ) -> None:
+        _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
+        _stub_sources(monkeypatch, ["rtl/alu.sv"], eda_tool=eda_tool)
+        _stub_which(monkeypatch, verilator_on_path)
+        flow = _make_flow(tmp_path)
+        _stub_probes(monkeypatch, flow, {"alu": _SYNTAX})
+
+        outcome = _run_sweep(flow, ["sim_dut"])
+
+        assert not outcome.eda_tool_failed
+        assert [f["module"] for f in outcome.detail["failures"]] == ["alu"]
+        assert "unparsed" not in outcome.detail
+
+    @pytest.mark.parametrize(
+        ("verilator_on_path", "primary_ok", "compiler"),
+        [
+            pytest.param(True, True, "verilator", id="verilator_on_path"),
+            pytest.param(False, True, "iverilog", id="verilator_absent_from_path"),
+            pytest.param(True, False, "verilator", id="primary_failed"),
+        ],
+    )
+    def test_commercial_only_module_uses_fallback_and_grades_parse_gap(
+        self, tmp_path, monkeypatch, verilator_on_path, primary_ok, compiler
+    ) -> None:
+        _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
+        _stub_sources(monkeypatch, ["rtl/alu.sv"], eda_tool="xcelium")
+        _stub_which(monkeypatch, verilator_on_path)
+        flow = _make_flow(tmp_path, criterion_met=True)
+        commands = _stub_probes(monkeypatch, flow, {"alu": _SYNTAX})
+
+        outcome = _run_sweep(flow, ["sim_dut"], primary_ok=primary_ok)
+
+        assert [command[0] for command in commands] == [compiler]
+        if primary_ok:
+            assert outcome.eda_tool_failed
+            assert outcome.detail["unparsed"][0]["fallback"] is True
+            assert flow.state.criteria["elaborate_standalone"].met is True
+        else:
+            # The Target build itself failed: a syntax error is a finding.
+            assert not outcome.eda_tool_failed
+            assert outcome.detail["failures"][0]["fallback"] is True
+
+    def test_fallback_matching_a_native_frontend_runs_once_and_is_graded(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
+        _stub_sources(
+            monkeypatch,
+            [],
+            targets={"ver": (["rtl/alu.sv"], "verilator"), "xcel": (["rtl/alu.sv"], "xcelium")},
+        )
+        _stub_which(monkeypatch, True)
+        flow = _make_flow(tmp_path)
+        commands = _stub_probes(monkeypatch, flow, {"alu": _SYNTAX})
+
+        outcome = _run_sweep(flow, ["ver", "xcel"])
+
+        assert [command[0] for command in commands] == ["verilator"]
+        assert not outcome.eda_tool_failed
+        assert outcome.detail["failures"][0]["fallback"] is False
+
+    def test_dry_run_plan_shows_per_module_frontend(self, tmp_path, monkeypatch) -> None:
+        flow = self._two_simulator_project(tmp_path, monkeypatch, shared_packages=True)
+
+        unit, error = flow._planned_standalone_unit(["ice", "ver"])
+
+        assert error is None
+        assert unit is not None
+        assert unit.eda_tool == "iverilog+verilator"
+        assert unit.recipe["frontends"] == ["iverilog", "verilator"]
+        sources = unit.recipe["module_sources"]
+        assert {(entry["module"], entry["frontend"], entry["fallback"]) for entry in sources} == {
+            ("alu", "iverilog", False),
+            ("alu", "verilator", False),
+        }
+        assert len(unit.commands) == len(sources) == 2
+        assert {command.argv[0] for command in unit.commands} == {"iverilog", "verilator"}
+
+    def test_run_log_records_probe_frontend_and_fallback(self, tmp_path, monkeypatch) -> None:
+        _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
+        _stub_sources(monkeypatch, ["rtl/alu.sv"], eda_tool="xcelium")
+        _stub_which(monkeypatch, True)
+        flow = _make_flow(tmp_path)
+        _stub_probes(monkeypatch, flow)
+
+        outcome = _run_sweep(flow, ["sim_dut"])
+
+        log = (tmp_path / outcome.detail["log"]).read_text(encoding="utf-8")
+        assert "# standalone probe: alu (rtl/alu.sv) via verilator (fallback)" in log
+        assert outcome.detail["probes"] == [
+            {
+                "frontend": "verilator",
+                "fallback": True,
+                "modules": [{"module": "alu", "file": "rtl/alu.sv"}],
+            }
+        ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_exit"),
+    [("pass", 0), ("design", 1), ("tool", 2)],
+)
+def test_optional_standalone_exit_codes_for_single_simulator_project(
+    tmp_path, monkeypatch, kind, expected_exit
+) -> None:
+    """Icarus-only project with Verilator on PATH: verdict, exit code, key unchanged."""
+    _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
+    _stub_sources(monkeypatch, ["rtl/alu.sv"])
+    _stub_which(monkeypatch, True)
+    # Start met so the tool-error case proves prior state is kept, not reset.
+    flow = _make_flow(tmp_path, criterion_met=True)
+    results = {
+        "pass": SubprocessResult(returncode=0),
+        "design": _SYNTAX,
+        "tool": SubprocessResult(returncode=-1, stderr="spawn failed"),
+    }
+    _stub_probes(monkeypatch, flow, {"alu": results[kind]})
+
+    with flow.publication_resources:
+        exit_code, outcome = flow._run_optional_standalone(["sim_dut"], [])
+
+    assert exit_code == expected_exit
+    assert outcome is not None
+    if kind == "tool":
+        assert flow.state.criteria["elaborate_standalone"].met is True
+    else:
+        assert flow.state.criteria["elaborate_standalone"].met is (kind == "pass")
 
 
 @pytest.mark.parametrize("met", [True, False])
@@ -532,7 +767,8 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
     flow.read_state()
     flow._record_eda_tool("sim_dut", "icarus")
     process = SubprocessResult(
-        returncode=0 if met else 1, stderr="syntax error" if not met else ""
+        returncode=0 if met else 1,
+        stderr="" if met else "error: Unknown module type: missing_sub",
     )
     _stub_probes(monkeypatch, flow, {"alu": process})
     with flow.publication_resources:
@@ -550,7 +786,7 @@ def test_standalone_frontend_identity_is_scalar(tmp_path, monkeypatch):
 
     _write_sources(tmp_path, {"rtl/top.sv": "module top; endmodule\n"})
     _stub_sources(monkeypatch, ["rtl/top.sv"])
-    flow = _make_flow(tmp_path, config='[flows.sim]\nstandalone_frontend = "iverilog"\n')
+    flow = _make_flow(tmp_path)
     _stub_probes(monkeypatch, flow)
     with flow.publication_resources:
         outcome = flow._run_standalone_check(["sim_dut"])
