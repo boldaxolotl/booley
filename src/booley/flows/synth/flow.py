@@ -30,12 +30,21 @@ from typing import Any, ClassVar
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
-from booley.core.boundary import BoundaryError, require_bool, require_positive_int
+from booley.core.boundary import (
+    BoundaryError,
+    as_dict,
+    as_float,
+    as_int,
+    as_str_list,
+    require_bool,
+    require_positive_int,
+)
 from booley.core.build_paths import work_root_for
 from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.evidence.timing import (
     ClockTiming,
     make_clock_timing,
+    per_clock_from_json,
     per_clock_to_json,
     worst_clock,
 )
@@ -1014,6 +1023,29 @@ def _aggregate_detail(
     if baseline_sha:
         detail["baseline_ref"] = baseline_sha
     return detail
+
+
+def report_metric_values(detail: dict[str, Any]) -> dict[str, FlowMetricValues]:
+    """Read each Target's :data:`SYNTH_METRIC_DECLARATIONS` values from an aggregate *detail*.
+
+    The inverse of :func:`_aggregate_detail`. A Target whose summary is missing or
+    malformed is skipped: judging an absent measurement belongs to the caller.
+    """
+    values: dict[str, FlowMetricValues] = {}
+    for target in as_str_list(detail.get("targets")):
+        summary = as_dict(detail.get(target))
+        if summary is None:
+            continue
+        values[target] = metric_values(
+            SYNTH_METRIC_DECLARATIONS,
+            plain={
+                "area_um2": as_float(summary.get("area_um2")),
+                "area_kge": as_float(summary.get("area_kge")),
+                "cell_count": as_int(summary.get("cells")),
+            },
+            per_clock=per_clock_from_json(summary.get("per_clock")),
+        )
+    return values
 
 
 def _publish_timing_dir(
