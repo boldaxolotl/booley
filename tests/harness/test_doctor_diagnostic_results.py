@@ -19,7 +19,7 @@ from booley.config.host_config import SandboxHostPolicy
 from booley.config.project_config import normalize_tests_toml
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
-from booley.runtime import doctor_stamp, inspection, session_admission
+from booley.runtime import doctor_stamp, inspection, session_admission, vaporview
 from tests.diagnostic_helpers import _Rec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.harness.test_doctor import (
@@ -317,7 +317,22 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     assert (tmp_path / "AGENTS.md").exists() is (valid and not read_only)
 
 
-@pytest.mark.parametrize("owner", ["line-endings", "interactive-git", "cocotb"])
+def _owner_frame(messages: list[str], owner: str) -> tuple[int, int]:
+    """Indices of the Doctor rows that bracket an owner's rows in the rendered report."""
+    if owner == "cocotb":
+        # Real Doctor rows frame the owner: Targets are enumerated first and the
+        # Target source checks follow, with the owner's rows contiguous between.
+        before = next(
+            i for i, m in enumerate(messages) if m.startswith(".core Targets enumerated")
+        )
+        after = next(
+            i for i, m in enumerate(messages) if m == "sim Target 'sim_fast' TB fileset tagged"
+        )
+        return before, after
+    return messages.index("before-marker"), messages.index("after-marker")
+
+
+@pytest.mark.parametrize("owner", ["line-endings", "interactive-git", "cocotb", "viewer-bridge"])
 def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
     """An owner's report is rendered where the old inline check ran, waivers applied."""
     booley_dir = _write_project(tmp_path)
@@ -345,6 +360,22 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
             "inspect_cocotb_targets",
             lambda _request: _owner_report(check_id, subject),
         )
+    elif owner == "viewer-bridge":
+        check_id, subject = "project.git-excludes-missing", ".booley"
+        requests: list[vaporview.ViewerBridgeRequest] = []
+
+        def inspect_bridge(request):
+            requests.append(request)
+            return _owner_report(check_id, subject)
+
+        monkeypatch.setattr(vaporview, "inspect_viewer_bridge", inspect_bridge)
+        # Public owner calls bracket the Viewer Bridge (credential checks sit between).
+        monkeypatch.setattr(
+            inspection, "inspect_interactive_git", lambda *_a, **_k: marker("before-marker")
+        )
+        monkeypatch.setattr(
+            inspection, "inspect_retained_resources", lambda *_a, **_k: marker("after-marker")
+        )
     else:
         check_id, subject = "project.git-excludes-missing", ".booley"
         stub = lambda *_a, **_k: _owner_report(check_id, subject)  # noqa: E731
@@ -366,18 +397,9 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
 
     messages = [f.message for f in result.findings]
     owned_pass, owned_warn = messages.index("owner pass"), messages.index("owner warn")
+    before, after = _owner_frame(messages, owner)
     if owner == "cocotb":
-        # Real Doctor rows frame the owner: Targets are enumerated first and the
-        # Target source checks follow, with the owner's rows contiguous between.
-        before = next(
-            i for i, m in enumerate(messages) if m.startswith(".core Targets enumerated")
-        )
-        after = next(
-            i for i, m in enumerate(messages) if m == "sim Target 'sim_fast' TB fileset tagged"
-        )
         assert owned_warn == owned_pass + 1
-    else:
-        before, after = messages.index("before-marker"), messages.index("after-marker")
     assert before < owned_pass < owned_warn < after
     waived = result.findings[owned_warn]
     assert (waived.severity, waived.check_id, waived.subject) == (
@@ -386,6 +408,8 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
         subject,
     )
     assert result.exit_code == 0
+    if owner == "viewer-bridge":
+        assert requests == [vaporview.ViewerBridgeRequest(tmp_path, "docker")]
 
 
 def test_doctor_renders_tests_toml_report_after_core_security(tmp_path, monkeypatch):

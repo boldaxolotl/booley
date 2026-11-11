@@ -239,6 +239,7 @@ DIRECTION_RULES = (
             exact("booley.harness.setup.readiness"),
             exact("booley.runtime.inspection"),
             exact("booley.flows.sim.backends.cocotb_target_checks"),
+            exact("booley.runtime.vaporview"),
             exact("booley.flows.target_test_plan_inspection"),
         ),
         (

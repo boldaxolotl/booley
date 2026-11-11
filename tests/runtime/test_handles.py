@@ -298,6 +298,7 @@ def test_baseline_allocates_before_launch_and_broken_maps_do_not_block_it(
     tmp_path, monkeypatch, broken
 ):
     from booley.mcp import sim_baseline_jobs
+    from booley.runtime import detached_job
 
     store = handles.HandleStore(tmp_path, jobs=True)
     if broken:
@@ -311,9 +312,9 @@ def test_baseline_allocates_before_launch_and_broken_maps_do_not_block_it(
         launched.append(args[0])
         return SimpleNamespace()
 
-    monkeypatch.setattr(sim_baseline_jobs.subprocess, "Popen", launch)
+    monkeypatch.setattr(detached_job.subprocess, "Popen", launch)
     monkeypatch.setattr(
-        sim_baseline_jobs.threading,
+        detached_job.threading,
         "Thread",
         lambda **_kwargs: SimpleNamespace(start=lambda: None),
     )
