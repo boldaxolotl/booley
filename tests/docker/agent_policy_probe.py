@@ -33,6 +33,7 @@ def _run(
     env: dict[str, str] | None = None,
     timeout: int = 30,
 ) -> subprocess.CompletedProcess[str]:
+    # Unbounded child: standalone script run inside the image, outside pytest
     result = subprocess.run(
         command,
         cwd=cwd,
@@ -79,6 +80,7 @@ def _assert_diagnostics() -> None:
     _run(["claude", "--help"])
     _run(["claude", "doctor"])
     _run(["codex", "--help"])
+    # Unbounded child: standalone script run inside the image, outside pytest
     codex = subprocess.run(
         ["codex", "doctor", "--json"],
         text=True,
@@ -377,6 +379,7 @@ def _run_codex_case(case: str, root: Path, extra_args: list[str]) -> str:
     codex_home.mkdir(exist_ok=True)
     env = os.environ.copy()
     env.update({"HOME": str(home), "CODEX_HOME": str(codex_home)})
+    # Unbounded child: standalone script run inside the image, outside pytest
     result = subprocess.run(
         ["codex", *extra_args, "doctor", "--json"],
         cwd=project,
