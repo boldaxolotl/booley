@@ -156,7 +156,6 @@ def test_project_config_program_paths_include_only_pre_run_program(tmp_path: Pat
             "sim": {
                 "pre_run_commands": ["python3 hooks/build.py --output generated/report.py"],
                 "run_cwd": "tests/work",
-                "output_dir": "generated/results",
             }
         }
     }
