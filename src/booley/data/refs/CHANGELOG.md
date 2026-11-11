@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- A failed Simulation run of a Target without registered Tests is now listed as
+  `<default>` (`<default>@N` when seeded) in `simulation.json` and the "Test
+  Runs" lines, and its rerun command is `booley flow sim --target <name>
+  [--seed N]` instead of an unrunnable `--test=<name>@N`.
 - `[flows.sim].output_dir` is retired. It has had no effect; Doctor now warns
   `config.flow-key-retired` while it is set. Delete it. `[flows.synth].output_dir`
   is unchanged.

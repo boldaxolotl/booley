@@ -142,7 +142,8 @@ def _observed_run(
     test = observation["test"]
     if unnamed is None or not isinstance(test, str):
         return None
-    return discovered_test_run(test, unnamed)
+    selector = cast(Mapping[str, object], observation["target"])["selector"]
+    return discovered_test_run(test, unnamed, target=cast(str, selector))
 
 
 def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:

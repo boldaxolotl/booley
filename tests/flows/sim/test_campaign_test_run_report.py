@@ -32,6 +32,7 @@ _SOAK = build_test_run("count", variant="soak", seed=42, args=("+iters=9",))
 def _observation(item: dict, run: TestRun, *, passed: bool, test: str | None = None) -> dict:
     return {
         "work_item_id": item["work_item_id"],
+        "target": item["target"],
         "test": run.test if test is None else test,
         "test_run": run.name if test is None else f"{test}@{run.seed}",
         "execution": "completed",

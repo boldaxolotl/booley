@@ -289,14 +289,15 @@ def test_unnamed_invocation_observation_is_named_by_its_test_run(tmp_path: Path)
 def test_tests_an_unfiltered_cocotb_batch_discovered_carry_its_seed():
     from booley.flows.sim.campaign.test_run_binding import observation_test_runs
 
-    item = {"test_runs": (test_run_document(build_test_run(None, seed=9)),)}
+    target = {"selector": "sim"}
+    item = {"target": target, "test_runs": (test_run_document(build_test_run(None, seed=9)),)}
     observed = ({"test": "found_b"}, {"test": "found_a"})
     fingerprint = build_test_run(None).fingerprint
     assert observation_test_runs(item, observed) == (
         ("found_b@9", fingerprint),
         ("found_a@9", fingerprint),
     )
-    unseeded = {"test_runs": (test_run_document(build_test_run(None)),)}
+    unseeded = {"target": target, "test_runs": (test_run_document(build_test_run(None)),)}
     assert [name for name, _ in observation_test_runs(unseeded, observed)] == [
         "found_b",
         "found_a",
@@ -306,7 +307,7 @@ def test_tests_an_unfiltered_cocotb_batch_discovered_carry_its_seed():
 def test_an_observation_without_a_test_run_in_its_work_item_is_refused():
     from booley.flows.sim.campaign.test_run_binding import observation_test_runs
 
-    item = {"test_runs": (test_run_document(_SOAK),)}
+    item = {"target": {"selector": "sim"}, "test_runs": (test_run_document(_SOAK),)}
     with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
         observation_test_runs(item, ({"test": "reset"},))
     with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
