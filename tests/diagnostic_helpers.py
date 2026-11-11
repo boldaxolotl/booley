@@ -109,6 +109,11 @@ class _Rec:
         if fix:
             self.fix_hints.append(fix)
 
+    def d(self, report: DiagnosticReport) -> None:
+        """Record each finding of an owner's report as a (severity, message) event."""
+        for finding in report.findings:
+            self.events.append((finding.severity.value, finding.message))
+
     def fails(self) -> list[str]:
         return [m for lvl, m in self.events if lvl == "fail"]
 
