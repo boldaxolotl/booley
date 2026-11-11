@@ -45,6 +45,7 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
 
 
 def _git(root: Path, *args: str) -> bytes:
+    # Kept on subprocess.check_output: needs binary output; _snapshot compares Git's bytes exactly.
     return subprocess.check_output(
         ["git", "-C", str(root), *args], stderr=subprocess.PIPE, timeout=_GIT_TIMEOUT_S
     )
@@ -203,12 +204,14 @@ def test_sigkill_sweep_preserves_dirty_scope(dirty_worktree, tmp_path, stage):
             _await_ready(descriptor)
             assert _snapshot(dirty_worktree) == before
             child.send_signal(signal.SIGKILL)
+            # Kept on Popen: needs signal/process-group control of a child the test drives.
             child.communicate(timeout=10)
             assert child.returncode == -signal.SIGKILL
             assert _snapshot(dirty_worktree) == before
         finally:
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGKILL)
+            # Kept on Popen: needs signal/process-group control of a child the test drives.
             child.communicate(timeout=10)
 
 

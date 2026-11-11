@@ -70,10 +70,10 @@ def test_serial_oracle_rejects_unrequested_extra_frame():
 def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path, newline):
     import hashlib
     import os
-    import subprocess
 
     import pytest
     from qa.missions.uart.evaluator.inputs import snapshot
+    from tests.subprocess_budget import run_bounded_child
 
     root = tmp_path / "candidate"
     root.mkdir()
@@ -109,16 +109,9 @@ def test_compiler_snapshot_rejects_unhashed_and_modified_includes(tmp_path, newl
             "accepted",
         ],
     ]:
-        subprocess.run(
-            [*git_command, *args], check=True, capture_output=True, timeout=10, env=git_env
-        )
-    commit = subprocess.run(
-        [*git_command, "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-        env=git_env,
+        run_bounded_child([*git_command, *args], timeout=10, check=True, env=git_env)
+    commit = run_bounded_child(
+        [*git_command, "rev-parse", "HEAD"], timeout=10, check=True, env=git_env
     ).stdout.strip()
     entries = [
         {"path": name, "sha256": hashlib.sha256((root / name).read_bytes()).hexdigest()}
