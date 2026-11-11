@@ -31,7 +31,7 @@ from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution import SimulationOptions
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow import OrdinaryCampaignPlanning, SimulateFlow
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.mcp.base import EXIT_ERROR
 from tests.flows.sim import test_campaign_crash_matrix as crash_matrix
@@ -299,7 +299,9 @@ def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
         patch.object(SimulateFlow, "_candidate_campaign_requests", return_value=[]),
         patch.object(SimulateFlow, "_publish_and_run_campaign_requests", side_effect=error),
     ):
-        endpoint = flow._run_ordinary_campaigns(["sim"], {"sim": []}, _admission())
+        endpoint = flow._run_ordinary_campaigns(
+            OrdinaryCampaignPlanning((), None, {"sim": []}), _admission()
+        )
 
     assert endpoint.exit_code == EXIT_ERROR
     first_line = endpoint.report_text.splitlines()[0]

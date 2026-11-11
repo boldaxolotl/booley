@@ -109,6 +109,7 @@ class _PtyDashboard:
         self._master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         try:
+            # Kept on subprocess.Popen: PTY child the test drives and signals.
             self.process = subprocess.Popen(
                 [sys.executable, "-c", _DASHBOARD_CHILD, str(tmp_path), scope],
                 stdin=slave,
@@ -143,6 +144,7 @@ class _PtyDashboard:
     def close(self) -> None:
         if self.process.poll() is None:
             self.process.kill()
+        # Kept on subprocess.Popen: reaping the PTY child the test signalled.
         self.process.wait(timeout=5)
         self._reader.join(timeout=5)
         os.close(self._master)
@@ -218,6 +220,7 @@ def test_takeover_leaves_no_earlier_dashboard_running(tmp_path, monkeypatch, sco
 
 def test_wedged_owner_is_stopped_before_takeover(tmp_path, monkeypatch, scope, newcomer):
     _thresholds(monkeypatch, seen=0.5, unseen=1.5)
+    # Kept on subprocess.Popen: wedged child the test drives and signals.
     wedged = subprocess.Popen(
         [sys.executable, "-c", _WEDGED_CHILD, scope],
         stdout=subprocess.PIPE,
@@ -233,6 +236,7 @@ def test_wedged_owner_is_stopped_before_takeover(tmp_path, monkeypatch, scope, n
         assert wedged.poll() == -signal.SIGKILL, "the wedged owner was not killed"
     finally:
         wedged.kill()
+        # Kept on subprocess.Popen: reaping the wedged child the test killed.
         wedged.wait(timeout=5)
         if wedged.stdout is not None:
             wedged.stdout.close()

@@ -45,7 +45,7 @@ from booley.runtime.image_lifecycle import LifecycleResult
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 from tests.conftest import symlink_or_skip
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
@@ -98,9 +98,7 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     """A scratch git repo with isolated HOME and no docker/vscode/systemctl."""
     root = tmp_path / "proj"
     root.mkdir()
-    subprocess.run(
-        ["git", "init", str(root)], capture_output=True, check=True, timeout=SUBPROCESS_TIMEOUT_S
-    )
+    run_bounded_child(["git", "init", str(root)], check=True)
 
     home = tmp_path / "home"
     home.mkdir()
@@ -644,15 +642,13 @@ class TestProjectGitignoreBackfill:
 
     def test_live_ticket_state_is_ignored_and_ticket_history_is_tracked(self, tmp_path: Path):
         # ADR 0065: the board and state records are working state; history is committed.
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+        run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
         init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
 
         def ignored(path: str) -> bool:
-            result = subprocess.run(
+            result = run_bounded_child(
                 ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "-q", path],
                 cwd=tmp_path,
-                check=False,
-                timeout=30,
             )
             return result.returncode == 0
 
@@ -664,15 +660,13 @@ class TestProjectGitignoreBackfill:
     def test_goal_records_are_ignored_and_goal_history_is_tracked(self, tmp_path: Path):
         # ADR 0067: Goal Record directories and Goal locks are local working
         # state; the committed Goal summaries under goals/history/ are not.
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+        run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
         init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
 
         def ignored(path: str) -> bool:
-            result = subprocess.run(
+            result = run_bounded_child(
                 ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "-q", path],
                 cwd=tmp_path,
-                check=False,
-                timeout=30,
             )
             return result.returncode == 0
 
@@ -709,18 +703,6 @@ class TestProjectGitignoreBackfill:
 # ---------------------------------------------------------------------------
 # Windows filesystem evidence for #609 (runs in the Windows CI shards)
 # ---------------------------------------------------------------------------
-
-
-def _git(repository: Path, *args: str) -> str:
-    """Run one Git command in *repository* and return its stdout."""
-    result = subprocess.run(
-        ["git", "-C", str(repository), *args],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
-    )
-    return result.stdout
 
 
 def _crlf_project_data(booley_dir: Path) -> list[str]:
@@ -784,7 +766,7 @@ def _check_only(root: Path) -> int:
 
 
 _GUIDANCE = b"# Guidance\n\nUse LF.\n"
-_AGENT_TABLE = b'[agent]\nprovider = "claude"\nauth = "subscription"\n'
+_AGENT_TABLE = b'[agent]\ndefault = "claude"\nauth = "subscription"\n'
 _CONFIG_WITHOUT_AGENT = b"# user config\n[flows.sim]\nenabled = true\n"
 
 
@@ -1166,10 +1148,8 @@ def test_booley_dir_check_full_init_reports_backfills_without_mutation(repo, mon
     assert _complete_snapshot(repo) == before
 
 
-def _managed_git(root: Path, *args: str) -> bytes:
-    return subprocess.run(
-        ["git", "-C", str(root), *args], capture_output=True, check=True, timeout=10
-    ).stdout
+def _managed_git(root: Path, *args: str) -> str:
+    return run_bounded_child(["git", "-C", str(root), *args], check=True, timeout=10).stdout
 
 
 def test_initial_authored_scaffolding_remains_uncommitted(repo):
@@ -1179,7 +1159,7 @@ def test_initial_authored_scaffolding_remains_uncommitted(repo):
     assert (data / "booley.toml").is_file()
     assert _managed_git(repo, "ls-files", "--stage", "-z") == before
     assert not _managed_git(data, "ls-files", "--stage", "-z")
-    assert b"booley.toml" in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
+    assert "booley.toml" in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
 
 
 # Windows CI measured 36.0s; 120s preserves the required timeout headroom.
@@ -1210,7 +1190,7 @@ def test_managed_bundle_publication_leaves_versioned_project_clean(repo, topolog
     assert _run_full_init(repo) == 0
     assert bundle.is_file()
     assert _managed_git(data, "check-ignore", "--no-index", str(bundle))
-    assert _managed_git(owner, "status", "--porcelain", "--untracked-files=all") == b""
+    assert _managed_git(owner, "status", "--porcelain", "--untracked-files=all") == ""
     assert _managed_git(owner, "ls-files", "--stage", "-z") == index
 
 
@@ -1239,8 +1219,8 @@ def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
     repaired = ignore.read_text()
     assert repaired.startswith(stale)
     assert repaired.count(".managed/\n") == 1
-    assert b".managed" not in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
-    assert b" M .gitignore" in _managed_git(data, "status", "--porcelain")
+    assert ".managed" not in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
+    assert " M .gitignore" in _managed_git(data, "status", "--porcelain")
     init_cmd._step_booley_dir(InitContext(project_root=repo))
     assert ignore.read_text() == repaired
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
@@ -1442,7 +1422,7 @@ def _git(root: Path, *args: str) -> str:
     creates and removes ``.git/objects/maintenance.lock`` at an arbitrary time,
     which flakes any test that snapshots the tree around a later call.
     """
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             "git",
             "-c",
@@ -1456,10 +1436,7 @@ def _git(root: Path, *args: str) -> str:
             *args,
         ],
         cwd=root,
-        capture_output=True,
-        text=True,
         check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout
 
@@ -1533,7 +1510,7 @@ def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys
 
     text = config.read_text(encoding="utf-8")
     parsed = tomllib.loads(text)
-    assert parsed["agent"] == {"provider": "claude", "auth": "subscription"}, "[agent] kept"
+    assert parsed["agent"] == {"default": "claude", "auth": "subscription"}, "[agent] kept"
     assert parsed["stealth"]["enabled"] is False
     assert "# booley-init-origin: scaffold" in text
     assert not (repo / ".booley/.git").exists(), "no inner repository for an open scaffold"
@@ -1580,7 +1557,7 @@ def test_stealth_scaffold_after_plain_init_keeps_hidden_layout(repo, monkeypatch
     assert init_cmd.run_init(_after_init_scaffold_args(stealth=True), repo) == 0
 
     parsed = tomllib.loads((repo / ".booley/booley.toml").read_text(encoding="utf-8"))
-    assert parsed["agent"] == {"provider": "claude", "auth": "subscription"}
+    assert parsed["agent"] == {"default": "claude", "auth": "subscription"}
     assert parsed["stealth"]["enabled"] is True
     assert (repo / ".booley/.git").is_dir(), "Stealth keeps the inner repository"
     assert "/.booley" in _exclude_lines(repo)
@@ -1770,12 +1747,7 @@ def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path,
     """Stealth init hides both `.booley` and the relocated Booley Directory."""
     root = tmp_path / "proj"
     root.mkdir()
-    subprocess.run(
-        ["git", "init", "-q", str(root)],
-        capture_output=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", "-q", str(root)], check=True)
     (root / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
     project = root / "tools" / "booley"
     project.mkdir(parents=True)

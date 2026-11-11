@@ -18,8 +18,9 @@ from booley.config.chat import chat_worktree
 from booley.config.gateway import GATEWAY_ENV_KEYS, HIDDEN_GATEWAY_ENV, GatewayConfigError
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.core.booley_dir import resolve_main_checkout_root
-from booley.harness import chat_checkout, codex_chat, worktree_cmd
+from booley.harness import chat_checkout, chat_exit, codex_chat, worktree_cmd
 from booley.harness.chat_checkout import Placement
+from booley.harness.chat_exit import CreatedWorktree
 from booley.runtime.booley_dir import resolve_checkout_booley_dir, resolve_common_booley_dir
 from booley.runtime.foreground_child import exec_agent, run_foreground_child
 from booley.runtime.handles import reserve_session_handle
@@ -188,8 +189,10 @@ def _interrupted_notice(project_root: Path, name: str) -> str:
     )
 
 
-def _enter_worktree(project_root: Path, handle: str, reason: str | None) -> int | None:
-    """Create the worktree named after *handle*, announce it and move there.
+def _enter_worktree(
+    project_root: Path, handle: str, reason: str | None, created: CreatedWorktree | None
+) -> int | None:
+    """Create the worktree named after *handle*, tell the parent, announce it and move there.
 
     Returns an exit code when the agent must not start, ``None`` after the move.
     """
@@ -203,6 +206,8 @@ def _enter_worktree(project_root: Path, handle: str, reason: str | None) -> int 
         return 128 + int(signum)
     if worktree is None:
         return 1
+    if created is not None:
+        created.record(name)  # the parent's exit step needs the name once the agent ends
     print(
         f"Booley session {handle} works in worktree {worktree} on branch booley/{name} ({reason}).",
         file=sys.stderr,
@@ -211,12 +216,18 @@ def _enter_worktree(project_root: Path, handle: str, reason: str | None) -> int 
     return None
 
 
-def _launch(provider: str, project_root: Path, agent_args: list[str], placement: Placement) -> int:
+def _launch(
+    provider: str,
+    project_root: Path,
+    agent_args: list[str],
+    placement: Placement,
+    created: CreatedWorktree | None = None,
+) -> int:
     """Exec the agent CLI; runs in the forked child, so identities are the agent's own.
 
-    A worktree placement first reserves the handle, creates the worktree it names and
-    starts the agent there. Returns an exit code only when the launch fails: on success
-    the process is replaced.
+    A worktree placement first reserves the handle, creates the worktree it names, reports
+    it through *created* and starts the agent there. Returns an exit code only when the
+    launch fails: on success the process is replaced.
     """
     try:
         executable, argv, handle = _agent_command(
@@ -227,7 +238,9 @@ def _launch(provider: str, project_root: Path, agent_args: list[str], placement:
         if placement.worktree:
             if handle is None:
                 raise _NoHandleError(f"{provider} cannot carry a handle")
-            if (code := _enter_worktree(project_root, handle, placement.reason)) is not None:
+            if (
+                code := _enter_worktree(project_root, handle, placement.reason, created)
+            ) is not None:
                 return code
         # Last statement before the process is replaced: the CLI exists and the
         # launch arguments are settled, so the notice only precedes a real start.
@@ -276,6 +289,8 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     if shutil.which(provider, mode=os.F_OK) is None:
         return _cli_not_found(provider)
 
+    # A worktree that sat idle is removed before this launch allocates a handle and a name.
+    chat_exit.collect_at_launch(project_root)
     # The child, not Booley, reserves the handle: the handle belongs to the agent's process.
     launch = functools.partial(_launch, provider, project_root, args.agent_args)
     return _run_in_checkout(launch, mode, flagged, project_root)
@@ -289,12 +304,16 @@ def _worktree_mode(args: argparse.Namespace, booley_dir: Path) -> tuple[str, boo
 
 
 def _run_in_checkout(
-    launch: Callable[[Placement], int], mode: str, flagged: bool, project_root: Path
+    launch: Callable[[Placement, CreatedWorktree | None], int],
+    mode: str,
+    flagged: bool,
+    project_root: Path,
 ) -> int:
     """Pick the checkout from where the launch happens, hold the main lock, run the child.
 
     Only a launch from the main checkout is placed: anywhere else (a linked worktree,
-    outside Git) the agent starts in place, as before, without the lock.
+    outside Git) the agent starts in place, as before, without the lock or an exit prompt
+    (Booley did not create that worktree). A worktree placement also gets the exit step.
     """
     main_root = resolve_main_checkout_root(project_root)
     if chat_checkout.launch_checkout(Path.cwd(), main_root) != "main":
@@ -304,7 +323,8 @@ def _run_in_checkout(
                 file=sys.stderr,
             )
             return 2
-        return run_foreground_child(functools.partial(launch, Placement(worktree=False)))
+        chat_exit.stamp_in_place_worktree(project_root)
+        return run_foreground_child(functools.partial(launch, Placement(worktree=False), None))
     common = resolve_common_booley_dir(project_root)
     with chat_checkout.main_checkout_lock(common) as lock:
         session = (
@@ -317,4 +337,16 @@ def _run_in_checkout(
         )
         if mode == "auto" and placement.worktree:
             lock.release()  # not in main, so later launches may take it
-        return run_foreground_child(functools.partial(launch, placement))
+        # Without `os.fork` (Windows) the agent replaces Booley: no session ever ends in it.
+        if not placement.worktree or not hasattr(os, "fork"):
+            return run_foreground_child(functools.partial(launch, placement, None))
+        created = CreatedWorktree()
+        try:
+            return run_foreground_child(
+                functools.partial(launch, placement, created),
+                after_exit=functools.partial(
+                    chat_exit.exit_step, project_root, created, lock.release
+                ),
+            )
+        finally:
+            created.close()
