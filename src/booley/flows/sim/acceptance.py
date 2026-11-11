@@ -115,7 +115,7 @@ class _OutcomeEvidence:
         return self._coverage
 
     def of(self, observations: Iterable[Mapping[str, object] | None]) -> list[dict[str, object]]:
-        """The Test Run row of each of *observations*, in order."""
+        """The Test Run row of each present observation in *observations*, in order."""
         if self._rows is None:
             rows = evidence_test_run_rows(self.outcome)
             self._rows = {row["name"]: row for row in rows}
