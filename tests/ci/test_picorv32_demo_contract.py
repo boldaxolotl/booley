@@ -164,7 +164,7 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 
     assert "project_contract_ref" not in raw_contract
     assert len(contract.upstream_ref) == 40
-    assert contract.project_ref == "e53c1896ab02595aa4ebb3a56b5aa7bd109177f9"
+    assert contract.project_ref == "a3520837bce9416c1a7209d779148a9eb12482a9"
     assert contract.schema == 2
     assert all(goal.target in contract.required_targets for goal in contract.required_goals)
     assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
