@@ -325,16 +325,17 @@ Read the Mergify status and underlying Actions failure, then:
 - For a known flake, requeue unchanged once. A failure is a known flake when
   the PR's diff does not touch the failing test or the code it exercises, and
   either an open issue describes the same failure or recent `main` runs of that
-  job show it alongside green runs. A push to `main` runs only `build-dist` and
-  the image job (`bwave-smoke`), so `main` evidence for every other job,
-  including `package-artifacts` and the test jobs, comes from the nightly
-  scheduled `Tests` run. Match a crashed worker or a duration-budget overrun by
-  job and error signature instead of a test ID. When no issue
-  exists, first file a `bug`, `ci`, `needs-triage` issue with the run link,
-  test ID or job, and error, scanned as `AGENTS.md` requires. When `main`'s
-  latest run of that job (for jobs outside the main-push tier, the latest nightly run) fails the
-  same way, `main` has regressed: report it instead of requeueing. A second
-  failure of the same flake on the same PR is a repeated interruption.
+  job show it alongside green runs. A push to `main` runs only `changes`,
+  `release-semantic`, `build-dist` and the image job (`bwave-smoke`), so `main`
+  evidence for every other job, including `package-artifacts` and the test
+  jobs, comes from the nightly scheduled `Tests` run. Match a crashed worker or
+  a duration-budget overrun by job and error signature instead of a test ID.
+  When no issue exists, first file a `bug`, `ci`, `needs-triage` issue with the
+  run link, test ID or job, and error, scanned as `AGENTS.md` requires. When
+  `main`'s latest run of that job (for jobs outside the main-push tier, the
+  latest nightly run) fails the same way, `main` has regressed: report it
+  instead of requeueing. A second failure of the same flake on the same PR is a
+  repeated interruption.
 - For an unexplained or repeated interruption, report an incident; do not retry
   until it happens to pass.
 

@@ -84,9 +84,9 @@ ALWAYS_JOBS = ("changes", "release-semantic")
 # `bwave-smoke` stays because only a main push may write the shared substrate
 # build cache, and it installs the wheel from `build-dist`. The nightly
 # scheduled run and manual runs still select every job.
-# `package-artifacts` is absent: the queue candidate already ran its install,
-# wheel and sdist checks on this tree, nothing here consumes its output, and
-# the nightly run refreshes its pip cache.
+# `package-artifacts` is absent: a queue candidate whose paths select it already
+# ran its install, wheel and sdist checks on this tree, nothing here consumes
+# its output, and the nightly run refreshes the shared pip cache.
 MAIN_PUSH_JOBS = (*ALWAYS_JOBS, DIST_JOB, "bwave-smoke")
 MAIN_REF = "refs/heads/main"
 CI_TOOLING_JOBS = (

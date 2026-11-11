@@ -31,11 +31,12 @@ commits before it are untested intermediate trees that no later run tests on
 their own (the nightly run below covers `main`'s tip). `bwave-smoke` stays because
 only a `main` push may write the shared `sandbox-substrate` build cache, and it
 installs the wheel `build-dist` builds. `package-artifacts` is absent because
-the queue candidate already ran its isolated host install, direct wheel and
-sdist checks on the same tree. The nightly run refreshes its pip cache, so
-after a dependency merge, until that night's run, PR runs restore an older
-entry by prefix, purge it and reinstall; a `main` push implies no immediate
-refresh.
+a queue candidate whose paths select it already ran its isolated host install,
+direct wheel and sdist checks on the same tree; drift in the unconstrained host
+install otherwise surfaces in the nightly run. The nightly run also refreshes
+the shared `pyproject.toml` and `constraints.txt` pip cache, so after a
+dependency merge, until that night's run, a PR's first run restores an older
+entry by prefix, purges it and reinstalls; a `main` push no longer refreshes it.
 
 `build-dist` builds the wheel and sdist once and uploads them as `pr-dist`;
 the classifier selects it whenever `package-artifacts`, `bwave-smoke` or
