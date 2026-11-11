@@ -18,6 +18,7 @@ import pytest
 from booley.harness import booley as tlr
 from booley.runtime import health
 from booley.runtime.booley_dir import reset_cache
+from tests.subprocess_budget import run_bounded_child
 
 TICKETS_REL = Path(".booley") / "tickets"
 
@@ -832,8 +833,6 @@ class TestVersionCommitDate:
         assert tlr._version_string() == f"booley {__version__} (abc1234, 2026-10-26)"
 
     def test_dirty_checkout_shows_dirty_commit_and_date(self, tmp_path, monkeypatch):
-        import subprocess
-
         from booley import __version__
         from booley.runtime.version_attribution import VersionOrigin
 
@@ -841,12 +840,9 @@ class TestVersionCommitDate:
         repo.mkdir()
 
         def git(*args, **env):
-            return subprocess.run(
+            return run_bounded_child(
                 ["git", "-C", str(repo), *args],
                 check=True,
-                capture_output=True,
-                text=True,
-                timeout=60,
                 # Ignore the developer's global git config (signing, hooks).
                 env={
                     **os.environ,
