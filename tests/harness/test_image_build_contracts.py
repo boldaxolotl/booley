@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -15,6 +14,7 @@ from booley.runtime import image_build_contracts as contracts
 from booley.runtime.build_stamp import BuildProfile, write_build_stamp
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.source_checkout_support import copy_source_checkout
+from tests.subprocess_budget import run_bounded_child
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -159,7 +159,7 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     write_build_stamp(checkout, profile=BuildProfile.OFFICIAL_RELEASE)
     wheel_dir = tmp_path / "wheel"
     build_python = sys.executable
-    built = subprocess.run(
+    built = run_bounded_child(
         [
             build_python,
             "-m",
@@ -169,10 +169,6 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
             str(wheel_dir),
         ],
         cwd=checkout,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=120,
     )
     assert built.returncode == 0, built.stderr or built.stdout
     wheel = next(wheel_dir.glob("booley_rtl-*.whl"))
@@ -199,14 +195,11 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
             "PYTHONPATH": str(installed),
         }
     )
-    completed = subprocess.run(
+    completed = run_bounded_child(
         [build_python, "-P", str(driver), str(project), str(SOURCE_ROOT)],
         cwd=tmp_path,
         env=environment,
         check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
     )
     observed = json.loads(completed.stdout)
 
