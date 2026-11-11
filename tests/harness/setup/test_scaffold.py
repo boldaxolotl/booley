@@ -807,6 +807,7 @@ def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(
         reporter.skip_,
         reporter.fail_,
         _note=reporter.note_,
+        _diagnostics=reporter.diagnostics,
     )
     findings = reporter.result(0).findings
     assert not [
@@ -884,6 +885,7 @@ def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
         reporter.skip_,
         reporter.fail_,
         _note=reporter.note_,
+        _diagnostics=reporter.diagnostics,
     )
     assert not [f for f in reporter.result(0).findings if f.severity in {"warn", "fail"}]
 
@@ -1077,6 +1079,7 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
         reporter.skip_,
         reporter.fail_,
         _note=reporter.note_,
+        _diagnostics=reporter.diagnostics,
     )
     findings = list(reporter.result(0).findings)
     _assert_target_names_conform(findings)

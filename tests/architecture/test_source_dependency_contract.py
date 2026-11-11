@@ -465,7 +465,13 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
 
 
 @pytest.mark.parametrize(
-    "owner", ["harness.host_diagnostics", "harness.setup.readiness", "runtime.inspection"]
+    "owner",
+    [
+        "harness.host_diagnostics",
+        "harness.setup.readiness",
+        "runtime.inspection",
+        "flows.sim.backends.cocotb_target_checks",
+    ],
 )
 @pytest.mark.parametrize(
     "target",
@@ -486,6 +492,9 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
         root,
         root / "harness",
         root / "harness" / "setup",
+        root / "flows",
+        root / "flows" / "sim",
+        root / "flows" / "sim" / "backends",
         root / "presentation",
         root / "runtime",
     ):

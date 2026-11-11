@@ -35,7 +35,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit).
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -64,7 +64,21 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_run_container_tool_checks",
         }
     ),
-    "_run_container_tool_checks": frozenset({"_check_container_runtime_payload"}),
+    "_run_container_tool_checks": frozenset(
+        {"_check_container_runtime_payload", "project_has_cocotb_target"}
+    ),
+    "_check_target_metadata": frozenset(
+        {
+            "_check_doctor_target_compatibility",
+            "_check_legacy_core_targets",
+            "_check_naming_conventions",
+            "_check_synth_recipe_migrations",
+            "_check_target_flow_option_defines",
+            "_check_yosys_targets_have_arch",
+            "_check_sim_traceable",
+            "inspect_cocotb_targets",
+        }
+    ),
     "_run_mcp_checks": frozenset(
         {
             "inspect_runtime",
@@ -260,3 +274,17 @@ def test_every_check_function_is_reachable_from_run_doctor() -> None:
         f"ORPHAN_ALLOWLIST entries {stale_allowlisted} are reachable or "
         "deleted — drop them from the allowlist"
     )
+
+
+def test_doctor_holds_no_cocotb_rules() -> None:
+    """The cocotb Target rules and AST name scan live in Flows, not in Doctor."""
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    imported_modules = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert "ast" not in imported_modules, "doctor.py parses Python source again"
+    cocotb_functions = sorted(name for name in _module_functions() if "cocotb" in name)
+    assert not cocotb_functions, f"cocotb rules moved back into Doctor: {cocotb_functions}"
