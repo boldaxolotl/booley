@@ -19,17 +19,24 @@ from booley.flows.test_runs import (
     test_run_document,
 )
 
+_TARGET = {"selector": "sim"}
+
+
+def _item(unnamed):
+    """A work item whose only Test Run is the unnamed invocation *unnamed*."""
+    return {"work_item_id": "w", "target": _TARGET, "test_runs": (test_run_document(unnamed),)}
+
 
 @pytest.mark.parametrize("seed", [None, 9])
 @pytest.mark.parametrize("test", ["found_a", "default", "has space"])
 def test_results_facts_and_reports_name_a_discovered_test_the_same_way(test, seed):
     """One rule, two readers: the facts binding and the report rows."""
     unnamed = build_test_run(None, seed=seed)
-    expected = discovered_test_run(test, unnamed)
+    expected = discovered_test_run(test, unnamed, target="sim")
 
-    item = {"work_item_id": "w", "test_runs": (test_run_document(unnamed),)}
+    item = _item(unnamed)
     ((bound_name, bound_fingerprint),) = observation_test_runs(item, ({"test": test},)) or ()
-    observation = {"work_item_id": "w", "test": test, "test_run": bound_name}
+    observation = {"work_item_id": "w", "target": _TARGET, "test": test, "test_run": bound_name}
     report = _observed_run(observation, {("w", unnamed.name): unnamed, ("w", ""): unnamed})
 
     assert report == expected
@@ -38,10 +45,25 @@ def test_results_facts_and_reports_name_a_discovered_test_the_same_way(test, see
 
 def test_a_discovered_test_runs_at_the_unnamed_invocations_seed():
     unnamed = build_test_run(None, seed=9)
-    assert discovered_test_run("found_a", unnamed).name == "found_a@9"
-    assert discovered_test_run("found_a", build_test_run(None)).name == "found_a"
+    assert discovered_test_run("found_a", unnamed, target="sim").name == "found_a@9"
+    assert discovered_test_run("found_a", build_test_run(None), target="sim").name == "found_a"
     # A name outside the Test name rules stays under the unnamed invocation.
-    assert discovered_test_run("default", unnamed) is unnamed
+    assert discovered_test_run("default", unnamed, target="sim") is unnamed
+
+
+@pytest.mark.parametrize("seed", [None, 9])
+@pytest.mark.parametrize("name", ["", "sim"])
+def test_results_facts_and_reports_bind_the_unnamed_invocations_own_result_to_it(name, seed):
+    """A result named after the Target (or nothing) is the unnamed run, not a discovered Test."""
+    unnamed = build_test_run(None, seed=seed)
+
+    ((bound_name, bound_fingerprint),) = observation_test_runs(_item(unnamed), ({"test": name},))
+    # "test_run" names no recorded run, so the report must bind through the Test name.
+    observation = {"work_item_id": "w", "target": _TARGET, "test": name, "test_run": "unrecorded"}
+    report = _observed_run(observation, {("w", unnamed.name): unnamed, ("w", ""): unnamed})
+
+    assert report is unnamed
+    assert (bound_name, bound_fingerprint) == (unnamed.name, unnamed.fingerprint)
 
 
 @pytest.mark.parametrize(

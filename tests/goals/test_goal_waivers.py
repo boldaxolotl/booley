@@ -17,7 +17,6 @@ from uuid import uuid4
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim import coverage_waiver_application as application
 from booley.flows.sim.coverage_campaign import (
     DurableTargetIdentity,
     encode_coverage_point_id,
@@ -30,13 +29,15 @@ from booley.flows.sim.coverage_policy import (
     CoverageCriterion,
     CoverageThreshold,
     evaluate_coverage_campaign,
+    evaluation_json,
+    strict_reevaluation,
 )
+from booley.flows.sim.coverage_provisional import criterion_from_evaluation
 from booley.flows.sim.coverage_reference import (
     build_coverage_campaign_reference,
     encode_coverage_campaign_reference,
     publish_coverage_campaign_reference,
 )
-from booley.flows.sim.coverage_waiver_application import evaluation_json, strict_reevaluation
 from booley.flows.sim.coverage_waivers import CoverageWaiverValidationError
 from booley.flows.sim.waiver_candidates import (
     CampaignBinding,
@@ -364,9 +365,11 @@ def test_recorder_never_stamps_removed_producer_waivers_as_fresh(layout, race):
     approve(layout, env, propose(layout, env, candidate).proposal.id)
     record = env.store.load(layout.record.id)
     current = load_goal_state(env.store, record)
+    campaign = env.waivers._resolved(current.criteria[KEY].detail).loaded.campaign
     producer = strict_reevaluation(
-        env.waivers._resolved(current.criteria[KEY].detail).loaded.campaign,
+        campaign,
         env.waivers._current_waivers(),
+        criterion=criterion_from_evaluation(campaign),
     )
     detail = {"evaluation": evaluation_json(producer)}
     assert detail["evaluation"]["status"] == "pass"
@@ -711,7 +714,8 @@ def tree_snapshot(root):
 def observe_prediction(monkeypatch, waiver_service, candidate, refuse):
     captured, seen = [], {}
     promotion = waiver_service._promotion_effects
-    loader = application.load_approved_waiver_set
+    loader = service.load_approved_waiver_set
+    promote = service.load_promoted_waiver_set
 
     def capture(*args):
         effects = promotion(*args)
@@ -726,14 +730,19 @@ def observe_prediction(monkeypatch, waiver_service, candidate, refuse):
             raise CoverageWaiverValidationError(())
         return result
 
+    def observing_promotion(*args):
+        # Observe only the loader the promotion path calls, not _current_waivers.
+        with monkeypatch.context() as scoped:
+            scoped.setattr(service, "load_approved_waiver_set", observe)
+            return promote(*args)
+
     capture_spy = Mock(side_effect=capture)
     build = Mock(wraps=service.build_promotion)
     render = Mock(wraps=service.render_approval_document)
     monkeypatch.setattr(waiver_service, "_promotion_effects", capture_spy)
-    monkeypatch.setattr(application, "load_approved_waiver_set", observe)
-    for module in (application, service):
-        monkeypatch.setattr(module, "build_promotion", build, raising=False)
-        monkeypatch.setattr(module, "render_approval_document", render, raising=False)
+    monkeypatch.setattr(service, "load_promoted_waiver_set", observing_promotion)
+    monkeypatch.setattr(service, "build_promotion", build)
+    monkeypatch.setattr(service, "render_approval_document", render)
     return captured, seen, (capture_spy, build, render)
 
 

@@ -2148,17 +2148,6 @@ def test_pull_and_local_fallback_failure_restore_prior_tag(
     assert not any(reference.startswith("booley-lifecycle-backup-") for reference in docker.images)
 
 
-def _wire_source_chain(
-    root: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[FakeDocker, list[tuple[str, str]], list[str]]:
-    docker_dir = _set_source_installation(tmp_path, monkeypatch)
-    docker, pulls = _wire_source_docker(docker_dir, monkeypatch)
-    builds = _wire_source_builds(root, docker, monkeypatch)
-    return docker, pulls, builds
-
-
 def _set_source_installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     import booley
     from booley.harness.setup import docker_image as init_docker_image
@@ -2212,57 +2201,6 @@ def _wire_source_docker(
         lambda version, image=lifecycle.BASE_IMAGE: pulls.append((version, image)) or False,
     )
     return docker, pulls
-
-
-def _wire_source_builds(
-    root: Path,
-    docker: FakeDocker,
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[str]:
-    from booley.harness.setup import docker_image as init_docker_image
-
-    builds: list[str] = []
-
-    def stamp_local(node: lifecycle.ImageNode, image_id: str) -> None:
-        labels = dict(node.expected_labels)
-        labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
-        labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
-        if node.reference == lifecycle.BASE_IMAGE:
-            labels[lifecycle.LABEL_PARENT_ARTIFACT] = (
-                docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or ""
-            )
-        docker.images[node.reference] = (image_id, labels)
-
-    def build_base(
-        context,
-        _docker_dir,
-        _exists,
-        _fingerprint,
-        *,
-        rebuild_runtime_base=False,
-        **_kwargs,
-    ) -> None:
-        del rebuild_runtime_base
-        payload = lifecycle.PayloadProvenance(
-            lifecycle.PROVENANCE_SCHEMA,
-            "0.2.6",
-            "payload-new",
-        )
-        stamp_local(lifecycle._base_node(payload), "sha256:" + "b" * 64)
-        context.record("docker_image", "ok", "built")
-        builds.append(lifecycle.BASE_IMAGE)
-
-    def build_flavor(
-        context, image: str, _recipe: Path, _exists: bool, _fingerprint: str | None
-    ) -> bool:
-        stamp_local(lifecycle._nodes(root, image, docker)[-1], "sha256:" + "c" * 64)
-        context.record("project_image", "ok", f"flavor {image} built")
-        builds.append(image)
-        return True
-
-    monkeypatch.setattr(init_docker_image, "_docker_local_build", build_base)
-    monkeypatch.setattr(init_docker_image, "_flavor_build", build_flavor)
-    return builds
 
 
 def _install_stale_outer_base(docker: FakeDocker) -> None:
@@ -2444,9 +2382,7 @@ def test_packaged_refresh_uses_pull_capable_builder(
     root = _project(tmp_path)
     docker_dir = tmp_path / "installed" / "src" / "booley" / "data" / "docker"
     docker_dir.mkdir(parents=True)
-    recipe = docker_dir / (
-        "Dockerfile" if reference == lifecycle.BASE_IMAGE else "Dockerfile.riscv"
-    )
+    recipe = docker_dir / "Dockerfile"
     recipe.write_text("FROM scratch\n", encoding="utf-8")
     monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
     pulls: list[tuple[str, str]] = []
@@ -2461,11 +2397,6 @@ def test_packaged_refresh_uses_pull_capable_builder(
         init_docker_image,
         "_step_docker_image",
         lambda *_args, **_kwargs: pytest.fail("packaged refresh attempted a source build"),
-    )
-    monkeypatch.setattr(
-        init_docker_image,
-        "ensure_flavor_image",
-        lambda *_args, **_kwargs: pytest.fail("packaged refresh attempted a flavor build"),
     )
     node = lifecycle.ImageNode(
         reference,

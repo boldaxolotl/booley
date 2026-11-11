@@ -109,7 +109,7 @@ def _protected_outputs(root, monkeypatch):
 
 def _protected_campaign(root, monkeypatch):
     """Campaign report lines and ``simulation.json`` test entries for a fixed passing campaign."""
-    from booley.flows.sim.acceptance import _campaign_projection
+    from booley.flows.sim.acceptance import _campaign_projection, _OutcomeEvidence
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
 
     # These budgets size the cycle lines, so the golden must not depend on the host.
@@ -124,7 +124,7 @@ def _protected_campaign(root, monkeypatch):
     lines = [
         line.replace(manifest, "<manifest>") for line in sim._campaign_report_lines((outcome,))
     ]
-    return [lines, _campaign_projection(outcome)["tests"]]
+    return [lines, _campaign_projection(_OutcomeEvidence(outcome))["tests"]]
 
 
 def _protected_transport():
