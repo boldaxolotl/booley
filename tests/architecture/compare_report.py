@@ -113,6 +113,7 @@ def _root_source(root: Path, label: str) -> _Source:
 
 
 def _resolve_ref(repo_root: Path, ref: str) -> str:
+    # Kept on subprocess.run: this standalone script runs outside pytest.
     result = subprocess.run(
         ["git", "rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}"],
         cwd=repo_root,
@@ -130,6 +131,7 @@ def _resolve_ref(repo_root: Path, ref: str) -> str:
 
 @contextmanager
 def _archived_source(repo_root: Path, object_id: str) -> Iterator[Path]:
+    # Kept on subprocess.run: this standalone script runs outside pytest and needs binary output.
     result = subprocess.run(
         ["git", "archive", "--format=tar", object_id, "--", "src/booley"],
         cwd=repo_root,
@@ -180,6 +182,7 @@ def _tree_digest(paths: tuple[Path, ...], *, common_root: Path) -> str:
 
 def _analyzer_commit() -> str:
     root = Path(__file__).resolve().parents[2]
+    # Kept on subprocess.run: this standalone script runs outside pytest.
     result = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD^{commit}"],
         cwd=root,
