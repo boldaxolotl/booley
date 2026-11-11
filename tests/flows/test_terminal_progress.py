@@ -646,7 +646,10 @@ def prepare_synth_unit(flow, tmp_path, monkeypatch):
     plan = SimpleNamespace(
         build_dir=build, spec=SimpleNamespace(timing=SimpleNamespace(mode="logical"))
     )
-    monkeypatch.setattr(flow, "_resolve_synth_recipe", lambda _: SimpleNamespace(command=["spec"]))
+    recipe = SimpleNamespace(
+        command=["spec"], resolved=SimpleNamespace(files=(), build_root=tmp_path)
+    )
+    monkeypatch.setattr(flow, "_resolve_synth_recipe", lambda _: recipe)
     monkeypatch.setattr(flow, "_configure_synth", lambda *_: plan)
     script = (
         f"import pathlib; pathlib.Path({str(build / 'yosys.log')!r})"
@@ -673,6 +676,7 @@ def prepare_fpga_unit(flow, tmp_path, monkeypatch):
         tmp_path,
         "",
         False,
+        None,
         console_logs=(tmp_path / "vivado.log", log),
     )
     monkeypatch.setattr(flow, "_prepare_fpga_command", lambda _: prepared)

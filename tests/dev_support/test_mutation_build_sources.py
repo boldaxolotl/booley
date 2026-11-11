@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +13,7 @@ from fusesoc.vlnv import Vlnv
 from tests.booley_checkouts_support import commit_all, init_repo, isolate_git, snapshot
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import symlinked_booley_dir
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support.mutation_build_sources import (
     materialize_build_mutation,
@@ -71,7 +71,8 @@ def _fixture(tmp_path, header=False, copyto=None, eda_tool=None, name=None, defe
 
 
 def _run(argv, cwd):
-    return subprocess.check_output(argv, cwd=cwd, stderr=subprocess.STDOUT, timeout=120).decode()
+    result = run_bounded_child(argv, cwd=cwd, check=True)
+    return result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(

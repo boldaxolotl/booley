@@ -8,6 +8,11 @@ This ADR's campaign terminology is superseded by
 [ADR 0090](0090-rename-simulation-and-coverage-campaigns-to-records.md): read
 Simulation Campaign as Simulation Record. Its other decisions stand.
 
+Amended by [ADR 0092](0092-measure-commits-against-target-metrics.md): the
+Goal rules below (Goals naming Test Runs, multi-seed `@xN` Goals, evidence
+matching) go when Goal Mode is removed. Test Variants, seeds and Test Runs
+stand.
+
 Engineers need to run a Test with other plusargs or another seed (issue #1233).
 A pass only means something for the exact configuration that ran, so Booley
 offers no free-form run-time overrides. A Project declares each extra
