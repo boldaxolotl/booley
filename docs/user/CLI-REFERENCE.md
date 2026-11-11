@@ -267,6 +267,11 @@ default with `gc_older_than` in the main checkout's `.booley/booley.toml`
 ([configuration](CONFIG.md#worktree-cleanup-worktree)). `--older-than` wins over
 the setting. Run it from the main checkout or another worktree.
 
+`booley chat` runs the same cleanup at the start of every launch, with the same
+age, and prints only the worktrees it removed: it stays silent about the ones it
+keeps and about a failed run (an invalid `gc_older_than`, for instance). Run
+`booley worktree gc` to see why a worktree was kept.
+
 Each idle worktree goes through `booley worktree rm` without `--force`, so
 everything `rm` refuses is kept: a live Session, an active Goal Mode, and
 unsaved work (see the list above). A removed worktree prints the same lines as
