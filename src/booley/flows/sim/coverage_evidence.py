@@ -31,6 +31,7 @@ from .coverage_campaign import (
     encode_coverage_point,
 )
 from .coverage_json import FrozenJson, freeze_coverage_mapping
+from .coverage_point_query import coverage_point_matches
 from .coverage_source_gaps import source_gap_overview, source_gap_paths
 
 #: The largest Campaign one Analyst evidence session indexes.
@@ -490,23 +491,18 @@ def _string_list(
     return list(items)
 
 
-def _covered(point: CoveragePoint) -> bool:
-    return sum(point.hits_by_run.values()) > 0
-
-
 def _disposition(point: CoveragePoint) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], point.disposition)
 
 
 def _matches(point: CoveragePoint, request: Mapping[str, object]) -> bool:
-    checks = (
-        request.get("metric") is None or point.identity.metric == request["metric"],
-        request.get("source") is None or point.identity.source == request["source"],
-        request.get("covered") is None or _covered(point) is request["covered"],
-        request.get("disposition") is None
-        or _disposition(point)["kind"] == request["disposition"],
+    return coverage_point_matches(
+        point,
+        metric=cast("str | None", request.get("metric")),
+        source=cast("str | None", request.get("source")),
+        covered=cast("bool | None", request.get("covered")),
+        disposition=cast("str | None", request.get("disposition")),
     )
-    return all(checks)
 
 
 def _filter_key(request: Mapping[str, object]) -> tuple[object, ...]:
@@ -520,9 +516,8 @@ def _overview_counts(
     metrics: Counter[str] = Counter()
     sources: Counter[str] = Counter()
     for point in points:
-        disposition = str(_disposition(point)["kind"])
-        dispositions[disposition] += 1
-        if not _covered(point) and disposition == "eligible":
+        dispositions[str(_disposition(point)["kind"])] += 1
+        if coverage_point_matches(point, covered=False, disposition="eligible"):
             metrics[point.identity.metric] += 1
             sources[point.identity.source] += 1
     return dispositions, metrics, sources
