@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
+    from booley.runtime.session_admission import Sandbox
 
 # --- Constants ---
 
@@ -1480,7 +1481,7 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     )
 
 
-def _warn_standalone_jobs(sandbox: Any) -> None:
+def _warn_standalone_jobs(sandbox: Sandbox | None) -> None:
     """Tell the user which Standalone Jobs die with the Sandbox about to be stopped."""
     from booley.harness.sandbox_stop_warning import standalone_job_warnings
 

@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -74,7 +75,9 @@ def _own_identity() -> dict[str, Any]:
     return identity.to_payload()
 
 
-def _real_probe(warning: Any, booley_dir: Path):
+def _real_probe(
+    warning: Any, booley_dir: Path
+) -> Callable[[Sandbox], subprocess.CompletedProcess[str]]:
     """Stand-in for ``docker exec``: run the shipped probe locally against ``booley_dir``."""
 
     def run(_sandbox: Sandbox) -> subprocess.CompletedProcess[str]:
@@ -104,7 +107,9 @@ def _session_down(
 ) -> tuple[int, str, str]:
     """Run ``booley session down`` with only the Docker-facing ``down`` replaced."""
 
-    def fake_down(_root: Path, *, before_stop=None) -> sr.DownResult:
+    def fake_down(
+        _root: Path, *, before_stop: Callable[[Sandbox | None], None] | None = None
+    ) -> sr.DownResult:
         assert before_stop is not None
         before_stop(sandbox)
         return sr.DownResult(headless=True)
@@ -155,10 +160,16 @@ def test_probe_keeps_only_live_running_records(
     _write(tmp_path, "reused", identity={**own, "start_token": own["start_token"] + 1})
     _write(tmp_path, "earlier-sandbox", identity={**own, "identity_scope": "pid:[1]"})
     _write(tmp_path, "finished", status="done", identity=own)
+    # An identity the probe cannot judge counts as live: warn rather than hide the Job.
+    _write(tmp_path, "scopeless", identity={"pid": own["pid"], "start_token": own["start_token"]})
 
     output = _probe_output(_load(monkeypatch), tmp_path)
 
-    assert sorted(item["run_id"] for item in output["running"]) == ["live", "no-identity"]
+    assert sorted(item["run_id"] for item in output["running"]) == [
+        "live",
+        "no-identity",
+        "scopeless",
+    ]
     assert output["unreadable"] == []
 
 
@@ -245,3 +256,57 @@ def test_unreadable_record_is_named_and_live_jobs_still_warned(
         "warning: skipped the running Standalone Job check: "
         "unreadable Job records: bad-schema.json, broken.json",
     ]
+
+
+@pytest.mark.parametrize(
+    "bad_fields",
+    [{"argv": {"x": 1, "y": 2}}, {"started_at": 5}],
+    ids=["argv-not-a-list", "started-at-not-a-string"],
+)
+def test_wrong_typed_running_record_is_unreadable_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    bad_fields: dict[str, Any],
+) -> None:
+    warning = _load(monkeypatch)
+    good = job_records.JobRecord(
+        run_id="good", endpoint="sim", started_at=STARTED_AT, timeout_s=60, argv=["booley", "flow"]
+    )
+    bad = {**good.to_dict(), "run_id": "bad", **bad_fields}
+    stdout = json.dumps({"running": [good.to_dict(), bad], "unreadable": []})
+    monkeypatch.setattr(
+        warning, "_run_probe", lambda _s: subprocess.CompletedProcess([], 0, stdout, "")
+    )
+
+    code, _out, err = _session_down(monkeypatch, tmp_path, capsys)
+
+    assert code == 0
+    assert err.splitlines() == [
+        "warning: Standalone Job flow sim (worktree unknown) has run for 1h 02m "
+        "and stops with the Sandbox",
+        "warning: skipped the running Standalone Job check: unreadable Job records: bad.json",
+    ]
+
+
+def test_run_probe_execs_the_probe_in_the_sandbox_without_caller_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warning = _load(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["argv"], seen["kwargs"] = argv, kwargs
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    warning._run_probe(SANDBOX)
+
+    assert seen["argv"] == sr.exec_argv(
+        SANDBOX.container_id,
+        ["python3", "-I", "-c", warning._PROBE, warning._RECORDS_RELPATH],
+        tty=False,
+    )
+    assert seen["kwargs"]["stdin"] == subprocess.DEVNULL
+    assert seen["kwargs"]["timeout"] == 15

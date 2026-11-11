@@ -48,6 +48,8 @@ def live(identity):
     kind = identity.get("identity_kind", "linux-procfs-start")
     if kind != "linux-procfs-start" or isinstance(pid, bool) or not isinstance(pid, int):
         return True
+    if not isinstance(scope, str) or isinstance(token, bool) or not isinstance(token, int):
+        return True
     try:
         with open("/proc/%d/stat" % pid, encoding="utf-8") as handle:
             stat = handle.read()
@@ -108,7 +110,10 @@ def _parse_probe(stdout: str) -> tuple[list[JobRecord], list[str]]:
     records: list[JobRecord] = []
     for raw in raw_records:
         try:
-            records.append(JobRecord.from_dict(require_dict(raw, field="Job record")))
+            record = JobRecord.from_dict(require_dict(raw, field="Job record"))
+            # The envelope check misses wrong-typed fields the warning line reads.
+            job_records.validate_record(record, now=wall_clock())
+            records.append(record)
         except (BoundaryError, JobRecordError, ValueError, TypeError):
             run_id = raw.get("run_id") if isinstance(raw, dict) else None
             unreadable.append(f"{run_id}.json" if isinstance(run_id, str) else "<unnamed record>")

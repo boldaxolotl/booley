@@ -291,7 +291,7 @@ def parse_stamp(stamp: object) -> float | None:
         return None
 
 
-def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
+def validate_record(record: JobRecord, *, now: float | None = None) -> None:
     data = require_dict(record.to_dict(), field="Job record")
     _validate_envelope(data)
     require_str(data, "run_id")
@@ -339,7 +339,7 @@ def strict_records(root: Path | None) -> list[JobRecord]:
             record = read_record(path.stem, root)
             if record is None:
                 raise BoundaryError("record is unreadable")
-            _validate_record(record)
+            validate_record(record)
         except (BoundaryError, JobRecordError, OSError, TypeError, ValueError) as exc:
             malformed.append(f"{path.name}: {exc}")
         else:
