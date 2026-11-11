@@ -15,7 +15,6 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
-from booley.bwave.sessions import register_trace
 from booley.flows.sim.campaign import CampaignOutcome
 from booley.flows.sim.campaign.test_run_report import (
     campaign_test_run_files_by_row,
@@ -57,6 +56,11 @@ def register_trace_sessions(outcomes: Sequence[CampaignOutcome]) -> None:
     the store is external JSON on a shared temp directory, and a session is a
     convenience that must not turn a finished simulation into an error.
     """
+    # Imported here, not at module level: ``booley.bwave.sessions`` resolves its
+    # session store from the temp directory at import, and importing the Flow
+    # must not fix that location before the process has set up its own.
+    from booley.bwave.sessions import register_trace
+
     try:
         for name, trace in session_traces(outcomes):
             register_trace(trace, alias=name)
