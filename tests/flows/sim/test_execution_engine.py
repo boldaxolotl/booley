@@ -820,6 +820,39 @@ def test_guard_abort_reason_uses_simulator_not_adapter_returncode(
         assert outcome.tests[0].reason.endswith(f"(rc={simulator_returncode})")
 
 
+def test_run_log_write_failure_is_typed_infrastructure(tmp_path: Path) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        _write_transport(
+            handle,
+            prepared,
+            ("smoke",),
+            AdapterResult(
+                True,
+                False,
+                0,
+                ("smoke",),
+                test_results=(AdapterTestResult("smoke", "pass"),),
+            ),
+        )
+        return SubprocessResult(returncode=0, stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n")
+
+    with patch(
+        "booley.flows.sim.execution.engine.write_run_log",
+        side_effect=OSError("evidence disk full"),
+    ):
+        outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+    assert outcome.verdict == "error"
+    assert outcome.infrastructure_failure is not None
+    assert outcome.infrastructure_failure.kind == "artifact_persistence"
+    assert "evidence disk full" in outcome.infrastructure_failure.detail
+    assert len(outcome.builds) == 1
+
+
 def test_adapter_exit_one_with_design_result_is_failure_not_infrastructure(
     tmp_path: Path,
 ) -> None:
@@ -2751,7 +2784,7 @@ def test_traced_attempt_deadline_adds_conversion_budget(tmp_path: Path) -> None:
     assert (work.timeout_s, work.trace_convert_timeout_s) == (5, 7)
 
 
-def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
+def test_trace_declarations_are_frozen_at_planning(tmp_path: Path) -> None:
     """Config edited after planning, while the build runs, never reaches the launch."""
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)

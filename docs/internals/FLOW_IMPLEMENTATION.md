@@ -424,8 +424,10 @@ Targets, each test's unabridged, attempt-specific simulator output is kept as
 `run.log` evidence in its Campaign work item, not referenced from the
 projection. A grouped run preserves this copy before starting the next test,
 including for failed, timed-out, and inconclusive tests that produced output.
-Each attempt's `execution-evidence` directory, beside its snapshot, keeps the
-live `run.log` (tail-truncated to 10 MB) and the adapter result JSON.
+Each launched attempt's `execution-evidence` directory, beside its snapshot,
+keeps the live `run.log` (tail-truncated to 10 MB), the adapter result JSON, and
+Cocotb's `results.xml`. A failed build never launches, so its `run.log` stays in
+the generation build root.
 
 Trace artifacts stay off the pass/fail path by design: `--trace` builds a
 separate trace-overlay Target (its own build root) so it never clobbers the fast

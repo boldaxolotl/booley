@@ -1590,7 +1590,7 @@ def _group_outcome(
     handle: TargetHandle,
     attempt: _Attempt,
     tests: tuple[SimulationTestOutcome, ...],
-    build: BuildOutcome | None,
+    build: BuildOutcome,
     artifacts: tuple[SimulationArtifactEvidence, ...],
     started: float,
     diagnostics: tuple[str, ...] = (),
@@ -1614,7 +1614,7 @@ def _group_outcome(
         verdict=_group_verdict(failure, passed, inconclusive),
         elapsed_s=elapsed_s,
         tests=tests,
-        builds=(build,) if build is not None else (),
+        builds=(build,),
         artifacts=artifacts,
         diagnostics=diagnostics,
         infrastructure_failure=failure,
@@ -1897,18 +1897,6 @@ def _run_log_for(
     artifacts: tuple[SimulationArtifactEvidence, ...],
     name: str,
 ) -> SimulationArtifactEvidence | None:
-    archive = next(
-        (item for item in artifacts if item.kind == "run_log" and item.test_names == (name,)),
-        None,
-    )
-    if archive is not None:
-        return archive
-    archive = next(
-        (item for item in artifacts if item.kind == "run_log" and name in item.test_names),
-        None,
-    )
-    if archive is not None:
-        return archive
     return next(
         (item for item in artifacts if item.kind == "live_run_log" and name in item.test_names),
         None,
