@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import subprocess
 import sys
 import textwrap
 from dataclasses import asdict
@@ -12,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
@@ -277,10 +277,8 @@ def test_cli_sorted_diagnostics_and_nonzero_exit_without_importing(tmp_path: Pat
             "with contextlib.suppress(OSError):\n    assert False\n",
             encoding="utf-8",
         )
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, str(_SCRIPT), "--repo", str(repo)],
-        text=True,
-        capture_output=True,
         timeout=10,
         check=False,
     )
