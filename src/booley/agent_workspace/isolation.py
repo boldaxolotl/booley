@@ -135,7 +135,12 @@ def _configured_outputs(value: object, table: tuple[str, ...] = ()) -> list[Path
 
 def _booley_copy_roots(directory: Path) -> list[Path]:
     """Known disposable copies in one authoritative or checkout Booley Directory."""
-    from booley.goals.paths import GoalIdError, goals_root, record_paths
+    from booley.core.booley_layout import (
+        GOAL_RECORD_LOGS_DIR,
+        GOALS_DIR_NAME,
+        is_goal_record_name,
+    )
+    from booley.runtime.session_paths import RUNTIME_DIR
 
     roots = [
         directory / name
@@ -150,13 +155,11 @@ def _booley_copy_roots(directory: Path) -> list[Path]:
         )
     ]
     roots.extend(directory.glob(".baseline-wt-*"))
-    goals = goals_root(directory)
+    goals = directory / GOALS_DIR_NAME
     for child in goals.iterdir() if goals.is_dir() else ():
-        try:
-            paths = record_paths(directory, child.name)
-        except GoalIdError:
+        if not is_goal_record_name(child.name):
             continue  # history and locks are not per-Goal artifact trees
-        roots.extend((paths.runtime_dir, paths.logs_dir))
+        roots.extend((child / RUNTIME_DIR, child / GOAL_RECORD_LOGS_DIR))
     return roots
 
 

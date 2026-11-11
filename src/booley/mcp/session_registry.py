@@ -14,8 +14,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.core.boundary import require_dict, require_str, require_str_value, require_uuid4
-from booley.goals.model import WorktreeIdentity
-from booley.goals.store import REPOSITORY_ID_FILE, resolve_worktree_identity
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.chat_sessions import codex_chat_owner
 from booley.runtime.filesystem_utils import read_file_bytes
@@ -29,6 +27,12 @@ from booley.runtime.session_activity import (
     valid_thread_id,
 )
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
+from booley.runtime.worktree_identity import (
+    CHECKOUT_PATTERN,
+    REPOSITORY_ID_FILE,
+    WorktreeIdentity,
+    resolve_worktree_identity,
+)
 
 MAX_ROWS = 4096
 MAX_ROW_BYTES = 65536
@@ -527,9 +531,9 @@ def _worktree_facts(work_dir: Path) -> tuple[Path, str, str]:
         if identity_file.exists():
             repository = require_uuid4(_git_fact(identity_file), field="repository id")
             checkout = "main" if git == common else git.relative_to(common).as_posix()
-            key = WorktreeIdentity.from_json(
-                {"repository": repository, "checkout": checkout}, where="observed worktree"
-            ).key
+            if not CHECKOUT_PATTERN.fullmatch(checkout):
+                raise ValueError(f"observed worktree checkout {checkout!r} is not a checkout name")
+            key = WorktreeIdentity(repository, checkout).key
         head = _git_fact(git / "HEAD")
         if head.startswith("ref: refs/heads/"):
             branch = head.removeprefix("ref: refs/heads/")
