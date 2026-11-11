@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -8,9 +7,8 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
-from booley.flows.plan import WorkUnitPlan, WorkUnitRole
 from booley.flows.sim.execution import SelectedTestRuns
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow import PlannedBaselines, PlannedTarget, SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import build_test_run
@@ -21,81 +19,6 @@ _TARGET_SELECTOR = "sim_core"
 
 
 _COREMARK_RUN = build_test_run("coremark", seed=1)
-
-
-def _plan_unit(
-    role: WorkUnitRole,
-    selector: str = _TARGET_SELECTOR,
-    identity: str = _TARGET_IDENTITY,
-    revision: str | None = None,
-) -> WorkUnitPlan:
-    return WorkUnitPlan(
-        unit_id="sim-baseline-coremark",
-        role=role,
-        revision=revision,
-        selector=selector,
-        target_identity=identity,
-        test_or_module_scope=("coremark",),
-        eda_tool="verilator",
-        timeout_ms=1_000,
-    )
-
-
-def test_simulation_plan_includes_baseline_before_candidate() -> None:
-    flow, _key = _criterion_flow(relative=True)
-    baseline = _plan_unit("baseline", revision="b" * 40)
-    candidate = _plan_unit("candidate")
-    flow._plan_cycle_count_baseline_units = MagicMock(return_value=([baseline], []))
-    flow._plan_simulation_targets = MagicMock(return_value=([candidate], []))
-
-    plan = flow._plan_simulation([_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]})
-
-    assert plan.work_units == (baseline, candidate)
-
-
-def test_baseline_planning_uses_ephemeral_tree_and_reports_identity_drift(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    flow, _key = _criterion_flow(relative=True)
-    flow._args.work_dir = tmp_path
-    baseline_ref = "b" * 40
-    baseline = _plan_unit("baseline", identity="drifted", revision=baseline_ref)
-    flow._cycle_baseline_selection = MagicMock(
-        return_value=(baseline_ref, [_TARGET_SELECTOR], None)
-    )
-    flow._plan_simulation_targets = MagicMock(return_value=([baseline], ["preview failed"]))
-    baseline_root = tmp_path / "baseline"
-
-    @contextmanager
-    def fake_baseline_worktree(project_root: Path, revision: str, *, paired_project):
-        assert project_root == tmp_path
-        assert revision == baseline_ref
-        assert paired_project is flow._paired_project_baseline
-        yield baseline_root
-
-    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_baseline_worktree)
-
-    with flow.publication_resources:
-        units, errors = flow._plan_cycle_count_baseline_units(
-            [_TARGET_SELECTOR],
-            {_TARGET_SELECTOR: ["coremark"]},
-        )
-
-    assert units == [baseline]
-    assert errors == [
-        "preview failed",
-        "sim_core: baseline resolves to 'drifted', expected 'sim_core'",
-    ]
-    assert flow.args.work_dir == tmp_path
-    flow._plan_simulation_targets.assert_called_once_with(
-        [_TARGET_SELECTOR],
-        {_TARGET_SELECTOR: ["coremark"]},
-        role="baseline",
-        revision=baseline_ref,
-        # The baseline runs the candidate's Test Run of the compared Test.
-        selections={_TARGET_SELECTOR: SelectedTestRuns((_COREMARK_RUN,))},
-    )
 
 
 def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
@@ -209,10 +132,6 @@ def test_relative_cycle_criterion_uses_declared_baseline_target(monkeypatch) -> 
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
 
     assert flow._cycle_baseline_selection(["sim_core"]) == ("b" * 40, ["sim_old"], None)
-    assert flow._cycle_baseline_test_names({"sim_core": ["coremark"]}) == {
-        "sim_core": ["coremark"],
-        "sim_old": ["coremark"],
-    }
 
 
 def test_schema_four_relative_cycle_criterion_selects_callable_target(monkeypatch) -> None:
@@ -254,23 +173,23 @@ def test_cycle_baseline_planning_materializes_project_topologies(tmp_path, monke
     _pin_baseline(flow, revision)
     roots = []
 
-    def preview(targets, tests, *, role, revision, selections):
+    def preview(targets, tests, selections):
         assert selections == {"sim_core": SelectedTestRuns((_COREMARK_RUN,))}
         baseline = Path(flow.args.work_dir)
         _assert_topology_baseline(baseline, root, "sim_core")
         roots.append(baseline)
         assert targets == ["sim_core"]
         assert tests == {"sim_core": ["coremark"]}
-        return [_plan_unit(role, identity=handle.identity, revision=revision)], []
+        return [PlannedTarget("sim_core", handle, MagicMock(target_identity=handle.identity))], []
 
-    monkeypatch.setattr(flow, "_plan_simulation_targets", preview)
+    monkeypatch.setattr(flow, "_preview_targets", preview)
     with flow.publication_resources:
-        units, errors = flow._plan_cycle_count_baseline_units(
-            ["sim_core"], {"sim_core": ["coremark"]}
-        )
+        baselines, errors = flow._plan_baseline_targets(["sim_core"], {"sim_core": ["coremark"]})
         assert errors == []
-        assert units[0].target_identity == handle.identity
-        assert units[0].revision == revision
+        assert baselines is not None
+        assert [planned.selector for planned in baselines.targets] == ["sim_core"]
+        assert baselines.revision == revision
+        assert baselines.worktree == roots[0]
         assert flow.args.work_dir == root
     assert roots and all(not path.exists() for path in roots)
 
@@ -293,21 +212,22 @@ def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeyp
     tests = {"sim_core": ["coremark"]}
     roots: list[Path] = []
 
-    def plan(targets, _tests, *, role, revision, selections):
-        roots.append(Path(flow.args.work_dir))
-        return [_plan_unit(role, identity=handle.identity, revision=revision)], []
+    def preview(targets, _tests, selections=None):
+        if selections is not None:  # the baseline's Test Runs, previewed in its checkout
+            roots.append(Path(flow.args.work_dir))
+        return [PlannedTarget("sim_core", handle, MagicMock(target_identity=handle.identity))], []
 
-    def request(_target, _identity, _ref, _runs, _tests, worktree, _invocation, _admission):
-        roots.append(worktree)
+    def request(_planned, baselines, _tests, _invocation, _admission):
+        roots.append(baselines.worktree)
         return object(), {"coremark@1": {"revision": revision}}
 
-    monkeypatch.setattr(flow, "_plan_simulation_targets", plan)
+    monkeypatch.setattr(flow, "_preview_targets", preview)
     monkeypatch.setattr(flow, "_planned_baseline_request", request)
     with flow.publication_resources:
         authorized = flow._campaign_authorization_baselines(revision, ["sim_core"])
-        _, errors = flow._plan_cycle_count_baseline_units(["sim_core"], tests)
-        assert errors == []
-        requests, _ = flow._plan_campaign_baselines(tmp_path / "inv", None, ["sim_core"], tests)
+        planning = flow._plan_ordinary_campaigns(["sim_core"], tests)
+        assert isinstance(planning.baselines, PlannedBaselines)
+        requests, _ = flow._plan_campaign_baselines(tmp_path / "inv", None, planning)
         assert len(requests) == 1
         assert [item.identity for item in authorized] == [handle.identity]
         assert [item.project_root for item in authorized] == roots[:1]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -223,6 +224,7 @@ def test_a_baseline_that_owns_an_option_of_the_test_run_refuses_it():
 
 def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, monkeypatch):
     """A baseline that cannot run the Test Run gets no campaign and no prerequisite."""
+    from booley.flows.sim.flow import OrdinaryCampaignPlanning, PlannedTarget
     from booley.flows.target_test_plan import build_target_test_plan
     from booley.targets.catalog import TargetCatalog
     from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
@@ -243,9 +245,21 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
     monkeypatch.setattr(
         flow, "_planned_baseline_request", lambda *_args: pytest.fail("baseline was planned")
     )
+    monkeypatch.setattr(flow, "_simulation_execution", MagicMock)
+    tests = {"sim_core": ["coremark"]}
     try:
+        baselines, errors = flow._plan_baseline_targets(["sim_core"], tests)
+        # The decision refuses the only link, so no baseline Target runs.
+        assert errors == []
+        assert baselines is not None
+        assert baselines.targets == ()
+        planning = OrdinaryCampaignPlanning(
+            (PlannedTarget("sim_core", flow._target_handles["sim_core"], MagicMock()),),
+            baselines,
+            tests,
+        )
         requests, prerequisites = flow._plan_campaign_baselines(
-            tmp_path / "invocation", None, ["sim_core"], {"sim_core": ["coremark"]}
+            tmp_path / "invocation", None, planning
         )
     finally:
         flow.publication_resources.close()
