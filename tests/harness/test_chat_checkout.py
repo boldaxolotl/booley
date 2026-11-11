@@ -261,8 +261,8 @@ def test_failed_worktree_setup_rolls_back_and_never_starts_the_agent(project, mo
     assert _branches(project) == []
 
 
-def _live_session_in_main(project: Path, *, alive: bool) -> None:
-    """A registry row (a plain `claude` tab, say) whose process works in the main checkout."""
+def _live_session_in_main(project: Path, *, alive: bool, work_dir: Path | None = None) -> None:
+    """A registry row (a plain `claude` tab, say) whose process works in *work_dir* (main)."""
     common = project / ".booley"
     if alive:
         identity = capture_process_identity(os.getpid())
@@ -274,7 +274,9 @@ def _live_session_in_main(project: Path, *, alive: bool) -> None:
     key = process_session_key(identity)
     HandleStore(common).reserve(key, "S")
     SessionRegistry(common, quiet_after=3600).upsert(
-        Attribution(key, "process", str(project), "key", process=identity, namespace=_NAMESPACE),
+        Attribution(
+            key, "process", str(work_dir or project), "key", process=identity, namespace=_NAMESPACE
+        ),
         "sim",
         "completed",
         now=time.time(),
@@ -882,6 +884,57 @@ def test_resume_into_a_busy_main_checkout_refuses_with_a_here_hint(project, monk
     assert started.exec_argv == []
     assert started.stderr == (
         "ERROR: the main checkout is in use by another booley chat; conversation conv-9 "
+        "resumes only there. Run booley chat --here ... to resume it beside that session.\n"
+    )
+    assert _worktrees(project) == []
+
+
+def test_resume_into_an_occupied_worktree_without_a_process_key_refuses(
+    project, monkeypatch, capsys
+):
+    # Bug caught: a Codex started by hand (its record has no process key) was invisible, so a
+    # resume started a second agent beside it.
+    busy, _ = _earlier_session(project)
+    _record(project, "claude", "conv-1", busy, key=None)
+    _live_session_in_main(project, alive=True, work_dir=busy / "sub")
+
+    started = _start(project, monkeypatch, capsys, agent_args=["--resume", "conv-1"])
+
+    assert started.code == 2
+    assert started.exec_argv == []
+    assert "where session S2 is still running" in started.stderr
+
+
+@pytest.mark.parametrize("busy_by", ["lock", "session"])
+def test_continue_with_a_busy_main_resumes_the_free_worktree_conversation(
+    project, monkeypatch, capsys, homes, busy_by
+):
+    # Bug caught: the busy main's own (newest) transcript won `-c`, so the refusal hinted
+    # `--here -c`, which continues the running session's conversation, and the free worktree
+    # conversation could not be reached.
+    free, _ = _earlier_session(project)
+    _record(project, "claude", "free-1", free)
+    _claude_transcript(homes, free, "free-1", _MAIN_MTIME)
+    _claude_transcript(homes, project, "main-conv", _MAIN_MTIME + 300)
+    if busy_by == "session":
+        _live_session_in_main(project, alive=True)
+        started = _start(project, monkeypatch, capsys, agent_args=["-c"])
+    else:
+        with _lock_held_elsewhere(project):
+            started = _start(project, monkeypatch, capsys, agent_args=["-c"])
+
+    assert started.cwd == free.resolve()
+    assert started.exec_argv[-2:] == ["--resume", "free-1"]
+
+
+def test_continue_with_a_busy_main_and_no_free_conversation_refuses(project, monkeypatch, capsys):
+    # Bug caught: the latest-form refusal wording was never exercised.
+    with _lock_held_elsewhere(project):
+        started = _start(project, monkeypatch, capsys, agent_args=["-c"])
+
+    assert started.code == 2
+    assert started.stderr == (
+        "ERROR: the main checkout is in use by another booley chat; the latest conversation "
         "resumes only there. Run booley chat --here ... to resume it beside that session.\n"
     )
     assert _worktrees(project) == []

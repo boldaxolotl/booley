@@ -15,7 +15,7 @@ from booley.runtime import conversation_records as records
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
 
-_STAMP = 11
+_STAMP = 1_100  # whole NTFS ticks (100 ns), so the stamp reads back unchanged
 
 
 def _write(common: Path, client: str, conversation: str, **changes: object) -> Path:

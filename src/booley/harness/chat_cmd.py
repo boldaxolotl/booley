@@ -227,7 +227,7 @@ def _enter_worktree(project_root: Path, handle: str, reason: str | None) -> int 
     return None
 
 
-def _enter_resumed_worktree(resume: ResumeTarget, handle: str | None) -> None:
+def _enter_resumed_worktree(resume: ResumeTarget, cwd: Path, handle: str | None) -> None:
     """Announce the resumed conversation and move into the worktree it ran in."""
     session = f"session {handle} " if handle else ""
     print(
@@ -235,7 +235,7 @@ def _enter_resumed_worktree(resume: ResumeTarget, handle: str | None) -> None:
         f"in worktree {resume.worktree}.",
         file=sys.stderr,
     )
-    os.chdir(resume.cwd or Path.cwd())
+    os.chdir(cwd)
 
 
 def _launch(provider: str, project_root: Path, agent_args: list[str], placement: Placement) -> int:
@@ -265,7 +265,7 @@ def _launch(provider: str, project_root: Path, agent_args: list[str], placement:
             if (code := _enter_worktree(project_root, handle, placement.reason)) is not None:
                 return code
         elif resume is not None and resume.cwd is not None:
-            _enter_resumed_worktree(resume, handle)
+            _enter_resumed_worktree(resume, resume.cwd, handle)
         # Last statement before the process is replaced: the CLI exists and the
         # launch arguments are settled, so the notice only precedes a real start.
         print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
@@ -350,7 +350,7 @@ def _resume_placement(
     lock: chat_checkout.MainLock,
     common: Path,
     main_root: Path,
-    resolve: Callable[[Path], ResumeTarget],
+    resolve: Callable[..., ResumeTarget],
 ) -> Placement:
     """Place a resumed conversation where the CLI can find it (ADR 0082, Resume).
 
@@ -358,12 +358,13 @@ def _resume_placement(
     except under `never`: a resume that needs it while it is in use is refused, because a new
     worktree would not hold the conversation.
     """
-    target = resolve(common)
+    user = None if mode == "never" else _main_user(lock, common, main_root)
+    target = resolve(common, main_busy=user is not None)
     if target.notice:
         print(target.notice, file=sys.stderr)
     if target.worktree is not None:
         lock.release()
-    elif mode != "never" and (user := _main_user(lock, common, main_root)) is not None:
+    elif user is not None:
         what = target.conversation_id and f"conversation {target.conversation_id}"
         raise ResumeRefusedError(
             f"the main checkout is in use by {user}; {what or 'the latest conversation'} "
@@ -378,7 +379,7 @@ def _placement(
     lock: chat_checkout.MainLock,
     common: Path,
     main_root: Path,
-    resolve: Callable[[Path], ResumeTarget] | None,
+    resolve: Callable[..., ResumeTarget] | None,
 ) -> Placement:
     """Where this launch starts. A flag is an explicit choice, so it beats resume routing."""
     if resolve is not None and not flagged:
@@ -401,7 +402,7 @@ def _run_in_checkout(
     mode: str,
     flagged: bool,
     project_root: Path,
-    resolve: Callable[[Path], ResumeTarget] | None,
+    resolve: Callable[..., ResumeTarget] | None,
 ) -> int:
     """Pick the checkout from where the launch happens, hold the main lock, run the child.
 

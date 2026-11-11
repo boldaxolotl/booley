@@ -20,7 +20,7 @@ from booley.harness.chat_resume import (
     resolve,
 )
 
-_STAMP = 7
+_STAMP = 1_000  # whole NTFS ticks (100 ns), so the stamp reads back unchanged
 
 
 @pytest.mark.parametrize(
@@ -87,7 +87,9 @@ def test_a_recorded_directory_outside_the_worktree_falls_back_to_its_root(tmp_pa
     (common / "worktrees" / "s4" / "sub").mkdir()
 
     def target(conversation: str) -> ResumeTarget:
-        return resolve(common, "claude", ResumeRequest(conversation), tmp_path, ["--resume"])
+        return resolve(
+            common, "claude", ResumeRequest(conversation), tmp_path, ["--resume"], False
+        )
 
     assert target("outside").cwd == common / "worktrees" / "s1"
     assert target("outside").predecessors == ("pid:fixture:990001:7",)
@@ -111,7 +113,7 @@ def test_a_running_session_in_the_worktree_refuses_the_resume(tmp_path):
     with pytest.raises(
         ResumeRefusedError, match=r"worktree s1, where session S1 is still running"
     ):
-        resolve(common, "claude", ResumeRequest("busy"), tmp_path, ["--resume", "busy"])
+        resolve(common, "claude", ResumeRequest("busy"), tmp_path, ["--resume", "busy"], False)
 
 
 def test_the_banner_without_a_handle_still_names_the_conversation(tmp_path, monkeypatch, capsys):
@@ -121,7 +123,7 @@ def test_the_banner_without_a_handle_still_names_the_conversation(tmp_path, monk
     monkeypatch.chdir(tmp_path)
     target = ResumeTarget(worktree, worktree, (), (), "conv-1")
 
-    chat_cmd._enter_resumed_worktree(target, None)
+    chat_cmd._enter_resumed_worktree(target, worktree, None)
 
     assert (
         capsys.readouterr().err == f"Booley resumes conversation conv-1 in worktree {worktree}.\n"

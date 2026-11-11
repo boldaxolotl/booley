@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.harness import chat_checkout
 from booley.runtime import agent_transcripts, conversation_records
 from booley.runtime.agent_transcripts import RecencyUnknownError
 from booley.runtime.conversation_records import ConversationRecord
@@ -46,7 +47,7 @@ class ResumeTarget:
 
 
 class ResumeRefusedError(Exception):
-    """The conversation's worktree has a running session; a second agent must not start."""
+    """The checkout the resume must reopen in is in use; a second agent must not start there."""
 
 
 def _before_separator(agent_args: list[str]) -> list[str]:
@@ -127,6 +128,19 @@ def _worktree_target(
     return ResumeTarget(worktree, cwd, tuple(names), tuple(agent_args), record.conversation_id)
 
 
+def _occupied(common: Path, live: list[ConversationRecord] | None = None) -> dict[str, str]:
+    """Map each worktree with a running session to its handle.
+
+    The records name the sessions `booley chat` started; the registry also sees an agent
+    started by hand, whose record carries no process key.
+    """
+    records = conversation_records.live(common) if live is None else live
+    return {
+        **chat_checkout.worktree_sessions(common),
+        **conversation_records.occupants(records),
+    }
+
+
 def _by_id(
     common: Path, provider: str, conversation_id: str, agent_args: list[str]
 ) -> ResumeTarget:
@@ -134,17 +148,14 @@ def _by_id(
     record = conversation_records.find(common, provider, conversation_id)
     if record is None:
         return _main(agent_args, conversation_id)
-    live = conversation_records.live(common)
-    if record not in live:
+    if not conversation_records.is_live(common, record):
         return _main(
             agent_args,
             conversation_id,
             f"NOTE: conversation {conversation_id} ran in worktree {record.worktree}, "
             "which no longer exists; resuming in the main checkout.",
         )
-    return _worktree_target(
-        common, provider, record, agent_args, conversation_records.occupants(live)
-    )
+    return _worktree_target(common, provider, record, agent_args, _occupied(common))
 
 
 def _rewritten(
@@ -171,14 +182,17 @@ def _latest(
     resume: ResumeRequest,
     launch_cwd: Path,
     agent_args: list[str],
+    main_busy: bool,
 ) -> ResumeTarget:
     """The latest form: the most recent conversation among main and the free worktrees.
 
     A worktree conversation is chosen only when strictly newer than the main checkout's;
-    when main's recency cannot be determined the CLI keeps its own pick, as before.
+    when main's recency cannot be determined the CLI keeps its own pick, as before. A main
+    checkout in use is skipped like an occupied worktree: its newest conversation is the
+    running session's.
     """
     live = conversation_records.live(common)
-    occupied = conversation_records.occupants(live)
+    occupied = _occupied(common, live)
     candidates: list[tuple[float, str, ConversationRecord]] = []
     for record in live:
         if record.client != provider or record.worktree in occupied:
@@ -189,6 +203,9 @@ def _latest(
     if not candidates:
         return _main(agent_args, None)
     stamp, _, winner = max(candidates, key=lambda candidate: candidate[:2])
+    if main_busy:
+        args = _rewritten(provider, resume, winner.conversation_id, agent_args)
+        return _worktree_target(common, provider, winner, args, occupied)
     try:
         main_stamp = agent_transcripts.latest_in(provider, launch_cwd, stamp)
     except RecencyUnknownError:
@@ -205,8 +222,12 @@ def resolve(
     resume: ResumeRequest,
     launch_cwd: Path,
     agent_args: list[str],
+    main_busy: bool,
 ) -> ResumeTarget:
-    """Decide where the resume starts; raises `ResumeRefusedError` for an occupied worktree."""
+    """Decide where the resume starts; raises `ResumeRefusedError` for an occupied worktree.
+
+    *main_busy* says the main checkout is in use, so the latest form must not pick it.
+    """
     if resume.conversation_id is not None:
         return _by_id(common, provider, resume.conversation_id, agent_args)
-    return _latest(common, provider, resume, launch_cwd, agent_args)
+    return _latest(common, provider, resume, launch_cwd, agent_args, main_busy)
