@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley resources` now keeps each Test Variant of a simulation apart
+  (`tests=first+slow`; the default Variant keeps the bare Test name, and the
+  seeds of one Variant share an entry). Flow runs that `booley doctor` starts
+  are no longer recorded, and each record stores the size of the Target's
+  source files when it is known.
 - A second `booley chat` while the main checkout is in use now starts in its
   own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
   and prints a line saying where it works. The first session and a lone

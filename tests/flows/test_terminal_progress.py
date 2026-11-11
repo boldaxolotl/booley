@@ -673,6 +673,7 @@ def prepare_fpga_unit(flow, tmp_path, monkeypatch):
         tmp_path,
         "",
         False,
+        None,
         console_logs=(tmp_path / "vivado.log", log),
     )
     monkeypatch.setattr(flow, "_prepare_fpga_command", lambda _: prepared)

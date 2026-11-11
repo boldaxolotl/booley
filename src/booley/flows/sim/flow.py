@@ -43,6 +43,7 @@ from booley.flows.execution_persistence import (
     wants_campaigns,
 )
 from booley.flows.frozen_test_runs import FrozenTestRuns, resolve_goal_test_runs
+from booley.flows.job_resources import resolved_source_bytes
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -4728,7 +4729,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         ]
         from booley.flows.terminal_progress import announce_unit
 
-        observe_stage(target, "building", evidence_root=prepared.build_root, attempt_token=token)
+        observe_stage(
+            target,
+            "building",
+            evidence_root=prepared.build_root,
+            attempt_token=token,
+            source_bytes=resolved_source_bytes(prepared.resolved),
+        )
         announce_unit("elaboration-only build", target=target)
         timeout_s = max(1, self._effective_build_timeout_ms() // 1000)
         proc = self._execute_boundary(command, timeout=timeout_s)
