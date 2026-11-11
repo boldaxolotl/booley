@@ -22,6 +22,7 @@ from booley.goals.store import GoalStore
 from tests.goals.conftest import git
 from tests.goals.test_committed_export import repository
 from tests.goals.test_finish import Crash, environment, publication_layout, request
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 if TYPE_CHECKING:
     from booley.goals.model import GoalRecord
@@ -439,13 +440,14 @@ def test_published_summary_preserves_conflicting_index_entries_without_wedging(l
         elif staging == "intent-to-add":
             git(complete.worktree, "add", "-N", "--", path)
         else:
+            # Kept on subprocess.run: needs stdin data (`--index-info` via `input=`), which the bounded helper does not take.
             subprocess.run(
                 ["git", "update-index", "--index-info"],
                 cwd=complete.worktree,
                 input=f"100644 {blob} 1\t{path}\n100644 {blob} 2\t{path}\n".encode(),
                 capture_output=True,
                 check=True,
-                timeout=30,
+                timeout=SUBPROCESS_TIMEOUT_S,
             )
         saved.append(index.read_bytes())
 
