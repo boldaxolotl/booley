@@ -460,6 +460,7 @@ def _assert_build_evidence(result) -> None:
     assert result.build.variant.coverage is True
     assert result.build.instrumentation == (
         "--coverage-line",
+        "--coverage-branch",
         "--coverage-toggle",
         "--coverage-expr",
         "--coverage-user",
