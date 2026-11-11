@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+
 # CPython's crash probe bypasses ctypes' Windows SEH wrapper and disables core
 # dumps / Windows Error Reporting before dereferencing NULL in native code.
 _NATIVE_CRASH = "__import__('faulthandler')._read_null()"
@@ -184,13 +186,9 @@ def _run_pytest_case(
         encoding="utf-8",
     )
     evidence = tmp_path / "evidence"
-    result = subprocess.run(
+    result = _run_nested_pytest(
+        tmp_path,
         [
-            sys.executable,
-            "-m",
-            "pytest",
-            "test_case.py",
-            "-q",
             "-p",
             "pytest_timeout",
             "-p",
@@ -205,14 +203,21 @@ def _run_pytest_case(
             "--timeout=1",
             "--timeout-method=thread",
         ],
-        cwd=tmp_path,
-        env=_timeout_environment(evidence),
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+        _timeout_environment(evidence),
     )
     return result, evidence
+
+
+def _run_nested_pytest(
+    tmp_path: Path, arguments: list[str], environment: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run ``test_case.py`` under a nested pytest, bounded so a stall leaves evidence."""
+    return run_bounded_child(
+        [sys.executable, "-m", "pytest", "test_case.py", "-q", *arguments],
+        cwd=tmp_path,
+        env=environment,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
 
 
 def _timeout_environment(evidence: Path) -> dict[str, str]:
@@ -282,13 +287,9 @@ def test_completed_timings_survive_abrupt_pytest_exit(tmp_path: Path, workers: i
     timings = tmp_path / "evidence" / "timings.jsonl"
     environment = _timeout_environment(tmp_path / "evidence")
     environment["BOOLEY_PYTEST_TIMING_FILE"] = str(timings)
-    result = subprocess.run(
+    result = _run_nested_pytest(
+        tmp_path,
         [
-            sys.executable,
-            "-m",
-            "pytest",
-            "test_case.py",
-            "-q",
             "-p",
             "xdist.plugin",
             "-p",
@@ -298,12 +299,7 @@ def test_completed_timings_survive_abrupt_pytest_exit(tmp_path: Path, workers: i
             "--max-worker-restart=0",
             "--junitxml=result.xml",
         ],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+        environment,
     )
     assert result.returncode == (17 if workers == 0 else 1), result.stdout + result.stderr
     records = [json.loads(line) for line in timings.read_text().splitlines()]

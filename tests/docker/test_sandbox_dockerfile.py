@@ -76,6 +76,7 @@ def test_base_python_installs_take_exact_pins_only_from_requirements_file() -> N
         installed.update(token for token in tokens if re.fullmatch(r"[a-z][a-z0-9-]*", token))
 
     assert installed == set(pins)
+    assert "pyslang" in installed  # ADR 0088: the image installs the Mutant generator parser
 
 
 def test_base_edalize_fusesoc_pins_match_project_metadata() -> None:
@@ -90,6 +91,18 @@ def test_base_edalize_fusesoc_pins_match_project_metadata() -> None:
     for name in ("edalize", "fusesoc"):
         assert name in pins, f"{name} missing from base-python-requirements.txt"
         assert pins[name] == exact.get(name), name
+
+
+def test_base_pyslang_pin_matches_optional_dependency_group() -> None:
+    """ADR 0088: the Sandbox image and the extras install one pyslang, never the host."""
+    pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+    extras = project["optional-dependencies"]
+
+    assert "pyslang" in pins
+    for extra in ("hdl-parser", "test", "dev"):
+        assert f"pyslang=={pins['pyslang']}" in extras[extra], extra
+    assert not any(item.startswith("pyslang") for item in project["dependencies"])
 
 
 def test_supported_tools_doc_lists_base_cocotb_pins() -> None:

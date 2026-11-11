@@ -34,6 +34,7 @@ from booley.flows.sim.campaign import (
     encode_artifact_reference,
 )
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
+from booley.flows.sim.campaign.test_run_files import campaign_test_run_files
 from booley.flows.sim.campaign.test_run_report import evidence_test_run_rows
 from booley.flows.sim.campaign_reports import (
     simulation_booley_dir,
@@ -49,7 +50,6 @@ from booley.flows.sim.coverage_reference import (
     resolve_coverage_campaign_reference,
 )
 from booley.flows.sim.test_run_invocation import baseline_refusal_key
-from booley.flows.test_runs import UNNAMED_TEST_DISPLAY
 from booley.targets.domain import criterion_matches_target
 
 if TYPE_CHECKING:
@@ -116,12 +116,11 @@ class _OutcomeEvidence:
         return self._coverage
 
     def of(self, observations: Iterable[Mapping[str, object] | None]) -> list[dict[str, object]]:
-        """The row of each of *observations* that names a Test Run, in order."""
+        """The Test Run row of each present observation in *observations*, in order."""
         if self._rows is None:
             rows = evidence_test_run_rows(self.outcome)
             self._rows = {row["name"]: row for row in rows}
-        named = (item.get("test_run") for item in observations if item is not None)
-        return [dict(self._rows[name]) for name in named if name in self._rows]
+        return [dict(self._rows[item["test_run"]]) for item in observations if item is not None]
 
     def all(self) -> list[dict[str, object]]:
         """Every Test Run row of the outcome."""
@@ -276,11 +275,7 @@ def eligible_simulation_keys(
 def _candidate_observations(
     facts: Mapping[str, object], target: Mapping[str, object]
 ) -> dict[str, Mapping[str, object]]:
-    """The candidate revision's observations of *target*, by Test Run name.
-
-    Facts before v2 name Tests only; such an observation is keyed by its Test
-    (``<default>`` for the unnamed invocation), which is unique there.
-    """
+    """The candidate revision's observations of *target*, by Test Run name."""
     indexed: dict[str, Mapping[str, object]] = {}
     for item in facts["observations"]:  # type: ignore[union-attr]
         if not isinstance(item, Mapping):
@@ -291,7 +286,7 @@ def _candidate_observations(
             or item["target"] != target
         ):
             continue
-        name = str(item.get("test_run") or item["test"] or UNNAMED_TEST_DISPLAY)
+        name = str(item["test_run"])
         if name in indexed:
             raise SimulationCampaignIntegrityError(
                 f"validated acceptance facts repeat Test Run {name!r}"
@@ -508,7 +503,7 @@ def _campaign_projection(
         "target_identity": f"{outcome.target['vlnv']}#{outcome.target['name']}",
         "passed": outcome.aggregate_grade == "pass",
         "inconclusive": outcome.aggregate_grade == "inconclusive",
-        "tests": _campaign_test_projections(outcome, test_runs),
+        "tests": _campaign_test_projections(outcome, test_runs, target_directory),
         "test_runs": test_runs,
         "campaign_id": campaign_id,
         "campaign_manifest": _artifact_document(
@@ -530,16 +525,16 @@ def _campaign_projection(
 
 
 def _campaign_test_projections(
-    outcome: CampaignOutcome, test_runs: list[dict[str, object]]
+    outcome: CampaignOutcome, test_runs: list[dict[str, object]], target_directory: Path
 ) -> list[dict[str, object]]:
-    """One row per observation, with the Test Run it observed when recorded.
+    """One row per observation, with the Test Run it observed.
 
-    *test_runs* is either empty (facts that name no Test Runs) or aligned
-    with the observations.
+    *test_runs* is aligned with the observations. Each row names the Test
+    Run's ``log`` and ``trace`` files relative to *target_directory* (the
+    directory of ``simulation.json``), ``None`` where a file does not exist.
+    They stay out of the ``test_runs`` rows, which rerun matching reads.
     """
-    runs: list[dict[str, object] | None] = (
-        list(test_runs) if test_runs else [None] * len(outcome.observations)
-    )
+    files = campaign_test_run_files(outcome)
     return [
         {
             "name": observation["test"] or "default",
@@ -551,15 +546,14 @@ def _campaign_test_projections(
             "execution": observation["execution"],
             "failure_kind": observation["failure_class"] or "",
             "error_tail": _observation_error_tail(observation),
+            **found.relative_to(target_directory),
         }
-        for observation, run in zip(outcome.observations, runs, strict=True)
+        for observation, run, found in zip(outcome.observations, test_runs, files, strict=True)
     ]
 
 
-def _test_run_fields(run: Mapping[str, object] | None) -> dict[str, object]:
+def _test_run_fields(run: Mapping[str, object]) -> dict[str, object]:
     """What a per-Test row says about its Test Run (the coverage rows' keys)."""
-    if run is None:
-        return {}
     return {
         "test_run": run["name"],
         "variant": run["variant"],
@@ -800,7 +794,7 @@ def _cycle_change(
     )
     detail["test_runs"] = evidence.of((current,))
     if baseline_state == "mismatched":
-        run_name = current.get("test_run") if current is not None else None
+        run_name = current["test_run"] if current is not None else None
         refused_as = baseline_refusal_key(str(test), cast("str | None", run_name))
         _name_baseline_refusal(detail, facts.refusals.get((facts.selector, refused_as)))
     return shadow.set_criterion(key, met, detail=detail)
@@ -869,17 +863,11 @@ def _bound_baseline(
 
 
 def _same_test_run(cycle: Mapping[str, object], current: Mapping[str, object] | None) -> bool:
-    """Whether a baseline observation is of the Test Run the candidate observed.
-
-    Facts before v2 name Tests only, on both sides; such a baseline
-    observation binds by Test, which is unique there.
-    """
-    if "test_run" not in cycle:
-        return current is None or "test_run" not in current
+    """Whether a baseline observation is of the Test Run the candidate observed."""
     return (
         current is not None
-        and cycle["test_run"] == current.get("test_run")
-        and cycle["test_run_fingerprint"] == current.get("test_run_fingerprint")
+        and cycle["test_run"] == current["test_run"]
+        and cycle["test_run_fingerprint"] == current["test_run_fingerprint"]
     )
 
 

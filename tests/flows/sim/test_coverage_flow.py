@@ -2318,13 +2318,9 @@ def test_pruning_during_allocation_does_not_reuse_campaign_number(tmp_path, monk
     from pathlib import Path
 
     from booley.flows.sim.campaign_retention import prune_invocation
-    from tests.flows.sim.test_campaign_retention import campaign
+    from tests.flows.sim.campaign_test_support import coverage_invocation
 
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    campaign(tmp_path)
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
+    coverage_invocation(tmp_path, monkeypatch)
     sim = tmp_path / "reports/sim"
     original = Path.iterdir
     triggered = False
@@ -3068,13 +3064,12 @@ def test_coverage_next_stage_keeps_returned_target_and_coverage_flag(tmp_path: P
 
     path = tmp_path / "progress.json"
     progress = CoverageProgress(tmp_path, ("first", "active"))
-    first = CoverageTargetOutcome(
-        "first", 0, tmp_path / "coverage.json", tmp_path / "sim.json", {"grade": "pass"}
-    )
+    first = CoverageTargetOutcome("first", 0, tmp_path / "coverage.json", {"grade": "pass"})
     sink = LiveProgressSink(path, tmp_path, os.environ.get("BOOLEY_RUN_ID", ""))
     with install_progress(sink):
         progress.checkpoint()
-        progress.completed(first)
+        progress.outcomes.append(first)
+        progress.checkpoint()
         with attempt_scope("active"):
             payload = json.loads(path.read_text())
             assert payload["coverage"] is True
@@ -3246,20 +3241,20 @@ def test_coverage_analysis_refuses_a_campaign_written_by_booley_0_3_0(tmp_path):
         read_coverage_campaign,
     )
     from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
-    from tests.flows.sim.test_campaign_retention import campaign
+    from tests.mcp_tools.test_coverage_analyst import persist_campaign
 
-    outcome = campaign(tmp_path)
-    manifest = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
+    campaign_path = persist_campaign(tmp_path)
+    manifest = json.loads(campaign_path.read_text(encoding="utf-8"))
     rewrite_manifest_as_v4(manifest)
-    outcome.campaign_path.write_text(json.dumps(manifest), encoding="utf-8")
+    campaign_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(CoverageAnalysisError) as error:
-        read_coverage_campaign(outcome.campaign_path)
+        read_coverage_campaign(campaign_path)
 
     message = str(error.value)
-    assert message.startswith(f"Cannot analyze Campaign at {outcome.campaign_path}")
+    assert message.startswith(f"Cannot analyze Campaign at {campaign_path}")
     assert "COV_SCHEMA_VERSION_UNSUPPORTED" in message
-    assert str(outcome.campaign_path.parent) in message
+    assert str(campaign_path.parent) in message
 
 
 def _add_second_coverage_target(tmp_path: Path, state_path: Path) -> None:

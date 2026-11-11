@@ -418,11 +418,13 @@ the resolved identity (`target`, `target_identity`), the target `passed` and
 `inconclusive` flags, a `test_runs` list, and a `tests` list whose entries
 contain `name`, `passed`, nullable `cycles`, `sva_errors`, `timed_out`,
 `execution`, `failure_kind`, and `error_tail`, plus the observed Test Run's
-`test_run`, `variant`, `seed`, and `fingerprint`. Full cycle counts are also
+`test_run`, `variant`, `seed`, and `fingerprint`, and its `log` and `trace`
+paths (see below). Full cycle counts are also
 copied to `report.json` (see [FLOW_REPORTS.md](FLOW_REPORTS.md)). For native HDL
 Targets, each test's unabridged, attempt-specific simulator output is kept as
-`run.log` evidence in its Campaign work item, not referenced from the
-projection. A grouped run preserves this copy before starting the next test,
+live-log (`live_run_log`) evidence in its Campaign work item; the projection and
+the card name it through `booley.flows.sim.campaign.test_run_files`, the one
+lookup from a Test Run to its accepted attempt's log and `trace` files. A grouped run preserves this copy before starting the next test,
 including for failed, timed-out, and inconclusive tests that produced output.
 Each launched attempt's `execution-evidence` directory, beside its snapshot,
 keeps the live `run.log` (tail-truncated to 10 MB), the adapter result JSON, and
@@ -1015,10 +1017,11 @@ suite, so any difference, including configured skips, is a suite mismatch
 during evaluation.
 Execution is sorted and sequential.
 
-`run_coverage_target(plan, execution, progress)` collects through
-`SimulationExecutionPort`, assembles and validates the canonical Campaign,
-loads approved waivers unless `--no-waivers` is given, evaluates, and publishes in order:
-Campaign, Simulation projection, terminal progress. Source/Target drift is
+`run_coverage_target(plan, execution, *, embedded_root, publication_checkpoint=None)`
+collects through `SimulationExecutionPort`, assembles and validates the canonical Campaign,
+loads approved waivers unless `--no-waivers` is given, evaluates, publishes the
+Campaign under the attempt-owned root, and returns the outcome. The Simulation
+Campaign writes the projection and the Simulation Flow writes progress. Source/Target drift is
 rejected. Ungated evaluation is `not_requested`, including incompatible input, unless the Approved Waiver Set
 fails to load or match, which blocks it (exit 2); collection errors still exit 2.
 Simulation failures exit 1. A valid threshold miss exits 0; the Criterion
@@ -1195,8 +1198,8 @@ root explicitly; callers obtain Booley Directory roots through
   The empty `.pruned-N` tombstone reserves the number permanently; it contains no
   Simulation Campaign or native evidence. Other invocations remain untouched.
 
-Native pruning first deep-validates the Campaign pair, then writes Target-local
-`availability.json` with schema `booley.coverage-availability/v1`, the Campaign
+Native pruning first deep-validates the Campaign pair, then writes `availability.json`, in the
+nested Coverage Campaign directory the Target's `coverage.json` references, with schema `booley.coverage-availability/v1`, the Campaign
 identity and manifest digest, and
 native artifact IDs, paths, and digests. Status `pruning` means cleanup is pending
 and native availability must not be assumed. Cleanup then deletes `native/` and
@@ -1204,6 +1207,9 @@ records `pruned`. Retrying the same exact selection completes interrupted cleanu
 and trusts the existing sidecar. Campaign manifest and point-store bytes,
 Simulation bytes, and hook evidence never change. Normalized Campaign evidence
 remains analyzable after native pruning; full pruning prevents re-analysis.
+A Target whose `coverage.json` is not a
+`booley.coverage-campaign-reference/v1` reference (a standalone layout no
+supported Booley writes, or a damaged file) is refused, naming its directory.
 
 Explicit maintenance entry points:
 
