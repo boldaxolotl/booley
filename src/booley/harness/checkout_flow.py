@@ -65,7 +65,7 @@ _START_FAILURE_EXIT_CODE = 2
 _FLOW_NAME = re.compile(r"[A-Za-z0-9_-]+")
 # The slot claim records this process's argv, so the bootstrap stays one short line.
 _BOOTSTRAP = (
-    "import sys;sys.path.insert(0,sys.argv.pop(1));"
+    "import sys;sys.path.append(sys.argv.pop(1));"
     "from booley.harness.checkout_flow import child_main;raise SystemExit(child_main())"
 )
 # Where ``import booley`` resolves from: located by argv, so ``PYTHONPATH`` stays out.
@@ -109,10 +109,17 @@ class CheckoutFlowResult:
     log: Path  # the Job's ``job.log`` in the Main Booley Directory
 
 
-def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path]:
-    """Return the resolved checkout and report directory, or raise before anything is created."""
+def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path, Path]:
+    """Return the resolved checkout, Main Booley Directory and report directory.
+
+    Raises before anything is created when the request is unsafe.
+    """
     if not runtime_context.inside_session_runtime():
         raise CheckoutFlowError("a checkout Flow runs only inside the Sandbox")
+    if request.timeout_s is not None and not 0 < request.timeout_s < math.inf:
+        raise CheckoutFlowError(
+            f"timeout must be a positive number of seconds: {request.timeout_s}"
+        )
     if not _FLOW_NAME.fullmatch(request.flow):
         raise CheckoutFlowError(f"invalid Flow name: {request.flow!r}")
     checkout = request.checkout.resolve()
@@ -123,7 +130,8 @@ def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path]:
     for candidate in (checkout, *checkout.parents):
         if has_git_worktree_marker(candidate):
             raise CheckoutFlowError(f"checkout {checkout} is inside the Git checkout {candidate}")
-    state_dirs = [request.main_booley_dir.resolve()]
+    main = request.main_booley_dir.resolve()
+    state_dirs = [main]
     if os.environ.get("BOOLEY_DIR"):
         state_dirs.append(Path(os.environ["BOOLEY_DIR"]).resolve())
     for state_dir in state_dirs:
@@ -131,14 +139,22 @@ def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path]:
             raise CheckoutFlowError(
                 f"checkout {checkout} is inside the Booley Directory {state_dir}"
             )
+    # The reverse too: shared state inside the checkout would vanish with it.
+    if main.is_relative_to(checkout):
+        raise CheckoutFlowError(f"Booley Directory {main} is inside the checkout {checkout}")
     report_dir = request.report_dir.resolve()
     if report_dir.is_relative_to(checkout):
         raise CheckoutFlowError(f"report directory {report_dir} is inside the checkout {checkout}")
-    return checkout, report_dir
+    return checkout, main, report_dir
 
 
 def _launch(
-    request: CheckoutFlowRequest, checkout: Path, report_dir: Path, run_id: str, log_path: Path
+    request: CheckoutFlowRequest,
+    checkout: Path,
+    main: Path,
+    report_dir: Path,
+    run_id: str,
+    log_path: Path,
 ) -> tuple[subprocess.Popen[Any], Path]:
     """Start the child; return it with the directory holding its fresh ``HOME`` and ``TMPDIR``."""
     scratch = Path(tempfile.mkdtemp(dir=checkout.parent, prefix=f".{checkout.name}.env-"))
@@ -146,15 +162,13 @@ def _launch(
         home, tmp = scratch / "home", scratch / "tmp"
         home.mkdir()
         tmp.mkdir()
-        environment = measurement_environment(
-            os.environ, main_booley_dir=request.main_booley_dir, home=home, tmp=tmp
-        )
+        environment = measurement_environment(os.environ, main_booley_dir=main, home=home, tmp=tmp)
         command = [
             sys.executable,
             "-c",
             _BOOTSTRAP,
             str(_BOOLEY_SOURCE_ROOT),
-            str(request.main_booley_dir),
+            str(main),
             run_id,
             request.flow,
             "--target",
@@ -173,7 +187,7 @@ def _launch(
                 stderr=log,
                 **new_group_kwargs(),
             )
-    except OSError:
+    except BaseException:  # includes a Ctrl-C: the directory must not outlive the run
         shutil.rmtree(scratch, ignore_errors=True)
         raise
     return process, scratch
@@ -187,6 +201,10 @@ def _stop(process: subprocess.Popen[Any]) -> None:
     except subprocess.TimeoutExpired:
         force_group_termination(process, capture_process_group(process))
         process.wait()
+    except BaseException:  # a second Ctrl-C: never leave the Flow running
+        force_group_termination(process, capture_process_group(process))
+        process.wait()
+        raise
 
 
 def _wait(process: subprocess.Popen[Any], timeout_s: float | None) -> bool:
@@ -234,12 +252,43 @@ def _settle_record(
     code = final.exit_code
     if code is None:
         code = _START_FAILURE_EXIT_CODE if returncode is None else _shell_status(returncode)
-    if timed_out or final.status == job_records.STATUS_RUNNING:
+    # A child that finished ``done`` before the stop landed keeps its record.
+    if final.status == job_records.STATUS_RUNNING or (
+        timed_out and final.status != job_records.STATUS_DONE
+    ):
         final.status = job_records.STATUS_FAILED
         final.exit_code = code
         final.ended_at = final.ended_at or utc_now_rfc3339()
         job_records.write_record(final, jobs_root)
     return final
+
+
+def _result_from(
+    request: CheckoutFlowRequest,
+    run_id: str,
+    final: job_records.JobRecord,
+    log_path: Path,
+    report_dir: Path,
+    *,
+    timed_out: bool,
+) -> CheckoutFlowResult:
+    """The caller's view of a settled run: outcome, this run's reports and their typed metrics."""
+    reports = _read_reports(report_dir, request.flow, run_id)
+    if timed_out and final.status != job_records.STATUS_DONE:
+        status = CheckoutFlowStatus.TIMED_OUT
+    elif final.status == job_records.STATUS_CANCELLED:
+        status = CheckoutFlowStatus.CANCELLED
+    else:
+        status = CheckoutFlowStatus.PASSED if final.exit_code == 0 else CheckoutFlowStatus.FAILED
+    detail = as_dict(reports[-1][1].get("detail")) if reports else None
+    return CheckoutFlowResult(
+        run_id=run_id,
+        status=status,
+        exit_code=final.exit_code if final.exit_code is not None else _START_FAILURE_EXIT_CODE,
+        reports=tuple(path for path, _ in reports),
+        metrics={} if detail is None else report_metric_values(request.flow, detail),
+        log=log_path,
+    )
 
 
 def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
@@ -248,8 +297,7 @@ def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
     Raises:
         CheckoutFlowError: the request is refused or the child cannot be started.
     """
-    checkout, report_dir = _refuse_unsafe(request)
-    main = request.main_booley_dir
+    checkout, main, report_dir = _refuse_unsafe(request)
     run_id = job_records.make_run_id(request.flow, compact_utc_now(), 1)
     log_path = standalone_log_path(main, run_id)
     jobs_root = standalone_jobs_dir(main)
@@ -263,10 +311,10 @@ def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
         argv=["booley", "flow", request.flow, "--target", request.target],
         report_root=str(report_dir),
     )
-    job_records.write_record_strict(record, jobs_root)
-    register_job(main, run_id, request.flow, None)
     try:
-        process, scratch = _launch(request, checkout, report_dir, run_id, log_path)
+        job_records.write_record_strict(record, jobs_root)
+        register_job(main, run_id, request.flow, None)
+        process, scratch = _launch(request, checkout, main, report_dir, run_id, log_path)
     except OSError as exc:
         # Best effort: an unwritable log must not stop the record turning failed.
         with contextlib.suppress(OSError), log_path.open("ab") as log:
@@ -282,22 +330,7 @@ def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
         final = _settle_record(record, jobs_root, process.returncode, timed_out=timed_out)
-    reports = _read_reports(report_dir, request.flow, run_id)
-    if timed_out:
-        status = CheckoutFlowStatus.TIMED_OUT
-    elif final.status == job_records.STATUS_CANCELLED:
-        status = CheckoutFlowStatus.CANCELLED
-    else:
-        status = CheckoutFlowStatus.PASSED if final.exit_code == 0 else CheckoutFlowStatus.FAILED
-    detail = as_dict(reports[-1][1].get("detail")) if reports else None
-    return CheckoutFlowResult(
-        run_id=run_id,
-        status=status,
-        exit_code=final.exit_code if final.exit_code is not None else _START_FAILURE_EXIT_CODE,
-        reports=tuple(path for path, _ in reports),
-        metrics={} if detail is None else report_metric_values(request.flow, detail),
-        log=log_path,
-    )
+    return _result_from(request, run_id, final, log_path, report_dir, timed_out=timed_out)
 
 
 def _run_flow_cli(flow: str, flow_argv: list[str]) -> int:

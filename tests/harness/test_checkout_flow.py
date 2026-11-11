@@ -7,6 +7,7 @@ commit, so it holds no ``.git`` and no shared state.
 
 from __future__ import annotations
 
+import _thread
 import contextlib
 import json
 import os
@@ -49,7 +50,7 @@ FLOW = "checkout_stub"
 # ``fail`` returns a failing outcome, ``wait`` waits (bounded) for the ``release``
 # marker and ``env`` records what it saw. Its control directory is written into the source.
 STUB_FLOW = """
-import json, os, time
+import json, os, signal, time
 from pathlib import Path
 from booley.flows.base import BooleyFlow
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -77,7 +78,12 @@ class CheckoutStub(BooleyFlow):
         target = self.args.target
         if target == "fail":
             return EndpointOutcome(exit_code=1)
-        if target == "wait":
+        if target == "metrics":
+            return EndpointOutcome(detail={{"marker": 7}})
+        if target == "stubborn":
+            signal.signal(signal.SIGINT, signal.SIG_IGN)  # only a kill ends this Flow
+            (CTL / "ignoring").write_text("1", encoding="utf-8")
+        if target in ("wait", "stubborn"):
             deadline = time.monotonic() + 60
             while not (CTL / "release").exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
@@ -234,6 +240,26 @@ def test_checkout_flow_returns_outcome_and_reports(
     assert len(records_in(world.main)) == 1  # the CLI wrote no second record
 
 
+@linux_only
+def test_checkout_flow_returns_typed_metrics_of_the_last_report(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.metric_declarations import FlowMetricValues
+    from booley.harness.checkout_flow import run_checkout_flow
+    from booley.measurement import flow_metrics
+
+    def reader(detail: dict[str, object]) -> dict[str, FlowMetricValues]:
+        return {
+            "top": FlowMetricValues(plain={"cell_count": int(str(detail["marker"]))}, per_clock={})
+        }
+
+    monkeypatch.setitem(flow_metrics._READERS_BY_FLOW, FLOW, reader)
+
+    result = run_checkout_flow(world.request("metrics"))
+
+    assert result.metrics == {"top": FlowMetricValues(plain={"cell_count": 7}, per_clock={})}
+
+
 def refusal_requests(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> dict[str, CheckoutFlowRequest]:
@@ -249,12 +275,14 @@ def refusal_requests(
         ),
         "booley-dir-env": world.request("pass", checkout=env_dir / "co"),
         "report-in-checkout": world.request("pass", report_dir=world.checkout / "reports"),
+        "main-in-checkout": world.request("pass", main_booley_dir=world.checkout / ".booley"),
     }
 
 
 @linux_only
 @pytest.mark.parametrize(
-    "case", ["live-tree", "main-booley-dir", "booley-dir-env", "report-in-checkout"]
+    "case",
+    ["live-tree", "main-booley-dir", "booley-dir-env", "report-in-checkout", "main-in-checkout"],
 )
 def test_checkout_flow_refuses_live_state_paths(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
@@ -263,7 +291,10 @@ def test_checkout_flow_refuses_live_state_paths(
 
     request = refusal_requests(world, tmp_path, monkeypatch)[case]
     request.checkout.mkdir(parents=True, exist_ok=True)
-    offending = request.report_dir if case == "report-in-checkout" else request.checkout
+    offending = {
+        "report-in-checkout": request.report_dir,
+        "main-in-checkout": request.main_booley_dir,
+    }.get(case, request.checkout)
 
     with pytest.raises(CheckoutFlowError) as refused:
         run_checkout_flow(request)
@@ -276,19 +307,74 @@ def test_checkout_flow_refuses_live_state_paths(
 
 
 @linux_only
-@pytest.mark.parametrize("case", ["missing-checkout", "bad-flow-name"])
+@pytest.mark.parametrize(
+    "case",
+    ["missing-checkout", "bad-flow-name", "zero-timeout", "infinite-timeout", "nan-timeout"],
+)
 def test_checkout_flow_refuses_a_malformed_request(world: World, case: str) -> None:
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
     request = {
         "missing-checkout": world.request("pass", checkout=world.checkout / "gone"),
         "bad-flow-name": world.request("pass", flow="../escape"),
+        "zero-timeout": world.request("pass", timeout_s=0),
+        "infinite-timeout": world.request("pass", timeout_s=float("inf")),
+        "nan-timeout": world.request("pass", timeout_s=float("nan")),
     }[case]
 
-    with pytest.raises(CheckoutFlowError, match=r"not a directory|invalid Flow name"):
+    with pytest.raises(CheckoutFlowError, match=r"not a directory|invalid Flow name|positive"):
         run_checkout_flow(request)
 
     assert not standalone_jobs_dir(world.main).exists()
+
+
+@linux_only
+def test_checkout_flow_refuses_outside_the_sandbox(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    monkeypatch.setattr(checkout_flow.runtime_context, "inside_session_runtime", lambda: False)
+
+    with pytest.raises(CheckoutFlowError, match="only inside the Sandbox"):
+        run_checkout_flow(world.request("pass"))
+
+    assert not standalone_jobs_dir(world.main).exists()
+
+
+@linux_only
+def test_checkout_flow_reports_an_unwritable_record_as_a_refusal(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    def unwritable(*_args: object, **_kwargs: object) -> None:
+        raise OSError(30, "read-only file system")
+
+    monkeypatch.setattr(checkout_flow.job_records, "write_record_strict", unwritable)
+
+    with pytest.raises(CheckoutFlowError, match="read-only file system"):
+        run_checkout_flow(world.request("pass"))
+
+    assert not (world.ctl / "started").exists()
+
+
+@linux_only
+def test_checkout_flow_resolves_a_relative_main_booley_dir(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
+
+    monkeypatch.chdir(
+        world.live
+    )  # the child runs in the checkout, where ".booley" is another place
+
+    result = run_checkout_flow(world.request("pass", main_booley_dir=Path(".booley")))
+
+    assert result.status is CheckoutFlowStatus.PASSED
+    assert len(records_in(world.main)) == 1
 
 
 @linux_only
@@ -364,14 +450,9 @@ def test_checkout_flow_keeps_shared_state_in_main(world: World) -> None:
     # Main gained the Flow's Resource History record and its Job record.
     assert [row["flow"] for row in load_records(world.main)] == [FLOW]
     assert record_of(world, result).status == "done"
-    # The checkout gained at most its own build cache: no shared state, no bytecode.
+    # The checkout gained nothing: no shared state, no build cache, no bytecode.
     added = {path.relative_to(world.checkout) for path in world.checkout.rglob("*")} - before
-    cache = Path(".booley/.runtime/python-artifacts")
-    stray = {
-        path for path in added if path not in {cache.parent, cache} and cache not in path.parents
-    }
-    assert stray == set()
-    assert not [path for path in added if "__pycache__" in path.parts]
+    assert added == set()
 
 
 @linux_only
@@ -443,6 +524,8 @@ def test_deleted_checkout_is_named_by_no_job_record(world: World, outcome: str) 
     assert_no_record_names(world.main, world.checkout)
     assert not (record.work_dir or "").startswith(str(world.checkout))
     # The reports are where the caller asked for them, and still readable.
+    if outcome in {"passed", "failed"}:
+        assert result.reports
     for report in result.reports:
         assert json.loads(report.read_text(encoding="utf-8"))["run_id"] == result.run_id
 
@@ -493,6 +576,7 @@ def test_interrupted_caller_stops_the_flow(world: World) -> None:
     assert not list(world.checkout.parent.glob(".*env-*"))
 
 
+@linux_only
 def test_child_main_runs_the_adopted_record_with_the_checkout_selected(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -522,6 +606,7 @@ def test_child_main_runs_the_adopted_record_with_the_checkout_selected(
     assert (record.run_id, record.status, record.exit_code) == (run_id, "done", 0)
 
 
+@linux_only
 def test_child_main_without_a_record_reports_it(
     world: World, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -529,3 +614,105 @@ def test_child_main_without_a_record_reports_it(
 
     assert checkout_flow.child_main([str(world.main), "missing-1", FLOW]) == 2
     assert "record not found: missing-1" in capsys.readouterr().err
+
+
+@linux_only
+def test_child_killed_before_its_terminal_write_fails_the_record(world: World) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        run = pool.submit(run_checkout_flow, world.request("wait"))
+        poll((world.ctl / "started").exists, "the Flow to start")
+        (running,) = records_in(world.main)
+        assert running.pid is not None
+        os.kill(running.pid, signal.SIGKILL)
+        result = run.result(timeout=TIMEOUT_S)
+
+    assert (result.status, result.exit_code) == (CheckoutFlowStatus.FAILED, 137)
+    record = record_of(world, result)
+    assert (record.status, record.exit_code) == ("failed", 137)
+    assert not list(world.checkout.parent.glob(".*env-*"))
+
+
+@linux_only
+def test_flow_that_ignores_the_stop_is_killed_after_the_grace(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import run_checkout_flow
+
+    monkeypatch.setattr(checkout_flow, "_STOP_GRACE_S", 1)
+
+    def interrupt_once_ignoring() -> None:
+        poll((world.ctl / "ignoring").exists, "the Flow to ignore SIGINT")
+        _thread.interrupt_main()  # the caller's Ctrl-C
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        watcher = pool.submit(interrupt_once_ignoring)
+        with pytest.raises(KeyboardInterrupt):
+            run_checkout_flow(world.request("stubborn"))
+        watcher.result(timeout=TIMEOUT_S)
+
+    (record,) = records_in(world.main)
+    assert record.status == "failed" and record.pid is not None
+    assert not Path(f"/proc/{record.pid}").exists()
+
+
+class StubbornProcess:
+    """A child that ends only when killed; the first wait is interrupted like a second Ctrl-C."""
+
+    def __init__(self) -> None:
+        self.signals: list[int] = []
+        self.killed = False
+        self.waits = 0
+
+    def send_signal(self, signum: int) -> None:
+        self.signals.append(signum)
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.waits += 1
+        if self.waits == 1:
+            raise KeyboardInterrupt
+        return -9
+
+
+def test_second_interrupt_during_the_stop_still_kills_the_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.harness import checkout_flow
+
+    process = StubbornProcess()
+    monkeypatch.setattr(checkout_flow, "capture_process_group", lambda _process: "group")
+    monkeypatch.setattr(
+        checkout_flow,
+        "force_group_termination",
+        lambda _process, group: setattr(process, "killed", group == "group"),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        checkout_flow._stop(process)  # type: ignore[arg-type]
+
+    assert process.signals == [signal.SIGINT]
+    assert process.killed
+    assert process.waits == 2  # the kill was reaped before the interrupt went on
+
+
+def test_a_child_that_finished_before_the_stop_keeps_its_done_record(tmp_path: Path) -> None:
+    from booley.harness import checkout_flow
+
+    record = job_records.JobRecord("flow-1", FLOW, "2026-11-07T00:00:00Z", 60)
+    record.status, record.exit_code, record.ended_at = "done", 0, "2026-11-07T00:00:01Z"
+    job_records.write_record_strict(record, tmp_path)
+
+    final = checkout_flow._settle_record(record, tmp_path, 0, timed_out=True)
+
+    assert (final.status, final.exit_code) == ("done", 0)
+    result = checkout_flow._result_from(
+        checkout_flow.CheckoutFlowRequest(tmp_path, tmp_path, tmp_path, FLOW, "pass"),
+        "flow-1",
+        final,
+        tmp_path / "log",
+        tmp_path,
+        timed_out=True,
+    )
+    assert (result.status, result.exit_code) == (checkout_flow.CheckoutFlowStatus.PASSED, 0)
