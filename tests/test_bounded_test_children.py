@@ -31,7 +31,7 @@ SIBLING_OWNED_PREFIXES: dict[str, str] = {
 }
 
 #: ``subprocess`` entry points whose ``timeout=`` keyword the audit covers.
-_SUBPROCESS_CALLS = frozenset({"run", "check_output", "check_call", "call", "Popen"})
+_SUBPROCESS_CALLS = frozenset({"run", "check_output", "check_call", "call"})
 
 #: The shared budget constant: a timeout spelled with it is not a literal.
 _SHARED_BUDGET_NAME = "SUBPROCESS_TIMEOUT_S"
@@ -91,6 +91,22 @@ class _TimeoutScanner(ast.NodeVisitor):
         bound = self._module_numeric.get(name)
         return bound is not None and self._is_numeric(bound, seen | {name})
 
+    def _is_literal_budget(self, node: ast.expr) -> bool:
+        """Return True for a numeric timeout, or arithmetic on the shared budget name.
+
+        Only the bare shared constant is exempt: ``SUBPROCESS_TIMEOUT_S * 4``
+        would raise the limit past the budget, so it counts as a literal.
+        """
+        if self._is_numeric(node):
+            return True
+        mentions_budget = any(
+            isinstance(inner, ast.Name) and inner.id == _SHARED_BUDGET_NAME
+            for inner in ast.walk(node)
+        )
+        return mentions_budget and not (
+            isinstance(node, ast.Name) and node.id == _SHARED_BUDGET_NAME
+        )
+
     def _is_audited_call(self, call: ast.Call) -> bool:
         func = call.func
         if isinstance(func, ast.Attribute):
@@ -101,7 +117,7 @@ class _TimeoutScanner(ast.NodeVisitor):
                 and isinstance(func.value, ast.Name)
                 and func.value.id == "subprocess"
             )
-        return isinstance(func, ast.Name) and func.id == "Popen"
+        return False
 
     def _has_keep_comment(self, statement: ast.stmt, call: ast.Call) -> bool:
         for anchor in {call.lineno, statement.lineno}:
@@ -132,7 +148,7 @@ class _TimeoutScanner(ast.NodeVisitor):
             for keyword in node.keywords:
                 if (
                     keyword.arg == "timeout"
-                    and self._is_numeric(keyword.value)
+                    and self._is_literal_budget(keyword.value)
                     and not self._has_keep_comment(self._statements[-1], node)
                 ):
                     self.offenders.append(f"{self._relative_path}:{node.lineno}")
@@ -163,3 +179,30 @@ def test_test_children_use_bounded_helper() -> None:
         "'# Kept on <call>: <reason>' comment directly above the call:\n  "
         + "\n  ".join(offenders)
     )
+
+
+def _scan(source: str) -> list[str]:
+    """Return the offender sites the scanner reports for one synthetic module."""
+    tree = ast.parse(source)
+    scanner = _TimeoutScanner("synthetic.py", source, tree)
+    scanner.visit(tree)
+    return scanner.offenders
+
+
+def test_scanner_flags_unlabeled_literal_timeouts() -> None:
+    """The scanner reports each literal-timeout shape and spares the allowed ones."""
+    flagged = [
+        "import subprocess\nsubprocess.run(['x'], timeout=5)\n",
+        "import subprocess\nT = 5\nsubprocess.run(['x'], timeout=T)\n",
+        "import subprocess\ndef f(t=5):\n    subprocess.run(['x'], timeout=t)\n",
+        "import subprocess\nsubprocess.run(['x'], timeout=5 if 1 else 9)\n",
+        "import subprocess\nsubprocess.run(['x'], timeout=SUBPROCESS_TIMEOUT_S * 4)\n",
+        "def f(p):\n    p.communicate(timeout=5)\n",
+    ]
+    allowed = [
+        "import subprocess\nsubprocess.run(['x'], timeout=SUBPROCESS_TIMEOUT_S)\n",
+        "import subprocess\n# Kept on subprocess.run: reason\nsubprocess.run(['x'], timeout=5)\n",
+        "import subprocess\nsubprocess.run(['x'])\n",
+    ]
+    assert [source for source in flagged if not _scan(source)] == []
+    assert [source for source in allowed if _scan(source)] == []

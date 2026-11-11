@@ -2672,9 +2672,15 @@ def _real_lint_setup(monkeypatch, command: list[str], root: Path) -> None:
         env[f"XDG_{kind}_HOME"] = str(root / f"isolated-{kind.lower()}")
 
     def bounded_runner(*args, **kwargs):
+        assert set(kwargs) <= {
+            "cwd",
+            "env",
+            "capture_output",
+            "text",
+        }  # the helper captures text itself
         assert kwargs["env"] == env
         assert args[0][args[0].index("--config") + 1] == str(config)
-        return run_bounded_child(args[0], cwd=kwargs["cwd"], env=kwargs["env"])
+        return run_bounded_child(args[0], cwd=kwargs.get("cwd"), env=kwargs["env"])
 
     def resolve(*args, **kwargs):
         return real_resolve(

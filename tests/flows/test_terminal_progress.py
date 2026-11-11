@@ -186,7 +186,6 @@ def test_pipe_output_and_transcript_visible_before_exit(tmp_path):
     results = []
     with sink.installed():
         sink.begin_command("simulation")
-        # Kept on Popen: the test drives it through communicate_observed, the code under test.
         thread = threading.Thread(
             target=lambda: results.append(communicate_observed(process, sink, timeout=5))
         )
@@ -229,7 +228,6 @@ def test_file_only_live_output_before_exit_and_stale_log_ignored(tmp_path):
             text=True,
             start_new_session=True,
         )
-        # Kept on Popen: the test drives it through communicate_observed, the code under test.
         thread = threading.Thread(target=lambda: communicate_observed(process, sink, timeout=5))
         thread.start()
         try:
@@ -266,7 +264,6 @@ def test_separate_flood_captures_match_communicate(tmp_path, returncode):
             encoding="utf-8",
             start_new_session=True,
         ) as process:
-            # Kept on Popen: the test drives it through communicate_observed, the code under test.
             stdout, stderr, timed_out = communicate_observed(process, sink, timeout=5)
     assert (stdout, stderr, process.returncode, timed_out) == (
         expected.stdout,
@@ -291,7 +288,6 @@ def test_split_unicode_newlines_and_partial_capture(tmp_path, encoding):
             encoding=encoding,
             start_new_session=True,
         ) as process:
-            # Kept on Popen: the test drives it through communicate_observed, the code under test.
             stdout, stderr, timed_out = communicate_observed(process, sink, timeout=3)
     assert stdout == "café\nline\ntail"
     assert stderr == ""
@@ -312,7 +308,6 @@ def test_invalid_capture_bytes_raise_and_reap(tmp_path):
             start_new_session=True,
         ) as process:
             with pytest.raises(UnicodeDecodeError):
-                # Kept on Popen: the test drives it through communicate_observed, the code under test.
                 communicate_observed(process, sink, timeout=3)
             assert process.poll() is not None
 
@@ -337,7 +332,6 @@ def test_timeout_preserves_partial_output_and_reaps(tmp_path, startup_delay):
         ) as process:
             try:
                 wait_until(ready.exists, timeout=10)
-                # Kept on Popen: the test drives it through communicate_observed, the code under test.
                 stdout, stderr, timed_out = communicate_observed(process, sink, timeout=0.3)
                 assert process.poll() is not None
             finally:
@@ -364,7 +358,6 @@ def test_descendant_held_pipe_does_not_wait_forever(tmp_path):
             # Generous timeout: a loaded CI runner can take over 0.3 s just to start
             # the interpreter. The held descendant sleeps 30 s, so the bound below
             # still proves the call does not wait for it.
-            # Kept on Popen: the test drives it through communicate_observed, the code under test.
             stdout, _, timed_out = communicate_observed(process, sink, timeout=3)
     assert time.monotonic() - started < 15
     assert stdout == "parent done\n"
@@ -638,7 +631,6 @@ def test_observer_failure_never_changes_capture(tmp_path):
             text=True,
             start_new_session=True,
         ) as process:
-            # Kept on Popen: the test drives it through communicate_observed, the code under test.
             output = communicate_observed(process, sink, timeout=3)
     assert output == ("authoritative capture\n", "", False)
     assert sink.log_path is None
@@ -751,7 +743,6 @@ def test_keyboard_interrupt_reaps_and_preserves_original_exception(tmp_path, mon
             start_new_session=True,
         ) as process:
             with pytest.raises(KeyboardInterrupt):
-                # Kept on Popen: the test drives it through communicate_observed, the code under test.
                 communicate_observed(process, sink, timeout=3)
             assert process.poll() is not None
     assert sink.closed
@@ -862,7 +853,6 @@ def test_blocked_transcript_writer_cannot_block_process_capture(tmp_path):
             text=True,
             start_new_session=True,
         ) as process:
-            # Kept on Popen: the test drives it through communicate_observed, the code under test.
             assert communicate_observed(process, sink, timeout=3) == (
                 "complete capture\n",
                 "",
@@ -924,7 +914,6 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
             start_new_session=True,
         )
         result = []
-        # Kept on Popen: the test drives it through communicate_observed, the code under test.
         thread = threading.Thread(
             target=lambda: result.append(communicate_observed(second, sink, timeout=6))
         )
@@ -939,7 +928,6 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
                 text=True,
                 start_new_session=True,
             ) as first:
-                # Kept on Popen: the test drives it through communicate_observed, the code under test.
                 assert communicate_observed(first, sink, timeout=3)[0] == "first done\n"
             release.touch()
             wait_until(lambda: "second still live" in sink.stream.getvalue())
@@ -1046,7 +1034,6 @@ def test_windows_capture_does_not_require_nonblocking_pipe_support(tmp_path, mon
             stderr=subprocess.PIPE,
             text=True,
         ) as process:
-            # Kept on Popen: the test drives it through communicate_observed, the code under test.
             assert communicate_observed(process, sink, timeout=3) == (
                 "Windows capture\n",
                 "",
@@ -1067,7 +1054,6 @@ def test_real_fast_tool_keeps_complete_transcript(tmp_path):
             text=True,
             start_new_session=True,
         ) as process:
-            # Kept on Popen: the test drives it through communicate_observed, the code under test.
             stdout, stderr, timed_out = communicate_observed(
                 process, sink, timeout=BOUNDARY_HANG_GUARD_S
             )
