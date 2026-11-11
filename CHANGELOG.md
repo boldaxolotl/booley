@@ -9,6 +9,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The Session Runtime now uses Verilator v5.054 at source commit
+  `bbb60a403932a9f695cb6ff001ceb73de6ad9234`. Verilator 5.054 moved `if`/`else`
+  and `?:` branch points out of `--coverage-line` into the new
+  `--coverage-branch` switch; `booley flow sim --coverage` now passes both, so
+  `branch` points are still collected. A project that passes `--coverage-line`
+  in its own `verilator_options` must add `--coverage-branch` to keep them.
+  ([PR #3464](https://github.com/boldaxolotl/booley/pull/3464))
 - The `sim` result card now names each Test Run that did not pass with its log
   (`log:`) and, when it ran with `--trace`, its waveform (`waveform:`); a
   `--trace` run lists its passing Test Runs with their waveform too.
