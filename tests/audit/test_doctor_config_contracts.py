@@ -346,3 +346,20 @@ def test_doctor_booley_toml_validation_names_retired_standalone_frontend(tmp_pat
     assert "each Target's simulator" in only.message
     assert "booley.toml booley.toml" not in only.message
     assert "commercial-EDA" not in only.fix
+
+
+def test_doctor_booley_toml_validation_accepts_memory_budget_and_rejects_zero(tmp_path):
+    """Doctor accepts the undocumented key silently and fails an invalid size naming it."""
+    from booley.audit.diagnostic_results import Findings
+    from booley.harness.setup import readiness
+
+    accepted = Findings()
+    assert readiness._validate_booley_toml({"jobs": {"memory_budget": "24g"}}, tmp_path, accepted)
+    assert not any("memory_budget" in f.message for f in accepted.report().findings)
+
+    rejected = Findings()
+    assert not readiness._validate_booley_toml(
+        {"jobs": {"memory_budget": "0g"}}, tmp_path, rejected
+    )
+    messages = [f.message for f in rejected.report().findings]
+    assert any("[jobs].memory_budget" in message for message in messages)

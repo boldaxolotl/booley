@@ -57,7 +57,7 @@ from booley.flows.eda_failures import (
 )
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
-from booley.flows.job_resources import resource_phase
+from booley.flows.job_resources import resolved_source_bytes, resource_phase
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -159,6 +159,8 @@ class _PreparedFpgaCommand:
     work_root: Path
     fingerprint: str
     require_bitstream: bool
+    # Size of the Target's resolved source files; ``None`` when unknown.
+    source_bytes: int | None
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     run_evidence: dict[str, Any] = field(default_factory=dict)
@@ -702,6 +704,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             work_root=work_root,
             fingerprint=fingerprint,
             require_bitstream=not recipe.out_of_context,
+            source_bytes=resolved_source_bytes(recipe.resolved),
             recipe_snapshot=recipe.recipe_snapshot,
             recipe_fingerprint=recipe.recipe_fingerprint,
             run_evidence=dispatch_evidence.as_dict(),
@@ -793,9 +796,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             temporary=role == "baseline",
         )
 
-    def _run_vivado(self, target: str, run_cmd: list[str]) -> SubprocessResult:
+    def _run_vivado(
+        self, target: str, run_cmd: list[str], source_bytes: int | None
+    ) -> SubprocessResult:
         """Run the FPGA implementation command under its resource-history label."""
-        with resource_phase(target, "fpga_impl"):
+        with resource_phase(target, "fpga_impl", source_bytes=source_bytes):
             return self._execute_boundary(run_cmd, timeout=self._get_timeout())
 
     def _run_single_target(self, target: str) -> FpgaMetrics:
@@ -832,7 +837,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         # The command is not path-remapped: ``make -C <rel>`` resolves from the
         # shared Sandbox workspace.
         self._announce_vivado_run(prepared, target)
-        result = self._run_vivado(target, run_cmd)
+        result = self._run_vivado(target, run_cmd, prepared.source_bytes)
         # The edalize project-mode vivado flow (launch_runs/wait_on_run) writes
         # its utilization/timing/DRC reports to *files*, not stdout — unlike the
         # legacy non-project tcl that printed report_* to the console. So the

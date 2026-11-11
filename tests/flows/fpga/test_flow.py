@@ -170,6 +170,7 @@ def test_numbered_log_publication_failure_does_not_skip_cache_store(
         work_root,
         "fingerprint",
         False,
+        None,
     )
     process = SubprocessResult(returncode=0, stdout="route", stderr="")
 
@@ -194,6 +195,68 @@ def test_numbered_log_publication_failure_does_not_skip_cache_store(
 
     assert metrics.log_path == ""
     store.assert_called_once()
+
+
+def test_fpga_label_carries_target_source_bytes(tmp_path: Path, state_file: Path) -> None:
+    from booley.flows import job_resources
+    from booley.flows.fpga.profiles import VIVADO_PROFILES
+
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file)
+    flow._project_root = tmp_path
+    (tmp_path / "top.v").write_bytes(b"module top; endmodule\n")
+    (tmp_path / "pkg.v").write_bytes(b"module pkg; endmodule\n")
+    expected_bytes = sum(len(path.read_bytes()) for path in tmp_path.glob("*.v"))
+    recipe = SimpleNamespace(
+        resolved=SimpleNamespace(
+            build_root=tmp_path,
+            files=(
+                ResolvedFile("top.v", "verilogSource"),
+                ResolvedFile("pkg.v", "verilogSource"),
+            ),
+        ),
+        out_of_context=False,
+        recipe_fingerprint="recipe",
+        reachable_dirs=(),
+        recipe_snapshot={},
+        source_evidence=None,
+        ppa_profile=VIVADO_PROFILES["balanced"],
+    )
+    seen: list[job_resources.ResourceLabel | None] = []
+
+    def execute(*_args, **_kwargs):
+        seen.append(job_resources.current_label())
+        return SubprocessResult(returncode=0, stdout="route", stderr="")
+
+    with (
+        patch.object(flow, "_fpga_recipe_for_execution", return_value=recipe),
+        patch.object(flow, "_materialize_fpga_project", return_value={"name": "demo"}),
+        patch("booley.flows.fpga.flow.fpga_cache.input_fingerprint", return_value="fingerprint"),
+        patch(
+            "booley.flows.fpga.flow.run_evidence.build_flow_run_evidence",
+            return_value=SimpleNamespace(as_dict=dict),
+        ),
+        patch("booley.flows.fpga.flow.fpga_edam.fpga_run_command", return_value=["make"]),
+        patch.object(flow, "_execute_boundary", side_effect=execute),
+        patch.object(flow, "_route_evidence", return_value=(True, "")),
+        patch.object(flow, "_collect_vivado_evidence", return_value="status: pass"),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
+            return_value={"status": "pass", "lut_count": 1, "ff_count": 1},
+        ),
+        patch.object(
+            flow,
+            "_metrics_from_parsed_reports",
+            return_value=FpgaMetrics(lut_count=1, ff_count=1, wns_ns=0.1, whs_ns=0.1),
+        ),
+        patch("booley.flows.fpga.flow.fpga_cache.store"),
+    ):
+        flow._run_single_target("default")
+
+    assert seen == [
+        job_resources.ResourceLabel("default", "fpga_impl", source_bytes=expected_bytes)
+    ]
+    assert expected_bytes > 0
 
 
 def test_relative_ticket_criterion_auto_applies_pinned_baseline(
@@ -677,7 +740,7 @@ def test_negative_wns_fails_fpga_criterion(
         patch.object(
             FpgaImplFlow,
             "_prepare_fpga_command",
-            return_value=_PreparedFpgaCommand(["make", "-C", "x"], tmp_path, "", False),
+            return_value=_PreparedFpgaCommand(["make", "-C", "x"], tmp_path, "", False, None),
         ),
         patch.object(flow, "_route_evidence", return_value=(True, "")),
         patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=parsed),
@@ -1511,7 +1574,9 @@ class TestFailureCapture:
             patch.object(
                 FpgaImplFlow,
                 "_prepare_fpga_command",
-                return_value=_PreparedFpgaCommand(["make", "-C", "wr"], work_root, "", False),
+                return_value=_PreparedFpgaCommand(
+                    ["make", "-C", "wr"], work_root, "", False, None
+                ),
             ),
             patch.object(
                 FpgaImplFlow,
@@ -1777,6 +1842,7 @@ def test_fake_vivado_generated_command_startup(
         root,
         "",
         False,
+        None,
         ppa_profile=VIVADO_PROFILES[profile],
     )
     monkeypatch.setattr(flow, "_prepare_fpga_command", lambda target: prepared)
@@ -1839,7 +1905,7 @@ def test_completed_route_missing_required_report_retains_route_fact(
     monkeypatch.setattr(
         flow,
         "_prepare_fpga_command",
-        lambda target: _PreparedFpgaCommand(["make"], root, "", False),
+        lambda target: _PreparedFpgaCommand(["make"], root, "", False, None),
     )
     monkeypatch.setattr(
         flow,
@@ -1898,7 +1964,7 @@ def _run_failing_fpga(tmp_path: Path, state_file: Path, stdout: str, stderr: str
         patch.object(
             FpgaImplFlow,
             "_prepare_fpga_command",
-            return_value=_PreparedFpgaCommand(["make", "-C", "wr"], work_root, "", False),
+            return_value=_PreparedFpgaCommand(["make", "-C", "wr"], work_root, "", False, None),
         ),
         patch.object(
             FpgaImplFlow,

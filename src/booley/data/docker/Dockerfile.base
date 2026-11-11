@@ -234,9 +234,9 @@ RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
 # Verible (pinned prebuilt static binary — the sv2v pattern). Bundled
 # lint EDA tool for .core lint Targets with flow_options.tool: verible (ADR 0033).
 # renovate: datasource=github-releases depName=chipsalliance/verible versioning=regex:^v(?<major>\d+)\.(?<minor>\d+)-(?<patch>\d+)-g[0-9a-f]+$
-ARG VERIBLE_VERSION=v0.0-4296-g0f262651
+ARG VERIBLE_VERSION=v0.0-4298-g085eef05
 # pin-companion: VERIBLE_VERSION
-ARG VERIBLE_SHA256=8569defb891d2316067613ea00442af28a7a09d405d95b54c0c91f9942d26635
+ARG VERIBLE_SHA256=ca83778c7c2b73272277bd670d1851c8caf973fd3283688aeb0d36d4b3598a90
 RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz" \
     -o /tmp/verible.tar.gz \
