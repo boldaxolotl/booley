@@ -2382,27 +2382,17 @@ targets:
 """
 
 
-def _write_cocotb_project(
-    root: Path,
-    *,
-    tb_body: str,
-    tests: list[str] | None = None,
-) -> None:
+def _write_cocotb_project(root: Path, *, tb_body: str) -> None:
     """A minimal project whose only sim Target is a Cocotb Target (ADR 0034).
 
-    *tb_body* is the Python testbench; *tests* (if given) is the tests.toml
-    ``tests = [...]`` list declared on the Target.
+    *tb_body* is the Python testbench.
     """
     (root / "design.core").write_text(_COCOTB_SIM_CORE, encoding="utf-8")
     (root / "rtl").mkdir(exist_ok=True)
     (root / "tb").mkdir(exist_ok=True)
     (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (root / "tb" / "test_dut.py").write_text(tb_body, encoding="utf-8")
-    pd = root / ".booley"
-    pd.mkdir(exist_ok=True)
-    if tests is not None:
-        names = ", ".join(f'"{t}"' for t in tests)
-        (pd / "tests.toml").write_text(f"[sim]\ntests = [{names}]\n", encoding="utf-8")
+    (root / ".booley").mkdir(exist_ok=True)
 
 
 class TestCoreAudit:
@@ -6778,181 +6768,6 @@ targets:
         assert not doctor._project_declares_verible_lint(project)
 
 
-class TestCocotbFactoryTests:
-    """B6: generated cocotb names cannot be grepped for as `def <name>(`.
-
-    ``TestFactory(...).generate_tests()`` and ``@cocotb.parametrize`` register
-    rendered names in the module namespace at import time, so the static check
-    is structurally blind to them. Not verifiable ⇒ report it as not
-    verifiable, not as a finding.
-    """
-
-    _FACTORY_TB = """\
-import cocotb
-from cocotb.regression import TestFactory
-
-
-async def run_test(dut, data_width=8):
-    pass
-
-
-factory = TestFactory(run_test)
-factory.add_option("data_width", [8, 16])
-factory.generate_tests()
-"""
-
-    _PARAMETRIZED_TB = """\
-import cocotb
-
-
-@cocotb.test()
-@cocotb.parametrize(("ifg", [12, 0]))
-async def run_test_tx(dut, ifg=12):
-    pass
-"""
-
-    @pytest.mark.parametrize(
-        ("body", "base"),
-        [
-            (_FACTORY_TB, "run_test"),
-            (_PARAMETRIZED_TB, "run_test_tx"),
-            (
-                _FACTORY_TB.replace("import TestFactory", "import TestFactory as Factory").replace(
-                    "TestFactory(run_test)", "Factory(run_test)"
-                ),
-                "run_test",
-            ),
-            (
-                _PARAMETRIZED_TB.replace("import cocotb", "import cocotb as c").replace(
-                    "@cocotb.", "@c."
-                ),
-                "run_test_tx",
-            ),
-        ],
-    )
-    def test_generating_base_name_is_deferred(self, tmp_path, body, base):
-        _write_cocotb_project(tmp_path, tb_body=body, tests=[base])
-        rec = _audit(tmp_path)
-        skips = [m for lvl, m in rec.events if lvl == "skip"]
-        assert any(base in m and "generating function" in m and "rendered IDs" in m for m in skips)
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    @pytest.mark.parametrize(
-        "names",
-        [
-            ["test_plain"],
-            ["test_plain", "run_test_tx"],
-            ["test_plain", "run_test_tx/ifg=12", "typo"],
-        ],
-    )
-    def test_generating_module_defers_every_registered_name(self, tmp_path, names):
-        body = self._PARAMETRIZED_TB + "\n@cocotb.test()\nasync def test_plain(dut): pass\n"
-        _write_cocotb_project(tmp_path, tb_body=body, tests=names)
-        rec = _audit(tmp_path)
-        skips = [
-            m for lvl, m in rec.events if lvl == "skip" and "cannot be verified statically" in m
-        ]
-        assert len(skips) == 1
-        assert f"{len(names)} tests.toml name(s)" in skips[0]
-        assert all(name in skips[0] for name in names)
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    @pytest.mark.parametrize("decorator", ["@cocotb.test()", "@cocotb.test", "@test()"])
-    def test_generation_words_in_comments_do_not_suppress_plain_checks(self, tmp_path, decorator):
-        body = f"import cocotb\nfrom cocotb import test\n# TestFactory generate_tests cocotb.parametrize\n{decorator}\nasync def test_reset(dut): pass\n"
-        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
-        rec = _audit(tmp_path)
-        assert any("tests.toml names all present" in m for lvl, m in rec.events if lvl == "pass")
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "async def test_reset(dut): pass\n",
-            "# def test_reset(dut):\n",
-            "class TB:\n    def test_reset(self): pass\n",
-        ],
-    )
-    def test_plain_function_search_does_not_earn_a_pass(self, tmp_path, body):
-        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
-        rec = _audit(tmp_path)
-        assert any(
-            "not found as" in m and "test_reset" in m for lvl, m in rec.events if lvl == "warn"
-        )
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "not python!",
-            "\x00",
-            "import cocotb\n@cocotb.test(name='other')\nasync def test_reset(dut): pass\n",
-        ],
-    )
-    def test_unverifiable_source_never_passes_names(self, tmp_path, body):
-        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
-        rec = _audit(tmp_path)
-        assert any("cannot be verified statically" in m for lvl, m in rec.events if lvl == "skip")
-        assert not any("tests.toml names all present" in m for _, m in rec.events)
-
-    def test_factory_generated_names_are_reported_unverifiable_not_missing(
-        self,
-        tmp_path: Path,
-    ):
-        _write_cocotb_project(
-            tmp_path,
-            tb_body=self._FACTORY_TB,
-            tests=["run_test_001", "run_test_002"],
-        )
-        rec = _audit(tmp_path)
-        assert not any("not found as functions" in m for lvl, m in rec.events)
-        assert any(
-            "cannot be verified statically" in m and "factory" in m
-            for lvl, m in rec.events
-            if lvl == "skip"
-        )
-        assert rec.fails() == []
-
-    def test_parametrized_names_are_reported_unverifiable_not_missing(
-        self,
-        tmp_path: Path,
-    ):
-        _write_cocotb_project(
-            tmp_path,
-            tb_body=self._PARAMETRIZED_TB,
-            tests=["run_test_tx/ifg=12", "run_test_tx/ifg=0"],
-        )
-        rec = _audit(tmp_path)
-        assert not any("not found as functions" in m for lvl, m in rec.events)
-        assert any(
-            "cannot be verified statically" in m and "parameterized" in m
-            for lvl, m in rec.events
-            if lvl == "skip"
-        )
-        assert rec.fails() == []
-
-    def test_hand_written_names_still_warn_when_absent(self, tmp_path: Path):
-        # The softening is gated on the factory call: a module WITHOUT one that
-        # names a test it does not define is still a real, greppable mismatch.
-        _write_cocotb_project(
-            tmp_path,
-            tb_body="import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
-            tests=["test_reset", "test_typo"],
-        )
-        rec = _audit(tmp_path)
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("not found as functions" in m and "test_typo" in m for m in warns)
-        assert not any("test_reset" in m for m in warns)
-
-    def test_all_names_present_still_passes(self, tmp_path: Path):
-        _write_cocotb_project(
-            tmp_path,
-            tb_body="import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
-            tests=["test_reset"],
-        )
-        rec = _audit(tmp_path)
-        assert any("tests.toml names all present" in m for lvl, m in rec.events if lvl == "pass")
-
-
 class TestDeepLintFindingsAreNotToolFailure:
     """B3: `doctor --deep`'s lint smoke asked "did lint exit 0?", but lint exits
     1 on a WARN verdict (findings). Any project with a single lint warning could
@@ -7005,7 +6820,7 @@ class TestDeepLintFindingsAreNotToolFailure:
 
 
 class TestReporterAcceptsFixHints:
-    """The original crash: `_check_cocotb_targets` hands `_warn` a fix hint, but
+    """The original crash: a check handed `_warn` a fix hint, but
     `_Reporter.warn_` took only a message -> TypeError, aborting `doctor` on any
     cocotb project whose tests.toml names are factory-generated."""
 
@@ -9292,38 +9107,6 @@ def test_deep_doctor_synthesis_legacy_and_malformed(tmp_path):
     )
     assert doctor._synth_deep_report_error("synth", "synth", True, tmp_path) == ""
     assert doctor._synth_deep_report_error("lint", "lint", False, tmp_path) == ""
-
-
-def test_cocotb_select_check_reads_the_qualified_section(tmp_path):
-    booley_dir = _write_project(tmp_path)
-    (booley_dir / "tests.toml").write_text(
-        '["unit#sim_fast"]\nselect = "+t={name}"\n', encoding="utf-8"
-    )
-    project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        booley_dir=booley_dir,
-        booley_toml={},
-        configs_toml={},
-        first_target="sim_fast",
-    )
-    ref = fusesoc_registry.TargetRef(
-        name="sim_fast",
-        vlnv="::unit:0",
-        core_file=tmp_path / "unit.core",
-        eda_tool="verilator",
-        flow="sim",
-        cocotb_module="tb",
-    )
-    failures: list[str] = []
-    doctor._check_cocotb_targets(
-        project,
-        {"sim_fast": ref},
-        lambda _message: None,
-        lambda *_args, **_kwargs: None,
-        lambda _message: None,
-        lambda message, _fix="": failures.append(message),
-    )
-    assert any("`select` plusarg template" in message for message in failures)
 
 
 # =============================================================

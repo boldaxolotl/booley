@@ -64,8 +64,10 @@ from booley.flows.progress_lifecycle import (
 )
 from booley.flows.request import FlowRequest
 from booley.flows.run_log import RUN_LOG_NAME, write_run_log
+from booley.flows.sim.campaign.test_run_files import TestRunFiles, campaign_test_run_files
 from booley.flows.sim.campaign.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
 from booley.flows.sim.campaign.test_run_report import (
+    campaign_test_run_files_by_row,
     campaign_test_run_rows,
     informative_test_run_lines,
 )
@@ -813,7 +815,11 @@ def _campaign_report_detail(
         "grade": outcome.aggregate_grade,
         "complete": outcome.complete,
         "observation_counts": _campaign_observation_counts(outcome.observations),
-        **_campaign_observation_preview(outcome.observations),
+        **_campaign_observation_preview(
+            outcome.observations,
+            campaign_test_run_files(outcome),
+            outcome.manifest_path.parents[1],
+        ),
         **_campaign_test_run_detail(outcome),
     }
     if report_invocation is None:
@@ -922,9 +928,17 @@ def _campaign_test_runs(outcome: CampaignOutcome) -> list[dict[str, object]]:
 def _campaign_test_run_lines(
     selector: str, outcome: CampaignOutcome, default_seed: int | None = DEFAULT_SEED
 ) -> list[str]:
-    """Report rows only where they say more than the Target's own line."""
+    """Report rows only where they say more than the Target's own line.
+
+    The rows name each Test Run's evidence files: where its log and waveform are.
+    """
+    if not isinstance(getattr(outcome, "manifest_path", None), Path):
+        return []
     return informative_test_run_lines(
-        selector, _campaign_test_runs(outcome), default_seed=default_seed
+        selector,
+        campaign_test_run_rows(outcome),
+        default_seed=default_seed,
+        files=campaign_test_run_files_by_row(outcome),
     )
 
 
@@ -1152,7 +1166,15 @@ def _fresh_campaign_recovery_detail(
 
 def _campaign_observation_preview(
     observations: Sequence[Mapping[str, object]],
+    files: Sequence[TestRunFiles],
+    target_directory: Path,
 ) -> dict[str, object]:
+    """The bounded observation rows, each with its Test Run's ``log`` and ``trace`` paths.
+
+    *files* is aligned with *observations*; the paths are relative to
+    *target_directory*, the directory of the Target's ``simulation.json``, and
+    ``None`` where the file does not exist.
+    """
     limit = 32
     preview = [
         {
@@ -1164,8 +1186,9 @@ def _campaign_observation_preview(
             "assertion_count": item["assertion_count"],
             "cycle_count": item.get("cycle_count"),
             "detail": _structured_json(item["detail"]),
+            **found.relative_to(target_directory),
         }
-        for item in observations[:limit]
+        for item, found in zip(observations[:limit], files[:limit], strict=True)
     ]
     total = len(observations)
     return {
@@ -4532,6 +4555,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         "module": probe.module,
                         "source": probe.file,
                         "frontend": probe.frontend,
+                        "dialect_flags": list(probe.flags),
                         "fallback": probe.fallback,
                         "shared_sources": list(probe.prereqs),
                     }

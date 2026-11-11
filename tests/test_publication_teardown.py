@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -108,7 +110,7 @@ def _run_child_pytest(tmp_path: Path, source: str) -> subprocess.CompletedProces
     environment["PYTHONPATH"] = os.pathsep.join((str(REPO_ROOT / "src"), str(REPO_ROOT)))
     for name in ("PYTEST_ADDOPTS", "PYTEST_XDIST_WORKER", "PYTEST_XDIST_TESTRUNUID"):
         environment.pop(name, None)
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -126,10 +128,7 @@ def _run_child_pytest(tmp_path: Path, source: str) -> subprocess.CompletedProces
         ],
         cwd=tmp_path,
         env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

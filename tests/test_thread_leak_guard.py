@@ -16,7 +16,7 @@ from textwrap import dedent
 
 import pytest
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _TESTS_DIR = Path(__file__).parent
 _SOURCE_DIR = _TESTS_DIR.parent / "src"
@@ -63,14 +63,11 @@ def _run_inner(
         *extra_args,
         "-n", str(workers),
     ]  # fmt: skip
-    return subprocess.run(
+    return run_bounded_child(
         [sys.executable, "-m", "pytest", "test_case.py", "-q", *arguments],
         cwd=tmp_path,
         env=environment,
-        capture_output=True,
-        text=True,
         timeout=SUBPROCESS_TIMEOUT_S,
-        check=False,
     )
 
 

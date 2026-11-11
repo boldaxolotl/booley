@@ -390,8 +390,33 @@ class TestFullInitRerun:
 
         assert init_cmd._print_summary(ctx) == 2
         output = capsys.readouterr().out
-        assert "could not reconcile stopped Sandbox" in output
+        assert "could not reconcile the Sandbox" in output
         assert "this project is ready" not in output
+
+    def test_runtime_inspection_failure_makes_init_incomplete(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A refusal while inspecting the Sandbox uses the same prefix as the apply path."""
+        _run_full_init(repo)
+        capsys.readouterr()
+        ctx = InitContext(project_root=repo)
+        with patch.object(
+            sr,
+            "plan_stopped_headless_runtime_reconciliation",
+            side_effect=sr.SessionError("run `booley session refresh` on the host"),
+        ):
+            init_cmd._step_interactive(
+                ctx,
+                nangate_pdk_root=repo.parent / "pdk",
+                agent_app="none",
+            )
+        ctx.record("advisories", "ok", "configured")
+
+        assert init_cmd._print_summary(ctx) == 2
+        output = capsys.readouterr().out
+        assert (
+            "could not reconcile the Sandbox: run `booley session refresh` on the host" in output
+        )
 
     def test_foreign_root_guidance_blocks_before_any_filesystem_mutation(self, repo: Path):
         booley_dir = repo / ".booley"

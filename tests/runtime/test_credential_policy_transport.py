@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
@@ -21,6 +22,7 @@ def transport_image():
     if not shutil.which("docker"):
         pytest.skip("Docker executable unavailable")
     try:
+        # Kept on subprocess.run: catches TimeoutExpired to skip.
         found = subprocess.run(
             ["docker", "image", "inspect", "booley-sandbox:latest"],
             capture_output=True,
@@ -33,21 +35,20 @@ def transport_image():
         pytest.skip("Docker daemon or local booley-sandbox:latest unavailable")
     image = f"booley-auth-transport-{uuid.uuid4().hex[:12]}:test"
     # The available image predates the canonical .booley alias; change only that link.
+    # Kept on subprocess.run: feeds the Dockerfile on stdin.
     built = subprocess.run(
         ["docker", "build", "--network", "none", "--pull=false", "-t", image, "-"],
         input="FROM booley-sandbox:latest\nUSER root\nRUN ln -sfn /work/.booley /booley-project\n",
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=SUBPROCESS_TIMEOUT_S,
         check=False,
     )
     assert built.returncode == 0, built.stderr
     try:
         yield image
     finally:
-        subprocess.run(
-            ["docker", "image", "rm", image], capture_output=True, timeout=30, check=False
-        )
+        run_bounded_child(["docker", "image", "rm", image])
 
 
 @pytest.fixture
@@ -124,9 +125,7 @@ def _probe_spec(spec, root):
 
 
 def _exec(name, *command):
-    result = subprocess.run(
-        ["docker", "exec", name, *command], capture_output=True, text=True, timeout=30, check=False
-    )
+    result = run_bounded_child(["docker", "exec", name, *command])
     assert result.returncode == 0, result.stderr
     return result.stdout
 
@@ -175,9 +174,7 @@ def test_actual_local_credential_transport(transport_host, monkeypatch, app, pol
             environment["CLAUDE_CODE_OAUTH_TOKEN"] = "SYNTHETIC_EDITOR_OAUTH"
     assert "SYNTHETIC" not in str(argv)
     try:
-        result = subprocess.run(
-            argv, env=environment, capture_output=True, text=True, timeout=30, check=False
-        )
+        result = run_bounded_child(argv, env=environment)
         assert result.returncode == 0, result.stderr
         observed = json.loads(
             _exec(
@@ -209,13 +206,8 @@ def test_actual_local_credential_transport(transport_host, monkeypatch, app, pol
             assert auth["authMethod"] == "api_key"
             assert auth["apiKeySource"] == "ANTHROPIC_API_KEY"
     finally:
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=30, check=False)
-        subprocess.run(
-            ["docker", "image", "rm", session_issuance.keeper_image(project)],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        run_bounded_child(["docker", "rm", "-f", name])
+        run_bounded_child(["docker", "image", "rm", session_issuance.keeper_image(project)])
 
 
 def test_editor_missing_api_key_cannot_fall_back(transport_host, monkeypatch):
@@ -226,9 +218,7 @@ def test_editor_missing_api_key_cannot_fall_back(transport_host, monkeypatch):
     argv = session_runtime.docker_run_argv(spec, project, name)
     environment = {**argv.environment, "ANTHROPIC_API_KEY": ""}
     try:
-        result = subprocess.run(
-            argv, env=environment, capture_output=True, text=True, timeout=30, check=False
-        )
+        result = run_bounded_child(argv, env=environment)
         assert result.returncode == 0, result.stderr
         _exec(
             name,
@@ -236,23 +226,12 @@ def test_editor_missing_api_key_cannot_fall_back(transport_host, monkeypatch):
             "-c",
             'from pathlib import Path;from booley.runtime.incontainer_setup import apply_stored_credential;apply_stored_credential("claude",Path("/home/agent"))',
         )
-        result = subprocess.run(
-            ["docker", "exec", name, "claude", "auth", "status", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        result = run_bounded_child(["docker", "exec", name, "claude", "auth", "status", "--json"])
         assert not json.loads(result.stdout)["loggedIn"]
         assert result.returncode != 0
     finally:
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=30, check=False)
-        subprocess.run(
-            ["docker", "image", "rm", session_issuance.keeper_image(project)],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        run_bounded_child(["docker", "rm", "-f", name])
+        run_bounded_child(["docker", "image", "rm", session_issuance.keeper_image(project)])
 
 
 @pytest.mark.parametrize("phase", ["inspect", "build"])

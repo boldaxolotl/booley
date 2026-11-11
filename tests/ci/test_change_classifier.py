@@ -26,7 +26,7 @@ from ci_changes import (
     required_jobs,
 )
 from picorv32_ci_inputs import RISCV_IMAGE_FILES
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
 _AGGREGATOR = _ROOT / ".github/scripts/ci_required.py"
@@ -42,38 +42,30 @@ def _git_identity_env() -> dict[str, str]:
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
+    result = run_bounded_child(
         ["git", "-C", str(repo), *args],
-        capture_output=True,
         check=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 
 
 def _commit(repo: Path, message: str) -> str:
     env = _git_identity_env()
-    subprocess.run(
-        ["git", "-C", str(repo), "add", "-A"], check=True, env=env, timeout=SUBPROCESS_TIMEOUT_S
-    )
-    subprocess.run(
+    staged = run_bounded_child(["git", "-C", str(repo), "add", "-A"], env=env)
+    assert staged.returncode == 0, staged.stderr
+    run_bounded_child(
         ["git", "-C", str(repo), "commit", "-m", message],
         check=True,
-        capture_output=True,
         env=env,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return _git(repo, "rev-parse", "HEAD")
 
 
 def _merge(repo: Path, branch: str) -> str:
-    subprocess.run(
+    run_bounded_child(
         ["git", "-C", str(repo), "merge", "--no-ff", "-m", "merge", branch],
         check=True,
-        capture_output=True,
         env=_git_identity_env(),
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return _git(repo, "rev-parse", "HEAD")
 
@@ -129,8 +121,9 @@ def _run_classifier(
         command.extend(("--head-ref", head_ref))
     if ref is not None:
         command.extend(("--ref", ref))
-    result = subprocess.run(
-        command, capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_S
+    result = run_bounded_child(
+        command,
+        check=False,
     )
     return result, output
 
@@ -1133,7 +1126,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
 
 
 def test_main_push_runs_only_the_cache_writing_tier(tmp_path: Path) -> None:
-    """The queue already validated main's tree; a main push re-runs only the image build."""
+    """The queue already validated main's tree; a main push runs only `build-dist` and `bwave-smoke`."""
     repo, base = _repository(tmp_path)
     _write(repo, "src/booley/data/docker/Dockerfile.base", "FROM scratch\n")
     head = _commit(repo, "stable base change")
@@ -1144,12 +1137,10 @@ def test_main_push_runs_only_the_cache_writing_tier(tmp_path: Path) -> None:
         "changes",
         "release-semantic",
         "build-dist",
-        "package-artifacts",
         "bwave-smoke",
     }
     assert {job for job, selected in _jobs(outputs).items() if selected} == {
         "build-dist",
-        "package-artifacts",
         "bwave-smoke",
     }
     # bwave-smoke still learns which images this push must build.

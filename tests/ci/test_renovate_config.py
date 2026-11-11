@@ -584,6 +584,14 @@ def test_shared_pins_share_one_group() -> None:
         project = _resolve(_Dep(name, "pyproject.toml", "pypi", "poetry", "project.dependencies"))
         assert base["groupName"] == project["groupName"] == "sandbox-base", name
 
+    # pyslang is an extra in pyproject.toml and a base-image pin: one PR moves both.
+    assert "pyslang" in _pins(_text(_BASE_REQUIREMENTS))
+    base = _resolve(_Dep("pyslang", _BASE_REQUIREMENTS, "pypi", "pip_requirements"))
+    extra = _resolve(
+        _Dep("pyslang", "pyproject.toml", "pypi", "poetry", "project.optional-dependencies")
+    )
+    assert base["groupName"] == extra["groupName"] == "sandbox-base"
+
     # The Ubuntu parent image is pinned in both Dockerfiles and held equal by a test.
     for dockerfile in (_DOCKERFILE_BASE, _RISCV):
         assert any(

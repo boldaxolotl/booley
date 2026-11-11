@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
 from tests.conftest import reset_git_command_config
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime.project_repositories import inspect_symbolic_branch
 
@@ -23,14 +23,7 @@ def _isolated_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _git(repository: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-    )
+    result = run_bounded_child(["git", *args], cwd=repository, check=True)
     return result.stdout.strip()
 
 
