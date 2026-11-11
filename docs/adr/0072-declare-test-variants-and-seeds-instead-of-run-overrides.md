@@ -4,6 +4,10 @@ status: accepted
 
 # Declare Test Variants and seeds instead of run-time overrides
 
+This ADR's campaign terminology is superseded by
+[ADR 0090](0090-rename-simulation-and-coverage-campaigns-to-records.md): read
+Simulation Campaign as Simulation Record. Its other decisions stand.
+
 Engineers need to run a Test with other plusargs or another seed (issue #1233).
 A pass only means something for the exact configuration that ran, so Booley
 offers no free-form run-time overrides. A Project declares each extra
