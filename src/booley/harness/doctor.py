@@ -64,11 +64,9 @@ from booley.config.gateway import (
 )
 from booley.config.jobs import parse_caps
 from booley.config.project_config import (
-    TESTS_SECTION_KEYS,
     lookup_target_section,
     normalize_tests_toml,
 )
-from booley.config.tests_toml_rules import TEST_NAME_RULES
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
@@ -81,7 +79,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
-from booley.flows import execution
+from booley.flows import execution, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
@@ -93,8 +91,7 @@ from booley.flows.sim.config import (
     resolve_run_cwd,
     resolve_trace_files,
 )
-from booley.flows.simulator_family import normalize_eda_tool
-from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
+from booley.flows.target_test_plan_inspection import TargetTestPlanInspectionRequest
 from booley.flows.test_runs import parse_test_selector
 from booley.fusesoc import (
     core_security,
@@ -167,11 +164,7 @@ from booley.targets.domain import (
     flow_can_drive,
 )
 from booley.targets.flow_names import config_section
-from booley.targets.selection import (
-    TargetSectionConflictError,
-    section_key_names,
-    target_section_key,
-)
+from booley.targets.selection import TargetSectionConflictError
 
 if TYPE_CHECKING:
     from booley.config.agent import AgentSettings, DeclaredAgent
@@ -1397,9 +1390,9 @@ def _run_flow_and_core_phase(
             reporter.warn_,
             reporter.skip_,
             reporter.fail_,
+            _diagnostics=reporter.diagnostics,
             _note=reporter.note_,
             _detail=info if verbose else None,
-            _diagnostics=reporter.diagnostics,
         )
 
 
@@ -5275,9 +5268,9 @@ def _run_core_audit(
     _skip: Check,
     _fail: Fail,
     *,
+    _diagnostics: Diagnostics,
     _note: Check | None = None,
     _detail: Check | None = None,
-    _diagnostics: Diagnostics,
 ) -> None:
     """Coordinate the structural, security, and metadata core audits."""
     audit = _CoreAuditContext(project, _pass, _warn, _skip, _fail, _note or _pass)
@@ -5293,7 +5286,11 @@ def _run_core_audit(
         _check_target_sources(audit, refs, inputs)
         _check_core_repository_hygiene(audit)
     _run_core_security_audit(audit, refs)
-    _audit_tests_toml(project, _pass, _skip, _fail)
+    _diagnostics(
+        target_test_plan_inspection.inspect_target_test_plans(
+            TargetTestPlanInspectionRequest(project.project_root, project.booley_dir)
+        )
+    )
     _audit_native_dependencies(project, _pass, _warn)
 
 
@@ -6413,8 +6410,8 @@ def _project_write_scope(root: Path) -> list[str]:
 def _load_tests_toml_normalized(project: ProjectAudit) -> dict[str, dict]:
     """The normalized tests.toml sections, or empty when absent/invalid.
 
-    Invalidity is _audit_tests_toml's finding, not this reader's — the cocotb
-    owner's request just degrades to the no-tests view.
+    Invalidity is reported by ``target_test_plan_inspection``, not this reader — the
+    cocotb owner's request just degrades to the no-tests view.
     """
     tests_path = project.booley_dir / "tests.toml"
     if not tests_path.exists():
@@ -6573,130 +6570,6 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
         _pass(f"no known-missing native build dependencies in {scanned} C/C++ source(s)")
         return
     _report_native_dependencies(project, needed, _pass, _warn)
-
-
-def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: Fail) -> None:
-    """Validate the project's ``tests.toml``: section keys, Test names, selectors."""
-    tests_path = project.booley_dir / "tests.toml"
-    if not tests_path.exists():
-        _skip("tests.toml not present (each sim Target runs its testbench's default test)")
-        return
-    try:
-        with tests_path.open("rb") as f:
-            raw = tomllib.load(f)
-        sections = normalize_tests_toml(raw)
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        _fail(
-            f"tests.toml invalid: {exc}",
-            "fix the tests.toml entry named above (a Target section holds only "
-            f"{', '.join(TESTS_SECTION_KEYS)}; {TEST_NAME_RULES})",
-        )
-        return
-    _pass(
-        "tests.toml valid (section keys, Test names, Test Variants, select and seed "
-        "templates well-formed)"
-    )
-    _audit_tests_toml_targets(project, sections, _fail)
-    _audit_test_run_plans(project, sections, _pass, _fail)
-
-
-def _audit_test_run_plans(
-    project: ProjectAudit, sections: dict, _pass: Check, _fail: Fail
-) -> None:
-    """Check each sim Target can apply what tests.toml declares for it (ADR 0072).
-
-    These are the checks the loader cannot make without the resolved ``.core``
-    Target: a Test Variant that overrides a Target plusarg, arguments or a
-    ``seed`` template on a Cocotb Target, ``default_seed`` on a Target that
-    cannot be seeded. A Target that passes gets one line naming how its Test
-    Runs are seeded; "unseeded" is a fact about the Target, not a problem.
-    """
-    try:
-        catalog = TargetCatalog.build(project.project_root)
-        handles = catalog.list(for_flow="sim")
-    except FuseSocError:
-        return  # enumeration failure is already reported by the structural audit
-    for handle in handles:
-        try:
-            inspection = catalog.inspect(handle)
-        except FuseSocError:
-            continue  # the resolve check reports a Target that does not inspect
-        adapter = (
-            "cocotb"
-            if inspection.flow_options.get("cocotb_module")
-            else _eda_family(inspection.eda_tool)
-        )
-        plusargs = [
-            str(name)
-            for name, spec in inspection.parameters.items()
-            if isinstance(spec, Mapping) and spec.get("paramtype") == "plusarg"
-        ]
-        try:
-            section = lookup_target_section(sections, handle.identity)
-        except TargetSectionConflictError:
-            continue  # the section-key audit reports the duplicate keys once
-        try:
-            plan = build_target_test_plan(
-                handle.selector,
-                section,
-                adapter=adapter,
-                target_plusargs=plusargs,
-            )
-        except ValueError as exc:
-            _fail(
-                f"tests.toml cannot apply to Target '{handle.selector}': {exc}",
-                "fix the tests.toml entry named above",
-            )
-            continue
-        _pass(_test_run_plan_line(handle.selector, plan))
-
-
-def _eda_family(eda_tool: str | None) -> str:
-    """The simulator family of a Target, or its raw tool name when unknown."""
-    try:
-        return normalize_eda_tool(eda_tool)
-    except ValueError:
-        return str(eda_tool or "")
-
-
-def _test_run_plan_line(selector: str, plan: TargetTestPlan) -> str:
-    """One PASS line: how *selector*'s Test Runs are seeded."""
-    if not plan.mechanism.seeded:
-        return f"Target '{selector}' Test Runs are unseeded ({plan.unseeded_cause()})"
-    return (
-        f"Target '{selector}' Test Runs are seeded through {plan.mechanism.describe()} "
-        f"(Default Seed {plan.default_seed})"
-    )
-
-
-def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail) -> None:
-    """Check every tests.toml section key names one Target, and no Target has two.
-
-    A key naming no Target is dead config that looks live: the lookup misses,
-    no selector reaches the binary, and the testbench runs its *default* test
-    to a green PASS. Two keys naming one Target make the choice of section
-    ambiguous. Both use the lookup rule the Simulation Flow uses.
-    """
-    try:
-        handles = TargetCatalog.build(project.project_root).list()
-    except FuseSocError:
-        return  # enumeration failure is already reported by the structural audit
-    if not handles:
-        return
-    for key in sections:
-        if not any(
-            section_key_names(key, handle.identity) or key == handle.name for handle in handles
-        ):
-            _fail(
-                f"tests.toml section [{key}] names no declared .core Target",
-                "fix the section key (a dead key runs the testbench's default "
-                "test and reports a false PASS)",
-            )
-    for handle in handles:
-        try:
-            target_section_key(sections, handle.identity)
-        except TargetSectionConflictError as exc:
-            _fail(str(exc), "keep one tests.toml section per Target")
 
 
 def _report_core_resolve(
@@ -8011,7 +7884,7 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
             with tests_path.open("rb") as f:
                 sections = normalize_tests_toml(tomllib.load(f))
         except (OSError, ValueError, tomllib.TOMLDecodeError):
-            sections = {}  # _audit_tests_toml already reported the breakage
+            sections = {}  # target_test_plan_inspection already reported the breakage
         try:
             handle = TargetCatalog.build(project.project_root).select(target, for_flow="sim")
             section = lookup_target_section(sections, handle.identity)

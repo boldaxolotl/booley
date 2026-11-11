@@ -777,13 +777,16 @@ class TestFlowEnablement:
 def _patch_edam_build(captured: dict):
     """Patch Vivado materialization for unit tests without a live tool."""
 
-    def fake_build_fpga_edam(**kwargs):
+    def fake_build_fpga_edam(recipe, **kwargs):
+        captured["recipe"] = recipe
         captured.update(kwargs)
         return {"name": kwargs.get("name", "fpga")}
 
     def fake_configure(_flow, edam, work_root):
         Path(work_root).mkdir(parents=True, exist_ok=True)
-        params = " ".join(f"{name}={value}" for name, value in captured["vlogparams"].items())
+        params = " ".join(
+            f"{name}={value}" for name, value in captured["recipe"].vlogparams.items()
+        )
         (Path(work_root) / f"{edam['name']}.tcl").write_text(
             f"set_property generic {{{params}}} [get_filesets sources_1]\n",
             encoding="utf-8",
@@ -825,27 +828,29 @@ class TestFpgaResolution:
         guard.assert_called_once()
 
         assert run_cmd == ["make", "-C", "x"]
-        assert captured["toplevel"] == "dut_top"  # from resolved.toplevel
+        recipe = captured["recipe"]
+        assert captured["name"] == "fpga_default"
+        assert recipe.top == "dut_top"  # from resolved.toplevel
         # These are absolute workspace Paths (Edalize relativizes them into
         # the .vc later); compare in POSIX form so a Windows host's backslashes
         # don't fail the suffix checks.
-        sv = [p.as_posix() for p in captured["sv_files"]]
-        v = [p.as_posix() for p in captured["v_files"]]
+        sv = [p.as_posix() for p in recipe.sv_files]
+        v = [p.as_posix() for p in recipe.v_files]
         assert any(s.endswith("rtl/top.sv") for s in sv)
         assert any(s.endswith("rtl/legacy.v") for s in v)
         # The include header is surfaced as a dir, never a compiled source.
         assert not any("defs.svh" in s for s in sv + v)
-        inc = [p.as_posix() for p in captured["include_dirs"]]
+        inc = [p.as_posix() for p in recipe.include_dirs]
         assert any(d.endswith("rtl/include") for d in inc)
         # Sources are absolute (under work_dir = the EDAM workspace_root).
         assert all(Path(s).is_absolute() for s in sv + v)
-        assert "CFG_DEFAULT" in captured["defines"]  # vlogdefine, default true
-        assert captured["vlogparams"] == {"WIDTH": ParameterValue("int", "8")}
+        assert "CFG_DEFAULT" in recipe.defines  # vlogdefine, default true
+        assert recipe.vlogparams == {"WIDTH": ParameterValue("int", "8")}
         # Part and XDC both come from the Target and reach
-        # build_fpga_edam as a one-element list.
-        assert captured["part"] == "xc7a200tfbg484-1"
+        # build_fpga_edam through the resolved recipe.
+        assert recipe.part == "xc7a200tfbg484-1"
         # Compare in POSIX form so Windows backslashes don't fail the suffix test.
-        xdc = [Path(p).as_posix() for p in captured["xdc_files"]]
+        xdc = [Path(p).as_posix() for p in recipe.xdc_files]
         assert any(x.endswith("constraints/timing.xdc") for x in xdc)
 
     def test_resolution_forwards_target_and_isolated_build_root(
@@ -1129,22 +1134,23 @@ class TestTargetRecipeBoundary:
         ):
             prepared = flow._prepare_fpga_command("fpga")
 
-        assert captured["toplevel"] == "dut_top"
+        recipe = captured["recipe"]
+        assert recipe.top == "dut_top"
         # Absolute workspace Paths (Edalize relativizes them downstream);
         # compare in POSIX form so a Windows host's backslashes don't fail.
-        sv = [p.as_posix() for p in captured["sv_files"]]
-        v = [p.as_posix() for p in captured["v_files"]]
+        sv = [p.as_posix() for p in recipe.sv_files]
+        v = [p.as_posix() for p in recipe.v_files]
         assert any(s.endswith("rtl/dut.sv") for s in sv)
         assert any(s.endswith("rtl/pkg.sv") for s in sv)
         assert any(s.endswith("rtl/legacy.v") for s in v)
         # Include header surfaces as a dir, TB file is excluded from sources.
         assert not any("defs.svh" in s for s in sv + v)
         assert not any("tb_dut.sv" in s for s in sv + v)
-        inc = [p.as_posix() for p in captured["include_dirs"]]
+        inc = [p.as_posix() for p in recipe.include_dirs]
         assert any(d.endswith("rtl/include") for d in inc)
         # The vlogdefine param reached the EDAM defines.
-        assert "SYNTH" in captured["defines"]
-        assert captured["vlogparams"] == {"WIDTH": ParameterValue("int", "8")}
+        assert "SYNTH" in recipe.defines
+        assert recipe.vlogparams == {"WIDTH": ParameterValue("int", "8")}
         assert prepared.recipe_snapshot["ppa_profile"]["name"] == "compact"
         # Resolved build dir lives under the worktree and is relocatable — no
         # absolute workspace path (in either separator form) leaked into the EDAM.
@@ -1739,23 +1745,33 @@ def test_fake_vivado_generated_command_startup(
     monkeypatch.setenv("FAKE_DIAGNOSTIC", diagnostic)
     from booley.flows import edam as edam_layer
     from booley.flows.fpga.backends.vivado import edam as fpga_edam
+    from booley.flows.fpga.profiles import VIVADO_PROFILES
+    from booley.flows.fpga.recipe import ResolvedFpgaRecipe
 
-    edam = fpga_edam.build_fpga_edam(
-        name="probe",
-        toplevel="dut_top",
+    recipe = ResolvedFpgaRecipe(
+        target="probe",
+        resolved=None,
         part="xc7a35tcpg236-1",
-        sv_files=[tmp_path / "rtl/top.sv"],
-        v_files=[],
-        include_dirs=[],
-        xdc_files=[tmp_path / "constraints/timing.xdc"],
-        defines=[],
+        top="dut_top",
+        xdc_files=(tmp_path / "constraints/timing.xdc",),
+        sv_files=(tmp_path / "rtl/top.sv",),
+        v_files=(),
+        include_dirs=(),
+        defines=(),
         vlogparams={},
+        out_of_context=False,
+        ppa_profile=VIVADO_PROFILES[profile],
+        recipe_snapshot={},
+        recipe_fingerprint="",
+        source_evidence=run_evidence.FlowSourceEvidence("rev", "sha"),
+    )
+    edam = fpga_edam.build_fpga_edam(
+        recipe,
+        name="fpga_probe",
         workspace_root=tmp_path,
         work_root=root,
     )
     edam_layer.configure("vivado", edam, root)
-    from booley.flows.fpga.profiles import VIVADO_PROFILES
-
     prepared = _PreparedFpgaCommand(
         fpga_edam.fpga_run_command(root, tmp_path),
         root,

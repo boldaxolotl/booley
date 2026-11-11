@@ -17,6 +17,7 @@ sys.path.insert(0, str(_ROOT / ".github/scripts"))
 from ci_changes import (
     ALL_JOBS,
     ALWAYS_JOBS,
+    CATEGORIES,
     DEFAULT_WINDOWS_SHARD_COUNT,
     MAIN_REF,
     STRESS_JOB,
@@ -264,6 +265,7 @@ def test_windows_shard_benchmark_matches_ordinary_python_change(tmp_path: Path) 
         "test-verify",
         "coverage-shards",
         "coverage",
+        "build-dist",
         "package-artifacts",
     }
 
@@ -469,6 +471,7 @@ def test_pure_docker_change_requires_only_image_build_path(tmp_path: Path) -> No
     assert _required(outputs) == {
         "changes",
         "release-semantic",
+        "build-dist",
         "package-artifacts",
         "bwave-smoke",
         "riscv-image",
@@ -492,6 +495,7 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
         "test-verify",
         "coverage-shards",
         "coverage",
+        "build-dist",
         "package-artifacts",
         "bwave-smoke",
         "riscv-image",
@@ -579,27 +583,27 @@ def test_package_inventory_inputs_select_their_image_gates(
 
 _BASE_JOBS = {"changes", "release-semantic", "docs-check"}
 _SITE_JOBS = _BASE_JOBS | {"site-build", "lint"}
+# package-artifacts validates the distributions build-dist builds.
+_PACKAGE_JOBS = {"build-dist", "package-artifacts"}
 
 
 @pytest.mark.parametrize(
     ("paths", "expected"),
     [
-        pytest.param(["README.md"], _BASE_JOBS | {"package-artifacts"}, id="readme"),
+        pytest.param(["README.md"], _BASE_JOBS | _PACKAGE_JOBS, id="readme"),
         pytest.param(["website/docs/index.md"], _SITE_JOBS, id="website-page"),
         pytest.param(["website/mkdocs.yml"], _SITE_JOBS, id="website-config"),
         # Python under website/ must still reach Ruff through ``lint``.
         pytest.param(["website/hooks/user_docs.py"], _SITE_JOBS, id="website-python"),
         pytest.param(["docs/user/USAGE.md"], _SITE_JOBS, id="user-docs"),
         # The install smoke runs the Install guide's commands.
-        pytest.param(
-            ["docs/user/INSTALL.md"], _SITE_JOBS | {"package-artifacts"}, id="install-guide"
-        ),
+        pytest.param(["docs/user/INSTALL.md"], _SITE_JOBS | _PACKAGE_JOBS, id="install-guide"),
         pytest.param(["docs/architecture.md"], _BASE_JOBS, id="internal-docs"),
         pytest.param(["AGENTS.md"], _BASE_JOBS, id="root-markdown"),
         pytest.param(["qa/AREAS.md"], _BASE_JOBS, id="qa-markdown"),
         pytest.param(
             ["README.md", "website/docs/index.md"],
-            _SITE_JOBS | {"package-artifacts"},
+            _SITE_JOBS | _PACKAGE_JOBS,
             id="readme-and-website",
         ),
     ],
@@ -619,7 +623,7 @@ def test_readme_and_website_pull_request_outputs_the_narrow_set(tmp_path: Path) 
 
     outputs = _classify(repo, base, head)
 
-    expected = _SITE_JOBS | {"package-artifacts"}
+    expected = _SITE_JOBS | _PACKAGE_JOBS
     assert outputs["full"] == "false"
     assert outputs["packaging"] == "false"
     assert outputs["python_tests"] == "false"
@@ -672,7 +676,7 @@ _NOT_SELECTED_BY_SOURCE = {
         ),
         pytest.param(
             ["tests/unit/test_example.py"],
-            _NOT_SELECTED_BY_SOURCE | {"docs-check", "site-build", "package-artifacts"},
+            _NOT_SELECTED_BY_SOURCE | {"docs-check", "site-build"} | _PACKAGE_JOBS,
             id="tests",
         ),
         pytest.param(["README.md", "pyproject.toml"], set(), id="readme-and-packaging"),
@@ -1113,6 +1117,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "coverage",
         "rust-test",
         "bwave-integration",
+        "build-dist",
         "package-artifacts",
         "sidecar-smoke",
         "scanner-smoke",
@@ -1138,10 +1143,12 @@ def test_main_push_runs_only_the_cache_writing_tier(tmp_path: Path) -> None:
     assert _required(outputs) == {
         "changes",
         "release-semantic",
+        "build-dist",
         "package-artifacts",
         "bwave-smoke",
     }
     assert {job for job, selected in _jobs(outputs).items() if selected} == {
+        "build-dist",
         "package-artifacts",
         "bwave-smoke",
     }
@@ -1512,3 +1519,24 @@ def test_linux_shard_overrides_require_workflow_dispatch(tmp_path: Path) -> None
 
         assert result.returncode == 2
         assert "Linux shard count and scheduler overrides require" in result.stderr
+
+
+# The jobs that download the `pr-dist` artifact in test.yml.
+_DIST_CONSUMERS = {"package-artifacts", "bwave-smoke", "riscv-image"}
+
+
+@pytest.mark.parametrize("stress", [False, True], ids=["plain", "stress"])
+@pytest.mark.parametrize("category", CATEGORIES)
+def test_build_dist_runs_exactly_when_a_dist_consumer_runs(category: str, stress: bool) -> None:
+    """A consumer without build-dist would be skipped; build-dist alone wastes a runner."""
+    jobs = required_jobs({category}, stress=stress)
+    assert ("build-dist" in jobs) == bool(jobs & _DIST_CONSUMERS), sorted(jobs)
+
+
+def test_build_dist_selection_covers_both_outcomes() -> None:
+    """Keeps the per-category test above from passing vacuously."""
+    assert "build-dist" in required_jobs({"standard_image"})
+    assert "build-dist" in required_jobs({"riscv_image"})
+    assert "build-dist" in required_jobs(set(), main_push=True)
+    assert "build-dist" not in required_jobs({"python_tests"})
+    assert "build-dist" not in required_jobs({"renovate"})

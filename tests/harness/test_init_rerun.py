@@ -1533,8 +1533,8 @@ def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
-        _note=reporter.note_,
         _diagnostics=reporter.diagnostics,
+        _note=reporter.note_,
     )
     assert not [
         (f.check_id, f.subject, f.message)

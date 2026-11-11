@@ -462,11 +462,20 @@ unique log directory under the Simulation work root for a bare CLI run), while
 the shared build cache remains mutable and reusable.
 
 The standalone sweep covers the selected Targets' RTL filesets, excludes TB-only
-sources, and includes package/interface files as shared prerequisites. Configure
-its probe with `[flows.sim].standalone_frontend` (`auto`, `iverilog`, or
-`verilator`). A genuine module rejection is exit 1; an unavailable or
-untrustworthy probe is exit 2 and leaves prior standalone Criterion state
-unchanged.
+sources, and includes package/interface files as shared prerequisites. Each
+module is probed with the simulator of every selected Target whose RTL fileset
+contains it ([ADR 0089](../adr/0089-probe-standalone-modules-with-each-targets-simulator.md)):
+`inspection.eda_tool` maps `icarus`/`iverilog` to `iverilog` and `verilator` to
+`verilator`. A probe compiles only the shared package/interface files of the
+Targets that contribute its frontend. A Target with any other simulator needs a
+fallback probe (Verilator when on PATH, else Icarus); the sim Flow can select
+only Icarus and Verilator Targets today, so this path is unreachable until a
+commercial simulator Target exists. A fallback probe whose compiler already is
+a covering Target's own runs once and is graded normally. A genuine module
+rejection is exit 1; only a fallback probe's parse error, when the per-Target
+builds passed, is "ungraded" (exit 2, prior standalone Criterion state
+unchanged). The retired `[flows.<flow>].standalone_frontend` key is a hard
+migration error for every Flow.
 
 ## `lint`
 
@@ -585,15 +594,17 @@ The `.core` Target owns the persistent recipe and timing inputs: frontend,
 profile, flattening, synthesis mode, backend overrides, source files, SDC, and
 toplevel. `[flows.synth]` owns execution and verdict policy such as the default
 Target, timeout, and intentional-latch allowance.
-[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth) owns the exact keys, defaults,
-and examples.
+[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth) owns the
+`[flows.synth]` policy and option semantics; the Target's `.core` shape and
+example live in the
+[Synthesis Target recipe](../user/TARGETS.md#synthesis-target).
 
 `ppa_profile` and `synth_mode` are the main synthesis controls. The built-in
 backend translates the profile to Yosys and OpenROAD settings; backend-specific
 knobs live under `advanced_settings_yosys` and `advanced_settings_openroad`.
 Per-call profile and expert overrides are resolved before command generation;
 their precedence and profile contents are part of the
-[configuration reference](../user/FLOW-SYNTH.md#configuration-flowssynth).
+[optimization profiles reference](../user/FLOW-SYNTH.md#optimization-profiles).
 
 Timing intent lives in the Target's SDC fileset (below), not in config scalars.
 
@@ -602,8 +613,8 @@ Timing intent lives in the Target's SDC fileset (below), not in config scalars.
 Timing constraints are **design intent** (clock period, I/O delays,
 false/multicycle paths), so they live on the FuseSoC Target as a `file_type:
 SDC` fileset, source-controlled and per-target like the RTL, symmetric with how
-FPGA XDC is a Target fileset. The configuration shape and example live in
-[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth).
+FPGA XDC is a Target fileset. The `.core` shape and example live in the
+[Synthesis Target recipe](../user/TARGETS.md#synthesis-target).
 
 A physical Target with **no** SDC fileset is a **hard error**, not a silent
 default: the run fails before EDA execution, naming the Target and the fix,
@@ -778,7 +789,8 @@ The selected Target owns FPGA build intent: device part, portable PPA profile,
 out-of-context choice,
 sources, XDC, toplevel, and compile-time defines. `[flows.fpga]` owns execution
 policy; every invocation still names its Target. [FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga)
-owns the exact keys, defaults, and examples.
+owns the `[flows.fpga]` policy and option semantics; the Target's `.core` shape
+and example live in the [FPGA Target recipe](../user/TARGETS.md#fpga-target).
 
 The Target's `fpga` name axis is the drivability discriminator. Its declared
 `flow_options.tool` remains a FuseSoC resolution input—most notably for
@@ -831,8 +843,8 @@ fileset.
 
 The source is a `file_type: xdc` fileset in the `.core`:
 source-controlled and per-target. Multiple XDC files are supported; the
-configuration shape and example live in
-[FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga).
+`.core` shape and example live in the
+[FPGA Target recipe](../user/TARGETS.md#fpga-target).
 
 The `file_type: xdc` fileset is the **sole** source: a Target with no such
 fileset is a hard error naming the Target and the fix. XDC is mandatory, and

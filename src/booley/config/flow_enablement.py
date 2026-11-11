@@ -41,8 +41,8 @@ def retired_config_error(raw: dict[str, Any]) -> str | None:
             if retired in flows:
                 return (
                     f"booley.toml [flows.{retired}] is retired; use "
-                    "`booley flow sim --mode elab-only` and move "
-                    "standalone_frontend to [flows.sim].standalone_frontend"
+                    "`booley flow sim --mode elab-only` and delete "
+                    "standalone_frontend"
                 )
         for key in ("venue", "backend", "host_setup_commands"):
             if key in flows:
@@ -50,6 +50,12 @@ def retired_config_error(raw: dict[str, Any]) -> str | None:
         for name, section in flows.items():
             if not isinstance(section, dict):
                 continue
+            if "standalone_frontend" in section:
+                return (
+                    f"booley.toml [flows.{name}].standalone_frontend is retired; "
+                    "delete the key — the standalone module probe now follows "
+                    "each Target's simulator"
+                )
             for key in ("venue", "backend", "host_setup_commands"):
                 if key in section:
                     return _retired_flow_key_error(f"flows.{name}", key, section[key])

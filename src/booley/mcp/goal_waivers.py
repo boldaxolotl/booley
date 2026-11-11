@@ -7,8 +7,10 @@ Journal enters this immediate, recoverable live-promotion lifecycle.
 
 from __future__ import annotations
 
+import shutil
 import tempfile
-from collections.abc import Generator, Mapping
+import tomllib
+from collections.abc import Collection, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from fractions import Fraction
@@ -16,6 +18,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from booley.config.coverage_waiver_inputs import CoverageWaiverConfig
+from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.flows.sim import waiver_candidates as candidates
@@ -23,6 +26,8 @@ from booley.flows.sim.coverage_campaign import DurableTargetIdentity, encode_cov
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_policy import (
     CoverageThreshold,
+    evaluation_json,
+    strict_reevaluation,
 )
 from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_provisional import (
@@ -32,11 +37,6 @@ from booley.flows.sim.coverage_provisional import (
 from booley.flows.sim.coverage_reference import (
     ResolvedCoverageCampaign,
     resolve_persisted_coverage_campaign_reference,
-)
-from booley.flows.sim.coverage_waiver_application import (
-    evaluation_json,
-    load_promoted_waiver_set,
-    strict_reevaluation,
 )
 from booley.flows.sim.coverage_waiver_promotion import (
     ApprovalStamps,
@@ -64,8 +64,66 @@ from booley.goals.waiver_policy import (
     policy_location,
     waiver_policy_fingerprint,
 )
-from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.booley_dir import crossed_booley_dir_entry, resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
+
+
+class WaiverPlanError(ValueError):
+    """An approval directory cannot be safely copied for prediction."""
+
+
+def _reject_symlinks(anchor_root: Path, approval_dir: Path) -> None:
+    """Never traverse writable links while predicting or promoting approvals."""
+    entry = crossed_booley_dir_entry(approval_dir)  # the anchor may be a linked .booley
+    for path in (approval_dir, *approval_dir.parents):
+        if path.is_symlink() and not is_booley_dir_entry(path, entry):
+            raise WaiverPlanError(f"approval directory contains a symlink: {path}")
+        if path == anchor_root:
+            break
+    if approval_dir.is_dir():
+        for path in approval_dir.rglob("*"):
+            if path.is_symlink():
+                raise WaiverPlanError(f"approval directory contains a symlink: {path}")
+
+
+def _named_sources(approval_dir: Path) -> set[str]:
+    """Every RTL source an approval document in the directory names."""
+    sources: set[str] = set()
+    for document in approval_dir.rglob("*.toml"):
+        try:
+            source = tomllib.loads(document.read_text(encoding="utf-8")).get("source")
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            continue  # the real loader reports it; the overlay only mirrors inputs
+        if isinstance(source, str):
+            sources.add(source)
+    return sources
+
+
+def load_promoted_waiver_set(
+    config: CoverageWaiverConfig,
+    roots: CoverageRepositoryRoots,
+    overlay: Path,
+    known_targets: Collection[DurableTargetIdentity],
+    after_bytes: Mapping[Path, bytes],
+) -> ApprovedWaiverSet:
+    """Load the captured approval images with the real loader, without publishing."""
+    anchor_root = Path(getattr(roots, config.anchor))
+    source_dir = anchor_root / config.directory
+    _reject_symlinks(anchor_root, source_dir)
+    if source_dir.is_dir():
+        shutil.copytree(source_dir, overlay / config.directory, symlinks=False)
+    for relative, content in after_bytes.items():
+        destination = overlay / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+    shadow = replace(roots, **{config.anchor: overlay})
+    if config.anchor == "rtl_repository":
+        for source in _named_sources(overlay / config.directory):
+            original = roots.rtl_repository / source
+            if original.is_file() and not original.is_symlink():
+                (overlay / source).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(original, overlay / source)
+    return load_approved_waiver_set(config, shadow, known_targets)
 
 
 @contextmanager

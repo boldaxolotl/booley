@@ -98,8 +98,10 @@ class _Rec:
         _require_doctor_warning(m)
         self.events.append(("warn", m))
 
-    def n(self, m: str) -> None:
+    def n(self, m: str, fix: str = "") -> None:
         self.events.append(("note", m))
+        if fix:
+            self.fix_hints.append(fix)
 
     def s(self, m: str) -> None:
         self.events.append(("skip", m))
@@ -109,8 +111,8 @@ class _Rec:
         if fix:
             self.fix_hints.append(fix)
 
-    def diagnostics(self, report: DiagnosticReport) -> None:
-        """Record an owner's report through the same sinks, as ``_Reporter.diagnostics`` renders it."""
+    def d(self, report) -> None:
+        """Record an owner's ``DiagnosticReport`` as the reporter's diagnostics path does."""
         _record_report(
             report, passed=self.p, warned=self.w, skipped=self.s, failed=self.f, noted=self.n
         )
