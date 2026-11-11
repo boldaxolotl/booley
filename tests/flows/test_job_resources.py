@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
-import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,6 +25,7 @@ from booley.runtime import resource_history
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 from booley.runtime.timefmt import rfc3339_from_datetime, utc_now_rfc3339
 from tests.flows.test_flow_base import EchoFlow, _env_with_state
+from tests.subprocess_budget import run_bounded_child
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 
@@ -404,15 +404,13 @@ def test_key_expires_ninety_days_after_its_newest_record(tmp_path):
 
 
 def test_history_is_ignored_by_git(tmp_path):
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     (booley_dir / ".gitignore").write_text(PROJECT_GITIGNORE)
     resource_history.append_records(booley_dir, [_record("x")])
     path = resource_history.history_path(booley_dir)
-    subprocess.run(
-        ["git", "-C", str(tmp_path), "check-ignore", "-q", str(path)], check=True, timeout=30
-    )
+    run_bounded_child(["git", "-C", str(tmp_path), "check-ignore", "-q", str(path)], check=True)
 
 
 def test_report_shows_spread_ratio_and_solo_calibration(tmp_path, capsys):

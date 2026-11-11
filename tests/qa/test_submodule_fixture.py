@@ -1,34 +1,27 @@
 """Real Git controls for the public companion construction recipe."""
 
 import json
-import subprocess
 import sys
 from pathlib import Path
+
+from tests.subprocess_budget import run_bounded_child
 
 BUILDER = Path(__file__).resolve().parents[2] / "qa/missions/taxi/fixtures/build_submodules.py"
 
 
 def test_companion_freezes_two_distinct_recursive_histories(tmp_path):
     root = tmp_path / "fixture"
-    result = subprocess.run(
-        [sys.executable, str(BUILDER), str(root)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    result = run_bounded_child([sys.executable, str(BUILDER), str(root)])
     assert result.returncode == 0, result.stderr
     manifest = json.loads((root / "manifest.json").read_text())
     assert manifest["outer"]["A"] != manifest["outer"]["B"]
     assert manifest["data"]["A"] != manifest["data"]["B"]
     assert manifest["leaf"]["A"] != manifest["leaf"]["B"]
     data = root / "companion/deps/data"
-    baseline = subprocess.run(
+    baseline = run_bounded_child(
         ["git", "-C", str(data), "show", manifest["data"]["A"] + ":rtl/data.sv"],
-        check=True,
-        capture_output=True,
-        text=True,
         timeout=10,
+        check=True,
     )
     assert "16'h1357" in baseline.stdout
     assert "16'h2468" in (data / "rtl/data.sv").read_text()
