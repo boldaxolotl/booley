@@ -88,6 +88,48 @@ and term id, never the term); it never skips a check silently.
   and PR title into it. Everything else, including every commit of a
   same-repository PR, stays enforced. Without `--repository-owner`, nothing is
   exempt.
+- **Pull requests.** CI classifies the PR from GitHub's trusted event payload,
+  never from PR content. It is *outside work* when its head repository ID
+  differs from its base repository ID and its `author_association` is not
+  `OWNER`, `MEMBER`, or `COLLABORATOR`; a missing or unreadable head repository
+  (a deleted fork) or association counts as maintainer work. For outside work,
+  commit, identity, and PR title, body, and head ref findings are advisory
+  (`WARNING`, not blocking), except commits whose author is allowlisted, which
+  stay enforced. An incomplete scan, including an invalid proposed encrypted
+  vocabulary, still fails. Advisory findings never displace enforced ones under
+  the finding cap. Same-repository PRs and maintainer fork PRs keep full
+  enforcement.
+- **Mergify candidates.** A candidate is a same-repository PR opened by the
+  Mergify bot (user ID `37929162`, type `Bot`) from a `mergify/merge-queue/`
+  branch. The scanner walks its first-parent chain down to the PR base. For each
+  first-parent commit whose whole message is `Merge of #N` it reads PR N through
+  the workflow token. When PR N is outside work and its head SHA equals that
+  merge's second parent, the commits reachable from the second parent and not
+  the first are advisory (logged only), except allowlisted-author commits. A
+  failed lookup, a head mismatch, a PR that is not outside work, or any other
+  first-parent commit (for example a push onto the candidate branch) leaves its
+  commits enforced; the scan prints a `NOTE` naming why. The `Merge of #N`
+  commits themselves stay enforced. The candidate's own title and body are
+  Mergify-generated from queued PRs whose own status already checked them, so
+  its metadata findings are advisory. This depends on Mergify's `Merge of #N`
+  message and bot user ID; a format change fails closed (everything enforced).
+- **Advisory comment and label.** Outside-PR advisories on confidential terms
+  (not identity-allowlist findings, which every outside contributor has and
+  which are only logged) post one PR comment per distinct finding set, listing
+  finding kind, redacted location, and term id only, and apply the
+  `confidential-review` label. The set is keyed on kind, path, and term id, not
+  on commit IDs or line numbers, so a rebase or amend does not post again.
+  Because a reviewed set is not re-posted while later pushes keep the same
+  kind, path, and term, review the PR head you queue. A vocabulary change alters
+  term ids, so an open outside PR with findings gets a fresh comment and label on
+  its next event (accepted noise). If posting or labelling fails, the required
+  status fails. Create the `confidential-review` label once; the label is a
+  human gate (see [merge-queue.md](merge-queue.md)).
+- **Residuals.** Commits from a same-repository branch carried inside an outside
+  PR are advisory unless their author is allowlisted; that branch's own PR stays
+  enforced. A maintainer's edit to an outside PR's title or body is advisory (a
+  term match is still commented and labelled); agents publish PR text through
+  `publish-pr`, which enforces.
 
 Consequences for maintainers:
 
@@ -101,11 +143,12 @@ Consequences for maintainers:
   vocabulary change clears it, because history is not rewritten.
 - A change to a merged outside file whose path or content matches a term must
   remove the match in the same commit.
-- Attribution is keyed on the commit author only, and it relies on the fork PR
-  scan staying enforced. A change that makes that scan advisory needs another
-  attribution signal first. An allowlisted-author commit with an unlisted
-  committer inside an outside PR (cherry-pick, rebase, web edit) stays
-  enforced, so the fork PR scan must be green before the merge.
+- Attribution is keyed on the commit author only. The fork PR scan is advisory
+  for outside work, so the `confidential-review` label is the human gate in its
+  place: a maintainer reviews the advisory before queueing. An
+  allowlisted-author commit with an unlisted committer inside an outside PR
+  (cherry-pick, rebase, web edit) stays enforced, so the fork PR scan must be
+  green before the merge.
 - Attribution reads the audited revision's first-parent history, so auditing a
   branch that merged `main` as a second parent enforces outside commits.
 - Attribution trusts the merge subject text, which git does not verify. A merge
@@ -114,6 +157,9 @@ Consequences for maintainers:
   that keep `main` from taking such pushes.
 - The repository owner string is part of the trust assumption: renaming the
   owner makes earlier same-repository merges look like outside ones.
+- The outside-PR rule assumes a user-owned repository, where every writer is
+  `OWNER` or `COLLABORATOR`. Re-check `author_association` for private members
+  before moving the repository to an organization.
 
 ## PR publication
 

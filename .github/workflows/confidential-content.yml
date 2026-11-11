@@ -9,6 +9,9 @@ on:
 
 permissions:
   contents: read
+  # Read queued PRs when scanning a Mergify candidate; comment and label an
+  # outside PR through the issues endpoints.
+  pull-requests: write
   statuses: write
 
 jobs:
@@ -48,6 +51,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          # Work by an outside contributor (and its commits inside a Mergify
+          # candidate) is advisory under the guard's provenance rules; everything
+          # else is scanned normally.
           # Mergify authors the in-place merge commits used to update queued
           # branches and signs speculative candidates with a separate committer.
           # The booley-renovate GitHub App (#2559) authors dependency-update
@@ -58,6 +64,7 @@ jobs:
             commit-signer@mergify.com
             353471265+booley-renovate[[]bot[]]@users.noreply.github.com
           BOOLEY_LEAK_GUARD_KEY_B64: ${{ secrets.BOOLEY_LEAK_GUARD_KEY_B64 }}
+          GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # Content identical (same path and blob) to an entry of the base tip is
@@ -67,17 +74,30 @@ jobs:
           if [ "${BASE_REF}" = main ]; then
             trusted_base=(--trusted-base "${BASE_SHA}")
           fi
+          # Advisory term findings of an outside PR collect here, then one
+          # comment and label are posted. Every command runs in this step, so an
+          # enforced finding, an incomplete scan, or a failed post fails the
+          # required status.
+          report="${RUNNER_TEMP}/confidential-advisory.jsonl"
+          : > "${report}"
           printf '%s %s %s %s\n' \
             refs/confidential-content/head "${HEAD_SHA}" \
             refs/heads/main "${BASE_SHA}" \
             | python .github/scripts/confidential_content_guard.py --repo . pre-push \
+              --pull-request-event "${GITHUB_EVENT_PATH}" \
+              --advisory-report "${report}" \
               "${trusted_base[@]}"
           python .github/scripts/confidential_content_guard.py \
             --repo . verify-candidate --rev "${HEAD_SHA}" \
             --base "${BASE_SHA}" --event "${GITHUB_EVENT_PATH}" \
+            --advisory-report "${report}" \
             "${trusted_base[@]}"
           python .github/scripts/confidential_content_guard.py \
-            --repo . pull-request --event "${GITHUB_EVENT_PATH}"
+            --repo . pull-request --event "${GITHUB_EVENT_PATH}" \
+            --advisory-report "${report}"
+          python .github/scripts/confidential_content_guard.py \
+            --repo . post-advisory --event "${GITHUB_EVENT_PATH}" \
+            --report "${report}"
 
       - name: Scan complete main history
         if: github.event_name != 'pull_request_target'
@@ -120,7 +140,7 @@ jobs:
           fi
           if [ "${outcome}" = success ]; then
             state=success
-            description='No confidential content found'
+            description='Confidential-content scan passed'
           else
             state=failure
             description='Confidential-content scan failed'

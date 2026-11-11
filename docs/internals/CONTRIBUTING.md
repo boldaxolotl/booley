@@ -404,9 +404,16 @@ branch. Start each feature, fix, refactor, or documentation branch from the
 latest `main`, and open its pull request directly into `main`. Keep the branch
 focused on one concern and make sure the required checks pass. A repository
 maintainer or agent then adds the ready PR to the Mergify queue; external
-contributors do not need write access to request review. Mergify updates and
-validates queued PRs one at a time before merging them. Delete the branch only
-after Mergify reports the PR merged.
+contributors do not need write access to request review. A PR labelled
+`confidential-review` waits for a maintainer to review it first. Mergify updates
+and validates queued PRs one at a time before merging them. Delete the branch
+only after Mergify reports the PR merged.
+
+A pull request from a fork needs no setup, such as allowlisting your commit
+identity, if you do not have write access. The `confidential-content` check
+treats findings on commits you author and on your PR text as advisory: they do
+not block the check, and a maintainer reviews any flagged confidential-term
+match. A maintainer-authored commit you re-commit is still checked.
 
 CI skips draft pull requests: `Tests`, the PicoRV32 demo contract, and the
 project site build start when the PR is opened ready or marked ready for

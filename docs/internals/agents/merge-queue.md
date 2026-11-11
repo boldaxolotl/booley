@@ -44,6 +44,12 @@ python3 .github/scripts/confidential_content_guard.py --repo . publish-pr commen
 Confirm that the `Mergify Merge Queue` check or status comment says queued.
 GitHub's merge button, auto-merge, and `gh pr merge` do not queue a PR.
 
+An outside PR labelled `confidential-review` has advisory confidential-content
+findings. Only a human maintainer queues it, after reviewing the advisory
+comment and removing the label; agents leave labelled PRs alone. Nothing removes
+the label automatically, and Mergify's queue conditions do not check it. See
+[confidential-content.md](confidential-content.md#provenance-rules).
+
 ## Own one queued PR
 
 Exactly one agent owns a queued PR until Mergify reports it merged or dequeued;
