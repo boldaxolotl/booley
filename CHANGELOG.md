@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- A failed test function that a Cocotb Target without registered Tests discovered
+  now gets one `booley flow sim --target <name> --seed N` command that reruns the
+  whole batch, instead of a `--test=<name>@N` command that Booley refused with
+  exit 2.
 - `booley init` now records the default Agent CLI as `[agent] default` instead of
   the older name `provider`, and the `--provider` conflict error names
   `[agent] default`. An existing `provider` key is kept as written and still
