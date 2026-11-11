@@ -136,7 +136,10 @@ Booley measures every Job's peak memory, CPU time, and wall-clock time, and
 keeps the newest 20 runs per Target and Job phase. `booley resources` prints
 the run count and the minimum, median, and maximum peak memory and wall-clock
 time for each (`--json` for scripts). Use it to choose `heavy_memory` and
-`[sandbox].memory`.
+`[sandbox].memory`. Each Test Variant of a simulation has its own entry
+(`tests=first+slow`; the default Variant keeps the bare Test name), and the
+seeds of one Variant share it. Flow runs that `booley doctor` starts are not
+recorded.
 
 ## Agent CLIs (`[agent]`)
 
