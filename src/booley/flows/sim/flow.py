@@ -66,9 +66,8 @@ from booley.flows.run_log import RUN_LOG_NAME, write_run_log
 from booley.flows.sim.campaign.test_run_files import TestRunFiles, campaign_test_run_files
 from booley.flows.sim.campaign.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
 from booley.flows.sim.campaign.test_run_report import (
-    campaign_test_run_files_by_row,
+    campaign_test_run_lines,
     campaign_test_run_rows,
-    informative_test_run_lines,
 )
 from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
@@ -960,12 +959,7 @@ def _campaign_test_run_lines(
     """
     if not isinstance(getattr(outcome, "manifest_path", None), Path):
         return []
-    return informative_test_run_lines(
-        selector,
-        campaign_test_run_rows(outcome),
-        default_seed=default_seed,
-        files=campaign_test_run_files_by_row(outcome),
-    )
+    return campaign_test_run_lines(selector, outcome, default_seed=default_seed)
 
 
 def _campaign_test_run_detail(outcome: CampaignOutcome) -> dict[str, object]:
@@ -4978,18 +4972,16 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets: list[str],
         test_names_map: dict[str, list[str]],
     ) -> EndpointOutcome | None:
-        """Reject an unknown ``--test`` before any sim runs (built-in path).
+        """Reject a ``--test`` that names no registered Test before any sim runs.
 
-        A target that declares a test list (tests.toml ``tests``) but whose list
-        has no substring match for ``--test`` is a typo, not a selector: running
-        it would emit no selection plusarg and silently execute the testbench's
-        default test — reporting a false PASS.
+        Exact named selection needs a registered test catalog (tests.toml
+        ``tests``). A target without one refuses any ``--test``; the value is
+        never passed through raw. A target with one refuses a selector whose
+        parsed Test is not in the catalog (an exact match, not a substring):
+        running it would select nothing and could report a false PASS.
         Mirrors the ``UnknownTargetError`` contract ``--target`` already gets.
 
-        Skipped for a target with no declared test list: there the ``--test``
-        value is a raw passthrough the TB owns (matching
-        ``resolve_target_selection``'s transitional skip when the Target list is
-        unknown). Returns an ``EXIT_ERROR`` EndpointOutcome on the first offending
+        Returns an ``EXIT_ERROR`` EndpointOutcome on the first offending
         target, else ``None``.
         """
         selectors = self.args.test
