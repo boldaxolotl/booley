@@ -371,16 +371,40 @@ _Avoid_: cycle budget, synthesis criterion, benchmark score
 The per-Project store, in the **Main Booley Directory**, of graded `sim`, `synth`, and `fpga` passes, their metrics and text reports, from runs at a **clean commit** that stayed clean until the run ended. Any such run stores; `booley ci` also fills it on purpose by running a named set of Criteria at a chosen commit in throwaway checkouts. A stored result is served in place of a fresh run only when its Result Key matches. The key covers: the tracked bytes of the RTL repository and of the Booley Directory's repository, `booley.toml` minus its verdict-neutral sections, the resolved Target Test Plan, non-Booley ignored files, the Target and its resolved EDAM, the keyed environment, Booley's build, the Sandbox Image, any mounted EDA tool's manifest, and a Booley-generated identity of the same host. A hit is labelled as cached with its producing run. Sampled re-runs check hits, and a mismatch disables the cache for the Project. It stores results, never builds; that is what distinguishes it from a **Simulator Bundle** and from the compiler cache.
 _Avoid_: build cache, global build cache, binary cache, memoization
 
+**Metric-Driven Development**:
+Accepting work by measuring a commit against the **Target Metrics** its Project declares, in place of approving a list of criteria for each task. Adoption is optional: a Project that declares no metrics is unaffected.
+_Avoid_: Sign-off, sign-off flow, acceptance mode
+
+**Target Metrics**:
+The metrics a Target declares for its Booley Flows in `metrics.toml`. Each is **enforced** (it has an absolute bound that must be met) or **tracked** (reported; its value never blocks).
+_Avoid_: Criteria, Goals, thresholds, KPIs
+
+**Measurement Run**:
+One stored run of `booley measure` over every Target that declares metrics. It belongs to the Git tree it measured, not to a commit, so a rewrite that leaves the files identical reuses it.
+_Avoid_: Sign-off run, Result Cache entry, CI run
+
+**Measured Commit**:
+A commit whose tree's latest full **Measurement Run** met every enforced Target Metric and produced no error. Locally it is advisory; a run in CI is the trusted one.
+_Avoid_: signed-off commit, passing commit, green commit
+
+**Measurement Report**:
+The report of one **Measurement Run** as seen from one commit and its **Base**: each metric's value, bound and verdict, and what changed since the Base, the rules included.
+_Avoid_: Sign-off Report, Review Package, Goal status
+
+**Base**:
+The commit a measured or reviewed commit is compared with: by default its merge-base with the default branch. A stored Measurement Run of the Base is optional; it adds deltas to the Measurement Report and never decides a verdict.
+_Avoid_: baseline (a Booley Flow's `--baseline` compares one Target with another revision), reference commit
+
 **Declared Review**:
-A Reviewer focus that a Target declares for one source role (RTL or testbench), optionally narrowed to matching files, with the spec it reviews against and the severity at which findings must be resolved.
+A Reviewer focus that a Target declares in `reviews.toml` for one source role (RTL or testbench), optionally narrowed to matching files, with the spec it reviews against and the severity at which findings must be resolved.
 _Avoid_: review kind, review type, Review Goal
 
 **Review Run**:
-One stored run of a commit's Declared Reviews: either the discovery pass over the changes since the baseline, or the verify pass that re-checks that discovery's open findings on a later commit.
+One stored run of a commit's Declared Reviews: either the discovery pass over the changes since the **Base**, or the verify pass that re-checks that discovery's open findings on a later commit.
 _Avoid_: review session, review receipt
 
 **Reviewed Commit**:
-A commit on which a verify Review Run left no finding open at or above its Declared Reviews' threshold. It records what happened on that commit, is not reproducible, and never gates CI; it is independent of a commit being measured.
+A commit on which a verify Review Run left no finding open at or above its Declared Reviews' threshold. It records what happened on that commit, is not reproducible, and never gates CI; it is independent of the commit being a **Measured Commit**.
 _Avoid_: approved commit, signed-off commit, clean review
 
 **Escalation**:
