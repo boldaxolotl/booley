@@ -62,10 +62,15 @@ def sim_job_request(
 
     Test Runs are grouped into simulator processes and named exactly as the
     simulation engine does: one process per Test Run on an HDL Target, Test Runs
-    sharing environment and seed batched on a Cocotb Target. A name is
-    ``test`` or ``test+variant``; seeds never appear.
+    sharing environment and seed batched on a Cocotb Target. Coverage runs one
+    collector process per Test Run on either. A name is ``test`` or
+    ``test+variant``; seeds never appear.
+
+    The request always lists simulator processes; a ``--mode elab-only`` Job
+    runs none, so its caller builds ``JobRequest(..., test_runs=())`` itself.
     """
-    groups = batch_test_runs(runs, one_process_per_run=plan.adapter != "cocotb")
+    one_process_per_run = plan.adapter != "cocotb" or _COVERAGE_FLAG in flags
+    groups = batch_test_runs(runs, one_process_per_run=one_process_per_run)
     names = tuple(
         ",".join(plan.history_test_name(run) for run in group if run.test is not None)
         for group in groups

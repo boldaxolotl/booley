@@ -327,13 +327,17 @@ def test_flows_label_their_commands(flow_class, method, phase, split):
     assert job_resources.current_label() is None
 
 
-def _recorded_keys(label: job_resources.ResourceLabel | None) -> list[Any]:
+def _recorded_keys(
+    label: job_resources.ResourceLabel | None, phases: dict[str, job_resources.Usage] | None = None
+) -> list[Any]:
     """History keys of the records one successful command with *label* writes."""
     from booley.runtime.resource_history import history_key
 
     assert label is not None
     result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0)
-    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+    measurement = job_resources.JobMeasurement(
+        0.25, job_resources.Usage(), phases or {}, None, None, None
+    )
     return [
         history_key(record)
         for record in job_resources.history_records("flow", label, (), measurement, result)
@@ -347,12 +351,15 @@ def test_flow_requests_map_to_the_keys_their_recorder_writes():
     for flow_class, method, flow_name, command in (
         (LintFlow, "_run_linter", "lint", ["make"]),
         (FpgaImplFlow, "_run_vivado", "fpga", ["make"]),
-        # The whole-command row; the split tool rows are not listed.
         (AsicSynthesizeFlow, "_run_synth_make", "synth", logical_plan),
     ):
         label = _label_seen(flow_class(), method, "core", command, 4096)
+        # Synthesis also records a split tool row; the request lists only the whole command.
+        split = {"yosys": job_resources.Usage()} if flow_name == "synth" else None
+        recorded = _recorded_keys(label, split)
 
-        assert list(phase_keys(JobRequest(flow_name, "core"))) == _recorded_keys(label)[:1]
+        assert list(phase_keys(JobRequest(flow_name, "core"))) == recorded[:1]
+        assert [key.phase for key in recorded[1:]] == (["yosys"] if flow_name == "synth" else [])
 
 
 @linux_only

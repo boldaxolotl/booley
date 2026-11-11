@@ -178,3 +178,22 @@ def test_coverage_request_maps_to_recorded_keys(tmp_path: Path, monkeypatch) -> 
         "sim_run",
         "sim_postprocess",
     ]
+
+
+def test_cocotb_requests_batch_runs_except_under_coverage(tmp_path: Path) -> None:
+    """Cocotb batches Test Runs of one seed per process; coverage runs each alone."""
+    from booley.flows.job_estimates import phase_keys, sim_job_request
+
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "tests.toml").write_text(
+        '[sim]\ntests = ["alpha", "beta"]\n', encoding="utf-8", newline="\n"
+    )
+    plan = load_target_test_plan(tmp_path, "sim", identity="sim", adapter="cocotb")
+    runs = plan.resolve(("alpha@7", "beta@7"))
+
+    def sim_run_names(flags: tuple[str, ...]) -> list[str]:
+        request = sim_job_request(plan, runs, flags=flags)
+        return [key.test_run for key in phase_keys(request) if key.phase == "sim_run"]
+
+    assert sim_run_names(()) == ["alpha,beta"]
+    assert sim_run_names(("coverage",)) == ["alpha", "beta"]
