@@ -2284,8 +2284,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _shared_baseline_worktree(self, revision: str) -> Path:
         """This invocation's one checkout of *revision*, open until publication ends.
 
-        Campaign authorization, Cycle Count planning, campaign preview and
-        execution all need the baseline revision. The scratch path depends
+        Campaign authorization and Cycle Count planning open the baseline
+        revision; campaign preview and execution reuse the planned path
+        (``PlannedBaselines.worktree``). The scratch path depends
         only on the process and revision, so a second opening while the first
         is held fails in ``git worktree add`` (#1959); they share this one.
         Consumers run in that order and only execution writes (build output),
@@ -3627,7 +3628,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         result.report_text = "\n".join(lines)
         return result
 
-    def _run_ordinary_campaigns(self, planning: OrdinaryCampaignPlanning, admission):
+    def _run_ordinary_campaigns(
+        self, planning: OrdinaryCampaignPlanning, admission: object | None
+    ) -> EndpointOutcome:
         return self._with_live_progress(
             lambda: self._execute_ordinary_campaigns(planning, admission)
         )
