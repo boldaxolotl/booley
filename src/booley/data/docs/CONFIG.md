@@ -308,9 +308,10 @@ gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
 ```
 
 `booley worktree gc` removes worktrees whose last use is older than this age,
-keeping any that `booley worktree rm` would refuse (default `"7d"`). The
-setting is read from the main checkout's `.booley/booley.toml`; a worktree's own
-copy is ignored. `booley worktree gc --older-than AGE` overrides it. See
+keeping any that `booley worktree rm` would refuse (default `"7d"`). Every
+`booley chat` launch runs the same cleanup with this age. The setting is read
+from the main checkout's `.booley/booley.toml`; a worktree's own copy is
+ignored. `booley worktree gc --older-than AGE` overrides it. See
 Cleaning up idle worktrees (host doc, not shipped).
 
 ## Feedback (`[feedback]`)
