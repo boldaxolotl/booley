@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.subprocess_budget import run_bounded_child
 
 from booley.audit.diagnostic_results import Severity
 from booley.runtime import runtime_context, session_runtime, vaporview
@@ -618,13 +619,8 @@ def test_viewer_bridge_probe_source_runs_against_the_real_client(tmp_path):
         "HOME": str(tmp_path),
         "PYTHONPATH": str(Path(vaporview.__file__).parents[2]),
     }
-    result = subprocess.run(
-        [sys.executable, "-c", vaporview._VIEWER_BRIDGE_PROBE_SOURCE],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=env,
-        check=False,
+    result = run_bounded_child(
+        [sys.executable, "-c", vaporview._VIEWER_BRIDGE_PROBE_SOURCE], env=env
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"bridges": []}

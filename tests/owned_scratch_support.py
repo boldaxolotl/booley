@@ -15,9 +15,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from tests.subprocess_budget import run_bounded_child
-
-CHILD_TIMEOUT_S = 60
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 # Creates a nested Codex home and a read-only Specialist workspace, prints both
 # paths, then SIGKILLs itself while the workspace is still open.
@@ -83,9 +81,7 @@ def child_environment(scratch: Path, home: Path) -> dict[str, str]:
 
 def run_child(script: str, repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Run *script* in a child Python (reaped on return) and capture its output."""
-    return run_bounded_child(
-        [sys.executable, "-c", script, str(repo)], env=env, timeout=CHILD_TIMEOUT_S
-    )
+    return run_bounded_child([sys.executable, "-c", script, str(repo)], env=env)
 
 
 def kill_child_with_scratch(repo: Path, scratch: Path, home: Path) -> list[Path]:
@@ -114,13 +110,14 @@ def exited_process_payload() -> dict[str, object]:
     """Return the identity payload of a real process that has already exited."""
     from booley.runtime.pid import capture_process_identity
 
+    # Kept on Popen: needs a live child to capture its identity, then kills it.
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         identity = capture_process_identity(child.pid)
         assert identity is not None
     finally:
         child.kill()
-        child.wait(timeout=CHILD_TIMEOUT_S)
+        child.wait(timeout=SUBPROCESS_TIMEOUT_S)
     return identity.to_payload()
 
 
