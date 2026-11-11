@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -77,7 +79,7 @@ def test_docker_client_routes_commands_through_its_prefix(monkeypatch) -> None:
         captured["kwargs"] = kwargs
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("tests.sidecar_image_helpers.run_bounded_child", fake_run)
     client = DockerClient(
         ("exec", "isolated-daemon", "docker", "--host", "unix:///var/run/docker.sock")
     )
@@ -95,18 +97,32 @@ def test_docker_client_routes_commands_through_its_prefix(monkeypatch) -> None:
             "unix:///var/run/docker.sock",
             "info",
         ],
-        "kwargs": {
-            "capture_output": True,
-            "text": True,
-            "timeout": 7,
-            "check": False,
-        },
+        "kwargs": {"timeout": 7},
     }
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake docker is a shebang script")
+def test_docker_client_stall_fails_with_elapsed_time_and_partial_output(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A stalled Docker child fails through the shared bounded helper, not a bare timeout."""
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_bytes(b"#!/bin/sh\necho partial-docker-output\nexec sleep 60\n")
+    fake_docker.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    with pytest.raises(pytest.fail.Exception) as stalled:
+        DockerClient().run("info", timeout=1)
+
+    message = str(stalled.value)
+    assert "docker info timed out after 1 s" in message
+    assert "elapsed" in message
+    assert "partial-docker-output" in message
 
 
 def test_isolated_daemon_routes_commands_and_cleans_up(monkeypatch, tmp_path: Path) -> None:
     boundary = FakeDockerBoundary()
-    monkeypatch.setattr(subprocess, "run", boundary)
+    monkeypatch.setattr("tests.sidecar_image_helpers.run_bounded_child", boundary)
 
     with isolated_docker_daemon("candidate", tmp_path, name_prefix="booley-test") as daemon:
         assert daemon.image_id == "sha256:candidate"
@@ -133,7 +149,7 @@ def test_isolated_daemon_routes_commands_and_cleans_up(monkeypatch, tmp_path: Pa
 
 def test_isolated_daemon_rejects_outer_daemon_identity(monkeypatch, tmp_path: Path) -> None:
     boundary = FakeDockerBoundary(inner_daemon_id="outer-daemon")
-    monkeypatch.setattr(subprocess, "run", boundary)
+    monkeypatch.setattr("tests.sidecar_image_helpers.run_bounded_child", boundary)
 
     with (
         pytest.raises(AssertionError, match="resolved to the outer Docker daemon"),
@@ -169,7 +185,7 @@ def test_isolated_daemon_rejects_malformed_inspection_payload(
             return super().__call__(args, **kwargs)
 
     boundary = MalformedInspectBoundary()
-    monkeypatch.setattr(subprocess, "run", boundary)
+    monkeypatch.setattr("tests.sidecar_image_helpers.run_bounded_child", boundary)
 
     with (
         pytest.raises(
@@ -187,11 +203,11 @@ def test_cleanup_timeout_does_not_mask_body_failure(monkeypatch, tmp_path: Path)
     class CleanupTimeoutBoundary(FakeDockerBoundary):
         def __call__(self, args, **kwargs):
             if args[1:3] == ["rm", "-f"]:
-                raise subprocess.TimeoutExpired(args, timeout=30)
+                pytest.fail("docker rm -f timed out after 30 s")
             return super().__call__(args, **kwargs)
 
     boundary = CleanupTimeoutBoundary()
-    monkeypatch.setattr(subprocess, "run", boundary)
+    monkeypatch.setattr("tests.sidecar_image_helpers.run_bounded_child", boundary)
 
     with (
         pytest.raises(ValueError, match="body failed") as caught,
@@ -212,7 +228,7 @@ def test_readiness_timeout_cleans_named_daemon(monkeypatch, tmp_path: Path) -> N
             return super()._inner_command(args, inner)
 
     boundary = NeverReadyBoundary()
-    monkeypatch.setattr(subprocess, "run", boundary)
+    monkeypatch.setattr("tests.sidecar_image_helpers.run_bounded_child", boundary)
 
     with (
         pytest.raises(AssertionError, match="did not become ready"),
@@ -245,7 +261,7 @@ def test_setup_failure_cleans_named_daemon(monkeypatch, tmp_path: Path, failure:
             return super().__call__(args, **kwargs)
 
     boundary = FailingBoundary()
-    monkeypatch.setattr(subprocess, "run", boundary)
+    monkeypatch.setattr("tests.sidecar_image_helpers.run_bounded_child", boundary)
 
     with (
         pytest.raises(AssertionError, match=f"{failure} failed"),
@@ -295,7 +311,7 @@ def test_unsafe_dind_configuration_fails_closed(
             return super().__call__(args, **kwargs)
 
     boundary = UnsafeBoundary()
-    monkeypatch.setattr(subprocess, "run", boundary)
+    monkeypatch.setattr("tests.sidecar_image_helpers.run_bounded_child", boundary)
 
     with (
         pytest.raises(AssertionError, match=message),
