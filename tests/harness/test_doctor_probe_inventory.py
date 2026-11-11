@@ -35,7 +35,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit).
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_target_test_plans$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_target_test_plans$|inspect_native_dependencies$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -130,13 +130,13 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_core_audit": frozenset(
         {
-            "_audit_native_dependencies",
             "_check_core_repository_hygiene",
             "_check_core_schema",
             "_check_core_setup_hazards",
             "_check_target_metadata",
             "_check_target_sources",
             "_run_core_security_audit",
+            "inspect_native_dependencies",
             "inspect_target_test_plans",
         }
     ),
