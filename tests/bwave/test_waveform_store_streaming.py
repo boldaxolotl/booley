@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import textwrap
 
 import pytest
@@ -14,6 +13,7 @@ from booley.bwave.waveform_store import (
     start_streaming_conversion,
 )
 from booley.flows.sim.trace_session import TraceSession
+from tests.subprocess_budget import run_bounded_child
 
 pytestmark = [
     pytest.mark.native_bwave,
@@ -78,12 +78,8 @@ def test_trace_session_streams_into_its_own_cache_destination(tmp_path) -> None:
     session.cleanup_fifo(conversion)
 
     assert session.find() == session.work_bwave_path
-    probe = subprocess.run(
-        [native_bwave_binary(), "signal", str(session.work_bwave_path), "-s", "*"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+    probe = run_bounded_child(
+        [str(native_bwave_binary()), "signal", str(session.work_bwave_path), "-s", "*"]
     )
     assert probe.returncode == 0, probe.stderr
 

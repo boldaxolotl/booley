@@ -7,7 +7,6 @@ import importlib
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from booley.flows.cli_selection import CliInvocation, normalize_endpoint_args
 from booley.flows.endpoint_cli import normalize_target_arg
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
+from tests.subprocess_budget import run_bounded_child
 
 
 def builtin_types() -> list[type[BuiltinFlow]]:
@@ -221,14 +221,11 @@ def test_module_help_outside_project(tmp_path: Path) -> None:
         if not key.startswith(("BOOLEY_", "RTL_", "_BOOLEY_"))
     }
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-m", "booley.flows.synth", "--help"],
         cwd=tmp_path,
         env=env,
-        capture_output=True,
-        text=True,
         timeout=20,
-        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "Common:" in result.stdout and "Expert: OpenROAD:" in result.stdout
