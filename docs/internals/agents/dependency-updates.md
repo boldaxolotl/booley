@@ -92,12 +92,34 @@ An OpenROAD PR is a human job (`ready-for-human`). Same items as its
    the allowlist in `.github/workflows/renovate.yml` and
    `tests/ci/test_renovate_config.py` in step.
 3. A literal copy of the pin elsewhere needs a custom manager, or a
-   `prBodyNotes` entry when no rewrite can reach it.
+   `prBodyNotes` entry when no rewrite can reach it. A manifest writes each pin
+   once: Renovate tracks one copy of a name per file, so extras that need the
+   same pin compose by self-reference (`dev = ["booley-rtl[test,quality]"]`),
+   never by repeating it. `test_manifests_write_each_pin_once` enforces this.
 4. Assign a group rule in `packageRules`, and keep its exact-name selectors in
    step with `tests/ci/test_renovate_config.py`.
 5. Validate with the strict check (`renovate-config` CI job, or
    `renovate-config-validator --strict --no-global .github/renovate.json` from
    the runner image).
+
+## Hold a version
+
+Hold a version when a newer release is known bad. Record the hold in two
+places that move together:
+
+1. In the manifest, put a comment directly above the `==` pin that contains
+   `hold <version>` and the reason, for example
+   `# ...breaks SIGINT exit codes; hold 7.17.0 until upstream is fixed.`
+2. In `packageRules`, add a rule with one `matchPackageNames` entry,
+   `allowedVersions: "==<version>"`, and a `description` starting `Hold:` that
+   gives the same reason and says how to lift it.
+
+Renovate reads only the rule; the comment is for the next reader.
+`test_version_holds_agree_with_renovate_rules` fails when one exists without
+the other or the versions differ. To lift a hold, delete the comment and the
+rule in one PR, then bump the pin. Security settings are forced over package
+rules (see above), so a security fix may still propose a held package: check
+such a PR against the reason for the hold.
 
 ## Pushing to a Renovate branch
 

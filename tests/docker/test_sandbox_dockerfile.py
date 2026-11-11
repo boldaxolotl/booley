@@ -100,8 +100,9 @@ def test_base_pyslang_pin_matches_optional_dependency_group() -> None:
     extras = project["optional-dependencies"]
 
     assert "pyslang" in pins
-    for extra in ("hdl-parser", "test", "dev"):
-        assert f"pyslang=={pins['pyslang']}" in extras[extra], extra
+    assert extras["hdl-parser"] == [f"pyslang=={pins['pyslang']}"]
+    # The test extra reaches the same pin through the hdl-parser extra (written once).
+    assert "booley-rtl[hdl-parser]" in extras["test"]
     assert not any(item.startswith("pyslang") for item in project["dependencies"])
 
 
