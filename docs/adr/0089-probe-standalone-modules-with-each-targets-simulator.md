@@ -52,3 +52,36 @@ findings.
   Icarus, so a parse error is a finding and any other compiler-specific
   result follows Icarus.
 - Users with `standalone_frontend` set must delete it before any Flow runs.
+
+## Amendments (2026-11-11, Target dialect flags)
+
+Recorded while implementing issue #3392. The probe honors each Target's
+language-dialect flags, so a module is judged under the language its Target
+builds it with, not under a fixed `-g2012`.
+
+- **Dialect flags are honored.** Only the Target's language-dialect options
+  reach the probe: Icarus `-g*` generation flags; Verilator `--language`,
+  `--default-language` (with their value) and `+<generation>ext+<exts>`. They
+  are read from `flow_options`, then the legacy `tools:` options, in authored
+  order. A Target with no dialect flag probes with the compiler's default
+  dialect; the probe never injects `-g2012` for a native Target.
+- **Defines and include paths are never forwarded.** Every other option
+  (defines, include paths, `+libext+`, warnings, `--timing`) stays out of the
+  probe, so a module relying on a Target-only define or include is still a
+  finding (same contract as before).
+- **One probe per distinct (frontend, dialect flags).** A module shared by
+  Targets with different dialect flags is probed under each distinct set, and a
+  failure under any is reported and fails the sweep. It counts once in
+  "N/M modules FAIL".
+- **Per-probe prerequisites** are refined from per frontend to per
+  (frontend, dialect flags).
+- **Fallback probes keep their defaults:** Icarus `-g2012`, Verilator none,
+  since the Target's flags belong to a compiler it does not use.
+- **Reporting.** Plan recipes, `detail.standalone.probes` groups, `failures` and
+  `unparsed` entries add `dialect_flags`; the console failure lines and
+  `run.log` probe headers name the dialect (`via iverilog -g2005`, or
+  `via verilator (default dialect)`). Additive keys only; no schema bump.
+- **Cost.** One probe per distinct (frontend, dialect flags) means a module
+  shared by Icarus Targets built with different `-g` flags, or by several
+  simulators, is compiled once per distinct set. The sweep keeps one shared
+  timeout, so the 2x bound above is no longer a ceiling.

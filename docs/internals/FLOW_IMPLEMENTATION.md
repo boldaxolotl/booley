@@ -472,7 +472,11 @@ module is probed with the simulator of every selected Target whose RTL fileset
 contains it ([ADR 0089](../adr/0089-probe-standalone-modules-with-each-targets-simulator.md)):
 `inspection.eda_tool` maps `icarus`/`iverilog` to `iverilog` and `verilator` to
 `verilator`. A probe compiles only the shared package/interface files of the
-Targets that contribute its frontend. A Target with any other simulator needs a
+Targets that contribute its frontend and dialect flags. The probe forwards only
+the Target's language-dialect options (Icarus `-g*`; Verilator `--language`,
+`--default-language`, `+<generation>ext+`), read from `flow_options` and then
+the legacy tool options; a module shared by Targets with different dialect
+flags is probed once per distinct set. A Target with any other simulator needs a
 fallback probe (Verilator when on PATH, else Icarus); the sim Flow can select
 only Icarus and Verilator Targets today, so this path is unreachable until a
 commercial simulator Target exists. A fallback probe whose compiler already is
