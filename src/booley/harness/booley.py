@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
+    from booley.runtime.session_admission import Sandbox
 
 # --- Constants ---
 
@@ -918,14 +919,18 @@ def _add_utility_subparsers(sub) -> None:
         description=(
             "Open an interactive Agent CLI for this Project: its default, or the one --cli names."
         ),
-        usage="%(prog)s [-h] [-C PATH | --project PATH] [--cli {claude,codex}] [--] [ARGS ...]",
+        usage=(
+            "%(prog)s [-h] [-C PATH | --project PATH] [--cli {claude,codex}] "
+            "[--new-worktree | --here] [--] [ARGS ...]"
+        ),
         epilog=(
             "Arguments after `chat` and its own options are passed unchanged to the "
             "Agent CLI, after Booley's own launch arguments, for example "
             "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex). "
-            "Booley reads -h/--help, -C/--project and --cli only before any other "
-            "argument. Put `--` first to forward them to the agent: "
-            "`booley chat -- --help`."
+            "Booley reads -h/--help, -C/--project, --cli, --new-worktree and --here only "
+            "before any other argument. Put `--` first to forward them to the agent: "
+            "`booley chat -- --help`. Claude Code's own `--worktree` is not Booley's and "
+            "goes to the agent."
         ),
     )
     chat_p.add_argument(
@@ -935,6 +940,29 @@ def _add_utility_subparsers(sub) -> None:
         help=(
             "Agent CLI to open; must be listed in booley.toml [agent] clis "
             "(default: the Project's default Agent CLI)"
+        ),
+    )
+    placement = chat_p.add_mutually_exclusive_group()
+    placement.add_argument(
+        "--new-worktree",
+        dest="chat_worktree",
+        action="store_const",
+        const="always",
+        default=None,
+        help=(
+            "Start in a new worktree `s<N>` even if the main checkout is free "
+            "(overrides [chat] worktree for this launch)"
+        ),
+    )
+    placement.add_argument(
+        "--here",
+        dest="chat_worktree",
+        action="store_const",
+        const="never",
+        default=None,
+        help=(
+            "Start in the main checkout even if another session uses it; from inside a "
+            "linked worktree, stay there (overrides [chat] worktree for this launch)"
         ),
     )
     _add_cheat_subparser(sub)
@@ -1203,7 +1231,10 @@ def _argv_command_index(argv: list[str], globals_parser: argparse.ArgumentParser
 
 
 def _chat_option_width(tail: list[str], position: int) -> int:
-    """Return how many tokens Booley's own `chat` option (-C/--project, --cli) takes at `position`."""
+    """Return how many tokens Booley's own `chat` option takes at `position`.
+
+    Those are -C/--project, --cli, --new-worktree and --here.
+    """
     if position >= len(tail):
         return 0
     token = tail[position]
@@ -1211,6 +1242,8 @@ def _chat_option_width(tail: list[str], position: int) -> int:
         return 2 if position + 1 < len(tail) else 1
     if token == "--cli":
         return 2 if position + 1 < len(tail) else 1
+    if token in ("--new-worktree", "--here"):
+        return 1
     if token.startswith(("--project=", "--cli=")) or (token.startswith("-C") and len(token) > 2):
         return 1
     return 0
@@ -1219,10 +1252,10 @@ def _chat_option_width(tail: list[str], position: int) -> int:
 def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], list[str]]:
     """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
 
-    Booley keeps `-C`/`--project` and `--cli` only while they lead the tail. Everything after
-    them goes to the agent CLI untouched, with one leading `--` dropped so
-    `booley chat -- --help` forwards `--help`. A leading `-h`/`--help` stays
-    Booley's: the whole argv goes to argparse, which prints the `chat` help.
+    Booley keeps `-C`/`--project`, `--cli`, `--new-worktree` and `--here` only while they
+    lead the tail. Everything after them goes to the agent CLI untouched, with one leading
+    `--` dropped so `booley chat -- --help` forwards `--help`. A leading `-h`/`--help`
+    stays Booley's: the whole argv goes to argparse, which prints the `chat` help.
     """
     tail = argv[command_index + 1 :]
     own_end = 0
@@ -1485,10 +1518,18 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     )
 
 
+def _warn_standalone_jobs(sandbox: Sandbox | None) -> None:
+    """Tell the user which Standalone Jobs die with the Sandbox about to be stopped."""
+    from booley.harness.sandbox_stop_warning import standalone_job_warnings
+
+    for line in standalone_job_warnings(sandbox):
+        print(line, file=sys.stderr)
+
+
 def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime import session_runtime as sr
 
-    result = sr.down(project_root)
+    result = sr.down(project_root, before_stop=_warn_standalone_jobs)
     if result:
         details = []
         if result.headless:

@@ -8,7 +8,6 @@ Flow dry-runs. ``--deep`` adds real first-Target EDA smoke checks.
 from __future__ import annotations
 
 import argparse
-import ast
 import contextlib
 import functools
 import hashlib
@@ -73,15 +72,14 @@ from booley.core.boundary import (
     BoundaryError,
     is_str_list,
     require_bool,
-    require_bool_value,
     require_dict,
     require_int,
     require_list,
-    require_opt_str,
     require_str,
 )
 from booley.flows import execution, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
     DEFAULT_SIM_TIMEOUT_MS,
@@ -187,8 +185,6 @@ _SIM_DEEP_FINALIZE_MARGIN_S = 30
 # The three core Flow tables remain required project configuration. FPGA is an
 # optional axis: plain Doctor covers it when configured or selected by Target
 # metadata, while deep Doctor deliberately stops short of implementation.
-# Doctor line label for the `bwave gui` Viewer Bridge probe.
-_VIEWER_BRIDGE_DESCRIPTION = "Viewer Bridge answers in the attached VS Code window (`bwave gui`)"
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
 _DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
@@ -2741,7 +2737,9 @@ def _run_container_tool_checks(
 
     # Conditional (ADR 0034 / F1): only a project with a Cocotb Target needs
     # cocotb in the image — the vanilla SV project is never faulted for it.
-    if _project_has_cocotb_target(project):
+    if project is not None and cocotb_target_checks.project_has_cocotb_target(
+        project.project_root
+    ):
         _container_check(
             "cocotb in container (a Cocotb Target exists)",
             ["cocotb-config", "--version"],
@@ -2823,7 +2821,11 @@ def _run_mcp_checks(
         )
     )
     _run_agent_credential_checks(project, reporter)
-    _check_viewer_bridge(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
+    reporter.diagnostics(
+        vaporview.inspect_viewer_bridge(
+            vaporview.ViewerBridgeRequest(project.project_root, docker_exe)
+        )
+    )
     reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))
 
     if not docker_exe:
@@ -3504,309 +3506,6 @@ def _check_subscription_creds_health(
             "recreate the container to re-bind the current host file — or store a "
             f"rotation-free credential: booley auth --cli {app}",
         )
-
-
-# Recovery when no attached window's bridge answers. The Booley workspace
-# extension starts the Viewer Bridge when a window loads; an extension host
-# that predates a spec refresh (or a spec that predates the bridge) has none.
-_BRIDGE_RELOAD_FIX = (
-    "run 'Developer: Reload Window' in the attached VS Code window so the Booley "
-    "extension starts its Viewer Bridge; if Doctor also reports devcontainer drift, "
-    "refresh the Sandbox so its spec installs the Booley Sandbox Integration extension"
-)
-
-_BRIDGE_MISSING_EXTENSION_FIX = vaporview.install_guidance()
-_BRIDGE_UNKNOWN_EXTENSION_FIX = (
-    "could not determine whether VaporView is installed; verify it in the attached "
-    "remote window, then install it if absent or run 'Developer: Reload Window' if present"
-)
-
-_VAPORVIEW_STATE_PROBE_SOURCE = (
-    "import sys;from pathlib import Path;"
-    "from booley.runtime.vaporview import ExtensionState,probe_home;"
-    "s=probe_home(Path.home());"
-    "sys.exit(0 if s is ExtensionState.INSTALLED else 3 if s is ExtensionState.MISSING else 4)"
-)
-
-# Prints the live VaporView versions as JSON; exit 4 means the registry could
-# not be read. An older in-container Booley without installed_versions fails the
-# import, which the runner also treats as unknown.
-_VAPORVIEW_VERSIONS_PROBE_SOURCE = (
-    "import json,sys;from pathlib import Path;"
-    "from booley.runtime.vaporview import installed_versions;"
-    "v=installed_versions(Path.home());"
-    "print(json.dumps(v)) if v is not None else sys.exit(4)"
-)
-
-# Prints every live bridge's VaporView report as JSON. An in-container Booley
-# without the bridge client fails the import, which the runner treats as
-# "probe could not run" rather than as a dark window.
-_VIEWER_BRIDGE_PROBE_SOURCE = (
-    "import json;from booley.bwave.vaporview_bridge import doctor_summary;"
-    "print(json.dumps(doctor_summary()))"
-)
-
-# Exit 0 when a VS Code extension host process runs, 3 when none does. Any
-# other exit (an interpreter error, a missing python3) stays "unknown", so a
-# broken probe can never pass for "no window attached".
-_VSCODE_EXTENSION_HOST_PROBE_SOURCE = """\
-import sys
-from pathlib import Path
-
-marker = b"bootstrap-fork\\x00--type=extensionHost"
-attached = False
-for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
-    try:
-        attached = marker in cmdline.read_bytes()
-    except OSError:
-        continue
-    if attached:
-        break
-sys.exit(0 if attached else 3)
-"""
-
-
-def _vscode_extension_host_running(argv_prefix: list[str]) -> bool | None:
-    """True/False when a live VS Code extension host can be detected, else None."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VSCODE_EXTENSION_HOST_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode == 0:
-        return True
-    if result.returncode == 3:
-        return False
-    return None
-
-
-def _vaporview_extension_state(argv_prefix: list[str]) -> vaporview.ExtensionState:
-    """Probe the remote extension registry; unexpected failures remain unknown."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VAPORVIEW_STATE_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return vaporview.ExtensionState.UNKNOWN
-    if result.returncode == 0:
-        return vaporview.ExtensionState.INSTALLED
-    if result.returncode == 3:
-        return vaporview.ExtensionState.MISSING
-    return vaporview.ExtensionState.UNKNOWN
-
-
-def _vaporview_installed_versions(argv_prefix: list[str]) -> list[str] | None:
-    """Live VaporView versions in the remote registry, or None when unknown."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VAPORVIEW_VERSIONS_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        versions = json.loads(result.stdout)
-    except ValueError:
-        return None
-    if not is_str_list(versions):
-        return None
-    return versions
-
-
-def _vaporview_version_fix() -> str:
-    """Recovery for an installed VaporView build other than the verified one."""
-    return (
-        "in the attached remote window's terminal run "
-        f"`code --install-extension {vaporview.BUNDLED_VSIX}`, then "
-        "'Developer: Reload Window'; for a lasting fix refresh the Sandbox so "
-        "its generated spec installs the bundled verified build"
-    )
-
-
-def _check_vaporview_version(
-    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
-) -> None:
-    """Report whether the attached window runs the VaporView build Booley verified.
-
-    The bridge answers for any VaporView build, but Booley's compatibility
-    patch and its readback rules are verified against exactly one; only the
-    installed version separates them.
-    """
-    description = f"VaporView version is the verified {vaporview.VERIFIED_VERSION}"
-    versions = _vaporview_installed_versions(argv_prefix)
-    if versions is None:
-        _skip(f"{description} - version probe could not run{where}")
-        return
-    if not versions:
-        # Absence is reported by the bridge check with install guidance.
-        _skip(f"{description} - VaporView not installed{where}")
-        return
-    other = [version for version in versions if version != vaporview.VERIFIED_VERSION]
-    if not other:
-        _pass(description)
-        return
-    _fail(
-        f"VaporView {', '.join(other)} is installed{where}; Booley verifies only "
-        f"{vaporview.VERIFIED_VERSION}",
-        _vaporview_version_fix(),
-    )
-
-
-def _viewer_bridges(argv_prefix: list[str]) -> list[dict] | None:
-    """Live bridge reports (``vaporview``/``error``), or None when the probe failed."""
-    try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _VIEWER_BRIDGE_PROBE_SOURCE],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        report = require_dict(json.loads(result.stdout), field="bridge probe")
-        entries = require_list(report.get("bridges"), field="bridge probe bridges")
-        return [_bridge_entry(require_dict(item, field="bridge entry")) for item in entries]
-    except (ValueError, BoundaryError):
-        return None
-
-
-def _bridge_entry(entry: dict) -> dict:
-    """Validate one bridge report; ``trusted`` is None when the bridge omits it."""
-    trusted = entry.get("trusted")
-    return {
-        "vaporview": require_opt_str(entry, "vaporview"),
-        "error": require_opt_str(entry, "error"),
-        "trusted": None if trusted is None else require_bool_value(trusted, field="trusted"),
-    }
-
-
-def _bridge_dark_fix(argv_prefix: list[str], state: vaporview.ExtensionState | None = None) -> str:
-    """Choose recovery from an authoritative remote extension observation.
-
-    ``state`` is a registry observation the caller already made; None probes.
-    """
-    state = _vaporview_extension_state(argv_prefix) if state is None else state
-    if state is vaporview.ExtensionState.MISSING:
-        return "VaporView extension is not installed. " + _BRIDGE_MISSING_EXTENSION_FIX
-    if state is vaporview.ExtensionState.UNKNOWN:
-        return _BRIDGE_UNKNOWN_EXTENSION_FIX
-    return _BRIDGE_RELOAD_FIX
-
-
-def _report_viewer_bridges(
-    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
-) -> None:
-    """Turn the bridge inventory into one pass/skip/fail line."""
-    description = _VIEWER_BRIDGE_DESCRIPTION
-    bridges = _viewer_bridges(argv_prefix)
-    if bridges is None:
-        _skip(f"{description} - probe could not run{where}")
-        return
-    if not bridges:
-        _fail(f"{description}: no window answered{where}", _bridge_dark_fix(argv_prefix))
-        return
-    # Restricted Mode disables VaporView, so a window that reports itself
-    # untrusted cannot show it: that is waiting for the user, not a fault.
-    broken = [entry for entry in bridges if entry["vaporview"] is None]
-    waiting = [entry for entry in broken if entry["trusted"] is False]
-    state = _vaporview_extension_state(argv_prefix) if waiting else None
-    # The registry does not depend on trust, so a really absent VaporView
-    # (MISSING) is never hidden behind a window that is not yet trusted.
-    if state is vaporview.ExtensionState.MISSING:
-        waiting = []
-    if len(broken) > len(waiting):
-        reasons = "; ".join(sorted({entry["error"] or "no detail" for entry in broken}))
-        _fail(
-            f"{description}: {len(broken)} of {len(bridges)} window(s){where} report no "
-            f"usable VaporView ({reasons})",
-            _bridge_dark_fix(argv_prefix, state),
-        )
-        return
-    _report_waiting_for_trust(description, len(bridges), len(waiting), where, _pass, _skip)
-
-
-def _report_waiting_for_trust(
-    description: str, windows: int, waiting: int, where: str, _pass: Check, _skip: Check
-) -> None:
-    """Pass or skip a bridge inventory in which no window is broken."""
-    if not waiting:
-        count = f" ({windows} windows)" if windows > 1 else ""
-        _pass(f"{description}{count}")
-    elif waiting < windows:
-        _pass(f"{description} ({windows} windows; {waiting} waiting for workspace trust)")
-    else:
-        _skip(
-            f"{description} - VaporView waits for workspace trust in {waiting} "
-            f"window(s){where}; trust the folder, then run `booley doctor`"
-        )
-
-
-def _check_viewer_bridge(
-    project: ProjectAudit,
-    docker_exe: str | None,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Live probe: does an attached window's Viewer Bridge answer, with VaporView ready?
-
-    The spec check (:func:`_check_devcontainer_spec`) is static — it proves the
-    devcontainer *asks* for the viewer and the Booley Sandbox Integration extension, never that a
-    window is running them. Without this probe the failure surfaces only when
-    a human runs `bwave gui` in a Doctor-clean project.
-
-    From the host, scope the probe to a VS Code-created devcontainer: a headless
-    `booley session up` container has no extension host by design. From inside a
-    runtime, probe its own socket directory because Docker metadata is
-    unavailable there.
-    """
-    from booley.runtime import runtime_context
-
-    description = _VIEWER_BRIDGE_DESCRIPTION
-    if runtime_context.inside_session_runtime():
-        if _vscode_extension_host_running([]) is False:
-            _skip(f"{description} - no VS Code extension host attached")
-            return
-        _check_vaporview_version([], "", _pass, _skip, _fail)
-        _report_viewer_bridges([], "", _pass, _skip, _fail)
-        return
-
-    if not docker_exe:
-        _skip(f"{description} - container runtime unavailable")
-        return
-    try:
-        container = session_runtime.vscode_session_container(project.project_root)
-    except session_runtime.SessionError as exc:
-        _fail(f"{description} - {exc}", "resolve the Sandbox inventory before retrying")
-        return
-    if container is None:
-        _skip(f"{description} - no VS Code devcontainer running for this project")
-        return
-    argv_prefix = [docker_exe, "exec", container]
-    if _vscode_extension_host_running(argv_prefix) is False:
-        _skip(f"{description} - no VS Code extension host attached in '{container}'")
-        return
-    where = f" in '{container}'"
-    _check_vaporview_version(argv_prefix, where, _pass, _skip, _fail)
-    _report_viewer_bridges(argv_prefix, where, _pass, _skip, _fail)
 
 
 def _run_mcp_probe(
@@ -5070,6 +4769,7 @@ class _CoreAuditContext:
 def _check_target_metadata(
     audit: _CoreAuditContext,
     refs: dict[str, TargetHandle],
+    diagnostics: Diagnostics,
 ) -> None:
     """Check Target declarations that do not need source partitions."""
     _check_doctor_target_compatibility(audit.root, audit.pass_, audit.fail)
@@ -5083,7 +4783,13 @@ def _check_target_metadata(
     _check_target_flow_option_defines(audit.root, audit.fail)
     _check_yosys_targets_have_arch(audit.root, refs, audit.pass_, audit.warn)
     _check_sim_traceable(audit.root, refs, audit.pass_, audit.warn)
-    _check_cocotb_targets(audit.project, refs, audit.pass_, audit.warn, audit.skip, audit.fail)
+    diagnostics(
+        cocotb_target_checks.inspect_cocotb_targets(
+            cocotb_target_checks.CocotbTargetRequest(
+                tuple(refs.values()), _load_tests_toml_normalized(audit.project)
+            )
+        )
+    )
 
 
 def _check_target_flow_option_defines(root: Path, _fail: Fail) -> None:
@@ -5273,7 +4979,7 @@ def _run_core_audit(
     catalog, refs = catalog_and_refs
     if refs:
         inputs = _CoreAuditInputs(catalog, refs)
-        _check_target_metadata(audit, refs)
+        _check_target_metadata(audit, refs, _diagnostics)
         _check_target_sources(audit, refs, inputs)
         _check_core_repository_hygiene(audit)
     _run_core_security_audit(audit, refs)
@@ -5282,7 +4988,7 @@ def _run_core_audit(
             TargetTestPlanInspectionRequest(project.project_root, project.booley_dir)
         )
     )
-    _audit_native_dependencies(project, _pass, _warn)
+    _diagnostics(pi.inspect_native_dependencies(_native_dependency_request(project)))
 
 
 def _check_sim_target_tb_staging(
@@ -6398,28 +6104,11 @@ def _project_write_scope(root: Path) -> list[str]:
     return sorted(dirs)
 
 
-def _project_has_cocotb_target(project: ProjectAudit | None) -> bool:
-    """True when any selectable Target declares a ``cocotb_module`` (ADR 0034).
-
-    Cheap ``.core`` YAML read; gates the conditional cocotb doctor checks so a
-    plain-SV project is never faulted for a capability it doesn't use. The
-    container checks also run without a project audit (``project is None``) —
-    no project, no Cocotb Target.
-    """
-    if project is None:
-        return False
-    try:
-        handles = TargetCatalog.build(project.project_root).list()
-    except FuseSocError:
-        return False
-    return any(handle.cocotb_module for handle in handles)
-
-
 def _load_tests_toml_normalized(project: ProjectAudit) -> dict[str, dict]:
     """The normalized tests.toml sections, or empty when absent/invalid.
 
     Invalidity is reported by ``target_test_plan_inspection``, not this reader — the
-    cocotb checks just degrade to the no-tests view.
+    cocotb owner's request just degrades to the no-tests view.
     """
     tests_path = project.booley_dir / "tests.toml"
     if not tests_path.exists():
@@ -6429,304 +6118,6 @@ def _load_tests_toml_normalized(project: ProjectAudit) -> dict[str, dict]:
             return normalize_tests_toml(tomllib.load(f))
     except (OSError, ValueError, tomllib.TOMLDecodeError):
         return {}
-
-
-def _cocotb_module_file(
-    ref: TargetRef | TargetHandle,
-    module: str,
-) -> tuple[Path, bool] | None:
-    """Locate the Target's cocotb module file among its filesets.
-
-    Matches a fileset entry whose ``copyto`` destination or source basename is
-    ``<module>.py``. Returns ``(source path, fileset tb-tagged)`` or ``None``.
-    """
-    try:
-        doc = fusesoc_registry.read_core(ref.core_file)
-    except fusesoc_registry.FuseSocError:
-        return None
-    targets = doc.get("targets") or {}
-    target_def = targets.get(ref.name) if isinstance(targets, dict) else None
-    if not isinstance(target_def, dict):
-        return None
-    filesets = doc.get("filesets") or {}
-    want = f"{module}.py"
-    for fs_name in fusesoc_registry.target_fileset_names(target_def):
-        fileset = filesets.get(fs_name)
-        if not isinstance(fileset, dict):
-            continue
-        tags = fileset.get("tags") or []
-        tagged = isinstance(tags, list) and "tb" in tags
-        for entry in fileset.get("files") or []:
-            if isinstance(entry, str):
-                path, attrs = entry, {}
-            elif isinstance(entry, dict) and len(entry) == 1:
-                path, attrs = next(iter(entry.items()))
-                attrs = attrs if isinstance(attrs, dict) else {}
-            else:
-                continue
-            copyto = str(attrs.get("copyto", ""))
-            if Path(str(path)).name == want or copyto == want or copyto.endswith(f"/{want}"):
-                return ref.core_file.parent / str(path), tagged
-    return None
-
-
-# A cocotb module can generate rendered test IDs at import time through legacy
-# ``TestFactory`` or cocotb 2's ``@cocotb.parametrize`` decorator. Those IDs
-# are registered at import time. Static inspection must never execute a module.
-
-
-def _cocotb_symbol(node: ast.expr, aliases: dict[str, str]) -> str:
-    """Resolve source-visible import aliases for a decorator or factory call."""
-    if isinstance(node, ast.Call):
-        return _cocotb_symbol(node.func, aliases)
-    if isinstance(node, ast.Name):
-        return aliases.get(node.id, node.id)
-    if isinstance(node, ast.Attribute):
-        return f"{_cocotb_symbol(node.value, aliases)}.{node.attr}"
-    return ""
-
-
-def _cocotb_imports(tree: ast.Module) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                aliases[alias.asname or alias.name.split(".")[0]] = (
-                    alias.name if alias.asname else alias.name.split(".")[0]
-                )
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            for alias in node.names:
-                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-    return aliases
-
-
-def _cocotb_source_names(tree: ast.Module) -> tuple[set[str], set[str], bool]:
-    """Identify plain test functions and known generating bases, conservatively."""
-    aliases = _cocotb_imports(tree)
-    plain: set[str] = set()
-    bases: set[str] = set()
-    generated = False
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        symbol = _cocotb_symbol(node.func, aliases)
-        if symbol.rsplit(".", 1)[-1] in {"TestFactory", "generate_tests", "parametrize"}:
-            generated = True
-        if symbol.rsplit(".", 1)[-1] == "TestFactory":
-            arguments = node.args[:1] + [
-                kw.value for kw in node.keywords if kw.arg == "test_function"
-            ]
-            bases.update(arg.id for arg in arguments if isinstance(arg, ast.Name))
-        if symbol == "cocotb.test" and any(kw.arg == "name" for kw in node.keywords):
-            generated = True
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        decorators = {_cocotb_symbol(dec, aliases) for dec in node.decorator_list}
-        if "cocotb.parametrize" in decorators:
-            bases.add(node.name)
-        elif decorators == {"cocotb.test"}:
-            plain.add(node.name)
-    return plain - bases, bases, generated
-
-
-def _check_cocotb_test_names(
-    source: Path,
-    module: str,
-    target: str,
-    declared: list[str],
-    _pass: Check,
-    _warn: Fail,
-    _skip: Check,
-) -> None:
-    """Report only the name claims static source can support."""
-    try:
-        tree = ast.parse(source.read_text(encoding="utf-8", errors="replace"))
-        plain, bases, generated = _cocotb_source_names(tree)
-    except (OSError, SyntaxError, ValueError, RecursionError):
-        _skip(
-            f"cocotb Target '{target}': tests.toml names cannot be verified statically — "
-            f"{module}.py could not be read or parsed; check results.xml at run time"
-        )
-        return
-    if generated:
-        base_names = [name for name in declared if name in bases]
-        explanation = (
-            f"; generating function name(s): {', '.join(base_names)} — cocotb reports "
-            "rendered IDs, which may differ from these base names"
-            if base_names
-            else ""
-        )
-        _skip(
-            f"cocotb Target '{target}': {len(declared)} tests.toml name(s) "
-            f"cannot be verified statically: {', '.join(declared)} — {module}.py uses "
-            "factory/parameterized test generation or renamed test IDs; "
-            f"the names are checked against results.xml at run time{explanation}"
-        )
-        return
-    missing = [name for name in declared if name not in plain]
-    if missing:
-        _warning_sink(_warn, "cocotb.test-name-missing", subject=target)(
-            f"cocotb Target '{target}': tests.toml names not found as "
-            f"functions decorated with @cocotb.test in {module}.py: {', '.join(missing)} "
-            "(static, advisory)",
-            "check the names against the @cocotb.test functions — a "
-            "mismatch surfaces at run time as inconclusive",
-        )
-    else:
-        _pass(f"cocotb Target '{target}' tests.toml names all present in {module}.py")
-
-
-def _check_cocotb_targets(
-    project: ProjectAudit,
-    refs: dict[str, TargetRef | TargetHandle],
-    _pass: Check,
-    _warn: Fail,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Conditional Cocotb Target checks (ADR 0034 / F1).
-
-    Fires only when a Target declares ``flow_options.cocotb_module``:
-
-    * a tests.toml plusarg ``select`` template on it is a config
-      contradiction (selection is the ``COCOTB_TEST_FILTER`` env var) — FAIL;
-    * the module file should exist in the Target's filesets and its fileset
-      be tagged ``tb`` (Source Isolation) — advisory WARN;
-    * plain test functions support advisory static name checks. Generating
-      modules defer every registered name, including generating base names,
-      to results.xml at run time (decision 7).
-    """
-    cocotb_refs = {n: r for n, r in refs.items() if r.cocotb_module}
-    if not cocotb_refs:
-        return
-    sections = _load_tests_toml_normalized(project)
-    for name, ref in sorted(cocotb_refs.items()):
-        module = ref.cocotb_module or ""
-        try:
-            section = lookup_target_section(sections, f"{ref.vlnv}#{ref.name}") or {}
-        except TargetSectionConflictError:
-            continue  # the section-key audit reports the duplicate keys
-        if "select" in section:
-            _fail(
-                f"cocotb Target '{name}' declares a tests.toml `select` plusarg template",
-                "remove `select` — cocotb test selection is the "
-                "COCOTB_TEST_FILTER env var built from the `tests` list "
-                "(ADR 0034)",
-            )
-        found = _cocotb_module_file(ref, module)
-        if found is None:
-            _warning_sink(_warn, "cocotb.module-file-missing", subject=name)(
-                f"cocotb Target '{name}': no fileset file matches its "
-                f"cocotb_module '{module}' ({module}.py)",
-                f"add the Python testbench to a tagged fileset with copyto: {module}.py",
-            )
-            continue
-        source, tagged = found
-        if not tagged:
-            _warning_sink(_warn, "cocotb.tb-tag-missing", subject=name)(
-                f"cocotb Target '{name}': the fileset carrying {module}.py "
-                "is not tagged tags:[tb]",
-                "tag it so Source Isolation partitions RTL vs TB "
-                "(ADR 0022 dec 13 / ADR 0034 dec 4)",
-            )
-        if not source.is_file():
-            _warning_sink(_warn, "cocotb.module-file-missing", subject=name)(
-                f"cocotb Target '{name}': module file {source} not found on disk",
-                "author the Python testbench (or fix the fileset path)",
-            )
-            continue
-        _pass(f"cocotb Target '{name}' module file present ({module}.py)")
-        declared = section.get("tests") or []
-        if declared:
-            _check_cocotb_test_names(source, module, name, declared, _pass, _warn, _skip)
-
-
-#: Native headers whose development package the base sandbox does NOT carry,
-#: mapped to the Debian package that provides them. Requirements baking is
-#: Python-only, so a DPI/testbench C++ file that includes one of these compiles
-#: nowhere until the project image installs it — Ibex's `dpi_memutil.cc`
-#: includes <libelf.h> and its Verilator target links -lelf, and the derived
-#: image shipped only the runtime `libelf.so.1` (F-9). Keep this list to
-#: headers genuinely absent from the base image; a false warning here costs
-#: more trust than the missing hint it replaces.
-_NATIVE_HEADER_PACKAGES = {
-    "libelf.h": "libelf-dev",
-    "gelf.h": "libelf-dev",
-    "elfutils/libdw.h": "libdw-dev",
-    "png.h": "libpng-dev",
-    "jpeglib.h": "libjpeg-dev",
-    "curl/curl.h": "libcurl4-openssl-dev",
-    "ssl/ssl.h": "libssl-dev",
-    "openssl/ssl.h": "libssl-dev",
-    "xml2/libxml/parser.h": "libxml2-dev",
-    "libxml/parser.h": "libxml2-dev",
-    "sqlite3.h": "libsqlite3-dev",
-    "boost/version.hpp": "libboost-dev",
-    "gmp.h": "libgmp-dev",
-    "mpfr.h": "libmpfr-dev",
-    "ncurses.h": "libncurses-dev",
-    "systemc.h": "libsystemc-dev",
-}
-
-_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
-
-_C_FAMILY_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
-
-#: Cap on files read for the include scan. The check is an advisory hint, not
-#: an audit; a monorepo with thousands of C++ files must not make doctor slow.
-_NATIVE_SCAN_FILE_CAP = 400
-
-
-def _dockerfile_declares_native_package(dockerfile: Path, package: str) -> bool:
-    """Return whether an apt install command in *dockerfile* names *package*.
-
-    Project-owned images are the documented remedy for native headers. Doctor
-    runs inside the Sandbox too, where Docker is deliberately absent,
-    so the hand-authored Dockerfile is the portable evidence available on both
-    venues. Ignore comments and require the package to occur as an install
-    argument, not merely elsewhere in the file.
-    """
-    try:
-        text = dockerfile.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    uncommented = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
-    joined = re.sub(r"\\\s*\n", " ", uncommented)
-    for match in re.finditer(r"(?:apt-get|apt)\s+install\b([^;&\n]*)", joined):
-        if package in re.findall(r"[A-Za-z0-9.+:-]+", match.group(1)):
-            return True
-    return False
-
-
-def _report_native_dependencies(
-    project: ProjectAudit,
-    needed: dict[str, set[str]],
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Report curated native packages, honoring the project image recipe."""
-    dockerfile = project.common_booley_dir / "docker" / "Dockerfile"
-    declared = {
-        package for package in needed if _dockerfile_declares_native_package(dockerfile, package)
-    }
-    if declared:
-        _pass(
-            "native build dependencies declared in project Dockerfile: "
-            + ", ".join(sorted(declared))
-        )
-    for package, users in sorted(needed.items()):
-        if package in declared:
-            continue
-        where = ", ".join(sorted(users)[:3])
-        more = f" (+{len(users) - 3} more)" if len(users) > 3 else ""
-        _warning_sink(_warn, "sandbox.native-dependency-missing", subject=package)(
-            f"C/C++ sources need the native package '{package}' ({where}{more}), "
-            "which the base sandbox image does not carry. Baking Python "
-            "requirements cannot pull in native deps — add it to "
-            ".booley/docker/Dockerfile and rebuild, or the simulation "
-            "build will fail on a missing header/library"
-        )
 
 
 def _native_dependency_sources(project: ProjectAudit) -> list[str]:
@@ -6751,44 +6142,13 @@ def _native_dependency_sources(project: ProjectAudit) -> list[str]:
     return sources
 
 
-def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check) -> None:
-    """Warn when a Target's C/C++ sources need a native package the image lacks.
-
-    ``booley init`` bakes the listed Python requirements only, so a native
-    build dependency is invisible to it: the project image is built, the flow
-    resolves, and the failure surfaces as a compile/link error deep inside a
-    simulation build. Naming the package at setup time is much cheaper than
-    debugging a missing header later.
-
-    Advisory by design — this is a curated header list, not a resolver, so it
-    can only be a hint. It never fails the gate.
-    """
-    root = project.project_root
-    sources = _native_dependency_sources(project)
-
-    needed: dict[str, set[str]] = {}
-    scanned = 0
-    for rel in dict.fromkeys(sources):
-        if Path(rel).suffix.lower() not in _C_FAMILY_SUFFIXES:
-            continue
-        if scanned >= _NATIVE_SCAN_FILE_CAP:
-            break
-        try:
-            text = (root / rel).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        scanned += 1
-        for header in _INCLUDE_RE.findall(text):
-            package = _NATIVE_HEADER_PACKAGES.get(header)
-            if package:
-                needed.setdefault(package, set()).add(rel)
-
-    if not scanned:
-        return  # no C/C++ in the selected Targets — nothing this check applies to
-    if not needed:
-        _pass(f"no known-missing native build dependencies in {scanned} C/C++ source(s)")
-        return
-    _report_native_dependencies(project, needed, _pass, _warn)
+def _native_dependency_request(project: ProjectAudit) -> pi.NativeDependencyRequest:
+    """Build the Project image owner's request from Doctor's selected Targets."""
+    return pi.NativeDependencyRequest(
+        project_root=project.project_root,
+        sources=tuple(_native_dependency_sources(project)),
+        dockerfile=project.common_booley_dir / "docker" / "Dockerfile",
+    )
 
 
 def _report_core_resolve(

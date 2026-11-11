@@ -9,7 +9,7 @@ import pytest
 
 from booley.goals.store import GoalStore
 from booley.harness.dashboard.app import job_detail, job_paths
-from booley.harness.dashboard.jobs import JobReader, target_arg
+from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
 from booley.mcp import (
     call_context,
@@ -801,7 +801,7 @@ def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
     ],
 )
 def test_target_arg_reads_both_spellings(argv, expected):
-    assert target_arg(argv) == expected
+    assert job_records.target_arg(argv) == expected
 
 
 def test_job_detail_links_job_log(tmp_path):

@@ -100,9 +100,13 @@ def test_campaign_report_lists_rows_and_a_rerun_command_per_failed_run(
     ]
     lines = run.result.outcome.report_text.splitlines()
     start = lines.index("  Test Runs: 2 (1 passed, 1 failed)")
-    assert lines[start + 1 : start + 5] == [
+    assert lines[start + 1 : start + 3] == [
         "    PASS         stress+short@1",
         "    FAIL         stress+soak@7",
+    ]
+    # The failed run names its log, the passing one prints no path.
+    assert lines[start + 3].startswith("      log: ")
+    assert lines[start + 4 : start + 6] == [
         "  Rerun a failed Test Run with the same seed:",
         "    booley flow sim --target lite --test=stress+soak@7",
     ]
@@ -215,3 +219,99 @@ def test_campaign_run_at_a_target_default_seed_other_than_one_prints_no_rows(
     assert run.result.exit_code == EXIT_SUCCESS, text
     assert "Test Runs:" not in text
     assert "smoke@7" not in text
+
+
+def _traced_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, failing: bool
+) -> tuple[CampaignSimRun, dict[str, Any]]:
+    """Run Test ``smoke`` with ``--trace``; the fake simulator dumps a waveform and reports it."""
+
+    def process(launch: Launch) -> SubprocessResult:
+        dump = launch.cwd / "smoke.fst"
+        dump.write_bytes(b"waveform")
+        verdict = "FAILED" if failing else "PASSED"
+        return SubprocessResult(
+            returncode=int(failing),
+            stdout=f"[SIM_RESULT] {verdict}\nTRACE_OK: {dump}\n",
+            duration_s=0.1,
+        )
+
+    run = run_campaign_sim(
+        tmp_path,
+        monkeypatch,
+        {"lite": ["smoke"]},
+        process,
+        files={".booley/tests.toml": '[lite]\ntests = ["smoke"]\nselect = "+test={name}"\n'},
+        target="lite",
+        trace=True,
+    )
+    return run, _simulation_json(tmp_path)
+
+
+def _simulation_json(tmp_path: Path) -> dict[str, Any]:
+    path = tmp_path / "reports/sim/1/targets/lite/simulation.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _card_path(text: str, label: str) -> Path:
+    """The path of the one ``<label>:`` line of the card."""
+    lines = [line for line in text.splitlines() if line.startswith(f"      {label}: ")]
+    assert len(lines) == 1, f"expected one {label}: line on the card, found {lines}"
+    return Path(lines[0].split(": ", 1)[1])
+
+
+def test_campaign_report_and_rows_carry_each_test_runs_evidence_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from booley.flows.sim.campaign.projection import decode_simulation_projection
+
+    run, report = _run(tmp_path, monkeypatch, "stress", "stress+soak@7", failing="iters=900")
+    target = tmp_path / "reports/sim/1/targets/lite"
+    text = run.result.outcome.report_text
+    mcp = json.loads((tmp_path / "reports/sim/1/report.json").read_text(encoding="utf-8"))
+    observations = mcp["detail"]["campaigns"]["lite"]["observations"]
+
+    # Card: the FAIL row names its log; the PASS row prints nothing.
+    log = _card_path(text, "log")
+    assert log.is_file()
+    assert "waveform:" not in text
+    # simulation.json and the MCP rows carry both paths for every Test Run, passing included.
+    for rows in (report["tests"], observations):
+        assert [(row["trace"], (target / row["log"]).is_file()) for row in rows] == [
+            (None, True),
+            (None, True),
+        ]
+    assert (target / report["tests"][1]["log"]).resolve() == log.resolve()
+    assert observations[1]["log"] == report["tests"][1]["log"]
+    # The Test Run rows rerun matching reads are untouched, and the file still decodes.
+    assert all({"log", "trace"}.isdisjoint(row) for row in report["test_runs"])
+    decode_simulation_projection(report, coverage_expected=False)
+
+
+def test_traced_failure_reports_its_captured_waveform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    run, report = _traced_run(tmp_path, monkeypatch, failing=True)
+    target = tmp_path / "reports/sim/1/targets/lite"
+    waveform = _card_path(run.result.outcome.report_text, "waveform")
+
+    assert waveform.is_file()
+    assert _card_path(run.result.outcome.report_text, "log").is_file()
+    (row,) = report["tests"]
+    assert (target / row["trace"]).resolve() == waveform.resolve()
+    assert (target / row["log"]).is_file()
+
+
+def test_traced_passing_run_shows_its_waveform_on_the_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    run, report = _traced_run(tmp_path, monkeypatch, failing=False)
+    text = run.result.outcome.report_text
+    target = tmp_path / "reports/sim/1/targets/lite"
+    waveform = _card_path(text, "waveform")
+
+    assert run.result.exit_code == EXIT_SUCCESS, text
+    assert "  Test Runs: 1 (1 passed)" in text
+    assert "      log: " not in text
+    assert waveform.is_file()
+    assert (target / report["tests"][0]["trace"]).resolve() == waveform.resolve()

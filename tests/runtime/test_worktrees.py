@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime.worktrees import WorktreeEntry, list_worktrees, parse_worktree_porcelain
 
@@ -13,13 +14,7 @@ SHA = "f4350f4c37961587b52be96f4d1f8a0c131b3ef2"
 
 
 def _git(root: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
-    ).stdout
+    return run_bounded_child(["git", "-C", str(root), *args], check=True).stdout
 
 
 @pytest.fixture

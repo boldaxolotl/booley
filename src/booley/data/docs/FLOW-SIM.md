@@ -112,8 +112,10 @@ The run ends with a block per Target: its verdict (`PASS`, `FAIL`, `ERROR` or
 `INCONCLUSIVE`, see below), the paths to its Campaign manifest and the report,
 and for a failure the end of the simulator output. The Test Runs are listed
 when there is more to say than "everything passed at the Default Seed" (a
-failure, another seed or Variant, or a Test that ran more than once). Each
-failed Test Run comes with a command that reruns it with the same seed:
+failure, another seed or Variant, a Test that ran more than once, or a
+[`--trace`](#waveforms) run that saved a waveform). Each failed Test Run comes
+with a command that reruns it with the same seed, and every Test Run that did
+not pass names its log:
 
 ```text
 sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
@@ -123,6 +125,7 @@ sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
   Test Runs: 3 (2 passed, 1 failed)
     PASS         stress+soak@1804289383
     FAIL         stress+soak@846930886
+      log: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/work-items/0002-…/attempts/0001-…/evidence/0001-run.log
     PASS         stress+soak@1681692777
   Rerun a failed Test Run with the same seed:
     booley flow sim --target sim_soc --test=stress+soak@846930886
@@ -138,13 +141,46 @@ seed:
     booley flow sim --target sim_soc --seed 846930886
 ```
 
-The two paths:
+In a `--trace` run the card also names each waveform, and lists the Test Runs
+even when all of them passed:
+
+```text
+sim_dma: PASS (Simulation Campaign 7b1c44d0-…)
+  manifest: /work/.booley/flow-reports/sim/12/targets/sim_dma/campaign/manifest.json
+  report: /work/.booley/flow-reports/sim/12/report.json
+  Test Runs: 1 (1 passed)
+    PASS         irq@1
+      waveform: /work/.booley/flow-reports/sim/12/targets/sim_dma/campaign/work-items/0001-…/attempts/0001-…/evidence/0003-trace.fst
+```
+
+The paths:
 
 - **`manifest`** is the run's plan, written before anything runs: the Target,
   the Test Runs with their seeds, the builds and the source files. You need
   it only to [resume an interrupted run](#resuming-an-interrupted-run).
 - **`report`** is the run's own `report.json`. Booley also keeps a copy of the
   newest run's report at `flow-reports/sim.json`; the next run overwrites it.
+- **`log`** is the full simulator output of that Test Run. A Test Run that did
+  not pass always names it, unless it never got as far as starting a simulator
+  (a build failure, for example): then there is no log and no `log:` line.
+  A Test Run that passed prints no log path.
+- **`waveform`** is the [waveform](#waveforms) the Test Run saved, when it ran
+  with `--trace`. It is printed under passing Test Runs too, and not at all
+  for a run without a waveform.
+
+The Test Runs of one Cocotb Target run as a batch, so they share one log and
+one waveform. The card prints these two paths for the first eight Test Runs of
+a Target, failures first, then says how many more there are; a coverage run
+prints none. A Test Run that was interrupted and then
+[resumed](#resuming-an-interrupted-run) names the files of the attempt that
+finished.
+
+Each run has its own numbered directory (`sim/12/` above; see
+[Running Flows](FLOW_REFERENCE.md#reading-results)). In it,
+`targets/<target>/simulation.json` holds the Target's results for tools: each
+Test Run with its seed, verdict and cycle count, and its `log` and `trace`
+paths (relative to that directory, `null` for a file that does not exist),
+passing Test Runs included.
 
 Each Test Run gets one verdict:
 
@@ -155,28 +191,8 @@ Each Test Run gets one verdict:
 | Timeout | The simulation ran past its time limit (`timeout_ms`, ten minutes by default). It counts as a failure: look for a deadlock in the RTL or testbench, or raise the limit if the test really needs longer. | `1` |
 | Error | An infrastructure problem stopped the test, such as a build timeout, a build failure with no recognised design error, a missing tool, or Pre-Sim Commands that can't start; the result says nothing about the design. An RTL compile error or a simulator crash is a failure instead. | `2` |
 
-The card doesn't print log or waveform paths. Each run has its own numbered
-directory (`sim/12/` above; see [Running Flows](FLOW_REFERENCE.md#reading-results)).
-These are the files to open, relative to
-`sim/<N>/targets/<target>/`:
-
-| File | What it holds |
-|---|---|
-| `simulation.json` | The Target's results: each Test Run with its seed, verdict and cycle count. |
-| `campaign/work-items/<NNNN>-<id>/attempts/<NNNN>-<id>/evidence/*-run.log` | The full simulator output of one Test Run, or of one batch for a Cocotb Target. |
-| `…/evidence/*-trace.fst` | The [waveform](#waveforms) of a `--trace` run, next to its log. |
-
-Work items are numbered in the order the run planned them, and each one's
-`result.json` names its Test Run. To find the log of the failed run above:
-
-```bash
-grep -l '"test_run":"stress+soak@846930886"' \
-  /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/work-items/*/result.json
-```
-
-A work item normally has one attempt. One that was interrupted and then
-[resumed](#resuming-an-interrupted-run) gets another, in the original run's
-directory.
+If every Test Run comes back inconclusive, see
+[Every simulation test comes back INCONCLUSIVE](TROUBLESHOOTING.md#every-simulation-test-comes-back-inconclusive).
 
 **Goals.** In Goal Mode (host doc, not shipped), a `sim` run that the agent makes in
 the Goal's worktree records evidence for `SIM`, `ELAB`, `CYCLE_COUNT` and
@@ -241,7 +257,7 @@ or when a signal changed, and it answers by reading the waveform with B-Wave.
 It can also open the part you care about in VS Code
 (Viewing waveforms (host doc, not shipped)). A traced run
 that produces no fresh, readable waveform is inconclusive rather than passing
-silently. The waveform is saved next to the Test Run's log; see
+silently. The card names each Test Run's waveform; see
 [Reading results](#reading-results).
 
 Booley stores every waveform as FST, a compact format that B-Wave and common

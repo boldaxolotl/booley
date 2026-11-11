@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from booley.evidence.review_vocabulary import (
+    ORIGIN_PRE_EXISTING,
     PERSISTED_REVIEWER_DISPOSITIONS,
     REVIEW_DISPOSITIONS,
     REVIEWER_TO_PACKAGE,
@@ -63,6 +64,7 @@ def _finding_row(
         "justification": str(finding.get("justification", "")),
         "exclusion_reason": str(finding.get("exclusion_reason", "")),
         "actor": str(finding.get("disposition_actor", "")),
+        "origin": str(finding.get("origin", "")),
     }
 
 
@@ -196,6 +198,8 @@ def is_corrective_done_finding(row: Mapping[str, Any]) -> bool:
         or not criterion.endswith("_done")
     ):
         return False
+    if row.get("origin") == ORIGIN_PRE_EXISTING:
+        return False  # introduced-before-the-change findings are observations
     disposition = row.get("reviewer_disposition") or row.get("disposition")
     status = row.get("status")
     return not any(

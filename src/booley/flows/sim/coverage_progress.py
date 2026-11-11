@@ -17,17 +17,6 @@ class CoverageProgress:
     targets: tuple[str, ...]
     outcomes: list[CoverageTargetOutcome] = field(default_factory=list)
 
-    def completed(self, outcome: CoverageTargetOutcome) -> None:
-        if outcome.abort_remaining:
-            self.checkpoint()
-            return
-        self.outcomes.append(outcome)
-        try:
-            self.checkpoint()
-        except Exception:
-            self.outcomes.pop()
-            raise
-
     def checkpoint(self, *, complete: bool = False, phase: str | None = None) -> None:
         done = [outcome.target for outcome in self.outcomes]
         resolved_phase = phase or (

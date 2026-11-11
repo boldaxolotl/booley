@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -46,7 +47,7 @@ def test_booley_dir_dependents_pass_without_harness_conftest(tmp_path: Path) -> 
         "PYTEST_XDIST_TESTRUNUID",
     ):
         environment.pop(name, None)
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             sys.executable,
             "-m",
@@ -66,10 +67,7 @@ def test_booley_dir_dependents_pass_without_harness_conftest(tmp_path: Path) -> 
         ],
         cwd=REPO_ROOT,
         env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
     passed = [
