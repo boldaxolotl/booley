@@ -22,6 +22,7 @@ from booley.runtime.docker_capacity import (
 from booley.runtime.image_identity import ImageMetadata
 from tests.conftest import symlink_or_skip
 from tests.harness.booley_dir_support import select_booley_dir
+from tests.subprocess_budget import run_bounded_child
 
 _ACTUAL_ALIAS_PROBE = lifecycle.project_image.project_data_alias_capable
 
@@ -4123,12 +4124,8 @@ assert session_refresh.pending_refresh_projects() == ()
 assert lifecycle.cleanup_owned_images(Path(PROJECT), docker=Docker()) == ()
 """
     code = f"IMAGE={image!r}\nSECOND={second!r}\nPROJECT={str(tmp_path)!r}\n" + code
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
         env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2] / "src")},
     )
     assert result.returncode == 0, result.stderr
