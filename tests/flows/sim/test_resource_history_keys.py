@@ -6,6 +6,7 @@ of the build-reuse tests and reads the history file the Flow wrote.
 
 from __future__ import annotations
 
+import os
 from collections import Counter
 from pathlib import Path
 
@@ -16,6 +17,11 @@ from booley.flows.sim.request import SimRequest
 from booley.runtime import resource_history
 from tests.flows.sim.test_verilator_build_reuse_campaign import (  # noqa: F401 -- fixture
     flow_project,
+)
+
+# The imported fake-Verilator Project is POSIX-only, like its home module.
+pytestmark = pytest.mark.skipif(
+    os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
 )
 
 _TESTS_TOML = """\
