@@ -390,6 +390,20 @@ def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     return ConfigTableAudit()
 
 
+def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Validate the undocumented ``[jobs].memory_budget`` override."""
+    from booley.audit.resource_policy import configured_memory_budget
+
+    try:
+        configured_memory_budget(data)
+    except ValueError as exc:
+        return failure(
+            f"booley.toml {exc}",
+            'set [jobs].memory_budget to a positive size such as "24g", or delete it',
+        )
+    return ConfigTableAudit()
+
+
 def audit_goals_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     """Validate Goal presentation knobs without inferring client lifecycle."""
     from booley.config.goals import parse_quiet_after
