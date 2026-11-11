@@ -33,7 +33,7 @@ from tests.diagnostic_helpers import (
     _record_environment,
     _require_doctor_warning,
 )
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import write_two_core_sim_project
 
 
@@ -326,13 +326,7 @@ class TestCustomToolsAndCriteria:
 
 
 def _git_init(root: Path) -> None:
-    subprocess.run(
-        ["git", "init", "-q", str(root)],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+    run_bounded_child(["git", "init", "-q", str(root)], check=True)
 
 
 class TestGitConflictsAndDirty:
@@ -607,7 +601,7 @@ def test_vivado_timeout_kills_child_process_group(tmp_path, monkeypatch, delayed
     assert "timeout --kill-after=2s 27s" in argv[-1]
     assert "--foreground" not in argv[-1]
     argv[-1] = argv[-1].replace("27s", "0.2s")
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
+    result = run_bounded_child(argv, timeout=5)
     assert result.returncode == 124
     pid = int(pid_file.read_text())
     stat = Path(f"/proc/{pid}/stat")

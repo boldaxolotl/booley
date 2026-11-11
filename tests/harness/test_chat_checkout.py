@@ -30,6 +30,7 @@ from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.session_activity import process_session_key
+from tests.subprocess_budget import run_bounded_child
 
 if sys.platform != "linux" or shutil.which("git") is None:
     pytest.skip(
@@ -55,9 +56,7 @@ class _Started:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    done = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, timeout=60
-    )
+    done = run_bounded_child(["git", *args], cwd=cwd, check=True)
     return done.stdout
 
 
@@ -353,6 +352,7 @@ def test_a_crashed_lock_holder_does_not_block_the_next_launch(project, monkeypat
         assert holder.stdout.readline() == "held\n"
         assert not _lock_is_free(project)
         holder.send_signal(signal.SIGKILL)
+        # Kept on subprocess.Popen: test drives the process (reads a line, SIGKILLs it)
         holder.wait(timeout=30)
     finally:
         if holder.poll() is None:
