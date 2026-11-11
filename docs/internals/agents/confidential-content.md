@@ -131,7 +131,10 @@ and term id, never the term); it never skips a check silently.
   enforced. Mergify's in-place update merge into an outside PR's branch is
   authored by an allowlisted identity, so it stays enforced, including its
   message, which names the branch; an outside PR whose branch name matches a
-  term fails once queued. A maintainer's edit to an outside PR's title or body is advisory (a
+  term fails once queued. A `Merge of #N` commit is always enforced, so an outside
+  PR whose term file also changed on the base side fails in the candidate's
+  combined diff until the contributor merges or rebases `main` themselves.
+  A maintainer's edit to an outside PR's title or body is advisory (a
   term match is still commented and labelled); agents publish PR text through
   `publish-pr`, which enforces.
 

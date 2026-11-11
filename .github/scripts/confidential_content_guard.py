@@ -134,8 +134,9 @@ class Finding:
 class Provenance:
     """Where commits and tree entries came from, so scans can attribute them.
 
-    ``outside`` holds commits merged from another owner's pull request;
-    ``attributing_merges`` the merges that attribute them (their messages are
+    ``outside`` holds commits attributed to outside work (merged from another
+    owner's pull request, an outside PR's own commits, or a verified candidate
+    range); ``attributing_merges`` the merges that attribute them (their messages are
     outside-authored); ``trusted_entries`` the exact ``(path, blob oid)`` pairs
     already accepted on the base tip.
     """
@@ -880,6 +881,7 @@ def _is_mergify_candidate(pull_request: object) -> bool:
     return (
         ids is not None
         and ids[0] == ids[1]
+        and type(_nested(pull_request, "user", "id")) is int
         and _nested(pull_request, "user", "id") == _MERGIFY_BOT_ID
         and _nested(pull_request, "user", "type") == "Bot"
         and isinstance(head_ref, str)
@@ -1162,16 +1164,15 @@ def _finish_scan(
     config: GuardConfig,
     *,
     report_path: Path | None,
-    scope: PullRequestScope,
     clean_message: str | None = None,
 ) -> int:
-    """Print findings, report outside-PR term advisories, and return the exit status.
+    """Print findings, write the advisory report when given, and return the exit status.
 
     Only enforced findings fail the scan; advisory findings are printed as warnings.
     """
     if findings:
         _print_findings(findings, config, sys.stderr)
-        if report_path is not None and scope == "outside":
+        if report_path is not None:
             _write_advisory_report(report_path, findings, config)
     if _has_enforced(findings):
         return 1
@@ -1261,9 +1262,10 @@ def _gh_api(arguments: list[str], what: str, stdin: bytes | None = None) -> byte
 def _advisory_posted(full_name: str, number: int, marker: str) -> bool:
     """True when the workflow bot already commented this finding set.
 
-    Only the bot's own comments count, so a contributor cannot suppress the
-    advisory by posting the marker. ``--jq`` runs once per page, so each comment
-    is emitted as one JSON line and filtered here.
+    Only the bot's own comments count, and only when the marker is the comment's
+    first line, so neither a contributor's comment nor a path planted in the
+    table can suppress the advisory. ``--jq`` runs once per page, so each comment
+    is emitted as one JSON line (``@json`` never emits a raw newline) and filtered here.
     """
     output = _gh_api(
         [
@@ -1274,9 +1276,14 @@ def _advisory_posted(full_name: str, number: int, marker: str) -> bool:
         ],
         "advisory lookup",
     )
-    for line in output.decode("utf-8", errors="replace").splitlines():
-        login, account_type, body = cast("list[str]", json.loads(line))
-        if login == _BOT_LOGIN and account_type == "Bot" and marker in body:
+    for line in output.decode("utf-8", errors="replace").split("\n"):
+        if not line:
+            continue
+        try:
+            login, account_type, body = cast("list[str]", json.loads(line))
+        except (ValueError, TypeError) as exc:
+            raise GuardError("the GitHub advisory lookup returned an invalid record") from exc
+        if login == _BOT_LOGIN and account_type == "Bot" and body.split("\n", 1)[0] == marker:
             return True
     return False
 
@@ -1389,7 +1396,9 @@ def pre_push_hook_main(
             scope = _pull_request_scope(pull_request)
             provenance = _scope_provenance(root, scope, pull_request, commits, provenance)
         findings = inspect_commits(root, commits, config, provenance)
-        return _finish_scan(findings, config, report_path=advisory_report, scope=scope)
+        return _finish_scan(
+            findings, config, report_path=advisory_report if scope == "outside" else None
+        )
     except GuardError as exc:
         return _guard_failure(exc, sys.stderr)
 
@@ -1415,8 +1424,7 @@ def pull_request_main(
         return _finish_scan(
             findings,
             config,
-            report_path=advisory_report,
-            scope=scope,
+            report_path=advisory_report if scope == "outside" else None,
             clean_message="Confidential-content pull-request metadata guard: clean.",
         )
     except GuardError as exc:
@@ -1634,6 +1642,22 @@ def restore_draft_main(repo: Path | str) -> int:
     return 0
 
 
+def _load_vocabularies(root: Path, revision: str) -> tuple[GuardConfig, GuardConfig]:
+    """Return the trusted and the proposed vocabulary; the proposal must use the trusted key."""
+    trusted = _sealed_config_bytes(root)
+    identifier = sealed_key_id(trusted)
+    key = _vocabulary_key(identifier)
+    trusted_config = _parse_config(unseal_vocabulary(trusted, key), root)
+    spec = f"{revision}:{_SEALED_CONFIG_NAME}"
+    size = int(_run_git(root, ["cat-file", "-s", spec]).strip())
+    if size > 2 * 1024 * 1024:
+        raise GuardError("the proposed encrypted vocabulary exceeds the size limit")
+    proposed = _run_git(root, ["cat-file", "blob", spec])
+    if sealed_key_id(proposed) != identifier:
+        raise GuardError("the proposed encrypted vocabulary uses a different key")
+    return trusted_config, _parse_config(unseal_vocabulary(proposed, key), root)
+
+
 def _candidate_findings(
     root: Path,
     commits: list[str],
@@ -1667,18 +1691,7 @@ def verify_candidate_main(
     try:
         if _OID_RE.fullmatch(revision) is None or _OID_RE.fullmatch(base) is None:
             raise GuardError("the candidate or base revision is invalid")
-        trusted = _sealed_config_bytes(root)
-        identifier = sealed_key_id(trusted)
-        key = _vocabulary_key(identifier)
-        trusted_config = _parse_config(unseal_vocabulary(trusted, key), root)
-        spec = f"{revision}:{_SEALED_CONFIG_NAME}"
-        size = int(_run_git(root, ["cat-file", "-s", spec]).strip())
-        if size > 2 * 1024 * 1024:
-            raise GuardError("the proposed encrypted vocabulary exceeds the size limit")
-        proposed = _run_git(root, ["cat-file", "blob", spec])
-        if sealed_key_id(proposed) != identifier:
-            raise GuardError("the proposed encrypted vocabulary uses a different key")
-        candidate_config = _parse_config(unseal_vocabulary(proposed, key), root)
+        trusted_config, candidate_config = _load_vocabularies(root, revision)
         event = _read_event(event_path)
         scope = _pull_request_scope(_pull_request_object(event))
         findings = _candidate_findings(
@@ -1696,8 +1709,7 @@ def verify_candidate_main(
         return _finish_scan(
             findings,
             candidate_config,
-            report_path=advisory_report,
-            scope=scope,
+            report_path=advisory_report if scope == "outside" else None,
             clean_message="Proposed encrypted vocabulary: valid.",
         )
     except (ValueError, OSError, SealedVocabularyError, GuardError) as exc:

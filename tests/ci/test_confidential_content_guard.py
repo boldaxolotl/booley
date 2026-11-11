@@ -2080,7 +2080,12 @@ if "--paginate" in arguments:
     record(method="GET", endpoint=arguments[arguments.index("--paginate") + 1], jq=selector)
     # Stand in for the production selector's projection; filtering is the code under test.
     for comment in comments:
-        print(json.dumps([comment["user"]["login"], comment["user"]["type"], comment["body"]]))
+        row = [comment["user"]["login"], comment["user"]["type"], comment["body"]]
+        # Real gh prints @json output raw, so U+2028 stays unescaped.
+        print(json.dumps(row, ensure_ascii=False))
+    raw = os.path.join(state, "comments.raw")
+    if os.path.exists(raw):
+        sys.stdout.write(open(raw, encoding="utf-8").read())
     sys.exit(0)
 endpoint = arguments[0]
 record(method="GET", endpoint=endpoint)
@@ -2121,6 +2126,9 @@ class _FakeGh:
             "base": {"repo": {"id": 1}},
         }
         (self.state / "pulls" / f"{number}.json").write_text(json.dumps(pull), encoding="utf-8")
+
+    def serve_raw_comments(self, text: str) -> None:
+        (self.state / "comments.raw").write_text(text, encoding="utf-8", newline="\n")
 
     def serve_comments(self, comments: list[dict]) -> None:
         (self.state / "comments.json").write_text(json.dumps(comments), encoding="utf-8")
@@ -2217,8 +2225,7 @@ def _run_pr_scan_step(
     scripts.mkdir(parents=True, exist_ok=True)
     for name in ("confidential_content_guard.py", "confidential_vocabulary.py"):
         shutil.copy(SCANNER.parent / name, scripts / name)
-    event_path = repo.parent / "event.json"
-    event_path.write_text(json.dumps(event), encoding="utf-8")
+    event_path = _write_event(repo, event)
     runner_temp = repo.parent / "runner-temp"
     runner_temp.mkdir(exist_ok=True)
     env = gh.env | {
@@ -2330,6 +2337,43 @@ def test_pr_scan_step_status_follows_provenance(tmp_path: Path, case: str) -> No
         assert labels == comments == []
     if status == 1:
         assert "blocked this operation" in result.stderr
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("case", ["other-digest", "other-bot-login", "marker-in-cell", "u2028"])
+def test_pr_scan_step_posts_unless_the_bot_posted_this_set(tmp_path: Path, case: str) -> None:
+    repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
+    gh = _FakeGh(tmp_path)
+    event = _pr_event(head=head, base=base)
+    _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
+    posted = gh.posts("/comments")[0]["body"]["body"]
+    marker = posted.splitlines()[0]
+    bot = {"login": "github-actions[bot]", "type": "Bot"}
+    comment = {
+        "other-digest": {"user": bot, "body": marker.replace(marker[-10], "z") + "\nrows"},
+        "other-bot-login": {"user": {"login": "other[bot]", "type": "Bot"}, "body": posted},
+        # A contributor-controlled path can put the marker inside the bot's table.
+        "marker-in-cell": {"user": bot, "body": f"<!-- other -->\n| `{marker}` |"},
+        "u2028": {"user": {"login": "someone", "type": "User"}, "body": "a\u2028b"},
+    }[case]
+    gh.serve_comments([comment])
+    gh.reset()
+
+    _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
+    assert len(gh.posts("/labels")) == len(gh.posts("/comments")) == 1
+
+
+@POSIX_ONLY
+def test_pr_scan_step_fails_on_a_malformed_comment_lookup(tmp_path: Path) -> None:
+    repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
+    gh = _FakeGh(tmp_path)
+    gh.serve_raw_comments("not json\n")
+
+    result = _run_pr_scan_step(repo, _pr_event(head=head, base=base), gh, base=base)
+
+    _expect_exit(result, 1)
+    assert "the GitHub advisory lookup returned an invalid record" in result.stderr
+    assert gh.posts("/labels") == gh.posts("/comments") == []
 
 
 @POSIX_ONLY
@@ -2512,7 +2556,7 @@ def _candidate_case(tmp_path: Path, case: str) -> tuple[Path, str, dict, _FakeGh
     clean_maintainer = case == "outside-and-clean-maintainer"
     stacked = case == "outside-stacked-on-maintainer"
     order = ["12", "11"] if case == "maintainer-then-outside-term" or stacked else ["11", "12"]
-    if case in {*_CANDIDATE_NOTES, "pushed-commit-on-candidate"}:
+    if case in {*_CANDIDATE_NOTES, "pushed-commit-on-candidate", "unlisted-merge-commit"}:
         order = ["11"]
     maintainer_files = {"maint.txt": "clean\n"} if clean_maintainer else _MAINTAINER_FILES
     # An unlisted maintainer identity makes enforcement visible even where a term would not.
@@ -2526,6 +2570,19 @@ def _candidate_case(tmp_path: Path, case: str) -> tuple[Path, str, dict, _FakeGh
     if case == "pushed-commit-on-candidate":
         (repo / "pushed.txt").write_bytes(TERM_TEXT.encode())
         head = _commit(repo, "pushed after the queue", name=OUTSIDER[0], email=OUTSIDER[1])
+    if case == "unlisted-merge-commit":
+        # A hand-made `Merge of #11` that also adds a term file under an unlisted identity.
+        (repo / "evil.txt").write_bytes(TERM_TEXT.encode())
+        _git(repo, "add", "evil.txt")
+        _git(
+            repo,
+            "commit",
+            "--amend",
+            "--no-edit",
+            "--reset-author",
+            env=_identity_env(*OUTSIDER),
+        )
+        head = _git(repo, "rev-parse", "HEAD")
     gh = _FakeGh(tmp_path)
     served_head = "0" * 40 if case == "outside-head-mismatch" else tips["11"]
     if case != "lookup-fails":
@@ -2561,6 +2618,10 @@ def _assert_candidate_outcome(
         assert "outside.txt" in warnings and "maint.txt" not in warnings
         # The maintainer's unlisted identity is enforced; the outside author's is advisory.
         assert "identity not allowed" in errors and "identity not allowed" in warnings
+    elif case == "unlisted-merge-commit":
+        # The merge commit is never exempt, only the verified outside range behind it.
+        assert "evil.txt" in errors and "identity not allowed" in errors
+        assert "outside.txt" in warnings and "outside.txt" not in errors
     elif case == "pushed-commit-on-candidate":
         assert "pushed.txt" in errors and "outside.txt" not in errors
         assert "outside.txt" in warnings
@@ -2586,6 +2647,7 @@ def _assert_candidate_outcome(
         "lookup-fails",
         "member-fork-pr",
         "pushed-commit-on-candidate",
+        "unlisted-merge-commit",
         "not-mergify-user-type",
     ],
 )
@@ -2598,15 +2660,13 @@ def test_candidate_enforces_only_maintainer_commits(tmp_path: Path, case: str) -
         _assert_candidate_outcome(case, result, repo, gh)
 
 
-@POSIX_ONLY
 def test_candidate_without_merge_commits_exempts_nothing(tmp_path: Path) -> None:
     repo, base, _head, _tips = _candidate_repository(tmp_path, [], {"11": _OUTSIDE_FILES})
     (repo / "plain.txt").write_bytes(TERM_TEXT.encode())
     head = _commit(repo, "plain commit", name=SAFE[0], email=SAFE[1])
-    gh = _FakeGh(tmp_path)
 
     result = _scan_with_event(
-        repo, "pre-push", _candidate_event(head, base), base=base, env=gh.env
+        repo, "pre-push", _candidate_event(head, base), base=base, env=os.environ.copy()
     )
 
     _expect_exit(result, 1)
@@ -2614,7 +2674,6 @@ def test_candidate_without_merge_commits_exempts_nothing(tmp_path: Path) -> None
     assert "plain.txt" in result.stderr
 
 
-@POSIX_ONLY
 def test_candidate_metadata_is_advisory(tmp_path: Path) -> None:
     repo, base, head = _pr_scenario(tmp_path, [(SAFE, _CLEAN_FILE)])
     event = _candidate_event(head, base, title=f"Queue {SENTINEL}")
@@ -2626,12 +2685,6 @@ def test_candidate_metadata_is_advisory(tmp_path: Path) -> None:
     _expect_exit(candidate, 0)
     assert "WARNING" in candidate.stderr and "pull request title" in candidate.stderr
     assert SENTINEL not in candidate.stdout + candidate.stderr
-    # The same text on a PR that is not a Mergify candidate stays enforced.
-    event["pull_request"]["user"] = {"id": 5, "type": "User"}
-    event_path = _write_event(repo, event)
-    maintainer = _run_guard(repo, ["pull-request", "--event", str(event_path)], env)
-    _expect_exit(maintainer, 1)
-    assert "ERROR" in maintainer.stderr
 
 
 def _with_head_repo(event: dict) -> None:
@@ -2644,11 +2697,11 @@ _CANDIDATE_MARKER_EDITS: dict[str, Callable[[dict], None]] = {
     "other-bot-id": lambda event: event["pull_request"]["user"].update(id=5),
     "other-queue-branch": lambda event: event["pull_request"]["head"].update(ref="mergify/bp/x"),
     "fork-head": _with_head_repo,
+    "float-bot-id": lambda event: event["pull_request"]["user"].update(id=37929162.0),
     "boolean-repository-id": lambda event: event["pull_request"]["head"].update(repo={"id": True}),
 }
 
 
-@POSIX_ONLY
 @pytest.mark.parametrize("case", sorted(_CANDIDATE_MARKER_EDITS))
 def test_candidate_metadata_needs_every_mergify_marker(tmp_path: Path, case: str) -> None:
     repo, base, head = _pr_scenario(tmp_path, [(SAFE, _CLEAN_FILE)])
@@ -2663,15 +2716,13 @@ def test_candidate_metadata_needs_every_mergify_marker(tmp_path: Path, case: str
     assert SENTINEL not in result.stdout + result.stderr
 
 
-@POSIX_ONLY
 def test_outside_pr_enforced_finding_survives_advisory_cap(tmp_path: Path) -> None:
     allowlisted_term = {"maintainer.txt": TERM_TEXT}
     many_paths = {f"{SENTINEL}-{index}.txt": "clean\n" for index in range(101)}
     repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, many_paths), (SAFE, allowlisted_term)])
-    gh = _FakeGh(tmp_path)
 
     result = _scan_with_event(
-        repo, "pre-push", _pr_event(head=head, base=base), base=base, env=gh.env
+        repo, "pre-push", _pr_event(head=head, base=base), base=base, env=os.environ.copy()
     )
 
     _expect_exit(result, 1)
@@ -2680,17 +2731,15 @@ def test_outside_pr_enforced_finding_survives_advisory_cap(tmp_path: Path) -> No
     assert SENTINEL not in result.stdout + result.stderr
 
 
-@POSIX_ONLY
 def test_outside_pr_invalid_proposed_vocabulary_still_fails(tmp_path: Path) -> None:
     repo, base, _head = _pr_scenario(tmp_path, [(OUTSIDER, _CLEAN_FILE)])
     (repo / ".github/confidential-vocabulary.enc").write_bytes(b"corrupt\n")
     _git(repo, "checkout", "-b", "tampered", base)
     head = _commit(repo, "tamper with the vocabulary", name=OUTSIDER[0], email=OUTSIDER[1])
     _git(repo, "checkout", base)  # the trusted vocabulary stays intact in the working tree
-    gh = _FakeGh(tmp_path)
 
     result = _scan_with_event(
-        repo, "verify-candidate", _pr_event(head=head, base=base), base=base, env=gh.env
+        repo, "verify-candidate", _pr_event(head=head, base=base), base=base, env=os.environ.copy()
     )
 
     _expect_exit(result, 1)
@@ -2698,7 +2747,6 @@ def test_outside_pr_invalid_proposed_vocabulary_still_fails(tmp_path: Path) -> N
     assert "WARNING" not in result.stderr
 
 
-@POSIX_ONLY
 def test_advisory_report_write_failure_fails_closed(tmp_path: Path) -> None:
     repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
     event_path = _write_event(repo, _pr_event(head=head, base=base))
@@ -2763,7 +2811,6 @@ def test_no_plaintext_term_in_advisory_outputs(tmp_path: Path) -> None:
         assert SENTINEL.upper() not in output.upper()
 
 
-@POSIX_ONLY
 def test_verify_candidate_redacts_with_trusted_vocabulary(tmp_path: Path) -> None:
     repo, _initial = _repository(tmp_path)
     _sealed_fixture(repo, _encoded_config())
@@ -2825,6 +2872,7 @@ def test_post_advisory_bounds_and_neutralises_rows(tmp_path: Path) -> None:
     body = gh.posts("/comments")[0]["body"]["body"]
     assert len(body) < 65_536
     assert "10 more findings not shown" in body
+    assert body.count("| confidential term |") == 100
     cell = next(line for line in body.splitlines() if "@maintainer" in line)
     assert "`x`" not in cell and "\\|" in cell and "?line" in cell
     assert "p" * 201 not in body
