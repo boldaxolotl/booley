@@ -202,7 +202,9 @@ Flow's page says which files in it to open.
 **Dry runs.** `--dry-run` prints a JSON plan of each unit of work: Target,
 sources, constraints, parameters, and the exact commands. It exits `0` when
 everything can be planned and `2` otherwise, still showing the parts that
-could be planned.
+could be planned. An ordinary or coverage `sim` dry run lists each Target's
+pending Simulation Campaign work items instead, and an ordinary or coverage
+`sim` planning failure names every error without a partial plan.
 
 When a Flow fails for a reason you can't explain, see
 [Troubleshooting](TROUBLESHOOTING.md). If Booley itself seems wrong, report it
