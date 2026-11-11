@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" class="fd" viewBox="0 0 440 196" role="img" aria-label="Two paths from the EDA tool to you. Without Booley: project-specific glue scripts, written by you or the agent, can be wrong; then the agent reads the logs and reports, and can misread or skip important detail. With Booley: Booley runs the tool and extracts the numbers, so the agent sees the same numbers; the commit carries them, marked Measured: tests failed 0, area 58.2 kGE within 60, coverage 93% against 90%.">
+<svg xmlns="http://www.w3.org/2000/svg" class="fd" viewBox="0 0 440 196" role="img" aria-label="Two paths from the EDA tool to you. Without Booley: project-specific glue scripts, written by you or the agent, can be wrong; then the agent reads the logs and reports, and can misread or skip important detail. With Booley: Booley runs the tool and extracts numbers, so the agent sees the same numbers; the commit carries them, marked Measured: tests failed 0, area 58.2 kGE within 60, coverage 93% against 90%.">
 <rect class="bx" x="0.5" y="0.5" width="55" height="195"/>
 <text class="t" x="28" y="92" text-anchor="middle">EDA tool</text>
 <text class="s" x="28" y="106" text-anchor="middle">simulator,</text>
@@ -28,7 +28,7 @@
 <rect class="bx ok" x="78" y="123" width="137" height="67"/>
 <text class="mark" x="146.5" y="140" text-anchor="middle">BOOLEY</text>
 <text class="s" x="146.5" y="154" text-anchor="middle">runs the tool,</text>
-<text class="s" x="146.5" y="166" text-anchor="middle">extracts the numbers</text>
+<text class="s" x="146.5" y="166" text-anchor="middle">extracts numbers</text>
 <text class="em ok" x="146.5" y="181" text-anchor="middle">agent sees the same numbers</text>
 <rect class="bx" x="232.5" y="122.5" width="138" height="68"/>
 <text class="sha" x="240" y="137">3f9c2a1</text>

@@ -43,7 +43,7 @@ Everything sits in one VS Code window: agent chats, RTL, terminals, waveforms, a
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://booley.dev/docs/assets/feature-parallel-dark.svg">
-  <img alt="Inside the Sandbox container each agent works in its own worktree and branch; only the LLM provider is reachable, and you review and merge finished work into main" src="https://booley.dev/docs/assets/feature-parallel-light.svg">
+  <img alt="Inside the container each agent works in its own worktree and branch; only the LLM provider is reachable, and you review and merge finished work into main" src="https://booley.dev/docs/assets/feature-parallel-light.svg">
 </picture>
 
 ### Results you can trust

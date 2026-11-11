@@ -140,8 +140,10 @@ p { margin: 0 0 14px; }
 .front .order { margin-top: 70px; }
 
 /* ---- Features: three rows, text left, its diagram right ----
-   Diagram styles: features.css. Phones stack the diagram under the text. */
-.feat__card { display: grid; grid-template-columns: minmax(0, 1fr) 500px; gap: 0 48px; align-items: center;
+   Two equal columns: about 500px for the diagram at full page width, and the
+   text keeps half the row on narrower screens. Diagram styles: features.css.
+   Below 860px the diagram stacks under the text. */
+.feat__card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 48px; align-items: center;
   padding: 26px 0; border-top: 1px solid var(--rule-soft); }
 .feat__card:first-child { border-top: 0; padding-top: 4px; }
 .feat__card:last-child { padding-bottom: 0; }

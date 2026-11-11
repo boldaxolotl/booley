@@ -73,11 +73,24 @@ def test_features_match_the_readme_word_for_word():
     assert _readme_feature_cards() == site_cards
 
 
+def _illustration_build():
+    """Load website/illustration/build.py, which the site toolchain runs as a script."""
+    spec = importlib.util.spec_from_file_location(
+        "site_illustration", WEBSITE / "illustration/build.py"
+    )
+    assert spec and spec.loader
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    return build
+
+
 def test_every_feature_card_shows_its_diagram_on_the_site_and_in_the_readme():
     """The home page inlines each diagram; the README shows its light and dark copies."""
     features = _site_section("features")
     readme_section = README.split("## What it does\n", 1)[1].split("\n## ", 1)[0]
-    for name in ("feature-tools", "feature-parallel", "feature-results"):
+    diagrams = _illustration_build().FEATURE_DIAGRAMS
+    assert len(diagrams) == len(_site_feature_cards())
+    for name in diagrams:
         assert f'--8<-- "{name}.svg"' in features
         assert f'srcset="{SITE_URL}docs/assets/{name}-dark.svg"' in readme_section
         assert f'src="{SITE_URL}docs/assets/{name}-light.svg"' in readme_section
@@ -136,13 +149,8 @@ def test_readme_links_resolve_to_site_sections_and_pages():
 
 
 def test_generated_illustration_is_up_to_date():
-    """ide.css, ide-figure.html, and the architecture diagram match their sources."""
-    spec = importlib.util.spec_from_file_location(
-        "site_illustration", WEBSITE / "illustration/build.py"
-    )
-    assert spec and spec.loader
-    build = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(build)
+    """ide.css, ide-figure.html, and the architecture and Features diagrams match their sources."""
+    build = _illustration_build()
 
     assert build.FIGURE_OUT.read_text(encoding="utf-8") == build.figure_html()
     assert build.CSS_OUT.read_text(encoding="utf-8") == build.css_text()
