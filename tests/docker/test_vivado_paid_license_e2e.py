@@ -23,6 +23,7 @@ from tests.license_evidence import (
     parse_flexnet_lmstat,
     require_checkout_then_release,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
@@ -129,12 +130,9 @@ def _issue(workspace: Path, p: Prerequisites) -> None:
 
 
 def _flow(container: str, *, timeout_ms: int = 600_000) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_bounded_child(
         _flow_argv(container, timeout_ms=timeout_ms),
-        capture_output=True,
-        text=True,
         timeout=(timeout_ms // 1000) + 90,
-        check=False,
     )
 
 
@@ -159,7 +157,7 @@ def _flow_argv(container: str, *, timeout_ms: int) -> list[str]:
 
 def _lmstat(container: str, p: Prerequisites) -> subprocess.CompletedProcess[str]:
     lmutil = f"{CONTAINER_TARGET}/Vivado/bin/unwrapped/lnx64.o/lmutil"
-    return subprocess.run(
+    return run_bounded_child(
         [
             "docker",
             "exec",
@@ -174,20 +172,14 @@ def _lmstat(container: str, p: Prerequisites) -> subprocess.CompletedProcess[str
             "-t",
             "3",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
-        check=False,
     )
 
 
 def _container_hostname(container: str) -> str:
-    result = subprocess.run(
+    result = run_bounded_child(
         ["docker", "inspect", container, "--format", "{{.Config.Hostname}}"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     if result.returncode != 0 or not result.stdout.strip():
         pytest.fail(f"cannot inspect Session hostname: {result.stderr}")
@@ -197,6 +189,7 @@ def _container_hostname(container: str) -> str:
 def _run_paid_flow_with_vendor_evidence(container: str, p: Prerequisites) -> None:
     """Run one Flow while independently sampling the fixed vendor status tool."""
     client_host = _container_hostname(container)
+    # Unbounded child: the test drives this Popen itself while sampling lmstat
     process = subprocess.Popen(
         _flow_argv(container, timeout_ms=600_000),
         stdout=subprocess.PIPE,
@@ -216,6 +209,7 @@ def _run_paid_flow_with_vendor_evidence(container: str, p: Prerequisites) -> Non
                     active_status = status.stdout
                     break
         time.sleep(1)
+    # Unbounded child: the test drives this Popen itself while sampling lmstat
     output, _ = process.communicate(timeout=690)
     assert process.returncode == 0, output
     assert active_status, "FlexNet never reported this Session's paid checkout"
@@ -238,6 +232,8 @@ def _run_paid_flow_with_vendor_evidence(container: str, p: Prerequisites) -> Non
 
 
 @pytest.mark.slow()
+# Integration budget: ~70 s per Flow plus licence checkout; child bounds (up to 690 s) sit inside it
+@pytest.mark.timeout(1800)
 def test_paid_vivado_checkout_uses_production_relay_and_vendor_status_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -251,23 +247,17 @@ def test_paid_vivado_checkout_uses_production_relay_and_vendor_status_evidence(
     relay = resources_for_session(str(workspace.resolve()))
     try:
         _run_paid_flow_with_vendor_evidence(container, p)
-        relay_logs = subprocess.run(
+        relay_logs = run_bounded_child(
             ["docker", "logs", relay.relay_container],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         assert f"listener_port={p.lmgrd_port}" in relay_logs.stdout + relay_logs.stderr
         assert f"listener_port={p.vendor_port}" in relay_logs.stdout + relay_logs.stderr
         assert p.server_ipv4 not in relay_logs.stdout + relay_logs.stderr
 
-        subprocess.run(
+        run_bounded_child(
             ["docker", "stop", relay.relay_container],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         failed = _flow(container, timeout_ms=120_000)
         assert failed.returncode != 0, "paid Flow passed with its fixed relay stopped"
