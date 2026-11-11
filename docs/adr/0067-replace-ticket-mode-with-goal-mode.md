@@ -1,6 +1,6 @@
 # Replace Ticket Mode with Goal Mode
 
-Status: proposed (2026-10-02; amended 2026-10-06: Phase 0 spike results and plan decisions, see Amendments)
+Status: proposed (2026-10-02; amended 2026-10-06: Phase 0 spike results and plan decisions, see Amendments); superseded by [ADR 0092](0092-measure-commits-against-target-metrics.md) when Goal Mode is removed (0.5.0)
 
 Ticket Mode makes a human write a Ticket up front, queue it on the Ticket
 Board, and review it later, with a separate Developer Agent doing the work.
