@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 _SCRIPT = Path(__file__).parents[2] / ".github/scripts/assert_junit.py"
 _SPEC = importlib.util.spec_from_file_location("assert_junit", _SCRIPT)
@@ -70,11 +70,8 @@ def test_valid_junit_file_prints_summary_and_passes(
 def test_missing_junit_file_fails_with_one_line(tmp_path: Path) -> None:
     missing = tmp_path / "junit.xml"
 
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, str(_SCRIPT), str(missing)],
-        capture_output=True,
-        text=True,
-        timeout=30,
         check=False,
     )
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import os
 import re
-import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +17,7 @@ from tests.sandbox_image_contract import (
     load_sources,
     validate_sources,
 )
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import dockerfile_syntax
 from booley.runtime.dockerfile_syntax import logical_instructions
@@ -688,13 +688,10 @@ def test_parent_inventory_mismatch_fails_the_step(
         shell = ["--noprofile", "--norc", "-eo", "pipefail"] if value.get("shell") else ["-e"]
         argv = ["bash", *shell, str(script)]
     path = f"{docker.parent}{os.pathsep}{os.environ['PATH']}"
-    result = subprocess.run(
+    result = run_bounded_child(
         argv,
         cwd=_ROOT,
         env={**os.environ, "PATH": path, "RUNNER_TEMP": str(tmp_path), **env},
-        capture_output=True,
-        text=True,
-        timeout=30,
         check=False,
     )
 
