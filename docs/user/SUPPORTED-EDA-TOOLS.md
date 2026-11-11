@@ -144,7 +144,7 @@ can replace the Python packages.
 |---|---|
 | Base image | Ubuntu 26.04 |
 | Python | 3.14 |
-| Verilator | v5.052 (commit `ea338be98e1e838d3518809ce8899f85a009963c`) |
+| Verilator | v5.054 (commit `bbb60a403932a9f695cb6ff001ceb73de6ad9234`) |
 | Icarus Verilog | v13_0 |
 | Yosys | v0.69, with its built-in `slang` frontend |
 | sv2v | v0.0.13 |
