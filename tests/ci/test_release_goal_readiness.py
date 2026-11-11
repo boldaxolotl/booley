@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 from tests.python_command_support import python_path_entry
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support.demo_contract_codec import load_contract
 from booley.goals.translate import translate_goals
@@ -46,7 +47,7 @@ def _run(
     path = tmp_path / "goal-readiness.json"
     if document is not None:
         path.write_text(document if isinstance(document, str) else json.dumps(document))
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-I",
@@ -57,8 +58,6 @@ def _run(
             "--readiness",
             str(path),
         ],
-        capture_output=True,
-        text=True,
         timeout=10,
         check=False,
     )
@@ -194,7 +193,7 @@ def test_release_summary_is_written_only_after_valid_readiness(
         for step in job["steps"]
         if step.get("name") == "Record PicoRV32 evidence"
     )
-    result = subprocess.run(
+    result = run_bounded_child(
         ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
         cwd=ROOT,
         env={
@@ -204,8 +203,6 @@ def test_release_summary_is_written_only_after_valid_readiness(
             "GITHUB_SHA": "candidate-sha",
             "IMAGE_DIGEST": "sha256:image",
         },
-        capture_output=True,
-        text=True,
         check=False,
         timeout=10,
     )
