@@ -9,7 +9,8 @@ from typing import ClassVar
 
 import pytest
 
-from booley.criteria.categories import _FINGERPRINT_CATEGORIES, CATEGORY_RTL, CATEGORY_TB
+from booley.core.source_categories import CATEGORY_RTL, CATEGORY_TB
+from booley.criteria.categories import _FINGERPRINT_CATEGORIES
 from booley.criteria.state import (
     CriterionEntry,
     DevelopmentState,

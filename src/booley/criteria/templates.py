@@ -42,24 +42,17 @@ from booley.core.boundary import (
 )
 from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS, describe_threshold
+from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.targets import target_naming
+from booley.targets.domain import TargetPair
 
 logger = logging.getLogger(__name__)
 
 _RELATIVE_QOR_SUFFIXES = ("_increase_at_most", "_reduce_at_least")
 _PAIRED_TARGET_CRITERIA = frozenset({"synthesis_ok", "fpga_impl_ok"})
-BASELINE_TARGET_PARAM = "_baseline_target"
 
 # Non-expanded criteria whose behavior still belongs to one Target.
 TARGET_BOUND_CRITERION_FLOWS: dict[str, str] = {}
-
-
-@dataclass(frozen=True)
-class TargetPair:
-    """One frozen baseline/candidate Target relationship for a relative Criterion."""
-
-    baseline: str
-    candidate: str
 
 
 def parse_target_pair(value: Any, *, field: str = "target") -> TargetPair:

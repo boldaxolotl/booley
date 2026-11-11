@@ -5,8 +5,8 @@
 - :mod:`booley.goals.translate` — Goal arguments to Criteria, merging Goals for
   one key to the stricter Goal.
 - :mod:`booley.goals.paths` — the Goal Record layout in the Booley Directory.
-- :mod:`booley.goals.store` — worktree identity, locks, and revisioned
-  ``record.json`` writes.
+- :mod:`booley.goals.store` — locks and revisioned ``record.json`` writes, and the
+  Goal-side wrapper of :mod:`booley.runtime.worktree_identity`.
 - :mod:`booley.goals.changes` — the append-only Change Log.
 - :mod:`booley.goals.goalsets` — rendering and create-only seeding of the
   Project-owned Goalsets.

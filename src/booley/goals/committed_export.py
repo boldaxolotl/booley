@@ -4,24 +4,29 @@ from __future__ import annotations
 
 import os
 import stat
-import tomllib
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import is_str_list, require_dict
 from booley.core.config_paths import resolve_booley_toml
 from booley.goals.baseline_objects import baseline_repository, cached_administration
 from booley.goals.committed_bytes import (
     ATTRIBUTES_CHANGED_ERROR,
-    BytePolicy,
     attributes,
     byte_policy,
     projected_blobs,
+    refuse_goal_transformations,
+    require_ambient_matches,
 )
 from booley.goals.input_identity import directory_identity, rebase_path
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.proposals import digest
+from booley.runtime.commit_export import (
+    BytePolicy,
+    CommitExportError,
+    configured_submodule_paths,
+    materialize_tree,
+)
 from booley.runtime.git_facts import repository_facts
 from booley.runtime.pinned_history import raw_git, tree_rows, validate_pin
 from booley.runtime.project_repositories import (
@@ -67,7 +72,10 @@ def export_tree(
         }
     ]
     config = confined(project_config or resolve_booley_toml(destination), scratch)
-    selected = _configured_paths(config)
+    try:
+        selected = configured_submodule_paths(config)
+    except CommitExportError as exc:
+        raise LifecycleError(str(exc)) from exc
     for name, metadata in rows.items():
         _mode, kind, oid = metadata.split()
         relative = os.fsdecode(name)
@@ -144,33 +152,6 @@ def _export_live_submodule(
     return nested
 
 
-def _configured_paths(config: Path) -> tuple[str, ...] | None:
-    """Selection comes only from the already materialized pinned Project, never live policy."""
-    if not config.exists():
-        return None
-    raw = require_dict(
-        tomllib.loads(config.read_text(encoding="utf-8")), field="pinned Project config"
-    )
-    section = require_dict(raw.get("submodules", {}), field="[submodules]")
-    if "paths" not in section:
-        return None
-    paths = section["paths"]
-    if not is_str_list(paths):
-        raise LifecycleError("[submodules].paths must be an array of strings")
-    for value in paths:
-        if (
-            not value
-            or value != value.strip()
-            or not value.isprintable()
-            or value.startswith(("-", "/"))
-            or "\\" in value
-            or PureWindowsPath(value).drive
-            or any(part in {"", ".", ".."} for part in PurePosixPath(value).parts)
-        ):
-            raise LifecycleError("unsafe pinned submodule selection path: " + value)
-    return tuple(paths)
-
-
 def _export_blobs(
     repository: Path,
     commit: str,
@@ -180,19 +161,12 @@ def _export_blobs(
     attrs: dict[bytes, dict[str, str]],
     policy: BytePolicy,
 ) -> None:
-    blobs = projected_blobs(repository, commit, rows, attrs, policy)
+    require_ambient_matches(repository, commit, list(rows), attrs, policy)
+    refuse_goal_transformations(attrs)
     for name, metadata in rows.items():
-        mode, kind, oid = metadata.split()
-        if kind != b"blob":
-            continue
-        path = confined(destination / os.fsdecode(name), scratch)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if mode == b"120000":
-            content = raw_git(repository, "cat-file", "blob", oid.decode("ascii"))
-            path.symlink_to(os.fsdecode(content))
-        else:
-            path.write_bytes(blobs[name])
-            path.chmod(0o755 if mode == b"100755" else 0o644)
+        if metadata.split()[1] == b"blob":
+            confined(destination / os.fsdecode(name), scratch)
+    materialize_tree(repository, commit, destination, rows, policy)
 
 
 def attrs_json(attrs: dict[bytes, dict[str, str]]) -> dict[str, Any]:
