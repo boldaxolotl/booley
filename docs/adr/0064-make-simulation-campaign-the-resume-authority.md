@@ -4,6 +4,10 @@ status: accepted
 
 # Make the Simulation Campaign the resume authority
 
+This ADR's campaign terminology is superseded by
+[ADR 0090](0090-rename-simulation-and-coverage-campaigns-to-records.md): read
+Simulation Campaign as Simulation Record. Its other decisions stand.
+
 `SimulateFlow` remains the CLI and immediate-presentation adapter, while the
 existing endpoint acceptance stage delegates Campaign Outcomes to a dedicated
 `SimulationAcceptanceCoordinator`, the sole Simulation Campaign Criteria owner.
