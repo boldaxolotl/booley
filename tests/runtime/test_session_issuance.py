@@ -3501,7 +3501,11 @@ def test_real_grant_changes_refuse_refresh_then_allow_authorized_reseed(
         eda_grants.GrantCoordinator().revoke(project, "vivado")
     assert not runtime_spec.stamp_path(project).exists()
     images = Mock(spec=session_refresh.RuntimeImageOperations)
-    with pytest.raises(session_runtime.SessionError, match="cannot preserve the prior Sandbox"):
+    with pytest.raises(
+        session_runtime.SessionError,
+        match=r"cannot preserve the prior Sandbox.*"
+        r"`booley session down`, `booley init --seed`, and `booley session up`",
+    ):
         session_refresh.refresh(project, images)
     images.inspect.assert_not_called()
     images.prepare.assert_not_called()

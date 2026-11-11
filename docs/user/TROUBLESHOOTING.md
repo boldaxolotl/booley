@@ -625,7 +625,8 @@ units. In the `.core`, list those headers first in the fileset.
 Run `booley doctor` on the host, then `booley doctor --deep` in the Sandbox.
 Check that the Project has a Grant, that the registered installation is still
 a Linux x86-64 Vivado 2025.2, and that Doctor reports no devcontainer drift.
-Fix the host side first, then reseed the Sandbox with `booley init --seed`.
+Fix the host side first, then apply it as [Applying Sandbox
+changes](SANDBOX.md#applying-sandbox-changes) describes.
 `booley eda installation list`, `booley eda license list` and `booley projects`
 show the current records.
 
