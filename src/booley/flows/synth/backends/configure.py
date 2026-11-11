@@ -26,7 +26,11 @@ from booley.flows.synth.backends.yosys.core import (  # Core synthesis functions
     synth_timing_config,
 )
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
-from booley.flows.synth.timing import DEFAULT_TIMING_REPORT_PATHS, StaTimingConfig
+from booley.flows.synth.timing import (
+    DEFAULT_TIMING_REPORT_PATHS,
+    OpenRoadPpaSettings,
+    StaTimingConfig,
+)
 from booley.flows.target_parameters import ParameterValue
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.shared_infra import (
@@ -120,7 +124,7 @@ def _resolve_ppa_settings(
 ) -> tuple[
     str,
     yosys_ppa_options.YosysPpaSettings,
-    openroad_ppa_options.OpenRoadPpaSettings,
+    OpenRoadPpaSettings,
 ]:
     """Resolve a generic profile plus explicit backend overrides."""
     profile = getattr(args, "ppa_profile", None) or DEFAULT_PPA_PROFILE
@@ -160,7 +164,7 @@ def _openroad_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
 
 def _validate_resolved_ppa(
     yosys: yosys_ppa_options.YosysPpaSettings,
-    openroad: openroad_ppa_options.OpenRoadPpaSettings,
+    openroad: OpenRoadPpaSettings,
 ) -> None:
     """Range-check resolved PPA values before rendering backend commands."""
     if yosys.abc_delay_ps is not None and yosys.abc_delay_ps <= 0:
@@ -200,7 +204,7 @@ def _legacy_timing_fallbacks(args: argparse.Namespace) -> tuple[bool, bool]:
 
 def _resolve_syn_timing(
     args: argparse.Namespace,
-    openroad: openroad_ppa_options.OpenRoadPpaSettings,
+    openroad: OpenRoadPpaSettings,
     project_root: Path | None = None,
 ) -> StaTimingConfig:
     """Resolve validated timing configuration for logical or physical synthesis."""
@@ -209,13 +213,7 @@ def _resolve_syn_timing(
     return synth_timing_config(
         mode=mode,
         sdc=args.sta_sdc,
-        utilization_pct=openroad.utilization_pct,
-        repair_timing=openroad.repair_setup,
-        placement_density=openroad.placement_density,
-        repair_hold=openroad.repair_hold,
-        gate_cloning=openroad.gate_cloning,
-        setup_margin_ns=openroad.setup_margin_ns,
-        repair_tns_percent=openroad.repair_tns_percent,
+        ppa=openroad,
         report_paths=args.timing_report_paths,
         legacy_utilization_fallback=legacy_utilization_fallback,
         legacy_repair_fallback=legacy_repair_fallback,

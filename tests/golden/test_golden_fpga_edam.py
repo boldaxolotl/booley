@@ -20,6 +20,8 @@ import json
 from pathlib import Path
 
 from booley.flows.fpga.backends.vivado.edam import build_fpga_edam
+from booley.flows.fpga.profiles import VIVADO_PROFILES
+from booley.flows.run_evidence import FlowSourceEvidence
 from tests.golden.conftest import assert_matches_golden
 
 # Canned workspace layout. work_root mirrors work_root_for()'s real
@@ -30,16 +32,28 @@ _WORK_ROOT = _WS / ".booley" / ".runtime" / "edalize" / "fpga" / "lite"
 
 def _build(extra_eda_tool_options: dict | None = None) -> str:
     """Build the canned EDAM and serialize it deterministically."""
-    edam = build_fpga_edam(
-        name="lite_fpga",
-        toplevel="dut_top",
+    from booley.flows.fpga.recipe import ResolvedFpgaRecipe
+
+    recipe = ResolvedFpgaRecipe(
+        target="lite",
+        resolved=None,
         part="xc7a100tcsg324-1",
-        sv_files=[_WS / "rtl" / "pkg.sv", _WS / "rtl" / "dut.sv"],
-        v_files=[_WS / "rtl" / "legacy_blk.v"],
-        include_dirs=[_WS / "rtl" / "include"],
-        xdc_files=[_WS / "constraints" / "board.xdc"],
-        defines=["SYNTHESIS", "WIDTH=8"],
+        top="dut_top",
+        xdc_files=(_WS / "constraints" / "board.xdc",),
+        sv_files=(_WS / "rtl" / "pkg.sv", _WS / "rtl" / "dut.sv"),
+        v_files=(_WS / "rtl" / "legacy_blk.v",),
+        include_dirs=(_WS / "rtl" / "include",),
+        defines=("SYNTHESIS", "WIDTH=8"),
         vlogparams={"DEPTH": 16},
+        out_of_context=False,
+        ppa_profile=VIVADO_PROFILES["balanced"],
+        recipe_snapshot={},
+        recipe_fingerprint="",
+        source_evidence=FlowSourceEvidence("rev", "sha"),
+    )
+    edam = build_fpga_edam(
+        recipe,
+        name="lite_fpga",
         workspace_root=_WS,
         work_root=_WORK_ROOT,
         extra_eda_tool_options=extra_eda_tool_options,

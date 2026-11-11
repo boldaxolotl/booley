@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 
 from booley.evidence.timing import per_clock_to_json
@@ -15,8 +14,6 @@ from booley.flows.implementation_report import (
 )
 
 if TYPE_CHECKING:
-    from booley.criteria.templates import TargetPair
-
     from .backends.vivado.metrics import FpgaMetrics
 
 _FPGA_DELTA_METRICS = (
@@ -88,29 +85,11 @@ def _run(metrics: FpgaMetrics) -> ImplementationRun:
 
 
 def build_fpga_implementation_report(
-    *,
-    target: str,
-    pair: TargetPair,
+    context: ImplementationContext,
     current: FpgaMetrics,
     baseline: FpgaMetrics | None,
-    baseline_ref: str | None,
-    resolved_baseline_ref: str | None,
-    eda_tool: str | None,
-    baseline_target_identity: str | None = None,
-    candidate_target_identity: str | None = None,
 ) -> ImplementationReport:
     """Normalize FPGA evidence and build its canonical v1 report."""
-    context = ImplementationContext(
-        flow="fpga",
-        target=target,
-        eda_tool=eda_tool,
-        invocation_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-        baseline_target=pair.baseline,
-        baseline_target_identity=baseline_target_identity,
-        candidate_target_identity=candidate_target_identity,
-        requested_baseline_ref=baseline_ref,
-        resolved_baseline_ref=resolved_baseline_ref,
-    )
     policy = MetricPolicy(
         delta_metrics=_FPGA_DELTA_METRICS,
         required_comparison_metrics=("lut_count", "ff_count"),

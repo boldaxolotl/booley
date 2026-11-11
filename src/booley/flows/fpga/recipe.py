@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,32 @@ from booley.evidence.recipe import (
     recipe_snapshot_fingerprint,
 )
 
+from ..run_evidence import FlowSourceEvidence
 from .profiles import VivadoProfile, resolve_fpga_profile
+
+
+@dataclass(frozen=True)
+class ResolvedFpgaRecipe:
+    """Validated Target recipe shared by dry-run and real materialization."""
+
+    target: str
+    resolved: Any
+    part: str
+    top: str
+    xdc_files: tuple[Path, ...]
+    sv_files: tuple[Path, ...]
+    v_files: tuple[Path, ...]
+    include_dirs: tuple[Path, ...]
+    defines: tuple[str, ...]
+    vlogparams: dict[str, Any]
+    out_of_context: bool
+    ppa_profile: VivadoProfile
+    recipe_snapshot: dict[str, Any]
+    recipe_fingerprint: str
+    source_evidence: FlowSourceEvidence
+    # Folders Vivado resolves relative includes in; set only in isolated
+    # Projects, where they widen the cache key (see cache.input_fingerprint).
+    reachable_dirs: tuple[Path, ...] = ()
 
 
 def normalized_fpga_flow_options(flow_options: Mapping[str, Any]) -> dict[str, Any]:
