@@ -1613,16 +1613,23 @@ def derive_coverage_rollups(points: Iterable[CoveragePoint]) -> tuple[CoverageRo
     return tuple(rollups)
 
 
-def rederive_coverage_points(
-    campaign: CoverageCampaign, points: tuple[CoveragePoint, ...]
+def apply_point_dispositions(
+    campaign: CoverageCampaign, dispositions: Mapping[str, Mapping[str, object]]
 ) -> CoverageCampaign:
-    """Return *campaign* with *points* and the rollups those points imply.
+    """Return *campaign* with the named points' dispositions and the rollups they imply.
 
-    Rollups exist only for complete, compatible collection, so a Campaign with
-    none keeps none and a Campaign with rollups gets exactly the derivation of
-    its new points. Rows are always canonical: one per metric with points, with
-    the canonical semantics text.
+    *dispositions* maps Coverage Point id to its new disposition; other points
+    are unchanged. Rollups exist only for complete, compatible collection, so a
+    Campaign with none keeps none and a Campaign with rollups gets exactly the
+    derivation of its new points. Rows are always canonical: one per metric with
+    points, with the canonical semantics text.
     """
+    points = tuple(
+        replace(point, disposition=freeze_coverage_mapping(dispositions[point.id]))
+        if point.id in dispositions
+        else point
+        for point in campaign.points
+    )
     rollups = derive_coverage_rollups(points) if campaign.rollups else ()
     return replace(campaign, points=points, rollups=rollups)
 

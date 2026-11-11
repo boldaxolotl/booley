@@ -31,6 +31,8 @@ from booley.flows.sim.coverage_policy import (
     CoverageCriterion,
     CoverageThreshold,
     evaluate_coverage_campaign,
+    evaluation_json,
+    strict_reevaluation,
 )
 from booley.flows.sim.coverage_waivers import (
     CoverageRepositoryRoots,
@@ -947,17 +949,27 @@ def test_complete_normalization_with_unknown_records_still_matches(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    ("case", "expected_code"),
+    ("case", "expected_code", "expected_message"),
     [
-        ("ambiguous", "COV_WAIVER_MATCH_AMBIGUOUS"),
-        ("source_mismatch", "COV_WAIVER_POINT_SOURCE_MISMATCH"),
-        ("unscored", "COV_WAIVER_POINT_UNSCORABLE"),
+        ("stale", "COV_WAIVER_POINT_STALE", "Approval no longer matches a point."),
+        ("ambiguous", "COV_WAIVER_MATCH_AMBIGUOUS", "Approval matches multiple points."),
+        (
+            "source_mismatch",
+            "COV_WAIVER_POINT_SOURCE_MISMATCH",
+            "Matched point belongs to a different RTL source.",
+        ),
+        (
+            "unscored",
+            "COV_WAIVER_POINT_UNSCORABLE",
+            "Only V1-scored eligible RTL points can be waived.",
+        ),
     ],
 )
 def test_ambiguous_or_ineligible_match_blocks_without_applying(
     tmp_path: Path,
     case: str,
     expected_code: str,
+    expected_message: str,
 ) -> None:
     roots = _roots(tmp_path)
     _write_valid_approval(roots)
@@ -968,7 +980,11 @@ def test_ambiguous_or_ineligible_match_blocks_without_applying(
     )
     campaign = _campaign()
     first = campaign.points[0]
-    if case == "ambiguous":
+    if case == "stale":
+        campaign = replace(
+            campaign, points=(replace(first, id="renamed-point"), campaign.points[1])
+        )
+    elif case == "ambiguous":
         campaign = replace(campaign, points=(first, *campaign.points))
     elif case == "source_mismatch":
         identity = replace(first.identity, location=MappingProxyType({"source": "rtl/other.sv"}))
@@ -987,8 +1003,31 @@ def test_ambiguous_or_ineligible_match_blocks_without_applying(
     evaluated = evaluate_coverage_campaign(campaign, _criterion(), approved)
 
     assert evaluated.evaluation["status"] == "blocked"
-    assert evaluated.evaluation["diagnostics"][0]["code"] == expected_code
+    assert evaluated.evaluation["diagnostics"][0] == {
+        "code": expected_code,
+        "pointer": "/approved_waivers/rtl/counter.sv.toml#counter-basic-block",
+        "message": expected_message,
+    }
     assert all(point.disposition["kind"] != "waived" for point in evaluated.points)
+
+
+@pytest.mark.parametrize("already_waived", [False, True])
+def test_strict_reevaluation(tmp_path: Path, already_waived: bool) -> None:
+    roots = _roots(tmp_path)
+    config = CoverageWaiverConfig("project_data_repository", "coverage-waivers")
+    (roots.project_data_repository / "coverage-waivers").mkdir()
+    empty = load_approved_waiver_set(config, roots, (_TARGET,))
+    _write_valid_approval(roots)
+    approved = load_approved_waiver_set(config, roots, (_TARGET,))
+    persisted = evaluate_coverage_campaign(
+        _campaign(), _criterion(), approved if already_waived else empty
+    )
+    assert persisted.evaluation["status"] == ("pass" if already_waived else "fail")
+    evaluated = strict_reevaluation(persisted, approved, criterion=_criterion())
+    assert evaluated.evaluation["status"] == "pass"
+    assert evaluated.evaluation["approved_waiver_set_digest"] == approved.digest
+    assert evaluated.evaluation["diagnostics"] == ()
+    assert evaluation_json(evaluated)["status"] == "pass"
 
 
 def test_known_other_target_approval_is_valid_but_inapplicable(tmp_path: Path) -> None:
