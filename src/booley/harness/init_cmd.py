@@ -122,7 +122,6 @@ from booley.harness.setup.docker_image import (
     _read_version,
     _step_docker_image,
     _try_pull_image,
-    ensure_flavor_image,
     source_fingerprint_mismatch,
 )
 from booley.harness.setup.git_hooks import (
