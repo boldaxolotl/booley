@@ -19,8 +19,10 @@ from booley.flows.sim.flow import (
     _coverage_report_suffix,
 )
 from booley.flows.sim.request import SimRequest
+from booley.flows.test_runs import build_test_run
 from booley.mcp.job_results import _read_report_json
 from tests.conftest import symlink_or_skip
+from tests.flows.sim.campaign_test_support import _recorded_campaign
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
@@ -152,20 +154,23 @@ def test_campaign_build_diagnostics_survive_preview_limit() -> None:
 
 
 @pytest.mark.parametrize("budget", [80, 300, 4000, 12000])
-def test_cycle_card_global_limits_and_utf8_names(monkeypatch, budget):
+def test_cycle_card_global_limits_and_utf8_names(tmp_path, monkeypatch, budget):
     from types import SimpleNamespace
 
     from booley.flows.sim.flow import _campaign_report_lines
 
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget * 2))
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
+    run = build_test_run("é" * 256)
+    recorded = _recorded_campaign(tmp_path, (run,))
     outcomes = [
         SimpleNamespace(
             target={"selector": str(index)},
             manifest_path=Path("/manifest.json"),
             aggregate_grade="fail",
             observations=[
-                {"test": "é" * 256, "cycle_count": value, "detail": {}} for value in range(100)
+                recorded.fact(run, test="é" * 256, cycle_count=value, detail={})
+                for value in range(100)
             ],
         )
         for index in range(2)
@@ -192,7 +197,7 @@ def test_cycle_card_global_limits_and_utf8_names(monkeypatch, budget):
 
 
 @pytest.mark.parametrize("reason", ["x\n", "x\r\nz", "x\u2028z"])
-def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
+def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from booley.flows.sim import flow
@@ -210,14 +215,16 @@ def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
     monkeypatch.setattr(flow, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"])
     monkeypatch.setattr(flow, "source_gap_report_lines", lambda _campaign: [])
 
+    one, two = build_test_run("one"), build_test_run("two")
+    recorded = _recorded_campaign(tmp_path, (one, two))
     outcome = SimpleNamespace(
         target={"selector": "sim"},
         manifest_path=Path("/target/campaign/manifest.json"),
         aggregate_grade="fail",
         coverage_reference=object(),
         observations=[
-            {"test": "one", "cycle_count": 7, "detail": {"reason": reason}},
-            {"test": "two", "cycle_count": None, "detail": {"reason": "y"}},
+            recorded.fact(one, test="one", cycle_count=7, detail={"reason": reason}),
+            recorded.fact(two, test="two", cycle_count=None, detail={"reason": "y"}),
         ],
     )
     rendered = flow._campaign_report_lines([outcome])[0]
@@ -1076,7 +1083,7 @@ def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_pat
         collect_pre_sim_firings(*roots)
 
 
-def test_campaign_card_renders_each_target_once(monkeypatch):
+def test_campaign_card_renders_each_target_once(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from booley.flows.sim import flow
@@ -1087,12 +1094,14 @@ def test_campaign_card_renders_each_target_once(monkeypatch):
     monkeypatch.setattr(
         flow, "_campaign_test_run_lines", lambda selector, *args: calls.append(selector) or []
     )
+    smoke = build_test_run("smoke")
+    recorded = _recorded_campaign(tmp_path, (smoke,))
     outcomes = [
         SimpleNamespace(
             target={"selector": name},
             manifest_path=Path("/manifest.json"),
             aggregate_grade="pass",
-            observations=[{"test": "smoke", "cycle_count": 0, "detail": {}}],
+            observations=[recorded.fact(smoke, test="smoke", cycle_count=0, detail={})],
         )
         for name in ("one", "two")
     ]
@@ -1255,17 +1264,20 @@ def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
 def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
     tmp_path: Path,
 ) -> None:
+    runs = [build_test_run(f"test_{index:02d}") for index in range(40)]
+    recorded = _recorded_campaign(tmp_path, runs)
     observations = tuple(
-        {
-            "test": f"test_{index:02d}",
-            "execution": "timeout" if index == 39 else "completed",
-            "failure_class": "design" if index == 39 else None,
-            "functional": "fail" if index % 2 else "pass",
-            "assertions": "dirty" if index % 3 == 0 else "clean",
-            "assertion_count": index,
-            "detail": {"reason": f"detail-{index}"},
-        }
-        for index in range(40)
+        recorded.fact(
+            run,
+            test=f"test_{index:02d}",
+            execution="timeout" if index == 39 else "completed",
+            failure_class="design" if index == 39 else None,
+            functional="fail" if index % 2 else "pass",
+            assertions="dirty" if index % 3 == 0 else "clean",
+            assertion_count=index,
+            detail={"reason": f"detail-{index}"},
+        )
+        for index, run in enumerate(runs)
     )
     outcome = SimpleNamespace(
         target={"selector": "sim"},
@@ -1296,11 +1308,15 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
 
 
 def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -> None:
+    unnamed = build_test_run(None)
+    recorded = _recorded_campaign(tmp_path, (unnamed,), ())
     outcome = SimpleNamespace(
         target={"selector": "sim_fail"},
         manifest_path=tmp_path / "campaign/manifest.json",
         aggregate_grade="fail",
-        observations=({"detail": {"reason": "intentional simulator failure"}},),
+        observations=(
+            recorded.fact(unnamed, test=None, detail={"reason": "intentional simulator failure"}),
+        ),
     )
 
     assert _campaign_report_lines((outcome,), report_path=tmp_path / "sim.json")[0] == (

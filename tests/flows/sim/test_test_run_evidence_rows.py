@@ -273,17 +273,15 @@ def test_an_incomplete_campaign_still_records_its_matching_failure(tmp_path):
     assert change.met is False and change.detail["test_runs"] == _rows(_RESET)
 
 
-def test_facts_that_name_no_test_runs_have_no_rows(tmp_path: Path):
+def test_evidence_rows_refuse_an_observation_whose_fingerprint_is_not_recorded(tmp_path: Path):
     outcome = _outcome(tmp_path, _RESET)
     document = dict(outcome.acceptance_facts.document)
-    document["$schema"] = "booley.simulation-acceptance-facts/v1"
     document["observations"] = [
-        {
-            key: value
-            for key, value in observation.items()
-            if key not in {"test_run", "test_run_fingerprint"}
-        }
+        {**observation, "test_run_fingerprint": "sha256:" + "0" * 64}
         for observation in document["observations"]
     ]
-    older = replace(outcome, acceptance_facts=AcceptanceFacts(document))
-    assert evidence_test_run_rows(older) == []
+    forged = replace(outcome, acceptance_facts=AcceptanceFacts(document))
+    with pytest.raises(
+        SimulationCampaignIntegrityError, match="no recorded Test Run with its fingerprint"
+    ):
+        evidence_test_run_rows(forged)

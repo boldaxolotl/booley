@@ -11,7 +11,6 @@ import pytest
 
 from booley.config.project_config import normalize_tests_toml
 from booley.flows.builtin_cli import parse_request
-from booley.flows.sim.campaign.codec import encode_simulation_campaign_manifest
 from booley.flows.sim.campaign.test_run_report import (
     _recorded_test_runs,
     campaign_test_run_rows,
@@ -24,17 +23,15 @@ from booley.flows.sim.flow import (
 )
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
+from tests.flows.sim.campaign_test_support import _recorded_campaign
 from tests.flows.sim.test_campaign_test_runs import _hdl_plan, _run_campaign
 
 _SOAK = build_test_run("count", variant="soak", seed=42, args=("+iters=9",))
 
 
-def _observation(item: dict, run: TestRun, *, passed: bool, test: str | None = None) -> dict:
+def _grade_members(*, passed: bool) -> dict:
+    """The members of an observation fact that grade it; identity comes from the manifest."""
     return {
-        "work_item_id": item["work_item_id"],
-        "target": item["target"],
-        "test": run.test if test is None else test,
-        "test_run": run.name if test is None else f"{test}@{run.seed}",
         "execution": "completed",
         "failure_class": None if passed else "design",
         "functional": "pass" if passed else "fail",
@@ -47,19 +44,14 @@ def _observation(item: dict, run: TestRun, *, passed: bool, test: str | None = N
 
 def _outcome(tmp_path: Path, runs: tuple[TestRun, ...], passed: tuple[bool, ...], required=None):
     """A campaign outcome whose manifest is on disk and whose runs ended as *passed*."""
-    plan = _hdl_plan(
-        tmp_path,
-        tuple((run,) for run in runs),
-        ("reset", "count") if required is None else required,
+    recorded = _recorded_campaign(
+        tmp_path, runs, ("reset", "count") if required is None else required
     )
-    manifest = tmp_path / "manifest.json"
-    manifest.write_bytes(encode_simulation_campaign_manifest(plan.manifest))
-    items = plan.manifest.document["work_items"]
     observations = tuple(
-        _observation(item, run, passed=ok)
-        for item, run, ok in zip(items, runs, passed, strict=True)
+        recorded.fact(run, test=run.test, **_grade_members(passed=ok))
+        for run, ok in zip(runs, passed, strict=True)
     )
-    return SimpleNamespace(manifest_path=manifest, observations=observations)
+    return SimpleNamespace(manifest_path=recorded.manifest_path, observations=observations)
 
 
 def test_rows_join_each_observation_to_its_recorded_test_run(tmp_path: Path):
@@ -132,13 +124,10 @@ def test_structured_detail_carries_bounded_rows(tmp_path: Path):
     }
 
 
-def test_facts_that_name_no_test_runs_have_no_rows(tmp_path: Path):
+def test_a_campaign_whose_manifest_is_gone_has_no_rows(tmp_path: Path):
     outcome = _outcome(tmp_path, (_SOAK,), (False,))
-    for observation in outcome.observations:
-        del observation["test_run"]
-    assert campaign_test_run_rows(outcome) == []
-    missing = SimpleNamespace(manifest_path=tmp_path / "gone.json", observations=())
-    assert campaign_test_run_rows(missing) == []
+    gone = SimpleNamespace(manifest_path=tmp_path / "gone.json", observations=outcome.observations)
+    assert campaign_test_run_rows(gone) == []
 
 
 _TESTS = {
@@ -204,16 +193,13 @@ def test_rerun_command_of_the_unnamed_invocation(adapter, seed, tail):
 
 def test_tests_an_unfiltered_cocotb_batch_discovered_get_rows(tmp_path: Path):
     unnamed = build_test_run(None, seed=9)
-    plan = _hdl_plan(tmp_path, ((unnamed,),), ())
-    manifest = tmp_path / "manifest.json"
-    manifest.write_bytes(encode_simulation_campaign_manifest(plan.manifest))
-    item = plan.manifest.document["work_items"][0]
+    recorded = _recorded_campaign(tmp_path, (unnamed,), ())
     observations = (
-        _observation(item, unnamed, passed=True, test="found_a"),
-        _observation(item, unnamed, passed=False, test="found_b"),
+        recorded.fact(unnamed, discovered="found_a", **_grade_members(passed=True)),
+        recorded.fact(unnamed, discovered="found_b", **_grade_members(passed=False)),
     )
     rows = campaign_test_run_rows(
-        SimpleNamespace(manifest_path=manifest, observations=observations)
+        SimpleNamespace(manifest_path=recorded.manifest_path, observations=observations)
     )
     assert [(row["name"], row["grade"]) for row in rows] == [
         ("found_a@9", "pass"),
