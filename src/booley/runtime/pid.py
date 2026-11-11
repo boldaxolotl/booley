@@ -32,6 +32,10 @@ REUSED = ProcessState.REUSED
 UNKNOWN = ProcessState.UNKNOWN
 
 
+# States in which the observed process is no longer working: gone, a different process, or a zombie.
+DEAD_PROCESS_STATES = frozenset({ProcessState.DEAD, ProcessState.REUSED, ProcessState.ZOMBIE})
+
+
 @dataclass(frozen=True)
 class ProcessObservation:
     """Current state of one previously captured process identity."""

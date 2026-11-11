@@ -20,7 +20,12 @@ from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.chat_sessions import codex_chat_owner
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.handles import HandleStore, fallback_predecessors, session_writer
-from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
+from booley.runtime.pid import (
+    DEAD_PROCESS_STATES,
+    ProcessIdentity,
+    ProcessState,
+    observe_process,
+)
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.session_activity import (
     ActivityStore,
@@ -181,9 +186,6 @@ def _updated_row(
             calls[index], tool=tool[:128], outcome=outcome[:64], ended_at=ended_at
         )
     return SessionRow(facts, started, stamp, tuple(calls[-CALL_HISTORY:]))
-
-
-DEAD_PROCESS_STATES = frozenset({ProcessState.DEAD, ProcessState.REUSED, ProcessState.ZOMBIE})
 
 
 @dataclass(frozen=True)
