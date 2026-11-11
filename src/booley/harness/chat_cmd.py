@@ -43,7 +43,11 @@ _HANDLE_WAIT_S = 10.0
 
 
 def _claude_command(
-    project_root: Path, agent_args: list[str], *, strict: bool, predecessors: tuple[str, ...]
+    project_root: Path,
+    agent_args: list[str],
+    *,
+    strict: bool,
+    predecessors: tuple[str, ...] = (),
 ) -> tuple[str, list[str], str | None]:
     """Use the launch process's persistent handle when naming is available.
 
