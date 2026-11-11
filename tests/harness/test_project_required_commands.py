@@ -287,7 +287,7 @@ def test_bare_and_explicit_chat_keep_launch_argv(cli_project, monkeypatch):
     monkeypatch.setattr(chat_cmd.shutil, "which", lambda provider, **_kw: f"/bin/{provider}")
     monkeypatch.setattr(chat_cmd, "capture_process_identity", lambda _pid: object())
     monkeypatch.setattr(chat_cmd, "process_session_key", lambda _identity: "key")
-    monkeypatch.setattr(chat_cmd, "reserve_session_handle", lambda *_args: "S17")
+    monkeypatch.setattr(chat_cmd, "reserve_session_handle", lambda *_args, **_kwargs: "S17")
     executed = []
 
     def execute(executable, argv):
