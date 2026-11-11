@@ -16,6 +16,10 @@ Notes:
     — the project runs the base image.
   - An explicit ``[sandbox].image`` other than the generated name means the user
     manages their own image; auto-generation is skipped.
+
+This module also owns the native build-dependency hint:
+:func:`inspect_native_dependencies` reports C/C++ includes whose Debian package
+the base image lacks, as a ``DiagnosticReport`` for Doctor to render.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.sandbox import (
     SANDBOX_IMAGE,
     project_image_name,
@@ -676,3 +681,151 @@ def _verify_layout_history(parent_id: str, image_id: str, executable: str) -> No
         commands.append(" ".join(command.split()))
     if commands != [expected]:
         raise RuntimeError("Booley Directory layout build history differs from its trusted recipe")
+
+
+# ---------------------------------------------------------------------------
+# Native build-dependency hint (#3213)
+# ---------------------------------------------------------------------------
+
+#: Native headers whose development package the base sandbox does NOT carry,
+#: mapped to the Debian package that provides them. Requirements baking is
+#: Python-only, so a DPI/testbench C++ file that includes one of these compiles
+#: nowhere until the project image installs it — Ibex's `dpi_memutil.cc`
+#: includes <libelf.h> and its Verilator target links -lelf, and the derived
+#: image shipped only the runtime `libelf.so.1` (F-9). Keep this list to
+#: headers genuinely absent from the base image; a false warning here costs
+#: more trust than the missing hint it replaces.
+_NATIVE_HEADER_PACKAGES = {
+    "libelf.h": "libelf-dev",
+    "gelf.h": "libelf-dev",
+    "elfutils/libdw.h": "libdw-dev",
+    "png.h": "libpng-dev",
+    "jpeglib.h": "libjpeg-dev",
+    "curl/curl.h": "libcurl4-openssl-dev",
+    "ssl/ssl.h": "libssl-dev",
+    "openssl/ssl.h": "libssl-dev",
+    "xml2/libxml/parser.h": "libxml2-dev",
+    "libxml/parser.h": "libxml2-dev",
+    "sqlite3.h": "libsqlite3-dev",
+    "boost/version.hpp": "libboost-dev",
+    "gmp.h": "libgmp-dev",
+    "mpfr.h": "libmpfr-dev",
+    "ncurses.h": "libncurses-dev",
+    "systemc.h": "libsystemc-dev",
+}
+
+_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
+
+_C_FAMILY_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
+
+#: Cap on files read for the include scan. The check is an advisory hint, not
+#: an audit; a monorepo with thousands of C++ files must not make doctor slow.
+_NATIVE_SCAN_FILE_CAP = 400
+
+
+@dataclass(frozen=True, slots=True)
+class NativeDependencyRequest:
+    """Inputs for the native build-dependency hint; carries no Doctor state."""
+
+    project_root: Path
+    """Project Root the *sources* paths are relative to."""
+    sources: tuple[str, ...]
+    """The selected Targets' compile inputs; the owner scans the C-family ones."""
+    dockerfile: Path
+    """The Project image recipe (``.booley/docker/Dockerfile``)."""
+
+
+def inspect_native_dependencies(request: NativeDependencyRequest) -> DiagnosticReport:
+    """Report C/C++ includes whose Debian package the base Sandbox image lacks.
+
+    ``booley init`` bakes the listed Python requirements only, so a native
+    build dependency is invisible to it: the project image is built, the flow
+    resolves, and the failure surfaces as a compile/link error deep inside a
+    simulation build. Naming the package at setup time is much cheaper than
+    debugging a missing header later.
+
+    Advisory by design — this is a curated header list, not a resolver, so it
+    can only be a hint. It never fails the gate. Reads the listed source files
+    and the Dockerfile; starts no subprocess and writes nothing.
+    """
+    report = Findings()
+    needed, scanned = _scan_native_includes(request.project_root, request.sources)
+    if not scanned:
+        return report.report()  # no C/C++ in the selected Targets — nothing to say
+    if not needed:
+        report.pass_(f"no known-missing native build dependencies in {scanned} C/C++ source(s)")
+    else:
+        _report_native_dependencies(needed, request.dockerfile, report)
+    return report.report()
+
+
+def _scan_native_includes(
+    project_root: Path, sources: tuple[str, ...]
+) -> tuple[dict[str, set[str]], int]:
+    """Map each curated missing package to its users; also return files scanned."""
+    needed: dict[str, set[str]] = {}
+    scanned = 0
+    for rel in dict.fromkeys(sources):
+        if Path(rel).suffix.lower() not in _C_FAMILY_SUFFIXES:
+            continue
+        if scanned >= _NATIVE_SCAN_FILE_CAP:
+            break
+        try:
+            text = (project_root / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        scanned += 1
+        for header in _INCLUDE_RE.findall(text):
+            package = _NATIVE_HEADER_PACKAGES.get(header)
+            if package:
+                needed.setdefault(package, set()).add(rel)
+    return needed, scanned
+
+
+def _dockerfile_declares_native_package(dockerfile: Path, package: str) -> bool:
+    """Return whether an apt install command in *dockerfile* names *package*.
+
+    Project-owned images are the documented remedy for native headers. The check
+    runs inside the Sandbox too, where Docker is deliberately absent,
+    so the hand-authored Dockerfile is the portable evidence available on both
+    venues. Ignore comments and require the package to occur as an install
+    argument, not merely elsewhere in the file.
+    """
+    try:
+        text = dockerfile.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    uncommented = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    joined = re.sub(r"\\\s*\n", " ", uncommented)
+    for match in re.finditer(r"(?:apt-get|apt)\s+install\b([^;&\n]*)", joined):
+        if package in re.findall(r"[A-Za-z0-9.+:-]+", match.group(1)):
+            return True
+    return False
+
+
+def _report_native_dependencies(
+    needed: dict[str, set[str]], dockerfile: Path, report: Findings
+) -> None:
+    """Report curated native packages, honoring the project image recipe."""
+    declared = {
+        package for package in needed if _dockerfile_declares_native_package(dockerfile, package)
+    }
+    if declared:
+        report.pass_(
+            "native build dependencies declared in project Dockerfile: "
+            + ", ".join(sorted(declared))
+        )
+    for package, users in sorted(needed.items()):
+        if package in declared:
+            continue
+        where = ", ".join(sorted(users)[:3])
+        more = f" (+{len(users) - 3} more)" if len(users) > 3 else ""
+        report.warn(
+            f"C/C++ sources need the native package '{package}' ({where}{more}), "
+            "which the base sandbox image does not carry. Baking Python "
+            "requirements cannot pull in native deps — add it to "
+            ".booley/docker/Dockerfile and rebuild, or the simulation "
+            "build will fail on a missing header/library",
+            check_id="sandbox.native-dependency-missing",
+            subject=package,
+        )

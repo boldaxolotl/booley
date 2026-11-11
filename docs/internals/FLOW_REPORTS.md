@@ -348,10 +348,11 @@ others depend on. Run it as
 with one of the options below. The algorithm is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#exact-report-retention).
 
-- **`--native-target <target>`** removes that Target's `native/` directory (raw and
-  merged Verilator databases). `coverage.json` and the point store stay, so the
-  Campaign can still be analyzed. `availability.json` in the Target directory
-  records the pruning.
+- **`--native-target <target>`** removes the `native/` directory (raw and merged
+  Verilator databases) of the Coverage Campaign that the Target's `coverage.json`
+  references. `coverage.json` and the point store stay, so the
+  Campaign can still be analyzed. `availability.json` in that
+  directory records the pruning.
 - **`--full`** removes the whole run. It leaves an empty `.pruned-N` marker so
   the run number is not reused. It refuses when later resumed runs depend on
   this one, unless `--include-dependents` is given.

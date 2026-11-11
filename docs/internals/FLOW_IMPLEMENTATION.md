@@ -1017,10 +1017,11 @@ suite, so any difference, including configured skips, is a suite mismatch
 during evaluation.
 Execution is sorted and sequential.
 
-`run_coverage_target(plan, execution, progress)` collects through
-`SimulationExecutionPort`, assembles and validates the canonical Campaign,
-loads approved waivers unless `--no-waivers` is given, evaluates, and publishes in order:
-Campaign, Simulation projection, terminal progress. Source/Target drift is
+`run_coverage_target(plan, execution, *, embedded_root, publication_checkpoint=None)`
+collects through `SimulationExecutionPort`, assembles and validates the canonical Campaign,
+loads approved waivers unless `--no-waivers` is given, evaluates, publishes the
+Campaign under the attempt-owned root, and returns the outcome. The Simulation
+Campaign writes the projection and the Simulation Flow writes progress. Source/Target drift is
 rejected. Ungated evaluation is `not_requested`, including incompatible input, unless the Approved Waiver Set
 fails to load or match, which blocks it (exit 2); collection errors still exit 2.
 Simulation failures exit 1. A valid threshold miss exits 0; the Criterion
@@ -1197,8 +1198,8 @@ root explicitly; callers obtain Booley Directory roots through
   The empty `.pruned-N` tombstone reserves the number permanently; it contains no
   Simulation Campaign or native evidence. Other invocations remain untouched.
 
-Native pruning first deep-validates the Campaign pair, then writes Target-local
-`availability.json` with schema `booley.coverage-availability/v1`, the Campaign
+Native pruning first deep-validates the Campaign pair, then writes `availability.json`, in the
+nested Coverage Campaign directory the Target's `coverage.json` references, with schema `booley.coverage-availability/v1`, the Campaign
 identity and manifest digest, and
 native artifact IDs, paths, and digests. Status `pruning` means cleanup is pending
 and native availability must not be assumed. Cleanup then deletes `native/` and
@@ -1206,6 +1207,9 @@ records `pruned`. Retrying the same exact selection completes interrupted cleanu
 and trusts the existing sidecar. Campaign manifest and point-store bytes,
 Simulation bytes, and hook evidence never change. Normalized Campaign evidence
 remains analyzable after native pruning; full pruning prevents re-analysis.
+A Target whose `coverage.json` is not a
+`booley.coverage-campaign-reference/v1` reference (a standalone layout no
+supported Booley writes, or a damaged file) is refused, naming its directory.
 
 Explicit maintenance entry points:
 

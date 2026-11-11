@@ -206,6 +206,24 @@ def _fail_closed_on_sharing_error(error: OSError, path: Path) -> None:
         raise _UnreadableDependencyError(f"cannot read {path}: {error}") from error
 
 
+def _is_standalone_coverage(public: Mapping[str, object]) -> bool:
+    """Whether a Target's ``coverage.json`` is a full Campaign, not a reference to one."""
+    return public.get("$schema") != REFERENCE_SCHEMA
+
+
+def _refuse_standalone_coverage(root: Path, target: Path) -> CampaignRetentionError:
+    """Refusal for a Target ``coverage.json`` that is not a Campaign reference.
+
+    The usual cause is the dead layout that kept the Coverage Campaign in the Target
+    directory; a damaged file reads the same, so the message names both.
+    """
+    return CampaignRetentionError(
+        f"Coverage Campaign in {target} is not a Campaign reference: the standalone layout "
+        "no supported Booley version writes, or a damaged file; delete the Simulation "
+        f"invocation directory {root} by hand"
+    )
+
+
 def _target(
     root: Path, selector: str, *, require_projection: bool = True
 ) -> tuple[Path, LoadedCoverageCampaign]:
@@ -222,17 +240,15 @@ def _target(
     target = target_report_directory(root, selector)
     public_path = target / "coverage.json"
     public = _read_object(public_path)
-    if public.get("$schema") == REFERENCE_SCHEMA:
-        resolved = resolve_coverage_campaign_reference(public_path)
-        try:
-            authenticate_coverage_campaign_owner(resolved)
-        except UnsupportedSimulationCampaignFormatError as exc:
-            raise CampaignRetentionError(str(exc)) from exc
-        loaded = resolved.loaded
-        storage = resolved.campaign_path.parent
-    else:
-        loaded = load_coverage_campaign(public_path)
-        storage = target
+    if _is_standalone_coverage(public):
+        raise _refuse_standalone_coverage(root, target)
+    resolved = resolve_coverage_campaign_reference(public_path)
+    try:
+        authenticate_coverage_campaign_owner(resolved)
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise CampaignRetentionError(str(exc)) from exc
+    loaded = resolved.loaded
+    storage = resolved.campaign_path.parent
     campaign = loaded.campaign
     if campaign.target.selector != selector or campaign.invocation["id"] != int(root.name):
         raise CampaignRetentionError("Campaign identity disagrees with the exact selection")
@@ -924,7 +940,7 @@ def _validate_invocation_inventory(root: Path) -> None:
     for selector in targets:
         assert isinstance(selector, str)
         target = target_report_directory(root, selector)
-        expected.update(_target_owned_files(root, target, selector))
+        expected.update(_target_owned_files(root, target))
         simulation = target / "simulation.json"
         if simulation.exists():
             expected.update(_referenced_invocation_artifacts(root, _read_object(simulation)))
@@ -1002,12 +1018,13 @@ def _validate_invocation_artifact_layout(relative: Path) -> None:
         raise CampaignRetentionError(f"Unsafe invocation artifact path: {relative}")
 
 
-def _target_owned_files(root: Path, target: Path, selector: str) -> set[Path]:
+def _target_owned_files(root: Path, target: Path) -> set[Path]:
     expected = {(target / "simulation.json").absolute()}
     public = target / "coverage.json"
     if public.exists():
-        storage, loaded = _target(root, selector, require_projection=False)
-        expected.update(_coverage_owned_files(target, storage, loaded))
+        # Already validated by _validate_invocation_targets; the nested storage is owned
+        # through the Simulation Campaign's coverage directories below.
+        expected.add(public.absolute())
     campaign = target / "campaign"
     manifest = campaign / "manifest.json"
     if manifest.exists():
@@ -1035,7 +1052,7 @@ def _campaign_coverage_files(coverage: Path) -> set[Path]:
     campaign_path = coverage / "coverage.json"
     if campaign_path.exists():
         loaded = load_coverage_campaign(campaign_path)
-        return _coverage_owned_files(coverage, coverage, loaded)
+        return _coverage_owned_files(coverage, loaded)
     if not coverage.exists():
         return set()
     marker = coverage / ".collection-started"
@@ -1056,19 +1073,14 @@ def _campaign_coverage_files(coverage: Path) -> set[Path]:
     }
 
 
-def _coverage_owned_files(
-    target: Path, storage: Path, loaded: LoadedCoverageCampaign
-) -> set[Path]:
-    markers = {target / ".collection-started", storage / ".collection-started"}
-    for marker in markers:
-        if marker.exists() and marker.read_bytes() != b"":
-            raise CampaignRetentionError(f"Coverage collection marker changed: {marker}")
-    availability = storage / "availability.json"
+def _coverage_owned_files(storage: Path, loaded: LoadedCoverageCampaign) -> set[Path]:
+    marker = storage / ".collection-started"
+    if marker.exists() and marker.read_bytes() != b"":
+        raise CampaignRetentionError(f"Coverage collection marker changed: {marker}")
     expected = {
-        (target / "coverage.json").absolute(),
         (storage / "coverage.json").absolute(),
-        availability.absolute(),
-        *(marker.absolute() for marker in markers),
+        (storage / "availability.json").absolute(),
+        marker.absolute(),
     }
     point_store = loaded.summary.point_store
     if point_store is not None:
@@ -1146,12 +1158,13 @@ def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
     target = target_report_directory(root, selector)
     manifest = target / "campaign" / "manifest.json"
     if not manifest.exists():
-        if not (target / "coverage.json").exists():
-            raise CampaignRetentionError(
-                "native-only pruning requires a completed Target; use --full to discard "
-                "this abandoned invocation"
-            )
-        return
+        public = target / "coverage.json"
+        if public.exists() and _is_standalone_coverage(_read_object(public)):
+            raise _refuse_standalone_coverage(root, target)
+        raise CampaignRetentionError(
+            "native-only pruning requires a completed Target; use --full to discard "
+            "this abandoned invocation"
+        )
     eligibility = _inspect_simulation_campaign(target, manifest.parent)
     status = eligibility.status
     workload = cast(Mapping[str, object], status.manifest.document["workload"])
