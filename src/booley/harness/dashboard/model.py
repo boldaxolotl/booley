@@ -32,13 +32,14 @@ from booley.goals.state_store import load_goal_state
 from booley.goals.status import GoalStatus, GoalStatusView, build_status
 from booley.goals.store import GoalStore
 from booley.harness import upgrade_review
-from booley.harness.dashboard.jobs import JobReader, JobSnapshot, target_arg
+from booley.harness.dashboard.jobs import JobReader, JobSnapshot
 from booley.harness.dashboard.resources import ProcessSampler, Resources, ResourceSampler
 from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.review.goal_package import GoalCompletionPackage
 from booley.runtime import health, health_presentation, job_slots
 from booley.runtime.artifact_paths import available_paths
 from booley.runtime.handles import HandleStore
+from booley.runtime.job_records import target_arg
 from booley.runtime.pid import ProcessIdentity
 from booley.runtime.session_activity import Activity, ActivityStore, observed_activity
 

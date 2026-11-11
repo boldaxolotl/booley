@@ -220,6 +220,25 @@ Sandbox and leaves your host checkout alone; `git -c`, `--author`, and
 another identity, and names the fix, including for a hand-written devcontainer
 spec such as GitHub Codespaces.
 
+## Interactive sessions (`[chat]`)
+
+```toml
+[chat]
+worktree = "auto"    # "auto" (default), "always", or "never"
+```
+
+Decides where `booley chat` starts when you run it from the main checkout:
+
+- `auto`: in the main checkout when no other Booley session is using it,
+  otherwise in a new worktree `s<N>` on branch `booley/s<N>`.
+- `always`: always in a new worktree.
+- `never`: always in the main checkout.
+
+`booley chat --new-worktree` and `--here` override it for one launch. Any other
+value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
+linked worktree, `booley chat` starts there whatever this says. See
+[Several agents at once](USAGE.md#several-agents-at-once).
+
 ## Model selection (`[models]`)
 
 Each Specialist has its own `[models]` key. The model you name decides which

@@ -40,8 +40,9 @@ def installed(tmp_path, monkeypatch):
 
 def test_npm_command_keeps_wrapper_and_reserves_handle(tmp_path, installed):
     project = tmp_path / "project"
-    executable, argv = codex_chat.command(project)
+    executable, argv, handle = codex_chat.command(project)
     assert executable == str(tmp_path / "node")
+    assert handle == "S1"
     assert argv == [
         str(tmp_path / "node"),
         str(Path(codex_chat.__file__).parents[1] / "data/codex_chat.mjs"),
@@ -52,7 +53,7 @@ def test_npm_command_keeps_wrapper_and_reserves_handle(tmp_path, installed):
     handles = HandleStore(project).load()
     assert handles.labels()["pid:fixture:123:7"] == "S1"
     assert handles.labels()["chat:codex:pid:fixture:123:7"] == "S1"
-    assert codex_chat.command(project) == (executable, argv)
+    assert codex_chat.command(project) == (executable, argv, "S1")
     assert HandleStore(project).load().next_number == 2
 
 
@@ -63,7 +64,7 @@ def test_native_command_keeps_exec_identity(tmp_path, installed, monkeypatch, na
     launcher = tmp_path / "codex"
     symlink_or_skip(launcher, native)
     monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: str(launcher))
-    assert codex_chat.command(tmp_path / "project") == (str(native), ["S1", "--no-daemon"])
+    assert codex_chat.command(tmp_path / "project") == (str(native), ["S1", "--no-daemon"], "S1")
 
 
 def test_npm_update_is_discovered_on_each_launch(tmp_path, installed, monkeypatch):
@@ -106,7 +107,7 @@ def test_naming_failures_retain_plain_launch(tmp_path, installed, monkeypatch, f
         store.path.write_text("broken")
     elif failure == "lock":
 
-        def locked(*_args):
+        def locked(*_args, **_kwargs):
             raise BlockingIOError("session writer is busy")
 
         monkeypatch.setattr(codex_chat, "reserve_codex_chat", locked)
@@ -116,14 +117,14 @@ def test_naming_failures_retain_plain_launch(tmp_path, installed, monkeypatch, f
         )
     else:
         monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: None)
-    assert codex_chat.command(project) == ("codex", ["codex"])
+    assert codex_chat.command(project) == ("codex", ["codex"], None)
     if failure != "store":
         assert not HandleStore(project).path.exists()
 
 
 def test_non_linux_launch_is_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="win32", stderr=sys.stderr))
-    assert codex_chat.command(tmp_path) == ("codex", ["codex"])
+    assert codex_chat.command(tmp_path) == ("codex", ["codex"], None)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -138,7 +139,7 @@ def test_runtime_directory_failure_keeps_plain_codex_launch(
     # Re-bind stderr now that capsys has replaced it.
     monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="linux", stderr=sys.stderr))
     project = tmp_path / "project"
-    assert codex_chat.command(project) == ("codex", ["codex"])
+    assert codex_chat.command(project) == ("codex", ["codex"], None)
     assert "NOTE: Codex tab handle is unavailable: no runtime directory" in capsys.readouterr().err
     assert not HandleStore(project).path.exists()
 
@@ -164,3 +165,16 @@ def test_shim_preserves_arguments_environment_and_exit_status(tmp_path, monkeypa
         "argv": [str(entrypoint), "argument with spaces", "--no-daemon"],
         "marker": "inherited",
     }
+
+
+def test_strict_command_raises_instead_of_falling_back(tmp_path, installed, monkeypatch):
+    # Bug caught: a worktree launch quietly starting an unnamed Codex tab.
+    project = tmp_path / "project"
+    monkeypatch.setattr(codex_chat, "capture_process_identity", lambda _pid: None)
+    with pytest.raises(ValueError, match="launch process identity is unavailable"):
+        codex_chat.command(project, strict=True)
+
+    monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="win32", stderr=sys.stderr))
+    with pytest.raises(codex_chat.NamingUnsupportedError, match="need Linux"):
+        codex_chat.command(project, strict=True)
+    assert not HandleStore(project).path.exists()

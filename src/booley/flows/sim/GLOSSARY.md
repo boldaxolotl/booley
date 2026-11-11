@@ -5,16 +5,16 @@ Simulation Flow runs.
 
 ## Language
 
-**Coverage Campaign**:
-One durable coverage record for exactly one Target and one Simulation Flow invocation.
-_Avoid_: latest coverage, waveform score
+**Coverage Record**:
+One durable native RTL coverage record for exactly one Target in one Simulation Flow invocation; a [Simulation Record](../../../../docs/GLOSSARY.md) may contain a Coverage Record. Code, messages, persisted formats, and docs outside the glossaries still say "campaign" until the rename in [#2711](https://github.com/boldaxolotl/booley/issues/2711) lands; until then, a lowercase "coverage record" in Criteria or Verilator messages means a Criteria coverage template item or a native counter line, not this term.
+_Avoid_: Coverage Campaign, coverage collection, latest coverage, waveform score
 
 **Coverage Point**:
 One losslessly identified native RTL coverage measurement point.
 _Avoid_: signal score, source-line identity
 
 **Coverage Window**:
-The simulation interval in which native counters contribute to a Coverage Campaign.
+The simulation interval in which native counters contribute to a Coverage Record.
 _Avoid_: waveform slice
 
 **Coverage Criterion**:
@@ -34,5 +34,5 @@ A Coverage Criterion evaluation that also counts a Goal Record's Waiver Candidat
 _Avoid_: soft pass, pending verdict
 
 **Coverage Analyst**:
-A Specialist that explains one Coverage Campaign and may record Waiver Candidates for its Goal Record; its model only reads evidence.
+A Specialist that explains one Coverage Record and may record Waiver Candidates for its Goal Record; its model only reads evidence.
 _Avoid_: coverage scorer, waveform coverage engine

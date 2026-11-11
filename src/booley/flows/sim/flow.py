@@ -1113,7 +1113,7 @@ def _group_disclosures(
 ) -> tuple[dict[str, object], ...]:
     """Disclose the build of each group's Test Runs, not of their Tests' defaults."""
     return tuple(
-        execution.plan_campaign_group(handle, group, runs)
+        execution.plan_ordinary_group(handle, group, runs)
         for group, runs in zip(groups, run_groups, strict=True)
     )
 
@@ -4543,15 +4543,23 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             selector=",".join(targets),
             target_identity="+".join(identities),
             test_or_module_scope=modules,
-            eda_tool=standalone.frontend,
+            eda_tool=standalone.frontend_label,
             timeout_ms=self._effective_timeout_ms(),
             sources=tuple(normalize_plan_path(path, self.args.work_dir) for path in sources),
             parameters={},
             recipe={
-                "frontend": standalone.frontend,
+                "frontend": standalone.frontend_label,
+                "frontends": list(standalone.frontends),
                 "mode": self._mode.value,
                 "module_sources": [
-                    {"module": module, "source": source} for module, source in standalone.modules
+                    {
+                        "module": probe.module,
+                        "source": probe.file,
+                        "frontend": probe.frontend,
+                        "fallback": probe.fallback,
+                        "shared_sources": list(probe.prereqs),
+                    }
+                    for probe in standalone.probes
                 ],
                 "shared_sources": list(standalone.shared),
             },
@@ -5044,11 +5052,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if selected is not None and selected.project_root == root:
             return selected
         return TargetCatalog.build(root).select(target, for_flow="sim")
-
-    @property
-    def _target_eda_tools(self) -> dict[str, str | None]:
-        """Standalone probes share the invocation's resolved tool metadata."""
-        return self._eda_tools
 
     def _record_eda_tool(self, target: str, eda_tool: str | None) -> None:
         """Remember *target*'s raw resolved EDA tool (e.g. ``"verilator"``).

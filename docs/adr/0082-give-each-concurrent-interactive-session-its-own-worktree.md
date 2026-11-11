@@ -140,6 +140,15 @@ when the child stops, and takes the terminal back only after the child exits.
   when it creates the worktree and removes it on `rm` (Orca issue 24697 is the
   leftover-trust failure to avoid).
 
+  Implemented by #2612 (2026-11-11): with Codex 0.160.0 (the pinned Sandbox
+  version), a worktree under the trusted Project Root gets no trust prompt, so
+  no trust entry is written or removed. The main-checkout lock is
+  `runtime/chat-main.lock`, held by the parent `booley chat` until the child
+  exits (a crash releases it). `auto` releases the lock when only a registry
+  Session made it pick a worktree. A launch from a linked worktree runs in
+  place. The worktree is named `s<N>` from the session handle, and a launch
+  that cannot reserve a handle refuses with exit 2.
+
 ### Resume
 
 Booley records, per worktree, the agent conversation ids started in it. The

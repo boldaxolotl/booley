@@ -15,8 +15,10 @@ inputs and returns a complete typed report:
 | Owner | Public operations | Knowledge hidden from Doctor |
 | --- | --- | --- |
 | `runtime.inspection` | `inspect_runtime(RuntimeInspectionRequest)`; `inspect_retained_resources(project_root, docker_exe)`; `inspect_interactive_git(InteractiveGitRequest)` | Spec parsing and drift order, authority validation, host/runtime distinction, mounted Vivado policy, Docker inventories, exact issuance matching, relay topology, retained-resource classification; Git `info/exclude` entry requirements (including Stealth names) and tracked `.interactive_logs` scratch. |
+| `runtime.vaporview` | `inspect_viewer_bridge(ViewerBridgeRequest)` | In-Sandbox versus host probing, Docker-absent and no-devcontainer skips, extension-host detection, VaporView version, Viewer Bridge inventory, workspace-trust waiting, and the recovery for a dark bridge. |
 | `harness.host_diagnostics` | `inspect_host()` | Python/package/legacy-distribution checks, Bootstrap CHECK interpretation, Docker readiness, host clock and runtime gating, read-only Session store identity scan. |
 | `harness.setup.readiness` | `load_project(root)`; `check_guidance(project, mode=...)`; `check_stealth_cores(project, mode=...)`; `inspect_worktree_portability(WorktreePortabilityRequest)`; `inspect_line_endings(LineEndingInspectionRequest)` | Checkout-local Project resolution, schema composition, parsed EDA inputs, valid continuation data, guidance and core-projection grading and bounded reconciliation; worktree portability policy; line-ending observation precedence (CRLF, autocrlf risk, attributes policy, stale index, migration) and its check IDs and subjects. |
+| `flows.target_test_plan_inspection` | `inspect_target_test_plans(TargetTestPlanInspectionRequest)` | `tests.toml` load and validation, section-key-to-Target matching (dead and duplicate keys), per-Target Test Run plan applicability and the seeding line each passing Target gets. |
 | `audit.host_environment` | `inspect_agent_installation(provider)` | The shared configuration-directory-or-executable installation heuristic. |
 | `runtime.interactive_docker` | `image_exists(name, executable=..., timeout=...)` | The image observation shared by Doctor and Project Initialization. |
 | `audit.diagnostic_results` | `DiagnosticFinding`, `DiagnosticReport`, `HealthAssessment` | Ordered severity/message/remediation/ID/subject/deduplication values, uncounted details (verbose-only unless an owner marks one always shown), and the active FAIL/WARN interpretation. |
@@ -42,6 +44,8 @@ deduplication, and interleaves details (verbose-only unless marked) without chan
 | Project loading / INSPECT | Reads and audits; does not repair guidance or projections. |
 | Line-ending inspection | Runs INSPECT-mode line-ending reconciliation with its bounded read-only Git probes; repairs nothing. |
 | Interactive Git inspection | Runs bounded `git rev-parse --git-common-dir` (with its filesystem fallback) and `git ls-files` (10-second timeout), and reads `info/exclude`; writes nothing. |
+| Viewer Bridge inspection | Runs bounded 20-second `python3 -c` probes in the attached VS Code devcontainer (`docker exec`) or locally inside the Sandbox, and reads the Sandbox inventory; writes nothing. |
+| Test Run plan inspection | Reads `tests.toml` and the Project's `.core` files through `TargetCatalog`; runs no subprocess and writes nothing. |
 | Project RECONCILE | Uses the guidance-link and core-projection owners to repair generated artifacts. It does not run Init or issue a Runtime. |
 
 Automatic (read-only) Doctor uses INSPECT; manual Doctor keeps its bounded
