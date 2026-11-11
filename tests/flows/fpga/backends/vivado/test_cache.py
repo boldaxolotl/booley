@@ -175,6 +175,7 @@ def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> 
         work_root=tmp_path,
         fingerprint="a" * 64,
         require_bitstream=True,
+        source_bytes=None,
         recipe_snapshot={"flow": "fpga", "target": "fpga_demo"},
         recipe_fingerprint="recipe-a",
         run_evidence=_run_evidence("consumer-2"),
@@ -213,6 +214,7 @@ def test_cache_miss_forces_make_recipe(tmp_path: Path) -> None:
         work_root=tmp_path,
         fingerprint="a" * 64,
         require_bitstream=False,
+        source_bytes=None,
     )
     executed: list[str] = []
 
@@ -245,7 +247,7 @@ def test_no_cache_forces_executor_despite_valid_hit(tmp_path: Path) -> None:
             os.utime(path, (time.time() + 3600, time.time() + 3600))
     flow = _flow(tmp_path)
     flow.args.no_cache = True
-    prepared = _PreparedFpgaCommand(["make", "-C", "build"], tmp_path, "a" * 64, False)
+    prepared = _PreparedFpgaCommand(["make", "-C", "build"], tmp_path, "a" * 64, False, None)
     with (
         patch.object(flow, "_prepare_fpga_command", return_value=prepared),
         patch.object(fpga_cache, "load") as load,
@@ -294,6 +296,7 @@ def test_post_route_completion_gates_success_and_cache(
         tmp_path,
         "a" * 64,
         False,
+        None,
         ppa_profile=VIVADO_PROFILES["max_frequency"],
     )
     with (

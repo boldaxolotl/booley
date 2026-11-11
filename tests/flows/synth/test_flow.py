@@ -1624,6 +1624,55 @@ class TestDryRun:
         assert operands("--inc-dir") == [f"{prefix}rtl/include"]
 
 
+def test_synth_label_carries_target_source_bytes(flow_and_state, tmp_path: Path) -> None:
+    from booley.flows import job_resources
+    from booley.fusesoc.fusesoc_registry import ResolvedFile
+
+    flow, _ = flow_and_state
+    (tmp_path / "dut.sv").write_bytes(b"module dut; endmodule\n")
+    (tmp_path / "pkg.sv").write_bytes(b"package p; endpackage\n")
+    expected_bytes = sum(len(path.read_bytes()) for path in tmp_path.glob("*.sv"))
+    recipe = SimpleNamespace(
+        command=["synth"],
+        resolved=SimpleNamespace(
+            build_root=tmp_path,
+            files=(
+                ResolvedFile("dut.sv", "systemVerilogSource"),
+                ResolvedFile("pkg.sv", "systemVerilogSource"),
+            ),
+        ),
+    )
+    plan = SimpleNamespace(
+        spec=SimpleNamespace(timing=SimpleNamespace(mode="logical")), build_dir=tmp_path
+    )
+    seen: list[job_resources.ResourceLabel | None] = []
+
+    def execute(*_args, **_kwargs):
+        seen.append(job_resources.current_label())
+        return SubprocessResult(returncode=0)
+
+    with (
+        patch.object(flow, "_resolve_synth_recipe", return_value=recipe),
+        patch.object(flow, "_configure_synth", return_value=plan),
+        patch.object(flow, "_synth_boundary_cmd", return_value=["make"]),
+        patch.object(flow, "_open_run_log"),
+        patch.object(flow, "_execute_boundary", side_effect=execute),
+        patch.object(flow, "_interpret_boundary_run", return_value=(SynthMetrics(), "")),
+        patch.object(
+            flow, "_attach_recipe_evidence", side_effect=lambda _target, metrics: metrics
+        ),
+        patch.object(flow, "_store_openroad_result"),
+    ):
+        flow._run_single_config("lite")
+
+    assert seen == [
+        job_resources.ResourceLabel(
+            "lite", "synth", split=job_resources.SYNTH_PHASES, source_bytes=expected_bytes
+        )
+    ]
+    assert expected_bytes > 0
+
+
 # ===========================================================================
 # No configs
 # ===========================================================================
