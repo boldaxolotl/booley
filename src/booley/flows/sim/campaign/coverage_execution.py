@@ -66,11 +66,6 @@ from .serial_execution import (
 )
 
 
-class _NoProgress:
-    def completed(self, outcome: CoverageTargetOutcome) -> None:
-        del outcome
-
-
 class _CoverageAggregateError(RuntimeError):
     """A nested Coverage Campaign failed with validated Target facts."""
 
@@ -320,7 +315,6 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             return run_coverage_target(
                 nested_plan,
                 execution,
-                _NoProgress(),
                 embedded_root=request.attempt_directory / "coverage-campaign",
                 publication_checkpoint=self._publication_checkpoint,
             )

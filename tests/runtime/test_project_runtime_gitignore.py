@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ from tests.project_runtime_git_support import (
     git,
     initialize_repository,
 )
+from tests.subprocess_budget import run_bounded_child
 
 from booley.feedback.findings import Finding, append, rewrite
 from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
@@ -105,12 +105,10 @@ def test_authored_inputs_remain_trackable(versioned_project, path):
     output = data / path
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("authored input\n")
-    result = subprocess.run(
-        ["git", "-C", str(data), "check-ignore", "--no-index", "--quiet", path],
-        check=False,
-        timeout=10,
+    result = run_bounded_child(
+        ["git", "-C", str(data), "check-ignore", "--no-index", "--quiet", path], timeout=10
     )
-    assert result.returncode == 1, path
+    assert result.returncode == 1, (path, result.stderr)
 
 
 def test_findings_append_and_rewrite_are_local(versioned_project):
