@@ -1700,6 +1700,9 @@ def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monke
     from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 
     assert f"{INVOCATION_ORIGIN_ENV}=transport" in cmd
+    # Doctor's Flow runs write no Resource History records (#3235).
+    assert "BOOLEY_INTERNAL_DOCTOR_RUN=1" in cmd
+    assert doctor._doctor_subprocess_env(project)["BOOLEY_INTERNAL_DOCTOR_RUN"] == "1"
 
 
 def _tests_toml_project_audit(tmp_path, tests_toml_text: str) -> doctor.ProjectAudit:
