@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +21,7 @@ import pytest
 from booley.flows.sim.flow import SimulateFlow
 from booley.mcp import server
 from booley.mcp.flow_adapter import flow_schema
+from tests.subprocess_budget import run_bounded_child
 
 _SRC = Path(server.__file__).resolve().parents[2]
 
@@ -40,14 +40,10 @@ def _call_sim_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: d
         del context, caller
         assert name == "sim" and cmd[0] == "python"
         commands.append(cmd)
-        child = subprocess.run(
+        child = run_bounded_child(
             [sys.executable, *cmd[1:]],
             cwd=tmp_path,
             env={**os.environ, "PYTHONPATH": str(_SRC)},
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
         )
         text = SimpleNamespace(type="text", text=child.stdout + child.stderr)
         return server._dispatch_result([text], is_error=child.returncode != 0)
