@@ -162,7 +162,7 @@ whose worktree is gone resumes in the main checkout, with a notice.
 Implemented by #2610 (2026-11-10): the records. The hook writes
 `worktrees/.conversations/<hash>.json`. See ADR 0068 Amendments (2026-11-10).
 
-Implemented by #2614 (2026-11-11): `booley chat` reads the records (`runtime/conversation_records.py`).
+Implemented by #2614: `booley chat` reads the records (`runtime/conversation_records.py`).
 A launch from the main checkout without `--here`/`--new-worktree` that carries a
 resume form (Claude `--resume <id>`, `--resume=<id>`, `-r <id>`, `-c`,
 `--continue`; Codex `resume <id>` with the id right after `resume`, `resume
@@ -415,12 +415,10 @@ becomes common.
     `harness/worktree_cmd.py:96`, `core/build_paths.py:12`,
     `fusesoc/core_projection.py:75`).
 
-## Amendments
+## Amendments (2026-11-11)
 
-### 2026-11-11: As built
-
-All feature tickets of #2599 have shipped. Where the shipped behavior differs
-from the Decision above, these points supersede it; the Decision text is kept
+Recorded as built. All feature tickets of #2599 have shipped. Where the
+shipped behavior differs from the Decision above, these points supersede it; the Decision text is kept
 as written.
 
 - **Snapshot contents** (What the worktree looks like; #2849, #2873). A

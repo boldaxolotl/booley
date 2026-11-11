@@ -227,7 +227,7 @@ such a session in a worktree from a container terminal: run
 path it prints, and start `claude` there. Asking an agent that already runs in
 the main checkout to create a worktree is not enough: its Booley tool calls
 keep running on the main checkout. A VS Code panel cannot be started in a
-worktree, so use a terminal with `booley chat` for a second editing session,
+worktree that way, so use a terminal with `booley chat` for a second editing session,
 and start Codex with `booley chat` too. See
 Several agents at once (host doc, not shipped).
 The Dashboard warns about a shared worktree but doesn't separate the agents.
@@ -238,18 +238,20 @@ Read the reason at the end of the `Booley session S<N> works in worktree ...`
 line:
 
 - `the main checkout is in use by another booley chat`: another `booley chat`
-  started from the main checkout is still running, perhaps in another terminal
-  or stopped with Ctrl-Z. That includes one started with `--new-worktree` or
-  under `[chat] worktree = "always"`: it holds the main checkout until its
-  session ends, although its agent works in a worktree. A `booley chat` that
+  whose agent runs in the main checkout is still running, perhaps in another
+  terminal or stopped with Ctrl-Z. That includes one started with
+  `--new-worktree` or under `[chat] worktree = "always"` while the main checkout
+  was free: it holds the main checkout until its session ends, although its
+  agent works in a worktree. A `booley chat` that `auto` placed in a worktree
+  holds nothing. A `booley chat` that
   crashed or was killed does not cause this, because the hold ends when its
   process exits, however it exits. If the launch also printed
   `NOTE: main-checkout lock unavailable: ...`, Booley could not open or lock
   `runtime/chat-main.lock` in the Main Booley Directory and counts the main
   checkout as in use; fix the error the note names.
 - `Session S<N> is working in the main checkout`: that session made a Booley
-  tool call from the main checkout and has not ended. A Codex session, or one
-  Booley could not tell apart by process, that ended without notice counts as
+  tool call from the main checkout and has not ended. A Codex started by hand, or a
+  session Booley could not tell apart by process, that ended without notice counts as
   in use until it goes quiet (`[goals] quiet_after`, two hours by default).
 
 Either way, `booley chat --here` starts in the main checkout now.
@@ -272,8 +274,8 @@ by `booley worktree rm <name>`, or run `booley worktree rm --force <name>`;
 `--force` also removes a Git-locked worktree, and a half-made checkout may
 otherwise be refused again for uncommitted changes.
 
-If `booley worktree rm` itself was interrupted, run it again: it finishes the
-removal.
+If `booley worktree rm` itself was interrupted, run it again with the same options:
+it finishes the removal.
 
 ### Worktrees show as `prunable` on the host
 
@@ -308,7 +310,7 @@ ERROR: cannot name a worktree for this session: ... Run booley chat --here to us
 Booley could not reserve the session handle that names the worktree. Run
 `booley chat --here`, or try again once other launches have finished.
 
-If you press Ctrl-C or close the terminal during setup, `booley chat` prints
+If you press Ctrl-C during setup, `booley chat` prints
 `Worktree setup interrupted; <name> was rolled back.` and nothing is left. If it
 prints `Worktree setup interrupted; <name> may be left behind.` instead, run the
 removal steps printed below it.

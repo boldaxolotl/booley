@@ -272,11 +272,13 @@ there. When the worktree is ready it prints:
 Booley session S3 works in worktree <path> on branch booley/s3 (<reason>).
 ```
 
-The main checkout is taken while another `booley chat` started from it is
-still running, or while a session there has made a Booley tool call and not
+The main checkout is taken while another `booley chat` whose agent runs there
+is still running, or while a session there has made a Booley tool call and not
 ended. A `booley chat` started with `--new-worktree` or under
 `[chat] worktree = "always"` also holds the main checkout until its session
-ends, although its agent works in a worktree. The reason in parentheses is one
+ends if the main checkout was free when it started, although its agent works
+in a worktree. A `booley chat` that `auto` placed in a worktree holds nothing.
+The reason in parentheses is one
 of:
 
 - `the main checkout is in use by another booley chat`
@@ -297,8 +299,9 @@ uncommitted Booley Directory files left out (see
 Before the agent starts, Booley fills the Git submodules from the main checkout
 and runs the Project's post-setup hook, printing
 `Filling git submodules from the main checkout...` and
-`Running post-setup hook ... (log: ...)`. On a large Project this can take
-minutes; the line above follows once setup succeeded. If a step fails, Booley
+`Running post-setup hook ... (log: ...)` (the second only if the Project has a
+hook). On a large Project this can take minutes; the `Booley session` line
+above follows once setup succeeded. If a step fails, Booley
 removes the worktree and does not start the agent (see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-fails-in-the-post-setup-hook)).
 
@@ -343,7 +346,7 @@ To manage worktrees, run these in a container terminal:
   and unmerged work, live sessions, active Goal, and last use.
 - `booley worktree rm <name>` removes one, keeps its branches, and moves its
   evidence aside. It refuses while a session runs there, a Goal is active, or
-  work would be lost, unless you add `--force`.
+  work would be lost; `--force` overrides most refusals.
 - `booley worktree gc [--older-than AGE]` runs `rm`, without `--force`, on
   every worktree idle longer than `[worktree] gc_older_than` (default `7d`).
   `booley chat` runs it at every launch and prints only what it removed, so

@@ -203,7 +203,7 @@ The part of a **Project**'s **Booley Directory** that every checkout shares, kep
 _Avoid_: global state, shared Booley Directory, main state, Git common dir
 
 **Checkout Booley State**:
-The part of a **Booley Directory** that belongs to one checkout: configuration versioned with that checkout's code (`booley.toml`, `cores/`, hooks, Goal and Ticket history) and the build trees and Flow reports of its sources. A **Worktree Booley Directory** holds only this part.
+The part of a **Booley Directory** that belongs to one checkout: configuration versioned with that checkout's code (`booley.toml`, `cores/`, hooks, Goal history) and the build trees and Flow reports of its sources. A **Worktree Booley Directory** holds only this part.
 _Avoid_: worktree state, local state, per-worktree config
 
 **Worktree Booley Directory**:
