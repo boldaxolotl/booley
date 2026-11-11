@@ -259,6 +259,8 @@ def make_versioned_booley_directory(tmp_path: Path, layout: str) -> tuple[Path, 
         write(checkout / ".booley" / "cores" / "x.core", "paired committed\n")
         commit_all(checkout / ".booley", "paired")
     write(checkout / ".booley" / "cores" / "x.core", "uncommitted edit\n")
+    # An uncommitted selection that, if read, would fail on the fake ``unselected`` gitlink.
+    write(checkout / ".booley" / "booley.toml", '[submodules]\npaths = ["unselected"]\n')
     write(checkout / ".booley" / "new.core", "untracked\n")
     return checkout, checkout / ".booley"
 
@@ -282,6 +284,50 @@ def test_versioned_booley_directory_exported_at_committed_head(
     assert result.paired_commit == paired_head
     assert not (result.root / "unselected").exists()
     assert result.drift == ()
+
+
+def test_filesystem_failure_is_a_commit_export_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import commit_export
+
+    repo = new_repository(tmp_path / "repo")
+    write(repo / "a.v", "x")
+    head = commit_all(repo)
+
+    def fail(*_args: object) -> None:
+        raise PermissionError("read-only destination")
+
+    monkeypatch.setattr(commit_export, "materialize_tree", fail)
+
+    with pytest.raises(commit_export.CommitExportError, match="read-only destination"):
+        commit_export.export_commit(repo, head, tmp_path / "out")
+
+    assert not (tmp_path / "out").exists()
+
+
+def test_committed_symlink_cannot_redirect_the_booley_directory(tmp_path: Path) -> None:
+    from booley.runtime.commit_export import CommitExportError, export_commit
+
+    require_symlinks(tmp_path)
+    victim = tmp_path / "victim"
+    write(victim / "live.core", "uncommitted live work\n")
+    repo = new_repository(tmp_path / "repo")
+    add_index_entry(repo, "100644", "rtl.v", "x\n")
+    add_index_entry(repo, "120000", ".booley", victim.as_posix())
+    head = commit_all(repo, staged_only=True)
+    booley = new_repository(repo / ".booley.live")
+    write(booley / "cores" / "x.core", "committed\n")
+    commit_all(booley)
+    (repo / ".booley.live").rename(repo / ".booley-moved")
+    (repo / ".booley-moved").rename(repo / ".booley")
+
+    with pytest.raises(CommitExportError, match="symlink"):
+        export_commit(repo, head, tmp_path / "out")
+
+    assert listing(victim) == {"live.core"}
+    assert (victim / "live.core").read_text() == "uncommitted live work\n"
+    assert not (tmp_path / "out").exists()
 
 
 def test_booley_directory_gitlink_is_not_recursed_into(tmp_path: Path) -> None:
@@ -347,8 +393,8 @@ def test_filter_and_encoding_attributes_refused(
 
 @pytest.mark.parametrize(
     "paths",
-    [("A.v", "a.v"), ("a", "A/x"), ("dir/f", "DIR/g")],
-    ids=["same-name", "file-vs-directory", "parent-directories"],
+    [("A.v", "a.v"), ("a", "A/x"), ("dir/f", "DIR/g"), ("caf\u00e9.v", "cafe\u0301.v")],
+    ids=["same-name", "file-vs-directory", "parent-directories", "unicode-normalization"],
 )
 def test_case_colliding_paths_refused(tmp_path: Path, paths: tuple[str, str]) -> None:
     from booley.runtime.commit_export import CommitExportError, export_commit

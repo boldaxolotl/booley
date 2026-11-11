@@ -18,6 +18,7 @@ import os
 import shutil
 import tempfile
 import tomllib
+import unicodedata
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -255,6 +256,8 @@ def export_commit(repository: Path, commit: str, destination: Path) -> CommitExp
         return _export_commit(repository, commit, destination.absolute())
     except (FileCommitError, RepositoryCheckoutError) as exc:
         raise CommitExportError(str(exc) or "Git could not read the commit") from exc
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise CommitExportError(f"export could not be written or read: {exc}") from exc
 
 
 def _export_commit(repository: Path, commit: str, destination: Path) -> CommitExport:
@@ -316,6 +319,7 @@ def _populate(
     paired_commit = None
     excluded: frozenset[str] = frozenset()
     if bd_repository is not None:
+        _require_real_placement(root, place)
         paired_commit = raw_git(bd_repository, "rev-parse", "HEAD").strip().decode("ascii")
         _export_repository(bd_repository, paired_commit, place, HERMETIC_POLICY)
         excluded = frozenset({own_booley_dir_relative(root).as_posix()})
@@ -323,6 +327,25 @@ def _populate(
     drift: list[SubmoduleDrift] = []
     _export_gitlinks(repository, rows, root, PurePosixPath(), selected, excluded, drift)
     return tuple(drift), paired_commit
+
+
+def _require_real_placement(root: Path, place: Path) -> None:
+    """Refuse a Booley Directory placement that a committed symlink redirects elsewhere.
+
+    The commit's own rows are written first, so a tracked symlink at (or above) the
+    placement would otherwise send the Booley Directory export, and its config read,
+    to a live path outside the export.
+    """
+    current = root
+    for part in place.relative_to(root).parts:
+        current = current / part
+        if current.is_symlink():
+            raise CommitExportError(
+                f"committed symlink {current.relative_to(root).as_posix()} redirects the "
+                "Booley Directory placement out of the export"
+            )
+    if place.exists() and not place.resolve().is_relative_to(root.resolve()):
+        raise CommitExportError(f"Booley Directory placement {place} escapes the export")
 
 
 def _export_repository(
@@ -349,7 +372,9 @@ def _refuse_case_collisions(rows: Mapping[bytes, bytes]) -> None:
         parts = PurePosixPath(os.fsdecode(name)).parts
         for end in range(1, len(parts) + 1):
             spelling = PurePosixPath(*parts[:end]).as_posix()
-            earlier = spellings.setdefault(spelling.casefold(), spelling)
+            # NFC first: macOS treats canonically equivalent Unicode spellings as one name.
+            key = unicodedata.normalize("NFC", spelling).casefold()
+            earlier = spellings.setdefault(key, spelling)
             if earlier != spelling:
                 raise CommitExportError(
                     f"case-colliding paths cannot be exported: {earlier} and {spelling}"
@@ -378,8 +403,8 @@ def _export_gitlinks(
         pinned = oid.decode("ascii")
         if not (source / ".git").exists() or not _has_commit(source, pinned):
             raise CommitExportError(
-                f"submodule objects missing for {shown}: pinned commit {pinned} is not in "
-                "the local objects; run git submodule update --init"
+                f"submodule objects missing for {shown}: no initialized checkout holds the "
+                f"pinned commit {pinned}; run git submodule update --init"
             )
         nested = _export_repository(source, pinned, root / relative, HERMETIC_POLICY)
         _record_drift(source, shown, pinned, drift)
