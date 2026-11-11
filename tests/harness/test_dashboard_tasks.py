@@ -14,6 +14,7 @@ from booley.runtime import devcontainer, runtime_context, session_issuance
 from booley.runtime.jsonc import Document
 from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
+from tests.subprocess_budget import run_bounded_child
 
 _REAL_TASK_FILE_TRACKED = tasks._task_file_tracked
 
@@ -647,9 +648,7 @@ def test_tracked_task_file_is_preserved_with_informational_notice(
     tmp_path, monkeypatch, owned, disabled
 ):
     def git(*args):
-        result = subprocess.run(
-            ["git", *args], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=True
-        )
+        result = run_bounded_child(["git", *args], cwd=tmp_path, check=True)
         return result.stdout
 
     git("init", "-q")

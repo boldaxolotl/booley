@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,7 +14,7 @@ from booley.runtime import session_refresh as runtime_refresh
 from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.session_runtime import SessionError
 from tests.harness import test_init_rerun as init_fixtures
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 # Reuse the init suite's isolated scratch repo (no Docker, isolated HOME) and its guard.
 repo = init_fixtures.repo
@@ -25,13 +24,7 @@ CORE_TEXT = "CAPI=2:\nname: example:lib:cpu:1.0\n"
 
 
 def _git(root: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        check=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    ).stdout
+    return run_bounded_child(["git", "-C", str(root), *args], check=True).stdout
 
 
 def _refresh(root: Path) -> runtime_refresh.RefreshResult:
@@ -116,11 +109,8 @@ def test_refresh_reports_crlf_without_rewriting_tracked_file(
     assert (root / ".booley" / ".gitattributes").read_bytes() == inner_attributes
     assert "1 tracked file(s) are checked out with CRLF" in capsys.readouterr().out
     # Pinning autocrlf=false over a CRLF checkout would only add phantom diffs.
-    unpinned = subprocess.run(
-        ["git", "-C", str(root), "config", "--local", "--get", "core.autocrlf"],
-        capture_output=True,
-        check=False,
-        timeout=SUBPROCESS_TIMEOUT_S,
+    unpinned = run_bounded_child(
+        ["git", "-C", str(root), "config", "--local", "--get", "core.autocrlf"]
     )
     assert unpinned.returncode == 1
 

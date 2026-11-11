@@ -120,6 +120,7 @@ def run_bounded(command: list[str], *, bound_s: float, output_dir: Path) -> tupl
         )
         timed_out = False
         try:
+            # Kept on subprocess.Popen: output goes to files and the test handles TimeoutExpired itself.
             proc.wait(timeout=bound_s)
         except subprocess.TimeoutExpired:
             timed_out = True
