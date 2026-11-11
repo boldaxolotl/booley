@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.subprocess_budget import run_bounded_child
+
 _REPORT = Path(__file__).parent / "compare_report.py"
 
 
@@ -20,14 +22,7 @@ def _package(root: Path, *, dependency: str = "") -> Path:
 
 
 def _run(*arguments: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, str(_REPORT), *arguments],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+    return run_bounded_child([sys.executable, str(_REPORT), *arguments], cwd=cwd)
 
 
 def test_root_mode_identifies_content_and_renders_explicit_empty_sections(
