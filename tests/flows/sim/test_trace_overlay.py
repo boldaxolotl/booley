@@ -85,7 +85,7 @@ def _trace_campaign_plan(handle, execution: SimulationExecution, *, cocotb: bool
     catalog = TargetCatalog.build(handle.project_root)
     inspection = catalog.inspect(handle)
     preview = execution.preview(handle, NamedTests(names))
-    disclosure = execution.plan_campaign_group(handle, names)
+    disclosure = execution.plan_ordinary_group(handle, names)
     common = {
         "handle": handle,
         "inspection": inspection,
