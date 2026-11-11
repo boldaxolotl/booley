@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import configparser
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 
@@ -20,7 +20,6 @@ from mutmut_also_copy import (  # pyright: ignore[reportMissingImports]
 )
 
 SKIPPED = ["src/", "tests", "setup.cfg", "pyproject.toml"]
-GIT_TIMEOUT_SECONDS = 60
 
 
 def test_lists_every_tracked_entry_mutmut_does_not_copy() -> None:
@@ -86,7 +85,8 @@ def test_reports_tracked_paths_mutmut_would_read_back_as_comments(tmp_path: Path
 
 
 def _git(root: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=root, check=True, timeout=GIT_TIMEOUT_SECONDS)
+    result = run_bounded_child(["git", *args], cwd=root)
+    assert result.returncode == 0, result.stderr
 
 
 def test_script_writes_the_list_for_a_real_checkout(

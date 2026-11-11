@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 
@@ -113,7 +114,7 @@ def _run_staged_probe(
     evidence = tmp_path / "evidence"
     if blocked_export:
         evidence.touch()
-    result = subprocess.run(
+    result = run_bounded_child(
         [
             "bash",
             str(_ROOT / ".github/scripts/verify_openroad_runtime.sh"),
@@ -126,8 +127,6 @@ def _run_staged_probe(
             "TMPDIR": str(scratch),
             "PROBE_FAILURE": failure,
         },
-        capture_output=True,
-        text=True,
         timeout=10,
         check=False,
     )

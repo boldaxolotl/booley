@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 import yaml
+from tests.subprocess_budget import run_bounded_child
 
 from booley.goals.model import parse_goal_arg
 from booley.runtime import dockerfile_syntax
@@ -432,7 +433,7 @@ def test_release_validation_skips_credentials_and_cannot_promote() -> None:
 
 
 def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-I",
@@ -441,8 +442,6 @@ def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
             "--contract",
             str(contract.resolve()),
         ],
-        capture_output=True,
-        text=True,
         check=False,
         timeout=10,
     )
@@ -929,10 +928,8 @@ def test_demo_verifier_uses_explicit_directory_for_both_readiness_stages(tmp_pat
     monkeypatch.setenv("BOOLEY_DIR", configured)
     monkeypatch.setenv("DEMO_COMMAND_LOG", str(commands))
     monkeypatch.setenv("BOOLEY_RUN_PICORV32_FLOWS", "0")
-    subprocess.run(
+    run_bounded_child(
         ["bash", str(VERIFY_SCRIPT.resolve())],
-        capture_output=True,
-        text=True,
         check=True,
         timeout=10,
     )
