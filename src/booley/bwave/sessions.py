@@ -13,6 +13,8 @@ the CLI/flag-translation layer). Concretely this module holds:
 Consumers:
   - ``booley.bwave.cli`` re-exports these symbols for backward compatibility
     and calls a few of them from its CLI dispatch / marker-resolution code.
+  - ``booley.flows.sim.bwave_registration`` calls ``register_trace`` to register
+    a traced simulation run's waveforms.
   - ``tests/bwave/test_sessions.py`` imports SESSION_FILE, _load_sessions,
     _save_sessions, register_trace via the ``bwave`` facade.
 
@@ -348,7 +350,7 @@ def cmd_register(args: argparse.Namespace) -> None:
     except OSError as exc:
         # Keep the historical contract: a store that cannot be written warns
         # and the command still reports the trace it found.
-        print(f"[bwave] WARNING: could not write session file ({exc})", file=sys.stderr)
+        print(f"[bwave] WARNING: {exc}", file=sys.stderr)
         alias = args.alias or _DEFAULT_ALIAS
     print(f"@{alias} -> {trace}")
     # Identity + age, so binding the wrong design (or a trace from a sim you

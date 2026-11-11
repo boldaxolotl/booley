@@ -56,12 +56,12 @@ def register_trace_sessions(outcomes: Sequence[CampaignOutcome]) -> None:
     the store is external JSON on a shared temp directory, and a session is a
     convenience that must not turn a finished simulation into an error.
     """
-    # Imported here, not at module level: ``booley.bwave.sessions`` resolves its
-    # session store from the temp directory at import, and importing the Flow
-    # must not fix that location before the process has set up its own.
-    from booley.bwave.sessions import register_trace
-
     try:
+        # Imported here, not at module level: ``booley.bwave.sessions`` resolves
+        # its session store from the temp directory at import, and importing the
+        # Flow must not fix that location before the process has set up its own.
+        from booley.bwave.sessions import register_trace
+
         for name, trace in session_traces(outcomes):
             register_trace(trace, alias=name)
     except Exception:

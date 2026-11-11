@@ -150,9 +150,12 @@ def test_direct_subcommand_help_forwards_to_native_bwave(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clean_session():
     """Remove session file before and after each test."""
+    lock_file = SESSION_FILE.with_name(f"{SESSION_FILE.name}.lock")
     SESSION_FILE.unlink(missing_ok=True)
+    lock_file.unlink(missing_ok=True)
     yield
     SESSION_FILE.unlink(missing_ok=True)
+    lock_file.unlink(missing_ok=True)
 
 
 # ── save / load round-trip ───────────────────────────────────────────
@@ -740,7 +743,7 @@ def test_v02_subcommand_accepts_trace_after_command(monkeypatch, tmp_path):
     assert calls == [["bwave-bin", "list", str(trace), "--limit", bwave._LIST_LIMIT_DEFAULT]]
 
 
-def testregister_trace_preserves_alias_and_last_markers(tmp_path, monkeypatch):
+def test_register_trace_preserves_alias_and_last_markers(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"

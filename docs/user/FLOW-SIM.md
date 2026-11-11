@@ -252,12 +252,12 @@ silently. The card names each Test Run's waveform; see
 
 A traced run also registers its waveforms as B-Wave sessions, so queries need
 no trace path. Each traced Target becomes session `@<target>`, so
-`bwave @<target> list` reads it. The session points at the waveform of a Test
-Run that did not pass if any, else of the last Test Run. The last Target's
-waveform also becomes the default session, so `bwave list` alone reads the
-newest trace. The session
-store is one file per Sandbox, shared by every agent session in it: the latest
-traced run in the Sandbox owns `@<target>` and the default session. A shell
+`bwave @<target> list` reads it. The session points at the waveform of the
+last Test Run that did not pass if any, else of the last Test Run. The last
+Target's waveform also becomes the default session, so `bwave list` alone reads
+the newest trace. The session store is one file per temporary directory (one
+per Sandbox), shared by every agent session in it: the latest traced run owns
+`@<target>` and the default session. A shell
 sees the sessions when it shares the temporary directory of the process that
 ran the simulation, which is the default. A failure to register never changes
 the run's result. A per-checkout store is tracked in

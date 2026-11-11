@@ -169,7 +169,7 @@ from booley.bwave.sessions import (
     _validate_marker_name,  # noqa: F401  # re-exported for backward compatibility
     cmd_markers,
     cmd_register,
-    register_trace,  # noqa: F401  # public: the Simulation Flow registers traced runs
+    register_trace,  # noqa: F401  # re-exported for the tests and the facade
 )
 
 

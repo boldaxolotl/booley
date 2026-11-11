@@ -10,8 +10,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 ## Unreleased
 
 - A traced `sim` run now registers each traced Target's waveform as B-Wave
-  session `@<target>` (its failing Test Run's, else its last) and the last
-  Target's as the default session, so `bwave @<target> list` and a path-less
+  session `@<target>` (its last Test Run that did not pass, else its last) and
+  the last Target's as the default session, so `bwave @<target> list` and a path-less
   `bwave list` work without finding the trace file. The session store is shared
   by the Sandbox, so the latest traced run owns `@<target>` and the default
   session ([#3483](https://github.com/boldaxolotl/Booley/issues/3483) tracks a
