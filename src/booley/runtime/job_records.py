@@ -147,6 +147,16 @@ def _validate_envelope(data: dict[str, Any]) -> None:
         require_dict(data["binding"], field="Job binding")
 
 
+def target_arg(argv: list[str]) -> str | None:
+    """Read the producer's Target once, without inventing one for legacy records."""
+    for index, word in enumerate(argv):
+        if word == "--target":
+            return argv[index + 1] if index + 1 < len(argv) else None
+        if word.startswith("--target="):
+            return word.removeprefix("--target=")
+    return None
+
+
 def terminal_status(exit_code: int, timed_out: bool) -> str:
     """Map a finished subprocess outcome to a terminal job status."""
     return STATUS_DONE if (exit_code == 0 and not timed_out) else STATUS_FAILED

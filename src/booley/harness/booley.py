@@ -1480,10 +1480,18 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     )
 
 
+def _warn_standalone_jobs(sandbox: Any) -> None:
+    """Tell the user which Standalone Jobs die with the Sandbox about to be stopped."""
+    from booley.harness.sandbox_stop_warning import standalone_job_warnings
+
+    for line in standalone_job_warnings(sandbox):
+        print(line, file=sys.stderr)
+
+
 def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime import session_runtime as sr
 
-    result = sr.down(project_root)
+    result = sr.down(project_root, before_stop=_warn_standalone_jobs)
     if result:
         details = []
         if result.headless:
