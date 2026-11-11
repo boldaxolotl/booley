@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- A failed test function that a Cocotb Target without registered Tests discovered
+  now gets one `booley flow sim --target <name> --seed N` command that reruns the
+  whole batch, instead of a `--test=<name>@N` command that Booley refused with
+  exit 2.
 - New `booley coverage uncovered <coverage.json>` lists every uncovered scored
   point of one retained coverage run as `source:line  metric  detail  hierarchy`,
   sorted by source, line, and metric, with a summary count and the number of

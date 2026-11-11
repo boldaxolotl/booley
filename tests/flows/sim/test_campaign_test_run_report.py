@@ -207,6 +207,27 @@ def test_tests_an_unfiltered_cocotb_batch_discovered_get_rows(tmp_path: Path):
     ]
 
 
+def test_failed_discovered_tests_share_one_batch_rerun_command(tmp_path: Path):
+    """A discovered Test has no registered name to select, so its batch reruns as one."""
+    unnamed = build_test_run(None, seed=9)
+    recorded = _recorded_campaign(tmp_path, (unnamed,), ())
+    observations = (
+        recorded.fact(unnamed, discovered="found_a", **_grade_members(passed=True)),
+        recorded.fact(unnamed, discovered="found_b", **_grade_members(passed=False)),
+        recorded.fact(unnamed, discovered="found_c", **_grade_members(passed=False)),
+        recorded.fact(unnamed, discovered="found_d", **_grade_members(passed=False)),
+    )
+    outcome = SimpleNamespace(manifest_path=recorded.manifest_path, observations=observations)
+    lines = _campaign_test_run_lines("sim", outcome)
+    assert lines[-2:] == [
+        "  Rerun the whole batch with the same seed "
+        "(register its test functions as Tests in tests.toml to rerun one alone):",
+        "    booley flow sim --target sim --seed 9",
+    ]
+    assert "  Rerun a failed Test Run with the same seed:" not in lines
+    assert not any("--test=" in line for line in lines)
+
+
 def test_a_hand_edited_test_run_fingerprint_reads_as_no_recorded_runs(tmp_path: Path):
     outcome = _outcome(tmp_path, (build_test_run("reset"),), (True,))
     document = json.loads(outcome.manifest_path.read_text())
