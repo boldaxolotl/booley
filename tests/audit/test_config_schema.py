@@ -483,3 +483,20 @@ def test_jobs_max_tickets_is_ignored_with_warning():
     assert audit.is_valid
     assert audit.findings[0].check_id == "config.ignored-key"
     assert audit.findings[0].fix == "delete max_tickets from [jobs] in booley.toml"
+
+
+@pytest.mark.parametrize("mode", ["auto", "always", "never"])
+def test_chat_worktree_knob_accepts_its_three_modes(mode: str) -> None:
+    assert project_schema.audit_chat_table({"chat": {"worktree": mode}}).is_valid
+    assert project_schema.audit_chat_table({}).is_valid
+
+
+@pytest.mark.parametrize(
+    "data", [{"chat": {"worktree": "sometimes"}}, {"chat": {"worktree": 1}}, {"chat": []}]
+)
+def test_chat_worktree_knob_must_be_auto_always_or_never(data: dict) -> None:
+    # Bug caught: Doctor passing a value that `booley chat` then refuses at launch.
+    audit = project_schema.audit_chat_table(data)
+
+    assert not audit.is_valid
+    assert not project_schema.audit_known_tables({"chat": {}}).findings
