@@ -46,7 +46,7 @@ def parse_caps(data: dict) -> SlotCaps:
         "max_light": defaults.max_light,
         "queue_max": defaults.queue_max,
     }
-    non_cap_keys = {"heavy_memory", "max_tickets"}
+    non_cap_keys = {"heavy_memory", "max_tickets", "memory_budget"}
     for key, default in tuple(values.items()):
         if key not in section:
             continue
