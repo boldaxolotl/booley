@@ -13,6 +13,7 @@ import time
 
 import pytest
 from tests.sidecar_image_helpers import SIDECAR_ALPINE_BASE, assert_python_version
+from tests.subprocess_budget import run_bounded_child
 
 from booley.docker import reaper
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -26,13 +27,7 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", *args],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    return run_bounded_child(["docker", *args], timeout=60)
 
 
 def _assert_ok(result: subprocess.CompletedProcess[str]) -> None:

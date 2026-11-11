@@ -19,6 +19,7 @@ import pytest
 
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 from booley.runtime import dockerfile_syntax
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 DIND_IMAGE = (
     "docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1"
@@ -63,14 +64,8 @@ class DockerClient:
     command_prefix: tuple[str, ...] = ()
 
     def run(self, *args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-        """Run one bounded Docker command without raising."""
-        return subprocess.run(
-            ["docker", *self.command_prefix, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        """Run one Docker command, killing its process tree after *timeout* seconds."""
+        return run_bounded_child(["docker", *self.command_prefix, *args], timeout=timeout)
 
 
 HOST_DOCKER = DockerClient()
@@ -204,9 +199,9 @@ def _load_candidate(name: str, client: DockerClient, archive: Path) -> str:
 
 def _report_dind_failure(name: str) -> None:
     try:
-        logs = HOST_DOCKER.run("logs", name, timeout=30)
+        logs = HOST_DOCKER.run("logs", name, timeout=SUBPROCESS_TIMEOUT_S)
         captured = logs.stdout + logs.stderr
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, pytest.fail.Exception) as exc:
         captured = f"could not read logs: {exc}"
     if captured:
         print(f"isolated Docker daemon logs:\n{captured}", file=sys.stderr)
@@ -215,11 +210,11 @@ def _report_dind_failure(name: str) -> None:
 def _cleanup_dind(name: str, primary_error: BaseException | None) -> None:
     cause: BaseException | None = None
     try:
-        cleanup = HOST_DOCKER.run("rm", "-f", "-v", name, timeout=30)
+        cleanup = HOST_DOCKER.run("rm", "-f", "-v", name, timeout=SUBPROCESS_TIMEOUT_S)
         detail = cleanup.stderr.strip()
         if cleanup.returncode == 0:
             return
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, pytest.fail.Exception) as exc:
         cause = exc
         detail = str(exc)
     message = f"failed to remove isolated Docker daemon {name}: {detail}"
