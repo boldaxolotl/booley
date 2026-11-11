@@ -1,12 +1,16 @@
 # Review commits outside measurement
 
-Status: accepted (2026-11-10)
+Status: accepted (2026-11-10; renumbered from 0087 on 2026-11-11, because
+[ADR 0087](0087-admit-jobs-against-a-measured-memory-budget.md) already had the
+number; amended 2026-11-11: reviews are declared in `reviews.toml`, see
+Amendments)
 
 Supersedes ADR 0074's Goal-owned review contract once Goal Mode is removed
 (0.5.0). ADR 0074's `--verify` and `--waive` mechanics stay. Decided in the
 triage of [#3064](https://github.com/boldaxolotl/booley/issues/3064), which
 builds on Metric-Driven Development
-([#3045](https://github.com/boldaxolotl/booley/issues/3045)).
+([#3045](https://github.com/boldaxolotl/booley/issues/3045),
+[ADR 0092](0092-measure-commits-against-target-metrics.md)).
 
 ## Context
 
@@ -20,10 +24,11 @@ work.
 
 ## Decision
 
-Reviews are declared per Target, next to its metrics, and produce a
-**Reviewed Commit**. They never take part in `booley measure`.
+Reviews are declared per Target, in a file of their own beside
+`metrics.toml`, and produce a **Reviewed Commit**. They never take part in
+`booley measure`.
 
-- **Declared Reviews.** A `[<target>.review]` table in `metrics.toml` lists
+- **Declared Reviews.** A `[<target>.review]` table in `reviews.toml` lists
   focuses per role (`rtl`, `tb`), a `spec` path, a `resolve` threshold
   (`critical`, `major` or `minor`; default `major`, meaning no open major or
   critical finding) and `exclude` globs. `[[<target>.review.paths]]` entries
@@ -32,7 +37,7 @@ Reviews are declared per Target, next to its metrics, and produce a
   fit the role, a glob that matches firmware or nothing, and a `spec` focus
   without a `spec` are load errors.
 - **`booley review [<sha>]`.** It reviews a commit in the same clean exported
-  checkout and against the same baseline as `booley measure`. Only Targets
+  checkout and against the same Base as `booley measure`. Only Targets
   and roles with changed files are reviewed, and identical reviews are merged
   into one Reviewer call. The Reviewer reads the changed files and the files
   that use them. Only findings the change introduced need resolving;
@@ -72,3 +77,18 @@ Reviews are declared per Target, next to its metrics, and produce a
   waive findings. The report, with waivers first, is the safeguard.
 - Goal review verdicts (`clean`, `done`, `no_major`, `no_critical`) are
   replaced by the `resolve` threshold.
+
+## Amendments (2026-11-11)
+
+Decided while finishing the design of
+[#3045](https://github.com/boldaxolotl/booley/issues/3045).
+
+- **Reviews are declared in `reviews.toml`**, a file in the Booley Directory
+  beside `metrics.toml`, not in `metrics.toml` as first decided. The table
+  names are unchanged: `[<target>.review]`, `[[<target>.review.paths]]` and
+  `[defaults.review]`. `metrics.toml` then never nests deeper than
+  `[<target>.<flow>]`, and no Booley Flow name is reserved for reviews.
+- **`reviews.toml` is a protected path in the Measurement Report**: an edit to
+  it is listed there and never blocks. Classifying a change to the review
+  rules (tightened or loosened) belongs to the Review Report, not to
+  `booley measure`.
