@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
+  as a Standalone Job: choose the worktree, the Flow, and its arguments, check
+  the equivalent shell command, then submit or copy it. The Jobs window opens
+  with the new Job selected. The Dashboard is no longer read-only.
 - A second `booley chat` while the main checkout is in use now starts in its
   own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
   and prints a line saying where it works. The first session and a lone

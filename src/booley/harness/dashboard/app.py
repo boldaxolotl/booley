@@ -1,4 +1,4 @@
-"""Read-only Textual navigation over detached Dashboard snapshots."""
+"""Textual navigation over detached Dashboard snapshots, and the Run wizard that starts Flows."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from booley.goals.presentation import proposal_presentation
 from booley.harness.dashboard import sessions
 from booley.harness.dashboard.footer import BackTarget, footer_hints
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView
+from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
@@ -42,8 +43,17 @@ from booley.harness.dashboard.targets import (
     first_line,
     order_worktrees,
 )
-from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, WORKTREE, TopBar
+from booley.harness.dashboard.topbar import (
+    FILTER,
+    HELP_ITEM,
+    OWNER,
+    RUN_ITEM,
+    WINDOW,
+    WORKTREE,
+    TopBar,
+)
 from booley.harness.dashboard.view_probe import ViewState
+from booley.harness.dashboard.wizard import LOADING, RunWizard
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.presentation.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.presentation.report_results import (
@@ -97,7 +107,11 @@ HELP = (
     "Click a report, artifact or evidence path to open it in the editor\n"
     "Activity is what the agent client last reported: working, waiting for tool call,\n"
     "or waiting for user input. Unknown means no fresh report, never a guess.\n"
-    "The Dashboard is read-only; approvals remain in chat."
+    "Run in the top bar starts a built-in Booley Flow as a Standalone Job: pick the worktree,\n"
+    "the Flow and its arguments, then check the equivalent shell command and submit or copy it\n"
+    "After Run the Jobs window opens on All sessions with the new Job selected; a Finished\n"
+    "filter switches to Running, which keeps the selected Job listed after it finishes\n"
+    "Approvals remain in chat."
 )
 
 _ACCENT = f"color({PALETTE_DODGER_BLUE})"
@@ -732,6 +746,7 @@ class DashboardApp(App[None]):
         opener: Callable[[str], str] = open_in_editor,
         view_state: ViewState | None = None,
         targets: TargetsReader | None = None,
+        launcher: Launcher | None = None,
     ) -> None:
         super().__init__()
         self.reader = reader
@@ -740,6 +755,12 @@ class DashboardApp(App[None]):
         self.view_state = view_state
         # Reads for the Targets window; without one the window reads nothing.
         self.targets = targets
+        # Starts Flows for the Run wizard; without one (no Project root) Run is unavailable.
+        self.launcher = launcher
+        # The Job the Run wizard just submitted, until its row appears in the Jobs list.
+        self._pending_job = ""
+        # The window and history Run was chosen from; Esc on the Jobs root returns there.
+        self._run_origin: tuple[str, list[Navigation]] | None = None
         self.snapshot = DashboardSnapshot()
         # Each window keeps its own non-empty history; its first entry is the top level.
         self.windows: dict[str, list[Navigation]] = {
@@ -898,6 +919,7 @@ class DashboardApp(App[None]):
 
     def _show_window(self, window: str) -> None:
         """Switch windows; each keeps its own history, selection and scroll."""
+        self._forget_run()
         self._remember()
         if window == "jobs" and self.window != "jobs":
             self._reset_jobs_owner()
@@ -917,7 +939,12 @@ class DashboardApp(App[None]):
         self.query_one(TopBar).focus()
 
     def _focus_content(self) -> None:
-        """Give the keyboard to the list, or to the detail when the list is hidden."""
+        """Give the keyboard to the list, or to the detail when the list is hidden.
+
+        Not while a modal (the Run wizard) is open: it keeps the keyboard.
+        """
+        if len(self.screen_stack) > 1:
+            return
         table = self.query_one(DataTable)
         (table if table.display else self.query_one("#aside")).focus()
 
@@ -950,6 +977,8 @@ class DashboardApp(App[None]):
             self._set_jobs_filter(session=self._next_owner())
         elif message.kind == WORKTREE:
             self._open_worktrees()
+        elif message.kind == RUN_ITEM:
+            self._open_run_wizard()
         # A scroll view has no list to hand the keyboard back to: it takes it (#2886).
         # The worktree list is for choosing from, so it takes the keyboard too.
         if self.navigation.view in DEDICATED_VIEWS or message.kind == WORKTREE:
@@ -958,12 +987,20 @@ class DashboardApp(App[None]):
     def on_top_bar_left(self, _message: TopBar.Left) -> None:
         self._focus_content()
 
+    def on_top_bar_moved(self, _message: TopBar.Moved) -> None:
+        self._update_footer()
+
     def action_back(self) -> None:
         """Go back one level inside the shown window; its top level stays put."""
         stack = self.windows[self.window]
         if len(stack) > 1:
             stack.pop()
             self._show()
+        elif self.window == "jobs" and self._run_origin is not None:
+            # Esc after Run returns to where the wizard started, history and all.
+            window, history = self._run_origin
+            self._forget_run()
+            self._navigate(window, *history)
 
     def action_help(self) -> None:
         """Display the Dashboard's keys and views; reached from the top bar's Help item."""
@@ -985,7 +1022,51 @@ class DashboardApp(App[None]):
 
         A filter chosen while a narrow Job detail is open returns to the list.
         """
+        self._forget_run()
         self._navigate("jobs", replace(self._jobs_root(), selected="", **changes))
+
+    def _forget_run(self) -> None:
+        """A window switch or a filter choice ends what Run set up: the pending Job and the way back."""
+        self._pending_job = ""
+        self._run_origin = None
+
+    def _open_run_wizard(self) -> None:
+        """Open the Run wizard over the current window, remembering where it started."""
+        if self.launcher is None:
+            self.notify("Run unavailable: no Project root", severity="warning")
+            return
+        self._remember()
+        origin = (self.window, list(self.windows[self.window]))
+        self._load_worktrees()
+        choices, message = self._wizard_worktrees()
+        self.push_screen(
+            RunWizard(self.launcher, choices, message, self._default_worktree(choices)),
+            lambda key: self._after_run(origin, key),
+        )
+
+    def _wizard_worktrees(self) -> tuple[tuple[WorktreeChoice, ...], str]:
+        """The wizard's worktree list and what to say while there is none."""
+        listed = self._worktree_list
+        return self._worktree_choices(), LOADING if listed is None else listed.problem
+
+    def _after_run(self, origin: tuple[str, list[Navigation]], key: str | None) -> None:
+        """Show the submitted Job selected in the Jobs window, which opens on All sessions.
+
+        A Finished filter would hide a Job that is still running, so it becomes Running;
+        Running keeps the selected Job listed after it finishes. The Job's row may not be
+        in the snapshot yet: the selection waits for it (``_pending_job``).
+        """
+        if key is None:
+            return
+        job_filter = self._jobs_root().job_filter
+        self._navigate(
+            "jobs",
+            Navigation("jobs", None, "running" if job_filter == "finished" else job_filter, key),
+        )
+        self._pending_job = key
+        self._run_origin = origin
+        self._focus_content()  # the top bar had the keyboard when Run was chosen
+        self.call_later(self.refresh_snapshot)
 
     def action_open_path(self, path: str) -> None:
         """Open a published path in the editor; a failure is reported, never raised."""
@@ -1357,6 +1438,8 @@ class DashboardApp(App[None]):
         )
 
     def _selected_key(self) -> str:
+        if self._pending_job and self.navigation.view == "jobs":
+            return self._pending_job  # not listed yet, so no cursor row can stand for it
         table = self.query_one(DataTable)
         index = table.cursor_row
         return self.row_keys[index] if index < len(self.row_keys) else self.navigation.selected
@@ -1467,14 +1550,7 @@ class DashboardApp(App[None]):
         notices_text = _notices_text(self.snapshot)
         notices.update(notices_text)
         notices.display = bool(notices_text)
-        bar = self.query_one(TopBar)
-        bar.active = self.window
-        bar.needs_you = self._needs_you()
-        jobs_root = self._jobs_root()
-        bar.job_filter = jobs_root.job_filter
-        bar.owner = self._owner_filter_label(jobs_root.session)
-        bar.unfinished = sum(not _finished(job) for job in self.snapshot.jobs.jobs)
-        bar.worktree = self._worktree.name if self._worktree else ""
+        self._update_top_bar()
         table = self.query_one(SessionList)
         selected = self._selected_key()
         scroll = (
@@ -1493,6 +1569,8 @@ class DashboardApp(App[None]):
             self._place_cursor(table, keys, selected, scroll)
             self._rows = rows
         self.row_keys = keys
+        if self._pending_job in keys:
+            self._pending_job = ""  # the cursor now stands on it
         self._render_detail()
         self._update_footer()
         # The list's width settles only after layout (a window switch, a scrollbar).
@@ -1504,6 +1582,17 @@ class DashboardApp(App[None]):
         # missing focus owner (a view change hid the list) moves it.
         if self.focused is None or not self.focused.display:
             self._focus_content()
+
+    def _update_top_bar(self) -> None:
+        """Tell the top bar the active window, filters, counts and worktree."""
+        bar = self.query_one(TopBar)
+        bar.active = self.window
+        bar.needs_you = self._needs_you()
+        jobs_root = self._jobs_root()
+        bar.job_filter = jobs_root.job_filter
+        bar.owner = self._owner_filter_label(jobs_root.session)
+        bar.unfinished = sum(not _finished(job) for job in self.snapshot.jobs.jobs)
+        bar.worktree = self._worktree.name if self._worktree else ""
 
     @staticmethod
     def _place_cursor(table: SessionList, keys: list[str], selected: str, scroll: float) -> None:
@@ -1771,6 +1860,7 @@ class DashboardApp(App[None]):
                     nested=len(self.windows[self.window]) > 1,
                     scrolling=self.focused is self.query_one("#aside"),
                     back_to=_back_target(self.navigation.view),
+                    on_run=self.query_one(TopBar).current_kind() == RUN_ITEM,
                 )
             )
 
@@ -1788,6 +1878,8 @@ class DashboardApp(App[None]):
         """
         if self.query_one(DataTable).cursor_row >= len(self.row_keys):
             return None
+        if self._pending_job and self.navigation.view == "jobs":
+            return None  # a Job that is not listed yet has nothing to open
         key = self._selected_key()
         if not key or key.startswith(sessions.HEADER_PREFIX):
             return None  # A header row, such as an empty-state line, opens nothing.
@@ -1944,6 +2036,18 @@ class DashboardApp(App[None]):
         checkout = row.attribution.work_dir or row.attribution.default_work_dir if row else ""
         return Path(checkout) if checkout else None
 
+    def _default_worktree(self, choices: tuple[WorktreeChoice, ...]) -> Path | None:
+        """The highlighted session's worktree, else the main checkout."""
+        checkout = self._highlighted_checkout()
+        return next(
+            (
+                item.path
+                for item in choices
+                if checkout and item.path.resolve() == checkout.resolve()
+            ),
+            None,
+        ) or next((item.path for item in choices if item.main), None)
+
     def _enter_targets(self) -> None:
         """Entering the window refreshes its reads and, until a choice, preselects the worktree."""
         self._preselect_pending = not self._worktree_chosen
@@ -1958,16 +2062,7 @@ class DashboardApp(App[None]):
         """
         if self._worktree_chosen or self.targets is None or self._worktree_list is None:
             return False
-        choices = self._worktree_choices()
-        checkout = self._highlighted_checkout()
-        picked = next(
-            (
-                item.path
-                for item in choices
-                if checkout and item.path.resolve() == checkout.resolve()
-            ),
-            None,
-        ) or next((item.path for item in choices if item.main), self.targets.root)
+        picked = self._default_worktree(self._worktree_choices()) or self.targets.root
         if picked == self._worktree:
             return False
         self._set_worktree(picked)
@@ -2051,6 +2146,8 @@ class DashboardApp(App[None]):
         reset = False
         if isinstance(result, WorktreeList):
             self._worktree_list = result
+            if isinstance(self.screen, RunWizard):
+                self.screen.set_worktrees(*self._wizard_worktrees())
             # Only the read started by entering the window preselects: a list opened later
             # by the human must not swap the worktree under them.
             reset = (

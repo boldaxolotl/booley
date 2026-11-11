@@ -528,7 +528,13 @@ def _build_parser() -> argparse.ArgumentParser:
     add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
     _add_goal_subparser(sub)
-    dashboard = sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
+    dashboard = sub.add_parser(
+        "dashboard",
+        help="Open the Sandbox Dashboard",
+        description=(
+            "Open the Sandbox Dashboard: sessions, Jobs and Targets, and Run to start a Booley Flow"
+        ),
+    )
     attach = dashboard.add_mutually_exclusive_group()
     attach.add_argument("--attach-policy", action="store_true", help=argparse.SUPPRESS)
     attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
@@ -1731,22 +1737,14 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     return None
 
 
-def _flow_blurb(description: str) -> str:
-    """Return the first sentence of a Flow description, on one line.
-
-    Endpoint descriptions can run to paragraphs; the listing shows the lead
-    sentence whole. Width fitting belongs to the table (TTY only), so piped
-    output is never cut mid-sentence.
-    """
-    return " ".join(description.split()).split(". ", maxsplit=1)[0].strip()
-
-
 def _flow_listing(flows: list[McpToolInfo]) -> str:
     """Render available Flows for the CLI."""
+    from booley.mcp.registry import flow_blurb
+
     if not flows:
         return "  (none discovered)"
     rows = [
-        [colors.accent(flow.name), _flow_blurb(flow.description)]
+        [colors.accent(flow.name), flow_blurb(flow.description)]
         for flow in sorted(flows, key=lambda item: item.name)
     ]
     return "\n".join(render_table(["Name", "Description"], rows, width=width_budget()))

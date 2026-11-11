@@ -294,11 +294,11 @@ async def test_up_on_first_row_focuses_top_bar_and_bar_keys():
         await pilot.press("left")
         assert bar.cursor == 0
         assert app.navigation.view == "jobs"  # choosing needs Enter
-        # Jobs window bar: Sessions, Jobs, Targets, Running, Finished, All, owner, Help.
-        await pilot.press(*["right"] * 8)
-        assert bar.cursor == 7  # clamped at Help, no wrap
+        # Jobs window bar: Sessions, Jobs, Targets, Running, Finished, All, owner, Run, Help.
+        await pilot.press(*["right"] * 9)
+        assert bar.cursor == 8  # clamped at Help, no wrap
 
-        await pilot.press(*["left"] * 7, "enter")
+        await pilot.press(*["left"] * 8, "enter")
         await pilot.pause()
         assert app.navigation.view == "overview"
         assert app.focused is bar
@@ -308,7 +308,7 @@ async def test_up_on_first_row_focuses_top_bar_and_bar_keys():
         assert app.navigation.view == "jobs"
         assert app.focused is bar
 
-        await pilot.press(*["right"] * 6, "enter")
+        await pilot.press(*["right"] * 7, "enter")
         await pilot.pause()
         assert app.navigation.view == "help"
         # Help has no list: the detail takes the keyboard at once (#2886).

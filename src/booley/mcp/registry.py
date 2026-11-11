@@ -57,6 +57,16 @@ _FLOW_BASE_NAMES = frozenset({"BooleyFlow", "BuiltinFlow"})
 _ENDPOINT_BASE_NAMES = _FLOW_BASE_NAMES | {"McpTool", "Specialist"}
 
 
+def flow_blurb(description: str) -> str:
+    """Return the first sentence of a Flow description, on one line.
+
+    Endpoint descriptions can run to paragraphs; the listing shows the lead
+    sentence whole. Width fitting belongs to the table (TTY only), so piped
+    output is never cut mid-sentence.
+    """
+    return " ".join(description.split()).split(". ", maxsplit=1)[0].strip()
+
+
 def discover_mcp_tools(
     *,
     booley_src: Path | None = None,
