@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext, StepResult
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import run_bounded_child
 
 CORE_TEXT = "CAPI=2:\nname: example:lib:cpu:1.0\n"
 HOST_PRIVATE_ENVIRONMENT = (
@@ -30,9 +29,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A git repo with a Booley guide and a Stealth core, host-private state absent."""
     root = tmp_path / "proj"
     root.mkdir()
-    subprocess.run(
-        ["git", "init", str(root)], capture_output=True, check=True, timeout=SUBPROCESS_TIMEOUT_S
-    )
+    run_bounded_child(["git", "init", str(root)], check=True)
     (root / ".booley" / "cores").mkdir(parents=True)
     (root / ".booley" / "AGENTS.md").write_text("# Project guide\n", encoding="utf-8")
     (root / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
@@ -70,12 +67,9 @@ def _repository_state(root: Path) -> dict[str, object]:
         if path.is_file() and not (path.name == "index" and path.parent.name == ".git")
     }
     configs = {
-        repository: subprocess.run(
+        repository: run_bounded_child(
             ["git", "-C", str(root / repository), "config", "--local", "--list"],
-            capture_output=True,
             check=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
         ).stdout
         for repository in (".", ".booley")
         if (root / repository / ".git").exists()

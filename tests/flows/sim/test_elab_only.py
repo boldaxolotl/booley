@@ -1022,3 +1022,28 @@ def test_standalone_live_probe_has_module_and_build_only_stage(
         )
     assert finding is None
     assert error == ""
+
+
+def test_elab_only_dry_run_writes_flow_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Elaboration Check keeps printing its elaboration FlowPlan (ordinary runs have none)."""
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _ordinary_public_hook_fixture
+
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+
+    result = flow.execute(
+        SimRequest(
+            target="sim_a",
+            mode="elab_only",
+            dry_run=True,
+            work_dir=project,
+            report_dir=tmp_path / "reports",
+        )
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
+    plan = json.loads((tmp_path / "reports/sim/flow_plan.json").read_text(encoding="utf-8"))
+    assert plan["mode"] == "elab_only"
+    assert [unit["selector"] for unit in plan["work_units"]] == ["sim_a"]

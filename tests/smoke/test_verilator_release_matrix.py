@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 
@@ -38,15 +39,7 @@ def _run(
     env: dict[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        argv,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
+    result = run_bounded_child(argv, cwd=cwd, env=env, timeout=120)
     if check and result.returncode != 0:
         pytest.fail(
             f"command failed ({result.returncode}): {' '.join(argv)}\n"
@@ -137,13 +130,7 @@ int main(int argc, char** argv) {
 
 
 def test_pinned_release_identity_is_immutable() -> None:
-    version = subprocess.run(
-        ["verilator", "--version"],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=10,
-    ).stdout
+    version = run_bounded_child(["verilator", "--version"], timeout=10, check=True).stdout
     provenance = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt").read_text(encoding="utf-8")
 
     assert f"Verilator {VERILATOR_VERSION}" in version

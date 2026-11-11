@@ -16,6 +16,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   `branch` points are still collected. A project that passes `--coverage-line`
   in its own `verilator_options` must add `--coverage-branch` to keep them.
   ([PR #3464](https://github.com/boldaxolotl/booley/pull/3464))
+- `booley init` now records the default Agent CLI as `[agent] default` instead of
+  the older name `provider`, and the `--provider` conflict error names
+  `[agent] default`. An existing `provider` key is kept as written and still
+  works.
 - `booley resources` now keeps each Test Variant of a simulation apart
   (`tests=first+slow`; the default Variant keeps the bare Test name, and the
   seeds of one Variant share an entry). Flow runs that `booley doctor` starts
