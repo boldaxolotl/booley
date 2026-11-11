@@ -15,14 +15,14 @@ zero-hit RTL point of this exact Campaign and its source still matches.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal, cast
 
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     CoveragePoint,
     DurableTargetIdentity,
-    rederive_coverage_points,
+    apply_point_dispositions,
 )
 from booley.flows.sim.coverage_json import (
     FrozenJson,
@@ -34,6 +34,7 @@ from booley.flows.sim.coverage_policy import (
     coverage_threshold,
     score_thresholds,
 )
+from booley.flows.sim.coverage_waivers import WaivablePointProblem, waivable_point_problem
 
 # Leave-one-out "needed" labelling is O(candidates x points); keep it bounded.
 MAX_PROVISIONAL_CANDIDATES = 512
@@ -116,21 +117,23 @@ def _binding_problem(
     return None
 
 
+_POINT_SCREENS: Mapping[WaivablePointProblem, str] = {
+    "missing": "Candidate does not name exactly one Coverage Point.",
+    "ambiguous": "Candidate does not name exactly one Coverage Point.",
+    "source": "Candidate source differs from the point's RTL source.",
+    "ineligible": "Point is not an eligible scored point.",
+    "hit": "Point has observed hits; it is not waivable as uncovered.",
+}
+
+
 def _point_problem(
     candidate: ProvisionalCandidate, points: Mapping[str, list[CoveragePoint]]
 ) -> tuple[CandidateStatus, str] | None:
     """Check that the candidate names one eligible, zero-hit point of its source."""
-    matches = points.get(candidate.point_id, [])
-    if len(matches) != 1:
-        return "invalid", "Candidate does not name exactly one Coverage Point."
-    point = matches[0]
-    if point.identity.location.get("source") != candidate.source:
-        return "invalid", "Candidate source differs from the point's RTL source."
-    if point.disposition.get("kind") != "eligible":
-        return "invalid", "Point is not an eligible scored point."
-    if sum(point.hits_by_run.values()) > 0:
-        return "invalid", "Point has observed hits; it is not waivable as uncovered."
-    return None
+    problem = waivable_point_problem(
+        points.get(candidate.point_id, []), {candidate.source}, zero_hits=True
+    )
+    return None if problem is None else ("invalid", _POINT_SCREENS[problem])
 
 
 def _screen_one(
@@ -151,23 +154,18 @@ def _screen_one(
 def _apply_candidates(
     campaign: CoverageCampaign, usable: Mapping[str, ProvisionalCandidate]
 ) -> CoverageCampaign:
-    points = tuple(
-        replace(
-            point,
-            disposition=freeze_coverage_mapping(
-                {
-                    "kind": "waived",
-                    "reason": usable[point.id].reason,
-                    "candidate_id": usable[point.id].candidate_id,
-                    "provisional": True,
-                }
-            ),
-        )
-        if point.id in usable
-        else point
-        for point in campaign.points
+    return apply_point_dispositions(
+        campaign,
+        {
+            point_id: {
+                "kind": "waived",
+                "reason": candidate.reason,
+                "candidate_id": candidate.candidate_id,
+                "provisional": True,
+            }
+            for point_id, candidate in usable.items()
+        },
     )
-    return rederive_coverage_points(campaign, points)
 
 
 def _provisional_evaluation(
