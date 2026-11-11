@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 from typing import cast
 
@@ -18,6 +17,7 @@ from booley.flows.sim.compiler_cache import (
     resolve_policy,
 )
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 MANAGED = {"OBJCACHE", "CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_COMPILERCHECK"}
 
@@ -92,12 +92,9 @@ def test_missing_ccache_builds_uncached_without_storage(project, tmp_path, monke
     policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache)})
     monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: None)
     prepared = prepared_build(root, policy, 'test -z "$OBJCACHE"')
-    result = subprocess.run(
+    result = run_bounded_child(
         ["sh", "-c", simulation_build_script(prepared, "b" * 32)],
-        capture_output=True,
-        text=True,
         timeout=60 if os.name == "nt" else 10,
-        check=False,
     )
     assert result.returncode == 0
     assert not cache.exists()
@@ -177,12 +174,9 @@ def test_build_exports_do_not_leak_to_run(project, tmp_path, monkeypatch):
     script = simulation_build_script(prepared, "a" * 32)
     script += '\ntest -z "$OBJCACHE" && test -z "$CCACHE_MAXSIZE"'
     # Git for Windows starts several shell processes here on loaded CI workers.
-    result = subprocess.run(
+    result = run_bounded_child(
         ["sh", "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=60 if os.name == "nt" else 10,
-        check=False,
+        timeout=SUBPROCESS_TIMEOUT_S if os.name == "nt" else 10,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "rc=0" in result.stdout

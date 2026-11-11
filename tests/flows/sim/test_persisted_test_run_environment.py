@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +26,7 @@ from booley.flows.test_runs import (
     declared_inputs_fingerprint,
     test_run_from_document,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _HOSTILE = ["X; id #", "A B", "$(id)", "A=B", "1X", "", "X\nY", "`id`"]
 _RESERVED = ["BOOLEY_TARGET", "COCOTB_RANDOM_SEED", "RANDOM_SEED", "PYTHONPATH", "MODULE"]
@@ -88,12 +88,10 @@ def test_a_valid_environment_renders_shell_safe_exports(value: str):
     line = _export_line("FAULT_MODE", value)
 
     assert shlex.split(line) == ["export", f"FAULT_MODE={value}"]
-    shown = subprocess.run(
+    shown = run_bounded_child(
         ["sh", "-c", f'{line} && printf %s "$FAULT_MODE"'],
-        capture_output=True,
-        text=True,
         # MSYS sh spawns slowly on a loaded Windows runner; this only guards a hang.
-        timeout=60 if os.name == "nt" else 10,
+        timeout=SUBPROCESS_TIMEOUT_S if os.name == "nt" else 10,
         check=True,
     )
     assert shown.stdout == value

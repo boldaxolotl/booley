@@ -215,8 +215,9 @@ def test_physical_substitution_never_adopts_foreign_summary_or_ref(layout):
 )
 def test_hard_process_death_recovers_only_durably_owned_publication_inodes(layout, boundary):
     import os
-    import subprocess
     import sys
+
+    from tests.subprocess_budget import run_bounded_child
 
     complete = publication_layout(layout)
     call = request(complete)
@@ -242,14 +243,12 @@ raise AssertionError('did not reach death boundary')
         "summary": call.summary,
         "boundary": boundary,
     }
-    child = subprocess.run(
+    child = run_bounded_child(
         [sys.executable, "-c", script, json.dumps(args)],
-        capture_output=True,
         env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")},
         timeout=90,
-        check=False,
     )
-    assert child.returncode == 17, child.stderr.decode()
+    assert child.returncode == 17, child.stderr
     unrelated = complete.main / ".git/unrelated-staging"
     unrelated.write_bytes(b"user staging bytes")
     result = finish_goal(call, environment(complete))
