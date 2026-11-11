@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 import pytest
 from tests.conftest import add_git_command_config
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support import pre_push_hook
 from booley.dev_support.pre_push_hook import main
@@ -37,14 +38,7 @@ def _git(repo: Path, *args: str, **env_overrides: str) -> str:
         "PATH": os.environ.get("BOOLEY_TEST_GIT_PATH", "/usr/bin:/bin:/usr/local/bin"),
         **env_overrides,
     }
-    proc = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-        check=True,
-        env=env,
-        timeout=30,
-    )
+    proc = run_bounded_child(["git", "-C", str(repo), *args], env=env, check=True)
     return proc.stdout.strip()
 
 
@@ -390,17 +384,10 @@ def actual_git(request, monkeypatch):
                 "optional minimum Git matrix requires BOOLEY_TEST_MIN_GIT; not local gate evidence"
             )
         assert Path(executable).is_absolute() and Path(executable).is_file()
-        version = subprocess.run(
-            [executable, "--version"], capture_output=True, text=True, timeout=10, check=True
-        )
+        version = run_bounded_child([executable, "--version"], timeout=10, check=True)
         assert re.fullmatch(r"git version 2\.37\.2(?:\.windows\.\d+)?\n?", version.stdout)
-        probe = subprocess.run(
-            [executable, "--no-lazy-fetch", "--version"],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-        assert probe.returncode == 129 and b"unknown option: --no-lazy-fetch" in probe.stderr
+        probe = run_bounded_child([executable, "--no-lazy-fetch", "--version"], timeout=10)
+        assert probe.returncode == 129 and "unknown option: --no-lazy-fetch" in probe.stderr
         print(f"minimum Git receipt: {Path(executable).resolve()} {version.stdout.strip()}")
     assert executable
     path = str(Path(executable).resolve().parent) + os.pathsep + os.environ.get("PATH", "")
@@ -499,9 +486,7 @@ def test_minimum_git_partial_state_preflight(
         }[state]
         _git(repo, "config", key, "false" if state != "partial" else "origin")
     executable = shutil.which("git")
-    probe = subprocess.run(
-        [executable, "--no-lazy-fetch", "--version"], capture_output=True, timeout=10, check=False
-    )
+    probe = run_bounded_child([executable, "--no-lazy-fetch", "--version"], timeout=10)
     if probe.returncode == 0:
         # The current capability safely inspects local complete objects; file
         # authority preflight remains strict on this path (tested separately).
@@ -989,12 +974,8 @@ def test_real_blobless_clone_missing_committed_symlink_never_fetches(
     _git(repo, "clone", "--filter=blob:none", "--no-checkout", upstream.as_uri(), str(clone))
     _enable_stealth(clone / ".booley")
     monkeypatch.chdir(clone)
-    absent_before = subprocess.run(
-        ["git", "--no-lazy-fetch", "cat-file", "-e", blob],
-        cwd=clone,
-        capture_output=True,
-        check=False,
-        timeout=10,
+    absent_before = run_bounded_child(
+        ["git", "--no-lazy-fetch", "cat-file", "-e", blob], cwd=clone, timeout=10
     )
     assert absent_before.returncode != 0
     before = {
@@ -1012,12 +993,8 @@ def test_real_blobless_clone_missing_committed_symlink_never_fetches(
     }
     assert before == after
     assert '"fetch"' not in trace.read_text()
-    absent = subprocess.run(
-        ["git", "--no-lazy-fetch", "cat-file", "-e", blob],
-        cwd=clone,
-        capture_output=True,
-        check=False,
-        timeout=10,
+    absent = run_bounded_child(
+        ["git", "--no-lazy-fetch", "cat-file", "-e", blob], cwd=clone, timeout=10
     )
     assert absent.returncode != 0
 
@@ -1858,6 +1835,7 @@ def test_minimum_git_upstream_ancestry_has_bounded_output(
             "committer Real Dev <dev@example.com> 1700000000 +0000\n"
             f"data 13\nupstream work\nfrom {parent}\n\n"
         )
+    # Kept on subprocess.run: the helper cannot feed stdin data.
     subprocess.run(
         ["git", "fast-import", "--quiet"],
         cwd=repo,
