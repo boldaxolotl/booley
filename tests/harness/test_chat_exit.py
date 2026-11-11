@@ -11,7 +11,6 @@ import importlib
 import io
 import os
 import shutil
-import signal
 import sys
 import time
 from pathlib import Path
@@ -412,7 +411,13 @@ def test_forwarded_hangup_keeps_without_prompt(
     assert path.is_dir()
 
 
-@pytest.mark.parametrize("status", [int(signal.SIGKILL), int(signal.SIGSEGV) | 0x80])
+# Raw POSIX wait statuses (low bits: signal number, 0x80: core dump). Literals, not
+# `signal.SIGKILL`, which Windows lacks and would break collection of this module there.
+_KILLED_BY_SIGKILL = 9
+_SEGFAULT_WITH_CORE_DUMP = 11 | 0x80
+
+
+@pytest.mark.parametrize("status", [_KILLED_BY_SIGKILL, _SEGFAULT_WITH_CORE_DUMP])
 def test_an_agent_that_did_not_exit_by_itself_keeps_without_prompt(
     repo: Path, terminal: _Terminal, capsys: pytest.CaptureFixture[str], status: int
 ) -> None:
