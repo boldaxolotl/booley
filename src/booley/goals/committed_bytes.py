@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import os
 import stat
-import tempfile
-from collections.abc import Generator
-from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 from booley.goals.lifecycle import LifecycleError
-from booley.runtime.git_attributes_policy import (
-    GITATTRIBUTES_RULE,
-    has_managed_attributes,
+from booley.runtime.commit_export import (
+    CHECKOUT_ATTRIBUTES,
+    BytePolicy,
+    parse_attributes,
+    pinned_attributes,
+    shadow_repository,
+    transformed_path,
 )
+from booley.runtime.git_attributes_policy import has_managed_attributes
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.pinned_history import raw_git, tree_rows
 
@@ -24,63 +25,7 @@ AMBIENT_ATTRIBUTES_ERROR = (
     ".gitattributes policy before finish"
 )
 
-
-CHECKOUT_ATTRIBUTES = ("text", "eol", "filter", "working-tree-encoding", "ident", "crlf")
-CHECKOUT_ATTRIBUTES_MARKER = ",".join(CHECKOUT_ATTRIBUTES)
-
-
 ATTRIBUTES_CHANGED_ERROR = "unsupported ambient input attributes changed during finish"
-
-
-@dataclass(frozen=True)
-class BytePolicy:
-    """Captured checkout settings and canonical managed-rule replay."""
-
-    autocrlf: str
-    eol: str
-    managed: bool
-
-    def record(self) -> dict[str, str]:
-        return {
-            "checkout_attributes": CHECKOUT_ATTRIBUTES_MARKER,
-            "autocrlf": self.autocrlf,
-            "eol": self.eol,
-            "managed_rule": GITATTRIBUTES_RULE if self.managed else "",
-        }
-
-
-@contextmanager
-def shadow_repository(repository: Path, managed: bool) -> Generator[tuple[Path, dict[str, str]]]:
-    """Object-only scratch repository with only the explicitly captured local policy."""
-    with tempfile.TemporaryDirectory(prefix="booley-pinned-bytes-") as scratch:
-        shadow, template = Path(scratch) / "repository", Path(scratch) / "template"
-        template.mkdir()
-        identity = raw_git(repository, "rev-parse", "--show-object-format", "--git-common-dir")
-        algorithm, common_text = os.fsdecode(identity).split("\n")[:2]
-        raw_git(
-            repository,
-            "init",
-            "-q",
-            "--template=" + str(template),
-            "--object-format=" + algorithm,
-            str(shadow),
-        )
-        common = Path(common_text)
-        common = common if common.is_absolute() else repository / common
-        env = {
-            "GIT_OBJECT_DIRECTORY": str(common.resolve() / "objects"),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_COUNT": "0",
-            "GIT_CONFIG_PARAMETERS": "",
-            "GIT_NO_LAZY_FETCH": "1",
-            "GIT_ATTR_NOSYSTEM": "1",
-        }
-        if managed:
-            info = shadow / ".git/info"
-            info.mkdir()
-            (info / "attributes").write_bytes(GITATTRIBUTES_RULE.encode() + b"\n")
-        yield shadow, env
 
 
 def attributes(
@@ -92,39 +37,26 @@ def attributes(
     policy: BytePolicy,
 ) -> dict[bytes, dict[str, str]]:
     """Pinned attributes, or external policy over the pin's own tracked attributes."""
+    if not ambient:
+        return pinned_attributes(repository, commit, names, policy)
     with shadow_repository(repository, policy.managed) as (shadow, env):
         raw_git(shadow, "read-tree", commit, env=env)
-        paths = b"".join(name + b"\0" for name in names)
-        args = ("check-attr", "-z", "--stdin", *CHECKOUT_ATTRIBUTES)
-        if ambient:
-            comparison = shadow.parent / "ambient"
-            comparison.mkdir()
-            _comparison_attributes(repository, commit, names, comparison)
-            result = raw_git(
-                repository,
-                *args,
-                env={
-                    "GIT_INDEX_FILE": str(shadow / ".git/index"),
-                    "GIT_WORK_TREE": str(comparison),
-                },
-                input_bytes=paths,
-            )
-        else:
-            result = raw_git(
-                shadow,
-                "-c",
-                "core.attributesFile=" + os.devnull,
-                *args,
-                "--cached",
-                env=env,
-                input_bytes=paths,
-            )
-    fields = result.rstrip(b"\0").split(b"\0") if result else []
-    values: dict[bytes, dict[str, str]] = {}
-    for i in range(0, len(fields), 3):
-        name, key, value = fields[i : i + 3]
-        values.setdefault(name, {})[key.decode("ascii")] = value.decode("utf-8")
-    return values
+        comparison = shadow.parent / "ambient"
+        comparison.mkdir()
+        _comparison_attributes(repository, commit, names, comparison)
+        result = raw_git(
+            repository,
+            "check-attr",
+            "-z",
+            "--stdin",
+            *CHECKOUT_ATTRIBUTES,
+            env={
+                "GIT_INDEX_FILE": str(shadow / ".git/index"),
+                "GIT_WORK_TREE": str(comparison),
+            },
+            input_bytes=b"".join(name + b"\0" for name in names),
+        )
+    return parse_attributes(result)
 
 
 def _attribute_ancestors(names: list[bytes]) -> set[Path]:
@@ -183,6 +115,29 @@ def _untracked_attribute_bytes(repository: Path, relative: Path) -> bytes | None
         raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR) from exc
 
 
+def require_ambient_matches(
+    repository: Path,
+    commit: str,
+    names: list[bytes],
+    attrs: dict[bytes, dict[str, str]],
+    policy: BytePolicy,
+) -> None:
+    """Refuse ambient attribute policy that would change the pinned attributes."""
+    if attributes(repository, commit, names, ambient=True, policy=policy) != attrs:
+        raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
+
+
+def refuse_goal_transformations(attrs: dict[bytes, dict[str, str]]) -> None:
+    """Goal Finish refuses any pinned filter or working-tree-encoding."""
+    name = transformed_path(attrs)
+    if name is not None:
+        raise LifecycleError(
+            f"unsupported committed input transformation: {os.fsdecode(name)}; "
+            "the whole selected versioned participant requires a hermetic working-byte proof, "
+            "including unconsumed files; custom filters/encodings are unsupported"
+        )
+
+
 def projected_blobs(
     repository: Path,
     commit: str,
@@ -191,18 +146,8 @@ def projected_blobs(
     policy: BytePolicy,
 ) -> dict[bytes, bytes]:
     """Git's built-in conversion, with exact pinned attributes and hermetic configuration."""
-    if attributes(repository, commit, list(rows), ambient=True, policy=policy) != attrs:
-        raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
-    for name, values in attrs.items():
-        if any(
-            values[key] not in {"unspecified", "unset"}
-            for key in ("filter", "working-tree-encoding")
-        ):
-            raise LifecycleError(
-                f"unsupported committed input transformation: {os.fsdecode(name)}; "
-                "the whole selected versioned participant requires a hermetic working-byte proof, "
-                "including unconsumed files; custom filters/encodings are unsupported"
-            )
+    require_ambient_matches(repository, commit, list(rows), attrs, policy)
+    refuse_goal_transformations(attrs)
     with shadow_repository(repository, policy.managed) as (
         shadow,
         env,
