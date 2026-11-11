@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import multiprocessing
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -33,6 +32,7 @@ from booley.flows.edam import (
     work_root_lease,
 )
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 
 def _hold_work_root(path: str, acquired, release) -> None:
@@ -455,10 +455,8 @@ class TestWorkRootLease:
         )
 
         with work_root_lease(work_root, timeout_s=1.0):
-            result = subprocess.run(
+            result = run_bounded_child(
                 [sys.executable, "-c", probe, str(work_root)],
-                capture_output=True,
-                text=True,
                 timeout=5,
                 check=True,
                 env=env,

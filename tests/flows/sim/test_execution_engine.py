@@ -72,6 +72,7 @@ from tests.flows.sim.test_verilator_build_reuse_engine import (
     _edit_keeping_mtime,
     _isolate_native_cores,
 )
+from tests.subprocess_budget import run_bounded_child
 
 
 def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus") -> TargetHandle:
@@ -1222,7 +1223,7 @@ def _configure_non_root_doctor_runtime(project: Path, state: Path) -> tuple[Path
 
 def _run_sim_cli(project: Path) -> subprocess.CompletedProcess[str]:
     source = Path(__file__).resolve().parents[3] / "src"
-    return subprocess.run(
+    return run_bounded_child(
         [
             sys.executable,
             "-c",
@@ -1236,10 +1237,6 @@ def _run_sim_cli(project: Path) -> subprocess.CompletedProcess[str]:
         ],
         cwd=project,
         env={**os.environ, "PYTHONPATH": str(source), "BOOLEY_CONTAINER": "1"},
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
     )
 
 

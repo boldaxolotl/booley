@@ -13,6 +13,7 @@ from booley.goals.committed_export import export_tree, materializations_unchange
 from booley.goals.input_identity import root_bindings
 from booley.goals.lifecycle import LifecycleError
 from tests.goals.conftest import git
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 if TYPE_CHECKING:
     from booley.goals.model import GoalRecord
@@ -29,13 +30,14 @@ def repository(path):
 
 def raw_blob(root, content):
     return (
+        # Kept on subprocess.run: needs stdin data (`input=`), which the bounded helper does not take.
         subprocess.run(
             ["git", "hash-object", "-w", "--stdin"],
             cwd=root,
             input=content,
             capture_output=True,
             check=True,
-            timeout=30,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         .stdout.strip()
         .decode()

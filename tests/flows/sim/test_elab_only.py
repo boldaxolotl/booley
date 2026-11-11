@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +24,7 @@ from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 
 def _result(output: str, *, rc: int = 0, **kwargs: object) -> SubprocessResult:
@@ -329,13 +329,10 @@ def test_build_stage_script_emits_record_before_run_half() -> None:
 def test_build_stage_script_measures_both_halves_and_preserves_run_exit() -> None:
     script = build_stage_script(["true"], "abc123", run_line="sh -c 'exit 7'")
 
-    completed = subprocess.run(
+    completed = run_bounded_child(
         ["sh", "-c", script],
-        check=False,
-        capture_output=True,
-        text=True,
         # MSYS sh spawns slowly on a loaded Windows runner; this only guards a hang.
-        timeout=60 if os.name == "nt" else 10,
+        timeout=SUBPROCESS_TIMEOUT_S if os.name == "nt" else 10,
     )
 
     assert completed.returncode == 7
