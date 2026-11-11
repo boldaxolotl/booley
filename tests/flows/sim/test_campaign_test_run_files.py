@@ -269,25 +269,33 @@ def _campaign_stand_in(tmp_path: Path) -> SimpleNamespace:
 def test_paths_name_the_attempt_the_campaign_accepted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    """A resumed work item is accepted on its second attempt: the log is that attempt's."""
+    from booley.flows.sim.campaign.codec import canonical_json_bytes
     from booley.flows.sim.campaign.test_run_files import campaign_test_run_files
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
     outcome = _campaign_stand_in(tmp_path)
-    (accepted,) = campaign_test_run_files(outcome)
-    assert accepted.log is not None
+    (result,) = (_target_directory(tmp_path) / "campaign").glob("work-items/*/result.json")
+    document = json.loads(result.read_text("utf-8"))
+    first = result.parent / "attempts" / f"0001-{document['attempt_id']}"
+    accepted = result.parent / "attempts" / f"0002-{document['attempt_id']}"
 
-    # A later attempt the Campaign never accepted must not be taken for it.
-    attempts = accepted.log.parents[1]
-    unaccepted = attempts.parent / "0002-unaccepted" / "evidence"
-    unaccepted.mkdir(parents=True)
-    unaccepted.joinpath("0001-run.log").write_bytes(b"later attempt")
+    # The Campaign accepted attempt 2; attempt 1 (an interrupted try) left its own log.
+    first.rename(accepted)
+    first.joinpath("evidence").mkdir(parents=True)
+    first.joinpath("evidence", "0001-run.log").write_bytes(b"interrupted attempt")
+    document["attempt_ordinal"] = 2
+    result.write_bytes(canonical_json_bytes(document))
 
-    assert campaign_test_run_files(outcome) == (accepted,)
+    (files,) = campaign_test_run_files(outcome)
+    assert files.log is not None
+    assert files.log.parents[1] == accepted
 
 
 def test_lookup_yields_no_files_for_unreadable_or_missing_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    from booley.flows.sim.campaign.codec import canonical_json_bytes
     from booley.flows.sim.campaign.test_run_files import TestRunFiles, campaign_test_run_files
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
@@ -314,6 +322,9 @@ def test_lookup_yields_no_files_for_unreadable_or_missing_records(
     # A record that is not a result, or has gone.
     result.write_bytes(b"not json")
     assert campaign_test_run_files(outcome) == (TestRunFiles(None, None),)
+    # Canonical JSON whose fields have the wrong shape is no result either.
+    result.write_bytes(canonical_json_bytes({"evidence": [{}]}))
+    assert campaign_test_run_files(outcome) == (TestRunFiles(None, None),)
     result.unlink()
     assert campaign_test_run_files(outcome) == (TestRunFiles(None, None),)
 
@@ -321,6 +332,7 @@ def test_lookup_yields_no_files_for_unreadable_or_missing_records(
 def test_a_reference_that_escapes_its_attempt_names_no_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    from booley.flows.sim.campaign.codec import canonical_json_bytes
     from booley.flows.sim.campaign.test_run_files import TestRunFiles, campaign_test_run_files
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
@@ -329,9 +341,12 @@ def test_a_reference_that_escapes_its_attempt_names_no_file(
     document = json.loads(result.read_text("utf-8"))
     for reference in document["evidence"]:
         if reference["kind"] == "live_run_log":
-            reference["path"] = "../../../manifest.json"
-    result.write_text(json.dumps(document), encoding="utf-8", newline="\n")
+            # Four levels up from the attempt directory is the Campaign manifest: a
+            # file that exists, so only the containment check can refuse it.
+            reference["path"] = "../../../../manifest.json"
+    result.write_bytes(canonical_json_bytes(document))
 
+    assert (result.parents[2] / "manifest.json").is_file()
     assert campaign_test_run_files(outcome) == (TestRunFiles(None, None),)
 
 

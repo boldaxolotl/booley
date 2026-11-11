@@ -123,9 +123,14 @@ def _work_item_files(invocation: Path, relative: object) -> TestRunFiles:
         )
     except (
         OSError,
+        KeyError,
+        TypeError,
+        ValueError,
         SimulationCampaignIntegrityError,
         UnsupportedSimulationCampaignFormatError,
     ):
+        # Includes a result whose fields have the wrong shape: ``SimulationResult``
+        # checks canonical JSON, not the types of its members.
         return _NO_FILES
 
 
