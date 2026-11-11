@@ -24,7 +24,7 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.campaign import collect_pre_sim_firings
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow import OrdinaryCampaignPlanning, SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_campaign_characterization import _AdapterAbortExecution, _plan
@@ -1281,8 +1281,7 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
 
     monkeypatch.setattr(flow, "_publish_and_run_campaign_requests", run)
     result = flow._run_ordinary_campaigns(
-        [],
-        {},
+        OrdinaryCampaignPlanning((), None, {}),
         AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
     )
     assert result.exit_code != 0
@@ -1958,10 +1957,10 @@ def test_partial_campaign_planning_keeps_known_and_unknown_tools(tmp_path, monke
     (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a"]\n[sim_b]\ntests = ["a"]\n')
     original = flow._ordinary_campaign_plan
 
-    def plan(target, *args, **kwargs):
-        if target == "sim_b":
+    def plan(planned, *args, **kwargs):
+        if planned.selector == "sim_b":
             raise ValueError("second Target unavailable")
-        return original(target, *args, **kwargs)
+        return original(planned, *args, **kwargs)
 
     monkeypatch.setattr(flow, "_ordinary_campaign_plan", plan)
     result = flow.execute(

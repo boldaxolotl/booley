@@ -51,10 +51,11 @@ from booley.harness.worktree_list import (
     merge_target,
     registered_worktrees,
 )
-from booley.mcp.session_registry import SessionRegistry, namespace
+from booley.mcp.session_registry import DEAD_PROCESS_STATES, SessionRegistry, namespace
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import own_booley_dir, own_booley_dir_repo_path
 from booley.runtime.handles import HandleStore
+from booley.runtime.pid import observe_process
 from booley.runtime.project_repositories import run_git
 from booley.runtime.project_worktree_pairing import (
     ProjectPairingError,
@@ -63,6 +64,7 @@ from booley.runtime.project_worktree_pairing import (
     remove_paired_checkout,
     remove_worktree_registration,
 )
+from booley.runtime.session_activity import process_identity_from_session_key
 from booley.runtime.submodule_materialization import SubmoduleMaterializationError, submodule_paths
 from booley.runtime.worktree_evidence import tracked_booley_paths, worktree_evidence_paths
 
@@ -304,6 +306,26 @@ def _session_reasons(target: _Target) -> list[str]:
         if work_dir and _is_inside(Path(work_dir), target.path):
             key = row.attribution.key
             reasons.append(f"live Session {handles.get(key, key)}")
+    for reason in _handle_holder_reasons(target, handles):
+        if reason not in reasons:
+            reasons.append(reason)
+    return reasons
+
+
+def _handle_holder_reasons(target: _Target, handles: dict[str, str]) -> list[str]:
+    """A running agent holds the handle `S<N>` that names worktree `s<N>`.
+
+    The agent of a worktree session may make no Booley tool call for a long time, so
+    it has no registry row yet; its handle, reserved under its process key, still
+    proves it lives.
+    """
+    reasons: list[str] = []
+    for key, label in handles.items():
+        identity = process_identity_from_session_key(key)
+        if identity is None or label.lower() != target.name:
+            continue
+        if observe_process(identity).state not in DEAD_PROCESS_STATES:
+            reasons.append(f"live Session {label}")
     return reasons
 
 
@@ -339,36 +361,76 @@ def _submodule_reasons(checkout: Path, source: Path, subject: str) -> list[str]:
     return reasons
 
 
-def _intact_reasons(target: _Target, component: _Component) -> list[str]:
-    """Uncommitted, unmerged, locked, and submodule-only work of an intact component."""
+def _upstream_repo(target: _Target, component: _Component) -> Path:
+    """The repository whose merge target the component's commits are compared with."""
+    return target.main if component.label == "outer" else target.common
+
+
+def _work_reasons(target: _Target, component: _Component) -> list[str]:
+    """Uncommitted changes and unmerged commits of an intact component."""
     subject = _SUBJECT[component.label]
-    outer = component.label == "outer"
-    upstream_repo = target.main if outer else target.common
-    excluded = own_booley_dir_repo_path(component.path).as_posix() if outer else None
+    excluded = (
+        own_booley_dir_repo_path(component.path).as_posix() if component.label == "outer" else None
+    )
     registration = component.registration
     assert registration is not None  # An intact component is registered.
     reasons: list[str] = []
     uncommitted = count_uncommitted(component.path, excluded)
     if uncommitted:
         reasons.append(f"{uncommitted} uncommitted change(s) in {subject}")
-    upstream = merge_target(upstream_repo)
+    upstream = merge_target(_upstream_repo(target, component))
     unmerged = count_unmerged(component.path, upstream)
     if unmerged:
         branch = (registration.branch or "detached HEAD").removeprefix("refs/heads/")
         reasons.append(
             f"{unmerged} commit(s) on {branch} not in {upstream.removeprefix('refs/heads/')}"
         )
-    if registration.locked is not None:
-        reasons.append(f"{subject} is locked by Git ({registration.locked or 'no reason given'})")
-    return reasons + _submodule_reasons(component.path, upstream_repo, subject)
+    return reasons
+
+
+def _lock_reasons(component: _Component) -> list[str]:
+    """The Git lock on an intact component: a blocker, not work that removal would lose."""
+    registration = component.registration
+    assert registration is not None  # An intact component is registered.
+    if registration.locked is None:
+        return []
+    subject = _SUBJECT[component.label]
+    return [f"{subject} is locked by Git ({registration.locked or 'no reason given'})"]
+
+
+def _loss_reasons(target: _Target, component: _Component) -> list[str]:
+    """Work an intact component holds that removal would lose: changes, commits, submodules."""
+    upstream_repo = _upstream_repo(target, component)
+    return _work_reasons(target, component) + _submodule_reasons(
+        component.path, upstream_repo, _SUBJECT[component.label]
+    )
+
+
+def _intact_reasons(target: _Target, component: _Component) -> list[str]:
+    """Uncommitted, unmerged, locked, and submodule-only work of an intact component."""
+    submodules = _submodule_reasons(
+        component.path, _upstream_repo(target, component), _SUBJECT[component.label]
+    )
+    return _work_reasons(target, component) + _lock_reasons(component) + submodules
+
+
+def _broken_reasons(target: _Target, component: _Component) -> list[str]:
+    """A broken component that no recorded removal explains is damage, not a removal."""
+    if component.state == "broken" and not _resuming(target, component):
+        return [f"{_SUBJECT[component.label]} is not a working Git checkout: {component.detail}"]
+    return []
 
 
 def _component_reasons(target: _Target, component: _Component) -> list[str]:
     if component.state == "intact":
         return _intact_reasons(target, component)
-    if component.state == "broken" and not _resuming(target, component):
-        return [f"{_SUBJECT[component.label]} is not a working Git checkout: {component.detail}"]
-    return []
+    return _broken_reasons(target, component)
+
+
+def _component_losses(target: _Target, component: _Component) -> list[str]:
+    if component.state == "intact":
+        return _loss_reasons(target, component)
+    return _broken_reasons(target, component)
 
 
 def _booley_dir_reasons(target: _Target) -> list[str]:
@@ -413,6 +475,22 @@ def _busy_reasons(target: _Target) -> list[str]:
     for component in (target.outer, target.paired):
         if component is not None:
             reasons += _component_reasons(target, component)
+    return reasons + _booley_dir_reasons(target)
+
+
+def discard_losses(project_root: Path, name: str) -> list[str]:
+    """What removing worktree *name* would lose, in the words of ``rm``'s refusal.
+
+    Read-only: it takes no layout lock and changes nothing. A live Session, an active
+    Goal Record and a Git lock are blockers, not losses; ``remove_worktree`` reports
+    them as its refusal. Raises the failures in :data:`REMOVAL_FAILURES`.
+    """
+    main = resolve_main_checkout_root(project_root)
+    target = _locate(project_root, main, name)
+    reasons: list[str] = []
+    for component in (target.outer, target.paired):
+        if component is not None:
+            reasons += _component_losses(target, component)
     return reasons + _booley_dir_reasons(target)
 
 
@@ -568,12 +646,17 @@ REMOVAL_FAILURES = (
 )
 
 
-def _refusal_text(refusal: WorktreeRemovalRefusedError) -> str:
-    lines = [f"ERROR: refusing to remove worktree {refusal.name}:"]
-    lines += [f"  - {reason}" for reason in refusal.reasons]
+def refusal_details(refusal: WorktreeRemovalRefusedError) -> list[str]:
+    """The refusal's reasons, one bullet each, then where an earlier attempt kept evidence."""
+    lines = [f"  - {reason}" for reason in refusal.reasons]
     if refusal.earlier_evidence:
         listed = ", ".join(str(path) for path in refusal.earlier_evidence)
         lines.append(f"An earlier attempt already moved evidence to: {listed}")
+    return lines
+
+
+def _refusal_text(refusal: WorktreeRemovalRefusedError) -> str:
+    lines = [f"ERROR: refusing to remove worktree {refusal.name}:", *refusal_details(refusal)]
     lines.append("Commit or merge that work, or rerun with --force to remove it anyway.")
     return "\n".join(lines)
 

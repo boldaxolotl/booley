@@ -93,7 +93,7 @@ def _write_toml(project: Path, body: str) -> None:
 @pytest.fixture(autouse=True)
 def _inline_claude_launch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the launch in-process as Claude; each launch is a distinct process identity."""
-    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch: launch())
+    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch, **_kw: launch())
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(
         chat_cmd, "get_agent_settings", lambda: SimpleNamespace(default_cli="claude")
@@ -1016,3 +1016,57 @@ def test_codex_last_stays_in_main_when_main_recency_is_unknown(
 
     assert started.cwd == project
     assert started.exec_argv[-2:] == ["resume", "--last"]
+
+
+# -- launch-time gc -------------------------------------------------------------------
+
+_DAY = 86400
+
+
+def _idle_worktree(project: Path, name: str, *, days: float | None) -> Path:
+    """Register worktree *name* on `booley/<name>`, last used *days* ago (``None``: never)."""
+    path = project / ".booley" / "worktrees" / name
+    _git(project, "worktree", "add", "-q", "-b", f"booley/{name}", str(path), "HEAD")
+    if days is not None:
+        stamp = project / ".booley" / "worktrees" / ".last-used" / name
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_bytes(b"")
+        then = time.time() - days * _DAY
+        os.utime(stamp, (then, then))
+    return path
+
+
+def test_launch_gc_removes_an_idle_clean_worktree(project, monkeypatch, capsys):
+    # Bug caught: no `gc` at launch (worktrees pile up), or its removal printed nowhere.
+    path = _idle_worktree(project, "s1", days=10)
+
+    started = _start(project, monkeypatch, capsys)
+
+    assert not path.exists()
+    assert "Removed worktree s1.\nBranches kept: booley/s1\n" in started.stderr
+    assert started.cwd == project
+    assert "booley/s1" in _branches(project)
+
+
+def test_launch_gc_is_quiet_about_kept_worktrees_and_errors(project, monkeypatch, capsys):
+    # Bug caught: launch-time `gc` printing `Kept worktree ...`, totals or an error for a
+    # recent, a dirty, an unstamped worktree or a bad `gc_older_than`; or blocking the launch.
+    recent = _idle_worktree(project, "s1", days=1)
+    dirty = _idle_worktree(project, "s2", days=10)
+    (dirty / "README.md").write_bytes(b"edited\n")
+    unstamped = _idle_worktree(project, "s3", days=None)
+    idle = _idle_worktree(project, "s4", days=10)
+    starting = "Booley is starting the claude interactive agent.\n"
+
+    started = _start(project, monkeypatch, capsys)
+
+    # Only the removal is printed: no `Kept` lines, no totals.
+    assert started.stderr == f"Removed worktree s4.\nBranches kept: booley/s4\n{starting}"
+    assert not idle.exists()
+
+    _write_toml(project, '[worktree]\ngc_older_than = "soon"\n')
+    started = _start(project, monkeypatch, capsys)
+
+    assert started.stderr == starting
+    assert started.cwd == project
+    assert all(path.is_dir() for path in (recent, dirty, unstamped))

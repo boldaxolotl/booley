@@ -199,6 +199,25 @@ When the agent exits, the parent asks: keep or discard.
   parent gets SIGHUP). Closing the terminal is the commonest exit, so kept
   worktrees are normal; `gc` and `list` handle them.
 
+Implemented by #2613 (2026-11-11):
+
+- The prompt lists the loss reasons of `rm`, so the two never disagree; they
+  include commits of a populated submodule that the main checkout lacks and
+  untracked files of a Snapshot's Booley Directory that are not evidence.
+  Ignored files are not counted. A live Session, an active Goal Record and a Git
+  lock are blockers, not losses: they appear as `rm`'s refusal at the second
+  question. A running agent that holds the session handle `S<N>` also blocks
+  `rm` and `gc` of worktree `s<N>`, even before its first Booley tool call.
+- A prompt needs the agent to have exited by itself, Booley to be the terminal's
+  foreground group, and stderr to be a terminal. A forwarded SIGHUP or SIGTERM,
+  a death by signal, a pipe or a redirect keep the worktree and print one
+  `Kept worktree` line.
+- Only a worktree that this launch created is offered: a launch from inside an
+  existing linked worktree, and a session in the main checkout, get no prompt.
+- The exit step runs after the agent was reaped and before Booley takes on the
+  agent's status, so the exit code stays the agent's. Closing the terminal while
+  the prompt waits ends Booley by SIGHUP, as for any program.
+
 ### Lifecycle commands
 
 `booley worktree` gains `list`, `rm <name>`, and `gc`.
