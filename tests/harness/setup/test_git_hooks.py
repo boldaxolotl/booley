@@ -2239,7 +2239,7 @@ class TestLineEndingsAutoFix:
         assert (booley_dir / "notes.md").read_bytes() == b"notes\n"
         config = (booley_dir / "booley.toml").read_bytes()
         assert b"\r" not in config
-        assert config.endswith(b'[agent]\nprovider = "claude"\nauth = "auto"\n')
+        assert config.endswith(b'[agent]\ndefault = "claude"\nauth = "auto"\n')
 
     def test_without_baseline_booleys_config_edit_blocks_repair(self, tmp_path: Path) -> None:
         from booley.harness.setup.git_hooks import _step_line_endings

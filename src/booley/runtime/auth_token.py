@@ -551,7 +551,7 @@ class CredentialPlan:
         if self.policy == GATEWAY_AUTH and self.selected is None:
             if self.app != APP_CODEX:
                 raise ValueError(
-                    f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] provider = 'codex'"
+                    f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] default = 'codex'"
                 )
             gateway_settings_from_env()  # raises GatewayConfigError naming the variable
         if self.policy != "auto" and self.selected is None:
