@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from tests.subprocess_budget import run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.runtime import history_commit
 from booley.runtime.history_commit import (
@@ -58,7 +58,7 @@ def _blob(root: Path, text: str) -> str:
         capture_output=True,
         text=True,
         check=True,
-        timeout=30,
+        timeout=SUBPROCESS_TIMEOUT_S,
     ).stdout.strip()
 
 

@@ -76,7 +76,7 @@ def test_posix_permission_denied_is_conservatively_alive(monkeypatch: pytest.Mon
 def test_posix_zombie_is_not_alive() -> None:
     if sys.platform != "linux":
         pytest.skip("Linux /proc process states are required")
-    # The test drives this Popen itself (cancel, wait, communicate).
+    # Kept on Popen: needs the exited-but-unreaped child to observe its zombie state.
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     try:
         deadline = time.monotonic() + 5

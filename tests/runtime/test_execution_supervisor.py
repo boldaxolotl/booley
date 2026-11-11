@@ -77,7 +77,7 @@ def _start_supervisor_with_test_heartbeat(
         "supervisor._EXECUTION_HEARTBEAT_SECONDS = 0.03\n"
         "raise SystemExit(supervisor.main())\n"
     )
-    # The test drives this Popen itself (cancel, wait, communicate).
+    # Kept on Popen: the test waits on the supervisor itself.
     return subprocess.Popen(
         [
             sys.executable,
@@ -257,7 +257,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     descendant_pid_file = tmp_path / "descendant.pid"
-    # The test drives this Popen itself (cancel, wait, communicate).
+    # Kept on Popen: the test cancels and waits on the supervisor itself.
     supervisor = start_supervisor_with_detached_descendant(
         booley_dir, execution_id, descendant_pid_file
     )
@@ -382,7 +382,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
     execution_id = _unique_execution_id()
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
-    # The test drives this Popen itself (cancel, wait, communicate).
+    # Kept on Popen: the test waits on the supervisor itself.
     supervisor = subprocess.Popen(
         [
             sys.executable,

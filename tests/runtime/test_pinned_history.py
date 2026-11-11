@@ -14,6 +14,7 @@ from tests.runtime.test_history_commit import (
     _head,
     _record_blob,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 from booley.runtime.history_commit import FileCommitError, build_commit
 from booley.runtime.pinned_history import (
@@ -109,7 +110,7 @@ def test_preserves_unrelated_or_conflicting_staging_without_wedging(repo, public
             input=b"100644 " + blob + b" 1\t" + RECORD.encode() + b"\n",
             check=True,
             capture_output=True,
-            timeout=30,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
     before = raw_git(repo, "ls-files", "--stage", "-z")
     commit = publish_pinned(repo, publication, "summary", lambda _: None)

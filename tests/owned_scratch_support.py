@@ -110,7 +110,7 @@ def exited_process_payload() -> dict[str, object]:
     """Return the identity payload of a real process that has already exited."""
     from booley.runtime.pid import capture_process_identity
 
-    # The test drives this Popen itself (cancel, wait, communicate).
+    # Kept on Popen: needs a live child to capture its identity, then kills it.
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         identity = capture_process_identity(child.pid)
