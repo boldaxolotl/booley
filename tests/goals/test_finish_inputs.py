@@ -620,8 +620,8 @@ def test_entry_through_alternate_spelling_finishes_from_original(layout, tmp_pat
 
 @pytest.mark.skipif(os.name == "nt", reason="requires native POSIX symlinks")
 def test_git_admin_alias_keeps_checkout_identity_but_copied_admin_refuses(layout, tmp_path):
-    from booley.goals.store import WorktreeIdentityError, _checkout_name
     from booley.runtime.project_repositories import git_directories
+    from booley.runtime.worktree_identity import WorktreeIdentityError, _checkout_name
 
     directories = git_directories(layout.worktree)
     alias = tmp_path / "other-admin-name"

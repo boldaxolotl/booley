@@ -3,7 +3,7 @@
 Two locks guard every write, both ``flock`` locks from
 :mod:`booley.core.file_lock`, released by the kernel when their holder dies:
 
-- the *worktree lock*, one per :class:`~booley.goals.model.WorktreeIdentity`,
+- the *worktree lock*, one per :class:`~booley.runtime.worktree_identity.WorktreeIdentity`,
   is held while a new record is created, so "no occupying record for this
   worktree" is checked and the new record published under one lock;
 - the *record lock*, one per record, is held around every save.
@@ -26,7 +26,6 @@ uniqueness check.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import shutil
@@ -39,7 +38,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Any
 
-from booley.core.boundary import BoundaryError, require_uuid4
+from booley.core.booley_layout import GOAL_ID_PATTERN
 from booley.core.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
 from booley.goals.model import (
     ALLOWED_TRANSITIONS,
@@ -47,11 +46,9 @@ from booley.goals.model import (
     GoalRecord,
     GoalRecordFormatError,
     GoalState,
-    WorktreeIdentity,
 )
 from booley.goals.naming import optional_names, record_names, save_names
 from booley.goals.paths import (
-    GOAL_ID_PATTERN,
     RECORD_FILE,
     STAGING_PREFIX,
     goals_root,
@@ -62,17 +59,20 @@ from booley.goals.paths import (
 from booley.goals.presentation import goal_presentation
 from booley.goals.test_run_resolution import resolution_update_violation
 from booley.runtime.atomic_files import (
-    WriteOnceConflictError,
     atomic_replace_bytes,
-    atomic_write_once,
     fsync_directory,
 )
 from booley.runtime.filesystem_utils import read_file_bytes
-from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
+from booley.runtime.worktree_identity import (
+    WorktreeIdentity,
+)
+from booley.runtime.worktree_identity import (
+    WorktreeIdentityError as RuntimeWorktreeIdentityError,
+)
+from booley.runtime.worktree_identity import (
+    resolve_worktree_identity as resolve_runtime_worktree_identity,
+)
 
-# The repository identity file inside Git's common directory (D3).
-REPOSITORY_ID_FILE = Path("booley") / "repository-id"
-MAIN_CHECKOUT = "main"
 DEFAULT_LOCK_TIMEOUT_S = 30.0
 # A staging directory older than this belongs to a create that died; any live
 # create renames its staging directory within moments of making it.
@@ -203,64 +203,21 @@ class GoalLockTimeoutError(GoalStoreError):
     """A Goal lock stayed busy for the whole allowed wait."""
 
 
-class WorktreeIdentityError(GoalStoreError):
+class WorktreeIdentityError(GoalStoreError, RuntimeWorktreeIdentityError):
     """A path is not a Git checkout Booley can identify."""
 
 
-# ---------------------------------------------------------------------------
-# Worktree identity (D3)
-# ---------------------------------------------------------------------------
-
-
 def resolve_worktree_identity(work_dir: Path, *, create: bool = False) -> WorktreeIdentity | None:
-    """Identify the Git worktree containing *work_dir*, the same from every spelling.
+    """Identify the Git worktree containing *work_dir*; failures are Goal store errors (D3).
 
-    The repository half is a UUID stored in Git's common directory. Without
-    *create*, a repository that has none yet returns ``None``. With *create*,
-    the first caller writes it atomically and concurrent callers all read the
-    winner's value. Goal Mode callers use :meth:`GoalStore.identify_worktree`,
-    which refuses a missing id while Goal Records occupy worktrees.
+    Goal Mode callers use :meth:`GoalStore.identify_worktree`, which refuses a
+    missing repository id while Goal Records occupy worktrees.
     """
     try:
-        directories = git_directories(work_dir)
-    except GitDirectoryInspectionError as exc:
-        raise WorktreeIdentityError(str(exc)) from exc
-    checkout = _checkout_name(directories.git_dir, directories.common_dir)
-    repository = _repository_id(directories.common_dir, create=create)
-    return None if repository is None else WorktreeIdentity(repository, checkout)
-
-
-def _checkout_name(git_dir: Path, common_dir: Path) -> str:
-    """``main`` for the primary checkout, ``worktrees/<admin>`` for a linked one."""
-    try:
-        if git_dir.samefile(common_dir):
-            return "main"
-        candidates = common_dir / "worktrees"
-        if candidates.is_dir():
-            names = [
-                child.name
-                for child in candidates.iterdir()
-                if child.is_dir() and child.samefile(git_dir)
-            ]
-            if len(names) == 1:
-                return "worktrees/" + names[0]
-    except OSError as exc:
-        raise WorktreeIdentityError(f"cannot inspect Git directory identity: {exc}") from exc
-    raise WorktreeIdentityError(f"Git directory {git_dir} is not a worktree of {common_dir}")
-
-
-def _repository_id(common_dir: Path, *, create: bool) -> str | None:
-    path = common_dir / REPOSITORY_ID_FILE
-    if not path.exists():
-        if not create:
-            return None
-        # A concurrent caller may win the creation; everyone reads the winner's id.
-        with contextlib.suppress(WriteOnceConflictError):
-            atomic_write_once(path, f"{uuid.uuid4()}\n".encode(), mode=0o644)
-    try:
-        return require_uuid4(read_file_bytes(path).decode("utf-8").strip(), field=str(path))
-    except (OSError, UnicodeDecodeError, BoundaryError) as exc:
-        raise WorktreeIdentityError(f"unreadable repository identity {path}: {exc}") from exc
+        return resolve_runtime_worktree_identity(work_dir, create=create)
+    except RuntimeWorktreeIdentityError as exc:
+        # Keep the OSError cause: callers read ``__cause__`` (e.g. Windows sharing violations).
+        raise WorktreeIdentityError(str(exc)) from exc.__cause__
 
 
 # ---------------------------------------------------------------------------
