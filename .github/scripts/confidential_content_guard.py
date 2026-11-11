@@ -888,9 +888,10 @@ def _is_mergify_candidate(pull_request: object) -> bool:
 
 
 def _pull_request_object(event: object) -> dict[str, object]:
-    if not isinstance(event, dict) or not isinstance(event.get("pull_request"), dict):
+    pull_request = _nested(event, "pull_request")
+    if not isinstance(pull_request, dict):
         raise GuardError("the GitHub event has no pull-request object")
-    return cast("dict[str, object]", event["pull_request"])
+    return cast("dict[str, object]", pull_request)
 
 
 def _pull_request_scope(pull_request: object) -> PullRequestScope:
@@ -1261,18 +1262,23 @@ def _advisory_posted(full_name: str, number: int, marker: str) -> bool:
     """True when the workflow bot already commented this finding set.
 
     Only the bot's own comments count, so a contributor cannot suppress the
-    advisory by posting the marker. ``--jq`` runs once per page, so matches are
-    counted as output lines.
+    advisory by posting the marker. ``--jq`` runs once per page, so each comment
+    is emitted as one JSON line and filtered here.
     """
-    selector = (
-        f'.[] | select(.user.login == "{_BOT_LOGIN}" and .user.type == "Bot" '
-        f'and ((.body // "") | contains("{marker}"))) | "match"'
-    )
     output = _gh_api(
-        ["--paginate", f"repos/{full_name}/issues/{number}/comments", "--jq", selector],
+        [
+            "--paginate",
+            f"repos/{full_name}/issues/{number}/comments",
+            "--jq",
+            '.[] | [.user.login, .user.type, (.body // "")] | @json',
+        ],
         "advisory lookup",
     )
-    return bool(output.strip())
+    for line in output.decode("utf-8", errors="replace").splitlines():
+        login, account_type, body = cast("list[str]", json.loads(line))
+        if login == _BOT_LOGIN and account_type == "Bot" and marker in body:
+            return True
+    return False
 
 
 def _pull_request_target(event: object) -> tuple[str, int]:
@@ -1389,12 +1395,11 @@ def pre_push_hook_main(
 
 
 def _event_metadata_findings(
-    event: object, config: GuardConfig
-) -> tuple[list[Finding], PullRequestScope]:
+    event: object, config: GuardConfig, scope: PullRequestScope
+) -> list[Finding]:
     """Scan PR metadata; outside work and Mergify-generated candidate text is advisory."""
     findings = inspect_pull_request_event(event, config)
-    scope = _pull_request_scope(_pull_request_object(event))
-    return (_as_advisory(findings) if scope != "maintainer" else findings), scope
+    return _as_advisory(findings) if scope != "maintainer" else findings
 
 
 def pull_request_main(
@@ -1404,7 +1409,9 @@ def pull_request_main(
     root = Path(repo).resolve()
     try:
         config = load_config(root)
-        findings, scope = _event_metadata_findings(_read_event(event_path), config)
+        event = _read_event(event_path)
+        scope = _pull_request_scope(_pull_request_object(event))
+        findings = _event_metadata_findings(event, config, scope)
         return _finish_scan(
             findings,
             config,
@@ -1627,6 +1634,21 @@ def restore_draft_main(repo: Path | str) -> int:
     return 0
 
 
+def _candidate_findings(
+    root: Path,
+    commits: list[str],
+    event: object,
+    scope: PullRequestScope,
+    config: GuardConfig,
+    trusted: Provenance,
+) -> list[Finding]:
+    """Commit and metadata findings of a proposed candidate, per the PR's provenance scope."""
+    provenance = _scope_provenance(root, scope, _pull_request_object(event), commits, trusted)
+    findings = inspect_commits(root, commits, config, provenance)
+    _add_limited(findings, _event_metadata_findings(event, config, scope))
+    return findings
+
+
 def verify_candidate_main(
     repo: Path | str,
     revision: str,
@@ -1657,16 +1679,16 @@ def verify_candidate_main(
         if sealed_key_id(proposed) != identifier:
             raise GuardError("the proposed encrypted vocabulary uses a different key")
         candidate_config = _parse_config(unseal_vocabulary(proposed, key), root)
-        commits = outgoing_commits(root, revision, base)
         event = _read_event(event_path)
-        pull_request = _pull_request_object(event)
-        scope = _pull_request_scope(pull_request)
-        provenance = _scope_provenance(
-            root, scope, pull_request, commits, _trusted_provenance(root, trusted_base)
+        scope = _pull_request_scope(_pull_request_object(event))
+        findings = _candidate_findings(
+            root,
+            outgoing_commits(root, revision, base),
+            event,
+            scope,
+            candidate_config,
+            _trusted_provenance(root, trusted_base),
         )
-        findings = inspect_commits(root, commits, candidate_config, provenance)
-        metadata, _scope = _event_metadata_findings(event, candidate_config)
-        _add_limited(findings, metadata)
         findings = [
             replace(finding, location=_redact_location(finding.location, trusted_config))
             for finding in findings

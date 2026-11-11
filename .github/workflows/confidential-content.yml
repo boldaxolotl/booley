@@ -51,9 +51,6 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
-          # Work by an outside contributor (and its commits inside a Mergify
-          # candidate) is advisory under the guard's provenance rules; everything
-          # else is scanned normally.
           # Mergify authors the in-place merge commits used to update queued
           # branches and signs speculative candidates with a separate committer.
           # The booley-renovate GitHub App (#2559) authors dependency-update
@@ -67,6 +64,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Outside work (and its commits inside a Mergify candidate) is advisory under
+          # the guard's provenance rules; everything else is enforced.
           # Content identical (same path and blob) to an entry of the base tip is
           # already accepted on main, so a merge of main into the branch does not
           # re-attribute it to the PR. Only PRs to main have such a trusted tip.

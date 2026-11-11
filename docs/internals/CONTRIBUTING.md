@@ -413,7 +413,7 @@ A pull request from a fork needs no setup, such as allowlisting your commit
 identity, if you do not have write access. The `confidential-content` check
 treats findings on commits you author and on your PR text as advisory: they do
 not block the check, and a maintainer reviews any flagged confidential-term
-match. A maintainer-authored commit you re-commit is still checked.
+match. A commit whose author is an allowlisted maintainer identity is still checked.
 
 CI skips draft pull requests: `Tests`, the PicoRV32 demo contract, and the
 project site build start when the PR is opened ready or marked ready for

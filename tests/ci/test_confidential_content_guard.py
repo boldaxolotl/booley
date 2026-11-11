@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -2042,7 +2043,7 @@ WORKFLOW = SCANNER.parent.parent / "workflows/confidential-content.yml"
 POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="fake gh and the scan step need POSIX")
 MERGIFY_USER = {"id": 37929162, "type": "Bot"}
 _FAKE_GH_SCRIPT = """\
-import json, os, re, sys
+import json, os, sys
 
 state = os.environ["FAKE_GH_DIR"]
 arguments = sys.argv[1:]
@@ -2074,14 +2075,12 @@ if "--method" in arguments:
     sys.exit(1 if failing else 0)
 if "--paginate" in arguments:
     selector = arguments[arguments.index("--jq") + 1]
-    marker = re.search(r"<!-- confidential-content-advisory [0-9a-f]+ -->", selector).group(0)
     path = os.path.join(state, "comments.json")
     comments = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
     record(method="GET", endpoint=arguments[arguments.index("--paginate") + 1], jq=selector)
+    # Stand in for the production selector's projection; filtering is the code under test.
     for comment in comments:
-        user = comment["user"]
-        if user["login"] == "github-actions[bot]" and user["type"] == "Bot" and marker in comment["body"]:
-            print("match")
+        print(json.dumps([comment["user"]["login"], comment["user"]["type"], comment["body"]]))
     sys.exit(0)
 endpoint = arguments[0]
 record(method="GET", endpoint=endpoint)
@@ -2160,7 +2159,7 @@ def _pr_event(
     head: str,
     base: str,
     head_repo_id: int | None = 2,
-    association: str = "NONE",
+    association: str | None = "NONE",
     user: dict | None = None,
     ref: str = "topic",
     title: str = "public",
@@ -2263,15 +2262,43 @@ _STATUS_CASES: dict[str, tuple[list, dict, int, str]] = {
         1,
         "identity not allowed",
     ),
-    "owner-fork-term": ([(SAFE, _TERM_FILE)], {"association": "OWNER"}, 1, "confidential term"),
-    "member-fork-term": ([(SAFE, _TERM_FILE)], {"association": "MEMBER"}, 1, "confidential term"),
+    # Maintainer-side cases use an unlisted author, so exit 1 depends on classification alone.
+    "owner-fork-term": (
+        [(OUTSIDER, _TERM_FILE)],
+        {"association": "OWNER"},
+        1,
+        "confidential term",
+    ),
+    "member-fork-term": (
+        [(OUTSIDER, _TERM_FILE)],
+        {"association": "MEMBER"},
+        1,
+        "confidential term",
+    ),
+    "lowercase-owner-fork-term": (
+        [(OUTSIDER, _TERM_FILE)],
+        {"association": "owner"},
+        1,
+        "confidential term",
+    ),
+    "null-association-fork-term": (
+        [(OUTSIDER, _TERM_FILE)],
+        {"association": None},
+        1,
+        "confidential term",
+    ),
     "collaborator-fork-unlisted-identity": (
         [(OUTSIDER, _CLEAN_FILE)],
         {"association": "COLLABORATOR"},
         1,
         "identity not allowed",
     ),
-    "deleted-fork-head": ([(SAFE, _TERM_FILE)], {"head_repo_id": None}, 1, "confidential term"),
+    "deleted-fork-head": (
+        [(OUTSIDER, _TERM_FILE)],
+        {"head_repo_id": None},
+        1,
+        "confidential term",
+    ),
 }
 
 
@@ -2341,6 +2368,8 @@ def test_pr_scan_step_posts_one_comment_per_finding_set(tmp_path: Path) -> None:
 
     # An amend keeps the findings but changes the commit id and message.
     _git(repo, "checkout", "topic")
+    (repo / "a.txt").write_bytes(b"\n" + TERM_TEXT.encode())  # same finding, new line number
+    _git(repo, "add", "a.txt")
     _git(repo, "commit", "--amend", "-m", "amended", env=_identity_env(*OUTSIDER))
     amended = _git(repo, "rev-parse", "HEAD")
     event = _pr_event(head=amended, base=base)
@@ -2416,21 +2445,29 @@ def _scan_with_event(
     )
 
 
-def _candidate_repository(tmp_path: Path, order: list[str], files: dict[str, dict]) -> tuple:
+def _candidate_repository(
+    tmp_path: Path,
+    order: list[str],
+    files: dict[str, dict],
+    *,
+    maintainer: tuple[str, str] = SAFE,
+    stacked: bool = False,
+) -> tuple:
     """A Mergify-style candidate merging queued PR branches in `order`, one `Merge of #N` each.
 
+    `maintainer` authors PR 12; `stacked` builds PR 11 on top of PR 12's branch.
     Returns (repo, base, candidate head, branch tips by PR number).
     """
     repo, _initial = _repository(tmp_path)
     _sealed_fixture(repo, _encoded_config())
     base = _commit(repo, "add vocabulary")
-    identities = {"11": OUTSIDER, "12": SAFE}
-    tips = {
-        number: _branch_commits(
-            repo, f"pr-{number}", [(identities[number], files[number])], start=base
+    identities = {"11": OUTSIDER, "12": maintainer}
+    tips: dict[str, str] = {}
+    for number in sorted(files, key=lambda number: number != "12"):  # PR 12 first
+        start = tips["12"] if stacked and number == "11" else base
+        tips[number] = _branch_commits(
+            repo, f"pr-{number}", [(identities[number], files[number])], start=start
         )
-        for number in sorted(files)
-    }
     _git(repo, "checkout", "-b", "mergify/merge-queue/abc123", base)
     for number in order:
         _git(
@@ -2447,7 +2484,7 @@ def _candidate_repository(tmp_path: Path, order: list[str], files: dict[str, dic
 
 def _candidate_event(head: str, base: str, **overrides: object) -> dict:
     event = _pr_event(head=head, base=base, head_repo_id=1, association="CONTRIBUTOR")
-    event["pull_request"]["user"] = MERGIFY_USER
+    event["pull_request"]["user"] = dict(MERGIFY_USER)
     event["pull_request"]["head"]["ref"] = "mergify/merge-queue/abc123"
     event["pull_request"].update(overrides)
     return event
@@ -2473,16 +2510,22 @@ _CANDIDATE_NOTES = {
 def _candidate_case(tmp_path: Path, case: str) -> tuple[Path, str, dict, _FakeGh]:
     """Build one candidate scenario: the repository, base, PR event, and fake gh."""
     clean_maintainer = case == "outside-and-clean-maintainer"
-    order = ["12", "11"] if case == "maintainer-then-outside-term" else ["11", "12"]
+    stacked = case == "outside-stacked-on-maintainer"
+    order = ["12", "11"] if case == "maintainer-then-outside-term" or stacked else ["11", "12"]
     if case in {*_CANDIDATE_NOTES, "pushed-commit-on-candidate"}:
         order = ["11"]
     maintainer_files = {"maint.txt": "clean\n"} if clean_maintainer else _MAINTAINER_FILES
+    # An unlisted maintainer identity makes enforcement visible even where a term would not.
     repo, base, head, tips = _candidate_repository(
-        tmp_path, order, {"11": _OUTSIDE_FILES, "12": maintainer_files}
+        tmp_path,
+        order,
+        {"11": _OUTSIDE_FILES, "12": maintainer_files},
+        maintainer=SAFE if clean_maintainer else OUTSIDER,
+        stacked=stacked,
     )
     if case == "pushed-commit-on-candidate":
         (repo / "pushed.txt").write_bytes(TERM_TEXT.encode())
-        head = _commit(repo, "pushed after the queue", name=SAFE[0], email=SAFE[1])
+        head = _commit(repo, "pushed after the queue", name=OUTSIDER[0], email=OUTSIDER[1])
     gh = _FakeGh(tmp_path)
     served_head = "0" * 40 if case == "outside-head-mismatch" else tips["11"]
     if case != "lookup-fails":
@@ -2509,9 +2552,15 @@ def _assert_candidate_outcome(
         assert "outside.txt" in warnings
         return
     _expect_exit(result, 1)
-    if case in {"outside-and-maintainer-term", "maintainer-then-outside-term"}:
+    if case in {
+        "outside-and-maintainer-term",
+        "maintainer-then-outside-term",
+        "outside-stacked-on-maintainer",
+    }:
         assert "maint.txt" in errors and "outside.txt" not in errors
         assert "outside.txt" in warnings and "maint.txt" not in warnings
+        # The maintainer's unlisted identity is enforced; the outside author's is advisory.
+        assert "identity not allowed" in errors and "identity not allowed" in warnings
     elif case == "pushed-commit-on-candidate":
         assert "pushed.txt" in errors and "outside.txt" not in errors
         assert "outside.txt" in warnings
@@ -2532,6 +2581,7 @@ def _assert_candidate_outcome(
         "outside-and-clean-maintainer",
         "outside-and-maintainer-term",
         "maintainer-then-outside-term",
+        "outside-stacked-on-maintainer",
         "outside-head-mismatch",
         "lookup-fails",
         "member-fork-pr",
@@ -2584,6 +2634,35 @@ def test_candidate_metadata_is_advisory(tmp_path: Path) -> None:
     assert "ERROR" in maintainer.stderr
 
 
+def _with_head_repo(event: dict) -> None:
+    event["pull_request"]["head"]["repo"] = {"id": 2}
+    event["pull_request"]["author_association"] = "OWNER"
+
+
+# name -> edit that removes one marker of a Mergify candidate (a maintainer-scope PR remains)
+_CANDIDATE_MARKER_EDITS: dict[str, Callable[[dict], None]] = {
+    "other-bot-id": lambda event: event["pull_request"]["user"].update(id=5),
+    "other-queue-branch": lambda event: event["pull_request"]["head"].update(ref="mergify/bp/x"),
+    "fork-head": _with_head_repo,
+    "boolean-repository-id": lambda event: event["pull_request"]["head"].update(repo={"id": True}),
+}
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("case", sorted(_CANDIDATE_MARKER_EDITS))
+def test_candidate_metadata_needs_every_mergify_marker(tmp_path: Path, case: str) -> None:
+    repo, base, head = _pr_scenario(tmp_path, [(SAFE, _CLEAN_FILE)])
+    event = _candidate_event(head, base, title=f"Queue {SENTINEL}")
+    _CANDIDATE_MARKER_EDITS[case](event)
+    event_path = _write_event(repo, event)
+
+    result = _run_guard(repo, ["pull-request", "--event", str(event_path)], os.environ.copy())
+
+    _expect_exit(result, 1)
+    assert "ERROR" in result.stderr and "WARNING" not in result.stderr
+    assert SENTINEL not in result.stdout + result.stderr
+
+
 @POSIX_ONLY
 def test_outside_pr_enforced_finding_survives_advisory_cap(tmp_path: Path) -> None:
     allowlisted_term = {"maintainer.txt": TERM_TEXT}
@@ -2607,6 +2686,7 @@ def test_outside_pr_invalid_proposed_vocabulary_still_fails(tmp_path: Path) -> N
     (repo / ".github/confidential-vocabulary.enc").write_bytes(b"corrupt\n")
     _git(repo, "checkout", "-b", "tampered", base)
     head = _commit(repo, "tamper with the vocabulary", name=OUTSIDER[0], email=OUTSIDER[1])
+    _git(repo, "checkout", base)  # the trusted vocabulary stays intact in the working tree
     gh = _FakeGh(tmp_path)
 
     result = _scan_with_event(
@@ -2614,7 +2694,8 @@ def test_outside_pr_invalid_proposed_vocabulary_still_fails(tmp_path: Path) -> N
     )
 
     _expect_exit(result, 1)
-    assert "could not complete" in result.stderr
+    assert "the proposed vocabulary is invalid" in result.stderr
+    assert "WARNING" not in result.stderr
 
 
 @POSIX_ONLY

@@ -108,7 +108,8 @@ and term id, never the term); it never skips a check silently.
   the first are advisory (logged only), except allowlisted-author commits. A
   failed lookup, a head mismatch, a PR that is not outside work, or any other
   first-parent commit (for example a push onto the candidate branch) leaves its
-  commits enforced; the scan prints a `NOTE` naming why. The `Merge of #N`
+  commits enforced; a `Merge of #N` commit left enforced prints a `NOTE` naming
+  why, and so does a candidate with no such commit. The `Merge of #N`
   commits themselves stay enforced. The candidate's own title and body are
   Mergify-generated from queued PRs whose own status already checked them, so
   its metadata findings are advisory. This depends on Mergify's `Merge of #N`
@@ -127,7 +128,10 @@ and term id, never the term); it never skips a check silently.
   human gate (see [merge-queue.md](merge-queue.md)).
 - **Residuals.** Commits from a same-repository branch carried inside an outside
   PR are advisory unless their author is allowlisted; that branch's own PR stays
-  enforced. A maintainer's edit to an outside PR's title or body is advisory (a
+  enforced. Mergify's in-place update merge into an outside PR's branch is
+  authored by an allowlisted identity, so it stays enforced, including its
+  message, which names the branch; an outside PR whose branch name matches a
+  term fails once queued. A maintainer's edit to an outside PR's title or body is advisory (a
   term match is still commented and labelled); agents publish PR text through
   `publish-pr`, which enforces.
 
