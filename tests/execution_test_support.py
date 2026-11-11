@@ -84,6 +84,7 @@ def start_supervisor_with_detached_descendant(
         f"subprocess.Popen([sys.executable,'-c',{descendant_script!r}],start_new_session=True)\n"
         "time.sleep(120)\n"
     )
+    # Kept on Popen: callers kill and wait on the supervisor themselves.
     return subprocess.Popen(
         [
             sys.executable,

@@ -257,6 +257,15 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             '(required for the `spec` focus) or `steer=["<context>"]` for context. '
             "`dry_run=true` previews the call. Each new review replaces the previous findings.",
             "",
+            '**Changes only:** add `base="<commit>"` (CLI: `--base <commit>`) to review only '
+            "the `scope` files changed since the merge-base of that commit and HEAD, "
+            "uncommitted changes included; Goal Mode refuses it. Unchanged `scope` files that "
+            "use them are context, the diff and commit messages are given to the Reviewer, and "
+            "no change in scope exits 0 without a review. Pass every file of the category as "
+            "the `scope` to give the Reviewer the files that use the changed ones. Findings "
+            "already present before the change are listed separately as pre-existing and are "
+            "never open or verified.",
+            "",
             "**Goal Mode:** the Review Goal fixes scope and spec, so `scope`, `spec` and "
             "`steer` are refused. Declare each Review Goal with exactly one `target` or "
             "`paths` (see `booley cheat --goals`).",

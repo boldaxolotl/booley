@@ -438,6 +438,13 @@
       "schedule": ["* * * * 1"]
     },
     {
+      "description": "sandbox-base: the pyslang extra pin moves with its base-image pin in one PR.",
+      "matchFileNames": ["pyproject.toml"],
+      "matchPackageNames": ["pyslang"],
+      "groupName": "sandbox-base",
+      "schedule": ["* * * * 1"]
+    },
+    {
       "description": "dev-python: CI requirement pins that pyproject extras also pin move in one PR (lockstep: tests/ci/test_ci_requirements.py).",
       "matchFileNames": [".github/ci/requirements-*.txt"],
       "matchPackageNames": [

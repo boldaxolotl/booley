@@ -218,10 +218,18 @@ once so it gets the new credential. Billing choices are in
 
 ### Two Developer Agents keep clobbering each other's edits
 
-They share one worktree. Give each agent that edits code its own: ask the agent
-to create a worktree (`booley worktree new <name>` in the Sandbox), then start
-Goal Mode there with `/booley-goal`. The Dashboard warns about a shared
-worktree but doesn't separate the agents.
+They share one worktree. Sessions started with `booley chat` get their own
+automatically: while the main checkout is in use, the next one starts in a
+worktree `s<N>`. A plain `claude` tab or VS Code panel started before any
+Booley tool call is not counted, so it may still share the main checkout. Start
+those in a worktree: ask the agent to create one (`booley worktree new <name>`
+in the Sandbox), then start Goal Mode there with `/booley-goal`. The Dashboard
+warns about a shared worktree but doesn't separate the agents.
+
+If `booley chat` keeps opening worktrees because a Codex session ended without
+notice, Booley counts the main checkout as in use until that session goes quiet
+(`[goals] quiet_after`, two hours by default). Run `booley chat --here` to use
+the main checkout now.
 
 ### Worktrees show as `prunable` on the host
 
@@ -617,7 +625,8 @@ units. In the `.core`, list those headers first in the fileset.
 Run `booley doctor` on the host, then `booley doctor --deep` in the Sandbox.
 Check that the Project has a Grant, that the registered installation is still
 a Linux x86-64 Vivado 2025.2, and that Doctor reports no devcontainer drift.
-Fix the host side first, then reseed the Sandbox with `booley init --seed`.
+Fix the host side first, then apply it as [Applying Sandbox
+changes](SANDBOX.md#applying-sandbox-changes) describes.
 `booley eda installation list`, `booley eda license list` and `booley projects`
 show the current records.
 

@@ -10,6 +10,7 @@ import contextlib
 import os
 import sys
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,7 +33,7 @@ from booley.goals.sim_baseline_store import (
 from booley.goals.sim_transitions import seen_failing
 from booley.mcp import sim_baseline_execution as execution
 from booley.mcp import sim_baseline_jobs as jobs
-from booley.runtime import job_records
+from booley.runtime import detached_job, job_records
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.goals.conftest import SMOKE_RUN, enter_goals
 from tests.goals.test_sim_baseline import _complete, _schedule
@@ -323,9 +324,8 @@ def test_reap_owned_checkout_refuses_unproven_scratch(baseline, tmp_path) -> Non
 
 def test_supervisor_refuses_bad_arguments_and_unknown_jobs(baseline) -> None:
     path, raw = _schedule(baseline)
-    assert jobs.main([]) == 2
     job_records.delete_record(raw["job_id"], Path(raw["jobs_root"]))
-    assert jobs.main([str(path)]) == 2
+    assert jobs.supervise(path) == 2
 
 
 def test_supervisor_cancellation_survives_os_error_handlers(baseline, monkeypatch) -> None:
@@ -346,7 +346,7 @@ def test_supervisor_cancellation_survives_os_error_handlers(baseline, monkeypatc
 
     monkeypatch.setattr(execution, "run_baseline", interrupted_hook)
     monkeypatch.setattr(jobs.signal, "signal", lambda *_args: None)
-    assert jobs.main([str(path)]) == 2
+    assert jobs.supervise(path) == 2
     assert not continued
     report = read_document(path)
     assert report["status"] == "unavailable" and "cancelled" in report["reason"]
@@ -354,21 +354,40 @@ def test_supervisor_cancellation_survives_os_error_handlers(baseline, monkeypatc
     assert job is not None and job.status == job_records.STATUS_FAILED and job.ended_at
 
 
-def test_unstarted_worker_exit_is_published_without_a_pid(baseline) -> None:
+def _reap(path: Path, raw: dict, code: int) -> None:
+    """Run the detached-job reaper as the baseline launch wires it, for a worker that exited *code*."""
+    detached_job._reap_unstarted(
+        SimpleNamespace(wait=lambda: code),
+        path.parent / "job.log",
+        Path(raw["jobs_root"]),
+        raw["job_id"],
+        partial(jobs._publish_unstarted, path),
+    )
+
+
+def test_unstarted_worker_exit_is_published_without_a_pid(baseline, caplog) -> None:
     path, raw = _schedule(baseline)
     jobs_root = Path(raw["jobs_root"])
     job_records.write_record(
         job_records.JobRecord(raw["job_id"], "sim_baseline", utc_now_rfc3339(), 60), jobs_root
     )
-    jobs._reap_unstarted(SimpleNamespace(wait=lambda: 3), path)
+    _reap(path, raw, 3)
     job = job_records.read_record(raw["job_id"], jobs_root)
     assert job is not None and job.status == job_records.STATUS_FAILED and job.exit_code == 3
     report = read_document(path)
     assert report["status"] == "unavailable" and "exit 3" in report["reason"]
 
-    # An unreadable request is logged, never raised from the reaper thread.
+    # An unreadable request is logged, never raised from the reaper thread; the
+    # record (pid-less and running again) is left as it was.
     path.write_bytes(b"not json")
-    jobs._reap_unstarted(SimpleNamespace(wait=lambda: 1), path)
+    job_records.write_record(
+        job_records.JobRecord(raw["job_id"], "sim_baseline", utc_now_rfc3339(), 60), jobs_root
+    )
+    with caplog.at_level("WARNING"):
+        _reap(path, raw, 1)
+    job = job_records.read_record(raw["job_id"], jobs_root)
+    assert job is not None and job.status == job_records.STATUS_RUNNING
+    assert "startup result could not be published" in caplog.text
 
 
 def test_supervisor_publishes_unavailable_when_the_baseline_fails(baseline, monkeypatch) -> None:
@@ -379,7 +398,7 @@ def test_supervisor_publishes_unavailable_when_the_baseline_fails(baseline, monk
 
     monkeypatch.setattr(execution, "run_baseline", fail)
     monkeypatch.setattr(jobs.signal, "signal", lambda *_args: None)
-    assert jobs.main([str(path)]) == 2
+    assert jobs.supervise(path) == 2
     report = read_document(path)
     assert report["status"] == "unavailable" and "checkout failed" in report["reason"]
     job = job_records.read_record(raw["job_id"], Path(raw["jobs_root"]))

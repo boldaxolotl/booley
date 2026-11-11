@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import host_base_acquisition as owner
 from booley.runtime import interactive_docker
@@ -158,13 +159,10 @@ def test_owner_wraps_docker_cli_failure_and_keeps_capacity_errors(
 
 def test_owner_cli_imports_with_only_standard_library():
     root = Path(__file__).resolve().parents[2]
-    result = subprocess.run(
+    result = run_bounded_child(
         [sys.executable, "-S", "-m", "booley.runtime.host_base_acquisition", "--help"],
         env=dict(os.environ, PYTHONPATH=str(root / "src")),
-        capture_output=True,
-        text=True,
         timeout=15,
-        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "--refresh" in result.stdout
