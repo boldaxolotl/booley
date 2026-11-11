@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support.commit_msg_hook import AttributionPolicyError, main, sanitize_message
 
@@ -411,7 +411,8 @@ class TestMain:
             "[tool.booley]\nsource_checkout = true\n",
             encoding="utf-8",
         )
-        subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10)
+        init = run_bounded_child(["git", "init", "-q", str(root)], timeout=10)
+        assert init.returncode == 0, init.stderr
         support = Path(__file__).resolve().parents[2] / "src" / "booley" / "dev_support"
         for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
             shutil.copy2(support / name, hooks / name)
@@ -427,12 +428,9 @@ class TestMain:
         original = "docs: explain Booley architecture\n"
         message.write_text(original, encoding="utf-8")
 
-        result = subprocess.run(
+        result = run_bounded_child(
             [sys.executable, "-S", str(hooks / "commit_msg_hook.py"), str(message)],
             cwd=root,
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=10,
         )
 
