@@ -8,6 +8,7 @@ the submitter's pid-less record and writes the terminal state like a shell run.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -94,7 +95,8 @@ def submit(booley_dir: Path, request: StandaloneRequest) -> str:
             run_id=run_id,
         )
     except OSError as exc:
-        with log_path.open("ab") as log:
+        # Best effort: an unwritable log must not stop the record turning failed.
+        with contextlib.suppress(OSError), log_path.open("ab") as log:
             log.write(f"Standalone Job not started: {exc}\n".encode())
         record.status = job_records.STATUS_FAILED
         record.exit_code = _START_FAILURE_EXIT_CODE

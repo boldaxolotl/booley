@@ -6,12 +6,14 @@ still in progress, so the worker is detached when the assertions look at it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -131,7 +133,7 @@ while marker and not Path(marker).exists() and time.monotonic() < deadline:
 
 
 @pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A Project whose Booley Directory has one Flow, one Specialist and one heavy slot."""
     for name in ("BOOLEY_DIR", "BOOLEY_SLOTS_DIR", *GOAL_AND_SESSION_ENV):
         monkeypatch.delenv(name, raising=False)
@@ -143,7 +145,14 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / ".booley" / "booley.toml").write_text("[jobs]\nmax_heavy = 1\n", encoding="utf-8")
     (tools / "stub_flow.py").write_text(STUB_FLOW, encoding="utf-8")
     (tools / "stub_specialist.py").write_text(STUB_SPECIALIST, encoding="utf-8")
-    return root
+    yield root
+    # A failed assertion must not leave a detached worker running into other tests.
+    for record in job_records.list_records(
+        standalone_jobs_dir(root / ".booley"), skip_malformed=True
+    ):
+        if record.pid is not None and record.status == job_records.STATUS_RUNNING:
+            with contextlib.suppress(OSError):
+                os.kill(record.pid, signal.SIGKILL)
 
 
 @pytest.fixture
@@ -354,6 +363,25 @@ def test_spawn_failure_leaves_failed_record(
     assert "no interpreter" in job_log(project, run_id)
 
 
+def test_unwritable_log_still_leaves_failed_record(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import standalone_worker as worker
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError(13, "log not writable")
+
+    monkeypatch.setattr(worker.detached_job, "spawn", refuse)
+    # A directory cannot be opened for append, so the reason line cannot be written.
+    monkeypatch.setattr(worker, "standalone_log_path", lambda *_args: tmp_path)
+
+    run_id = worker.submit(booley_dir_of(project), worker.StandaloneRequest(project, "flow", "x"))
+
+    record = job_records.read_record(run_id, jobs_root_of(project))
+    assert record is not None
+    assert (record.status, record.exit_code) == ("failed", 2)
+
+
 def test_goal_baseline_launches_the_generic_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -396,6 +424,8 @@ def test_worker_rejects_unknown_kinds(capsys: pytest.CaptureFixture[str]) -> Non
     from booley.harness import standalone_worker as worker
 
     assert worker.main(["unknown", "x"]) == 2
+    assert worker.main(["goal-baseline"]) == 2
+    assert worker.main(["standalone", "x"]) == 2
     assert "usage:" in capsys.readouterr().err
 
 

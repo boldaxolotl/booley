@@ -365,7 +365,7 @@ def _reap(path: Path, raw: dict, code: int) -> None:
     )
 
 
-def test_unstarted_worker_exit_is_published_without_a_pid(baseline) -> None:
+def test_unstarted_worker_exit_is_published_without_a_pid(baseline, caplog) -> None:
     path, raw = _schedule(baseline)
     jobs_root = Path(raw["jobs_root"])
     job_records.write_record(
@@ -377,9 +377,17 @@ def test_unstarted_worker_exit_is_published_without_a_pid(baseline) -> None:
     report = read_document(path)
     assert report["status"] == "unavailable" and "exit 3" in report["reason"]
 
-    # An unreadable request is logged, never raised from the reaper thread.
+    # An unreadable request is logged, never raised from the reaper thread; the
+    # record (pid-less and running again) is left as it was.
     path.write_bytes(b"not json")
-    _reap(path, raw, 1)
+    job_records.write_record(
+        job_records.JobRecord(raw["job_id"], "sim_baseline", utc_now_rfc3339(), 60), jobs_root
+    )
+    with caplog.at_level("WARNING"):
+        _reap(path, raw, 1)
+    job = job_records.read_record(raw["job_id"], jobs_root)
+    assert job is not None and job.status == job_records.STATUS_RUNNING
+    assert "startup result could not be published" in caplog.text
 
 
 def test_supervisor_publishes_unavailable_when_the_baseline_fails(baseline, monkeypatch) -> None:
