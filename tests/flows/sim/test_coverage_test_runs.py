@@ -20,7 +20,7 @@ from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
 )
-from booley.flows.sim.coverage_transaction import run_coverage_target
+from booley.flows.sim.coverage_json import coverage_mapping_document
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import (
@@ -36,7 +36,7 @@ from tests.flows.sim.test_coverage_flow import (
     _SplitMetricsExecution,
 )
 from tests.flows.sim.test_coverage_invocation import project
-from tests.flows.sim.test_coverage_transaction import NativeExecution, Progress
+from tests.flows.sim.test_coverage_transaction import NativeExecution, run_target
 
 _TESTS_TOML = """\
 [sim_0]
@@ -98,7 +98,7 @@ def test_two_variants_and_a_seed_count_are_one_process_each(tmp_path, monkeypatc
     plan = _target_plan(tmp_path, context, runs)
     execution = NativeExecution()
 
-    outcome = run_coverage_target(plan, execution, Progress())
+    outcome = run_target(plan, execution)
 
     assert outcome.exit_code == 0
     names = ["reset+soak@1", "reset+short@1", "wrap@11", "wrap@22", "wrap@33"]
@@ -134,7 +134,7 @@ def test_two_variants_and_a_seed_count_are_one_process_each(tmp_path, monkeypatc
     assert dict(campaign.points[0].hits_by_run) == {
         f"run:{index:03d}:{name}": 2 for index, name in enumerate(names, start=1)
     }
-    rows = json.loads(outcome.simulation_path.read_text())["tests"]
+    rows = coverage_mapping_document(outcome.detail)["tests"]
     assert [(row["name"], row["test_run"], row["variant"], row["seed"]) for row in rows] == [
         ("reset", "reset+soak@1", "soak", 1),
         ("reset", "reset+short@1", "short", 1),
@@ -148,10 +148,10 @@ def test_one_failing_run_fails_the_coverage_campaign(tmp_path, monkeypatch):
     context = _project(tmp_path, monkeypatch)
     plan = _target_plan(tmp_path, context, _runs(tmp_path, "reset", "reset+soak", "wrap"))
 
-    outcome = run_coverage_target(plan, _FailingRun("reset+soak@1"), Progress())
+    outcome = run_target(plan, _FailingRun("reset+soak@1"))
 
     assert outcome.exit_code == 1
-    simulation = json.loads(outcome.simulation_path.read_text())
+    simulation = coverage_mapping_document(outcome.detail)
     assert simulation["passed"] is False
     assert simulation["simulation"] == "fail"
     assert [(row["test_run"], row["passed"]) for row in simulation["tests"]] == [
