@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Job resource history keeps the newest 20 runs per Target, Job phase, flags,
+  and Test Run with no overall cap, and deletes a group that has had no run in
+  90 days. Peak memory now includes processes forked by any thread of a Job
+  command, and counts the Job's temporary files only when `TMPDIR` is on
+  tmpfs (they are still recorded as the temporary-file peak); earlier runs
+  keep their earlier peak.
 - The `sim` result card now names each Test Run that did not pass with its log
   (`log:`) and, when it ran with `--trace`, its waveform (`waveform:`); a
   `--trace` run lists its passing Test Runs with their waveform too.
