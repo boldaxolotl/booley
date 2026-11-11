@@ -184,7 +184,7 @@ def _supervise(monkeypatch, path, *, child_wait=None) -> int:
         execution, "_child_watchdog", lambda _output: SimpleNamespace(cancel=lambda: None)
     )
     monkeypatch.setattr(jobs.signal, "signal", lambda *_args: None)
-    return jobs.main([str(path)])
+    return jobs.supervise(path)
 
 
 def _job(request: dict[str, Any]) -> Any:
