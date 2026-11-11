@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.contract import SimulationOptions
@@ -41,12 +41,8 @@ class _RealVerilatorExecution:
         self.build_dir = build_dir
 
     def build(self, request) -> SimulationBuildResult:
-        version = subprocess.run(
-            ["verilator", "--version"],
-            timeout=30,
-            check=True,
-            capture_output=True,
-            text=True,
+        version = run_bounded_child(
+            ["verilator", "--version"], timeout=SUBPROCESS_TIMEOUT_S, check=True
         ).stdout
         provenance = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt")
         if (
@@ -55,7 +51,7 @@ class _RealVerilatorExecution:
             or PINNED_VERILATOR.commit not in provenance.read_text(encoding="utf-8")
         ):
             return SimulationBuildResult(success=False, output=version)
-        result = subprocess.run(
+        result = run_bounded_child(
             [
                 "verilator",
                 "--binary",
@@ -67,9 +63,6 @@ class _RealVerilatorExecution:
                 *request.instrumentation,
                 str(self.source),
             ],
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=_TOOL_TIMEOUT_S,
         )
         return SimulationBuildResult(
@@ -82,13 +75,10 @@ class _RealVerilatorExecution:
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         environment = os.environ.copy()
         environment.update(request.environment)
-        result = subprocess.run(
+        result = run_bounded_child(
             [str(self.build_dir / "Vcounter_tb"), *request.argv_suffix],
             cwd=request.raw_path.parent,
             env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=_TOOL_TIMEOUT_S,
         )
         return SimulationRunResult(
@@ -98,14 +88,7 @@ class _RealVerilatorExecution:
 
     def command(self, request) -> SimulationCommandResult:
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            request.argv,
-            cwd=request.cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_TOOL_TIMEOUT_S,
-        )
+        result = run_bounded_child(list(request.argv), cwd=request.cwd, timeout=_TOOL_TIMEOUT_S)
         return SimulationCommandResult(
             returncode=result.returncode,
             stdout=result.stdout,
@@ -166,6 +149,7 @@ endmodule
 
 def _invoke(command: list[str], *, timeout: int) -> SubprocessResult:
     try:
+        # Unbounded child: the test handles the timeout itself and falls back to a timed_out result
         completed = subprocess.run(
             command,
             timeout=timeout,
@@ -419,9 +403,9 @@ def _prepare_cocotb_cache_project(root: Path) -> Path:
     )
     (root / ".booley/tests.toml").write_text('[sim]\ntests = ["check", "another"]\n')
     (root / ".gitignore").write_text(".booley/.runtime/\nreports/\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
-    subprocess.run(["git", "add", "."], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
-    subprocess.run(
+    run_bounded_child(["git", "init", "-q"], cwd=root, check=True)
+    run_bounded_child(["git", "add", "."], cwd=root, check=True)
+    run_bounded_child(
         [
             "git",
             "-c",
@@ -434,19 +418,13 @@ def _prepare_cocotb_cache_project(root: Path) -> Path:
         ],
         cwd=root,
         check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return helper
 
 
 def _git_status(root: Path) -> str:
-    return subprocess.run(
-        ["git", "status", "--porcelain=v1", "-uall"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
+    return run_bounded_child(
+        ["git", "status", "--porcelain=v1", "-uall"], cwd=root, check=True
     ).stdout
 
 
