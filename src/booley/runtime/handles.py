@@ -167,9 +167,17 @@ class HandleStore:
             raise ValueError("handle map exceeds 16 MiB")
         atomic_replace_bytes(self.path, payload)
 
-    def reserve(self, key: str, prefix: str, *, predecessors: tuple[str, ...] = ()) -> str:
+    def reserve(
+        self,
+        key: str,
+        prefix: str,
+        *,
+        predecessors: tuple[str, ...] = (),
+        wait_s: float | None = None,
+    ) -> str:
         root = self.root if self.jobs else self.root.parent
-        with _writer(root, wait_s=1 if self.jobs else None, booley_dir=self.booley_dir):
+        wait = 1 if self.jobs else wait_s
+        with _writer(root, wait_s=wait, booley_dir=self.booley_dir):
             handles = self.load()
             before = json.dumps(handles.stored(), sort_keys=True)
             label = handles.reserve(key, prefix, predecessors=predecessors)
@@ -215,12 +223,16 @@ def _writer(root: Path, *, wait_s: float | None, booley_dir: Path) -> Iterator[N
             release_file_lock(handle)
 
 
-def session_writer(booley_dir: Path) -> AbstractContextManager[None]:
-    return _writer(booley_dir / "runtime/sessions", wait_s=None, booley_dir=booley_dir)
+def session_writer(
+    booley_dir: Path, *, wait_s: float | None = None
+) -> AbstractContextManager[None]:
+    """The Session writer lock; *wait_s* bounds the wait, ``None`` fails on first contention."""
+    return _writer(booley_dir / "runtime/sessions", wait_s=wait_s, booley_dir=booley_dir)
 
 
-def reserve_session_handle(booley_dir: Path, key: str) -> str:
-    return HandleStore(booley_dir).reserve(key, "S")
+def reserve_session_handle(booley_dir: Path, key: str, *, wait_s: float | None = None) -> str:
+    """Reserve the Session handle for *key*, waiting up to *wait_s* for the writer lock."""
+    return HandleStore(booley_dir).reserve(key, "S", wait_s=wait_s)
 
 
 def register_job(
