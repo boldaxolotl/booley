@@ -467,9 +467,11 @@ def test_setup_sees_sigint_held_by_the_launch_window_then_holds_it_again(monkeyp
     held = {signal.SIGINT, signal.SIGQUIT}
     outer = signal.pthread_sigmask(signal.SIG_BLOCK, held)
     try:
-        with pytest.raises(chat_cmd._SetupInterruptedError):  # noqa: SLF001
-            with chat_cmd._signals_interrupt_setup():  # noqa: SLF001
-                signal.raise_signal(signal.SIGINT)
+        with (
+            pytest.raises(chat_cmd._SetupInterruptedError),
+            chat_cmd._signals_interrupt_setup(),
+        ):
+            signal.raise_signal(signal.SIGINT)
         assert held <= signal.pthread_sigmask(signal.SIG_BLOCK, [])
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, outer)
