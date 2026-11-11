@@ -109,6 +109,12 @@ class _Rec:
         if fix:
             self.fix_hints.append(fix)
 
+    def d(self, report) -> None:
+        """Record an owner's ``DiagnosticReport`` as the reporter's diagnostics path does."""
+        _record_report(
+            report, passed=self.p, warned=self.w, skipped=self.s, failed=self.f, noted=self.n
+        )
+
     def fails(self) -> list[str]:
         return [m for lvl, m in self.events if lvl == "fail"]
 
