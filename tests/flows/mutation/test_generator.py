@@ -240,7 +240,6 @@ def test_excluded_contexts_yield_no_mutants(tmp_path: Path) -> None:
         (13, "    if (state == `IDLE) begin end"),
         (14, "    begin end"),
         (16, "  /* deleted */"),
-        (18, "    begin end"),
         (21, "  /* deleted */"),
         (22, "  always @(a == b) begin end"),
         (36, "  /* deleted */"),
@@ -432,6 +431,52 @@ def test_deletion_operator_sites(tmp_path: Path, name: str) -> None:
     (`repeat`, `foreach` and generate `for` bodies are bounded and stay).
     """
     assert _sites(_generate(tmp_path, name), ("deletion",)) == _DELETION_SITES[name]
+
+
+def test_awkward_contexts_neither_crash_nor_move_unsafe_sites(tmp_path: Path) -> None:
+    """Review regressions: a function's own return variable, a macro in a net initializer,
+    compound `case` labels, written selects (`++`, task output argument) and delays.
+    """
+    source = "\n".join(
+        [
+            "`define MASK 1'b1",
+            "module awk(input [3:0] a, input [1:0] u, input req, output reg [3:0] q, output reg c);",
+            "  wire en = `MASK & req;",
+            "  function [3:0] rev; input [3:0] x; begin rev[0] = x[3]; end endfunction",
+            "  task tk(output [1:0] o); o = 2'd1; endtask",
+            "  reg [3:0] r;",
+            "  always @* begin tk(r[1:0]); r[1]++; c = #5 ~c; q = rev(a); end",
+            "  always @* case (u)",
+            "    {1'b0, 1'b1}: q = 4'd2;",
+            "    (2'd2): q = 4'd3;",
+            "    default: q = 4'd4;",
+            "  endcase",
+            "endmodule",
+            "",
+        ]
+    )
+    name = _write(tmp_path, "awk.v", source)
+
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    # Only `x[3]` (a read) moves; the select of `rev` itself has no declared range to use.
+    bit_selects = [line for _, line in _edited_lines(tmp_path, name, selection, "bit-select")]
+    assert bit_selects == [
+        "  function [3:0] rev; input [3:0] x; begin rev[0] = x[2]; end endfunction"
+    ]
+    # Labels keep their constants; only the statements after them change.
+    for line, text in _edited_lines(tmp_path, name, selection, "constant"):
+        if line in (9, 10):
+            assert text.startswith(("    {1'b0, 1'b1}: q = 4'd", "    (2'd2): q = 4'd")), text
+    # The net initializer goes whole despite the macro; `c = #5 ~c` keeps its wait.
+    deletions = _edited_lines(tmp_path, name, selection, "deletion")
+    assert (3, "  wire en;") in deletions
+    assert all("c = #5 ~c;" in text for line, text in deletions if line == 7)
+    # Every Mutant of every operator still parses.
+    pristine = source.encode()
+    for mutant in selection.mutants:
+        edited = pristine[: mutant.start] + mutant.mutated_code.encode() + pristine[mutant.end :]
+        assert _error_count(edited.decode()) == 0, mutant
 
 
 def _error_count(text: str) -> int:

@@ -117,13 +117,16 @@ _LITERALS = _names(
 _BASE_DIGITS = {"b": "[01]+", "o": "[0-7]+", "d": "[0-9]+", "h": "[0-9a-fA-F]+"}
 _BASE_RADIX = {"b": 2, "o": 8, "d": 10, "h": 16}
 # A literal that is a whole ``if``/``?:`` condition has condition Mutants already, and
-# moving a ``case`` label can overlap another item (Verilator CASEOVERLAP).
-_CONSTANT_EXCLUDED_PARENTS = _names("ConditionalPattern StandardCaseItem")
+# moving anything in a ``case`` label can overlap another item (Verilator CASEOVERLAP).
+_CONSTANT_EXCLUDED_PARENTS = _names("ConditionalPattern")
 
 # Operator 5: a select is written when this chain of selects and concatenations ends at
-# the left side of an assignment; moving it could drive a variable from two places.
+# the left side of an assignment, an increment or decrement, or a call argument (a task
+# output); moving it could drive a variable from two places.
 # (Port connections of instances are not design code, so they never get this far.)
-_SELECT_CHAIN = _names("IdentifierSelectName ConcatenationExpression")
+_SELECT_CHAIN = _names(
+    "IdentifierSelectName ConcatenationExpression SimpleSequenceExpr SimplePropertyExpr"
+)
 _VARIABLE_SYMBOLS = _names("Variable Net FormalArgument")
 
 # Operator 6: placeholders (the applier rejects empty replacement text).  A parent that
@@ -206,9 +209,11 @@ def _select_limits(pyslang: Any, select: Any) -> tuple[int, int] | None:
         return None
     symbol = base.symbol
     declared = select.value.type
-    if not declared.hasFixedRange or _has_identifier(
-        pyslang, [symbol.declaredType.typeSyntax, *symbol.syntax.dimensions]
-    ):
+    # A function's return variable and an implicit net have no declarator to inspect.
+    dimensions = getattr(symbol.syntax, "dimensions", None)
+    if dimensions is None or not declared.hasFixedRange:
+        return None
+    if _has_identifier(pyslang, [symbol.declaredType.typeSyntax, *dimensions]):
         return None
     return int(declared.fixedRange.lower), int(declared.fixedRange.upper)
 
@@ -345,7 +350,7 @@ class _SiteCollector:
 
     def _add_constant(self, node: Any, kind: str) -> None:
         """Operator 4: change a numeric literal's value digits (size and base stay)."""
-        if node.parent.kind.name in _CONSTANT_EXCLUDED_PARENTS:
+        if node.parent.kind.name in _CONSTANT_EXCLUDED_PARENTS or self._in_case_label(node):
             return
         if kind == "IntegerVectorExpression":
             token = node.value
@@ -359,6 +364,14 @@ class _SiteCollector:
             token = node.literal
             variants = {"'0": ("'1",), "'1": ("'0",)}.get(token.rawText, ())
         self._add(node, CONSTANT, token, token, variants, avoid_loops=True)
+
+    @staticmethod
+    def _in_case_label(node: Any) -> bool:
+        """True if the node sits in the label list of its nearest enclosing ``case`` item."""
+        child, parent = node, node.parent
+        while parent is not None and parent.kind.name != "StandardCaseItem":
+            child, parent = parent, parent.parent
+        return parent is not None and child is not parent.clause
 
     def _add_bit_select(self, node: Any) -> None:
         """Operator 5: move a literal bit-select index or slice bound by one, within range."""
@@ -374,7 +387,8 @@ class _SiteCollector:
         ) or self._is_written(node):
             return
         first, last = selector.getFirstToken(), selector.getLastToken()
-        limits = self._ranges.get(self._offset(first) or -1)  # None: no range was recorded
+        offset = self._offset(first)
+        limits = None if offset is None else self._ranges.get(offset)  # None: no range recorded
         raw_bounds = tuple(str(bound.literal.rawText) for bound in bounds)
         if limits is not None:
             self._add(
@@ -383,29 +397,36 @@ class _SiteCollector:
                 first,
                 last,
                 lambda text: _shifted_selects(text, raw_bounds, limits),
+                avoid_loops=True,
             )
 
     @staticmethod
     def _is_written(node: Any) -> bool:
-        """True if the select, alone or inside a concatenation, is an assignment target."""
+        """True if the select, alone or inside a concatenation, may be written."""
         child, parent = node, node.parent
         while parent.kind.name in _SELECT_CHAIN:
             child, parent = parent, parent.parent
-        return parent.kind.name.endswith("AssignmentExpression") and child is parent.left
+        parent_kind = parent.kind.name
+        if parent_kind.endswith("AssignmentExpression"):
+            return child is parent.left
+        return parent_kind.endswith(("crementExpression", "Argument"))
 
     def _add_deletion(self, node: Any, kind: str) -> None:
         """Operator 6: remove one assignment, one net initializer, or one ``case`` item."""
         if kind == "Declarator":
             if node.parent.kind.name == "NetDeclaration" and node.initializer is not None:
-                initializer_length = len(str(node.initializer))
-                self._add(
-                    node,
-                    DELETION,
-                    node.getFirstToken(),
-                    node.getLastToken(),
-                    lambda text: (text[: len(text) - initializer_length],),
-                    avoid_loops=True,
-                )
+                # Cut at the ``=`` token: the parsed text of a macro may differ from the file's.
+                equals = self._offset(node.initializer.equals)
+                start = self._offset(node.getFirstToken())
+                if equals is not None and start is not None:
+                    self._add(
+                        node,
+                        DELETION,
+                        node.getFirstToken(),
+                        node.getLastToken(),
+                        lambda text: (text[: equals - start].rstrip(),),
+                        avoid_loops=True,
+                    )
             return
         if kind == "ContinuousAssign":
             if sum(isinstance(item, self._node_type) for item in node.assignments) != 1:
@@ -417,7 +438,11 @@ class _SiteCollector:
             if node.parent.kind.name != "CaseStatement" or len(node.parent.items) < 2:
                 return
             placeholder = _DELETED_COMMENT
-        elif node.expr.kind.name.endswith("AssignmentExpression"):  # a procedural assignment
+        elif (
+            node.expr.kind.name.endswith("AssignmentExpression")  # a procedural assignment
+            and node.expr.right.kind.name
+            != "TimingControlExpression"  # ``c = #5 ~c``: the wait stays
+        ):
             placeholder = _EMPTY_BLOCK
         else:
             return
