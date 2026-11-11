@@ -299,6 +299,64 @@ def test_the_hold_is_released_when_the_fork_fails(monkeypatch: pytest.MonkeyPatc
 
 
 @_needs_fork
+def test_a_pipe_that_cannot_be_made_falls_back_to_the_in_process_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse_pipe() -> tuple[int, int]:
+        raise OSError("too many open files")
+
+    monkeypatch.setattr(foreground_child.os, "pipe", refuse_pipe)
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+    outer_mask = _current_mask()
+
+    assert foreground_child.run_foreground_child(lambda: 4) == 4
+
+    assert _current_mask() == outer_mask
+
+
+@_needs_fork
+def test_a_signal_pending_when_the_fork_fails_acts_after_the_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The released signal may raise (KeyboardInterrupt); the launch's state must be gone first."""
+    state_when_it_acted: list[tuple[set[signal.Signals], frozenset[int]]] = []
+
+    def caught(_number: int, _frame: object) -> None:
+        state_when_it_acted.append((set(foreground_child._held_until_exec), _current_mask()))
+
+    def fork_after_signalling_itself() -> int:
+        signal.pthread_kill(threading.get_ident(), signal.SIGINT)  # blocked: stays pending
+        raise OSError("pids limit")
+
+    outer_mask = _current_mask()
+    previous = signal.signal(signal.SIGINT, caught)
+    monkeypatch.setattr(foreground_child.os, "fork", fork_after_signalling_itself)
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+    try:
+        assert foreground_child.run_foreground_child(lambda: 4) == 4
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+    assert state_when_it_acted == [(set(), outer_mask)]
+
+
+@_needs_fork
+def test_a_quit_pending_but_not_held_leaves_the_core_limit_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limits: list[object] = []
+    monkeypatch.setattr(foreground_child, "_held_until_exec", {signal.SIGINT})
+    monkeypatch.setattr(signal, "sigpending", lambda: {signal.SIGQUIT})
+    monkeypatch.setattr(signal, "pthread_sigmask", lambda _how, _signals: set())
+    monkeypatch.setattr("resource.setrlimit", lambda *args: limits.append(args))
+    monkeypatch.setattr(foreground_child.os, "execvp", lambda _exe, _argv: None)
+
+    foreground_child.exec_agent("agent", ["agent"])
+
+    assert limits == []
+
+
+@_needs_fork
 def test_without_a_hold_the_agent_exec_is_a_plain_execvp(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(foreground_child.os, "execvp", lambda exe, argv: calls.append((exe, argv)))

@@ -137,7 +137,7 @@ class _ForegroundRun:
             signal.signal(signal.SIGTTOU, signal.SIG_IGN)
         # SIGINT, SIGQUIT and SIGTSTP stay as they were: held blocked across the fork,
         # so the child inherits the entry dispositions and the parent sets its own
-        # once the child is released (`_start_parent`).
+        # before the child is released (`_start_parent`).
 
     def _install_parent_tty_handling(self) -> None:
         """Set the parent's dispositions for the held signals, after the child got its copies."""
@@ -261,6 +261,8 @@ class _ForegroundRun:
         child's own pending copy, so the agent still sees one.
         """
         assert self._child is not None
+        # Single-threaded by the launch's contract: no other thread can take the shared
+        # copy between `sigpending` and `sigwait`, which would block the wait forever.
         for number in sorted(signal.sigpending() & self._held):
             signal.sigwait({number})
             with contextlib.suppress(ProcessLookupError):
@@ -329,9 +331,10 @@ class _ForegroundRun:
             signal.SIG_BLOCK, [*_signal_numbers(_FORWARDED_NAMES), *self._held]
         )
         self._install_before_fork()
-        self._handover_read, self._handover_write = os.pipe()
         try:
             try:
+                # A pipe that cannot be made falls back to the in-process launch, like a fork.
+                self._handover_read, self._handover_write = os.pipe()
                 child = os.fork()
             except OSError:
                 self._restore_entry()
@@ -345,10 +348,12 @@ class _ForegroundRun:
                 self._end_signal_handling()
         finally:
             # Every exit restores the mask and the hold; a faked fork in tests ends in
-            # an exception here, and must not leave the worker's signals blocked.
-            signal.pthread_sigmask(signal.SIG_SETMASK, outer_mask)
+            # an exception here, and must not leave the worker's signals blocked. The
+            # mask goes last: a held signal still pending then acts (KeyboardInterrupt
+            # for SIGINT), and the cleanup must already be done by then.
             self._close_handover()
             _held_until_exec.clear()
+            signal.pthread_sigmask(signal.SIG_SETMASK, outer_mask)
 
     def _end_signal_handling(self) -> None:
         """Stop relaying as soon as the child is reaped, then return the terminal."""
@@ -389,7 +394,7 @@ def exec_agent(executable: str, argv: list[str]) -> None:
             for number, handler in saved.items():
                 if handler not in (signal.SIG_IGN, signal.SIG_DFL):
                     signal.signal(number, signal.SIG_DFL)  # exec resets caught signals anyway
-            if signal.SIGQUIT in signal.sigpending():
+            if signal.SIGQUIT in released and signal.SIGQUIT in signal.sigpending():
                 import resource
 
                 # Death is certain; leave no Python core file (as `_propagate` does).
