@@ -238,6 +238,7 @@ DIRECTION_RULES = (
             exact("booley.harness.host_diagnostics"),
             exact("booley.harness.setup.readiness"),
             exact("booley.runtime.inspection"),
+            exact("booley.runtime.vaporview"),
             exact("booley.flows.target_test_plan_inspection"),
             exact("booley.runtime.project_image"),
         ),

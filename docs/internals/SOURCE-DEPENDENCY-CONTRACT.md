@@ -264,6 +264,7 @@ build-dependency hint for Project image sources. These owners do not accept Doct
 or import command orchestration or rendering. D1/D6 protect audit/Runtime; D26
 protects the five request-taking, report-returning owners
 (`harness.host_diagnostics`, `harness.setup.readiness`, `runtime.inspection`,
+`runtime.vaporview`,
 `flows.target_test_plan_inspection`, `runtime.project_image`),
 including deferred and type-only imports. A new owner follows
 [Adding a diagnostic owner](DOCTOR-HEALTH.md#adding-a-diagnostic-owner).
@@ -394,7 +395,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D23 | Prefix `booley.config` | Prefix `booley.eda` | Forbid | Config owns declarative requests without depending on EDA provisioning policy. |
 | D24 | Prefix `booley.eda` | Prefix `booley.runtime` | Forbid | EDA uses neutral host mechanisms without depending on Runtime execution or issuance. |
 | D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.commit_policy`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.goals`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
-| D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness`, `booley.runtime.inspection`, `booley.flows.target_test_plan_inspection`, `booley.runtime.project_image` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.presentation.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
+| D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness`, `booley.runtime.inspection`, `booley.runtime.vaporview`, `booley.flows.target_test_plan_inspection`, `booley.runtime.project_image` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.presentation.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 | D29 | Prefix `booley.bwave` | Prefix `booley.flows` | Forbid | B-Wave owns reusable waveform mechanics without Flow execution or Simulation evidence policy. |

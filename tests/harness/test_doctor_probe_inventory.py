@@ -33,9 +33,9 @@ _DOCTOR_SRC = Path(doctor.__file__)
 
 # Probe naming convention: everything an orchestrator dispatches to is named
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
-# _audit_* (config-section audit).
+# _audit_* (config-section audit), or a named public owner entry point.
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_target_test_plans$|inspect_native_dependencies$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_target_test_plans$|inspect_viewer_bridge$|inspect_native_dependencies$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "inspect_runtime",
             "inspect_retained_resources",
             "inspect_interactive_git",
-            "_check_viewer_bridge",
+            "inspect_viewer_bridge",
             "_run_agent_credential_checks",
             "_run_mcp_probe",
         }

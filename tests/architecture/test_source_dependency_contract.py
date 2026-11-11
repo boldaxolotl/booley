@@ -470,6 +470,7 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
         "harness.host_diagnostics",
         "harness.setup.readiness",
         "runtime.inspection",
+        "runtime.vaporview",
         "flows.target_test_plan_inspection",
         "runtime.project_image",
     ],

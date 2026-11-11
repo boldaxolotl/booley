@@ -45,7 +45,10 @@ from booley.flows.sim.execution.engine import (
     PreparedOrdinaryGroup,
     SimulationBuildSlotError,
 )
-from booley.flows.sim.runtime_inputs import materialize_campaign_runtime_inputs
+from booley.flows.sim.runtime_inputs import (
+    RuntimeInputError,
+    materialize_campaign_runtime_inputs,
+)
 from tests.flows.sim.campaign_test_support import (
     _BAD_DIGEST,
     _admission,
@@ -326,6 +329,38 @@ def test_literal_runtime_input_removes_only_attempt_owned_materialization(
     assert not (run / "generated").exists()
     assert retained.read_text(encoding="utf-8") == "project-owned"
     assert (attempt / "runtime-inputs/generated/nested/input.bin").read_bytes() == b"runtime input"
+
+
+def test_literal_runtime_input_conflict_preserves_existing_file(tmp_path: Path) -> None:
+    """A different file already at the destination is a typed conflict and stays untouched."""
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "input.bin").write_bytes(b"runtime input")
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    run = tmp_path / "literal-run"
+    run.mkdir()
+    existing = run / "input.bin"
+    existing.write_bytes(b"project-owned")
+    declaration = {
+        "declaration_id": "sha256:" + "1" * 64,
+        "source_artifact_path": "input.bin",
+        "destination": "input.bin",
+    }
+
+    with (
+        pytest.raises(RuntimeInputError, match="conflicts with an existing path"),
+        materialize_campaign_runtime_inputs(
+            bundle_root=bundle,
+            attempt_root=attempt,
+            run_cwd=run,
+            declarations=(declaration,),
+            owned_run_directory=False,
+        ),
+    ):
+        pytest.fail("conflicting runtime input must not be exposed")
+
+    assert existing.read_bytes() == b"project-owned"
 
 
 def _recording_executor(
