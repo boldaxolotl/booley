@@ -128,3 +128,12 @@ def test_only_a_running_process_occupies_its_worktree(tmp_path):
     ]
 
     assert records.occupants(live) == {"s4": "S4", "s5": key}
+
+
+def test_a_worktree_that_vanishes_while_checked_is_not_live(tmp_path, monkeypatch):
+    # Bug caught: a worktree removed between the existence check and the stamp read raising
+    # out of the launch.
+    record = records.ConversationRecord("claude", "c1", "/w", "s1", None, None, _STAMP)
+    monkeypatch.setattr(Path, "is_file", lambda _self: True)
+
+    assert not records.is_live(tmp_path, record)
