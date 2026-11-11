@@ -500,3 +500,21 @@ def test_chat_worktree_knob_must_be_auto_always_or_never(data: dict) -> None:
 
     assert not audit.is_valid
     assert not project_schema.audit_known_tables({"chat": {}}).findings
+
+
+def test_jobs_memory_budget_is_accepted() -> None:
+    audit = project_schema.audit_jobs_table({"jobs": {"memory_budget": "24g", "max_heavy": 2}})
+
+    assert audit.is_valid
+    assert audit.findings == ()
+    assert project_schema.audit_jobs_table({}).findings == ()
+
+
+def test_jobs_memory_budget_audit_fails_invalid_value_naming_key() -> None:
+    audit = project_schema.audit_jobs_table({"jobs": {"memory_budget": "-1g"}})
+
+    assert not audit.is_valid
+    (finding,) = audit.findings
+    assert "[jobs].memory_budget" in finding.message
+    assert "-1g" in finding.message
+    assert "memory_budget" in finding.fix
