@@ -87,6 +87,18 @@ def test_declared_package_passes_before_remaining_warnings(tmp_path: Path) -> No
     ]
 
 
+def test_plain_apt_install_ending_at_semicolon_declares_package(tmp_path: Path) -> None:
+    _write(tmp_path, "tb/a.cc", "#include <libelf.h>\n")
+
+    report = _inspect(
+        tmp_path, ("tb/a.cc",), "FROM booley-sandbox\nRUN apt install -y libelf-dev; true\n"
+    )
+
+    assert [(f.severity, f.message) for f in report.findings] == [
+        (Severity.PASS, "native build dependencies declared in project Dockerfile: libelf-dev")
+    ]
+
+
 def test_dockerfile_comment_does_not_declare_package(tmp_path: Path) -> None:
     _write(tmp_path, "tb/a.cc", "#include <libelf.h>\n")
 

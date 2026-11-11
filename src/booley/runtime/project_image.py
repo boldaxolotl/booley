@@ -16,6 +16,10 @@ Notes:
     — the project runs the base image.
   - An explicit ``[sandbox].image`` other than the generated name means the user
     manages their own image; auto-generation is skipped.
+
+This module also owns the native build-dependency hint:
+:func:`inspect_native_dependencies` reports C/C++ includes whose Debian package
+the base image lacks, as a ``DiagnosticReport`` for Doctor to render.
 """
 
 from __future__ import annotations
@@ -781,7 +785,7 @@ def _scan_native_includes(
 def _dockerfile_declares_native_package(dockerfile: Path, package: str) -> bool:
     """Return whether an apt install command in *dockerfile* names *package*.
 
-    Project-owned images are the documented remedy for native headers. Doctor
+    Project-owned images are the documented remedy for native headers. The check
     runs inside the Sandbox too, where Docker is deliberately absent,
     so the hand-authored Dockerfile is the portable evidence available on both
     venues. Ignore comments and require the package to occur as an install
