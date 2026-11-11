@@ -25,7 +25,8 @@ INTERACTIVE_LOGS_DIR_NAME = ".interactive_logs"
 GOALS_DIR_NAME = "goals"
 # A Goal slug is a short lowercase path segment; a Goal id is ``<slug>-<compact UTC
 # timestamp>``. Leftover Goal Record directories can outlive Goal Mode, so code that
-# only needs to recognise one (Specialist workspace isolation) reads the names here.
+# only needs to recognise one (Specialist workspace isolation; the Goal Record store and
+# recorder also reuse the id pattern) reads the names here.
 GOAL_SLUG_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 GOAL_SLUG_MAX_LENGTH = 64
 GOAL_ID_PATTERN = re.compile(rf"(?P<slug>{GOAL_SLUG_PATTERN.pattern})-\d{{8}}T\d{{6}}Z")

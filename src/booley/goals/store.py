@@ -3,7 +3,7 @@
 Two locks guard every write, both ``flock`` locks from
 :mod:`booley.core.file_lock`, released by the kernel when their holder dies:
 
-- the *worktree lock*, one per :class:`~booley.goals.model.WorktreeIdentity`,
+- the *worktree lock*, one per :class:`~booley.runtime.worktree_identity.WorktreeIdentity`,
   is held while a new record is created, so "no occupying record for this
   worktree" is checked and the new record published under one lock;
 - the *record lock*, one per record, is held around every save.

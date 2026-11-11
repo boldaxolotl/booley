@@ -1,4 +1,4 @@
-"""Goal Mode keeps one format per artifact and applies no migration-era rules (issue #2407)."""
+"""Goal Mode keeps one format per artifact (issue #2407); only allowed modules import its packages (#3506)."""
 
 from __future__ import annotations
 

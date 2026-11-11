@@ -11,11 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.goals.model import WorktreeIdentity
 from booley.mcp import session_peer, session_registry
 from booley.mcp.session_observer import SessionObserver
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime.pid import ProcessIdentity, ProcessObservation, ProcessState
+from booley.runtime.worktree_identity import WorktreeIdentity
 from tests.conftest import symlink_or_skip
 
 SCOPE = "pid:[17]"
@@ -473,6 +473,23 @@ def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
     assert row.attribution.worktree_key == after.worktree_key
     assert row.attribution.key == after.key
     assert after.branch == "goal/fixture"
+
+
+def test_nested_checkout_name_keeps_path_key(tmp_path, monkeypatch):
+    """A linked git dir that is not a plain checkout name falls back to the ``path:`` key."""
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
+
+    common = tmp_path / "common"
+    git = common / "worktrees" / "a" / "b"
+    git.mkdir(parents=True)
+    (common / REPOSITORY_ID_FILE).parent.mkdir()
+    (common / REPOSITORY_ID_FILE).write_text("00000000-0000-4000-8000-000000000001\n")
+    monkeypatch.setattr(
+        session_registry, "git_checkout_metadata", lambda root: (root, git, common)
+    )
+    _, key, branch = session_registry._worktree_facts(tmp_path)
+    assert key == "path:" + str(tmp_path.resolve())
+    assert branch == ""
 
 
 @pytest.mark.asyncio
