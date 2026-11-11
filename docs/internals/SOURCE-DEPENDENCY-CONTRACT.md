@@ -18,13 +18,13 @@ The package layout maps to the canonical concepts indexed by the
 | --- | --- | --- |
 | Host Bootstrap | `booley.harness.bootstrap`, `booley.harness.bootstrap_cli`, `booley.harness.host_sidecars`, `booley.harness.host_diagnostics` | Inspect and reconcile Project-independent host prerequisites and shared infrastructure. |
 | Project Initialization | `booley.harness.init_cmd`, `booley.harness.setup` (including `readiness`), `booley.agent_workspace` | Validate and reconcile one Project before issuing its Sandbox. |
-| Sandbox | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment`, `booley.runtime.inspection` | Inspect and own shared execution records, processes, paths, and runtime lifecycle. |
+| Sandbox | `booley.runtime`, `booley.runtime.session_runtime`, `booley.runtime.runtime_attachment`, `booley.runtime.inspection` | Inspect and own shared execution records, processes, paths, worktree identity, and runtime lifecycle. |
 | Booley Flow | `booley.flows` | Turn a structured request into an EDA invocation and machine-checkable evidence. |
 | Target | `booley.targets`, `booley.fusesoc` | Resolve the design and named operation selected for a Flow. |
 | Criteria | `booley.criteria` | Define and evaluate reusable acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
 | Criterion evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, reviewer receipts/dispositions, and per-clock timing values shared by Criteria and evidence-producing Flows. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
-| Goal Mode | `booley.goals` | Translate Goals into Criteria and own Goal Records, their locks and revisions, worktree identity, and the Change Log. |
+| Goal Mode | `booley.goals` | Translate Goals into Criteria and own Goal Records, their locks and revisions, and the Change Log. |
 | MCP | `booley.mcp` | Expose Flows and Specialists to calling agents. |
 | B-Wave | `booley.bwave` | Inspect, convert, discover, and query waveform stores; own the B-Wave half of streaming and control human viewing. |
 

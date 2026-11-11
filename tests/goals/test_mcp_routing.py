@@ -617,14 +617,14 @@ def test_non_git_ordinary_directory_is_not_bound_to_an_unrelated_goal(goal_mode,
 
 
 def test_goal_path_with_missing_git_metadata_refuses(goal_mode, monkeypatch):
-    from booley.goals import store as store_module
     from booley.goals.store import WorktreeIdentityError
+    from booley.runtime import worktree_identity as identity_module
     from booley.runtime.project_repositories import GitDirectoryInspectionError
 
     def missing(_path):
         raise GitDirectoryInspectionError("worktree metadata missing")
 
-    monkeypatch.setattr(store_module, "git_directories", missing)
+    monkeypatch.setattr(identity_module, "git_directories", missing)
     with pytest.raises(WorktreeIdentityError, match="metadata missing"):
         resolve_call_context({"work_dir": str(goal_mode.worktree)})
 

@@ -42,7 +42,6 @@ from booley.goals.finish_presentation import finished_overview
 from booley.goals.model import GoalRecord, GoalState, WorktreeIdentity
 from booley.goals.paths import goals_root, record_paths, worktree_lock_file
 from booley.goals.store import (
-    MAIN_CHECKOUT,
     GoalStore,
     GoalStoreError,
     WorktreeIdentityError,
@@ -50,6 +49,7 @@ from booley.goals.store import (
 )
 from booley.runtime.project_repositories import git_directories
 from booley.runtime.timefmt import format_human_datetime_safe
+from booley.runtime.worktree_identity import MAIN_CHECKOUT
 
 logger = logging.getLogger(__name__)
 

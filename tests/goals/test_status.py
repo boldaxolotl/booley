@@ -176,7 +176,8 @@ def test_review_done_with_findings_and_clean_unmet(layout, monkeypatch):
 
 
 def test_status_outside_git_lists_active_without_hiding_missing_identity(goal_mode, tmp_path):
-    from booley.goals.store import REPOSITORY_ID_FILE, WorktreeIdentityError
+    from booley.goals.store import WorktreeIdentityError
+    from booley.runtime.worktree_identity import REPOSITORY_ID_FILE
 
     outside = tmp_path / "outside"
     outside.mkdir()

@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import as_dict, as_str
-from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.evidence.acceptance import (
     AcceptanceTargetBinding,
     ResolvedFlowAcceptance,
 )
+from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import FuseSocError, TargetHandle
+from booley.targets.domain import FuseSocError, TargetHandle, TargetPair
 
 
 class ImplementationComparisonError(ValueError):

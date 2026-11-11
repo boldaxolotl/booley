@@ -33,7 +33,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from booley.criteria.templates import BASELINE_TARGET_PARAM
+from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.targets.domain import TARGET_IDENTITY_PARAM
 
 if TYPE_CHECKING:

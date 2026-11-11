@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-CATEGORY_RTL = "rtl"
-CATEGORY_TB = "tb"
+from booley.core.source_categories import CATEGORY_RTL, CATEGORY_TB
 
 _FINGERPRINT_CATEGORIES: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = (
     (("review_rtl_",), frozenset({CATEGORY_RTL})),
