@@ -17,6 +17,7 @@ from booley.flows.sim import standalone as standalone_mod
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.standalone import _scan_hdl_declarations
 from booley.runtime.booley_dir import reset_cache
+from booley.targets.domain import immutable_mapping
 
 
 @pytest.fixture(autouse=True)
@@ -101,8 +102,9 @@ def _stub_sources(
             rtl_files=tuple(files),
             tb_files=tuple(tb or []),
             eda_tool=tool,
-            flow_options=options.get("flow_options", {}),
-            tool_options=options.get("tool_options", {}),
+            # Production freezes authored lists into tuples; stub the same.
+            flow_options=immutable_mapping(options.get("flow_options", {})),
+            tool_options=immutable_mapping(options.get("tool_options", {})),
         )
 
     monkeypatch.setattr(
@@ -812,7 +814,8 @@ class TestDialectFlagExtraction:
             pytest.param("iverilog", ["-g", "2012"], ("-g", "2012"), id="icarus_bare_g"),
             pytest.param("iverilog", ["-g2005-sv -g2012"], ("-g2005-sv", "-g2012"), id="order"),
             pytest.param("iverilog", ["-g'unterminated"], ("-g'unterminated",), id="no_shlex"),
-            pytest.param("iverilog", "-g2005", (), id="not_a_list"),
+            pytest.param("iverilog", "-g2005", (), id="bare_string"),
+            pytest.param("iverilog", ("-g2005", "-Wall"), ("-g2005",), id="tuple"),
             pytest.param("verilator", ["-DX", "+libext+.v", "+incdir+i", "-Wall"], (), id="none"),
             pytest.param(
                 "verilator",
@@ -831,10 +834,11 @@ class TestDialectFlagExtraction:
         assert standalone_mod._dialect_flags(frontend, options) == expected
 
     def test_modern_options_precede_legacy_options(self) -> None:
+        # Real inspections hold tuples, not lists: build one the production way.
         inspection = SimpleNamespace(
             eda_tool="icarus",
-            flow_options={"iverilog_options": ["-g2005"]},
-            tool_options={"iverilog_options": ["-g2012"], "other": 1},
+            flow_options=immutable_mapping({"iverilog_options": ["-g2005"]}),
+            tool_options=immutable_mapping({"iverilog_options": ["-g2012"], "other": 1}),
         )
 
         assert standalone_mod._target_dialect(inspection) == standalone_mod._ProbeDialect(

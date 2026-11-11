@@ -81,3 +81,7 @@ builds it with, not under a fixed `-g2012`.
   `unparsed` entries add `dialect_flags`; the console failure lines and
   `run.log` probe headers name the dialect (`via iverilog -g2005`, or
   `via verilator (default dialect)`). Additive keys only; no schema bump.
+- **Cost.** One probe per distinct (frontend, dialect flags) means a module
+  shared by Icarus Targets built with different `-g` flags, or by several
+  simulators, is compiled once per distinct set. The sweep keeps one shared
+  timeout, so the 2x bound above is no longer a ceiling.

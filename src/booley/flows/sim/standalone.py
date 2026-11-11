@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -166,18 +167,25 @@ class _ProbeDialect:
     flags: tuple[str, ...]
 
 
+def _is_option_sequence(value: object) -> bool:
+    """Whether *value* is an authored option list (a list or the tuple it is frozen into)."""
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+
 def _option_tokens(options: object) -> list[str]:
     """Flatten authored option entries into one shell-split token list.
 
     Edalize joins every entry with spaces, so ``["--default-language",
     "1364-2005"]`` and ``["--default-language 1364-2005"]`` are the same
-    command line. A non-list value contributes nothing; an entry that does not
-    shell-split is kept whole.
+    command line. A value that is not a sequence (or is a bare string)
+    contributes nothing; an entry that does not shell-split is kept whole.
+    ``TargetInspection`` freezes authored lists into tuples, so any sequence
+    counts.
     """
-    if not isinstance(options, list):
+    if not _is_option_sequence(options):
         return []
     tokens: list[str] = []
-    for option in cast("list[object]", options):
+    for option in cast("Sequence[object]", options):
         try:
             tokens.extend(shlex.split(str(option)))
         except ValueError:
@@ -232,8 +240,8 @@ def _target_dialect(inspection: TargetInspection) -> _ProbeDialect | None:
     key = _FRONTEND_OPTIONS_KEY[frontend]
     options: list[object] = []
     for authored in (inspection.flow_options.get(key), inspection.tool_options.get(key)):
-        if isinstance(authored, list):
-            options.extend(cast("list[object]", authored))
+        if _is_option_sequence(authored):
+            options.extend(cast("Sequence[object]", authored))
     return _ProbeDialect(frontend, _dialect_flags(frontend, options))
 
 
