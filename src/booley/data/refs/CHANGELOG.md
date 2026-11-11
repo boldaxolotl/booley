@@ -9,6 +9,16 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The Mutation Tester now generates Mutants deterministically and runs no LLM:
+  the same RTL, `--count`, and the new `--seed` (default 0) give identical
+  Mutants. `--scope` is optional and defaults to the Target's own RTL. The
+  default pass threshold is 80 % of the count, rounded up, also for an
+  existing Goal without `min_detected` (it used to require every Mutant). Each Mutant's per-test timeout scales with the
+  baseline run (10 x, 30 s minimum, 300 s cap), and a timed-out Mutant counts
+  as detected and is reported as `detected (timeout)`. Results record scope
+  file hashes, generator and pyslang versions, seed, and count. `--steer` and
+  `--regen-lock` are removed, and the mutation lock is no longer used.
+
 - The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
   as a Standalone Job: choose the worktree, the Flow, and its arguments, check
   the equivalent shell command, then submit or copy it. The Jobs window opens

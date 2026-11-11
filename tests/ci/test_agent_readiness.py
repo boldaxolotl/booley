@@ -195,22 +195,27 @@ def test_project_runner_pins_match_the_readiness_contract():
         "ruff",
         "pyright",
     }
-    for extra in ("test", "dev"):
-        declared = {item.split("==", 1)[0]: item for item in extras[extra]}
-        for name, version in pins.items():
-            if name not in readiness.RUNNER_EXTRAS["quality"]:
-                assert declared.get(name) == f"{name}=={version}"
+    declared = {item.split("==", 1)[0]: item for item in extras["test"]}
+    for name, version in pins.items():
+        if name not in readiness.RUNNER_EXTRAS["quality"]:
+            assert declared.get(name) == f"{name}=={version}"
+    # dev composes the narrow extras by self-reference instead of repeating their pins.
+    assert extras["dev"] == [f"{project['name']}[test,quality]"]
     quality = {item.split("==", 1)[0]: item for item in extras["quality"]}
     for name in readiness.RUNNER_EXTRAS["quality"]:
         assert quality[name] == f"{name}=={pins[name]}"
 
 
-def _write_project(root: Path, test: list[str], quality: list[str]) -> None:
-    """Write a minimal pyproject.toml declaring the given extras."""
+def _write_project(
+    root: Path, test: list[str], quality: list[str], extras: dict[str, list[str]] | None = None
+) -> None:
+    """Write a minimal pyproject.toml declaring the given extras (plus any ``extras``)."""
     lines = ["[project]", 'name = "demo"', 'version = "0"', "dependencies = []"]
     lines += ["[project.optional-dependencies]"]
     lines += ["test = [" + ", ".join(f'"{item}"' for item in test) + "]"]
     lines += ["quality = [" + ", ".join(f'"{item}"' for item in quality) + "]"]
+    for name, items in (extras or {}).items():
+        lines += [f"{name} = [" + ", ".join(f'"{item}"' for item in items) + "]"]
     (root / "pyproject.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -235,6 +240,48 @@ def test_runner_pins_derive_from_project_metadata(tmp_path):
         "ruff": "9.9.9",
         "pyright": "8.8.8",
     }
+
+
+def test_runner_pins_and_install_argv_expand_self_referencing_extras(tmp_path):
+    """``demo[parser]`` in an extra means the parser extra's pins, never the published package."""
+    test = [f"{name}==1" for name in _RUNNER_NAMES]
+    _write_project(
+        tmp_path,
+        [*test, "hypothesis>=1", "demo[parser]"],
+        ["ruff==2", "pyright==3"],
+        extras={"parser": ["pyslang==2"]},
+    )
+    assert readiness.runner_pins(tmp_path)["coverage"] == "1"
+    argv = readiness.dependency_argv(tmp_path)
+    assert "pyslang==2" in argv
+    assert not any(item.startswith("demo") for item in argv)
+    assert argv.index("pyslang==2") == len(argv) - 3  # test extra order is kept, quality follows
+
+
+def test_self_reference_cycles_terminate_and_unknown_extras_fail(tmp_path):
+    """A loop between extras adds each pin once; a reference to a missing extra is refused."""
+    test = [f"{name}==1" for name in _RUNNER_NAMES]
+    _write_project(
+        tmp_path,
+        [*test, "demo[Parser]"],
+        ["ruff==2", "pyright==3"],
+        extras={"parser": ["pyslang==2", "Demo[test]"]},
+    )
+    assert readiness.dependency_argv(tmp_path).count("pyslang==2") == 1
+    _write_project(tmp_path, [*test, "demo[missing]"], ["ruff==2", "pyright==3"])
+    with pytest.raises(readiness.ReadinessUsageError, match="unknown extra 'missing'"):
+        readiness.dependency_argv(tmp_path)
+
+
+@pytest.mark.parametrize("reference", ["demo[parser]>=1", "demo[parser]; python_version>'3'"])
+def test_self_reference_with_a_specifier_is_a_usage_error(tmp_path, reference):
+    """A versioned or marked self-reference would install the published package: refuse it."""
+    test = [f"{name}==1" for name in _RUNNER_NAMES]
+    _write_project(
+        tmp_path, [*test, reference], ["ruff==2", "pyright==3"], extras={"parser": ["pyslang==2"]}
+    )
+    with pytest.raises(readiness.ReadinessUsageError, match=r"test.*self-reference"):
+        readiness.dependency_argv(tmp_path)
 
 
 _UNPINNED_RUNNER_CASES = (

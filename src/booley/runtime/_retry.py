@@ -84,8 +84,8 @@ _RUN_INDEXED_STEM_RE = re.compile(r"^(?P<run>run_\d+)(?P<retry>-retry\d+)?$")
 def transcript_path_for_label(base_path: Path | None, label: str | None) -> Path | None:
     """Derive per-invocation transcript path from label.
 
-    Multi-invocation specialists (e.g. mutation_tester's per-round
-    ``mutation_creator_roundN`` labels) pass different labels so their
+    Multi-invocation specialists (e.g. reviewer's per-category labels)
+    pass different labels so their
     transcripts don't overwrite each other.
     Preserves any -retryN suffix already present in the base path.
 

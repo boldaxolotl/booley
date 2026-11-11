@@ -458,6 +458,12 @@
       "schedule": ["* * * * 1"]
     },
     {
+      "description": "Hold: coverage.py 7.17.1 breaks SIGINT exit codes under patch = [\"subprocess\"] (tests expecting 130 get 1). Keep 7.17.0 until upstream is fixed; lift the hold by deleting this rule and the hold comment above the pin in pyproject.toml together.",
+      "matchDatasources": ["pypi"],
+      "matchPackageNames": ["coverage"],
+      "allowedVersions": "==7.17.0"
+    },
+    {
       "description": "riscv: RISC-V tooling image pins. Placed before sandbox-base so the shared Ubuntu image still joins sandbox-base.",
       "matchFileNames": ["src/booley/data/docker/Dockerfile.riscv"],
       "groupName": "riscv",

@@ -263,6 +263,7 @@ reviewer = "gpt-6-astra"   # runs on Codex
 ```
 
 The `[models]` keys are `reviewer`, `mutation_tester`, and `coverage_analyst`.
+`mutation_tester` currently runs no model, so its key has no effect.
 Any other key, a model that is neither `claude-*` nor `gpt-*`, or a model whose
 CLI isn't in `clis` stops Booley from loading the config, and `booley doctor`
 names the entry. The Developer Agent itself uses your Agent CLI's own model
