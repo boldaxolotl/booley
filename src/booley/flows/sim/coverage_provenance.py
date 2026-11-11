@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from .coverage_invocation import CoverageTargetPlan
@@ -35,10 +35,7 @@ def coverage_source_closure(inspection: TargetInspection) -> dict[str, list[dict
 def validate_coverage_sources(plan: CoverageTargetPlan) -> None:
     """Reject source/Target drift rather than publish a Campaign under stale fingerprints."""
     for category in ("rtl", "testbench"):
-        records = plan.source_closure[category]
-        assert isinstance(records, tuple)
-        for record in records:
-            assert isinstance(record, Mapping)
+        for record in cast(tuple[Mapping[str, str], ...], plan.source_closure[category]):
             path = plan.handle.project_root / str(record["path"])
             if content_digest(path.read_bytes()) != record["sha256"]:
                 raise ValueError(f"Coverage source changed after Preflight: {record['path']}")

@@ -995,13 +995,18 @@ def test_alias_normalization_precedes_simulation_preparation(
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
 def test_projection_rejects_corrupt_record(tmp_path, error):
-    from booley.flows.sim.acceptance import _campaign_projection
+    from booley.flows.sim.acceptance import _campaign_projection, _OutcomeEvidence
     from booley.flows.sim.campaign import decode_simulation_projection
     from booley.flows.sim.campaign_retention import _read_object
     from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
 
     document = json.loads(
-        json.dumps({**_campaign_projection(_outcome(tmp_path, _RESET)), "complete": True})
+        json.dumps(
+            {
+                **_campaign_projection(_OutcomeEvidence(_outcome(tmp_path, _RESET))),
+                "complete": True,
+            }
+        )
     )
     path = tmp_path / "simulation.json"
     path.write_text(json.dumps(document))
