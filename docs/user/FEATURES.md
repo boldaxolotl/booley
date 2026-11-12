@@ -1,6 +1,6 @@
 # Features
 
-Booley's core move is giving Developer Agents **one consistent interface to the EDA tools** through Booley Flows, the same for Claude Code and Codex and the same across the EDA tools each Flow supports, and wrapping the result in an agentic development environment (ADE): one VS Code window where you direct and supervise those agents. That makes Developer Agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
+Booley's core move is giving Developer Agents **one consistent interface to the EDA tools** through Booley Flows, the same for Claude Code and Codex and the same across the EDA tools each Flow supports, and wrapping the result in an agentic development environment (ADE): one VS Code window where you direct and supervise those agents. That makes Developer Agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [ARCHITECTURE.md](../internals/ARCHITECTURE.md).
 
 New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, Target, Goal Mode)? The [context map](../../GLOSSARY-MAP.md) points to each canonical glossary and its rejected synonyms.
 
@@ -80,7 +80,7 @@ A Developer Agent could spawn its own subagent, but then it writes the brief, de
 
 For debugging, Booley **observes actual simulation behavior** through a custom-built Rust waveform EDA tool (`bwave`) instead of just reasoning about the code. It can query signal values at specific time ranges, use one signal as a trigger for sampling another, and trace data through the design: systematic debugging instead of guesswork.
 
-**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. Otherwise Booley converts VCD to FST as the simulation runs; Cocotb Targets convert after the run ([details](FLOW-SIM.md#tracing-a-cocotb-target)). The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
+**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. Otherwise Booley converts VCD to FST as the simulation runs; Cocotb Targets convert after the run ([details](FLOW-SIM.md#tracing-a-cocotb-target)). The reasoning is in [ARCHITECTURE.md: Why FST is the trace contract](../internals/ARCHITECTURE.md#why-fst-is-the-trace-contract).
 
 ## Multi-Category Code Review
 

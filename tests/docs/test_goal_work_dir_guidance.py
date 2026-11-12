@@ -159,7 +159,7 @@ GUIDANCE_REGIONS = (
         "interactive",
     ),
     (
-        "docs/internals/MCP-TOOLS.md",
+        "docs/internals/SPECIALIST_IMPLEMENTATION.md",
         "The model prompt contains only a compact Campaign reference.",
         "\nChanging filters",
         "Analyst",
