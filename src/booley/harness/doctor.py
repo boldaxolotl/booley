@@ -3690,6 +3690,7 @@ def _run_project_checks(
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
     _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
+    _check_disabled_endpoints(project, reporter.note_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
             project.project_root,
@@ -4075,6 +4076,34 @@ def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail
         )
         return
     _pass("custom endpoints and Criteria validated")
+
+
+def _check_disabled_endpoints(project: ProjectAudit, _note: Check) -> None:
+    """NOTE the Specialists and custom Flows that ``booley.toml`` turns off.
+
+    Built-in Flows are left out: the Flow audit already prints a line for each.
+    Invalid endpoint configuration is reported by the custom-endpoint check instead.
+    """
+    from booley.mcp.endpoint_config import EndpointConfigError, parse_endpoint_config
+    from booley.mcp.registry import BUILTIN_FLOW_PACKAGES, discover_mcp_inventory, filter_mcp_tools
+
+    try:
+        specialists, flows = parse_endpoint_config(project.booley_toml)
+        inventory = discover_mcp_inventory(project_mcp_tools_dir=project.booley_dir / "mcp_tools")
+        enabled = filter_mcp_tools(inventory, specialist_config=specialists, flow_config=flows)
+    except EndpointConfigError:
+        return
+    enabled_names = {info.name for info in enabled}
+    disabled = sorted(
+        {
+            info.name
+            for info in inventory
+            if info.name not in enabled_names
+            and not (info.kind == "flow" and info.name in BUILTIN_FLOW_PACKAGES)
+        }
+    )
+    if disabled:
+        _note(f"MCP endpoints disabled in booley.toml: {', '.join(disabled)}")
 
 
 def _check_agent_backend_health(
