@@ -1,12 +1,20 @@
 # Goalset: close-test-gap
 
-Add decoder choice 2 to the gap test while retaining reset, counter wrap,
-choices 0/1 and assertions. Change only `tb/coverage_tb.sv`; preserve RTL, core,
-registry and policy. The dedicated registry has only gap on sim_generated,
-so `tests: all` means exactly [gap]. Collect via MCP before/after, ask the Analyst
-about the exact initial Campaign, and retain initial passing sim/failing coverage,
-advice and final full Campaign. No waivers or threshold reduction. Finish with a
-clean committed TB-only diff and Session Summary.
+Close the coverage gap in the testbench: make the `gap` test also drive decoder
+choice 2, while it still checks reset, counter wrap, choices 0 and 1, and every
+assertion it has today.
+
+- Change only `tb/coverage_tb.sv`. Leave the RTL, the core file, the test
+  registry and the coverage policy as they are. Add no waivers and lower no
+  threshold.
+- This Project's registry lists only `gap` for `sim_generated`, so
+  `"tests": "all"` below means exactly `[gap]`.
+- Collect coverage through MCP before and after the change. Ask the Coverage
+  Analyst about the exact first Campaign.
+- Keep the first collection's evidence (simulation passes, coverage fails),
+  the Analyst's advice, and the final full Campaign.
+- Finish with a clean, committed diff that touches only the testbench, and a
+  Session Summary.
 
 ## Goals
 

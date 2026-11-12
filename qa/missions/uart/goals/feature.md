@@ -1,19 +1,22 @@
 # Goalset: feature
 
-Implement the documented standalone UART from the frozen public corpus and
-MMIO/timing addenda. Author owned RTL and self-checking SystemVerilog TB assets;
-preserve interface, full required behavior and Target contracts. Use only the
-mission's allowed documentation and ordinary Project inspection; retrieve no
-existing UART RTL or tests. Report corpus conflicts instead of inventing rules.
-`spec/contract.md` contains the frozen register definitions and MMIO addendum
-for spec review. Require fresh netlist/reports for synthesis. Error recovery is
-required behavior: after a framing error or a break, with parity enabled or
-disabled, the receiver must resume receiving valid characters as the corpus
-Reception and error sections define; test it in the TB. The mutation Goal below is
-the only mutation gate. It mutates `rtl/qa_uart.sv`, the scaffold's design file, so keep
-the UART implementation there. Do not invent relative PPA or hidden coverage gates. Operator
-conformance evaluation is separate from Finish; the child sees no evaluator
-implementation, seed or generated cases.
+Implement the standalone UART described by the frozen public corpus and the
+MMIO and timing addenda. Write your own RTL and a self-checking SystemVerilog
+testbench, and keep the interface, all required behavior and the Target names.
+Use only the allowed documentation and the Project itself; don't fetch any
+existing UART RTL or tests. Where the corpus contradicts itself, report the
+conflict instead of inventing a rule.
+
+`spec/contract.md` holds the frozen register definitions and MMIO addendum for
+the spec review. Synthesis needs a fresh netlist and reports. Error recovery is
+required: after a framing error or a break, with parity on or off, the receiver
+must go back to receiving valid characters as the corpus Reception and error
+sections describe; test that in the testbench.
+
+The mutation Goal below is the only mutation gate. It mutates `rtl/qa_uart.sv`,
+the scaffold's design file, so keep the UART implementation there. Don't add
+relative-PPA or hidden coverage gates. Conformance is checked separately from
+Finish; you won't see that evaluator, its seed or its cases.
 
 ## Goals
 
