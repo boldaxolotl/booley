@@ -798,7 +798,31 @@ def _swap_steps(sources: ContractSources, first: str, second: str) -> None:
     )
 
 
+# Mutation id -> (candidate-build input, replacement) for single-input edits.
+_BASE_BUILD_EDITS: dict[str, tuple[str, object]] = {
+    "base-dockerfile": ("file", "src/booley/data/docker/Dockerfile.substrate"),
+    "base-push": ("push", False),
+    "base-tag": ("tags", "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main"),
+}
+
+
+def _mutate_candidate_wiring(sources: ContractSources, mutation: str) -> bool:
+    """Break the candidate tag or the report step's inputs; False for another mutation."""
+    if mutation == "metadata-tag":
+        step = _runtime_base_step(sources, "candidate-metadata")
+        step["run"] = str(step["run"]).replace("tag=candidate-${GITHUB_SHA}", "tag=main")
+    elif mutation == "selected-env":
+        _runtime_base_step(sources, "selected")["env"]["CANDIDATE_IMAGE"] = (
+            "${{ steps.candidate-build.outputs.digest }}"
+        )
+    else:
+        return False
+    return True
+
+
 def _mutate_base_selection(sources: ContractSources, mutation: str) -> None:
+    if _mutate_candidate_wiring(sources, mutation):
+        return
     jobs = sources.release_workflow["jobs"]
     build = _runtime_base_step(sources, "candidate-build")["with"]
     if mutation == "decide-if":
@@ -811,16 +835,13 @@ def _mutate_base_selection(sources: ContractSources, mutation: str) -> None:
         _swap_steps(sources, "candidate-build", "candidate-verify")
     elif mutation == "needs":
         del jobs["build-and-push"]["needs"]
-    elif mutation == "base-dockerfile":
-        build["file"] = "src/booley/data/docker/Dockerfile.substrate"
-    elif mutation == "base-push":
-        build["push"] = False
-    elif mutation == "base-tag":
-        build["tags"] = "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main"
-    elif mutation == "base-cache-from":
-        build["cache-from"] = "type=gha,scope=sandbox-substrate"
-    elif mutation == "base-cache-from-missing":
+    elif mutation in _BASE_BUILD_EDITS:
+        key, value = _BASE_BUILD_EDITS[mutation]
+        build[key] = value
+    elif mutation in {"base-cache-from", "base-cache-from-missing"}:
         del build["cache-from"]
+        if mutation == "base-cache-from":
+            build["cache-from"] = "type=gha,scope=sandbox-substrate"
     elif mutation == "base-args-parity":
         build["build-args"] = str(build["build-args"]).replace("BOOLEY_BASE_BUILT_AT=", "OTHER=")
     else:
@@ -859,6 +880,8 @@ def _mutate_base_selection(sources: ContractSources, mutation: str) -> None:
             id="base-cache-from-missing",
         ),
         pytest.param("base-args-parity", "must match the publisher", id="base-args-parity"),
+        pytest.param("metadata-tag", "candidate tag must be exactly", id="metadata-tag"),
+        pytest.param("selected-env", "must read the verified candidate", id="selected-env"),
     ],
 )
 def test_release_base_selection_rules(mutation: str, expected: str) -> None:
@@ -919,7 +942,6 @@ def _mutate_substrate_tags(sources: ContractSources, mutation: str) -> tuple[str
         )
         return "release RISC-V substrate", "tags"
     if mutation == "source-output":
-        _runtime_base_step(sources, "selected")  # the job must exist before its outputs change
         jobs["runtime-base"]["outputs"]["origin"] = jobs["runtime-base"]["outputs"].pop("source")
         return "release base selection", "must expose image, source, candidate-tag"
     jobs["build-and-push"]["outputs"]["base-source"] = "published"

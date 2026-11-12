@@ -525,6 +525,14 @@ _BASE_STEP_IDS = (
 _CANDIDATE_TAG = "${{ steps.candidate-metadata.outputs.tag }}"
 _CANDIDATE_BASE_TAG = f"${{{{ env.REGISTRY }}}}/${{{{ env.BASE_IMAGE_NAME }}}}:{_CANDIDATE_TAG}"
 _TRUSTED_BASE_CACHE = "type=gha,scope=sandbox-runtime-base"
+# The only tag a candidate base may take: never ``main`` or another shared tag.
+_CANDIDATE_TAG_LINE = 'echo "tag=candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"'
+# The report step reads the verified candidate digest, never the bare build digest.
+_SELECTED_ENV = {
+    "PUBLISHED_IMAGE": "${{ steps.published.outputs.image }}",
+    "CANDIDATE_IMAGE": "${{ steps.candidate-verify.outputs.image }}",
+    "CANDIDATE_TAG": _CANDIDATE_TAG,
+}
 
 
 def _release_base_selection_errors(
@@ -570,6 +578,16 @@ def _release_base_selection_errors(
         errors.append(f"{role}: decide, candidate build, verify, and report are out of order")
     if steps["decide"].path >= steps["published"].path:
         errors.append(f"{role}: the dispatch decision must precede the published resolver")
+    errors.extend(_candidate_base_errors(role, steps, candidate, publisher))
+    errors.extend(_selected_base_output_errors(workflow, role))
+    return errors
+
+
+def _candidate_base_errors(
+    role: str, steps: dict[str, Any], candidate: Build, publisher: Build
+) -> list[str]:
+    """The candidate base build matches the publisher, writes no cache, and is verified by digest."""
+    errors: list[str] = []
     errors.extend(
         _build_shape_errors(
             f"{role} candidate base",
@@ -596,7 +614,10 @@ def _release_base_selection_errors(
             f"{role}: verification must consume the candidate base build digest {expected}"
         )
     errors.extend(_resolver_errors(role, steps["candidate-verify"], "${BASE_IMAGE}"))
-    errors.extend(_selected_base_output_errors(workflow, role))
+    if _CANDIDATE_TAG_LINE not in str(steps["candidate-metadata"].value.get("run", "")):
+        errors.append(f"{role}: the candidate tag must be exactly {_CANDIDATE_TAG_LINE}")
+    if steps["selected"].value.get("env") != _SELECTED_ENV:
+        errors.append(f"{role}: the report step must read the verified candidate image")
     return errors
 
 
