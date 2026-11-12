@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-Booley is an agentic development environment (ADE) for hardware: you direct Claude Code or Codex agents while they do the RTL work. Each Developer Agent gets one short command per EDA job and works in a sandbox on its own branch, so you can leave several running unattended. Booley, not the agent, reads the numbers out of the EDA tool reports and measures every finished commit against the limits you set: passing tests, area and timing budgets, cycle counts, coverage, and more.
+Booley is an agentic development environment (ADE) for RTL design and verification: you direct Claude Code or Codex agents while they do the work. Each Developer Agent gets one short command per EDA job and works in a sandbox on its own branch, so you can leave several running unattended. Booley, not the agent, reads the numbers out of the EDA tool reports and measures every finished commit against the limits you set: passing tests, area and timing budgets, cycle counts, coverage, and more.
 
 **Website:** [booley.dev](https://booley.dev/) for the full feature tour, videos, and blog.
 
