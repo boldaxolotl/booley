@@ -1,0 +1,16 @@
+{
+  "complete": true,
+  "completed_targets": [],
+  "detail": {},
+  "flow": "sim",
+  "mode": "simulate",
+  "pending_targets": [
+    "sim_0"
+  ],
+  "phase": "aborted",
+  "run_id": "",
+  "targets": [
+    "sim_0"
+  ],
+  "timestamp": "2026-11-12T17:00:02Z"
+}

@@ -292,7 +292,9 @@ def read_durable_results(manifest_path: Path, manifest_sha256: str) -> DurableCa
     campaign is resumed.
 
     Raises :class:`~booley.flows.campaign_results.CampaignBusyError` while a
-    scheduler owns the campaign, and :class:`SimulationCampaignIntegrityError`
+    scheduler owns the campaign,
+    :class:`~booley.flows.campaign_results.OlderBooleyRecordError` when an older
+    Booley wrote it, and :class:`SimulationCampaignIntegrityError`
     when the campaign is gone, is not the expected one, or any of its results
     cannot be authenticated (one whose writer was killed mid-write included).
     """
