@@ -17,10 +17,13 @@ import re
 
 # Verilator warning lines (also the built-in lint parser's regex):
 #   %Warning-UNUSEDSIGNAL: module_a.sv:42:5: Signal is not used: 'foo'
+# Anchored at column 0: Verilator echoes source (string literals kept) in an
+# indented gutter line, which must not parse as a second warning (#3673).
 VERILATOR_WARNING_RE = re.compile(
-    r"%Warning-(?P<rule>[A-Z0-9_]+):\s+"
-    r"(?P<file>[^:]+):(?P<line>\d+):(?P<col>\d+):\s+"
-    r"(?P<message>.+)"
+    r"^%Warning-(?P<rule>[A-Z0-9_]+):[ \t]+"
+    r"(?P<file>[^:\n]+):(?P<line>\d+):(?P<col>\d+):[ \t]+"
+    r"(?P<message>.+)",
+    re.MULTILINE,
 )
 
 # Verilator emits ``%Error`` (and the summary ``%Error: Exiting due to N
