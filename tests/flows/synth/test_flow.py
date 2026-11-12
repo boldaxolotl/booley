@@ -310,6 +310,27 @@ def test_clockless_sdc_marker_is_classified_as_configuration_error(tmp_path: Pat
     assert "created no clocks" in metrics.infra_error
 
 
+def test_exit_zero_echoed_input_error_token_is_not_an_infra_error(tmp_path: Path) -> None:
+    """An RTL comment echoed into an exit-0 log must not read as an input error (#3673)."""
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    metrics = SynthMetrics(synth_mode=SynthMode.PHYSICAL)
+    outcome = SimpleNamespace(
+        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+        forced_failure=None,
+        yosys_complete=True,
+    )
+    process = SubprocessResult(returncode=0, stdout="", stderr="", duration_s=0.1)
+
+    flow._apply_boundary_completion(
+        metrics, outcome, process, "    5 | // BOOLEY_INPUT_ERROR: echoed comment\n      | ^\n"
+    )
+
+    assert metrics.returncode == 0
+    assert metrics.termination == "completed"
+    assert metrics.infra_error == ""
+
+
 @pytest.fixture(autouse=True)
 def _adr0039_lenient_selection(monkeypatch):
     """Pre-0039 pass-through target selection for these layer-focused tests.
