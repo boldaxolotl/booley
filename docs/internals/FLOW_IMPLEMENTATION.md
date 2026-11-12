@@ -488,7 +488,7 @@ inventory was most of the report's size and a hard-coded file name silently
 goes stale. `artifacts.live_dirs.timing` (physical mode) holds the STA reports
 (`overall.rpt`, `overall.csv.rpt`, `reg2reg.rpt` when the design has registers,
 and `pre_repair*.rpt` when repair ran). `artifacts.live_dirs.build` holds the
-rest: the `stat` output, the netlists, the final-check output, the per-stage
+rest: the `stat` output, the netlists, the two check outputs, the per-stage
 logs, the rendered `synth.ys`, and the SDC fed to STA. On a large design these
 are easier to search than `run.log`, which holds the tail (up to 10 MB) of all
 stages' output.
@@ -526,13 +526,15 @@ transpile. Both feed the same mapping and timing steps. See
 
 The loop count comes from a Yosys `check` that Booley runs right after `synth`
 and before mapping (`premap_check_<design>.txt`). Mapped library cells are black
-boxes to `check`, so a check after mapping never sees a loop through them.
+boxes to `check`, so a check after mapping cannot trace a loop through them.
 `check` works per module, so without `flatten` a loop that crosses a module
 boundary is not counted. The multi-driver count comes from a final `check` run
 after mapping and optimization (`check_<design>.txt`). The reported loop count
-is the larger of the two. Yosys also runs `check` inside `synth`; loops seen
-only there (an optimization removes them, as in #1417) are advisory when the
-pre-mapping check finds none, and are kept with that rationale. Missing, stale,
+is the larger of the two, so a loop that either check reports still fails the
+run. Yosys also runs `check` inside `synth`; loops seen only there (an
+optimization removes them, as in
+[#1417](https://github.com/boldaxolotl/booley/issues/1417)) are advisory when
+neither check finds a loop, and are kept with that rationale. Missing, stale,
 or incomplete output from either check sets `structural_checks_complete` to
 false and cannot pass.
 
@@ -553,8 +555,7 @@ Each current and baseline result carries a bounded `warning_summary`: total
 and unique counts, counts by EDA tool, category, and disposition, and one
 representative message per group; `artifacts.log` keeps every raw message.
 Structural warnings become fatal when the check that owns their count
-confirms them. Other
-actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
+confirms them. Other actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
 known to be benign is counted with its rationale and does not downgrade the
 result. Unknown warning forms default to actionable, so a new message is never
 silently ignored.

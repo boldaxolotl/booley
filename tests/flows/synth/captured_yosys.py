@@ -11,7 +11,7 @@ def load_capture(name: str) -> dict[str, str]:
     """Split a capture into ``{artifact file name: text}`` by its ``--- name ---`` headers."""
     sections: dict[str, str] = {}
     current = ""
-    for line in (FIXTURES / name).read_text().splitlines(keepends=True):
+    for line in (FIXTURES / name).read_text(encoding="utf-8").splitlines(keepends=True):
         if line.startswith("--- ") and line.rstrip().endswith(" ---"):
             current = line.strip("- \n")
             sections[current] = ""

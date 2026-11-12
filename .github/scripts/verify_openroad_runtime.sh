@@ -314,11 +314,15 @@ require(
     diagnostics.structural.comb_loops == 1,
     f"expected 1 loop, counted {diagnostics.structural.comb_loops}",
 )
-# The final check cannot trace a path through mapped black-box cells; the loop
-# is counted only because the pre-mapping check exists.
-require("found logic loop" not in final_check, "final check unexpectedly sees the loop")
+# The loop warnings must be structural, so the run fails; other warnings (for
+# example from ABC) do not matter here.
+loop_groups = [
+    group
+    for group in diagnostics.warnings.representatives
+    if group.category == "combinational_loop"
+]
 require(
-    diagnostics.warnings.structural_warnings == diagnostics.warnings.total_warnings > 0,
+    bool(loop_groups) and all(group.disposition == "structural" for group in loop_groups),
     "loop warnings are not all structural",
 )
 PY

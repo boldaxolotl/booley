@@ -5,9 +5,10 @@ paths.  Freshness and filesystem ownership stay with the synthesis pipeline;
 warning dialect, grouping, disposition, and representative bounds stay here.
 
 Structural counts come from two Yosys ``check`` passes: the pre-mapping check
-(after ``synth``, before mapping) owns combinational loops because mapped
-library cells are black boxes to ``check``, and the final check owns
-multi-driven nets after mapping.
+(after ``synth``, before mapping) is the main source of combinational loops
+because mapped library cells are black boxes to ``check``; the reported loop
+count is the larger of the two. The final check owns multi-driven nets after
+mapping.
 """
 
 from __future__ import annotations
@@ -120,7 +121,7 @@ class WarningSummary:
 
 @dataclass(frozen=True)
 class SynthDiagnostics:
-    """Warning inventory plus authoritative final structural evidence."""
+    """Warning inventory plus authoritative pre-mapping and final structural evidence."""
 
     warnings: WarningSummary
     structural: StructuralConditions
