@@ -314,18 +314,14 @@ def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch)
 # broad run does not collect, so this reader is tested here) ---
 
 
-@pytest.mark.parametrize("version", ["0.4.0"])
 def test_an_older_layout_campaign_reads_as_refused_in_status_and_the_dashboard(
-    version: str,
     two: SimpleNamespace,  # noqa: F811 (fixture imported from tests/goals)
     campaign: _Campaign,  # noqa: F811
     tmp_path: Path,
 ) -> None:
     """An older Booley's record is refused as too old, never "cannot be read"."""
     invocation = tmp_path / "reports" / "sim" / "1"
-    shutil.copytree(
-        _FIXTURES / f"booley_{version.replace('.', '_')}" / "complete" / "sim" / "1", invocation
-    )
+    shutil.copytree(_FIXTURES / "booley_0_4_0" / "complete" / "sim" / "1", invocation)
     campaign.manifest = invocation / "targets" / "sim" / "campaign" / "manifest.json"
     campaign.start("run-1")
     two.campaign_reader = read_unpublished_results

@@ -15,6 +15,7 @@ this part refuses on the layout before it reads any content.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -110,41 +111,42 @@ def test_resume_from_accepts_a_record_manifest(tmp_path: Path, monkeypatch) -> N
 # --- AC2: --resume-from an older layout is refused before any work ----------------------
 
 
-@pytest.mark.parametrize(
-    ("version", "kind"),
-    [("0.4.0", "interrupted"), ("0.4.0", "coverage"), ("0.3.0", "interrupted")],
-    ids=["0.4.0-interrupted", "0.4.0-coverage", "0.3.0-interrupted"],
-)
+_RESUMED = (("0.4.0", "interrupted"), ("0.4.0", "coverage"), ("0.3.0", "interrupted"))
+
+
 def test_resume_from_an_older_layout_manifest_is_refused_before_any_work(
-    version: str, kind: str, tmp_path: Path, reports: Path
+    tmp_path: Path, reports: Path
 ) -> None:
-    invocation = copy_older_invocation(version, kind, reports)
-    before = _tree(invocation)
+    for version, kind in _RESUMED:
+        shutil.rmtree(reports / "sim", ignore_errors=True)
+        invocation = copy_older_invocation(version, kind, reports)
+        before = _tree(invocation)
 
-    result = SimulateFlow().execute(
-        SimRequest(
-            resume_from=_manifest_of(invocation, kind), work_dir=tmp_path, report_dir=reports
+        result = SimulateFlow().execute(
+            SimRequest(
+                resume_from=_manifest_of(invocation, kind), work_dir=tmp_path, report_dir=reports
+            )
         )
-    )
 
-    assert result.exit_code == 2
-    _assert_refused(result.outcome.report_text, _marker(kind), invocation)
-    assert not (reports / "sim" / "2").exists()
-    assert _tree(invocation) == before
+        assert result.exit_code == 2, (version, kind)
+        _assert_refused(result.outcome.report_text, _marker(kind), invocation)
+        assert not (reports / "sim" / "2").exists()
+        assert _tree(invocation) == before
 
 
 # --- AC3: retention and pruning ---------------------------------------------------------
 
 
-@pytest.mark.parametrize("kind", ["complete", "coverage"])
-def test_full_prune_cli_refuses_an_older_layout(kind: str, reports: Path) -> None:
-    invocation = copy_older_invocation("0.4.0", kind, reports)
+def test_full_prune_cli_refuses_an_older_layout(reports: Path) -> None:
+    for kind in ("complete", "coverage"):
+        shutil.rmtree(reports / "sim", ignore_errors=True)
+        invocation = copy_older_invocation("0.4.0", kind, reports)
 
-    result = _run_retention_cli("--reports-root", str(reports), "--invocation", "1", "--full")
+        result = _run_retention_cli("--reports-root", str(reports), "--invocation", "1", "--full")
 
-    assert result.returncode == 2
-    _assert_refused(result.stderr, _marker(kind), invocation)
-    assert invocation.is_dir()
+        assert result.returncode == 2, kind
+        _assert_refused(result.stderr, _marker(kind), invocation)
+        assert invocation.is_dir()
 
 
 def test_native_prune_cli_refuses_an_older_layout(reports: Path) -> None:
@@ -159,27 +161,28 @@ def test_native_prune_cli_refuses_an_older_layout(reports: Path) -> None:
     assert invocation.is_dir()
 
 
-@pytest.mark.parametrize("batch", ["fresh", "batch-retry"])
-def test_dependents_prune_refuses_an_older_layout(batch: str, reports: Path) -> None:
+def test_dependents_prune_refuses_an_older_layout(reports: Path) -> None:
     """An interrupted dependents batch is retried from its journal: that refuses too."""
-    invocation = copy_older_invocation("0.4.0", "complete", reports)
-    if batch == "batch-retry":
-        write_campaign_json(
-            invocation / ".prune-batch.json",
-            {
-                "$schema": "booley.simulation-prune-batch/v1",
-                "operation": "full-with-dependents",
-                "origin": str(invocation.absolute()),
-                "members": [str(invocation.absolute())],
-            },
-        )
-    before = _tree(invocation)
+    for batch in ("fresh", "batch-retry"):
+        shutil.rmtree(reports / "sim", ignore_errors=True)
+        invocation = copy_older_invocation("0.4.0", "complete", reports)
+        if batch == "batch-retry":
+            write_campaign_json(
+                invocation / ".prune-batch.json",
+                {
+                    "$schema": "booley.simulation-prune-batch/v1",
+                    "operation": "full-with-dependents",
+                    "origin": str(invocation.absolute()),
+                    "members": [str(invocation.absolute())],
+                },
+            )
+        before = _tree(invocation)
 
-    with pytest.raises(CampaignRetentionError) as excinfo:
-        prune_invocation(reports, 1, include_dependents=True)
+        with pytest.raises(CampaignRetentionError) as excinfo:
+            prune_invocation(reports, 1, include_dependents=True)
 
-    _assert_refused(str(excinfo.value), _marker("complete"), invocation)
-    assert _tree(invocation) == before
+        _assert_refused(str(excinfo.value), _marker("complete"), invocation)
+        assert _tree(invocation) == before, batch
 
 
 # --- AC3: the Pre-Sim scan, Coverage analysis and Goal waiver binding --------------------
