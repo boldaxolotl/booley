@@ -267,9 +267,10 @@ def _live_roots(main: Path) -> list[LiveRoot]:
 
     The Booley-issued Sandbox mounts the live working tree at ``/work`` and the Booley
     Directory at a separate mount, so the tree is not derivable from *main* there; other
-    working trees are not mounted. A hand-written Sandbox's ``/work`` (the image's empty
-    ``WORKDIR``) is not the live tree, which is the Git checkout around *main* or around
-    the caller's working directory, outside the Booley Directory itself. The run is
+    working trees are not mounted. A hand-written Sandbox's ``/work`` is the live tree only
+    when it is a Git checkout (the image's empty ``WORKDIR`` is not); the others are the Git
+    checkout around *main* or around the caller's working directory, outside the Booley
+    Directory itself. The run is
     refused there when no such checkout is found, since nothing could be scanned for. A
     Booley Directory inside an unrelated repository, with the caller outside the live
     tree, makes that repository the only tree found: a limit of the derivation.

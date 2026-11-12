@@ -1201,6 +1201,25 @@ def test_checkout_flow_refuses_a_path_into_the_booley_dir_variable(
 
 
 @linux_only
+def test_checkout_flow_takes_a_work_directory_with_a_git_marker_as_the_live_tree(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    # Main is outside every checkout and the caller stands outside the tree: only a ``/work``
+    # that is a Git checkout (``WORK_DIR`` is the live tree here) shows it.
+    world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
+    detached_main = tmp_path / "detached-main"
+    detached_main.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
+        run_checkout_flow(replace(world.request("pass"), main_booley_dir=detached_main))
+
+
+@linux_only
 def test_checkout_flow_ignores_a_path_under_an_empty_work_directory(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
