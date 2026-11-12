@@ -23,7 +23,7 @@ from booley.flows.cli_help import option_groups
 from booley.flows.cli_selection import EndpointProjectAction
 from booley.harness.dashboard.launch import split_arguments
 
-FieldKind = Literal["toggle", "three-way", "list", "text"]
+FieldKind = Literal["toggle", "three-way", "list", "text", "target", "tests"]
 
 # Common and each Flow's own options are fields; Output and the Expert groups are extra arguments.
 GROUP_PLACEMENT: Final[dict[str, Literal["field", "extra"]]] = {
@@ -37,12 +37,14 @@ GROUP_PLACEMENT: Final[dict[str, Literal["field", "extra"]]] = {
     "Expert: OpenROAD": "extra",
 }
 
-# Until the Target and test pickers exist, these two options say how their text is read.
-_HINTS: Final[dict[str, str]] = {
-    "target": "A Target name or a comma list of them; empty means automatic.",
-    "test": "One Test Run; put more of them in the extra arguments.",
+# The two options the wizard fills from the worktree's Targets: dest -> field kind.
+_PICKERS: Final[dict[str, FieldKind]] = {"target": "target", "test": "tests"}
+_PICKER_HINTS: Final[dict[FieldKind, str]] = {
+    "target": "One Target; put more in the extra arguments.",
+    "tests": "Enter toggles a Test Run; more forms (seeds) go in the extra arguments.",
 }
-_EMPTY_TEXT: Final[dict[str, str]] = {"target": "automatic"}
+AUTOMATIC = "automatic"  # what the Target field shows while no Target is chosen
+DEFAULT_SUITE = "default suite"  # what the test field shows while no Test Run is chosen
 TEXT_NOTE: Final = "Typed as one value: no quoting needed."
 DEFAULT = "default"  # what a list or three-way field shows while nothing is chosen
 
@@ -67,18 +69,25 @@ class Field:
     spellings: tuple[str, ...]  # every option string of every action: all count as placed
     off_flag: str = ""
     choices: tuple[str, ...] = ()  # a list's value spellings; a three-way's are "on" and "off"
-    empty: str = ""  # what a text field shows while it has no value
+    # The Flow insists on this option: the Target field then has no automatic.
+    required: bool = False
 
     def values(self) -> tuple[str, ...]:
         """The values a choice list offers after the default, as stored."""
         return ("on", "off") if self.kind == "three-way" else self.choices
 
-    def shown(self, value: str) -> str:
-        """How the row spells *value* (``""`` is unset)."""
+    def shown(self, value: str | tuple[str, ...]) -> str:
+        """How the row spells *value* (``""`` is unset; the test field holds a tuple of Test Runs)."""
+        if isinstance(value, tuple):
+            return ", ".join(value) or DEFAULT_SUITE
         if self.kind == "toggle":
             return "on" if value else "off"
         if self.kind == "text":
-            return value or self.empty
+            return value
+        if self.kind == "target":
+            return value or ("" if self.required else AUTOMATIC)
+        if self.kind == "tests":
+            return value or DEFAULT_SUITE
         return value or DEFAULT
 
 
@@ -162,15 +171,18 @@ def _single_field(dest: str, action: argparse.Action) -> Field | None:
             tuple(action.option_strings),
             choices=_choice_spellings(action),
         )
-    return Field(
-        dest,
-        "text",
-        flag,
-        flag,
-        f"{_HINTS.get(dest, hint)} {TEXT_NOTE}",
-        tuple(action.option_strings),
-        empty=_EMPTY_TEXT.get(dest, ""),
-    )
+    picker = _PICKERS.get(dest)
+    if picker is not None:
+        return Field(
+            dest,
+            picker,
+            flag,
+            flag,
+            _PICKER_HINTS[picker],
+            tuple(action.option_strings),
+            required=bool(action.required),
+        )
+    return Field(dest, "text", flag, flag, f"{hint} {TEXT_NOTE}", tuple(action.option_strings))
 
 
 def _pair_field(dest: str, actions: list[argparse.Action]) -> Field | None:
@@ -237,7 +249,9 @@ def _text_words(field: Field, value: str) -> list[str]:
     return [f"{field.flag}={text}"] if text.startswith("-") else [field.flag, text]
 
 
-def command_argv(form: RunForm, values: Mapping[str, str], extra_text: str) -> tuple[str, ...]:
+def command_argv(
+    form: RunForm, values: Mapping[str, str | tuple[str, ...]], extra_text: str
+) -> tuple[str, ...]:
     """The argument words for the field *values* (``""`` is unset) and the typed *extra_text*.
 
     Fields come in the parser's group order, then the extra words, of which one
@@ -247,13 +261,19 @@ def command_argv(form: RunForm, values: Mapping[str, str], extra_text: str) -> t
     words: list[str] = []
     for field in form.fields:
         value = values.get(field.dest, "")
+        if field.kind == "tests":
+            for run in (value,) if isinstance(value, str) else value:
+                if run:
+                    words.extend((field.flag, run))
+            continue
+        assert isinstance(value, str), f"{field.dest} takes one value"
         if field.kind == "toggle" and value:
             words.append(field.flag)
         elif field.kind == "three-way" and value:
             words.append(field.flag if value == "on" else field.off_flag)
         elif field.kind == "list" and value:
             words.extend((field.flag, value))
-        elif field.kind == "text":
+        elif field.kind in ("text", "target"):
             words.extend(_text_words(field, value))
     extra = split_arguments(extra_text)
     return (*words, *(extra[1:] if extra[:1] == ("--",) else extra))
