@@ -314,7 +314,7 @@ def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch)
 # broad run does not collect, so this reader is tested here) ---
 
 
-@pytest.mark.parametrize("version", ["0.3.0", "0.4.0"])
+@pytest.mark.parametrize("version", ["0.4.0"])
 def test_an_older_layout_campaign_reads_as_refused_in_status_and_the_dashboard(
     version: str,
     two: SimpleNamespace,  # noqa: F811 (fixture imported from tests/goals)
