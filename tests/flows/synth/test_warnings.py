@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from booley.flows.synth.warnings import parse_synth_diagnostics
@@ -191,3 +193,25 @@ def test_earlier_driver_clean_final_remains_inventory_only():
     )
     assert diagnostics.structural.multi_driven == 0
     assert diagnostics.warnings.structural_warnings == 1
+
+
+def test_real_yosys_v070_check_output_is_counted() -> None:
+    # Captured from Yosys 0.70+ (28ba3cb92) through Booley's generated script:
+    # one combinational loop and one multi-driven net in the design.
+    fixture = (Path(__file__).parent / "fixtures/check_yosys_0_70.txt").read_text()
+    yosys, final_check = fixture.split("--- check_chk.txt ---\n")
+    yosys = yosys.removeprefix("--- yosys.log ---\n")
+
+    diagnostics = parse_synth_diagnostics({"yosys": yosys, "final_check": final_check})
+
+    # The final check runs after Liberty mapping, where cells are opaque, so it
+    # sees the multi-driven net but not the loop (the same on the previous Yosys release).
+    assert diagnostics.structural.complete is True
+    assert diagnostics.structural.comb_loops == 0
+    assert diagnostics.structural.multi_driven == 1
+    # The loop reported by Yosys's own earlier ``check`` passes stays visible.
+    assert diagnostics.warnings.by_category == {"combinational_loop": 2, "multi_driver": 3}
+    assert "deprecated" not in (yosys + final_check).lower()
+    # ``tee -q`` keeps the final check out of ``yosys.log``.
+    assert "Checking module chk" in final_check
+    assert yosys.count("Found and reported") == 2
