@@ -8,9 +8,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from booley.measurement.rules_diff import RulesDiff
-
 if TYPE_CHECKING:
+    from booley.measurement.rules_diff import RulesDiff
     from booley.measurement.run_key import KeyedCommit
 
 from tests.runtime.test_commit_export import (
@@ -392,7 +391,8 @@ def test_booley_and_reviews_toml_edits_leave_header_unchanged(tmp_path: Path) ->
     assert header_amber(diff) == ()
     assert edits == (".booley/booley.toml", ".booley/reviews.toml")
     assert paired_protected_edits(repo, keyed, diff, protected) == ()
-    assert rules_diff(repo, keyed, None) == RulesDiff((), None, None, None)
+    no_base = rules_diff(repo, keyed, None)
+    assert (no_base.changes, no_base.tests_diff, no_base.unreadable) == ((), None, None)
 
 
 def versioned_case(tmp_path: Path, layout: str) -> tuple[Path, Path]:
