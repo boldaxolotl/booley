@@ -128,8 +128,15 @@ then warns when `[sandbox].memory` can't hold `max_heavy` heavy Jobs plus the
 agents. With `max_heavy` above 1, a simulation campaign also runs independent
 tests in parallel.
 
-Caps apply to one Project. They don't share commercial license seats between
-Projects.
+Caps apply to one Project.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Caps don't share commercial license seats between Projects. See
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
+
+</details>
 
 ### Job resource history
 
@@ -347,10 +354,18 @@ so the report still reads. `redact_extra` terms are replaced too, as are any
 `[stealth]` `banned_words` and `banned_substrings` you set.
 
 **Kept**, because a report without them can't be acted on: EDA tool names and
-versions, error text, tracebacks, and timing and area numbers. That reveals
-which commercial EDA tools you license, and a design name that appears only
-inside a quoted log line slips through. Attached log tails are redacted with the
-rest, but a log line is arbitrary text, so read them in the shared file.
+versions, error text, tracebacks, and timing and area numbers. A design name
+that appears only inside a quoted log line slips through. Attached log tails
+are redacted with the rest, but a log line is arbitrary text, so read them in
+the shared file.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Kept tool names reveal which commercial EDA tools you license. See
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
+
+</details>
 
 Redaction is a best-effort list, not a guarantee. For an open-source design
 whose module names are already public, `redact_identifiers = false` gives the
