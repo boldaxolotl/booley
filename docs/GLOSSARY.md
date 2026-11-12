@@ -4,7 +4,7 @@ This is the canonical vocabulary for concepts shared across Booley. Consult it
 when a term is unfamiliar; it is not an onboarding sequence. The
 [context map](../GLOSSARY-MAP.md) points to the separately owned vocabularies.
 
-Booley is an **agentic development environment (ADE)** for FPGA and ASIC development: the working environment where an engineer directs and supervises Developer Agents doing RTL work, whether hands-on or unattended. **Goal Mode** and **Interactive Mode** share the same isolated **Sandbox**, Booley Flows, and Specialists; neither mode alone defines the product.
+Booley is an **agentic development environment (ADE)** for RTL design and verification: the working environment where an engineer directs and supervises Developer Agents doing RTL work, whether hands-on or unattended. **Goal Mode** and **Interactive Mode** share the same isolated **Sandbox**, Booley Flows, and Specialists; neither mode alone defines the product.
 _Avoid_ (for the product itself): IDE, agentic RTL IDE, framework, system, library, platform, toolkit, package, harness
 
 The glossary also records words to _avoid_. Booley's concepts collide with
