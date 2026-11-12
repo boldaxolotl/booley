@@ -131,15 +131,20 @@ sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
     booley flow sim --target sim_soc --test=stress+soak@846930886
 ```
 
-A Cocotb Target with no Tests in `tests.toml` runs its test functions as one
-batch, so a failed test function cannot be rerun alone. The report then prints
-one command, however many of them failed, that reruns the whole batch at that
-seed:
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+A [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) with no Tests in
+`tests.toml` runs its test functions as one batch, so a failed test function
+cannot be rerun alone. The report then prints one command, however many of
+them failed, that reruns the whole batch at that seed:
 
 ```text
   Rerun the whole batch with the same seed (register its test functions as Tests in tests.toml to rerun one alone):
     booley flow sim --target sim_soc --seed 846930886
 ```
+
+</details>
 
 In a `--trace` run the card also names each waveform, and lists the Test Runs
 even when all of them passed:
@@ -168,12 +173,19 @@ The paths:
   with `--trace`. It is printed under passing Test Runs too, and not at all
   for a run without a waveform.
 
-The Test Runs of one Cocotb Target run as a batch, so they share one log and
-one waveform. The card prints these two paths for the first eight Test Runs of
+The card prints the `log` and `waveform` paths for the first eight Test Runs of
 a Target, failures first, then says how many more there are; a coverage run
 prints none. A Test Run that was interrupted and then
 [resumed](#resuming-an-interrupted-run) names the files of the attempt that
 finished.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+The Test Runs of one [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches)
+run as a batch, so they share one log and one waveform.
+
+</details>
 
 Each run has its own numbered directory (`sim/12/` above; see
 [Running Flows](FLOW_REFERENCE.md#reading-results)). In it,
@@ -186,10 +198,19 @@ Each Test Run gets one verdict:
 
 | Verdict | Meaning | Exit |
 |---|---|---:|
-| Pass / fail | An HDL testbench passes or fails by the [message it prints](#passfail-sentinels-and-cycle-counts). A Cocotb Target uses cocotb's result file. Either way, [error and assertion messages](#passfail-sentinels-and-cycle-counts) in the output fail a test even when it printed its pass message, and so does a nonzero simulator exit code. A test also fails when it reads a `$readmemh` file that is missing and not declared in the Target (reported as `missing_input`; [declare it with `copyto`](TARGETS.md#design-description-core)), or when a [Pre-Sim Command](#pre-sim-commands-flowssimpre_run_commands) preparing it fails or times out. | `0` / `1` |
+| Pass / fail | An HDL testbench passes or fails by the [message it prints](#passfail-sentinels-and-cycle-counts). [Error and assertion messages](#passfail-sentinels-and-cycle-counts) in the output fail a test even when it printed its pass message, and so does a nonzero simulator exit code. A test also fails when it reads a `$readmemh` file that is missing and not declared in the Target (reported as `missing_input`; [declare it with `copyto`](TARGETS.md#design-description-core)), or when a [Pre-Sim Command](#pre-sim-commands-flowssimpre_run_commands) preparing it fails or times out. | `0` / `1` |
 | Inconclusive | The simulator exited with code `0` without printing a pass or fail message, or a `--trace` run produced no usable waveform. It never counts as a pass. | `1` |
 | Timeout | The simulation ran past its time limit (`timeout_ms`, ten minutes by default). It counts as a failure: look for a deadlock in the RTL or testbench, or raise the limit if the test really needs longer. | `1` |
 | Error | An infrastructure problem stopped the test, such as a build timeout, a build failure with no recognised design error, a missing tool, or Pre-Sim Commands that can't start; the result says nothing about the design. An RTL compile error or a simulator crash is a failure instead. | `2` |
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+A [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) uses
+cocotb's result file. Error and assertion messages in the output still fail a
+test, and so does a nonzero simulator exit code.
+
+</details>
 
 If every Test Run comes back inconclusive, see
 [Every simulation test comes back INCONCLUSIVE](TROUBLESHOOTING.md#every-simulation-test-comes-back-inconclusive).
@@ -223,8 +244,15 @@ fail_sentinels = ["ERROR!", "TIMEOUT"]
 Your lists replace the defaults. When both a pass and a fail sentinel appear,
 the test fails. `booley doctor` warns when a sim Target's testbench doesn't
 contain the default pass sentinel; a custom one it can't find is only a note,
-because the testbench may build the message at run time. A Cocotb Target takes
-its verdicts from cocotb, so sentinels don't apply to it.
+because the testbench may build the message at run time.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+A [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) takes its
+verdicts from cocotb, so pass and fail sentinels don't apply to it.
+
+</details>
 
 **Error and assertion messages.** A pass sentinel isn't enough on its own.
 A test also fails, on any simulator and testbench kind, when its output
@@ -243,11 +271,20 @@ Without it, Booley has no cycle count for the test, and a `CYCLE_COUNT` Goal
 on it stays unmet.
 `cycle_sentinels` replaces that prefix with one your testbench already prints,
 such as `["CoreMark completed in:"]` for `CoreMark completed in: coremark 12345`.
-Counts appear as `cycles=N` on the verdict card and in the report, also for
-Cocotb Targets. They are informational unless a `CYCLE_COUNT` Goal sets
+Counts appear as `cycles=N` on the verdict card and in the report. They are
+informational unless a `CYCLE_COUNT` Goal sets
 [thresholds](GOAL-MODE.md#thresholds) on them, such as "at most 12,000
 cycles" or "cycle count drops at least 8%" against the code the Goal started
 from.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+Cycle counts still appear for a
+[Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches), on its verdict
+card and in the report.
+
+</details>
 
 ## Waveforms
 
@@ -278,9 +315,9 @@ viewers (GTKWave, VaporView) read. The simulator can write either format:
 
 - **FST**: Booley uses the file as it is.
 - **VCD**: Booley converts it to FST for you. With Verilator the conversion
-  runs while the test runs, so the full VCD never lands on disk. Icarus and
-  Cocotb Targets write the VCD first and Booley converts it after the run
-  (Verilator does the same on Windows).
+  runs while the test runs, so the full VCD never lands on disk. Icarus
+  writes the VCD first and Booley converts it after the run (Verilator does
+  the same on Windows).
 
 How tracing is switched on depends on the Target:
 
@@ -290,8 +327,15 @@ How tracing is switched on depends on the Target:
   `+tracefile=<file>` to the simulation, which the Target's C++ `main()` must
   handle. A Target built with `--trace-fst` writes FST directly; otherwise
   the dump is VCD.
-- **Cocotb Target**: Booley drives the dump itself; see
-  [Tracing a Cocotb Target](#tracing-a-cocotb-target).
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+On a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) Booley
+drives the dump itself, writes the VCD and converts it after the run; see
+[Tracing a Cocotb Target](#tracing-a-cocotb-target).
+
+</details>
 
 If your Verilator `main()` takes other options, declare them in `trace_args`.
 `{file}` becomes the waveform path, and the list replaces the default pair.
@@ -387,19 +431,7 @@ booley flow sim --resume-from <manifest.json>
   and output options may change.
 - One resume continues one Target. For a run of several Targets, resume each
   unfinished Target's manifest.
-- What runs again depends on the testbench:
-
-    | Testbench | Unit of work | On resume |
-    |---|---|---|
-    | HDL | one Test Run | Only Test Runs without a result run again. |
-    | cocotb | the whole batch | Finished batches are skipped; an interrupted batch reruns all its tests. |
-
-    A Cocotb batch is every test that shares a seed and Test Variant, run in
-    one simulator process. Resuming a Cocotb Target doesn't start it from
-    scratch: only the interrupted batch runs again, and the batches that
-    finished are kept. A run with several seeds (`@x20`) or Test Variants has
-    several batches.
-
+- Only Test Runs without a result run again.
 - A `--coverage` run resumes only if it was interrupted while publishing its
   results. Otherwise Booley refuses (exit `2`). Start a new `booley flow sim --coverage` run instead:
   the refusal prints the command, with the same Test Runs and seeds.
@@ -409,18 +441,38 @@ booley flow sim --resume-from <manifest.json>
   changed since the original run. Don't edit Campaign files by hand: resume
   checks that they are intact.
 
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+On a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) the unit
+of work is the whole batch. Finished batches are skipped; an interrupted batch
+reruns all its tests. A Cocotb batch is every test that shares a seed and Test
+Variant, run in one simulator process. Resuming a Cocotb Target doesn't start
+it from scratch: only the interrupted batch runs again, and the batches that
+finished are kept. A run with several seeds (`@x20`) or Test Variants has
+several batches.
+
+</details>
+
 ## Pre-Sim Commands (`[flows.sim].pre_run_commands`)
 
 Some tests need a non-RTL build step before the simulation starts, typically a
 CPU core whose testbench loads firmware compiled for each test. Declare that
 step as **Pre-Sim Commands**: shell lines that Booley runs inside the Sandbox
-immediately before each simulator process. That is once per Test Run for an
-HDL testbench, and once per batch for a Cocotb Target.
+immediately before each simulator process. That is once per Test Run.
 
 ```toml
 [flows.sim]
 pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
 ```
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+For a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches), the
+commands run once per batch.
+
+</details>
 
 The commands run in the Project Root, not in `run_cwd`: write paths relative to
 the Project Root, or `cd "$BOOLEY_RUN_CWD"` first. Nothing creates output
@@ -487,8 +539,15 @@ available.
 ## Build reuse
 
 A repeat run skips the build when nothing that goes into it has changed:
-sources, cores, toolchain, flags and environment. Cocotb Targets always
-rebuild. Each Target's result says why a build was or wasn't reused.
+sources, cores, toolchain, flags and environment. Each Target's result says
+why a build was or wasn't reused.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+[Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches) always rebuild.
+
+</details>
 
 ## Verilator builds
 
@@ -557,12 +616,20 @@ simulation: under `--trace`, converting the VCD to FST has its own
 attempt, and running out of it is a trace incident, not a timeout. Pre-Sim Commands have an
 independent fixed 600-second budget that neither setting changes.
 
-**Two safety limits.** `max_rundir_bytes` stops a run whose directory grows
+**Run directory limit.** `max_rundir_bytes` stops a run whose directory grows
 by more than the limit, for example a testbench that dumps every signal to
-disk; the message names the largest files. `sim_time_grace_s` stops a cocotb
-run whose simulation time is still zero that many seconds after cocotb starts,
-which usually means the cocotb version doesn't match the simulator; see
+disk; the message names the largest files.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+`sim_time_grace_s` stops a run of a
+[Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) whose simulation
+time is still zero that many seconds after cocotb starts, which usually means
+the cocotb version doesn't match the simulator; see
 [Baking the cocotb stack into the image](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
 Raise it if your testbench spends minutes in Python setup before the first
 clock edge. For the stop's message and fix, see
 [Simulation stalls at time zero](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).
+
+</details>

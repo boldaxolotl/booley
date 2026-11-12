@@ -158,8 +158,9 @@ def test_flow_reference_uses_the_executable_target_filter() -> None:
 def test_sim_campaign_resume_granularity_stays_documented() -> None:
     section = _flow_section("sim")
     assert "One resume continues one Target" in section
-    assert "| HDL | one Test Run |" in section
-    assert "| cocotb | the whole batch |" in section
+    assert "- Only Test Runs without a result run again." in section
+    flat = " ".join(section.split())
+    assert "Finished batches are skipped; an interrupted batch reruns all its tests." in flat
     assert "Start a new `booley flow sim --coverage` run instead" in section
     assert "Resume never\n  re-runs failures" in section
     mcp = _reference_text(MCP_TOOLS)
