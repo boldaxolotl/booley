@@ -415,6 +415,14 @@ def _build_yosys_script(
     if spec.flatten:
         synth += " -flatten"
 
+    # Step 3b: structural check on the generic netlist after ``synth`` and
+    # before mapping. This pass owns the combinational-loop count: it sees
+    # generic cells after ``synth``'s optimisation, whereas the final check
+    # below only sees black-box library cells and cannot trace a loop through
+    # them. ``check`` is read-only, so area and stat are unchanged.
+    premap_check_out = q(out_dir + "/premap_check_" + design_name + ".txt")
+    premap_check = f"tee -q -o {premap_check_out} check"
+
     # Step 4: DFF library mapping
     dfflibmap = f"dfflibmap -liberty {lib_path}"
 
@@ -438,8 +446,10 @@ def _build_yosys_script(
     # ``synth`` runs CHECK internally more than once, so its log can contain
     # repeated loop/driver warnings. Keeping this pass quiet and in its own
     # artifact gives result interpretation an exact final count without
-    # duplicating it in yosys.log. The completed final check supplies authoritative
-    # structural counts; earlier-only loops remain advisory.
+    # duplicating it in yosys.log. The final check supplies multi-driven nets
+    # and completeness after mapping; loops through mapped black-box cells are
+    # invisible to it, so the pre-mapping check owns the loop count. Loops seen
+    # only by ``synth``'s first check (removed by optimisation) remain advisory.
     check_out = q(out_dir + "/check_" + design_name + ".txt")
     final_check = (
         "select -assert-none =A:booley_check_library=1; "
@@ -462,7 +472,7 @@ def _build_yosys_script(
         f"tee -o {stat_out} stat -liberty {lib_path}"
     )
 
-    return f"{hls}; {parameter_guard}; {synth}; {dfflibmap}; {abc}; {final_check}; {wout}"
+    return f"{hls}; {parameter_guard}; {synth}; {premap_check}; {dfflibmap}; {abc}; {final_check}; {wout}"
 
 
 def _build_abc_command(

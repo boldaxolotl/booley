@@ -524,11 +524,17 @@ transpile. Both feed the same mapping and timing steps. See
 - no critical condition remains: no latches beyond `expected_latches`, no
   combinational loops, no multi-driven nets, no unmapped processes.
 
-Loop and multi-driver counts come from a final Yosys `check` run after mapping
-and optimization. Yosys also runs `check` during `synth`; loops seen only
-there are advisory when the final check finds none, and are kept with that
-rationale. Missing, stale, or incomplete final-check output sets
-`structural_checks_complete` to false and cannot pass.
+The loop count comes from a Yosys `check` that Booley runs right after `synth`
+and before mapping (`premap_check_<design>.txt`). Mapped library cells are black
+boxes to `check`, so a check after mapping never sees a loop through them.
+`check` works per module, so without `flatten` a loop that crosses a module
+boundary is not counted. The multi-driver count comes from a final `check` run
+after mapping and optimization (`check_<design>.txt`). The reported loop count
+is the larger of the two. Yosys also runs `check` inside `synth`; loops seen
+only there (an optimization removes them, as in #1417) are advisory when the
+pre-mapping check finds none, and are kept with that rationale. Missing, stale,
+or incomplete output from either check sets `structural_checks_complete` to
+false and cannot pass.
 
 Negative setup or hold slack grades `warn` and exits 0 unless
 `[flows.synth].fail_on_timing_violation = true`, which makes it a failure
@@ -546,7 +552,8 @@ liberty file, a Yosys or sv2v error) is carried into the report.
 Each current and baseline result carries a bounded `warning_summary`: total
 and unique counts, counts by EDA tool, category, and disposition, and one
 representative message per group; `artifacts.log` keeps every raw message.
-Structural warnings become fatal when the final check confirms them. Other
+Structural warnings become fatal when the check that owns their count
+confirms them. Other
 actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
 known to be benign is counted with its rationale and does not downgrade the
 result. Unknown warning forms default to actionable, so a new message is never

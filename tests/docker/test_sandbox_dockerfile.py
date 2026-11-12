@@ -1346,6 +1346,8 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
     assert "log_abc_dut.txt" in probe
     assert "abc-control" in probe
     assert 'ABC: Warning: Detected 2 multi-output cells (for example, "FA_X1").' in probe
+    assert "premap_check_dut.txt" in probe
+    assert "comb-loop" in probe
     assert "collision-preserve" in probe
     assert "collision-attribute" in probe
     assert 'grep -Fq "Assertion failed"' in probe

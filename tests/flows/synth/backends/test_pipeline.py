@@ -122,6 +122,14 @@ class TestConfigureSynthesis:
         assert "synth -top dut -noabc -flatten" in script
         assert script.count("abc -liberty") == 1
 
+    def test_premap_check_follows_synth_and_precedes_mapping(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+        lines = (plan.build_dir / "synth.ys").read_text(encoding="utf-8").splitlines()
+
+        synth_index = next(i for i, line in enumerate(lines) if line.startswith("synth -top"))
+        assert lines[synth_index + 1] == "tee -q -o ./premap_check_dut.txt check"
+        assert lines[synth_index + 2].startswith("dfflibmap -liberty")
+
     def test_final_mapped_netlist_gets_a_dedicated_structural_check(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         script = (plan.build_dir / "synth.ys").read_text(encoding="utf-8")
@@ -382,6 +390,9 @@ class TestBoundaryOutput:
             "Warning: found logic loop in module dut:\n    wire \\feedback\n",
             encoding="utf-8",
         )
+        (plan.build_dir / "premap_check_dut.txt").write_text(
+            "Found and reported 0 problems.\n", encoding="utf-8"
+        )
         (plan.build_dir / "check_dut.txt").write_text(
             "Warning: multiple conflicting drivers for dut.sig:\n"
             "    port Q[0] of cell $procdff$1 ($dff)\n"
@@ -407,15 +418,22 @@ class TestBoundaryOutput:
             if group.category == "combinational_loop"
         )
         assert "\\feedback" in loop.message
-        assert "completed final netlist check" in loop.rationale
-        assert "--- check_dut.txt ---" in outcome.text
+        assert "completed post-optimisation check" in loop.rationale
+        # Both checks reach run.log, the pre-mapping one first.
+        assert outcome.text.index("--- premap_check_dut.txt ---") < outcome.text.index(
+            "--- check_dut.txt ---"
+        )
 
-    def test_stale_final_check_is_not_complete(self, tmp_path: Path):
+    @pytest.mark.parametrize("stale_name", ["premap_check_dut.txt", "check_dut.txt"])
+    def test_stale_structural_check_is_not_complete(self, tmp_path: Path, stale_name: str):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
-        check = plan.build_dir / "check_dut.txt"
-        check.write_text("Found and reported 0 problems.\n", encoding="utf-8")
+        for name in ("premap_check_dut.txt", "check_dut.txt"):
+            (plan.build_dir / name).write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
+        stale = plan.build_dir / stale_name
 
-        outcome = syn_make.boundary_output(plan, 0, is_stale=lambda path: path == check)
+        outcome = syn_make.boundary_output(plan, 0, is_stale=lambda path: path == stale)
 
         assert outcome.diagnostics.structural.complete is False
 
@@ -669,10 +687,19 @@ class TestSv2vRecipeSharesTheArgvBuilder:
         assert recipe.endswith("-w sv2v_converted.v")
 
 
-@pytest.mark.parametrize("empty", ["yosys.log", "stat_dut.txt", "check_dut.txt", "synth_dut.v"])
+@pytest.mark.parametrize(
+    "empty", ["yosys.log", "stat_dut.txt", "premap_check_dut.txt", "check_dut.txt", "synth_dut.v"]
+)
 def test_authenticated_empty_required_yosys_output_is_missing(tmp_path, empty):
     plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
-    for name in ["yosys.log", "stat_dut.txt", "check_dut.txt", "synth_dut.v", "sv2v_converted.v"]:
+    for name in [
+        "yosys.log",
+        "stat_dut.txt",
+        "premap_check_dut.txt",
+        "check_dut.txt",
+        "synth_dut.v",
+        "sv2v_converted.v",
+    ]:
         (plan.build_dir / name).write_text("Found and reported 0 problems.\n")
     (plan.build_dir / empty).write_text("")
     outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
@@ -686,6 +713,7 @@ def test_authenticated_empty_required_yosys_output_is_missing(tmp_path, empty):
         ("sv2v_converted.v", "sv2v"),
         ("yosys.log", "yosys"),
         ("stat_dut.txt", "yosys"),
+        ("premap_check_dut.txt", "yosys"),
         ("check_dut.txt", "yosys"),
         ("synth_dut.v", "yosys"),
         ("reports/timing/overall.rpt", "openroad"),
@@ -700,6 +728,7 @@ def test_all_authenticated_required_artifacts(tmp_path, subject, stage, state):
         "sv2v_converted.v",
         "yosys.log",
         "stat_dut.txt",
+        "premap_check_dut.txt",
         "check_dut.txt",
         "synth_dut.v",
         "reports/timing/overall.rpt",
@@ -751,7 +780,7 @@ def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
         "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
         "yosys": "#!/bin/sh\nexit 0\n"
         if failing_stage == "yosys"
-        else '#!/bin/sh\necho "Chip area for module dut: 1000.0" > stat_dut.txt\ncat stat_dut.txt\necho "Found and reported 0 problems." > check_dut.txt\necho "module dut; endmodule" > synth_dut.v\n',
+        else '#!/bin/sh\necho "Chip area for module dut: 1000.0" > stat_dut.txt\ncat stat_dut.txt\necho "Found and reported 0 problems." > premap_check_dut.txt\necho "Found and reported 0 problems." > check_dut.txt\necho "module dut; endmodule" > synth_dut.v\n',
         "openroad": "#!/bin/sh\nexit 0\n",
     }
     for name, script in scripts.items():
@@ -865,7 +894,7 @@ def _fake_generic_master_bin(tmp_path):
     fake_bin.mkdir()
     scripts = {
         "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
-        "yosys": "#!/bin/sh\ncat > stat_dut.txt <<'STAT'\n13. Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - $_DLATCH_P_\n  Area for cell type $_DLATCH_P_ is unknown!\nSTAT\ncat stat_dut.txt\necho 'Found and reported 0 problems.' > check_dut.txt\necho 'module dut; endmodule' > synth_dut.v\n",
+        "yosys": "#!/bin/sh\ncat > stat_dut.txt <<'STAT'\n13. Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - $_DLATCH_P_\n  Area for cell type $_DLATCH_P_ is unknown!\nSTAT\ncat stat_dut.txt\necho 'Found and reported 0 problems.' > premap_check_dut.txt\necho 'Found and reported 0 problems.' > check_dut.txt\necho 'module dut; endmodule' > synth_dut.v\n",
         "openroad": "#!/bin/sh\necho '[ERROR ORD-2013] instance latch LEF master $_DLATCH_P_ not found.'\nexit 1\n",
     }
     for name, script in scripts.items():
@@ -983,7 +1012,7 @@ def test_1095_generated_make_usage_failure(tmp_path, monkeypatch, tool):
     fake_bin.mkdir()
     for name, script in {
         "sv2v": "echo 'module dut; endmodule' > sv2v_converted.v",
-        "yosys": "echo 'Number of cells: 2' > stat_dut.txt; echo 'Found and reported 0 problems.' > check_dut.txt; echo 'module dut; endmodule' > synth_dut.v",
+        "yosys": "echo 'Number of cells: 2' > stat_dut.txt; echo 'Found and reported 0 problems.' > premap_check_dut.txt; echo 'Found and reported 0 problems.' > check_dut.txt; echo 'module dut; endmodule' > synth_dut.v",
         "openroad": "exit 0",
     }.items():
         shim = fake_bin / name
@@ -1014,6 +1043,7 @@ def test_1095_false_pass_uses_offending_frontend_log(tmp_path, mode):
     plan = dataclasses.replace(plan, attempt_token="a" * 32)
     for name in (
         "stat_dut.txt",
+        "premap_check_dut.txt",
         "check_dut.txt",
         "synth_dut.v",
         syn_core.SV2V_OUTPUT_NAME,

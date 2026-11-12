@@ -29,10 +29,12 @@ retain_evidence() {
     files=("$work"/check_dut_*.txt "$work"/yosys*.log
       "$work"/log_abc_*.txt "$work"/openroad-*.log
       "$work"/run_openroad-*.tcl "$work"/synth*.ys "$work"/placed-*.v)
-    if test -f "$work/check_dut.txt"; then
-      files+=("$work/check_dut.txt")
-    fi
-    for directory in abc-control collision-preserve collision-attribute repair-off repair-on; do
+    for single in check_dut.txt premap_check_dut.txt; do
+      if test -f "$work/$single"; then
+        files+=("$work/$single")
+      fi
+    done
+    for directory in abc-control collision-preserve collision-attribute comb-loop repair-off repair-on; do
       if (( status == 0 )) || test -d "$work/$directory"; then
         files+=("$work/$directory")
       fi
@@ -191,6 +193,29 @@ write_collision_case(
     "marker u_marker(.A(A), .Z(Z)); endmodule\n",
 )
 
+# A real combinational loop: the pre-mapping check must count it even though
+# the final check, run after mapping to black-box Liberty cells, cannot.
+comb_loop_dir = work / "comb-loop"
+comb_loop_dir.mkdir()
+(comb_loop_dir / "dut.v").write_text(
+    "module dut(input wire en, input wire x, output wire y);\n"
+    "  wire a, b;\n"
+    "  assign a = ~(b & en);\n"
+    "  assign b = a | x;\n"
+    "  assign y = b;\n"
+    "endmodule\n",
+    encoding="utf-8",
+)
+write_yosys_script(
+    comb_loop_dir / "synth.ys",
+    _build_yosys_script(
+        probe_spec("dut", liberty, "balanced"),
+        sources=[comb_loop_dir / "dut.v"],
+        inc_dirs=[],
+        work_dir=comb_loop_dir,
+    ),
+)
+
 pdk = OpenRoadPdk(tech_lef=tech_lef, stdcell_lef=stdcell_lef, layer_rc=layer_rc)
 for label, repair_timing in (("repair-off", False), ("repair-on", True)):
     run_dir = work / label
@@ -221,6 +246,7 @@ PY
 
 yosys -q -s "$work/synth.ys" > "$work/yosys.log" 2>&1
 grep -Fq "Found and reported 0 problems." "$work/check_dut.txt"
+grep -Fq "Found and reported 0 problems." "$work/premap_check_dut.txt"
 if grep -F "used but has no driver" "$work/check_dut.txt"; then
   exit 1
 fi
@@ -258,6 +284,44 @@ if yosys -q -s "$work/collision-attribute/synth.ys" \
 fi
 grep -Fq "Assertion failed" "$work/collision-attribute/yosys.log"
 test ! -e "$work/collision-attribute/synth_collision_attribute.v"
+
+yosys -q -s "$work/comb-loop/synth.ys" > "$work/comb-loop/yosys.log" 2>&1
+PYTHONPATH=/booley-source/src python - "$work/comb-loop" <<'PY'
+import sys
+from pathlib import Path
+
+from booley.flows.synth.warnings import parse_synth_diagnostics
+
+run_dir = Path(sys.argv[1])
+
+
+def require(condition, message):
+    # An explicit exit, not assert: python -O must not turn the check off.
+    if not condition:
+        sys.exit(f"comb-loop check failed: {message}")
+
+
+final_check = (run_dir / "check_dut.txt").read_text(encoding="utf-8")
+diagnostics = parse_synth_diagnostics(
+    {
+        "yosys": (run_dir / "yosys.log").read_text(encoding="utf-8"),
+        "premap_check": (run_dir / "premap_check_dut.txt").read_text(encoding="utf-8"),
+        "final_check": final_check,
+    }
+)
+require(diagnostics.structural.complete, "structural evidence is incomplete")
+require(
+    diagnostics.structural.comb_loops == 1,
+    f"expected 1 loop, counted {diagnostics.structural.comb_loops}",
+)
+# The final check cannot trace a path through mapped black-box cells; the loop
+# is counted only because the pre-mapping check exists.
+require("found logic loop" not in final_check, "final check unexpectedly sees the loop")
+require(
+    diagnostics.warnings.structural_warnings == diagnostics.warnings.total_warnings > 0,
+    "loop warnings are not all structural",
+)
+PY
 
 run_openroad() {
   local label="$1"
