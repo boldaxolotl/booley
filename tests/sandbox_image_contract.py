@@ -555,6 +555,38 @@ def _release_candidate_errors(
     return errors
 
 
+# The RISC-V substrate tag names its recipe and the exact standard-substrate
+# parent, so it changes when either changes.
+_RISCV_SUBSTRATE_TAG = (
+    "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:riscv-"
+    "${{ steps.version.outputs.substrate_recipe_fingerprint }}"
+    "-parent-${{ steps.parent-key.outputs.key }}"
+)
+
+
+def _riscv_parent_key_errors(workflow: dict[str, Any]) -> list[str]:
+    """Require the tag's parent key to come from the parent's registry digest.
+
+    The standard-substrate contract omits Dockerfile.substrate and the runtime
+    base, so only the digest identifies the exact parent.
+    """
+    role = "release RISC-V substrate"
+    job = "build-and-push-riscv"
+    try:
+        key_step = find_step("docker-publish.yml", workflow, job, step_id="parent-key")
+        substrate_step = find_step("docker-publish.yml", workflow, job, step_id="substrate")
+    except ValueError as error:
+        return [f"{role}: parent key: {error}"]
+    errors: list[str] = []
+    if key_step.path > substrate_step.path:
+        errors.append(f"{role}: parent key step must run before the substrate build")
+    env = key_step.value.get("env")
+    source = env.get("STANDARD_SUBSTRATE_DIGEST") if isinstance(env, dict) else None
+    if source != "${{ needs.build-and-push.outputs.substrate-digest }}":
+        errors.append(f"{role}: parent key must derive from the standard substrate digest output")
+    return errors
+
+
 def _release_riscv_errors(workflow: dict[str, Any], substrate: Build, build: Build) -> list[str]:
     role = "release RISC-V image"
     standard_parent = (
@@ -566,10 +598,11 @@ def _release_riscv_errors(workflow: dict[str, Any], substrate: Build, build: Bui
         substrate,
         _RISCV_DOCKERFILE,
         {"booley-standard-substrate": f"docker-image://{standard_parent}"},
-        (),
+        (_RISCV_SUBSTRATE_TAG,),
         push=True,
         label=("io.booley.build.parent-artifact", standard_parent),
     )
+    errors.extend(_riscv_parent_key_errors(workflow))
     parent = "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.substrate.outputs.digest }}"
     errors.extend(
         _build_shape_errors(

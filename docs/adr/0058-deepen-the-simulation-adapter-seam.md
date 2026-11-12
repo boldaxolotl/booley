@@ -56,14 +56,14 @@ grading uses the typed channel.
 The authenticated result carries normalized per-test verdicts and diagnostics.
 The parent validates the result file as a fresh, contained current-attempt
 artifact before accepting it, and independently validates run logs and trace
-artifacts. Build, Pre-Run, workload, artifact, and infrastructure evidence all
+artifacts. Build, Pre-Sim Commands, workload, artifact, and infrastructure evidence all
 cross the execution boundary in the returned outcome instead of being rebuilt
 from output markers by the Flow.
 
 Project-owned settings are resolved from `TargetHandle.project_root` for each
 invocation. This applies equally to the active checkout and an ephemeral Cycle
 Count baseline worktree; a module cache populated for one checkout cannot
-supply another checkout's test list, selector, environment, or Pre-Run
+supply another checkout's test list, selector, environment, or Pre-Sim
 Commands.
 
 ## Considered Options
@@ -80,8 +80,8 @@ Commands.
   Simulation and Elaboration Check deliberately share the same authenticated
   `sim.build` contract.
 - A single end-to-end timeout was rejected for this refactor. The established
-  simulator budget, wrapper trace-cleanup margin, and independent Pre-Run
-  budget remain behaviorally compatible.
+  simulator budget, wrapper trace-cleanup margin, and independent Pre-Sim
+  Commands budget remain behaviorally compatible.
 
 ## Consequences
 

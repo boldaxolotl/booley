@@ -334,6 +334,33 @@ def test_release_jobs_must_export_their_build_digest(job: str) -> None:
     assert "image-digest" in _errors(sources, role)
 
 
+@pytest.mark.parametrize("case", ["tag-without-parent", "key-from-contract", "key-after-build"])
+def test_release_riscv_substrate_tag_must_name_its_parent(case: str) -> None:
+    """The tag must carry the exact parent digest key, fed from the digest output (#3650)."""
+    sources = _sources()
+    job = "build-and-push-riscv"
+    steps: list[dict[str, Any]] = sources.release_workflow["jobs"][job]["steps"]
+    substrate = _step(sources, "release_workflow", "docker-publish.yml", job, step_id="substrate")
+    key_step = _step(sources, "release_workflow", "docker-publish.yml", job, step_id="parent-key")
+    if case == "tag-without-parent":
+        inputs = substrate["with"]
+        inputs["tags"] = _sub_once(
+            r"-parent-\$\{\{ steps\.parent-key\.outputs\.key \}\}", "", str(inputs["tags"])
+        )
+        expected = "tags"
+    elif case == "key-from-contract":
+        key_step["env"]["STANDARD_SUBSTRATE_DIGEST"] = (
+            "${{ steps.version.outputs.standard_substrate_contract }}"
+        )
+        expected = "parent key"
+    else:
+        steps.remove(key_step)
+        steps.insert(steps.index(substrate) + 1, key_step)
+        expected = "parent key"
+
+    assert expected in _errors(sources, "release RISC-V substrate")
+
+
 def test_release_riscv_job_must_depend_on_candidate_producer() -> None:
     sources = _sources()
     sources.release_workflow["jobs"]["build-and-push-riscv"]["needs"] = []

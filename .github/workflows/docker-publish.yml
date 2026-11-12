@@ -211,6 +211,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The substrate tag names the recipe and the first 16 hex of the exact
+      # parent digest; the full parent digest stays in the
+      # io.booley.build.parent-artifact label.
+      - name: Derive RISC-V substrate tag key from its parent digest
+        id: parent-key
+        env:
+          STANDARD_SUBSTRATE_DIGEST: ${{ needs.build-and-push.outputs.substrate-digest }}
+        run: |
+          if [[ ! "${STANDARD_SUBSTRATE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::standard-substrate digest is not sha256:<64 hex>: '${STANDARD_SUBSTRATE_DIGEST}'"
+            exit 1
+          fi
+          echo "key=${STANDARD_SUBSTRATE_DIGEST:7:16}" >> "${GITHUB_OUTPUT}"
+
       - name: Build and publish RISC-V substrate
         id: substrate
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -222,7 +236,7 @@ jobs:
           build-contexts: |
             booley-standard-substrate=docker-image://${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ needs.build-and-push.outputs.substrate-digest }}
           tags: >-
-            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:riscv-${{ steps.version.outputs.substrate_recipe_fingerprint }}
+            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:riscv-${{ steps.version.outputs.substrate_recipe_fingerprint }}-parent-${{ steps.parent-key.outputs.key }}
           labels: |
             io.booley.provenance.schema=3
             io.booley.artifact.role=riscv-substrate
@@ -234,7 +248,7 @@ jobs:
           # No GHA cache here: the riscv image is ~10 GB, larger than the
           # repo's entire 10 GB Actions cache budget — writing it would evict
           # the per-PR sandbox cache that bwave-smoke depends on, for a build
-          # that only runs on release tags anyway.
+          # that runs on release tags and manual dispatches.
 
       - name: Build complete RISC-V image
         id: build
