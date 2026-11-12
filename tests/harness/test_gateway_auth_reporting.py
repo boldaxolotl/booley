@@ -123,7 +123,9 @@ def test_doctor_gateway_auto_fallback_without_token_warns(gateway_env, monkeypat
     command, _ = write_token_command(gateway_env, [], stderr="no token yet\n", exit_code=1)
     monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
     monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN_COMMAND", command)
-    choice = agent_app.AgentAppChoice("codex", "gateway", "no Claude or Codex credential")
+    choice = agent_app.AgentAppChoice(
+        "codex", "gateway", "no Claude or Codex credential", ("codex",)
+    )
     monkeypatch.setattr(agent_app, "auto_choice", lambda: choice)
 
     findings = _doctor_findings(gateway_env)

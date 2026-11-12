@@ -694,6 +694,27 @@ def sandbox_cli_policy(cli: str) -> str | None:
     return env_auth_handoff()
 
 
+def sandbox_agent_clis() -> tuple[str, ...]:
+    """The Agent CLIs this Sandbox allows, the default first; empty when none.
+
+    ``BOOLEY_AGENT_APP=auto`` takes the set the registrar published for this
+    start (every CLI with a credential). Otherwise a decodable
+    ``BOOLEY_AGENT_CLIS`` record lists them, ``BOOLEY_AGENT_APP`` first and the
+    rest in record order. A hand-written spec allows only the CLI
+    ``BOOLEY_AGENT_APP`` names; ``none``, unset or an unknown value allows none.
+    """
+    import os
+
+    from booley.config import agent_app
+
+    if choice := agent_app.auto_choice():
+        return choice.clis
+    app = (os.environ.get("BOOLEY_AGENT_APP") or "").strip()
+    if app not in AGENT_CLIS:
+        return ()
+    return (app, *(cli for cli in _recorded_cli_policies() if cli != app))
+
+
 def gateway_handoff_active() -> bool:
     """Whether Codex is routed through the gateway in this Sandbox.
 

@@ -1,8 +1,9 @@
-"""The agent app chosen by ``BOOLEY_AGENT_APP=auto``, published once per Sandbox start.
+"""The agent apps chosen by ``BOOLEY_AGENT_APP=auto``, published once per Sandbox start.
 
 The in-Sandbox registrar (``booley.harness.incontainer_register``) inspects the
-visitor's credentials at every start and publishes its choice as a record in the
-Sandbox home directory. Every other consumer reads that record through
+visitor's credentials at every start and publishes its choice (every CLI with a
+credential, and the default among them) as a record in the Sandbox home
+directory. Every other consumer reads that record through
 :func:`auto_choice`; none of them looks at credentials again, so Specialists,
 the MCP server, ``booley chat`` and Doctor cannot disagree with the
 registration. The config layer cannot look up credentials itself (it may not
@@ -20,7 +21,7 @@ from booley.config import agent
 
 AGENT_APP_ENV = "BOOLEY_AGENT_APP"
 AUTO_APP = "auto"
-_RECORD_SCHEMA = 1
+_RECORD_SCHEMA = 2
 _REGISTRAR_HOOK = "python -m booley.harness.incontainer_register"
 
 
@@ -30,11 +31,15 @@ class AgentAppError(agent.BackendConfigError):
 
 @dataclass(frozen=True)
 class AgentAppChoice:
-    """One start's resolution: the app, the ``BOOLEY_PRIMARY_AUTH`` policy, and why."""
+    """One start's resolution: the default app, every allowed CLI, the policy, and why.
+
+    ``clis`` lists every allowed Agent CLI, the default ``app`` first.
+    """
 
     app: str
     policy: str | None
     reason: str
+    clis: tuple[str, ...]
 
 
 def record_path() -> Path:
@@ -47,6 +52,7 @@ def encode(choice: AgentAppChoice) -> bytes:
     document = {
         "schema": _RECORD_SCHEMA,
         "app": choice.app,
+        "clis": list(choice.clis),
         "policy": choice.policy,
         "reason": choice.reason,
     }
@@ -84,9 +90,15 @@ def auto_choice() -> AgentAppChoice | None:
     if not isinstance(document, dict) or document.get("schema") != _RECORD_SCHEMA:
         raise AgentAppError(unresolved)
     try:
-        return AgentAppChoice(document["app"], document["policy"], document["reason"])
-    except KeyError as exc:
+        choice = AgentAppChoice(
+            document["app"], document["policy"], document["reason"], tuple(document["clis"])
+        )
+    except (KeyError, TypeError) as exc:
         raise AgentAppError(unresolved) from exc
+    # The default leads the set, and the set names only real CLIs.
+    if choice.clis[:1] != (choice.app,) or not set(choice.clis) <= set(agent.AGENT_CLIS):
+        raise AgentAppError(unresolved)
+    return choice
 
 
 def resolved_app(fallback: str | None) -> str | None:

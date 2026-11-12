@@ -1978,3 +1978,168 @@ def test_handwritten_gateway_start_leaves_claude_settings_alone(first_run, tmp_p
 
     assert "env" not in _claude_settings(first_run.home)
     assert not reg.codex_config_path(first_run.home).exists()
+
+
+# ===========================================================================
+# Every allowed Agent CLI is registered, each under its own policy (#2756)
+# ===========================================================================
+
+
+def _multi_cli_start(first_run, tmp_path, monkeypatch, *, app, record, primary_auth):
+    """A container start of the registrar hook with *record* and *primary_auth*.
+
+    ``record=None`` is a hand-written spec. No gateway values are exported, so a
+    ``gateway`` policy is judged only by what the registrar writes.
+    """
+    _gateway_start(first_run, tmp_path, monkeypatch, app=app, record=record, gateway_values=False)
+    if primary_auth is None:
+        monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
+    else:
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", primary_auth)
+
+
+def _booley_mcp_entries(home):
+    """Which CLIs carry the ``booley`` MCP entry in *home*'s user config."""
+
+    def has_entry(read, key):
+        try:
+            return "booley" in read(home).get(key, {})
+        except (OSError, ValueError):  # a missing or deliberately broken config has no entry
+            return False
+
+    return {
+        "claude": has_entry(_claude_config, "mcpServers"),
+        "codex": has_entry(_codex_config, "mcp_servers"),
+    }
+
+
+def test_issued_sandbox_registers_every_listed_cli(first_run, tmp_path, monkeypatch, capsys):
+    require_symlinks(tmp_path)
+    src = TestSkills._fake_skills(tmp_path, ["booley-a"])
+    TestSkills._patch_src(monkeypatch, src)
+    _multi_cli_start(
+        first_run,
+        tmp_path,
+        monkeypatch,
+        app="claude",
+        record="claude=auto,codex=auto",
+        primary_auth="auto",
+    )
+
+    entry.main()
+
+    assert _booley_mcp_entries(first_run.home) == {"claude": True, "codex": True}
+    assert (first_run.home / ".claude" / "skills" / "booley-a").exists()
+    assert (first_run.home / ".agents" / "skills" / "booley-a").exists()
+    err = capsys.readouterr().err
+    assert "claude:written" in err
+    assert "codex:written" in err
+
+
+@pytest.mark.parametrize("default", ["claude-default", "codex-default"])
+def test_each_listed_cli_applies_its_own_recorded_policy(
+    first_run, tmp_path, monkeypatch, capsys, default
+):
+    if default == "claude-default":
+        # Codex's API-key policy must not be judged under the default's subscription policy.
+        _multi_cli_start(
+            first_run,
+            tmp_path,
+            monkeypatch,
+            app="claude",
+            record="claude=subscription,codex=api_key",
+            primary_auth="subscription",
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_CODEX_KEY")
+    else:
+        # Claude's subscription login must be found although the default is on the gateway.
+        _multi_cli_start(
+            first_run,
+            tmp_path,
+            monkeypatch,
+            app="codex",
+            record="codex=gateway,claude=subscription",
+            primary_auth="gateway",
+        )
+        login = first_run.home / ".claude" / ".credentials.json"
+        login.parent.mkdir()
+        login.write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": "SYNTHETIC_ACCESS"}}), encoding="utf-8"
+        )
+
+    entry.main()
+
+    assert "refused" not in capsys.readouterr().err
+    if default == "claude-default":
+        auth_path = reg.codex_auth_path(first_run.home)
+        assert auth_path.exists()
+        assert json.loads(auth_path.read_text(encoding="utf-8")) == {
+            "OPENAI_API_KEY": "SYNTHETIC_CODEX_KEY"
+        }
+    else:
+        assert reg.claude_config_path(first_run.home).exists()
+        assert _claude_config(first_run.home)["hasCompletedOnboarding"] is True
+
+
+@pytest.mark.parametrize("broken", ["claude", "codex"])
+def test_one_cli_refusal_leaves_the_other_registered(
+    first_run, tmp_path, monkeypatch, capsys, broken
+):
+    _multi_cli_start(
+        first_run,
+        tmp_path,
+        monkeypatch,
+        app="claude",
+        record="claude=auto,codex=auto",
+        primary_auth="auto",
+    )
+    doctor_runs = []
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: doctor_runs.append(1) or "current")
+    if broken == "claude":
+        reg.claude_config_path(first_run.home).write_text("{not json", encoding="utf-8")
+    else:
+        codex_path = reg.codex_config_path(first_run.home)
+        codex_path.parent.mkdir()
+        codex_path.write_text("broken = [", encoding="utf-8")
+    other = "codex" if broken == "claude" else "claude"
+
+    with pytest.raises(SystemExit) as raised:
+        entry.main()
+
+    assert raised.value.code == 1
+    assert doctor_runs == [1]
+    assert _booley_mcp_entries(first_run.home)[other] is True
+    err = capsys.readouterr().err
+    assert f"registration refused: {broken}:" in err
+    assert f"{broken}:refused" in err
+    assert f"{other}:written" in err
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        ("claude", None, None),
+        ("codex", None, None),
+        ("codex", "codex=auto", "auto"),
+    ],
+    ids=["handwritten-claude", "handwritten-codex", "issued-codex"],
+)
+def test_single_cli_sandbox_registers_only_that_cli(
+    first_run, tmp_path, monkeypatch, capsys, spec
+):
+    """Guard: a Sandbox allowing one CLI registers it alone and prints no set suffix."""
+    app, record, primary_auth = spec
+    _multi_cli_start(
+        first_run, tmp_path, monkeypatch, app=app, record=record, primary_auth=primary_auth
+    )
+
+    entry.main()
+
+    expected = {"claude": False, "codex": False}
+    expected[app] = True
+    assert _booley_mcp_entries(first_run.home) == expected
+    err = capsys.readouterr().err
+    assert re.search(rf"(?<![-\w]){app}:written", err)
+    other = "codex" if app == "claude" else "claude"
+    assert not re.search(rf"(?<![-\w]){other}:", err)
+    assert "clis:" not in err
