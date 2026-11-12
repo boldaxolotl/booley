@@ -396,6 +396,8 @@ or keeping alive, and any state can be read with `ls` and `cat`. The cost is
 that atomic renames and lock files are the concurrency primitives, and they
 take care to get right. That trade fits Booley's scale: one human per Project.
 
+## Common and Checkout Booley State
+
 A Project's Booley Directory splits into two kinds of state. Common Booley
 State, which every checkout shares (Session and Job coordination, Goal
 Records, Project-wide records and evidence, shared caches), lives only in the
@@ -408,15 +410,17 @@ path; the path-by-path split is in
 
 ## Security & Trust Model
 
-Booley treats Developer Agent behavior as untrusted, whether it comes from
-error or adversarial input. Developer Agents, MCP tools, Flows, and EDA
-processes run inside the Sandbox with no host command channel. The container
-gets the Project Root, its Booley Directory, linked worktrees, and explicitly
-authorized resources; it has no host home directory, SSH keys, Docker
-socket, or host EDA configuration. An `.ssh` directory holding only
-`authorized_keys` grants inbound access to the Sandbox, not host authority. It runs as a non-root user with all capabilities dropped,
-`no-new-privileges`, and a PID limit. A memory limit applies only when the
-Project sets `[sandbox].memory`.
+Booley treats Developer Agent behavior as untrusted, whether it comes from error
+or adversarial input. Developer Agents, MCP tools, Flows, and EDA processes run
+inside the Sandbox with no host command channel. The container gets the Project
+Root, its Booley Directory, linked worktrees, and explicitly authorized
+resources; it has no host home directory, SSH keys, Docker socket, or host EDA
+configuration. A real `.ssh` directory holding only a regular `authorized_keys`
+that is not mounted from the host grants inbound access to the Sandbox, not host
+authority; a mounted or symlinked one is host authority, and Doctor FAILs on it.
+It runs as a non-root user with all capabilities dropped, `no-new-privileges`,
+and a PID limit. A memory limit applies only when the Project sets
+`[sandbox].memory`.
 
 Network egress belongs to the whole Sandbox; there is no per-Flow network
 boundary. By default every process in the Sandbox, EDA tools included, reaches

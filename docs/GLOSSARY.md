@@ -49,8 +49,8 @@ The coding-agent program an agent runs on: Claude Code (`claude`) or Codex (`cod
 _Avoid_: agent app, provider (in user-facing text)
 
 **Sandbox**:
-The isolated environment, one per opened project folder, where all Booley work executes. It owns file access, shell, git, EDA subprocesses, MCP servers, logs, and secrets; the host may add read-only EDA files and license access, never execution authority. Its **Sandbox Policy**, the isolation rules all that work shares, covers mounts, credentials, memory, process limits, capabilities, and egress, default-deny outside an Unproxied Sandbox. Docker is the default implementation.
-_Avoid_: Session Runtime, Session Container, Docker Session, MCP sandbox, per-Flow network policy
+The isolated environment, one per opened project folder, where all Booley work executes. It owns file access, shell, git, EDA subprocesses, MCP servers, logs, and secrets; the host may add read-only EDA files and scoped license connectivity, never execution authority. Its **Sandbox Policy**, the shared isolation rules, covers mounts, credentials, memory, process limits, capabilities, and egress, default-deny outside an Unproxied Sandbox. Docker by default.
+_Avoid_: Session Runtime, Session Container, Docker Session, MCP sandbox; per-Flow network policy (for Sandbox Policy)
 
 **Sandbox Image**:
 The reusable immutable filesystem and installed-program artifact from which **Sandboxes** are created. A Project selects either a Booley-owned image, an automatically named Project-derived image, or an explicitly external image; a mutable tag is only a locator and is not the Sandbox Image's identity.
@@ -93,7 +93,7 @@ One approved change to a Goal of an active Goal Mode: add, relax, retarget, or w
 _Avoid_: amendment, Ticket Amendment, waiver request, criteria edit; audit log (for the Change Log)
 
 **Protected Input**:
-A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration, `booley.toml`, hooks, generators, Custom Flow code, and files the Project lists in `[project].protected_inputs` ([full list](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
+A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration, `booley.toml`, hooks, generators, Project MCP tool code under `mcp_tools`, and files the Project lists in `[project].protected_inputs` ([full list](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
 _Avoid_: frozen file, locked config, Scope
 
 **Review Package**:
@@ -138,7 +138,7 @@ _Avoid_: repo, workspace
 
 **Booley Directory**:
 Where Booley keeps everything for a **Project**: configuration, Goalsets, Goal Records, evidence, logs, and worktrees; by default `.booley/` at the **Project Root**. **Common Booley State**, what all checkouts share, lives only in the **Main Booley Directory**; **Checkout Booley State** belongs to one checkout (its versioned configuration, build trees and reports). A linked worktree's **Worktree Booley Directory** holds only the latter.
-_Avoid_: Project directory, Project dir, Project data, state dir; global state, worktree state, session Project (for parts)
+_Avoid_: Project directory, Project dir, Project data, state dir; global state, worktree state (for Common or Checkout Booley State)
 
 **Project Root**:
 The top directory of a **Project**'s codebase checkout, and the default home of its **Booley Directory**.
@@ -168,7 +168,7 @@ The host-owned catalog of canonical Project paths and their **Project Grants**, 
 _Avoid_: Project registry, workspace list, filesystem scan
 
 **License Profile**:
-A host-owned record of one approved commercial-license topology: its fixed server identity, literal upstream address, and license-manager ports. A **Project Grant** authorizes it for one Project Root and EDA kind; Project configuration never selects one. A Sandbox reaches the server through a **FlexNet License Relay**, a fixed-destination raw-TCP gateway, by its **FlexNet SERVER Host Identifier**, the exact name the license manager advertises, not an IP or DNS name.
+A host-owned record of one approved commercial-license topology: its fixed server identity, literal upstream address, and license-manager ports. A **Project Grant** authorizes it for one Project Root and EDA kind; Project configuration never selects one. A Sandbox reaches the server via a **FlexNet License Relay**, a fixed-destination raw-TCP gateway, by its **FlexNet SERVER Host Identifier**, the name the license manager advertises, not an IP address or DNS lookup name.
 _Avoid_: project license config, license server setting; license proxy, server hostname (for the relay)
 
 **Project Grant**:
@@ -206,8 +206,8 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional capability the **Developer Agent** invokes for one delegated task, with fresh context and no history: the Reviewer, the [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md), and the model-free **Mutation Tester** ([list](user/CLI-REFERENCE.md#booley-flows--specialists)). Under **Specialist Source Isolation**, one that judges one side of the RTL/testbench divide cannot see the other side's sources, so it reads the spec independently of the code it judges.
-_Avoid_: agentic MCP tool, agent, worker; optional blindness, reviewer independence (for source isolation)
+An optional capability the **Developer Agent** invokes for one task, with fresh context and no history: the Reviewer, the [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md), and the model-free **Mutation Tester** ([list](user/CLI-REFERENCE.md#booley-flows--specialists)). Under **Specialist Source Isolation**, one that judges one side of the RTL/testbench divide cannot see the other side's sources, so it reads the spec independently of the code it judges.
+_Avoid_: agentic MCP tool, agent, worker; optional blindness, reviewer independence (for Specialist Source Isolation)
 
 **Custom Flow**:
 A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence for declared Goals. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
@@ -240,7 +240,7 @@ One **Test Variant** simulated with one seed, written `test+variant@seed`: `test
 _Avoid_: run (bare), iteration, seed run, QA Run; random seed (for the Default Seed)
 
 **Simulation Record**:
-The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**, with the strict aggregate outcome of all selected work; an explicit resume continues it later. It may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md). Code, messages and formats say "campaign" until [#2711](https://github.com/boldaxolotl/booley/issues/2711); Goal-side names keep it ([ADR 0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md)).
+The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**, with the strict aggregate outcome of all selected work; an explicit resume continues it later. It may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md). Code, messages, formats and docs say "campaign" until [#2711](https://github.com/boldaxolotl/booley/issues/2711); Goal-side names keep it ([ADR 0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md)).
 _Avoid_: Simulation Campaign, campaign, regression run, test batch
 
 **Simulator Bundle**:
@@ -262,7 +262,7 @@ _Avoid_: regex, marker, exit-code-only verdict
 ### Presentation
 
 **Booley Dashboard**:
-The terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, Targets, and health signals in that Sandbox, from which a human can also launch Booley Flows as Standalone Jobs. Its **Session activity** is what a session's agent client last reported through lifecycle hooks (working, waiting for tool call, or waiting for user input), or unknown; it is never inferred from Booley calls or Jobs.
+The terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, Targets, and health signals in that Sandbox, from which a human can also launch Booley Flows as Standalone Jobs. Its **Session activity** is what a session's agent client last reported through lifecycle hooks (working, waiting for tool call, or waiting for user input), or unknown when nothing fresh was reported; it is never inferred from Booley calls or Jobs.
 _Avoid_: control room, console, monitor; session status, session state (for Session activity)
 
 ## Execution and evidence
@@ -296,7 +296,7 @@ A Reviewer focus that a Target declares in `reviews.toml` for one source role (R
 _Avoid_: review kind, review type, Review Goal
 
 **Reviewed Commit**:
-A commit on which a verify **Review Run**, one stored run of its Declared Reviews (the discovery pass over changes since the **Base**, or the verify pass re-checking open findings), left no finding open at or above their threshold. It is not reproducible, never gates CI, and is independent of being a **Measured Commit**.
+A commit on which a verify **Review Run**, one stored run of its Declared Reviews (the discovery pass over changes since the **Base**, or the verify pass re-checking open findings), left no finding open at or above the Declared Reviews' threshold. It is not reproducible, never gates CI, and is independent of being a **Measured Commit**.
 _Avoid_: approved commit, signed-off commit, clean review; review session, review receipt (for a Review Run)
 
 ## Retired and ambiguous terminology

@@ -19,7 +19,7 @@ malfunction), `qa-bug` (a defect in the QA mission or its inputs), or `wish`
 (a desired improvement); its missions collect no general Impressions. A
 Public QA Finding also records severity, reproduction, expected and actual
 behavior, any workaround, and local evidence.
-_Avoid_: issue, Ticket, defect report; minor bug, nitpick, UX bug (for a Friction Report); feature request, rating, testimonial (for an Impression); success, pass (for a Win)
+_Avoid_: issue, Ticket, defect report; minor bug, nitpick, UX bug (for a Friction Report); feature request, review, rating, testimonial (for an Impression); success, pass (for a Win)
 
 **Findings Log**:
 The durable collection of Findings for one Project or Booley source checkout.

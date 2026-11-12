@@ -1,9 +1,10 @@
 # Goal Mode glossary
 
-This is the vocabulary for the inside of one Goal Mode: how its Goals are
-bound to a worktree and to the runs that produce their evidence. It is for contributors working on `booley.goals` and the evidence
-path. [ADR 0092](../../../docs/adr/0092-measure-commits-against-target-metrics.md)
-removes Goal Mode in 0.5.0, and this vocabulary retires with it.
+This is the vocabulary for the inside of one Goal Mode: how its Goals are bound
+to a worktree and to the runs that produce their evidence. It is for
+contributors working on `booley.goals` and the evidence path. [ADR
+0092](../../../docs/adr/0092-measure-commits-against-target-metrics.md) removes
+Goal Mode in 0.5.0, and this vocabulary retires with it.
 
 **Goal Mode**, **Goal**, **Goalset**, **Goal Branch**, **Goal Record**,
 **Goal Change**, **Goal Change Proposal**, **Change Log**, **Protected Input**,
