@@ -134,15 +134,8 @@ def test_base_on_another_branch_is_normalized_to_the_merge_base_naming_both_comm
     assert own.commit is None  # a descendant --base leaves the commit as its own base
 
 
-@pytest.mark.parametrize(
-    ("requested", "message"),
-    [
-        pytest.param("no-such-revision", "not a commit", id="not-a-commit"),
-        pytest.param("unrelated", "shares no history", id="no-shared-history"),
-    ],
-)
 def test_base_that_is_not_a_commit_or_shares_no_history_is_an_error_naming_it(
-    tmp_path: Path, requested: str, message: str
+    tmp_path: Path,
 ) -> None:
     from booley.measurement.base import BaseError, resolve_base
 
@@ -153,8 +146,12 @@ def test_base_that_is_not_a_commit_or_shares_no_history_is_an_error_naming_it(
     write(repo / "other.v", "other\n")
     commit_all(repo, "unrelated root")
 
-    with pytest.raises(BaseError, match=rf"--base {requested}: {message}"):
-        resolve_base(repo, head, requested=requested)
+    for requested, message in (
+        ("no-such-revision", "not a commit"),
+        ("unrelated", "shares no history"),
+    ):
+        with pytest.raises(BaseError, match=rf"--base {requested}: {message}"):
+            resolve_base(repo, head, requested=requested)
 
 
 def test_file_changed_only_on_the_default_branch_after_the_fork_is_not_listed(
