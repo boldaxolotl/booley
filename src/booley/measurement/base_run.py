@@ -4,9 +4,16 @@ Contract for the caller (``booley measure``, #3507; rendering and ``--json`` are
 compute :func:`base_run_view` at read time from the head run's stored document and the
 resolved :class:`~booley.measurement.base.Base`. The view is derived, never stored, and
 it never feeds a verdict, ``is_measured``, the header state or the exit code: it only
-reads the store and the head document, and it never starts a run. An unreadable stored
-document is reported in :attr:`BaseRunView.problem` instead of raised, so a base run
-can never change what the measured commit's own run decided.
+reads the store and the head document, and it never starts a run. A stored document
+the store cannot load (unreadable, unknown schema) is reported in
+:attr:`BaseRunView.problem` instead of raised. The documents are trusted past that check
+because Booley wrote them: the head document must come from the running Booley (a renamed
+metric or Flow would fail the lookup), and per-test rows need rules resolved against a
+checkout (``test_run`` set), else they read "no base value".
+
+``tests_total`` is compared for every paired table, so when it is also a reported metric
+a drop appears both in :attr:`BaseRunView.worsened` and in
+:attr:`BaseRunView.tests_dropped`; the renderer (#3505) may merge the two.
 
 A base run is the latest stored run of the Base's project tree, whatever its rules tree
 or status, so an unmet, errored or stopped base run still gives Δ and warnings.
@@ -26,7 +33,7 @@ from booley.measurement.flow_metrics import metric_declarations
 from booley.measurement.run_store import MeasurementStore, MeasurementStoreError
 from booley.runtime.pinned_history import raw_git
 
-TESTS_TOTAL = "tests_total"
+_TESTS_TOTAL = "tests_total"
 
 
 class NoDelta(StrEnum):
@@ -169,8 +176,8 @@ def _tests_dropped(
         base_table = base_tables.get(target_flow)
         if base_table is None or table["values"] is None or base_table["values"] is None:
             continue
-        total = table["values"]["plain"].get(TESTS_TOTAL)
-        base_total = base_table["values"]["plain"].get(TESTS_TOTAL)
+        total = table["values"]["plain"].get(_TESTS_TOTAL)
+        base_total = base_table["values"]["plain"].get(_TESTS_TOTAL)
         if total is not None and base_total is not None and total < base_total:
             dropped.append(TestsDropped(table["identity"], table["flow"], base_total, total))
     return tuple(dropped)
@@ -193,6 +200,7 @@ def _toolchain_changes(head: Mapping[str, Any], base: Mapping[str, Any]) -> tupl
 
 
 def _without_base_run(head: Mapping[str, Any], why: NoDelta) -> tuple[MetricDelta, ...]:
+    """One Δ-less row per head result, all for the same reason *why*."""
     return tuple(
         MetricDelta(row.identity, row.flow, row.key, row.value, None, None, why)
         for row in _head_rows(head)
@@ -257,17 +265,42 @@ def base_run_view(
     """
     if base.commit is None:
         return BaseRunView(
-            None, None, None, None, _without_base_run(head, NoDelta.NO_BASE), (), (), ()
+            base=None,
+            base_run_id=None,
+            command=None,
+            problem=None,
+            deltas=_without_base_run(head, NoDelta.NO_BASE),
+            worsened=(),
+            tests_dropped=(),
+            toolchain_changes=(),
         )
     tree = raw_git(repository, "rev-parse", "--verify", f"{base.commit}^{{tree}}")
     try:
         run = store.base_run(tree.decode("ascii").strip())
     except MeasurementStoreError as error:
         deltas = _without_base_run(head, NoDelta.NO_BASE_RUN)
-        return BaseRunView(base.commit, None, None, str(error), deltas, (), (), ())
+        return BaseRunView(
+            base=base.commit,
+            base_run_id=None,
+            command=None,
+            problem=str(error),
+            deltas=deltas,
+            worsened=(),
+            tests_dropped=(),
+            toolchain_changes=(),
+        )
     if run is None:
         deltas = _without_base_run(head, NoDelta.NO_BASE_RUN)
         command = f"booley measure --all {base.commit}"
-        return BaseRunView(base.commit, None, command, None, deltas, (), (), ())
+        return BaseRunView(
+            base=base.commit,
+            base_run_id=None,
+            command=command,
+            problem=None,
+            deltas=deltas,
+            worsened=(),
+            tests_dropped=(),
+            toolchain_changes=(),
+        )
     compared = _compare(head, run.document)
     return replace(compared, base=base.commit, base_run_id=run.run_id)

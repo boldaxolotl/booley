@@ -306,12 +306,26 @@ def test_tests_total_drop_is_warned_even_when_not_reported(world: World) -> None
     head_tables = (
         table("sim", 8),  # dropped
         table("coverage", 12),  # grew
+        Table(  # same total: not a drop
+            "sim",
+            (Entry("tests_failed", "tests_failed", 0),),
+            values({"tests_total": 5}),
+            "acme:core:1.0#other",
+            "other",
+        ),
         Table("fpga", (Entry("x", "lut_count", 0),), values({"tests_total": 1})),  # no base total
         Table("synth", (Entry("cell_count", "cell_count", 1),), None),  # head values null
     )
     base_tables = (
         table("sim", 10),
         table("coverage", 10),
+        Table(
+            "sim",
+            (Entry("tests_failed", "tests_failed", 0),),
+            values({"tests_total": 5}),
+            "acme:core:1.0#other",
+            "other",
+        ),
         Table("fpga", (Entry("x", "lut_count", 0),), values()),
         Table("synth", (Entry("cell_count", "cell_count", 1),), values({"tests_total": 3})),
     )
