@@ -15,13 +15,14 @@ from booley.flows.sim.campaign import (
     collect_pre_sim_firings,
     resolve_report_artifact_reference,
 )
+from booley.flows.sim.campaign_presentation import _coverage_request_selector
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
     resolve_coverage_campaign_reference,
 )
 from booley.flows.sim.execution.contract import SimulationOptions
-from booley.flows.sim.flow import SimulateFlow, _coverage_request_selector
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.mcp.flow_adapter import flow_schema
@@ -911,7 +912,7 @@ def test_fatal_coverage_failure_lists_completed_campaigns(tmp_path, monkeypatch)
 
 
 def test_unmatched_coverage_failure_lists_completed_campaigns(tmp_path, monkeypatch):
-    from booley.flows.sim import flow as sim_flow
+    from booley.flows.sim import campaign_presentation as sim_flow
 
     monkeypatch.setattr(sim_flow, "_campaign_structured_details", lambda *_args: {})
     finished = SimpleNamespace(
@@ -1313,6 +1314,7 @@ def _prepare_coverage_origin(tmp_path, monkeypatch, *, skipped=()):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     revision = "a" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
+    monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: revision)
     monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
     project(tmp_path)
     data = tmp_path / ".booley"
@@ -1955,6 +1957,7 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary, *, no_waivers=F
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     revision = "b" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
+    monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: revision)
     monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
     project(tmp_path)
     data = tmp_path / ".booley"
@@ -2112,7 +2115,9 @@ def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeyp
     def fail_reference(*_args, **_kwargs):
         raise OSError("injected report reference failure")
 
-    monkeypatch.setattr("booley.flows.sim.flow._report_artifact_reference", fail_reference)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign_presentation._report_artifact_reference", fail_reference
+    )
     resumed = SimulateFlow(
         coverage_execution=execution_factory,
         campaign_publication_checkpoint=checkpoint,
@@ -2144,7 +2149,9 @@ def test_unreadable_publication_evidence_preserves_simulation_truth(
     def unreadable(*_args, **_kwargs):
         raise OSError("nested coverage evidence unreadable")
 
-    monkeypatch.setattr("booley.flows.sim.flow.load_coverage_campaign", unreadable)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign_presentation.load_coverage_campaign", unreadable
+    )
     if resumed:
 
         def checkpoint(boundary):
@@ -2187,7 +2194,9 @@ def _run_with_retention_reference_failure(monkeypatch, request, execution=None):
         return resolve_coverage_campaign_reference(public)
 
     with monkeypatch.context() as patch:
-        patch.setattr("booley.flows.sim.flow.resolve_coverage_campaign_reference", fail_once)
+        patch.setattr(
+            "booley.flows.sim.campaign_presentation.resolve_coverage_campaign_reference", fail_once
+        )
         return SimulateFlow(
             coverage_execution=lambda *_args: execution or NativeExecution()
         ).execute(request)
@@ -2974,7 +2983,7 @@ def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_pa
 
 
 def _observe_pre_sim_projection(monkeypatch):
-    from booley.flows.sim import flow as flow_module
+    from booley.flows.sim import campaign_presentation as flow_module
     from booley.flows.sim.campaign import pre_sim_evidence
 
     reads = {"manifest": 0, "preview": 0, "decoder_manifest": 0}
@@ -3186,6 +3195,7 @@ def _linked_coverage_project(tmp_path, monkeypatch):
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     revision = "a" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
+    monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: revision)
     monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
     root = tmp_path / "project"
     (root / ".git").mkdir(parents=True)

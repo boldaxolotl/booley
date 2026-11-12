@@ -1582,10 +1582,11 @@ def _sim_mcp_tool_timeout_seconds(
     from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
     from booley.flows.sim.config import (
         resolve_sim_build_timeout_ms,
+        resolve_sim_timeout_ms,
         resolve_sim_trace_convert_timeout_ms,
     )
-    from booley.flows.sim.flow import resolve_sim_campaign_work_units, resolve_sim_timeout_ms
     from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
+    from booley.flows.sim.watchdog_sizing import resolve_sim_campaign_work_units
 
     work_dir = context.work_dir
     requested = requested_timeout_ms(arguments)

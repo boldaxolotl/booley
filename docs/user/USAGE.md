@@ -253,9 +253,16 @@ The Dashboard has three windows; press `←` or `→` to switch:
   worktree: those with a connected session come first, the main checkout last.
 
 The **Run** item in the top bar starts a built-in Booley Flow as a Standalone
-Job. Pick the worktree, the Flow, and its arguments (the Project comes from the
-worktree, so `-C`, `--project`, and `--work-dir` are refused); the Dashboard
-checks them and shows the equivalent `cd … && booley flow …` command. **Submit**
+Job. Pick the worktree and the Flow, then fill in the form the Dashboard
+builds from that Flow's options (the Project comes from the worktree, so `-C`,
+`--project`, and `--work-dir` are never offered). Each Common and Flow option is
+a field: `Enter` flips an on/off flag, opens a short list for an option with
+choices or a default/on/off pair, or opens a text editor (the Target field takes
+a Target name or a comma list, empty means automatic; the test field takes one
+Test Run). Output and Expert options go in the **Extra arguments** field, typed
+as on the command line. `Esc` in a list or editor drops the change, `Enter`
+keeps it. **Review the command** checks it and shows the equivalent
+`cd … && booley flow …` command. **Submit**
 starts the Job, **Copy command** asks your terminal to copy the command instead.
 The Jobs window then opens on All sessions with the new Job selected; a
 Finished filter switches to Running, which keeps the Job listed after it

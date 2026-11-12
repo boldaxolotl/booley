@@ -28,9 +28,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   `--regen-lock` are removed, and the mutation lock is no longer used.
 
 - The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
-  as a Standalone Job: choose the worktree, the Flow, and its arguments, check
-  the equivalent shell command, then submit or copy it. The Jobs window opens
-  with the new Job selected. The Dashboard is no longer read-only.
+  as a Standalone Job: choose the worktree and the Flow, fill in a form generated
+  from the Flow's options, check the equivalent shell command, then submit or
+  copy it. The Jobs window opens with the new Job selected. The Dashboard is no
+  longer read-only.
 - Job resource history keeps the newest 20 runs per Target, Job phase, flags,
   and Test Run with no overall cap, and deletes a group that has had no run in
   90 days. Peak memory now includes processes forked by any thread of a Job
