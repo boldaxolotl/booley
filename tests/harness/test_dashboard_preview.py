@@ -187,6 +187,25 @@ async def test_interactive_session_preview_lists_fields_and_only_unfinished_jobs
 
 
 @pytest.mark.asyncio
+async def test_preview_shows_the_session_title():
+    # Bug caught: the preview's first line showed only the handle for a named session.
+    rows = [session_row(0, "wt0"), session_row(1, "wt1")]
+    current = replace(
+        snapshot_of(rows),
+        session_titles={"codex:00": "S1 \u00b7 uart-fix", "codex:01": "S2"},
+    )
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(130, 30)) as pilot:
+        await pilot.pause()
+        move_to(app, "codex:00")
+        await pilot.pause()
+        assert detail_text(app).startswith("S1 \u00b7 uart-fix \u00b7 Interactive")
+        move_to(app, "codex:01")
+        await pilot.pause()
+        assert detail_text(app).startswith("S2 \u00b7 Interactive")
+
+
+@pytest.mark.asyncio
 async def test_goal_mode_session_preview_has_one_line_goal_summary():
     rows = [session_row(0, "wt0", work_dir="/work/a", branch="goal/fixture")]
     goal = goal_view("wt0", "active", met=2, goals=(0,) * 5, pending_proposals=1)

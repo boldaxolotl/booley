@@ -42,11 +42,12 @@ SESSION, MODE, BRANCH, WORK_DIR, STARTED, ACTIVITY = range(6)
 LABELS = ("Session", "Mode", "Branch", "Work dir", "Started", "Activity")
 GAP = 2
 #: Narrowest a column is squeezed before columns drop; Activity is cut last, below 40 cells.
-_FLOORS = {BRANCH: 8, WORK_DIR: 10, ACTIVITY: 40}
+#: A long ``--name`` title is cut at the Session floor rather than pushing Branch out.
+_FLOORS = {SESSION: 12, BRANCH: 8, WORK_DIR: 10, ACTIVITY: 40}
 #: Columns that disappear when the list is too narrow, first to go first.
 DROP_ORDER = (STARTED, WORK_DIR, BRANCH)
 #: Spare width is handed out in this order, each up to the column's natural width.
-GROW_ORDER = (ACTIVITY, BRANCH, WORK_DIR)
+GROW_ORDER = (SESSION, ACTIVITY, BRANCH, WORK_DIR)
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,10 @@ class SessionFacts:
     """What one overview row needs to know about a connected session."""
 
     key: str
+    #: The bare ``S3`` handle; ordering uses its number.
     handle: str
+    #: What the row shows: ``S3 · uart-fix`` for a named session, else the handle.
+    title: str
     #: ``Interactive``, ``Goal m/n``, or ``Goal`` when Goal status is unavailable.
     mode: str
     branch: str
@@ -214,7 +218,7 @@ def build(
             (
                 facts.key,
                 (
-                    facts.handle,
+                    facts.title,
                     facts.mode,
                     facts.branch or ABSENT,
                     facts.work_dir or ABSENT,

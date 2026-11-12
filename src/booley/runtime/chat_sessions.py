@@ -38,18 +38,20 @@ def reserve_codex_chat(
     *,
     wait_s: float | None = None,
     predecessors: tuple[str, ...] = (),
+    name: str | None = None,
 ) -> str:
     """Reserve the tab's handle and mark this process as a Booley Codex launch.
 
     *wait_s* bounds the wait for the Session writer lock; ``None`` fails on contention.
     A resumed tab passes the earlier tab's keys as *predecessors* and keeps its handle.
+    *name* labels the Session; ``None`` keeps a stored label.
     """
     key = process_session_key(identity)
     marker = "chat:codex:" + key
     with session_writer(booley_dir, wait_s=wait_s):
         store = HandleStore(booley_dir)
         handles = store.load()
-        label = handles.reserve(key, "S", predecessors=predecessors or (marker,))
+        label = handles.reserve(key, "S", predecessors=predecessors or (marker,), name=name)
         # Ownership checks compare the marker with the key itself; with a predecessor the key
         # is an alias of the old entry, which `reserve` would otherwise point the marker at.
         handles.aliases[marker] = key

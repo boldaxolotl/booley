@@ -183,6 +183,43 @@ def test_chat_cli_option_is_booleys_only_when_leading(monkeypatch, capsys):
     assert "invalid choice: 'bogus'" in capsys.readouterr().err
 
 
+def test_chat_name_option_is_booleys_only_when_leading(monkeypatch):
+    # Bug caught: a leading `--name X` / `--name=X` not parsed into `session_name`, or `--name`
+    # after the agent's own arguments swallowed instead of forwarded.
+    args = _parse_argv(monkeypatch, "chat", "--name", "uart-fix", "--resume", "x")
+    assert (args.session_name, args.agent_args) == ("uart-fix", ["--resume", "x"])
+    args = _parse_argv(monkeypatch, "chat", "--cli", "codex", "--name=uart-fix", "resume")
+    assert (args.cli, args.session_name, args.agent_args) == ("codex", "uart-fix", ["resume"])
+    assert _parse_argv(monkeypatch, "chat").session_name is None
+    args = _parse_argv(monkeypatch, "chat", "--resume", "x", "--name", "y")
+    assert (args.session_name, args.agent_args) == (None, ["--resume", "x", "--name", "y"])
+    # `--` hands even a leading `--name` to the agent (Claude's own session name).
+    args = _parse_argv(monkeypatch, "chat", "--", "--name", "y")
+    assert (args.session_name, args.agent_args) == (None, ["--name", "y"])
+
+
+def test_chat_name_rejects_invalid_labels(monkeypatch, capsys):
+    # Bug caught: an invalid label accepted, or a failure other than a usage error (exit 2)
+    # naming `--name`.
+    for label in ["", "   ", "a/b", "x" * 33, ".hidden", "caf\u00e9", "tab\there"]:
+        with pytest.raises(SystemExit) as raised:
+            _parse_argv(monkeypatch, "chat", "--name", label)
+        assert raised.value.code == 2, repr(label)
+        assert "argument --name: use 1-32 letters" in capsys.readouterr().err, repr(label)
+
+
+def test_chat_name_missing_value_is_a_usage_error(monkeypatch, capsys):
+    with pytest.raises(SystemExit) as raised:
+        _parse_argv(monkeypatch, "chat", "--name")
+    assert raised.value.code == 2
+    assert "--name: expected one argument" in capsys.readouterr().err
+
+
+def test_chat_name_is_trimmed_and_length_bounded(monkeypatch):
+    assert _parse_argv(monkeypatch, "chat", "--name", "  uart fix  ").session_name == "uart fix"
+    assert _parse_argv(monkeypatch, "chat", "--name", "x" * 32).session_name == "x" * 32
+
+
 def test_chat_later_booley_options_are_forwarded(monkeypatch, capsys):
     """Only leading -h/-C/--project are Booley's; later ones belong to the agent."""
     for tail in (["--resume", "x", "--project", "P"], ["--resume", "x", "-C", "P"]):
@@ -217,6 +254,17 @@ def test_chat_help_documents_cli_option(monkeypatch, capsys):
     help_text = " ".join(capsys.readouterr().out.split())
     assert "--cli {claude,codex}" in help_text
     assert "must be listed in booley.toml [agent] clis" in help_text
+
+
+def test_chat_help_documents_name_option(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _parse_argv(monkeypatch, "chat", "--help")
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "[--name NAME]" in help_text
+    assert "--name NAME" in help_text
+    assert "S3 \u00b7 NAME" in help_text
+    assert "resumed in its worktree keeps its label unless --name sets a new one" in help_text
+    assert "--here and --name only before any other argument" in help_text
 
 
 def test_auth_cli_and_hidden_app_alias_parse_identically(capsys):

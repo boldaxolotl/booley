@@ -334,7 +334,7 @@ def test_baseline_allocates_before_launch_and_broken_maps_do_not_block_it(
 def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
     tmp_path_factory, monkeypatch
 ):
-    for map_state in ["allocated", "empty", "broken"]:
+    for map_state in ["allocated", "named", "empty", "broken"]:
         tmp_path = tmp_path_factory.mktemp(str(map_state))
         from booley.harness.dashboard.model import DashboardReader
 
@@ -346,6 +346,8 @@ def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
         store = handles.HandleStore(tmp_path)
         if map_state == "empty":
             store.save(handles.HandleMap())
+        elif map_state == "named":
+            store.reserve("codex:one", "S", name="uart-fix")
         elif map_state == "broken":
             store.path.write_text("broken")
         monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
@@ -366,11 +368,15 @@ def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
             assert snapshot.sessions[0].attribution.key == "codex:one", map_state
             assert snapshot.jobs.jobs[0].handle == "J-SIM1", map_state
             assert snapshot.jobs.jobs[0].owner_handle == (
-                "S1" if map_state == "allocated" else ""
+                "S1" if map_state in {"allocated", "named"} else ""
             ), map_state
             assert snapshot.session_handles == (
-                {"codex:one": "S1"} if map_state == "allocated" else {}
+                {"codex:one": "S1"} if map_state in {"allocated", "named"} else {}
             ), map_state
+            assert snapshot.session_titles == {
+                "allocated": {"codex:one": "S1"},
+                "named": {"codex:one": "S1 \u00b7 uart-fix"},
+            }.get(map_state, {}), map_state
             diagnostics = (*snapshot.diagnostics, *snapshot.jobs.diagnostics)
             assert sum("Session handles unavailable" in d for d in diagnostics) == (
                 map_state == "broken"
@@ -615,3 +621,80 @@ def test_dropping_an_entry_drops_the_marker_of_a_resumed_tab():
 
     assert handles_map.aliases == {}
     assert handles_map.entries == {"pid:other": "S2"}
+
+
+def test_session_name_is_kept_on_resume_and_replaced_by_a_new_name():
+    # Bug caught: resuming (a predecessor) dropped the label, or a new --name did not replace
+    # it; the label must live on the entry every alias of the session resolves to.
+    handles_map = handles.HandleMap()
+    handles_map.reserve("pid:old", "S", name="uart-fix")
+    assert handles_map.titles() == {"pid:old": "S1 \u00b7 uart-fix"}
+
+    handles_map.reserve("pid:new", "S", predecessors=("pid:old",))
+    assert handles_map.titles()["pid:new"] == "S1 \u00b7 uart-fix"
+    assert handles_map.names == {"pid:old": "uart-fix"}
+
+    handles_map.reserve("pid:newer", "S", predecessors=("pid:new",), name="data path")
+    assert handles_map.names == {"pid:old": "data path"}
+    assert handles_map.titles()["pid:newer"] == "S1 \u00b7 data path"
+    assert handles_map.labels()["pid:newer"] == "S1"
+
+
+def test_dropping_a_handle_drops_its_name(tmp_path):
+    # Bug caught: a stale label survived its dropped entry and showed on a reused number.
+    store = handles.HandleStore(tmp_path)
+    store.reserve("pid:one", "S", name="uart-fix")
+    store.reserve("pid:two", "S")
+    store.prune(lambda _map: {"pid:one"}, wait_s=1)
+    assert store.load().names == {}
+    assert json.loads(store.path.read_bytes())["names"] == {}
+    store.reserve("pid:three", "S")
+    assert store.load().titles() == {"pid:two": "S2", "pid:three": "S3"}
+
+
+def test_handle_map_without_names_loads_and_titles_are_handles(tmp_path):
+    # Bug caught: a map written before labels existed was rejected, or titled wrongly.
+    store = handles.HandleStore(tmp_path)
+    store.root.mkdir(parents=True)
+    legacy = {"schema": 1, "entries": {"k": "S4"}, "aliases": {"old": "k"}, "next_number": 5}
+    store.path.write_text(json.dumps(legacy))
+    assert store.load().names == {}
+    assert store.titled_snapshot() == (
+        {"k": "S4", "old": "S4"},
+        {"k": "S4", "old": "S4"},
+        (),
+    )
+    # Reading a label-less map writes nothing; a reservation without a name leaves it as is.
+    store.reserve("k", "S")
+    assert json.loads(store.path.read_text()) == legacy
+
+
+def test_non_string_names_are_diagnosed_and_never_reset(tmp_path):
+    # Bug caught: bad labels silently dropped, or the map reset by prune/reserve.
+    store = handles.HandleStore(tmp_path)
+    store.reserve("pid:one", "S", name="uart-fix")
+    data = json.loads(store.path.read_bytes())
+    data["names"] = {"pid:one": 7}
+    store.path.write_text(json.dumps(data))
+    before = store.path.read_bytes()
+    _handles, titles, diagnostics = store.titled_snapshot()
+    assert titles == {}
+    assert "Session handles unavailable" in diagnostics[0]
+    with pytest.raises(ValueError, match="strings"):
+        store.reserve("pid:two", "S", name="x")
+    with pytest.raises(ValueError, match="strings"):
+        store.prune(lambda _map: {"pid:one"}, wait_s=1)
+    assert store.path.read_bytes() == before
+    store.path.write_text(json.dumps({**data, "names": ["not", "a", "dict"]}))
+    assert store.titled_snapshot()[2]
+
+
+def test_launched_title_reads_the_stored_label_and_falls_back_to_the_given_name(tmp_path):
+    # Bug caught: a resumed launch without --name showed the bare handle, or an unreadable
+    # map broke the launch instead of falling back.
+    handles.reserve_session_handle(tmp_path, "pid:old", name="uart-fix")
+    handles.reserve_session_handle(tmp_path, "pid:new", predecessors=("pid:old",))
+    assert handles.launched_session_title(tmp_path, "pid:new", "S1", None) == "S1 \u00b7 uart-fix"
+    handles.HandleStore(tmp_path).path.write_text("broken")
+    assert handles.launched_session_title(tmp_path, "pid:new", "S1", "x") == "S1 \u00b7 x"
+    assert handles.launched_session_title(tmp_path, "pid:new", "S1", None) == "S1"

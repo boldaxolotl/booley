@@ -95,6 +95,8 @@ class DashboardSnapshot:
     # Reported activity by session key; a session without an entry is unknown.
     activity: Mapping[str, Activity] = field(default_factory=dict)
     session_handles: Mapping[str, str] = field(default_factory=dict)
+    #: Display title per session key (``S3 · uart-fix``); read with the handles in one map read.
+    session_titles: Mapping[str, str] = field(default_factory=dict)
 
 
 def _live_baseline_comparison(goal: GoalStatus, entry: Any) -> tuple[str, ...]:
@@ -345,7 +347,7 @@ class DashboardReader:
         sessions = SessionRegistry(
             self.booley_dir, quiet_after=quiet_after(self.booley_dir)
         ).visible_snapshot(now=now, scope=namespace())
-        handles, handle_diagnostics = HandleStore(self.booley_dir).snapshot()
+        handles, titles, handle_diagnostics = HandleStore(self.booley_dir).titled_snapshot()
         store = GoalStore(self.booley_dir, lock_timeout_s=0)
         scan = store.list_records()
         goals = []
@@ -382,6 +384,7 @@ class DashboardReader:
             now,
             self._activity(sessions.rows, now),
             handles,
+            titles,
         )
 
     def _activity(self, rows: tuple[SessionRow, ...], now: float) -> dict[str, Activity]:

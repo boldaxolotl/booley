@@ -52,6 +52,7 @@ def facts(number: int, state: str = WORKING, ago: float | None = 60, **overrides
     values = {
         "key": f"codex:{number:02}",
         "handle": f"S{number}",
+        "title": f"S{number}",
         "mode": "Interactive",
         "branch": "main",
         "work_dir": f"/work/s{number}",
@@ -159,6 +160,48 @@ def test_longest_in_state_first_ties_and_unparseable_by_handle_number():
         120,
     )
     assert overview.keys[1:] == ["codex:03", "codex:02", "codex:10", "codex:04", "codex:11"]
+
+
+def test_named_session_row_shows_its_title_and_sorts_by_handle_number():
+    # Bug caught: the row showed the bare handle, or the order parsed the display title
+    # (`S10 · x` sorting before `S2`, or a named session sorting last).
+    from booley.harness.dashboard import sessions
+
+    overview = sessions.build(
+        [
+            facts(10, ago=100, title="S10 \u00b7 x"),
+            facts(2, ago=100, title="S2 \u00b7 uart-fix"),
+            facts(3, ago=100),
+        ],
+        [],
+        NOW,
+        120,
+    )
+    assert overview.keys[1:] == ["codex:02", "codex:03", "codex:10"]
+    rows = [line.plain for line in overview.rows[1:]]
+    assert rows[0].startswith("S2 \u00b7 uart-fix")
+    assert rows[1].startswith("S3 ")
+    assert rows[2].startswith("S10 \u00b7 x")
+
+
+def test_long_title_is_cut_before_other_columns_drop():
+    # Bug caught: one long label squeezed Branch out of every row, or the Activity below
+    # its 40-cell floor.
+    from booley.harness.dashboard import sessions
+
+    long_title = "S1 \u00b7 " + "a" * 32  # the longest allowed label
+    busy = facts(1, title=long_title, jobs=("\u25b6 J-SIM3 sim fifo_top_level_with_a_long_name",))
+    other = facts(2)
+    overview = sessions.build([busy, other], [], NOW, 80)
+    header, first, second = overview.header.plain, overview.rows[1].plain, overview.rows[2].plain
+    assert "Branch" in header
+    cell = first[: header.index("Mode") - 2].rstrip()
+    assert cell.startswith("S1 \u00b7 ") and cell.endswith("\u2026")
+    assert "main" in first and "main" in second
+    assert second.startswith("S2 ")
+    assert len(first[header.index("Activity") :]) == 40  # Activity keeps its floor
+    for line in overview.rows:
+        assert line.cell_len <= 80
 
 
 # --- AC3 ---------------------------------------------------------------------
