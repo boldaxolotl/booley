@@ -208,6 +208,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   `branch` points are still collected. A project that passes `--coverage-line`
   in its own `verilator_options` must add `--coverage-branch` to keep them.
   ([PR #3464](https://github.com/boldaxolotl/booley/pull/3464))
+- The egress proxy and reaper sidecars now run on Python 3.15.2 and the reaper
+  on the Docker 29.9.3 CLI; Booley rebuilds both automatically. The FlexNet
+  relay image also builds on Python 3.15.2, but an existing
+  `booley-flexnet-relay:1` image is kept: remove it with
+  `docker image rm booley-flexnet-relay:1` and the next licensed session builds
+  it again.
 
 ## 0.4.0 - 04 NOV 2026
 
