@@ -332,10 +332,12 @@ registered test `native-missing`, `native-malformed` or `native-incompatible`.
 The fixture main first runs the real simulation and coverage hook, then
 deletes its own raw file, writes a malformed record, or writes an incompatible
 header. These are controlled native inputs, not real EDA-success evidence.
-There is no stale-native case. Booley reports `COV_RAW_FILE_STALE` when an
-existing raw file fails its freshness validation (unchanged from its pre-run
-snapshot, outside the allowed roots, or not a regular file); a raw file this
-run created at its per-attempt path is fresh even with an old mtime. `native-fsm`, `native-covergroup` and `native-unknown` append a record
+There is no stale-native case, and no unsafe-file case. Booley reports
+`COV_RAW_FILE_STALE` only when a raw file is unchanged from its pre-run snapshot;
+a raw file this run created at its per-attempt path is fresh even with an old
+mtime. It reports `COV_RAW_FILE_UNSAFE` when the raw file is outside the allowed
+roots or is not a regular file, which the `native-*` tests never create.
+`native-fsm`, `native-covergroup` and `native-unknown` append a record
 of that native class using an existing source and hierarchy identity; judge
 the expected unscored or capability/finding behavior independently. They make
 no claim that the compiler can generate those classes.
