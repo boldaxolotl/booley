@@ -75,7 +75,7 @@ httpx2==2.16.0
     # via mcp
 httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscripten'
     # via httpx2
-hypothesis==6.170.14
+hypothesis==6.170.15
     # via booley-rtl (pyproject.toml)
 idna==3.20
     # via
