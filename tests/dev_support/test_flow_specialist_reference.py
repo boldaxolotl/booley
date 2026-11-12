@@ -101,7 +101,7 @@ def test_flows_follow_hardware_flow_order() -> None:
         for line in render_flow_reference().splitlines()
         if line.startswith("| `")
     ]
-    assert rows == ["sim", "lint", "synth", "fpga"]
+    assert rows == ["sim", "lint", "synth", "fpga", "mutation"]
 
 
 def test_every_builtin_flow_has_key_controls() -> None:
@@ -153,25 +153,26 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     for criterion, args in (reviewer.satisfies_args or {}).items():
         assert evidence_goal_name(criterion) in rendered
         assert args.split("--focus ", maxsplit=1)[1] in rendered
-    assert "| Campaign | Goal arguments | Interactive Mode arguments |" in rendered
-    assert "| Default fixed |" in rendered
-    assert "| Explicit fixed |" in rendered
-    assert "| Size-scaled |" in rendered
-    assert "Mutation goals in a ticket" not in rendered
-    assert "Direct goal controls" not in rendered
-    assert "Target campaign with `target`" in rendered
-    assert "`total: N` and `min_detected: K`" in rendered
-    assert "`auto: true`" in rendered
-    assert 'count="N"' in rendered
-    assert 'count="auto"' in rendered
-    assert "min_detected=K" in rendered
-    assert "`seed=<int>` (default 0)" in rendered
-    assert "ceil(0.8 x count)" in rendered
-    assert "max(10 x that test's baseline duration, 30 s), capped at 300 s" in rendered
-    assert "detected (timeout)" in rendered
-    mutation_section = rendered.split("#### `mutation_tester`", maxsplit=1)[1]
-    assert "regen_lock" not in mutation_section
-    assert "steer" not in mutation_section
+    # Mutation testing is a Flow now: no Specialist table, no Specialist section.
+    assert "mutation_tester" not in rendered
+    assert "| Campaign | Goal arguments | Interactive Mode arguments |" not in rendered
+
+
+def test_mutation_flow_page_documents_campaign_controls() -> None:
+    """The Mutation Flow page owns the campaign, seed, threshold, and timeout rules."""
+    page = " ".join((REPO_ROOT / "docs" / "user" / "FLOW-MUTATION.md").read_text("utf-8").split())
+    assert "`total: N`, `min_detected: K`, or `auto: true`" in page
+    assert "`--count <N\\|auto>`" in page
+    assert "`--min-detected <N>`" in page
+    assert "`--seed <N>`" in page and "(default `0`)" in page
+    assert "80 % of `--count`, rounded up" in page
+    assert (
+        "ten times the test's baseline duration, at least 30 seconds and at most 300 seconds"
+        in page
+    )
+    assert "detected (timeout)" in page
+    assert "regen_lock" not in page
+    assert "steer" not in page
 
 
 def test_specialist_examples_use_connected_session_arguments_without_cli_flags() -> None:
@@ -180,7 +181,7 @@ def test_specialist_examples_use_connected_session_arguments_without_cli_flags()
     assert "CLI Flow and Specialist runs never record Goal evidence" in rendered
     assert "Goal-bound MCP calls with `work_dir`" in rendered
     assert "CLI-only controls" in rendered
-    for name in ("coverage_analyst", "reviewer", "mutation_tester"):
+    for name in ("coverage_analyst", "reviewer"):
         assert f"Call the `{name}` Specialist from your Developer Agent session" in rendered
     assert "booley specialist <name> --help" in rendered
     assert 'steer=["<context>"]' in rendered

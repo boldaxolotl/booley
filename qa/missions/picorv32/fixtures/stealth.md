@@ -1,6 +1,6 @@
-### Stealth sanitation and attribution
+### Stealth rejection and attribution
 
-The [published Stealth contract](../../../../docs/user/STEALTH.md) has two rules. It redacts built-in banned words (including `booley`) in place, keeping subject, body, and rationale. It **rejects** recognized attribution footers and leaves the raw message unchanged. Use the accepted Stealth settings with no custom banned-word override. Run each case as a commit attempt on a run-owned disposable empty commit, and save the raw message, the stored message (if any), the hook's stdout/stderr, and the exit status. Discard the disposable commits after capturing evidence.
+The [published Stealth contract](../../../../docs/user/STEALTH.md) has one rule: the commit-msg hook **rejects** recognized attribution footers and messages with banned words (including `booley`), and never rewrites the message file. Use the accepted Stealth settings with no custom banned-word override. Run each case as a commit attempt on a run-owned disposable empty commit, and save the raw message, the stored message (if any), the hook's stdout/stderr, and the exit status. Discard the disposable commits after capturing evidence.
 
 **Case 1: `Co-Authored-By` is rejected.** Supply exactly:
 
@@ -15,9 +15,9 @@ Co-Authored-By: QA Fixture <qa-fixture@example.invalid>
 
 Require: hook exit 1 with the remove-the-footer diagnostic, no new commit, and the raw message byte-identical to the input.
 
-**Case 2: the same message without the footer is redacted and committed.** Supply case 1 without its blank line and `Co-Authored-By` line. Require: a commit is created, `booley` is absent from the stored subject and body, `Keep this rationale intact.` is kept, and the rewritten configuration sentence is kept. Don't require a particular substitute token unless the documentation of the tested build specifies one.
+**Case 2: the same message without the footer is still rejected for `booley`.** Supply case 1 without its blank line and `Co-Authored-By` line. Require: hook exit 1, no new commit, the raw message file byte-identical to the input, and stderr that lists `'booley' in the subject` and `'booley' on line N` for each body line that has it, says to reword or remove the term from `[stealth] banned_words` / `banned_substrings`, names the kept message file, and gives the retry `-v -e -F "<path>"`. Then reword the message without `booley` and commit it again: a commit is created and `Keep this rationale intact.` is stored verbatim.
 
-**Case 3: a plain "Generated with …" footer is judged by its payload.** Supply case 2's message with one extra final line, once per variant:
+**Case 3: a plain "Generated with …" footer is judged by its payload.** Supply case 2's reworded message (no banned terms) with one extra final line, once per variant:
 
-- `Generated with booley`: rejected like case 1 (exit 1, no commit, raw message unchanged).
-- `Generated with care by the whole team`: accepted, and the rest is redacted as in case 2. The footer is not rejected, but banned words inside it are still redacted, so with the default vocabulary `Generated` is rewritten. Once #1081 removes `generated` from the defaults, the footer line must be stored verbatim.
+- `Generated with booley`: rejected like case 1 (exit 1, no commit, raw message unchanged; the error doesn't echo the footer).
+- `Generated with care by the whole team`: accepted and stored verbatim, footer included. With no banned term in it the footer is not rejected.

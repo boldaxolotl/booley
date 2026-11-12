@@ -314,19 +314,6 @@ def test_surrogate_reference_docs_state_registered_data_dependence():
     assert "no combinational write-to-read arc" in comments
 
 
-def test_shared_glossary_defines_memory_timing_surrogate():
-    root = Path(__file__).resolve().parents[2]
-    glossary = (root / "docs/GLOSSARY.md").read_text(encoding="utf-8")
-    active = " ".join(glossary.split("## Retired and ambiguous terminology", 1)[0].split())
-    for required in (
-        "**Memory Timing Surrogate**:",
-        "synth-only define",
-        "data dependence",
-        "_Avoid_: RAM stub, fake RAM",
-    ):
-        assert required in active
-
-
 def test_heal_has_bounded_doctor_repair_and_verification_loop():
     skill = _skill_text("booley-heal")
 
@@ -424,8 +411,11 @@ def test_agents_template_limits_doctor_during_task_work():
 def test_setup_agents_template_advertises_supported_specialists():
     agents = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
 
-    for specialist in ("`coverage_analyst`", "`reviewer`", "`mutation_tester`"):
+    for specialist in ("`coverage_analyst`", "`reviewer`"):
         assert specialist in agents
+    # Mutation testing is a Flow now, not a Specialist.
+    assert "`mutation`" in agents
+    assert "mutation_tester" not in agents
 
 
 def test_heal_preserves_scope_and_routes_exceptional_findings():

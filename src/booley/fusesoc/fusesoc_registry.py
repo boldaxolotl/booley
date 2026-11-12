@@ -32,6 +32,7 @@ build dir next to the ``.eda.yml``.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import logging
@@ -49,7 +50,11 @@ from fusesoc.capi2.coreparser import Core2Parser
 from fusesoc.core import Core as FuseSocCore
 from fusesoc.vlnv import Vlnv
 
-from booley.core.booley_dir import BOOLEY_DIR_NAME, in_checkout_booley_dir
+from booley.core.booley_dir import (
+    BOOLEY_DIR_NAME,
+    in_checkout_booley_dir,
+    resolve_checkout_booley_dir,
+)
 from booley.core.booley_dir_links import resolve_through_entry
 from booley.core.boundary import as_dict, is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
@@ -377,7 +382,7 @@ def prepare_core_library_plan(project_root: Path | str) -> CoreLibraryPlan:
 def prepare_private_mirror_plan(project_root: Path | str, mirror_root: Path) -> CoreLibraryPlan:
     """Describe a private per-build registry that names in-checkout files relatively.
 
-    Used by builds that edit their own exported sources (Mutation Tester) in a
+    Used by builds that edit their own exported sources (Mutation Flow) in a
     Project whose shared isolated registry names every source by absolute path.
     """
     try:
@@ -1555,7 +1560,7 @@ def _target_source_files(
     the C++/firmware assets while ``ibex_top_tracing.sv`` arrives transitively —
     so a root-core-only read yields an empty RTL list and callers conclude the
     Target has no design to work on (F-27). Still pure YAML: the closure walk
-    keeps the subprocess-free ordering guarantee that ``mutation_tester``'s
+    keeps the subprocess-free ordering guarantee that the Mutation Flow's
     in-place mux swap depends on.
 
     Raises :class:`~booley.targets.domain.UnknownTargetError` /
@@ -2129,7 +2134,7 @@ def source_dirs_from_core(
     A resolvable ``.core`` is a precondition for every Booley Flow (ADR 0039):
     a project with none raises rather than guessing — the old hardcoded
     ``(["rtl", "fw"], ["tb"])`` fallback silently fed a wrong partition into
-    the Specialist Source Isolation boundary (Reviewer snapshot / MutationTester
+    the Specialist Source Isolation boundary (Reviewer snapshot / Mutation Flow
     blindness). ``booley doctor`` FAILs the same condition up front.
     """
     root = Path(project_root)
@@ -2527,11 +2532,13 @@ def setup_command_for_handle(
     fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
     backend_arguments: Sequence[str] = (),
     library_plan: CoreLibraryPlan | None = None,
+    export: bool = True,
 ) -> list[str]:
     """Build FuseSoC setup argv from catalog-authorized Target facts.
 
     *library_plan* replaces the Project's own prepared library view, e.g. with
-    a per-build private mirror.
+    a per-build private mirror. ``export=False`` adds ``--no-export``: the EDAM then
+    names each file at its original place instead of a copy under the work root.
     """
     root = require_current_target_handle(handle)
     try:
@@ -2549,6 +2556,7 @@ def setup_command_for_handle(
         build_root=Path(build_root),
         fusesoc_cmd=fusesoc_cmd,
         backend_arguments=backend_arguments,
+        export=export,
     )
 
 
@@ -2581,6 +2589,7 @@ def _setup_argv(
     build_root: Path,
     fusesoc_cmd: Sequence[str],
     backend_arguments: Sequence[str] = (),
+    export: bool = True,
 ) -> list[str]:
     flag_args = ["--flag", f"tool_{eda_tool}"] if flow and eda_tool else []
     library_args = [
@@ -2596,6 +2605,7 @@ def _setup_argv(
         "--build-root",
         str(build_root),
         "--setup",
+        *([] if export else ["--no-export"]),
         *flag_args,
         "--target",
         target_name,
@@ -2678,11 +2688,17 @@ def _run_setup_command(
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> ResolvedTarget:
     logger.debug("resolving target via: %s", " ".join(cmd))
+    child_env = dict(env) if env is not None else {**os.environ}
+    if env is None:
+        # Generators and core hooks read this checkout's inputs (ADR 0082); a failed
+        # lookup keeps the inherited value. A caller that passes its own *env* owns it.
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
+            child_env["BOOLEY_DIR"] = str(resolve_checkout_booley_dir(project_root))
     try:
         proc = runner(
             cmd,
             cwd=str(project_root),
-            env=dict(env) if env is not None else None,
+            env=child_env,
             capture_output=True,
             text=True,
         )
@@ -2714,8 +2730,12 @@ def resolve_target_handle(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     backend_arguments: Sequence[str] = (),
     library_plan: CoreLibraryPlan | None = None,
+    export: bool = True,
 ) -> ResolvedTarget:
-    """Resolve a catalog-authorized handle without selecting its token again."""
+    """Resolve a catalog-authorized handle without selecting its token again.
+
+    ``export=False`` resolves without FuseSoC's copy of the sources (``--no-export``).
+    """
     root = require_current_target_handle(handle)
     build = Path(build_root)
     vlnv = resolution_vlnv or handle.vlnv
@@ -2726,6 +2746,7 @@ def resolve_target_handle(
         fusesoc_cmd=fusesoc_cmd,
         backend_arguments=backend_arguments,
         library_plan=library_plan,
+        export=export,
     )
     source_ref = TargetRef(
         name=handle.name,

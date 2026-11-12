@@ -243,6 +243,23 @@ class FlowMechanics:
         """Return working directory for subprocess."""
         return self.args.work_dir
 
+    def _tool_environment(self, cwd: Path) -> tuple[dict[str, str], Path]:
+        """Return the child environment and Python artifact cache root for a tool in *cwd*.
+
+        *cwd* must be a checkout root (every caller passes ``work_dir`` or another
+        checkout's root): from a subdirectory the lookup would fall through to the
+        ambient ``BOOLEY_DIR``. ``BOOLEY_DIR`` names that checkout's own Booley
+        Directory: tools read this checkout's inputs, never another checkout's
+        (ADR 0082).
+        """
+        env = {**os.environ, **self._extra_subprocess_env()}
+        try:
+            checkout_dir = resolve_checkout_booley_dir(cwd)
+        except (OSError, RuntimeError, ValueError):
+            return env, Path(tempfile.gettempdir()) / "booley-python-artifacts"
+        env["BOOLEY_DIR"] = str(checkout_dir)
+        return env, checkout_dir / ".runtime" / "python-artifacts"
+
     def _execute_local(
         self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
     ) -> SubprocessResult:
@@ -259,11 +276,7 @@ class FlowMechanics:
 
         timeout = self._get_timeout() if timeout is None else timeout
         cwd = self._get_cwd() if cwd is None else cwd
-        env = {**os.environ, **self._extra_subprocess_env()}
-        try:
-            cache_root = resolve_checkout_booley_dir(cwd) / ".runtime" / "python-artifacts"
-        except (OSError, RuntimeError, ValueError):
-            cache_root = Path(tempfile.gettempdir()) / "booley-python-artifacts"
+        env, cache_root = self._tool_environment(cwd)
         env = relocate_python_artifacts(
             env,
             cache_root,
@@ -411,7 +424,7 @@ RequestT = TypeVar("RequestT", bound=FlowRequest)
 
 
 class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
-    """Invocation seam shared only by Booley's four shipped Flows.
+    """Invocation seam shared only by Booley's five shipped Flows.
 
     The Flow is the single owner of its per-invocation state; every entry point
     starts an invocation through ``_start_invocation``.

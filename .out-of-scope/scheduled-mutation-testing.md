@@ -5,7 +5,7 @@ The weekly mutmut campaign over the harness setup package was removed
 (#3404).
 
 This does not concern Booley's own mutation Goal family or the Mutation
-Tester specialist, which test users' RTL.
+Flow, which test users' RTL.
 
 ## Why this is out of scope
 

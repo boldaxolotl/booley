@@ -28,6 +28,7 @@ from booley.core.boundary import (
     require_str_value,
     require_uuid4,
 )
+from booley.flows.campaign_results import OlderBooleyRecordError
 from booley.flows.sim.campaign_files import canonical_json
 from booley.runtime.timefmt import parse_timestamp
 
@@ -66,8 +67,8 @@ class SimulationCampaignIntegrityError(ValueError):
     """An authoritative campaign value violates its exact contract."""
 
 
-class UnsupportedSimulationCampaignFormatError(ValueError):
-    """A record Booley 0.3.0 wrote.
+class UnsupportedSimulationCampaignFormatError(OlderBooleyRecordError):
+    """A record an older Booley wrote.
 
     Deliberately not an integrity error: the storage is intact, only too old, so no
     integrity catch may report it as corrupt. Callers that know the invocation
@@ -81,8 +82,8 @@ class UnsupportedSimulationCampaignFormatError(ValueError):
             else "its Simulation invocation directory"
         )
         super().__init__(
-            f"{label} {schema} was written by Booley 0.3.0 and is no longer supported; "
-            f"delete {where} by hand"
+            f"{label} {schema} was written by an older Booley and is no longer supported; "
+            f"delete {where} and start a fresh run"
         )
         self.label = label
         self.schema = schema
@@ -92,11 +93,15 @@ class UnsupportedSimulationCampaignFormatError(ValueError):
         return UnsupportedSimulationCampaignFormatError(self.label, self.schema, invocation)
 
 
-def raise_if_retired(document: Mapping[str, object]) -> None:
-    """Refuse a document in a format Booley 0.3.0 wrote, before any other check."""
-    schema = document.get("$schema")
+def raise_if_retired_schema(schema: object) -> None:
+    """Refuse a schema identifier an older Booley wrote, before any other check."""
     if isinstance(schema, str) and schema in _RETIRED_SCHEMAS:
         raise UnsupportedSimulationCampaignFormatError(_RETIRED_SCHEMAS[schema], schema)
+
+
+def raise_if_retired(document: Mapping[str, object]) -> None:
+    """Refuse a document in a format an older Booley wrote, before any other check."""
+    raise_if_retired_schema(document.get("$schema"))
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -118,12 +123,13 @@ MANIFEST_SCHEMA = "booley.simulation-campaign-manifest/v4"
 # Test Run it observed (ADR 0072). Observations are unique by Test Run.
 RESULT_SCHEMA = "booley.simulation-result/v3"
 
-# Formats Booley 0.3.0 wrote. They are recognised only to be refused.
+# Formats an older Booley (0.3.0) wrote. They are recognised only to be refused.
 _RETIRED_SCHEMAS = {
     "booley.simulation-campaign-manifest/v1": "Simulation Campaign manifest",
     "booley.simulation-campaign-manifest/v2": "Simulation Campaign manifest",
     "booley.simulation-result/v2": "Simulation Result",
     "booley.simulation-projection/v2": "Simulation projection",
+    "booley.coverage-campaign/v4": "Coverage Campaign",
 }
 
 _MANIFEST_FIELDS = frozenset(

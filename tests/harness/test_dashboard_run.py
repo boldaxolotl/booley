@@ -34,7 +34,16 @@ from booley.mcp.registry import discover_mcp_tools
 from booley.runtime import detached_job, job_records
 from booley.runtime.job_slots import SlotStore, slots_dir
 from tests.harness.test_dashboard import STAMP, choose_in_bar, snapshot
-from tests.harness.test_dashboard_targets import git, init_repository, session, settle, world
+from tests.harness.test_dashboard_targets import (
+    FIFO_CORE,
+    TESTS_TOML,
+    git,
+    init_repository,
+    session,
+    settle,
+    world,
+    write_files,
+)
 
 if TYPE_CHECKING:
     from booley.harness.dashboard.wizard import RunWizard
@@ -69,6 +78,36 @@ def spawned(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         detached_job, "spawn", lambda command, *_args, **_kw: commands.append(command)
     )
     return commands
+
+
+# What the Target and test pickers read: one Target per Flow, two sim Targets with their own Tests.
+PICKER_CORE = (
+    FIFO_CORE
+    + """  fpga_fifo:
+    default_tool: vivado
+    filesets: [rtl, constraints]
+    toplevel: fifo
+  sim_wide:
+    flow: sim
+    flow_options: {tool: verilator}
+    filesets: [rtl, tb]
+    toplevel: tb
+"""
+)
+PICKER_TESTS = TESTS_TOML + '\n[sim_wide]\nselect = "+test={name}"\ntests = ["wide", "narrow"]\n'
+PICKER_FILES = {
+    "fifo.core": PICKER_CORE,
+    "fifo.v": "module fifo; endmodule\n",
+    "tb.sv": "module tb; endmodule\n",
+    "fifo.sdc": "# constraints\n",
+    ".booley/booley.toml": "[project]\n",
+    ".booley/tests.toml": PICKER_TESTS,
+}
+
+
+def write_picker_project(root: Path) -> None:
+    """Cores and a ``tests.toml`` in *root* for the Target and test pickers to read."""
+    write_files(root, PICKER_FILES)
 
 
 def real_launcher(booley_dir: Path):
@@ -242,6 +281,43 @@ async def set_choice(pilot, wizard: RunWizard, label: str, choice: str) -> None:
     await pilot.press(*(["down" if step > 0 else "up"] * abs(step)), "enter")
 
 
+def pick_rows(wizard: RunWizard) -> list[str]:
+    """The rows of the open Target or test picker."""
+    picks = wizard.query_one("#run-picks", OptionList)
+    return [str(picks.get_option_at_index(i).prompt) for i in range(picks.option_count)]
+
+
+async def press_pick(pilot, wizard: RunWizard, pick: str) -> None:
+    """Arrow to the picker row for *pick* (a Target, or a Test Run behind its ``[x]`` box) and Enter."""
+    names = [row.split()[-1] for row in pick_rows(wizard)]
+    picks = wizard.query_one("#run-picks", OptionList)
+    assert picks.highlighted is not None
+    step = names.index(pick) - picks.highlighted
+    await pilot.press(*(["down" if step > 0 else "up"] * abs(step)), "enter")
+
+
+async def open_picker(app: DashboardApp, pilot, wizard: RunWizard, label: str) -> None:
+    """Enter on the Target or test row *label* and let the read behind the picker land."""
+    await goto_row(pilot, wizard, label)
+    await pilot.press("enter")
+    await settle(app, pilot)
+
+
+async def set_target(app: DashboardApp, pilot, wizard: RunWizard, label: str, target: str) -> None:
+    await open_picker(app, pilot, wizard, label)
+    await press_pick(pilot, wizard, target)
+
+
+async def set_tests(
+    app: DashboardApp, pilot, wizard: RunWizard, label: str, runs: list[str]
+) -> None:
+    """Toggle each of *runs* in the test picker, then leave it with Esc."""
+    await open_picker(app, pilot, wizard, label)
+    for run in runs:
+        await press_pick(pilot, wizard, run)
+    await pilot.press("escape")
+
+
 async def review_command(app: DashboardApp, pilot, wizard: RunWizard) -> None:
     """Enter on the Review row and wait for the argument check's answer."""
     await goto_row(pilot, wizard, "Review the command")
@@ -268,9 +344,10 @@ def row_key(path: Path, run_id: str) -> str:
 class FormScript:
     """What one Flow's AC1 pilot enters through the form, and the command it must produce.
 
-    Every Flow has at least one field of each kind it offers; the Target text field is
+    Every Flow has at least one field of each kind it offers; the Target picker is
     always set. ``steps`` are ``(kind, row label, value)``: kind ``toggle`` flips the row,
-    ``text`` types the value, ``choice`` keeps that entry of the row's choice list.
+    ``text`` types the value, ``choice`` keeps that entry of the row's choice list,
+    ``target`` chooses that Target, ``tests`` toggles the Test Runs named (comma list).
     """
 
     steps: tuple[tuple[str, str, str], ...]
@@ -282,38 +359,53 @@ class FormScript:
 FORM_SCRIPTS: dict[str, FormScript] = {
     "lint": FormScript(
         steps=(
-            ("text", "--target", "t"),
+            ("target", "--target", "lint_fifo"),
             ("toggle", "--dry-run", ""),
             ("text", "--scope", "a.sv"),
         ),
         extra="-q",
-        argv=("--target", "t", "--dry-run", "--scope", "a.sv", "-q"),
-        shown="--target t --dry-run --scope a.sv -q",
+        argv=("--target", "lint_fifo", "--dry-run", "--scope", "a.sv", "-q"),
+        shown="--target lint_fifo --dry-run --scope a.sv -q",
+    ),
+    "mutation": FormScript(
+        steps=(
+            ("target", "--target", "sim_fifo"),
+            ("text", "--scope", "a.sv"),
+            ("text", "--count", "3"),
+        ),
+        extra="--seed 7",
+        argv=("--target", "sim_fifo", "--scope", "a.sv", "--count", "3", "--seed", "7"),
+        shown="--target sim_fifo --scope a.sv --count 3 --seed 7",
     ),
     "sim": FormScript(
         steps=(
-            ("text", "--target", "t"),
+            ("target", "--target", "sim_fifo"),
             ("toggle", "--coverage", ""),
             ("choice", "--mode", "simulate"),
-            ("text", "--test", "smoke"),
+            ("tests", "--test", "reset,stress+soak"),
         ),
         extra="--result-verbosity full",
         argv=(
             "--target",
-            "t",
+            "sim_fifo",
             "--coverage",
             "--mode",
             "simulate",
             "--test",
-            "smoke",
+            "reset",
+            "--test",
+            "stress+soak",
             "--result-verbosity",
             "full",
         ),
-        shown="--target t --coverage --mode simulate --test smoke --result-verbosity full",
+        shown=(
+            "--target sim_fifo --coverage --mode simulate --test reset --test stress+soak"
+            " --result-verbosity full"
+        ),
     ),
     "synth": FormScript(
         steps=(
-            ("text", "--target", "t"),
+            ("target", "--target", "synth_fifo"),
             ("toggle", "--fresh-openroad", ""),
             ("choice", "--flatten/--no-flatten", "off"),
             ("choice", "--frontend", "slang"),
@@ -321,32 +413,32 @@ FORM_SCRIPTS: dict[str, FormScript] = {
         extra="--repair-hold",
         argv=(
             "--target",
-            "t",
+            "synth_fifo",
             "--no-flatten",
             "--frontend",
             "slang",
             "--fresh-openroad",
             "--repair-hold",
         ),
-        shown="--target t --no-flatten --frontend slang --fresh-openroad --repair-hold",
+        shown="--target synth_fifo --no-flatten --frontend slang --fresh-openroad --repair-hold",
     ),
     "fpga": FormScript(
         steps=(
-            ("text", "--target", "t"),
+            ("target", "--target", "fpga_fifo"),
             ("toggle", "--no-cache", ""),
             ("choice", "--ppa-profile", "balanced"),
         ),
         extra="--report-dir 'out dir'",
         argv=(
             "--target",
-            "t",
+            "fpga_fifo",
             "--no-cache",
             "--ppa-profile",
             "balanced",
             "--report-dir",
             "out dir",
         ),
-        shown="--target t --no-cache --ppa-profile balanced --report-dir 'out dir'",
+        shown="--target fpga_fifo --no-cache --ppa-profile balanced --report-dir 'out dir'",
     ),
 }
 
@@ -363,6 +455,7 @@ async def launch_flow_through_the_form(checkout, spawned, tmp_path, flow):
     if flow not in FORM_SCRIPTS:
         pytest.fail(f"add a form script for the new built-in Flow {flow!r}")
     script = FORM_SCRIPTS[flow]
+    write_picker_project(checkout)
     booley_dir = tmp_path / "booley"
     app = make_app(checkout, real_launcher(booley_dir))
     async with app.run_test(size=(120, 40)) as pilot:
@@ -372,6 +465,10 @@ async def launch_flow_through_the_form(checkout, spawned, tmp_path, flow):
                 await set_toggle(pilot, wizard, label)
             elif kind == "text":
                 await set_text(pilot, wizard, label, value)
+            elif kind == "target":
+                await set_target(app, pilot, wizard, label, value)
+            elif kind == "tests":
+                await set_tests(app, pilot, wizard, label, value.split(","))
             else:
                 await set_choice(pilot, wizard, label, value)
         await set_text(pilot, wizard, "Extra arguments", script.extra)
@@ -416,9 +513,15 @@ async def test_flow_step_lists_every_builtin_flow_with_its_blurb(checkout):
         await pilot.press("enter")
         options = wizard.query_one("#run-flows", OptionList)
         lines = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
-        assert [line.split(" — ")[0] for line in lines] == ["fpga", "lint", "sim", "synth"]
+        assert [line.split(" — ")[0] for line in lines] == [
+            "fpga",
+            "lint",
+            "mutation",
+            "sim",
+            "synth",
+        ]
         assert all(len(line.split(" — ", 1)[1]) > 10 for line in lines)
-        assert lines[2].startswith("sim — Run RTL simulation")
+        assert lines[3].startswith("sim — Run RTL simulation")
 
 
 # --- AC2 ---------------------------------------------------------------------
@@ -721,15 +824,15 @@ async def test_the_form_is_kept_for_the_same_pair_and_fresh_for_another_flow(che
     app = make_app(checkout, FakeLauncher())
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "lint")
-        await set_text(pilot, wizard, "--target", "t")
+        await set_text(pilot, wizard, "--scope", "a.sv")
         await set_toggle(pilot, wizard, "--dry-run")
         await set_text(pilot, wizard, "Extra arguments", "-q")
         await pilot.press("escape", "enter")  # back to the Flow list, lint again
         await settle_form(app, pilot)
-        assert row_value(wizard, "--target") == "t"
+        assert row_value(wizard, "--scope") == "a.sv"
         assert row_value(wizard, "--dry-run") == "on"
         assert row_value(wizard, "Extra arguments") == "-q"
-        await pilot.press("escape", "down", "enter")  # another Flow
+        await pilot.press("escape", "down", "down", "enter")  # another Flow: sim, past mutation
         await settle_form(app, pilot)
         assert row_value(wizard, "--target") == "automatic"
         assert row_value(wizard, "Extra arguments") == ""
@@ -742,13 +845,13 @@ async def test_the_form_is_fresh_for_another_worktree(checkout):
     app = make_app(checkout, FakeLauncher())
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "lint")  # the main checkout, listed last
-        await set_text(pilot, wizard, "--target", "t")
+        await set_text(pilot, wizard, "--scope", "a.sv")
         await pilot.press("escape", "escape", "up", "enter", "enter")  # the other worktree
         await settle_form(app, pilot)
-        assert row_value(wizard, "--target") == "automatic"
+        assert row_value(wizard, "--scope") == ""
         await pilot.press("escape", "escape", "down", "enter", "enter")  # and back: fresh again
         await settle_form(app, pilot)
-        assert row_value(wizard, "--target") == "automatic"
+        assert row_value(wizard, "--scope") == ""
 
 
 class FormGate(FakeLauncher):
@@ -912,18 +1015,18 @@ async def test_esc_discards_and_enter_keeps_a_choice_and_a_typed_value(checkout)
         await pilot.press("escape")
         assert row_value(wizard, "--mode") == "elab-only"
         # The editor: typing, then Esc, keeps the old value; Enter keeps the new one.
-        await goto_row(pilot, wizard, "--test")
+        await goto_row(pilot, wizard, "--seed")
         await pilot.press("enter")
-        assert "more of them" in shown(wizard, "#run-hint")
+        assert "Seed for every selected Test Run" in shown(wizard, "#run-hint")
         assert "esc cancel" in shown(wizard, "#run-footer")
-        await type_text(pilot, "smoke")
+        await type_text(pilot, "7")
         await pilot.press("escape")
-        assert row_value(wizard, "--test") == ""
-        await set_text(pilot, wizard, "--test", "smoke")
+        assert row_value(wizard, "--seed") == ""
+        await set_text(pilot, wizard, "--seed", "7")
         await pilot.press("enter")  # edit again: the value is there and typing appends
         await type_text(pilot, "2")
         await pilot.press("enter")
-        assert row_value(wizard, "--test") == "smoke2"
+        assert row_value(wizard, "--seed") == "72"
 
 
 @pytest.mark.asyncio
@@ -970,14 +1073,14 @@ async def test_review_returns_to_the_form_with_every_value_kept(checkout):
     app = make_app(checkout, FakeLauncher())
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "lint")
-        await set_text(pilot, wizard, "--target", "t")
+        await set_text(pilot, wizard, "--scope", "a.sv")
         await review_command(app, pilot, wizard)
         await pilot.press("escape")
-        assert row_value(wizard, "--target") == "t"
+        assert row_value(wizard, "--scope") == "a.sv"
         rows = wizard.query_one("#run-form", OptionList)
         assert rows.highlighted == rows.option_count - 1  # on Review, as left
         await review_command(app, pilot, wizard)
-        assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow lint --target t"
+        assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow lint --scope a.sv"
 
 
 @pytest.mark.asyncio
@@ -1015,7 +1118,7 @@ async def test_a_value_changed_while_a_check_runs_keeps_review_closed(checkout):
     app = make_app(checkout, launcher)
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "lint")
-        await set_text(pilot, wizard, "--target", "t")
+        await set_text(pilot, wizard, "--scope", "a.sv")
         await goto_row(pilot, wizard, "Review the command")
         await pilot.press("enter")
         assert launcher.started.wait(timeout=60)

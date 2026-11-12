@@ -27,6 +27,10 @@ SKIP_REASON = (
 SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     # Goal Mode (`booley goal` is a Sandbox command). WINDOWS_HOST_TESTS lists the exceptions.
     "tests/goals/",
+    # Mutation Flow runtime (generation, variant builds, interruption handling): Sandbox-only.
+    "tests/flows/mutation/test_runtime_inputs.py",
+    "tests/flows/mutation/test_variant_flow.py",
+    "tests/flows/mutation/test_variant_interruptions.py",
     # Simulation Flow runtime (campaigns, builds, coverage, backends): `booley flow sim` is a
     # Sandbox command. The host imports flows.sim.flow and its modules only to print endpoint
     # help and never executes the runtime, so tests of that runtime stay Sandbox-only. Tests of
@@ -89,9 +93,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/mcp_tools/test_job_lifecycle.py",
     "tests/mcp_tools/test_live_catalog.py",
     "tests/mcp_tools/test_mcp_dispatch.py",
-    "tests/mcp_tools/test_mutation_runtime_inputs.py",
-    "tests/mcp_tools/test_mutation_variant_flow.py",
-    "tests/mcp_tools/test_mutation_variant_interruptions.py",
     "tests/mcp_tools/test_nested_session_presence.py",
     "tests/mcp_tools/test_owned_job_poll.py",
     "tests/mcp_tools/test_peer_checkout.py",

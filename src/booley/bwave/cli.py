@@ -2214,7 +2214,7 @@ Wrapper commands:
 
 Query subcommands (forwarded to the bwave binary — see `bwave query --help`):
   Trace-consuming:  list  signal  wave  value  find  sample  diff
-                    distance  stats  stuck  build
+                    distance  overview  stats  stuck  build
   Meta (no trace):  schema  docs  skill
 
 Run 'bwave query --help' for the full query reference, or

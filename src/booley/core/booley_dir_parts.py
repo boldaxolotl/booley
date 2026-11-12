@@ -101,6 +101,9 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         ".runtime/syn/": _SOURCE_TIED,
         ".runtime/simulation-run-locks/": _SOURCE_TIED,
         ".runtime/flow-console/": _SOURCE_TIED,
+        ".runtime/mutation/": _SOURCE_TIED,
+        # The retired Specialist's scratch tree: the next mutation run deletes it, but an
+        # upgraded checkout may still hold one, and a Snapshot must classify it.
         ".runtime/mutation_tester/": _SOURCE_TIED,
         ".runtime/flow-reports/": _SOURCE_TIED,
         ".runtime/mcp-tool-reports/": _SOURCE_TIED,
@@ -120,6 +123,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/upgrade_review.json": _COMMON,
         ".runtime/compiler-cache/": _COMMON,
         "result-cache/": _COMMON,
+        "measurements/": _COMMON,
         "worktrees/": _COMMON,
         ".baseline-wt-*/": _COMMON,
         "directory-layout.lock": _COMMON,

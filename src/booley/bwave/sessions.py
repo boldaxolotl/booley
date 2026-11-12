@@ -201,6 +201,11 @@ def _trace_identity(trace: Path) -> str:
     except (OSError, subprocess.TimeoutExpired, SystemExit):
         return ""
     if result.returncode != 0:
+        # Surface why the probe failed (e.g. a truncated store's cause plus
+        # rebuild hint) instead of leaving only the generic warning below.
+        cause = result.stderr.strip().splitlines()[-1:] if result.stderr else []
+        if cause:
+            print(f"[bwave] WARNING: {cause[0]}", file=sys.stderr)
         return ""
     try:
         metadata = decode_list_metadata(result.stdout)

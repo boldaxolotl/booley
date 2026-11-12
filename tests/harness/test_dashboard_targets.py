@@ -278,6 +278,28 @@ async def test_worktree_list_orders_sessions_first_and_main_last(repo):
 
 
 @pytest.mark.asyncio
+async def test_worktree_list_shows_session_titles(repo):
+    # Bug caught: the picker labelled a named session by its bare handle, or ordered by the
+    # title text (`S10 \u00b7 x` before `S3`) instead of the handle number.
+    tmp = repo.parent
+    current = replace(
+        world(session("S1", repo), session("S10", tmp / "wt-a"), session("S3", tmp / "wt-b")),
+        session_titles={"codex:10": "S10 \u00b7 uart-fix", "codex:03": "S3 \u00b7 data path"},
+    )
+    app = make_app(repo, current)
+    async with app.run_test(size=(130, 30)) as pilot:
+        await open_targets(app, pilot)
+        await pilot.press("up", "right", "enter")
+        await pilot.pause()
+        assert rows_of(app) == [
+            ["wt-b \u00b7 S3 \u00b7 data path Interactive"],
+            ["wt-a \u00b7 S10 \u00b7 uart-fix Interactive"],
+            ["wt-c"],
+            ["main \u00b7 main checkout \u00b7 S1 Interactive"],
+        ]
+
+
+@pytest.mark.asyncio
 async def test_choosing_a_worktree_reloads_the_list(repo):
     app = make_app(repo, world())
     async with app.run_test(size=(130, 30)) as pilot:

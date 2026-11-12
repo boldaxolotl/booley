@@ -43,7 +43,7 @@ def test_report_prints_deterministic_graph_diagnostics(tmp_path: Path) -> None:
         "- booley.flows.synth.flow: 0\n"
         "- booley.mcp.server: 0\n"
         "- booley.flows.fpga.flow: 0\n"
-        "- booley.specialists.mutation_tester: 0\n"
+        "- booley.flows.mutation.flow: 0\n"
         "- booley.specialists.coverage_analyst: 0\n"
     )
 

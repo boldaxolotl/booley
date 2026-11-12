@@ -113,8 +113,8 @@ WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
 RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
 DEFAULT_WINDOWS_SHARD_COUNT = 4
 # Ubuntu Python 3.11 legs: two duration-balanced shards, adopted from the
-# controlled comparison in .github/ci/linux-shard-experiment.md. A manual run may
-# still pick 1 (one complete-suite job) or 3. Ubuntu Python 3.14 runs the suite
+# controlled comparison in issue #1792 (see .github/ci/README.md, "Shard counts
+# and benchmarks"). A manual run may still pick 1 (one complete-suite job) or 3. Ubuntu Python 3.14 runs the suite
 # under coverage in the fixed six-shard `coverage-shards` job instead.
 LINUX_SHARD_COUNTS = (1, 2, 3)
 DEFAULT_LINUX_SHARD_COUNT = 2

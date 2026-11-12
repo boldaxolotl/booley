@@ -215,6 +215,28 @@ def test_disconnected_session_without_cached_row_still_has_its_handle():
     assert goal is None
 
 
+def test_session_header_shows_the_title_connected_and_disconnected():
+    # Bug caught: the header (live and disconnected) showed only the bare handle.
+    titles = {"codex:00": "S1 \u00b7 uart-fix", "codex:gone": "S17 \u00b7 data path"}
+    handles = {"codex:00": "S1", "codex:gone": "S17"}
+    current = replace(snapshot(1), session_titles=titles, session_handles=handles)
+    app = DashboardApp(lambda: current)
+    app.snapshot = current
+    app.navigation = Navigation("session", "codex:00")
+    live, _goal = app._session_header()
+    assert live.plain.startswith("S1 \u00b7 uart-fix ")
+    app.navigation = Navigation("session", "codex:gone")
+    gone, _goal = app._session_header()
+    assert gone.plain.startswith("S17 \u00b7 data path ")
+    assert "disconnected" in gone.plain
+    # An unnamed session (no title entry) falls back to its handle.
+    app.navigation = Navigation("session", "codex:00")
+    app.snapshot = replace(current, session_titles={})
+    unnamed, _goal = app._session_header()
+    assert unnamed.plain.startswith("S1 ")
+    assert "uart-fix" not in unnamed.plain
+
+
 def test_disconnected_session_detail_keeps_its_last_seen_calls():
     """#2880: the header and the Booley activity list read the same remembered row."""
     calls = (RecentCall(STAMP, "sim", "completed"), RecentCall(STAMP, "lint", "failed"))

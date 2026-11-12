@@ -1525,7 +1525,7 @@ class TestTargetSourceFilesDependencyClosure:
 
     Ibex's sim Target's root fileset owns the C++/firmware harness while
     `ibex_top_tracing.sv` is contributed transitively, so a root-core-only
-    read returned no RTL at all and mutation_tester failed before injection.
+    read returned no RTL at all and the Mutation Flow failed before injection.
     """
 
     def _layered_repo(self, tmp_path: Path) -> None:
@@ -2257,7 +2257,7 @@ class TestFilesetsAppend:
         """A CAPI2 fileset path is relative to its .core's directory. For a
         state-zone core (ADR 0036 stealth cores) that is NOT the Project Root,
         so returned paths must be re-based project-relative — consumers join
-        them onto the root (doctor's sentinel scan, mutation_tester's DUT list)
+        them onto the root (doctor's sentinel scan, the Mutation Flow's DUT list)
         and used to silently read the wrong file, or none at all."""
         from booley.fusesoc.fusesoc_registry import _target_source_files
 
@@ -3030,3 +3030,34 @@ def test_resolving_target_runs_no_extra_core_graph_inspection(tmp_path, monkeypa
     monkeypatch.setattr(fusesoc_registry, "_run_setup_command", lambda *a, **k: k["source_ref"])
     fusesoc_registry.resolve_target_handle(handle, build_root=tmp_path / "build")
     assert inspected == []
+
+
+def test_fusesoc_setup_sees_the_checkouts_booley_dir(tmp_path, monkeypatch):
+    """Generators run by ``fusesoc run --setup`` read the checkout's inputs, not Main's."""
+    from booley.runtime import booley_dir
+
+    project = tmp_path / "proj"
+    _write_core(project / "ip")
+    (project / ".booley").mkdir(parents=True)
+    main = tmp_path / "main-booley"
+    main.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(main))
+    booley_dir.reset_cache()
+    build_root = tmp_path / "build"
+    seen: dict[str, str] = {}
+
+    def recording_runner(cmd, **kwargs):
+        seen["BOOLEY_DIR"] = kwargs["env"]["BOOLEY_DIR"]
+        out = build_root / "demo_core_0" / "sim"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "demo_core_0.eda.yml").write_text(_EDAM_TEXT, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    try:
+        _resolve_target(
+            "sim", project_root=project, build_root=build_root, runner=recording_runner
+        )
+    finally:
+        booley_dir.reset_cache()
+
+    assert seen["BOOLEY_DIR"] == str((project / ".booley").resolve())

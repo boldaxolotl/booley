@@ -297,6 +297,23 @@ def test_observational_slot_state_and_corrupt_entry_isolation(tmp_path, monkeypa
     assert files(tmp_path) == before
 
 
+def test_observer_reports_queued_memory_claim(tmp_path, monkeypatch):
+    from booley.runtime.pid import ProcessObservation, ProcessState
+
+    identity = ProcessIdentity(99, "fixture", 101)
+    root = tmp_path / "jobs"
+    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
+    slots = tmp_path / "slots/memory"
+    slots.mkdir(parents=True)
+    token = slots / job_slots._entry_name("w", 1, 1, 99, 0)
+    token.write_text(json.dumps({"owner_identity": identity.to_payload()}))
+    monkeypatch.setattr(
+        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
+    )
+    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
+    assert view.state == "queued"
+
+
 def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path, monkeypatch):
     real = tmp_path / "real"
     project = real / "project"

@@ -73,29 +73,6 @@ ALLOWLIST += tuple(
     for path in ("docs/user/TROUBLESHOOTING.md",)
 )
 
-# The packaged FLOW_REPORTS.md copy (its source is under docs/internals, which is not
-# scanned) documents how Booley reads reports written by older versions.
-ALLOWLIST += (
-    ExceptionRule(
-        "src/booley/data/docs/FLOW_REPORTS.md",
-        "the old Campaign can no longer be resumed",
-        "Current resume behavior after the suite or sources changed.",
-        2,
-    ),
-    ExceptionRule(
-        "src/booley/data/docs/FLOW_REPORTS.md",
-        "legacy reports keep their old artifact hints",
-        "Current reading of reports written by older versions.",
-        2,
-    ),
-    ExceptionRule(
-        "src/booley/data/docs/FLOW_REPORTS.md",
-        "distinct from the legacy",
-        "Current report field that older reports carry.",
-        1,
-    ),
-)
-
 
 def is_scanned_user_doc_copy(root: Path, path: Path) -> bool:
     """Return whether ``path`` is a generated copy of a ``docs/user`` page scanned at its source."""

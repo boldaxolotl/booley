@@ -1,10 +1,10 @@
 # Booley Coding Principles
 
-Concise engineering discipline rules for all Python code in Booley
-(Booley's own Python codebase, not the user's RTL; see the
-[README](../../README.md) for what Booley is). These are language-agnostic
-principles applied to Python: they govern design and correctness, not
-formatting (Ruff, the Python linter/formatter, handles that).
+Design and correctness rules for Booley's own Python code, not the user's RTL
+(see the [README](../../README.md) for what Booley is). Formatting is left to
+Ruff, the Python linter and formatter. Docs follow
+[DOCS_PRINCIPLES.md](DOCS_PRINCIPLES.md); environment setup and the
+contribution workflow are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Audience:** this document is written mainly for agents. Agents should apply
 these principles to improve the codebase, both when writing new code and when
@@ -110,13 +110,13 @@ comment explaining why. See `[tool.ruff]` in `pyproject.toml` for the active rul
 ### 13. One date/time language
 
 Machine timestamps are second-resolution UTC RFC 3339 with a `Z` suffix:
-`2026-08-10T09:11:49Z`. Parsers remain liberal enough to read legacy offsets
-and fractional seconds, but new persisted values use the canonical form.
+`2026-08-10T09:11:49Z`. Parsers also accept other UTC offsets and fractional
+seconds, but new persisted values use the canonical form.
 
 Human-visible dates use uppercase English three-letter months regardless of
 process locale: `10 AUG 2026`. Use `booley.runtime.timefmt`; do not hand-roll
-another format string. Persisted diagnostic log prefixes and their mirrored Console
-prefixes instead use canonical UTC RFC 3339 `Z` timestamps so events can be
+another format string. Persisted diagnostic log prefixes, and the same
+prefixes echoed to the terminal, use the machine form instead, so events can be
 correlated across files.
 
 ### Time and duration display
@@ -205,7 +205,8 @@ Tests that touch time, processes, sockets, or the filesystem also:
   waits a fixed time before answering, is a race.
 - Size inner deadlines (`subprocess.run(timeout=...)`, poll loops) from the
   suite's timeout budget rather than a tight literal; Windows CI fails any test
-  that uses more than 80% of its timeout.
+  that uses more than 80% of its timeout (see
+  [Development basics](CONTRIBUTING.md#development-basics)).
 - Bind port 0 and read back the assigned port.
 - Pass on Windows or skip there with the reason: guard POSIX-only signals
   (`SIGKILL`, `SIGHUP`), file modes, and symlinks, and close handles before

@@ -4,7 +4,7 @@ edalize==0.6.8
 fusesoc==2.4.7
 # Cocotb verification layer (ADR 0034 decision 10).
 cocotb==2.1.0
-numpy==2.5.3
+numpy==2.5.4
 cocotbext-axi==0.1.28
 cocotbext-uart==0.1.4
 # Mutant generator parser (ADR 0088); a test holds it equal to the hdl-parser extra.

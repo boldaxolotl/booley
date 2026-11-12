@@ -32,7 +32,7 @@ RUNTIME_PATHS = (
     ".runtime/traces/results.json",
     ".runtime/compiler-cache/cache-tag",
     ".runtime/sessions/log.json",
-    ".runtime/mutation_tester/mutant.sv",
+    ".runtime/mutation/mutant.sv",
     ".runtime/executions/id/.record.json.tmp",
     ".runtime/campaign-child-executions/entries/id.json",
     ".managed/project-git-hooks.pyz",
@@ -206,7 +206,7 @@ def _publish_goal_and_ticket(root, data, repo):
 
 def _publish_logs_and_cache(root, data, repo):
     """Build/trace logs, mutation proposals, diagnostics, MCP transcripts."""
-    from booley.dev_support import mutation_workspace
+    from booley.flows.mutation import workspace as mutation_workspace
     from booley.flows.run_log import write_run_log
     from booley.flows.sim.trace_session import TraceSession
     from booley.runtime.booley_dir import runtime_dir
@@ -430,7 +430,7 @@ def test_ignored_evidence_is_omitted_from_specialist_visible_inputs(versioned_pr
 def test_specialist_session_and_mutation_log_storage_keep_project_clean(
     versioned_project, monkeypatch
 ):
-    from booley.dev_support import mutation_workspace
+    from booley.flows.mutation import workspace as mutation_workspace
     from booley.specialists.reviewer import ReviewerSpecialist
 
     root, data, repo = versioned_project
