@@ -316,13 +316,26 @@ def take_number_one(kind: str, main: Path, booley_dir: Path) -> None:
         git(booley_dir, "commit", "--allow-empty", "-qm", "fixture")
         git(booley_dir, "branch", "booley-worktree/s1")
     else:
-        git(main, "branch", "booley/s1/x" if kind == "nested-branch" else "booley/s1")
+        branch = {
+            "branch": "booley/s1",
+            "nested-branch": "booley/s1/x",
+            "wt-branch": "wt/s1",
+            "nested-wt-branch": "wt/s1/x",
+        }[kind]
+        git(main, "branch", branch)
 
 
 def test_allocation_after_full_prune_skips_taken_numbers(tmp_path, monkeypatch):
     """An emptied map restarts numbering, but never at a number whose worktree or branch lives."""
     isolate_git(tmp_path, monkeypatch)
-    for kind in ("worktree", "branch", "nested-branch", "paired-branch"):
+    for kind in (
+        "worktree",
+        "branch",
+        "nested-branch",
+        "wt-branch",
+        "nested-wt-branch",
+        "paired-branch",
+    ):
         (tmp_path / kind).mkdir()
         main = main_project(tmp_path / kind)
         booley_dir = main / ".booley"
