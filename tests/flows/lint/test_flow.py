@@ -2950,3 +2950,140 @@ def test_lint_label_carries_target_source_bytes(tmp_path):
 
     assert seen == [job_resources.ResourceLabel("lite", "lint", source_bytes=expected_bytes)]
     assert expected_bytes > 0
+
+
+# ---------------------------------------------------------------------------
+# Typed metrics (issue #3497)
+# ---------------------------------------------------------------------------
+
+_VERILATOR_FINDINGS = (
+    "%Warning-UNUSEDSIGNAL: rtl/a.v:3:5: Signal is not used: 'x'\n"
+    "%Warning-UNUSEDSIGNAL: rtl/a.v:3:5: Signal is not used: 'x'\n"
+    "%Warning-WIDTH: rtl/b.v:9:1: Operator ASSIGNW expects 8 bits\n"
+    "%Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'\n"
+    "%Error: rtl/x.v:9:5: second diagnostic\n"
+    "%Error: rtl/x.v:9:5: second diagnostic\n"
+    "%Error: Exiting due to 3 error(s)\n"
+)
+_VERIBLE_FINDINGS = (
+    "rtl/top.sv:4:11: Interface names must end with _if. [interface-name-style]\n"
+    "rtl/top.sv:4:11: Interface names must end with _if. [interface-name-style]\n"
+    "rtl/top.sv:9:1: Line length exceeds 100. [line-length]\n"
+    'rtl/top.sv:3:1: syntax error at token "endmodule"\n'
+    'rtl/top.sv:5:1: syntax error at token "foo"\n'
+    'rtl/top.sv:5:1: syntax error at token "foo"\n'
+)
+
+
+class TestFlowMetrics:
+    """A Lint run returns its unique warning and error counts as typed metrics."""
+
+    @staticmethod
+    def _lint(
+        tmp_path: Path, family: str, *, stdout: str, returncode: int, timed_out: bool = False
+    ) -> LintConfigResult:
+        """Run one Target through ``_run_lint_target`` against canned linter output."""
+        with (
+            patch.object(
+                LintFlow,
+                "_execute",
+                return_value=MagicMock(
+                    returncode=returncode,
+                    stdout=stdout,
+                    stderr="",
+                    timed_out=timed_out,
+                    duration_s=0.1,
+                ),
+            ),
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["make", "-C", "x"], _stub_resolved(family)),
+            ),
+        ):
+            flow = LintFlow()
+            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+            flow.read_state()
+            return flow._run_lint_target(_target_handle("lite", eda_tool=family))
+
+    @pytest.mark.parametrize(
+        ("family", "output", "returncode"),
+        [
+            pytest.param("verilator", _VERILATOR_FINDINGS, 2, id="verilator"),
+            pytest.param("verible", _VERIBLE_FINDINGS, 1, id="verible"),
+        ],
+    )
+    def test_findings_return_unique_warning_and_error_counts(
+        self, tmp_path: Path, state_file: Path, family: str, output: str, returncode: int
+    ) -> None:
+        result = self._lint(tmp_path, family, stdout=output, returncode=returncode)
+
+        assert result.flow_metrics().plain == {"warnings": 2, "errors": 2}
+
+    def test_clean_run_returns_zero_counts(self, tmp_path: Path, state_file: Path) -> None:
+        result = self._lint(tmp_path, "verilator", stdout="", returncode=0)
+
+        assert result.flow_metrics().plain == {"warnings": 0, "errors": 0}
+
+    def test_warnings_only_run_does_not_count_the_epilogue_as_an_error(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        output = (
+            "%Warning-WIDTH: rtl/b.v:9:1: Operator ASSIGNW expects 8 bits\n"
+            "%Error: Exiting due to 1 warning(s)\n"
+        )
+
+        result = self._lint(tmp_path, "verilator", stdout=output, returncode=2)
+
+        assert result.flow_metrics().plain == {"warnings": 1, "errors": 0}
+
+    def test_linter_that_could_not_run_produces_no_metrics(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        from booley.flows.metric_declarations import MetricsUnavailableError
+
+        result = self._lint(tmp_path, "verilator", stdout="", returncode=-9, timed_out=True)
+
+        with pytest.raises(MetricsUnavailableError, match="Timed out"):
+            result.flow_metrics()
+
+    def test_rejected_design_without_a_readable_error_produces_no_metrics(
+        self, tmp_path: Path, state_file: Path
+    ) -> None:
+        from booley.flows.metric_declarations import MetricsUnavailableError
+
+        result = self._lint(tmp_path, "verilator", stdout="boom\n", returncode=3)
+
+        with pytest.raises(MetricsUnavailableError, match="exited 3"):
+            result.flow_metrics()
+
+    @pytest.mark.parametrize(
+        ("output", "expected"),
+        [
+            # Two different errors on one line count twice; a rule-less, location-less one once.
+            pytest.param(
+                "%Error: a.v:1:1: first\n%Error: a.v:1:1: other\n%Error: Internal Error\n",
+                3,
+                id="same-line-and-locationless",
+            ),
+            # A repeated line counts once; the same message under another rule counts again.
+            pytest.param(
+                "%Error-UNSUPPORTED: a.v:2:1: nope\n%Error-UNSUPPORTED: a.v:2:1: nope\n"
+                "%Error: a.v:2:1: nope\n",
+                2,
+                id="repeated-and-other-rule",
+            ),
+            # Continuation lines of a multi-line message are not errors.
+            pytest.param(
+                "%Error: a.v:3:1: bad\n    ... note\n   3 | wire x;\n      | ^\n",
+                1,
+                id="multi-line-message",
+            ),
+            pytest.param("%Error: Exiting due to 1 error(s)\n", 0, id="epilogue-only"),
+            pytest.param("", 0, id="empty"),
+        ],
+    )
+    def test_count_lint_errors_verilator(self, output: str, expected: int) -> None:
+        from booley.flows.lint.flow import count_lint_errors
+
+        assert count_lint_errors(output, "verilator") == expected
