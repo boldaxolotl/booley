@@ -86,6 +86,37 @@ def test_npm_update_is_discovered_on_each_launch(tmp_path, installed, monkeypatc
     assert HandleStore(project).load().next_number == 2
 
 
+@pytest.mark.parametrize("launcher", ["native", "npm"])
+def test_session_name_titles_the_codex_tab(tmp_path, installed, monkeypatch, launcher):
+    # Bug caught: the label never reaches the tab title (argv[0] natively, the shim argument
+    # under npm), or a resumed tab without --name loses its stored label.
+    if launcher == "native":
+        native = installed.with_name("codex")
+        native.write_text("not an ELF file\n")
+        monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: str(native))
+    project = tmp_path / "project"
+    _program, argv, handle = codex_chat.command(project, name="uart fix")
+    title_at = 0 if launcher == "native" else 2
+    assert handle == "S1"
+    assert argv[title_at] == "S1 \u00b7 uart fix"
+    assert argv[-1] == "--no-daemon"
+    assert HandleStore(project).load().names == {"pid:fixture:123:7": "uart fix"}
+    # The same launch process again, without --name: the stored label stays on the tab.
+    assert codex_chat.command(project)[1][title_at] == "S1 \u00b7 uart fix"
+    assert codex_chat.command(project, name="other")[1][title_at] == "S1 \u00b7 other"
+
+
+def test_unsupported_codex_naming_notes_the_ignored_name(tmp_path, monkeypatch, capsys):
+    # Bug caught: an explicit --name silently dropped where Codex cannot carry a title.
+    monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="win32", stderr=sys.stderr))
+    assert codex_chat.command(tmp_path, name="uart-fix") == ("codex", ["codex"], None)
+    assert "NOTE: Codex cannot show --name here: Codex tab handles need Linux" in (
+        capsys.readouterr().err
+    )
+    assert codex_chat.command(tmp_path) == ("codex", ["codex"], None)
+    assert capsys.readouterr().err == ""
+
+
 @pytest.mark.parametrize(
     "failure", ["script", "node-shim", "identity", "store", "lock", "node", "missing"]
 )

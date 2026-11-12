@@ -108,7 +108,8 @@ def order_worktrees(
     """Worktrees with a connected session first, other linked ones next, the main checkout last.
 
     ``sessions`` holds each connected session's checkout and its label
-    (``S3 Interactive``), already in handle-number order. Linked worktrees
+    (``S3 Interactive``, or ``S3 · uart-fix Interactive`` for a named session), already
+    in handle-number order. Linked worktrees
     with sessions keep the order of their first session; the others keep
     Git's order. The first Git entry is the main checkout and always comes
     last, with its sessions' labels too. Bare and prunable entries are dropped.

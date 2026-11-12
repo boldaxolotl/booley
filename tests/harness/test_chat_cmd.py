@@ -14,6 +14,8 @@ from booley.config.agent import AgentSettings
 from booley.config.settings import BackendConfigError
 from booley.harness import booley as booley_cli
 from booley.harness import chat_cmd, codex_chat
+from booley.runtime import handles as handles_module
+from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity
 from booley.runtime.session_activity import process_session_key
 
@@ -464,6 +466,49 @@ def test_claude_launch_paths_append_agent_args(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_cmd, "reserve_session_handle", unavailable, raising=False)
     _launch(tmp_path, ["--resume", "abc"])
     assert executed[-1] == ("claude", ["claude", "--resume", "abc"])
+
+
+def _use_real_reservation(monkeypatch, tmp_path, provider):
+    """Reserve handles for real in *tmp_path*, for either provider."""
+    _configure_claude(monkeypatch, provider)
+    monkeypatch.setattr(chat_cmd, "reserve_session_handle", handles_module.reserve_session_handle)
+    _use_real_codex_command(monkeypatch, tmp_path)
+    monkeypatch.setattr(codex_chat, "resolve_common_booley_dir", lambda root: root)
+    return _capture_exec(monkeypatch)
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_named_run_titles_the_tab(tmp_path, monkeypatch, provider):
+    # Bug caught: `--name` not threaded from `run` to the reservation, or the tab title
+    # (and Claude's `-n`) left as the bare handle.
+    executed = _use_real_reservation(monkeypatch, tmp_path, provider)
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(agent_args=[], session_name="uart-fix"), tmp_path)
+    title = "S1 \u00b7 uart-fix"
+    _program, argv = executed[-1]
+    assert argv == ([title, "-n", title] if provider == "claude" else [title, "--no-daemon"])
+    assert list(HandleStore(tmp_path).load().names.values()) == ["uart-fix"]
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_resumed_launch_keeps_or_replaces_the_stored_name(tmp_path, monkeypatch, provider):
+    # Bug caught: a resumed tab titled from its new key instead of the predecessor's entry,
+    # so the stored label vanishes (or a new --name does not replace it).
+    _use_real_reservation(monkeypatch, tmp_path, provider)
+    store = HandleStore(tmp_path)
+    store.reserve("pid:old", "S", name="uart-fix")
+    keys = ("pid:old",)
+
+    def title_of(name):
+        _, argv, handle = chat_cmd._agent_command(
+            provider, tmp_path, [], strict=False, predecessors=keys, name=name
+        )
+        assert handle == "S1"
+        return argv[0]
+
+    assert title_of(None) == "S1 \u00b7 uart-fix"
+    assert title_of("data path") == "S1 \u00b7 data path"
+    assert title_of(None) == "S1 \u00b7 data path"
 
 
 def test_claude_user_name_replaces_booley_name(tmp_path, monkeypatch):

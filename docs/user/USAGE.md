@@ -124,7 +124,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
     the default CLI, so another one may ask you to sign in and lack Booley's tools.
 
     Arguments after `booley chat` and its own options (`--cli`, `-C`,
-    `--new-worktree`, `--here`) go to the
+    `--new-worktree`, `--here`, `--name`) go to the
     CLI unchanged. To resume an earlier conversation, run
     `booley chat --resume <id>` (Claude) or `booley chat resume <id>` /
     `booley chat resume --last` (Codex); a conversation that ran in a worktree
@@ -281,6 +281,15 @@ footer shows the keys you can use.
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
 `J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
 handle, except a conversation resumed in its worktree, which keeps its handle.
+
+`booley chat --name uart-fix` labels a session: the terminal tab (Claude and
+Codex), the Claude session name and the Dashboard's session list, header and
+worktree picker show `S3 · uart-fix`. The label is a display aid only; the
+worktree and branch keep the handle (`s3`, `booley/s3`). A conversation resumed
+in its worktree keeps its handle and label, and `--name` on a resume sets a new
+label. A name is 1-32 letters, digits, spaces, `.`, `_` or `-`, starting with a
+letter or digit. Claude's own `--name` is still reachable as
+`booley chat -- --name <name>`.
 
 ### Several agents at once
 
