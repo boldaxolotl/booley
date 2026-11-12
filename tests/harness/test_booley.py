@@ -198,18 +198,14 @@ def test_chat_name_option_is_booleys_only_when_leading(monkeypatch):
     assert (args.session_name, args.agent_args) == (None, ["--name", "y"])
 
 
-@pytest.mark.parametrize(
-    "label",
-    ["", "   ", "a/b", "x" * 33, ".hidden", "caf\u00e9", "tab\there"],
-    ids=["empty", "blank", "slash", "too-long", "leading-dot", "non-ascii", "tab"],
-)
-def test_chat_name_rejects_invalid_labels(monkeypatch, capsys, label):
+def test_chat_name_rejects_invalid_labels(monkeypatch, capsys):
     # Bug caught: an invalid label accepted, or a failure other than a usage error (exit 2)
     # naming `--name`.
-    with pytest.raises(SystemExit) as raised:
-        _parse_argv(monkeypatch, "chat", "--name", label)
-    assert raised.value.code == 2
-    assert "argument --name: use 1-32 letters" in capsys.readouterr().err
+    for label in ["", "   ", "a/b", "x" * 33, ".hidden", "caf\u00e9", "tab\there"]:
+        with pytest.raises(SystemExit) as raised:
+            _parse_argv(monkeypatch, "chat", "--name", label)
+        assert raised.value.code == 2, repr(label)
+        assert "argument --name: use 1-32 letters" in capsys.readouterr().err, repr(label)
 
 
 def test_chat_name_missing_value_is_a_usage_error(monkeypatch, capsys):

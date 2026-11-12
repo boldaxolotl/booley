@@ -477,38 +477,42 @@ def _use_real_reservation(monkeypatch, tmp_path, provider):
     return _capture_exec(monkeypatch)
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_named_run_titles_the_tab(tmp_path, monkeypatch, provider):
+def test_named_run_titles_the_tab(tmp_path, monkeypatch):
     # Bug caught: `--name` not threaded from `run` to the reservation, or the tab title
     # (and Claude's `-n`) left as the bare handle.
-    executed = _use_real_reservation(monkeypatch, tmp_path, provider)
-    with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(agent_args=[], session_name="uart-fix"), tmp_path)
     title = "S1 \u00b7 uart-fix"
-    _program, argv = executed[-1]
-    assert argv == ([title, "-n", title] if provider == "claude" else [title, "--no-daemon"])
-    assert list(HandleStore(tmp_path).load().names.values()) == ["uart-fix"]
+    for provider, expected in (
+        ("claude", [title, "-n", title]),
+        ("codex", [title, "--no-daemon"]),
+    ):
+        project = tmp_path / provider
+        project.mkdir()
+        executed = _use_real_reservation(monkeypatch, project, provider)
+        with pytest.raises(_ExecCalledError):
+            chat_cmd.run(argparse.Namespace(agent_args=[], session_name="uart-fix"), project)
+        assert executed[-1][1] == expected
+        assert list(HandleStore(project).load().names.values()) == ["uart-fix"]
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_resumed_launch_keeps_or_replaces_the_stored_name(tmp_path, monkeypatch, provider):
+def test_resumed_launch_keeps_or_replaces_the_stored_name(tmp_path, monkeypatch):
     # Bug caught: a resumed tab titled from its new key instead of the predecessor's entry,
     # so the stored label vanishes (or a new --name does not replace it).
-    _use_real_reservation(monkeypatch, tmp_path, provider)
-    store = HandleStore(tmp_path)
-    store.reserve("pid:old", "S", name="uart-fix")
-    keys = ("pid:old",)
+    for provider in ("claude", "codex"):
+        project = tmp_path / provider
+        project.mkdir()
+        _use_real_reservation(monkeypatch, project, provider)
+        HandleStore(project).reserve("pid:old", "S", name="uart-fix")
 
-    def title_of(name):
-        _, argv, handle = chat_cmd._agent_command(
-            provider, tmp_path, [], strict=False, predecessors=keys, name=name
-        )
-        assert handle == "S1"
-        return argv[0]
+        def title_of(name, provider=provider, project=project):
+            _, argv, handle = chat_cmd._agent_command(
+                provider, project, [], strict=False, predecessors=("pid:old",), name=name
+            )
+            assert handle == "S1"
+            return argv[0]
 
-    assert title_of(None) == "S1 \u00b7 uart-fix"
-    assert title_of("data path") == "S1 \u00b7 data path"
-    assert title_of(None) == "S1 \u00b7 data path"
+        assert title_of(None) == "S1 \u00b7 uart-fix"
+        assert title_of("data path") == "S1 \u00b7 data path"
+        assert title_of(None) == "S1 \u00b7 data path"
 
 
 def test_claude_user_name_replaces_booley_name(tmp_path, monkeypatch):
