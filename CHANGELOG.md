@@ -202,8 +202,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   ([PR #3464](https://github.com/boldaxolotl/booley/pull/3464))
 
 - The RISC-V Sandbox Image moves Spike to upstream master `4094d290`, which adds
-  configurable LR/SC reservation-set size, the Zvt tile fixes, and a batch of
+  configurable LR/SC reservation-set size, a Zvt tile fix, and a batch of
   CSR and PMP fixes (`stopei`, `mstateen0`, `scountovf`, mcontrol6 triggers).
+  ([PR #3633](https://github.com/boldaxolotl/booley/pull/3633))
 
 ## 0.4.0 - 04 NOV 2026
 
