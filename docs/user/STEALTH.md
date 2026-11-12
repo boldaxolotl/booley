@@ -78,28 +78,25 @@ When you or the agent commit, the commit-msg hook:
   or `'booley' on line 3`, and says where the message is kept:
 
     ```text
-    commit-msg: commit message rejected by Stealth Mode
-      'booley' in the subject
-    Reword the message or remove the term from [stealth] banned_words /
-    banned_substrings in the project config TOML.
-    Your message is kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
+    commit-msg: Stealth Mode rejected this commit message; it contains banned terms:
+      - 'booley' in the subject
+    Reword the message, or, if a term is an ordinary name in this design, remove it from [stealth] banned_words or banned_substrings in the project config TOML.
+    Your message was kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
+    To retry with the same text, rerun your git commit command with the same options (-a, --amend, paths) and replace -m/-F with: -v -e -F "/path/to/repo/.git/COMMIT_EDITMSG"
     ```
 
-  To retry, rerun the same `git commit` command with its options (`-a`,
-  `--amend`, paths) and replace `-m` or `-F` with
-  `-v -e -F "<that path>"`. That opens the kept message in your editor so you
-  can reword it. A rejected merge commit also tells you to finish it with
-  `git commit -m "<message>"`, or to pass `-m` to `git merge`.
+    To retry, rerun the same `git commit` command with its options (`-a`,
+    `--amend`, paths) and replace `-m` or `-F` with
+    `-v -e -F "<that path>"`. That opens the kept message in your editor so you
+    can reword it. A rejected merge commit also tells you to finish it with
+    `git commit -m "<message>"`, or to pass `-m` to `git merge`.
 
-Lines that start with the comment prefix (`#`, or your `core.commentChar`) and
-everything below the scissors line (the diff that `git commit -v` appends) aren't
-checked. A `#` line that `git commit -m` keeps in the message isn't caught
-here; the pre-push hook checks it.
+The hook skips the lines the editor template comments out and the diff that
+`git commit -v` appends. The pre-push hook still checks the final message.
 
 The default banned words are `claude`, `anthropic`, `copilot`, `codex`,
 `openai`, `chatgpt`, `gemini`, `booley`, `gpt`, `llm`, and `co-authored-by`.
-`cursor` and `ticket` used to be on the list; add them to `banned_words` to keep
-checking them.
+To also check `cursor` or `ticket`, add them to `banned_words`.
 
 ```toml
 [stealth]

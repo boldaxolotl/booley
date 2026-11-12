@@ -295,13 +295,13 @@ Try:
   footer is rejected with the raw message unchanged. Without it, `booley` in the message is still
   rejected with the file unchanged and the match listed. A final `Generated with booley` is
   rejected, and a message without banned terms ending in `Generated with care by the whole team`
-  is accepted verbatim. No Project state reaches outer history. A fresh outer
-  clone shows the documented hidden-state limit.
+  is accepted verbatim. No Project state reaches outer history. A fresh outer clone shows the
+  documented hidden-state limit.
 - An invalid native core is ignored while authored Targets resolve. Refreshing after an
   authored-core edit updates the projection.
 - Git policy (disposable bare remote): a bad subject or body is refused, not truncated. The escape
-  skips the convention but still rejects banned terms. Identities, banned paths, symlinks, and the guard escape
-  behave as documented. Restore, then commit and push cleanly.
+  skips the convention but still rejects banned terms. Identities, banned paths, symlinks, and the
+  guard escape behave as documented. Restore, then commit and push cleanly.
 - Isolation: non-root, with no host home, SSH, or Docker socket. Undeclared routes are blocked while
   provider calls work. The PDK mount refuses writes, and an interrupt leaves no descendants.
 - A push to your Git server succeeds from outside. From inside, the network blocks it (not Git or

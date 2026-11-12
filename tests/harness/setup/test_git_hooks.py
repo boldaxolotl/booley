@@ -564,6 +564,11 @@ class TestProjectCommitMsgHookVendoring:
         assert 'git commit -m "<message>"' in rejected.stderr
         assert "git merge" in rejected.stderr and '-m "<message>"' in rejected.stderr
 
+        # The merge is still in progress, so a message from -m is also a merge message.
+        again = _run_git(repo, "commit", "-m", "fix(core): booley merge", check=False)
+        assert again.returncode != 0
+        assert 'git commit -v -e -F "' in again.stderr
+
         _run_git(repo, "commit", "-m", "Merge feature work")
         parents = _run_git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()
         assert len(parents) == 3

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import io
+import os
 import shutil
 import sys
+from collections.abc import Iterator
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,11 +18,17 @@ from booley.dev_support.commit_msg_hook import main
 
 
 @pytest.fixture(autouse=True)
-def project(tmp_path_factory) -> Path:
+def project(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Path]:
     """Unit-test the vendored Project hook, not this source checkout's role.
 
     The hook acts only in Stealth Mode, so the default Project enables it explicitly.
+    Git ignores the developer's own configuration, so a global ``core.commentChar``
+    cannot change what the hook skips.
     """
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     project_root = tmp_path_factory.mktemp("stealth-project")
     (project_root / ".booley").mkdir()
     _write_config(project_root, "[stealth]\nenabled = true\n")
@@ -36,9 +46,6 @@ def _run_hook(
     """Run ``main()`` on a message file; return (rc, stderr text, file bytes after)."""
     msg_file = tmp_path / name
     msg_file.write_bytes(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
-    import io
-    from contextlib import redirect_stderr
-
     err = io.StringIO()
     with (
         patch("booley.dev_support.commit_msg_hook.sys.argv", ["commit-msg", str(msg_file)]),
@@ -87,6 +94,15 @@ class TestBannedTermRejection:
         assert "banned_words" in err and "banned_substrings" in err
         assert "-v -e -F" in err
 
+    def test_docs_quote_the_real_rejection_output(self, tmp_path: Path):
+        """The user docs show the lines a user pastes into a search; keep them current."""
+        _, err, _ = _run_hook(tmp_path, "fix(core): llm\n")
+        docs = Path(__file__).resolve().parents[2] / "docs" / "user"
+        for name in ("STEALTH.md", "TROUBLESHOOTING.md"):
+            text = (docs / name).read_text(encoding="utf-8")
+            for line in (err.splitlines()[0], err.splitlines()[2]):
+                assert line in text, f"{name} no longer quotes: {line}"
+
     def test_one_entry_per_term_per_line(self, tmp_path: Path):
         _, err, _ = _run_hook(tmp_path, "fix(core): llm llm LLM\n")
         assert err.count("'llm'") == 1
@@ -108,11 +124,7 @@ class TestBannedTermRejection:
         assert after == raw.encode()
 
     def test_configured_comment_char_is_honored(self, tmp_path: Path, project: Path):
-        for argv in (
-            ["git", "init", "-q", str(project)],
-            ["git", "-C", str(project), "config", "core.commentChar", ";"],
-        ):
-            assert run_bounded_child(argv, timeout=10).returncode == 0
+        self._git_config(project, "core.commentChar", ";")
         rc, err, _ = _run_hook(tmp_path, "fix(core): repair widget\n; booley here\n")
         assert rc == 0, err
         rc, err, _ = _run_hook(tmp_path, "fix(core): repair widget\n# booley here\n")
@@ -120,11 +132,7 @@ class TestBannedTermRejection:
         assert "'booley' on line 2" in err
 
     def test_comment_char_auto_falls_back_to_hash(self, tmp_path: Path, project: Path):
-        for argv in (
-            ["git", "init", "-q", str(project)],
-            ["git", "-C", str(project), "config", "core.commentChar", "auto"],
-        ):
-            assert run_bounded_child(argv, timeout=10).returncode == 0
+        self._git_config(project, "core.commentChar", "auto")
         rc, err, _ = _run_hook(tmp_path, "fix(core): repair widget\n# booley here\n")
         assert rc == 0, err
 
@@ -138,12 +146,45 @@ class TestBannedTermRejection:
     def test_message_lines_keeps_file_line_numbers(self):
         from booley.dev_support.commit_msg_hook import message_lines
 
-        assert message_lines("a\n# c\nb\n", "#") == [(1, "a"), (3, "b"), (4, "")]
+        assert message_lines("a\n# c\nb\n", ("#",)) == [(1, "a"), (3, "b"), (4, "")]
+
+    def test_scissors_line_must_match_exactly(self):
+        """Git cuts only at the exact scissors line, so text after it on the line is kept."""
+        from booley.dev_support.commit_msg_hook import message_lines
+
+        raw = "a\n# ------------------------ >8 ------------------------ booley\nb\n"
+        assert [text for _, text in message_lines(raw, ("#",))] == ["a", "b", ""]
+
+    def test_comment_string_keeps_trailing_space(self, tmp_path: Path, project: Path):
+        """A ``core.commentString`` of ``"# "`` leaves ``#booley`` as message text."""
+        self._git_config(project, "core.commentString", "# ")
+        rc, err, _ = _run_hook(tmp_path, "fix(core): repair widget\n# comment\n#booley\n")
+        assert rc == 1
+        assert "'booley' on line 3" in err
+
+    def test_comment_char_auto_skips_any_char_git_may_pick(self, tmp_path: Path, project: Path):
+        """A retry with ``-F`` can make ``auto`` pick ``;``: that template is not scanned."""
+        self._git_config(project, "core.commentChar", "auto")
+        raw = (
+            "fix(core): repair widget\n\n; On branch booley/x\n"
+            "; ------------------------ >8 ------------------------\n+import booley\n"
+        )
+        rc, err, _ = _run_hook(tmp_path, raw)
+        assert rc == 0, err
+
+    @staticmethod
+    def _git_config(project: Path, key: str, value: str) -> None:
+        for argv in (
+            ["git", "init", "-q", str(project)],
+            ["git", "-C", str(project), "config", key, value],
+        ):
+            assert run_bounded_child(argv, timeout=10).returncode == 0
 
     def test_merge_commit_message_file_gets_merge_hint(self, tmp_path: Path):
         rc, err, _ = _run_hook(tmp_path, "Merge branch 'llm-fix'\n", name="MERGE_MSG")
         assert rc == 1
         assert "git commit -m" in err and "git merge" in err
+        assert 'git commit -v -e -F "' in err
 
     def test_plain_rejection_has_no_merge_hint(self, tmp_path: Path):
         _, err, _ = _run_hook(tmp_path, "fix(core): llm\n")
@@ -317,15 +358,12 @@ class TestMain:
         with patch("booley.dev_support.commit_msg_hook.sys.argv", ["commit-msg", str(missing)]):
             assert main() == 1
 
-    def test_validation_failure(self, tmp_path: Path):
+    def test_validation_failure(self, tmp_path: Path, project: Path):
         """main() returns 1 when the convention check reports errors."""
-        with patch(
-            "validate_commit_msg.convention_errors",
-            return_value=["Subject doesn't match format"],
-        ):
-            rc, err, _ = _run_hook(tmp_path, "bad message\n")
+        _write_config(project, "[stealth]\nenabled = true\nenforce_convention = true\n")
+        rc, err, _ = _run_hook(tmp_path, "bad message\n")
         assert rc == 1
-        assert "Subject doesn't match format" in err
+        assert "Subject doesn't match" in err
 
     def test_stealth_disabled_leaves_message_unchanged(self, tmp_path: Path, project: Path):
         _write_config(

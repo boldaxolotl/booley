@@ -366,10 +366,11 @@ control at all: copy a file aside before you edit it.
 ### A commit is rejected for a banned term
 
 ```text
-commit-msg: commit message rejected by Stealth Mode
-  'booley' in the subject
-  'booley' on line 3
-Your message is kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
+commit-msg: Stealth Mode rejected this commit message; it contains banned terms:
+  - 'booley' in the subject
+  - 'booley' on line 3
+Reword the message, or, if a term is an ordinary name in this design, remove it from [stealth] banned_words or banned_substrings in the project config TOML.
+Your message was kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
 ```
 
 [Stealth Mode](https://booley.dev/docs/stealth/) rejects a commit message that
@@ -379,14 +380,13 @@ message, or remove the term from `[stealth] banned_words` / `banned_substrings`
 in `.booley/booley.toml` if it is an ordinary name in your design. Your text
 stays in the file the error names.
 
-To retry, rerun the same `git commit` command with its options (`-a`,
-`--amend`, paths), replacing `-m` or `-F` with `-v -e -F "<that path>"`. The
-editor opens on the kept message. If a merge commit was rejected, finish it with
-`git commit -m "<message>"`, or pass `-m` to `git merge`.
+To retry, rerun the same `git commit` command with its options, replacing
+`-m` or `-F` with `-v -e -F "<that path>"`; the editor opens on the kept message.
+[Stealth Mode](https://booley.dev/docs/stealth/#commit-messages) covers merge
+commits and the rest.
 
 `BOOLEY_SKIP_COMMIT_VALIDATION=1` doesn't bypass this check. If the hook still
-rewrites messages after an upgrade, run `booley init` to install the current
-hook.
+replaces words with `redacted`, run `booley init` to install the current hook.
 
 ### Doctor reports a Sandbox whose egress mode differs from the host
 

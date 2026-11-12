@@ -18,10 +18,9 @@ how to retry with the same text.
 Project Initialization packages this module into the Project Git-hook
 bundle used by the RTL repository and its linked worktrees.
 
-**Rejecting beats rewriting.** The hook used to replace banned terms with a
-placeholder in place. That changed what the author wrote, produced scopes such
-as ``fix(redacted)``, and made the committed history differ from the text the
-author had reviewed. A rejection costs one retry and loses nothing.
+**Rejecting beats rewriting.** Rewriting would change what the author wrote and
+make the committed history differ from the text the author had reviewed. A
+rejection costs one retry and loses nothing.
 """
 
 from __future__ import annotations
@@ -39,9 +38,8 @@ if _DEV_SUPPORT_DIR not in sys.path:
 from commit_msg_utils import find_banned, stealth_enabled
 
 # These existing structural forms are unambiguous attribution markers and are
-# rejected regardless of Project vocabulary. They used to be silently dropped,
-# which made the hook's policy depend on footer spelling and destroyed the raw
-# message the author needed to correct.
+# rejected regardless of Project vocabulary, and the raw message is kept so the
+# author can correct it.
 _STRUCTURAL_ATTRIBUTION_LINE_RE = re.compile(
     r"""^\s*(?:
           co-authored-by\s*:          # the git trailer itself
@@ -96,32 +94,43 @@ def _git_output(project_root: Path | None, *args: str) -> tuple[bool, str]:
     return run.ok, run.stdout
 
 
-def _comment_prefix(project_root: Path | None) -> str:
-    """Return Git's comment prefix: ``core.commentChar``/``commentString``, else ``#``.
+# Characters Git picks from when ``core.commentChar`` is ``auto``.
+_AUTO_COMMENT_CHARS = tuple("#;@!$%^&|:")
 
-    Git treats the two keys as one setting where the last one set wins, and
-    ``auto`` means "pick a character the message does not use", which cannot
-    be known here, so it maps to ``#``.
+
+def _comment_prefixes(project_root: Path | None) -> tuple[str, ...]:
+    """Return Git's comment prefixes: ``core.commentChar``/``commentString``, else ``#``.
+
+    Git treats the two keys as one setting where the last one set wins. With
+    ``auto`` Git picks a character the message does not use, which cannot be
+    known here (a retry with ``-F`` can switch it from ``#``), so every
+    character ``auto`` may pick counts as a comment prefix.
     """
     ok, out = _git_output(project_root, "config", "--get-regexp", r"^core\.comment(char|string)$")
     if not ok or not out.strip():
-        return "#"
-    value = out.strip().splitlines()[-1].partition(" ")[2].strip()
-    return "#" if value in ("", "auto") else value
+        return ("#",)
+    # Keep the value's own spaces: only the line break is not part of it.
+    value = out.splitlines()[-1].partition(" ")[2]
+    if value == "auto":
+        return _AUTO_COMMENT_CHARS
+    return (value or "#",)
 
 
-def message_lines(raw: str, prefix: str) -> list[tuple[int, str]]:
-    """Return ``(file line number, text)`` for the lines Git keeps in the message.
+def message_lines(raw: str, prefixes: tuple[str, ...]) -> list[tuple[int, str]]:
+    """Return ``(file line number, text)`` for the lines Git keeps in an edited message.
 
     Drops the scissors line and everything below it, and lines that start with
-    *prefix* at column 0, as ``git commit`` does.
+    one of *prefixes* at column 0, as ``git commit`` does when it cleans up a
+    message the author edited.
     """
-    scissors = f"{prefix} ------------------------ >8 ------------------------"
+    scissors = {
+        f"{prefix} ------------------------ >8 ------------------------" for prefix in prefixes
+    }
     kept: list[tuple[int, str]] = []
     for number, line in enumerate(raw.replace("\r\n", "\n").replace("\r", "\n").split("\n"), 1):
-        if line.startswith(scissors):
+        if line in scissors:
             break
-        if not line.startswith(prefix):
+        if not line.startswith(prefixes):
             kept.append((number, line))
     return kept
 
@@ -149,10 +158,14 @@ def _is_merge(msg_file: Path, project_root: Path | None) -> bool:
     return _git_output(project_root, "rev-parse", "-q", "--verify", "MERGE_HEAD")[0]
 
 
-def _print_kept_and_retry(msg_file: Path) -> None:
+def _print_kept_and_retry(msg_file: Path, *, merge: bool = False) -> None:
     """Say where the rejected message was kept and how to retry with it."""
     path = msg_file.resolve()
     print(f'Your message was kept unchanged in "{path}".', file=sys.stderr)
+    if merge:
+        # The merge stays in progress after a rejection, so plain git commit finishes it.
+        print(f'To retry with the same text, run: git commit -v -e -F "{path}"', file=sys.stderr)
+        return
     print(
         "To retry with the same text, rerun your git commit command with the same "
         f'options (-a, --amend, paths) and replace -m/-F with: -v -e -F "{path}"',
@@ -189,14 +202,14 @@ def _print_banned_rejection(
             '-m "<message>" to git merge.',
             file=sys.stderr,
         )
-    _print_kept_and_retry(msg_file)
+    _print_kept_and_retry(msg_file, merge=merge)
 
 
 def _check_message(msg_file: Path, raw: str, project_root: Path | None) -> int:
     """Return the hook exit code for one message, printing any rejection."""
     from validate_commit_msg import convention_errors
 
-    lines = message_lines(raw, _comment_prefix(project_root))
+    lines = message_lines(raw, _comment_prefixes(project_root))
     subject_index = _subject_index(lines)
     body = "\n".join(text for _, text in lines[(subject_index or 0) + 1 :])
 
