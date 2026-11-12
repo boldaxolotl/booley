@@ -9,6 +9,24 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- A traced `sim` run now registers each traced Target's waveform as B-Wave
+  session `@<target>` (its last Test Run that did not pass, else its last) and
+  the last Target's as the default session, so `bwave @<target> list` and a path-less
+  `bwave list` work without finding the trace file. The session store is shared
+  by the Sandbox, so the latest traced run owns `@<target>` and the default
+  session ([#3483](https://github.com/boldaxolotl/Booley/issues/3483) tracks a
+  per-checkout store). `bwave` without a trace path or session now says to rerun
+  the simulation with `--trace`.
+- The Mutation Tester now generates Mutants deterministically and runs no LLM:
+  the same RTL, `--count`, and the new `--seed` (default 0) give identical
+  Mutants. `--scope` is optional and defaults to the Target's own RTL. The
+  default pass threshold is 80 % of the count, rounded up, also for an
+  existing Goal without `min_detected` (it used to require every Mutant). Each Mutant's per-test timeout scales with the
+  baseline run (10 x, 30 s minimum, 300 s cap), and a timed-out Mutant counts
+  as detected and is reported as `detected (timeout)`. Results record scope
+  file hashes, generator and pyslang versions, seed, and count. `--steer` and
+  `--regen-lock` are removed, and the mutation lock is no longer used.
+
 - The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
   as a Standalone Job: choose the worktree and the Flow, fill in a form generated
   from the Flow's options, check the equivalent shell command, then submit or

@@ -32,7 +32,7 @@ Booley offers two kinds of capability:
 - **Flows** (`sim`, `lint`, `synth`, `fpga`) run EDA tools in a fixed,
   predictable way. No AI is involved.
 - **Specialists** (`reviewer`, `mutation_tester`, `coverage_analyst`) are small
-  LLM-powered capabilities that each do one focused job. See
+  capabilities that each do one focused job; `mutation_tester` runs no LLM. See
   [Specialists](SPECIALISTS.md).
 
 Both run inside the **Sandbox**, a Docker container that holds the EDA tools
