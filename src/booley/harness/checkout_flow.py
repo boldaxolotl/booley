@@ -4,7 +4,9 @@ The checkout comes from :func:`booley.runtime.commit_export.export_commit`: a
 Git-less directory that is the Project Root of the run. The Flow runs as a child
 process whose ``BOOLEY_DIR`` is the caller's Main Booley Directory, so admission
 and its settings, the Resource History and the Job record stay there, while
-nothing shared is written into the checkout. The child gets the scrubbed
+nothing shared is written into the checkout. Every input (configuration, cores,
+tests) comes from the checkout's own Booley Directory, which the run refuses to
+start without. The child gets the scrubbed
 :func:`~booley.measurement.environment.measurement_environment`, a fresh ``HOME``
 and ``TMPDIR`` beside the checkout, and its reports go to a directory the caller
 names outside the checkout. Once the entry point returns, no Job record names a
@@ -41,6 +43,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from booley.core.booley_layout import validate_environment
 from booley.core.boundary import as_dict
 from booley.flows.metric_declarations import FlowMetricValues
 from booley.harness.standalone_job import (
@@ -155,7 +158,51 @@ def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path, Path]:
     report_dir = request.report_dir.resolve()
     if report_dir.is_relative_to(checkout):
         raise CheckoutFlowError(f"report directory {report_dir} is inside the checkout {checkout}")
+    _require_own_booley_dir(checkout, main)
     return checkout, main, report_dir
+
+
+def _require_own_booley_dir(checkout: Path, main: Path) -> None:
+    """Refuse a checkout whose Booley configuration would not come from inside it.
+
+    The child reads every input from the checkout's own Booley Directory. A commit
+    without one would silently fall back to Main's (``BOOLEY_DIR``), and a
+    ``[project].dir`` in an ancestor ``booley.toml`` would select a directory
+    outside the checkout (or inside it, steered from outside). Either would make
+    the run measure something other than the commit.
+    """
+    try:
+        validate_environment()
+    except (OSError, RuntimeError, ValueError) as exc:  # the runner's own environment
+        raise CheckoutFlowError(f"the runner's environment is unusable: {exc}") from exc
+    try:
+        selected = booley_dir.resolve_authoritative_booley_dir(checkout)
+        own = booley_dir.own_booley_dir(checkout)
+    except (OSError, RuntimeError, ValueError) as exc:  # includes BooleyLayoutError
+        raise CheckoutFlowError(
+            f"checkout {checkout} has an unusable Booley configuration: {exc}"
+        ) from exc
+    if not selected.is_dir():
+        # No Booley Directory in the commit: the child would fall back to Main's.
+        raise CheckoutFlowError(
+            f"checkout {checkout} has no Booley Directory of its own, so it would read "
+            f"its Booley configuration from {main}; commit one inside the checkout"
+        )
+    selected = selected.resolve()
+    if selected == checkout:
+        raise CheckoutFlowError(
+            f"checkout {checkout} selects its own root as its Booley Directory; "
+            "use a directory inside the checkout"
+        )
+    # Only the checkout's own ``booley.toml`` may choose the directory: a selection
+    # from an ancestor, even one landing inside the checkout, is steered from outside.
+    if not selected.is_relative_to(checkout) or selected != own.resolve():
+        raise CheckoutFlowError(
+            f"checkout {checkout} would read its Booley configuration from {selected}, "
+            "which its own booley.toml does not select inside it; commit a Booley "
+            "Directory inside the checkout, remove any [project].dir above it and fix a "
+            "[project].dir of its own that names a missing directory"
+        )
 
 
 def _launch(
