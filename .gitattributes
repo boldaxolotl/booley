@@ -15,6 +15,9 @@ qa/** -text
 # bytes, including trailing blank lines in run logs, stay as captured.
 tests/qa/fixtures/** -text -whitespace
 
+# Captured Booley 0.3.0 Simulation records keep their exact bytes.
+tests/flows/fixtures/booley_0_3_0/** -text -whitespace
+
 # Captured Cocotb console output keeps the producer's trailing spaces.
 tests/fixtures/cocotb_timeout_progress/2.1.0/*.log -text -whitespace
 

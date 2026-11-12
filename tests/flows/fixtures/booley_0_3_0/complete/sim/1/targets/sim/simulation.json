@@ -1,0 +1,31 @@
+{
+  "$schema": "booley.simulation-projection/v2",
+  "campaign_id": "6ccc4b9b-b4ff-40fe-9328-ee16d700adcf",
+  "campaign_manifest": {
+    "bytes": 4400,
+    "kind": "simulation_campaign_manifest",
+    "owner": "6ccc4b9b-b4ff-40fe-9328-ee16d700adcf",
+    "path": "campaign/manifest.json",
+    "path_base": "origin_target",
+    "sha256": "sha256:e685b481effbd336dbfff07ed18e618543918be2f78addc05e4d268adbf3c751"
+  },
+  "complete": true,
+  "flow": "sim",
+  "inconclusive": false,
+  "mode": "simulate",
+  "passed": true,
+  "target": "sim",
+  "target_identity": "acme:lib:demo:1#sim",
+  "tests": [
+    {
+      "cycles": null,
+      "error_tail": "",
+      "execution": "completed",
+      "failure_kind": "",
+      "name": "first",
+      "passed": true,
+      "sva_errors": 0,
+      "timed_out": false
+    }
+  ]
+}

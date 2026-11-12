@@ -1,0 +1,24 @@
+{
+  "$schema": "booley.verilator-declarations/v1",
+  "build_identity": "unavailable",
+  "compiler": {
+    "commit": "ea338be98e1e838d3518809ce8899f85a009963c",
+    "tag": "v5.052"
+  },
+  "declarations": [],
+  "diagnostics": [
+    {
+      "code": "missing_build_evidence",
+      "message": "Successful build supplied no declaration evidence"
+    }
+  ],
+  "native_source_presence": {
+    "paths": [],
+    "unresolved": [
+      "rtl/counter.sv"
+    ]
+  },
+  "raw_evidence": [],
+  "sources": [],
+  "status": "incomplete"
+}
