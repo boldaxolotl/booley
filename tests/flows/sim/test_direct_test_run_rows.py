@@ -190,7 +190,10 @@ def test_coverage_rows_come_from_the_frozen_test_runs_only():
 def test_rows_are_informative_relative_to_the_targets_own_default_seed():
     """A Target with ``default_seed = 7``: ``@7`` is its plain run, ``@1`` is not."""
     from booley.flows.sim.campaign.test_run_report import informative_test_run_lines
-    from booley.flows.sim.flow import _campaign_test_run_lines, _effective_default_seed
+    from booley.flows.sim.campaign_presentation import (
+        _campaign_test_run_lines,
+        _effective_default_seed,
+    )
 
     at_seven = [{**test_run_document(build_test_run("smoke", seed=7)), "grade": "pass"}]
     at_one = [{**test_run_document(_SMOKE), "grade": "pass"}]

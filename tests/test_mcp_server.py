@@ -494,19 +494,19 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_configured_default_gets_small_margin(self, tmp_path):
         with patch(
-            "booley.flows.sim.flow.resolve_sim_timeout_ms",
-            return_value=600_000,
+            "booley.flows.sim.config.resolve_sim_timeout_ms",
+            return_value=900_000,
         ):
             timeout = self._mcp_tool_timeout_seconds(
                 "sim",
                 {"work_dir": str(tmp_path), "trace": False},
                 {"default_timeout": 600},
             )
-        assert timeout == 4830
+        assert timeout == 5130
 
     def test_simulate_campaign_budget_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=4,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -518,7 +518,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_trace_margin_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -531,7 +531,7 @@ class TestMcpToolTimeoutSeconds:
     def test_coverage_trace_budget_adds_conversion_per_unit(self):
         def coverage_timeout(trace: bool) -> int:
             with patch(
-                "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+                "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
                 return_value=2,
             ):
                 return self._mcp_tool_timeout_seconds(
@@ -546,7 +546,7 @@ class TestMcpToolTimeoutSeconds:
         from booley.flows.sim.mode import SimulationMode
 
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=3,
         ) as resolve_units:
             timeout = self._mcp_tool_timeout_seconds(
@@ -564,7 +564,7 @@ class TestMcpToolTimeoutSeconds:
     def test_watchdog_sizing_sees_the_requested_seed(self):
         """``--seed random`` splits Cocotb batches, so sizing must know about it."""
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=3,
         ) as resolve_units:
             self._mcp_tool_timeout_seconds(
@@ -598,7 +598,7 @@ class TestMcpToolTimeoutSeconds:
         )
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=1,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -800,7 +800,7 @@ class TestMcpToolTimeoutSeconds:
             encoding="utf-8",
         )
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -1944,7 +1944,7 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
 ):
     from types import SimpleNamespace
 
-    from booley.flows.sim.flow import _campaign_report_lines
+    from booley.flows.sim.campaign_presentation import _campaign_report_lines
     from booley.flows.test_runs import build_test_run
     from booley.mcp.server import _format_mcp_tool_result
     from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error

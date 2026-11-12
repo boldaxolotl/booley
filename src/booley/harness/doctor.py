@@ -2844,7 +2844,7 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     if not reported:
         return
     default_cli = _configured_provider(project)
-    allowed = _allowed_clis(project, default_cli)
+    allowed = _auto_allowed_clis(auto_choice, default_cli) or _allowed_clis(project, default_cli)
     _warn_ignored_gateway_handoff(reporter)
     # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
     pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
@@ -2859,6 +2859,13 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
             runs_specialist=cli in specialist_clis,
             auto_choice=auto_choice,
         )
+
+
+def _auto_allowed_clis(choice: AgentAppChoice | None, default_cli: str) -> tuple[str, ...]:
+    """The CLIs ``BOOLEY_AGENT_APP=auto`` allowed, the default first; empty for an explicit app."""
+    if choice is None:
+        return ()
+    return (default_cli, *(cli for cli in choice.clis if cli != default_cli))
 
 
 def _specialist_clis(project: ProjectAudit | None) -> frozenset[str]:
@@ -2991,8 +2998,13 @@ def _report_agent_app_choice(reporter: _Reporter) -> tuple[bool, AgentAppChoice 
         reporter.fail_(str(exc), check_id="agent.credential-policy", subject="BOOLEY_AGENT_APP")
         return False, None
     if choice is not None:
-        label = _AGENT_APP_LABELS[choice.app]
-        reporter.pass_(f"Agent app: {label} chosen by BOOLEY_AGENT_APP=auto ({choice.reason})")
+        labels = [_AGENT_APP_LABELS[cli] for cli in choice.clis]
+        if len(labels) > 1:
+            labels[0] += " (default)"
+            subject = "Agent CLIs: " + ", ".join(labels)
+        else:
+            subject = f"Agent app: {labels[0]}"
+        reporter.pass_(f"{subject} chosen by BOOLEY_AGENT_APP=auto ({choice.reason})")
     return True, choice
 
 

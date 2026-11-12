@@ -16,6 +16,7 @@ the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
 | `booley chat` | Explicit spelling of the Sandbox default `booley` command |
 | `booley dashboard` | Show sessions, Goals, and Jobs |
 | `booley flow` | List or directly run deterministic Booley Flows |
+| `booley measure` | Check `metrics.toml` with `--validate`; measuring is not available yet |
 | `booley specialist` | List or directly run visible Specialists |
 | `booley worktree` | Create, list, remove, or clean up idle linked worktrees (Paired Checkout or Snapshot) |
 

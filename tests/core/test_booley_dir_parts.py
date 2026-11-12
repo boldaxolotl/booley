@@ -10,6 +10,7 @@ import pytest
 ADR_0082_SAMPLES = {
     "booley.toml": "checkout",
     "tests.toml": "checkout",
+    "metrics.toml": "checkout",
     "criteria.toml": "checkout",
     "doctor-waivers.toml": "checkout",
     "configs.toml": "checkout",
@@ -152,6 +153,7 @@ def test_unclassified_path_is_rejected():
 VERSIONED_PATTERNS = {
     "booley.toml",
     "tests.toml",
+    "metrics.toml",
     "criteria.toml",
     "doctor-waivers.toml",
     "configs.toml",

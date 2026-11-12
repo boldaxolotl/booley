@@ -15,7 +15,7 @@ in the wrong place stops and prints how to run it in the right one.
 
 | Location | Public commands, in order |
 |---|---|
-| Sandbox | `chat`, `dashboard`, `flow`, `specialist`, `worktree` |
+| Sandbox | `chat`, `dashboard`, `flow`, `measure`, `specialist`, `worktree` |
 | Either | `cheat`, `coverage`, `doctor`, `help`, `init`, `resources`, `targets` |
 | Host-only | `auth`, `bootstrap`, `eda`, `projects` |
 
@@ -61,6 +61,7 @@ booley chat --resume <id>         # Claude: arguments after chat and its options
 booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
 booley dashboard                  # sessions and Jobs; see Usage
+booley measure --validate         # check .booley/metrics.toml; measures nothing
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
 booley worktree rm <name>         # remove a worktree, keeping its evidence and branches
@@ -71,6 +72,9 @@ booley worktree gc                # remove idle worktrees (default: a week), whe
 the agent's own arguments. `--new-worktree` is refused when you run it from
 inside a linked worktree. If Booley cannot reserve a session handle for a
 worktree launch, it exits with status 2 and suggests `--here`.
+
+Measuring a commit is not available yet: `booley measure` without
+`--validate` says so and exits with status 2.
 
 The Dashboard opens by itself when you attach to the container; see
 [The dashboard](USAGE.md#the-dashboard).

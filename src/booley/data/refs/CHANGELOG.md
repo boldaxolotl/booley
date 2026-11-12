@@ -10,6 +10,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 ## Unreleased
 
 - Mutation testing now generates Mutants deterministically and runs no LLM:
+- The Sandbox start step now registers Booley's MCP server and skills for every
+  allowed Agent CLI, not only the default: a Sandbox issued for `claude` and
+  `codex` serves both. A CLI whose registration is refused is reported as
+  `<cli>:refused` (the error line names the CLI) and no longer stops the others.
+  With `BOOLEY_AGENT_APP=auto`, every CLI with a credential is allowed, Claude
+  the default when both have one; `booley doctor` audits each
+  ([#2756](https://github.com/boldaxolotl/Booley/issues/2756)).
 - A traced `sim` run now registers each traced Target's waveform as B-Wave
   session `@<target>` (its last Test Run that did not pass, else its last) and
   the last Target's as the default session, so `bwave @<target> list` and a path-less
@@ -36,9 +43,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   criterion and `MUTATION:` Goals are unchanged.
 
 - The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
-  as a Standalone Job: choose the worktree, the Flow, and its arguments, check
-  the equivalent shell command, then submit or copy it. The Jobs window opens
-  with the new Job selected. The Dashboard is no longer read-only.
+  as a Standalone Job: choose the worktree and the Flow, fill in a form generated
+  from the Flow's options, check the equivalent shell command, then submit or
+  copy it. The Jobs window opens with the new Job selected. The Dashboard is no
+  longer read-only.
 - Job resource history keeps the newest 20 runs per Target, Job phase, flags,
   and Test Run with no overall cap, and deletes a group that has had no run in
   90 days. Peak memory now includes processes forked by any thread of a Job

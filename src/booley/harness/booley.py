@@ -108,6 +108,7 @@ COMMAND_LOCATIONS = {
     "resources": CommandLocation.EITHER,
     "flow": CommandLocation.SESSION_RUNTIME,
     "specialist": CommandLocation.SESSION_RUNTIME,
+    "measure": CommandLocation.SESSION_RUNTIME,
     "feedback": CommandLocation.EITHER,
     "cleanup": CommandLocation.EITHER,
 }
@@ -149,6 +150,7 @@ COMMAND_PROJECT_BINDINGS = {
     "resources": ProjectBinding.REQUIRED,
     "flow": ProjectBinding.REQUIRED,
     "specialist": ProjectBinding.REQUIRED,
+    "measure": ProjectBinding.REQUIRED,
     "feedback": ProjectBinding.FEEDBACK,
     "cleanup": ProjectBinding.REQUIRED,
     "shell": ProjectBinding.REQUIRED,
@@ -847,6 +849,19 @@ def _add_specialist_subparser(sub) -> None:
     )
 
 
+def _add_measure_subparser(sub) -> None:
+    """Add `booley measure`; until measuring lands it only validates `metrics.toml`."""
+    parser = sub.add_parser(
+        "measure", help="Check the Target Metrics rules in metrics.toml (measuring comes later)"
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Check the working tree's metrics.toml against the Flows, Targets and tests; "
+        "measure nothing",
+    )
+
+
 def _add_session_subparser(sub) -> None:
     """Add lifecycle controls for the Sandbox."""
     from booley.flows.cli_arguments import add_project_root_alias
@@ -983,6 +998,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_init_subparser(sub)
     _add_flow_subparser(sub)
     _add_specialist_subparser(sub)
+    _add_measure_subparser(sub)
     _add_targets_subparser(sub)
     resources_cli.add_subparser(sub)
     coverage_cli.add_subparser(sub)
@@ -1948,6 +1964,39 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     return 0
 
 
+def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
+    """`booley measure --validate`: read the working tree's metrics.toml; run no Flow."""
+    from booley.measurement.metrics_file import MetricsFileError, load_metrics_rules, table_header
+
+    if not args.validate:
+        print(
+            "ERROR: measurement is not available yet; `booley measure --validate` "
+            "checks metrics.toml",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        rules = load_metrics_rules(project_root)
+    except MetricsFileError as exc:
+        for error in exc.errors:
+            print(error.render(), file=sys.stderr)
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if not rules.path.exists():
+        print(f"no metrics.toml in {rules.path.parent}: declares nothing")
+    elif not rules.tables:
+        print("metrics.toml is valid and declares no `[<target>.<flow>]` table")
+    else:
+        count = len(rules.tables)
+        print(f"metrics.toml is valid: {count} table{'s' if count != 1 else ''}")
+        for table in rules.tables:
+            print(
+                f"  {table_header(table.target, table.flow)} {len(table.bounds)} bounds, "
+                f"{len(table.tracked)} tracked"
+            )
+    return 0
+
+
 def _cmd_feedback(args: argparse.Namespace, project_root: Path) -> int:
     """Compose Doctor state only for Feedback operations that render it."""
     env = None
@@ -1972,6 +2021,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "dashboard": _cmd_dashboard,
     "flow": _cmd_flow,
     "specialist": _cmd_specialist,
+    "measure": _cmd_measure,
     "feedback": _cmd_feedback,
     "cleanup": cleanup_cli.run,
     "upgrade": upgrade_cli.run,

@@ -12,6 +12,9 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
+from booley.flows.sim.execution.artifacts import (
+    artifact_path_component as _artifact_path_component,
+)
 from booley.flows.sim.execution.telemetry import (
     parse_build_seconds,
     parse_run_seconds,
@@ -20,12 +23,9 @@ from booley.flows.sim.execution.telemetry import (
 from booley.flows.sim.flow import (
     SimulateFlow as ProductionSimulateFlow,
 )
-from booley.flows.sim.flow import (
-    _artifact_path_component,
-    _filter_tests,
-    resolve_sim_campaign_work_units,
-)
 from booley.flows.sim.mode import SimulationMode
+from booley.flows.sim.test_selection import _filter_tests
+from booley.flows.sim.watchdog_sizing import resolve_sim_campaign_work_units
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from tests.flows.sim.campaign_boundary import (
@@ -77,7 +77,7 @@ def test_display_label_counts_distinct_exact_tests(tmp_path: Path):
             "booley.flows.sim.flow._get_test_names",
             return_value={"sim_mul": ["mul_base", "mul_edge"]},
         ),
-        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+        patch("booley.flows.sim.test_selection._get_test_skips", return_value={}),
     ):
         label = flow._resolve_display_label()
 
@@ -92,7 +92,9 @@ def test_display_label_applies_configured_skips_before_naming_test(tmp_path: Pat
             "booley.flows.sim.flow._get_test_names",
             return_value={"sim_mul": ["smoke", "edge"]},
         ),
-        patch("booley.flows.sim.flow._get_test_skips", return_value={"sim_mul": ["edge"]}),
+        patch(
+            "booley.flows.sim.test_selection._get_test_skips", return_value={"sim_mul": ["edge"]}
+        ),
     ):
         label = flow._resolve_display_label()
 
@@ -107,7 +109,7 @@ def test_display_label_deduplicates_same_test_across_targets(tmp_path: Path):
             "booley.flows.sim.flow._get_test_names",
             return_value={"sim_a": ["smoke"], "sim_b": ["smoke"]},
         ),
-        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+        patch("booley.flows.sim.test_selection._get_test_skips", return_value={}),
     ):
         label = flow._resolve_display_label()
 
@@ -122,7 +124,7 @@ def test_display_label_uses_unknown_suite_when_any_target_is_undeclared(tmp_path
             "booley.flows.sim.flow._get_test_names",
             return_value={"sim_a": ["smoke"]},
         ),
-        patch("booley.flows.sim.flow._get_test_skips", return_value={}),
+        patch("booley.flows.sim.test_selection._get_test_skips", return_value={}),
     ):
         label = flow._resolve_display_label()
 
@@ -163,18 +165,18 @@ def test_display_label_does_not_resolve_target_catalog(tmp_path: Path):
 def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
     with (
         patch(
-            "booley.flows.sim.flow._target_is_cocotb",
+            "booley.flows.sim.watchdog_sizing._target_is_cocotb",
             side_effect=lambda _root, target: target == "cocotb",
         ),
         patch(
-            "booley.flows.sim.flow._get_test_names",
+            "booley.flows.sim.watchdog_sizing._get_test_names",
             return_value={
                 "native": ["smoke", "stress", "known_hang"],
                 "cocotb": ["one", "two", "three"],
             },
         ),
         patch(
-            "booley.flows.sim.flow._get_test_skips",
+            "booley.flows.sim.watchdog_sizing._get_test_skips",
             return_value={"native": ["known_hang"]},
         ),
     ):
@@ -357,7 +359,8 @@ class TestSkipList:
     def test_config_skip_excludes_named_tests(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         with patch(
-            "booley.flows.sim.flow._get_test_skips", return_value={"lite": ["lite_stress"]}
+            "booley.flows.sim.test_selection._get_test_skips",
+            return_value={"lite": ["lite_stress"]},
         ):
             assert flow._resolve_tests_to_run("lite", self._NAMES) == [
                 "lite_smoke",
@@ -367,7 +370,7 @@ class TestSkipList:
     def test_multiple_config_skips(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         with patch(
-            "booley.flows.sim.flow._get_test_skips",
+            "booley.flows.sim.test_selection._get_test_skips",
             return_value={"lite": ["lite_stress", "lite_boot"]},
         ):
             assert flow._resolve_tests_to_run("lite", self._NAMES) == ["lite_smoke"]
@@ -376,14 +379,15 @@ class TestSkipList:
         # Naming a skipped test by hand is a clear override of the skip list.
         flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "lite_stress"])
         with patch(
-            "booley.flows.sim.flow._get_test_skips", return_value={"lite": ["lite_stress"]}
+            "booley.flows.sim.test_selection._get_test_skips",
+            return_value={"lite": ["lite_stress"]},
         ):
             assert flow._resolve_tests_to_run("lite", self._NAMES) == ["lite_stress"]
 
     def test_all_skipped_is_rejected(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         with patch(
-            "booley.flows.sim.flow._get_test_skips",
+            "booley.flows.sim.test_selection._get_test_skips",
             return_value={"lite": list(self._NAMES["lite"])},
         ):
             result = flow._validate_runnable_tests(["lite"], self._NAMES)
@@ -394,7 +398,7 @@ class TestSkipList:
 
     def test_no_skip_runs_every_test(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        with patch("booley.flows.sim.flow._get_test_skips", return_value={}):
+        with patch("booley.flows.sim.test_selection._get_test_skips", return_value={}):
             assert flow._resolve_tests_to_run("lite", self._NAMES) == self._NAMES["lite"]
 
 
@@ -979,42 +983,42 @@ class TestErrorTailSource:
 
 class TestMissingExecutableDetection:
     def test_dash_not_found(self):
-        from booley.flows.sim.flow import find_missing_executable
+        from booley.flows.eda_failures import find_missing_executable
 
         assert find_missing_executable("/bin/sh: 1: verilator: not found") == "verilator"
 
     def test_bash_command_not_found(self):
-        from booley.flows.sim.flow import find_missing_executable
+        from booley.flows.eda_failures import find_missing_executable
 
         assert find_missing_executable("bash: fusesoc: command not found") == "fusesoc"
 
     def test_make_no_such_file(self):
-        from booley.flows.sim.flow import find_missing_executable
+        from booley.flows.eda_failures import find_missing_executable
 
         text = "make[1]: verilator: No such file or directory"
         assert find_missing_executable(text) == "verilator"
 
     def test_fusesoc_spawn_guard(self):
-        from booley.flows.sim.flow import find_missing_executable
+        from booley.flows.eda_failures import find_missing_executable
 
         text = "could not invoke fusesoc (fusesoc): [Errno 2] No such file or directory: 'fusesoc'"
         assert find_missing_executable(text) == "fusesoc"
 
     def test_bare_spawn_failure_names_the_eda_tool(self):
-        from booley.flows.sim.flow import find_missing_executable
+        from booley.flows.eda_failures import find_missing_executable
 
         text = "FileNotFoundError: [Errno 2] No such file or directory: 'xrun'"
         assert find_missing_executable(text) == "xrun"
 
     def test_missing_data_file_is_not_a_missing_binary(self):
-        from booley.flows.sim.flow import find_missing_executable
+        from booley.flows.eda_failures import find_missing_executable
 
         # A plain setup failure keeps its own message and exit-1 grading.
         text = "FileNotFoundError: [Errno 2] No such file or directory: '/work/foo.core'"
         assert find_missing_executable(text) is None
 
     def test_ordinary_compile_error_is_not_a_missing_binary(self):
-        from booley.flows.sim.flow import find_missing_executable
+        from booley.flows.eda_failures import find_missing_executable
 
         text = "%Error: tb.sv:12: Cannot find file containing module: 'dut'\nnot found\n"
         assert find_missing_executable(text) is None
@@ -1064,7 +1068,7 @@ class TestMissingExecutableIsEdaToolError:
 @pytest.mark.parametrize("met", [True, False, None])
 def test_standalone_elab_only_final_headline(tmp_path, met):
     from booley.flows.sim.build import BuildOutcome
-    from booley.flows.sim.flow import ElabOnlyTargetResult
+    from booley.flows.sim.elab_only import ElabOnlyTargetResult
     from booley.runtime.endpoint_execution import EndpointOutcome
     from tests.flows.report_headline import final_report_omits_headline
 
@@ -1091,7 +1095,7 @@ def test_standalone_elab_only_final_headline(tmp_path, met):
 def test_target_report_write_survives_transient_replace_sharing_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.flows.sim.flow import _atomic_write_json
+    from booley.flows.sim.elab_only import _atomic_write_json
     from tests.sharing_error_support import hold_replaces
 
     path = tmp_path / "targets" / "sim_a" / "simulation.json"
@@ -1105,7 +1109,7 @@ def test_target_report_write_survives_transient_replace_sharing_error(
 def test_target_report_write_retries_before_raising_lasting_sharing_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.flows.sim.flow import _atomic_write_json
+    from booley.flows.sim.elab_only import _atomic_write_json
     from tests.sharing_error_support import hold_replaces
 
     path = tmp_path / "targets" / "sim_a" / "simulation.json"

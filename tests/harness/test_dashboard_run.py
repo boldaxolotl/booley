@@ -1,23 +1,26 @@
-"""The Dashboard's Run wizard (#3437): worktree, Flow, arguments, review, submit.
+"""The Dashboard's Run wizard (#3437, #3580): worktree, Flow, form, review, submit.
 
-Pilots drive the real wizard over a real Git repository and the real argument
-check (a child process running the shell's own parse); only the detached worker
-spawn and, for selection tests, the Job reads are replaced.
+Pilots drive the real wizard over a real Git repository, the form generated from
+the real parsers and the real argument check (a child process running the
+shell's own parse); only the detached worker spawn and, for selection tests, the
+Job reads are replaced.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
 import sys
 import threading
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from textual.widgets import DataTable, Input, OptionList, Static
+from textual.widgets import DataTable, OptionList, Static
+from textual.worker import WorkerFailed
 
 from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard.app import DashboardApp, Navigation
@@ -36,7 +39,6 @@ if TYPE_CHECKING:
 # Read from discovery, not from the Run code, which a Dashboard without Run lacks: its import
 # belongs in each test body, so a missing module fails there and not at collection.
 FLOW_NAMES = sorted(info.name for info in discover_mcp_tools() if info.kind == "flow")
-ARGUMENTS = "--target t --report-dir 'out dir'"
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +74,10 @@ def real_launcher(booley_dir: Path):
 
 
 class FakeLauncher:
-    """A launcher whose check always passes and whose submit answers a fixed Job key."""
+    """A launcher whose check always passes and whose submit answers a fixed Job key.
+
+    Its form is the real one, built from the Flow's parser.
+    """
 
     def __init__(self, key: str = "", error: OSError | None = None) -> None:
         self.key, self.error = key, error
@@ -82,6 +87,11 @@ class FakeLauncher:
         from booley.harness.dashboard.launch import builtin_flows
 
         return builtin_flows()
+
+    def form(self, flow):
+        from booley.harness.dashboard import launch
+
+        return launch.form(flow)
 
     def check(self, worktree, flow, argv):
         return ""
@@ -131,19 +141,85 @@ async def settle_check(app: DashboardApp, pilot) -> None:
     await pilot.pause()
 
 
+async def settle_form(app: DashboardApp, pilot) -> None:
+    """Wait for the form's build worker and for the wizard to show its rows."""
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+
+
 async def to_form(app: DashboardApp, pilot, flow: str) -> RunWizard:
-    """Run, accept the preselected worktree, pick *flow*."""
+    """Run, accept the preselected worktree, pick *flow* and wait for its form."""
     wizard = await start_run(app, pilot)
     await pilot.press("enter")
     await pilot.press(*["down"] * FLOW_NAMES.index(flow), "enter")
-    assert wizard.query_one("#run-arguments", Input).display
+    await settle_form(app, pilot)
+    assert wizard.query_one("#run-form", OptionList).display
     return wizard
 
 
-async def check_arguments(app: DashboardApp, pilot, wizard: RunWizard, text: str) -> None:
-    wizard.query_one("#run-arguments", Input).value = text
+def form_rows(wizard: RunWizard) -> list[str]:
+    rows = wizard.query_one("#run-form", OptionList)
+    return [str(rows.get_option_at_index(i).prompt) for i in range(rows.option_count)]
+
+
+def row_value(wizard: RunWizard, label: str) -> str:
+    """What the form row named *label* shows."""
+    for prompt in form_rows(wizard):
+        name, _, value = prompt.partition("  ")
+        if name.strip() == label:
+            return value.strip()
+    raise AssertionError(f"no row {label!r} in {form_rows(wizard)}")
+
+
+async def goto_row(pilot, wizard: RunWizard, label: str) -> None:
+    """Arrow to the form row named *label*."""
+    rows = wizard.query_one("#run-form", OptionList)
+    names = [prompt.partition("  ")[0].strip() for prompt in form_rows(wizard)]
+    assert rows.highlighted is not None
+    step = names.index(label) - rows.highlighted
+    await pilot.press(*(["down" if step > 0 else "up"] * abs(step)))
+
+
+async def type_text(pilot, text: str) -> None:
+    await pilot.press(*text)
+
+
+async def set_toggle(pilot, wizard: RunWizard, label: str) -> None:
+    await goto_row(pilot, wizard, label)
+    await pilot.press("enter")
+
+
+async def set_text(pilot, wizard: RunWizard, label: str, text: str) -> None:
+    await goto_row(pilot, wizard, label)
+    await pilot.press("enter")
+    await type_text(pilot, text)
+    await pilot.press("enter")
+
+
+async def set_choice(pilot, wizard: RunWizard, label: str, choice: str) -> None:
+    """Open the choice list of the row *label* and keep *choice*."""
+    await goto_row(pilot, wizard, label)
+    await pilot.press("enter")
+    choices = wizard.query_one("#run-choices", OptionList)
+    names = [str(choices.get_option_at_index(i).prompt) for i in range(choices.option_count)]
+    assert choices.highlighted is not None
+    step = names.index(choice) - choices.highlighted
+    await pilot.press(*(["down" if step > 0 else "up"] * abs(step)), "enter")
+
+
+async def review_command(app: DashboardApp, pilot, wizard: RunWizard) -> None:
+    """Enter on the Review row and wait for the argument check's answer."""
+    await goto_row(pilot, wizard, "Review the command")
     await pilot.press("enter")
     await settle_check(app, pilot)
+
+
+async def check_arguments(app: DashboardApp, pilot, wizard: RunWizard, text: str) -> None:
+    """Type *text* into the extra arguments (when there is any), then review the command."""
+    await settle_form(app, pilot)
+    if text:
+        await set_text(pilot, wizard, "Extra arguments", text)
+    await review_command(app, pilot, wizard)
 
 
 def row_key(path: Path, run_id: str) -> str:
@@ -153,16 +229,120 @@ def row_key(path: Path, run_id: str) -> str:
 # --- AC1 ---------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class FormScript:
+    """What one Flow's AC1 pilot enters through the form, and the command it must produce.
+
+    Every Flow has at least one field of each kind it offers; the Target text field is
+    always set. ``steps`` are ``(kind, row label, value)``: kind ``toggle`` flips the row,
+    ``text`` types the value, ``choice`` keeps that entry of the row's choice list.
+    """
+
+    steps: tuple[tuple[str, str, str], ...]
+    extra: str
+    argv: tuple[str, ...]
+    shown: str  # the argv as the shell would read it
+
+
+FORM_SCRIPTS: dict[str, FormScript] = {
+    "lint": FormScript(
+        steps=(
+            ("text", "--target", "t"),
+            ("toggle", "--dry-run", ""),
+            ("text", "--scope", "a.sv"),
+        ),
+        extra="-q",
+        argv=("--target", "t", "--dry-run", "--scope", "a.sv", "-q"),
+        shown="--target t --dry-run --scope a.sv -q",
+    ),
+    "sim": FormScript(
+        steps=(
+            ("text", "--target", "t"),
+            ("toggle", "--coverage", ""),
+            ("choice", "--mode", "simulate"),
+            ("text", "--test", "smoke"),
+        ),
+        extra="--result-verbosity full",
+        argv=(
+            "--target",
+            "t",
+            "--coverage",
+            "--mode",
+            "simulate",
+            "--test",
+            "smoke",
+            "--result-verbosity",
+            "full",
+        ),
+        shown="--target t --coverage --mode simulate --test smoke --result-verbosity full",
+    ),
+    "synth": FormScript(
+        steps=(
+            ("text", "--target", "t"),
+            ("toggle", "--fresh-openroad", ""),
+            ("choice", "--flatten/--no-flatten", "off"),
+            ("choice", "--frontend", "slang"),
+        ),
+        extra="--repair-hold",
+        argv=(
+            "--target",
+            "t",
+            "--no-flatten",
+            "--frontend",
+            "slang",
+            "--fresh-openroad",
+            "--repair-hold",
+        ),
+        shown="--target t --no-flatten --frontend slang --fresh-openroad --repair-hold",
+    ),
+    "fpga": FormScript(
+        steps=(
+            ("text", "--target", "t"),
+            ("toggle", "--no-cache", ""),
+            ("choice", "--ppa-profile", "balanced"),
+        ),
+        extra="--report-dir 'out dir'",
+        argv=(
+            "--target",
+            "t",
+            "--no-cache",
+            "--ppa-profile",
+            "balanced",
+            "--report-dir",
+            "out dir",
+        ),
+        shown="--target t --no-cache --ppa-profile balanced --report-dir 'out dir'",
+    ),
+}
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("flow", FLOW_NAMES)
-async def test_every_builtin_flow_launches_through_the_wizard(checkout, spawned, tmp_path, flow):
+async def test_every_builtin_flow_launches_through_the_form(checkout, spawned, tmp_path):
+    for flow in FLOW_NAMES:
+        spawned.clear()
+        await launch_flow_through_the_form(checkout, spawned, tmp_path / flow, flow)
+
+
+async def launch_flow_through_the_form(checkout, spawned, tmp_path, flow):
+    """Fill the form for one Flow, submit it, and compare shown and submitted commands."""
+    if flow not in FORM_SCRIPTS:
+        pytest.fail(f"add a form script for the new built-in Flow {flow!r}")
+    script = FORM_SCRIPTS[flow]
     booley_dir = tmp_path / "booley"
     app = make_app(checkout, real_launcher(booley_dir))
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, flow)
-        await check_arguments(app, pilot, wizard, ARGUMENTS)
+        for kind, label, value in script.steps:
+            if kind == "toggle":
+                await set_toggle(pilot, wizard, label)
+            elif kind == "text":
+                await set_text(pilot, wizard, label, value)
+            else:
+                await set_choice(pilot, wizard, label, value)
+        await set_text(pilot, wizard, "Extra arguments", script.extra)
+        await review_command(app, pilot, wizard)
         command = shown(wizard, "#run-command")
-        assert command == f"cd {checkout} && booley flow {flow} --target t --report-dir 'out dir'"
+        assert command == f"cd {checkout} && booley flow {flow} {script.shown}"
         await pilot.press("enter")  # Submit is highlighted
         await pilot.pause()
         assert app.window == "jobs"
@@ -170,7 +350,7 @@ async def test_every_builtin_flow_launches_through_the_wizard(checkout, spawned,
         assert Path(jobs_dir) == standalone_jobs_dir(booley_dir)
     record = job_records.read_record(run_id, standalone_jobs_dir(booley_dir))
     assert record is not None
-    assert record.argv == ["booley", "flow", flow, "--target", "t", "--report-dir", "out dir"]
+    assert record.argv == ["booley", "flow", flow, *script.argv]
     # The shown command and the submitted Job are the same command.
     assert shlex.split(command) == ["cd", record.work_dir, "&&", *record.argv]
     assert record.work_dir == str(checkout)
@@ -179,7 +359,7 @@ async def test_every_builtin_flow_launches_through_the_wizard(checkout, spawned,
         "worktree": str(checkout),
         "kind": "flow",
         "name": flow,
-        "argv": ["--target", "t", "--report-dir", "out dir"],
+        "argv": list(script.argv),
     }
     assert spawned == [
         [
@@ -245,19 +425,20 @@ async def test_invalid_arguments_fail_in_the_form(
         await check_arguments(app, pilot, wizard, text)
         assert fragment in shown(wizard, "#run-error")
         assert "usage:" not in shown(wizard, "#run-error")
-        assert wizard.query_one("#run-arguments", Input).display
+        assert wizard.query_one("#run-form", OptionList).display
         assert not wizard.query_one("#run-command", Static).display
     assert spawned == []
     assert not booley_dir.exists()
 
 
 @pytest.mark.asyncio
-async def test_valid_arguments_after_a_dash_pass_like_the_shell(checkout):
+async def test_a_leading_double_dash_in_extra_arguments_is_dropped_from_the_command(checkout):
     app = make_app(checkout, real_launcher(checkout / ".booley"))
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "lint")
         await check_arguments(app, pilot, wizard, "-- --target t")
-        assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow lint -- --target t"
+        # Shown and submitted without it, as `booley flow` drops it.
+        assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow lint --target t"
 
 
 def test_check_resolves_relative_paths_in_the_worktree(tmp_path, monkeypatch):
@@ -494,11 +675,11 @@ async def test_esc_steps_back_and_closes_the_wizard(checkout):
             stages.append(
                 [
                     i
-                    for i in ("run-actions", "run-arguments", "run-flows", "run-worktrees")
+                    for i in ("run-actions", "run-form", "run-flows", "run-worktrees")
                     if wizard.query_one(f"#{i}").display
                 ]
             )
-        assert stages == [["run-arguments"], ["run-flows"], ["run-worktrees"]]
+        assert stages == [["run-form"], ["run-flows"], ["run-worktrees"]]
         await pilot.press("escape")
         await pilot.pause()
         assert len(app.screen_stack) == 1
@@ -507,16 +688,163 @@ async def test_esc_steps_back_and_closes_the_wizard(checkout):
 
 
 @pytest.mark.asyncio
-async def test_arguments_are_kept_for_the_same_flow_and_cleared_for_another(checkout):
+async def test_the_form_is_kept_for_the_same_pair_and_fresh_for_another_flow(checkout):
     app = make_app(checkout, FakeLauncher())
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "lint")
-        arguments = wizard.query_one("#run-arguments", Input)
-        arguments.value = "--target t"
+        await set_text(pilot, wizard, "--target", "t")
+        await set_toggle(pilot, wizard, "--dry-run")
+        await set_text(pilot, wizard, "Extra arguments", "-q")
         await pilot.press("escape", "enter")  # back to the Flow list, lint again
-        assert arguments.value == "--target t"
+        await settle_form(app, pilot)
+        assert row_value(wizard, "--target") == "t"
+        assert row_value(wizard, "--dry-run") == "on"
+        assert row_value(wizard, "Extra arguments") == "-q"
         await pilot.press("escape", "down", "enter")  # another Flow
-        assert arguments.value == ""
+        await settle_form(app, pilot)
+        assert row_value(wizard, "--target") == "automatic"
+        assert row_value(wizard, "Extra arguments") == ""
+        assert "--coverage" in " ".join(form_rows(wizard))
+
+
+@pytest.mark.asyncio
+async def test_the_form_is_fresh_for_another_worktree(checkout):
+    git(checkout, "worktree", "add", "-q", "-b", "wt-a", str(checkout.parent / "wt-a"))
+    app = make_app(checkout, FakeLauncher())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")  # the main checkout, listed last
+        await set_text(pilot, wizard, "--target", "t")
+        await pilot.press("escape", "escape", "up", "enter", "enter")  # the other worktree
+        await settle_form(app, pilot)
+        assert row_value(wizard, "--target") == "automatic"
+        await pilot.press("escape", "escape", "down", "enter", "enter")  # and back: fresh again
+        await settle_form(app, pilot)
+        assert row_value(wizard, "--target") == "automatic"
+
+
+class FormGate(FakeLauncher):
+    """A launcher whose form waits until the test lets it be built."""
+
+    def __init__(self, failures: tuple[Exception, ...] = ()) -> None:
+        super().__init__()
+        self.release = threading.Event()
+        self.failures = list(failures)
+        self.built: list[str] = []
+
+    def form(self, flow):
+        assert self.release.wait(timeout=60)
+        self.built.append(flow)
+        if self.failures:
+            raise self.failures.pop(0)
+        return super().form(flow)
+
+
+@pytest.mark.asyncio
+async def test_only_the_note_shows_while_the_form_builds(checkout):
+    launcher = FormGate()
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await start_run(app, pilot)
+        await pilot.press("enter", "enter")  # the worktree, then the first Flow
+        await pilot.pause()
+        assert shown(wizard, "#run-note") == "Building the form…"
+        assert not wizard.query_one("#run-form", OptionList).display
+        launcher.release.set()
+        await settle_form(app, pilot)
+        assert not wizard.query_one("#run-note", Static).display
+        assert wizard.query_one("#run-form", OptionList).display
+        assert app.focused is wizard.query_one("#run-form", OptionList)
+        assert wizard.query_one("#run-form", OptionList).highlighted == 0
+
+
+@pytest.mark.asyncio
+async def test_keys_do_nothing_while_the_next_form_builds_and_the_old_rows_are_gone(checkout):
+    launcher = FormGate()
+    launcher.release.set()
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "synth")  # many rows: the old cursor can go far
+        launcher.release.clear()
+        await pilot.press("escape", "up", "enter")  # lint: building
+        await pilot.pause()
+        rows = wizard.query_one("#run-form", OptionList)
+        assert rows.option_count == 0
+        wizard._form_row_selected(9)  # a late Enter on a row of the old form
+        await pilot.press(*["down"] * 9, "enter")
+        assert wizard._stage == "form"
+        assert shown(wizard, "#run-note") == "Building the form…"
+        launcher.release.set()
+        await settle_form(app, pilot)
+        assert row_value(wizard, "--target") == "automatic"
+        assert row_value(wizard, "Extra arguments") == ""
+        assert "--flatten" not in " ".join(form_rows(wizard))
+
+
+@pytest.mark.asyncio
+async def test_a_result_of_a_replaced_build_is_dropped(checkout):
+    from types import SimpleNamespace
+
+    from textual.worker import WorkerState
+
+    app = make_app(checkout, FakeLauncher())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        before = form_rows(wizard)
+        other = SimpleNamespace(worker=object(), state=WorkerState.ERROR)
+        wizard._form_built(other)  # an old build's message, still queued when the human moved on
+        assert form_rows(wizard) == before
+        assert not wizard.query_one("#run-note", Static).display
+
+
+def build_failure(kind: str) -> Exception:
+    from booley.harness.dashboard.run_form import FormError
+
+    if kind == "form-error":
+        return FormError("group 'Brand new' is not placed")
+    return RuntimeError("boom")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "note"),
+    [
+        ("form-error", "The form cannot be built: group 'Brand new' is not placed"),
+        ("crash", "The form cannot be built: RuntimeError: boom"),
+    ],
+)
+async def test_a_form_that_cannot_be_built_says_why_and_still_takes_extra_arguments(
+    checkout, kind, note
+):
+    launcher = FormGate((build_failure(kind),))
+    launcher.release.set()
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        assert shown(wizard, "#run-note") == note
+        assert [row.split("  ")[0].strip() for row in form_rows(wizard)] == [
+            "Extra arguments",
+            "Review the command",
+        ]
+        await check_arguments(app, pilot, wizard, "--target t")
+        assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow lint --target t"
+        await pilot.press("enter")  # Submit
+        await pilot.pause()
+        assert launcher.submitted == [(checkout, "lint", ("--target", "t"))]
+
+
+@pytest.mark.asyncio
+async def test_a_form_that_failed_is_built_again_on_choosing_the_flow_again(checkout):
+    launcher = FormGate((build_failure("crash"),))
+    launcher.release.set()
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        assert len(form_rows(wizard)) == 2
+        await pilot.press("escape", "enter")
+        await settle_form(app, pilot)
+        assert launcher.built == ["lint", "lint"]
+        assert len(form_rows(wizard)) > 2
+        assert not wizard.query_one("#run-note", Static).display
 
 
 @pytest.mark.asyncio
@@ -524,9 +852,103 @@ async def test_typed_arguments_reach_the_check_and_q_is_text(checkout):
     app = make_app(checkout, real_launcher(checkout / ".booley"))
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "lint")
-        await pilot.press("minus", "q", "enter")  # -q is a Flow option; the app's q quits
-        await settle_check(app, pilot)
+        await check_arguments(app, pilot, wizard, "-q")  # -q is a Flow option; the app's q quits
         assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow lint -q"
+
+
+@pytest.mark.asyncio
+async def test_esc_discards_and_enter_keeps_a_choice_and_a_typed_value(checkout):
+    app = make_app(checkout, FakeLauncher())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "sim")
+        await goto_row(pilot, wizard, "--mode")
+        await pilot.press("enter")
+        choices = wizard.query_one("#run-choices", OptionList)
+        assert [str(choices.get_option_at_index(i).prompt) for i in range(4)] == [
+            "default",
+            "simulate",
+            "elab-only",
+            "elab-only-standalone",
+        ]
+        assert choices.highlighted == 0
+        assert "esc cancel" in shown(wizard, "#run-footer")
+        assert "Execution mode" in shown(wizard, "#run-hint")
+        await pilot.press("down", "down", "escape")  # discard
+        assert wizard.query_one("#run-form", OptionList).display
+        assert row_value(wizard, "--mode") == "default"
+        await set_choice(pilot, wizard, "--mode", "elab-only")
+        assert row_value(wizard, "--mode") == "elab-only"
+        await pilot.press("enter")  # the list opens on the current value
+        assert wizard.query_one("#run-choices", OptionList).highlighted == 2
+        await pilot.press("escape")
+        assert row_value(wizard, "--mode") == "elab-only"
+        # The editor: typing, then Esc, keeps the old value; Enter keeps the new one.
+        await goto_row(pilot, wizard, "--test")
+        await pilot.press("enter")
+        assert "more of them" in shown(wizard, "#run-hint")
+        assert "esc cancel" in shown(wizard, "#run-footer")
+        await type_text(pilot, "smoke")
+        await pilot.press("escape")
+        assert row_value(wizard, "--test") == ""
+        await set_text(pilot, wizard, "--test", "smoke")
+        await pilot.press("enter")  # edit again: the value is there and typing appends
+        await type_text(pilot, "2")
+        await pilot.press("enter")
+        assert row_value(wizard, "--test") == "smoke2"
+
+
+@pytest.mark.asyncio
+async def test_a_value_starting_with_a_dash_reaches_the_check_as_option_equals_value(checkout):
+    app = make_app(checkout, real_launcher(checkout / ".booley"))
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        await set_text(pilot, wizard, "--scope", "-x.sv")
+        await review_command(app, pilot, wizard)
+        assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow lint --scope=-x.sv"
+
+
+@pytest.mark.asyncio
+async def test_ppa_profile_offers_the_underscore_spelling_its_parser_takes(checkout):
+    app = make_app(checkout, FakeLauncher())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "fpga")
+        await goto_row(pilot, wizard, "--ppa-profile")
+        await pilot.press("enter")
+        choices = wizard.query_one("#run-choices", OptionList)
+        assert str(choices.get_option_at_index(3).prompt) == "max_frequency"
+
+
+@pytest.mark.asyncio
+async def test_a_toggle_and_a_three_way_field_cycle_their_values(checkout):
+    app = make_app(checkout, FakeLauncher())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "synth")
+        assert row_value(wizard, "--dry-run") == "off"
+        await set_toggle(pilot, wizard, "--dry-run")
+        assert row_value(wizard, "--dry-run") == "on"
+        await set_toggle(pilot, wizard, "--dry-run")
+        assert row_value(wizard, "--dry-run") == "off"
+        assert row_value(wizard, "--flatten/--no-flatten") == "default"
+        await set_choice(pilot, wizard, "--flatten/--no-flatten", "on")
+        assert row_value(wizard, "--flatten/--no-flatten") == "on"
+        await set_choice(pilot, wizard, "--flatten/--no-flatten", "default")
+        await check_arguments(app, pilot, wizard, "")
+        assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow synth"
+
+
+@pytest.mark.asyncio
+async def test_review_returns_to_the_form_with_every_value_kept(checkout):
+    app = make_app(checkout, FakeLauncher())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        await set_text(pilot, wizard, "--target", "t")
+        await review_command(app, pilot, wizard)
+        await pilot.press("escape")
+        assert row_value(wizard, "--target") == "t"
+        rows = wizard.query_one("#run-form", OptionList)
+        assert rows.highlighted == rows.option_count - 1  # on Review, as left
+        await review_command(app, pilot, wizard)
+        assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow lint --target t"
 
 
 @pytest.mark.asyncio
@@ -559,21 +981,22 @@ class GatedLauncher(FakeLauncher):
 
 
 @pytest.mark.asyncio
-async def test_stale_check_results_are_dropped(checkout):
+async def test_a_value_changed_while_a_check_runs_keeps_review_closed(checkout):
     launcher = GatedLauncher()
     app = make_app(checkout, launcher)
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "lint")
-        arguments = wizard.query_one("#run-arguments", Input)
-        arguments.value = "--target t"
+        await set_text(pilot, wizard, "--target", "t")
+        await goto_row(pilot, wizard, "Review the command")
         await pilot.press("enter")
         assert launcher.started.wait(timeout=60)
-        arguments.value = "--target other"  # edited while the check runs
-        await pilot.pause()
+        await set_toggle(pilot, wizard, "--dry-run")  # flipped while the check runs
         launcher.release.set()
         await settle_check(app, pilot)
-        assert arguments.display
+        assert wizard.query_one("#run-form", OptionList).display
         assert not wizard.query_one("#run-command", Static).display
+        assert shown(wizard, "#run-error") == ""
+        assert row_value(wizard, "--dry-run") == "on"
 
 
 # --- the top bar and its footer -----------------------------------------------
@@ -691,4 +1114,26 @@ async def test_a_crashed_check_is_reported_in_the_form(checkout):
         wizard = await to_form(app, pilot, "lint")
         await check_arguments(app, pilot, wizard, "--target t")
         assert "Argument check failed: embedded null byte" in shown(wizard, "#run-error")
-        assert wizard.query_one("#run-arguments", Input).display
+        assert wizard.query_one("#run-form", OptionList).display
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_crashes_after_the_human_moved_on_is_not_shown(checkout):
+    gate = threading.Event()
+
+    class SlowCrash(FakeLauncher):
+        def check(self, worktree, flow, argv):
+            assert gate.wait(timeout=60)
+            raise ValueError("embedded null byte")
+
+    app = make_app(checkout, SlowCrash())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        await goto_row(pilot, wizard, "Review the command")
+        await pilot.press("enter")  # the check starts and waits
+        await pilot.press("escape")  # the human steps back to the Flow list
+        gate.set()
+        with contextlib.suppress(WorkerFailed):  # the crash itself is what the wizard must ignore
+            await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert shown(wizard, "#run-error") == ""

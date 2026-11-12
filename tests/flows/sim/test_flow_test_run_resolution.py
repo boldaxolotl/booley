@@ -12,7 +12,8 @@ from booley.criteria.presentation import CriterionPresentation
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns, SeedGroup
 from booley.flows.sim.execution import DefaultSelection, SelectedTestRuns
-from booley.flows.sim.flow import SimulateFlow, resolve_sim_campaign_work_units
+from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.watchdog_sizing import resolve_sim_campaign_work_units
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import UnseededTargetError, build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
