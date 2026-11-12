@@ -1,4 +1,4 @@
-"""The process boundary of the Dashboard's Run wizard: list, check, quote and submit a Flow.
+"""The process boundary of the Dashboard's Run wizard: list, form, check, quote and submit a Flow.
 
 No Textual here. The wizard calls a :class:`Launcher`; the argument check runs
 the shell's own parse of a built-in Flow in a child process (``main`` below), so
@@ -22,6 +22,7 @@ from booley.runtime import detached_job
 
 if TYPE_CHECKING:
     from booley.flows.base import BuiltinFlow
+    from booley.harness.dashboard.run_form import RunForm
 
 # The child parses and builds a request only; a minute covers a cold import on a slow host.
 CHECK_TIMEOUT_S = 60
@@ -67,6 +68,20 @@ def shell_command(worktree: Path, flow: str, argv: tuple[str, ...]) -> str:
     return f"cd {shlex.quote(str(worktree))} && {shlex.join(['booley', 'flow', flow, *argv])}"
 
 
+def form(flow: str) -> RunForm:
+    """The Run form of the built-in Flow *flow*, read from its human parser.
+
+    Built in this process: the code is the tree the Job's worker runs, and building
+    a parser prints nothing and sets nothing. Parsing a typed command stays in the
+    child of :func:`check`.
+    """
+    from booley.flows.builtin_cli import build_cli_parser
+    from booley.flows.cli_selection import CliInvocation
+    from booley.harness.dashboard.run_form import describe
+
+    return describe(build_cli_parser(_load_flow(flow), CliInvocation()))
+
+
 def _error_text(stderr: str, returncode: int) -> str:
     """argparse's message without its usage block, else the last line the child printed."""
     lines = [line for line in stderr.splitlines() if line.strip()]
@@ -109,6 +124,9 @@ class Launcher:
 
     def flows(self) -> tuple[FlowChoice, ...]:
         return builtin_flows()
+
+    def form(self, flow: str) -> RunForm:
+        return form(flow)
 
     def check(self, worktree: Path, flow: str, argv: tuple[str, ...]) -> str:
         return check(worktree, flow, argv)
