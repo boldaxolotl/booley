@@ -16,7 +16,7 @@ document: Booley product datasheet
   <div class="front">
     <section aria-labelledby="description" class="desc">
       <h2 class="sec" id="description"><span class="n">1</span>Description</h2>
-      <p>Booley is an agentic development environment (ADE) for hardware: you direct Claude Code or Codex agents while they do the RTL work. Booley runs each Developer Agent in a sandbox, hands it real EDA tools, and measures its work against the limits you set: passing tests, area and timing budgets, cycle counts, coverage, and more.</p>
+      <p>Booley is an agentic development environment (ADE) for hardware: you direct Claude Code or Codex agents while they do the RTL work. Each Developer Agent gets one short command per EDA job and works in a sandbox on its own branch, so you can leave several running unattended. Booley, not the agent, reads the numbers out of the EDA tool reports and measures every finished commit against the limits you set: passing tests, area and timing budgets, cycle counts, coverage, and more.</p>
     </section>
 
     <div class="order" aria-labelledby="order-h">
