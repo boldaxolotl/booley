@@ -7,13 +7,7 @@ document: Booley product datasheet
 <!-- Masthead: the part number is the one loud element on the page -->
   <section class="mast" aria-labelledby="part">
     <h1 class="mast__part" id="part">BOOLEY</h1>
-    <div class="mast__head">
-      <p class="mast__title">Open-source Agentic Development Environment (ADE) for FPGA and ASIC work</p>
-      <!-- One phrase per Features card, in card order; the README repeats it
-           under its title (tests/test_site_contract.py). Each phrase is a
-           span so a narrow screen wraps between phrases, never inside one. -->
-      <p class="mast__tag"><span>Sandboxed agents,</span> <span>built-in EDA flows,</span> <span>measured results</span></p>
-    </div>
+    <p class="mast__title">Open-source Agentic Development Environment (ADE) for FPGA and ASIC work</p>
     <div class="mast__sub">
       <span>Package <strong>booley-rtl</strong> on PyPI. Works with Claude Code or Codex.</span>
     </div>

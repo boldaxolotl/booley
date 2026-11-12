@@ -108,17 +108,6 @@ def test_quick_start_commands_match_the_install_guide_block():
     assert site_commands == guide_commands == ["pipx install booley-rtl", "booley bootstrap"]
 
 
-def test_masthead_tagline_is_the_line_under_the_readme_title():
-    # The tagline is one phrase per Features card; both copies change together.
-    tagline = re.search(r'<p class="mast__tag">(.*?)</p>', SITE)
-    assert tagline, "home page masthead has no tagline"
-    # README head: "# Booley", the bold positioning line, then the tagline.
-    readme_head = [block.strip() for block in README.split("\n\n", 3)[:3]]
-
-    assert readme_head[0] == "# Booley"
-    assert readme_head[2] == _plain(tagline.group(1))
-
-
 def test_description_is_the_readme_intro_paragraph():
     # The intro paragraph opens with the product's ADE positioning sentence.
     intro_opener = "Booley is an agentic development environment"
