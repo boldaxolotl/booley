@@ -156,7 +156,7 @@ def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
         "",
         *provider.splitlines(),
         "",
-        # Codex 0.160 ignores its default *TOKEN* filter, so exclude explicitly.
+        # Do not rely on Codex's default *TOKEN* filter (it was ignored in 0.160): exclude explicitly.
         "[shell_environment_policy]",
         f"exclude = [{json.dumps(GATEWAY_TOKEN_ENV)}]",
     ]

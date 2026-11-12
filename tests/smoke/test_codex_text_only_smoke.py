@@ -130,7 +130,7 @@ def test_pinned_codex_accepts_gateway_seeded_catalog(tmp_path):
         assert not requests[0].get("tools")
         # The seeded entry's instructions and the configured effort reach the request.
         # Codex 0.167 sends the catalog base instructions as the first input item, a
-        # developer message, not in the Responses `instructions` field (0.160 did).
+        # developer message, not in the Responses `instructions` field.
         assert "instructions" not in requests[0]
         first_item = requests[0]["input"][0]
         assert first_item["type"] == "message"
