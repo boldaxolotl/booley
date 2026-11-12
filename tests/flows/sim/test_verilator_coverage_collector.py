@@ -1183,6 +1183,12 @@ def test_bad_native_merge_never_discards_per_run_evidence(
     assert len(result.points) == 1
     assert result.merge.status == merge_status
     assert [finding.code for finding in result.findings] == [expected_code]
+    unsafe_detail = {
+        "outside": "escapes the coverage artifact root",
+        "directory": "is not a regular file",
+    }
+    if mode in unsafe_detail:
+        assert unsafe_detail[mode] in result.findings[0].message
     merged = [artifact for artifact in result.artifacts if artifact.kind == "merged_native"]
     assert [artifact.state for artifact in merged] == (
         [] if merged_state is None else [merged_state]

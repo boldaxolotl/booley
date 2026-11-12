@@ -5654,11 +5654,21 @@ class TestAdvisoryMcpTools:
             "MCP endpoints disabled in booley.toml: custom_flow, reviewer"
         ]
 
-    def test_no_disabled_endpoints_prints_nothing(self, tmp_path):
-        """AC5: a project that disables nothing gets no line at all."""
+    @pytest.mark.parametrize("endpoint_config", [{}, {"sim": {"enabled": False}}])
+    def test_no_disabled_endpoints_prints_nothing(self, tmp_path, endpoint_config):
+        """AC5: nothing disabled, or only a built-in Flow the Flow audit names, prints no line."""
         notes: list[str] = []
 
-        doctor._check_disabled_endpoints(self._project(tmp_path, {}), notes.append)
+        doctor._check_disabled_endpoints(self._project(tmp_path, endpoint_config), notes.append)
+
+        assert notes == []
+
+    def test_invalid_endpoint_config_is_left_to_the_endpoint_check(self, tmp_path):
+        """A disabled name no endpoint carries makes the registry raise: stay silent, never crash."""
+        notes: list[str] = []
+        audit = self._project(tmp_path, {"typo": {"enabled": False}})
+
+        doctor._check_disabled_endpoints(audit, notes.append)
 
         assert notes == []
 

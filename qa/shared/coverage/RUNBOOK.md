@@ -223,6 +223,8 @@ EDA-success evidence. There is no stale-native case. Booley reports a raw file a
 stale only when it is unchanged from its pre-run snapshot. A raw file created by
 this run at its per-attempt path is fresh even with an old mtime, by design.
 `COV_RAW_FILE_STALE` and `COV_RAW_FILE_UNSAFE` are not exercised by this mission.
+`UNSAFE` needs a raw file that is a symlink, a non-regular file, or outside the artifact root,
+which the `native-*` tests never create.
 `native-fsm`, `native-covergroup`, `native-unknown` append a record with that
 native class using an existing source/hierarchy identity; judge the expected
 unscored or capability/finding behavior independently. They make no claim that
