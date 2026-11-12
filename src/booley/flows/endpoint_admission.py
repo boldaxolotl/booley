@@ -34,7 +34,6 @@ from booley.runtime.supervised_execution import no_cancellation_cause
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
-    from booley.flows.prepared_invocation import PreparedInvocation
     from booley.targets.domain import TargetHandle
 
 
@@ -91,19 +90,17 @@ class AdmissionContext:
 class AdmissionGate:
     """Lazy admission entered once, after Target authorization and the binding gate."""
 
-    def __init__(
-        self, endpoint: EndpointState, invocation: PreparedInvocation | None = None
-    ) -> None:
+    def __init__(self, endpoint: EndpointState, prepared: PreparedExecution | None = None) -> None:
         self._endpoint = endpoint
-        # What the Job will run, to size its Memory Reservation; ``None`` is unknown.
-        self._invocation = invocation
+        # What the Job will run sizes its Memory Reservation; ``None`` is unknown.
+        self._prepared = prepared
         self._entered = False
 
     def _claim(self) -> tuple[job_slots.SlotStore | None, object | None, str | None]:
         """Claim the Job's admission: a Memory Reservation under the switch, else a slot."""
         endpoint = self._endpoint
         if memory_admission_enabled() and endpoint._resolve_job_class() == job_slots.CLASS_HEAVY:
-            return _acquire_memory_reservation(endpoint, self._invocation)
+            return _acquire_memory_reservation(endpoint, self._prepared)
         store, token = endpoint._acquire_job_slot()
         return store, token, None
 
@@ -230,13 +227,13 @@ def admission(
         yield None
         return
     with ExitStack() as held:
-        borrowed = _enter_admission(endpoint, held, prepared.invocation)
+        borrowed = _enter_admission(endpoint, held, prepared)
         endpoint._pre_run_head = endpoint._get_head_sha()
         yield borrowed
 
 
 def _enter_admission(
-    endpoint: EndpointState, held: ExitStack, invocation: PreparedInvocation | None = None
+    endpoint: EndpointState, held: ExitStack, prepared: PreparedExecution | None = None
 ) -> AdmissionContext:
     """Enter the gate on ``held``, mapping admission failures to a rejection.
 
@@ -244,7 +241,7 @@ def _enter_admission(
     body must pass through unchanged.
     """
     try:
-        return held.enter_context(AdmissionGate(endpoint, invocation).enter())
+        return held.enter_context(AdmissionGate(endpoint, prepared).enter())
     except (
         job_slots.QueueFullError,
         job_slots.ClaimLostError,
@@ -381,7 +378,7 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
 
 
 def _acquire_memory_reservation(
-    endpoint: EndpointState, invocation: PreparedInvocation | None
+    endpoint: EndpointState, prepared: PreparedExecution | None
 ) -> tuple[job_slots.SlotStore | None, object | None, str | None]:
     """Claim this heavy Job's Memory Reservation, waiting in queue order if needed.
 
@@ -395,7 +392,8 @@ def _acquire_memory_reservation(
     project, root = found
     config = load_job_budget_config(booley_dir=project)
     store = job_slots.SlotStore(root, parse_caps(config))
-    plan = measure_memory_claim(project, config, invocation.job_requests() if invocation else None)
+    requests = None if prepared is None else prepared.invocation.job_requests()
+    plan = measure_memory_claim(project, config, requests)
     pid = os.getpid()
     token = store.acquire(
         job_slots.CLASS_MEMORY,

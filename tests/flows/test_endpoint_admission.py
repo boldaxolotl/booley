@@ -604,8 +604,8 @@ def memory_runtime(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return booley_dir
 
 
-def _selection_invocation(flow: AsicSynthesizeFlow, work_dir: Path) -> Any:
-    """A Target-selection invocation of *flow* over its one Target ``a``."""
+def _selection_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExecution:
+    """The preparation of *flow* as a Target-selection invocation over its one Target ``a``."""
     from booley.flows.prepared_invocation import TargetSelectionInvocation
     from tests.target_test_support import make_target_handle
 
@@ -613,7 +613,13 @@ def _selection_invocation(flow: AsicSynthesizeFlow, work_dir: Path) -> Any:
     flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
     flow._args = SimpleNamespace(work_dir=work_dir, target="a")
     selection = SimpleNamespace(handles=(handle,), matches=lambda *_args: True)
-    return TargetSelectionInvocation(flow, selection, flow._run)  # type: ignore[arg-type]
+    return PreparedExecution(
+        display_target=None,
+        display_label=None,
+        dry_run=False,
+        non_persisting_dry_run=False,
+        invocation=TargetSelectionInvocation(flow, selection, flow._run),  # type: ignore[arg-type]
+    )
 
 
 def _held(booley_dir: Path, job_class: str) -> list[job_slots.SlotToken]:
@@ -627,7 +633,7 @@ def test_memory_admission_claims_the_estimated_reservation(
     _seed_history(memory_runtime, ("a", 400))
     flow = AsicSynthesizeFlow()
 
-    with AdmissionGate(flow, _selection_invocation(flow, runtime)).enter() as context:
+    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter() as context:
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
         assert holder.memory == job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0)
         assert _held(memory_runtime, job_slots.CLASS_HEAVY) == []
