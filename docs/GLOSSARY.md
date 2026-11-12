@@ -266,7 +266,7 @@ _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 
 | Term | Meaning | Examples |
 |---|---|---|
-| **Booley Flow** | Deterministic end-to-end orchestration | Simulation, Lint, ASIC Synthesis, FPGA Implementation, Mutation |
+| **Booley Flow** | Deterministic end-to-end orchestration | Simulation, Lint, ASIC Synthesis, FPGA Implementation |
 | **EDA tool** | Concrete external program driven by a Flow | Verilator, Icarus, Verible, Yosys, Vivado |
 | **MCP tool** | Protocol-level mechanism used to invoke a Flow or Specialist | Implementation detail rather than product taxonomy |
 
