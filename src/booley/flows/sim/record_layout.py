@@ -30,25 +30,27 @@ def _refusal(label: str, where: str, invocation: Path | None) -> Exception:
 def refuse_older_layout(invocation: Path) -> None:
     """Refuse an invocation directory holding a ``targets/<Target>/campaign`` directory."""
     for candidate in sorted((invocation / "targets").glob(f"*/{_OLDER_RECORD_DIRECTORY}")):
-        if os.path.lexists(candidate):
-            raise _refusal(
-                "Simulation Campaign directory",
-                f"targets/{candidate.parent.name}/{_OLDER_RECORD_DIRECTORY}",
-                invocation,
-            )
+        raise _refusal(
+            "Simulation Campaign directory",
+            f"targets/{candidate.parent.name}/{_OLDER_RECORD_DIRECTORY}",
+            invocation,
+        )
 
 
 def refuse_older_manifest_path(path: Path) -> None:
     """Refuse ``<invocation>/targets/<Target>/campaign/manifest.json``; ignore any other path.
 
-    Any other path, such as a Mutation manifest, falls through to the caller's own
-    exact-name check, so it is never diagnosed as an older Simulation record.
+    Any other path, such as a Mutation manifest, or a ``campaign/`` path that names no
+    directory on disk (a habit from 0.4.0 aimed at a new run), falls through to the caller's
+    own exact-name check. It is never diagnosed as an older record, so the user is never told
+    to delete a Record that holds good data.
     """
     if (
         path.name == "manifest.json"
         and path.parent.name == _OLDER_RECORD_DIRECTORY
         and len(path.parents) > 3
         and path.parents[2].name == "targets"
+        and os.path.lexists(path.parent)
     ):
         raise _refusal(
             "Simulation Campaign directory",

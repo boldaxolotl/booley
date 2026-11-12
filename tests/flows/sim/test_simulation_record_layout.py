@@ -134,11 +134,25 @@ def test_resume_from_an_older_layout_manifest_is_refused_before_any_work(
         assert _tree(invocation) == before
 
 
+def test_a_campaign_path_naming_no_directory_is_not_called_an_older_record(
+    tmp_path: Path, reports: Path
+) -> None:
+    """A new run's invocation is never described as an older record, whatever path is typed."""
+    invocation = reports / "sim" / "1"
+    (invocation / "targets" / "sim" / "record").mkdir(parents=True)
+    typed = invocation / "targets" / "sim" / "campaign" / "manifest.json"
+
+    with pytest.raises(SimulationCampaignIntegrityError) as excinfo:
+        validate_resume_manifest(typed, project_root=tmp_path)
+
+    assert "older Booley" not in str(excinfo.value)
+
+
 # --- AC3: retention and pruning ---------------------------------------------------------
 
 
 def test_full_prune_cli_refuses_an_older_layout(reports: Path) -> None:
-    for kind in ("complete", "coverage"):
+    for kind in ("complete", "interrupted", "coverage"):
         shutil.rmtree(reports / "sim", ignore_errors=True)
         invocation = copy_older_invocation("0.4.0", kind, reports)
 
