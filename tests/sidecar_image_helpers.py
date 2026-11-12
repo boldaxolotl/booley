@@ -22,7 +22,7 @@ from booley.runtime import dockerfile_syntax
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 DIND_IMAGE = (
-    "docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1"
+    "docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121"
 )
 _DOCKER_DIR = Path(__file__).parents[1] / "src/booley/data/docker"
 
