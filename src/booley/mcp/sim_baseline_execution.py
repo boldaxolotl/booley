@@ -30,6 +30,8 @@ from booley.flows.baseline_worktree import baseline_worktree, baseline_worktree_
 from booley.flows.campaign_results import StartedCampaign
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import current_declaration
+from booley.flows.job_estimates import JobRequest, sim_job_request
+from booley.flows.memory_admission import measure_memory_claim, memory_admission_enabled
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, test_run_document
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
@@ -52,9 +54,14 @@ from booley.goals.sim_baseline_store import (
     write_document,
 )
 from booley.goals.test_run_evidence import freshness_stamp
-from booley.goals.test_run_freezing import TargetPlans
+from booley.goals.test_run_freezing import TargetPlanError, TargetPlans
 from booley.mcp.baseline_preparation import HOOK_PROOF, file_digest, run_post_setup_hook
-from booley.mcp.synth_baseline_execution import classify_synth, measure_synth, synth_job_class
+from booley.mcp.synth_baseline_execution import (
+    classify_synth,
+    measure_synth,
+    synth_job_class,
+    synth_job_requests,
+)
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.git_ignore import ignored_paths
@@ -87,6 +94,12 @@ class BaselineExecutor:
     measure: Callable[[Mapping[str, Any]], dict[str, Any]]
     #: The Job Class of the Flow that ``measure`` runs; the supervisor claims it.
     job_class: Callable[[], str]
+    #: ``(checkout, target, units)`` -> what ``measure`` runs, for its Memory
+    #: Reservation (``None`` when that is not known).
+    job_requests: Callable[
+        [Path, str, tuple[Any, ...]],
+        tuple[JobRequest, ...] | None,
+    ]
 
 
 def contents_stamp(fingerprint: Mapping[str, Any], key: str = SIM_KEY) -> str:
@@ -413,6 +426,17 @@ def classify_sim_runs(
     return (plans.identity(target) if plan is not None else None), results, applicable
 
 
+def sim_job_requests(
+    checkout: Path, target: str, runs: tuple[TestRun, ...]
+) -> tuple[JobRequest, ...] | None:
+    """The SIM Job's request: *runs* on the Target's plan, without instrumentation."""
+    try:
+        plan = TargetPlans(checkout).plan(target)
+    except TargetPlanError:
+        return None
+    return None if plan is None else (sim_job_request(plan, runs),)
+
+
 def _classify_runs(
     plan: TargetTestPlan | None, runs: Sequence[TestRun]
 ) -> tuple[list[dict[str, Any]], tuple[TestRun, ...]]:
@@ -523,27 +547,21 @@ def _measurement(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return next(({"measurement": row["measurement"]} for row in rows if "measurement" in row), {})
 
 
-@contextmanager
-def _background_slot(owner: Mapping[str, Any], output: Path) -> Iterator[job_slots.SlotToken]:
-    """Hold one background-priority slot of the Flow's Job Class while measuring.
+def _memory_claim(
+    executor: BaselineExecutor,
+    job_class: str,
+    booley_dir: Path,
+    config: Mapping[str, object],
+    work: tuple[Path, str, tuple[Any, ...]],
+) -> job_slots.MemoryClaim | None:
+    """The Memory Reservation a heavy baseline holds under the switch, else ``None``."""
+    if not memory_admission_enabled() or job_class != job_slots.CLASS_HEAVY:
+        return None
+    return measure_memory_claim(booley_dir, config, executor.job_requests(*work)).claim
 
-    The supervisor, the process recorded on the Job, owns the claim so Job
-    status shows the wait. The wait spends the Job's own remaining budget:
-    a starved baseline ends unavailable rather than as a live Job that
-    readers report failed.
-    """
-    from booley.config.jobs import parse_caps
-    from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
-    from booley.runtime.job_records import _proc_cmdline
-    from booley.runtime.shared_infra import load_job_budget_config
 
-    booley_dir = Path(owner["booley_dir"])
-    job_class = EXECUTORS[family_for_schema(owner["schema"]).name].job_class()
-    store = job_slots.SlotStore(
-        job_slots.slots_dir(booley_dir), parse_caps(load_job_budget_config(booley_dir=booley_dir))
-    )
-    deadline = time.monotonic() + _remaining_seconds(output)
-    pid = os.getpid()
+def _slot_narrator(store: job_slots.SlotStore, job_class: str) -> Callable[[int | None], None]:
+    """Narrate a waiting baseline on stderr, naming who holds its Job Class."""
 
     def narrate(position: int | None) -> None:
         line = f"baseline waiting for {job_class} slot (position {(position or 0) + 1})"
@@ -552,6 +570,38 @@ def _background_slot(owner: Mapping[str, Any], output: Path) -> Iterator[job_slo
             file=sys.stderr,
             flush=True,
         )
+
+    return narrate
+
+
+@contextmanager
+def _background_slot(
+    owner: Mapping[str, Any], output: Path, work: tuple[Path, str, tuple[Any, ...]]
+) -> Iterator[job_slots.SlotToken]:
+    """Hold one background-priority claim of the Flow's Job Class while measuring.
+
+    The supervisor, the process recorded on the Job, owns the claim so Job
+    status shows the wait. The wait spends the Job's own remaining budget:
+    a starved baseline ends unavailable rather than as a live Job that
+    readers report failed. Under the memory admission switch a heavy Job holds
+    a background Memory Reservation (sized from *work*, the ``(checkout,
+    target, units)`` it measures) instead of a heavy slot.
+    """
+    from booley.config.jobs import parse_caps
+    from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
+    from booley.runtime.job_records import _proc_cmdline
+    from booley.runtime.shared_infra import load_job_budget_config
+
+    booley_dir = Path(owner["booley_dir"])
+    executor = EXECUTORS[family_for_schema(owner["schema"]).name]
+    job_class = executor.job_class()
+    config = load_job_budget_config(booley_dir=booley_dir)
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), parse_caps(config))
+    memory = _memory_claim(executor, job_class, booley_dir, config, work)
+    if memory is not None:
+        job_class = job_slots.CLASS_MEMORY
+    deadline = time.monotonic() + _remaining_seconds(output)
+    pid = os.getpid()
 
     try:
         token = store.acquire(
@@ -562,8 +612,9 @@ def _background_slot(owner: Mapping[str, Any], output: Path) -> Iterator[job_slo
             # Twice the Job budget keeps the reaper's holder deadline a strict
             # upper bound of any legitimate measurement.
             timeout_s=2.0 * BASELINE_TIMEOUT_S,
-            on_queued=narrate,
+            on_queued=_slot_narrator(store, job_class),
             should_abort=lambda: time.monotonic() >= deadline,
+            memory=memory,
         )
     except job_slots.ClaimAbortedError as exc:
         raise TimeoutError(
@@ -600,7 +651,7 @@ def execute_child(
         },
     )
     command = [sys.executable, "-m", "booley.mcp.sim_baseline_execution", str(document)]
-    with _background_slot(owner, output) as token:
+    with _background_slot(owner, output, (checkout, target, runs)) as token:
         environment = detached_environment() | {
             job_slots.INHERITED_SLOT_ENV: f"{token.job_class}/{token.path.name}"
         }
@@ -809,10 +860,16 @@ def _sim_job_class() -> str:
 #: Executor half of each registered family, keyed by ``BaselineFamily.name``.
 EXECUTORS: dict[str, BaselineExecutor] = {
     "sim": BaselineExecutor(
-        classify=classify_sim_runs, measure=_measure_sim, job_class=_sim_job_class
+        classify=classify_sim_runs,
+        measure=_measure_sim,
+        job_class=_sim_job_class,
+        job_requests=sim_job_requests,
     ),
     "synth": BaselineExecutor(
-        classify=classify_synth, measure=measure_synth, job_class=synth_job_class
+        classify=classify_synth,
+        measure=measure_synth,
+        job_class=synth_job_class,
+        job_requests=synth_job_requests,
     ),
 }
 
