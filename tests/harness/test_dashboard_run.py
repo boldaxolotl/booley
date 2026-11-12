@@ -367,6 +367,16 @@ FORM_SCRIPTS: dict[str, FormScript] = {
         argv=("--target", "lint_fifo", "--dry-run", "--scope", "a.sv", "-q"),
         shown="--target lint_fifo --dry-run --scope a.sv -q",
     ),
+    "mutation": FormScript(
+        steps=(
+            ("target", "--target", "sim_fifo"),
+            ("text", "--scope", "a.sv"),
+            ("text", "--count", "3"),
+        ),
+        extra="--seed 7",
+        argv=("--target", "sim_fifo", "--scope", "a.sv", "--count", "3", "--seed", "7"),
+        shown="--target sim_fifo --scope a.sv --count 3 --seed 7",
+    ),
     "sim": FormScript(
         steps=(
             ("target", "--target", "sim_fifo"),
@@ -503,9 +513,15 @@ async def test_flow_step_lists_every_builtin_flow_with_its_blurb(checkout):
         await pilot.press("enter")
         options = wizard.query_one("#run-flows", OptionList)
         lines = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
-        assert [line.split(" — ")[0] for line in lines] == ["fpga", "lint", "sim", "synth"]
+        assert [line.split(" — ")[0] for line in lines] == [
+            "fpga",
+            "lint",
+            "mutation",
+            "sim",
+            "synth",
+        ]
         assert all(len(line.split(" — ", 1)[1]) > 10 for line in lines)
-        assert lines[2].startswith("sim — Run RTL simulation")
+        assert lines[3].startswith("sim — Run RTL simulation")
 
 
 # --- AC2 ---------------------------------------------------------------------
@@ -816,7 +832,7 @@ async def test_the_form_is_kept_for_the_same_pair_and_fresh_for_another_flow(che
         assert row_value(wizard, "--scope") == "a.sv"
         assert row_value(wizard, "--dry-run") == "on"
         assert row_value(wizard, "Extra arguments") == "-q"
-        await pilot.press("escape", "down", "enter")  # another Flow
+        await pilot.press("escape", "down", "down", "enter")  # another Flow: sim, past mutation
         await settle_form(app, pilot)
         assert row_value(wizard, "--target") == "automatic"
         assert row_value(wizard, "Extra arguments") == ""

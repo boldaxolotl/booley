@@ -438,6 +438,28 @@ class TestRunSubprocess:
         assert len(out.encode("utf-8")) <= cap
 
 
+def test_mutation_watchdog_follows_resolved_timeout(tmp_path):
+    mcp_stubs = {
+        "mcp": MagicMock(),
+        "mcp.server": MagicMock(),
+        "mcp.server.models": MagicMock(),
+        "mcp.server.request_state": MagicMock(),
+        "mcp.server.stdio": MagicMock(),
+        "mcp.types": MagicMock(),
+    }
+    with patch.dict(sys.modules, mcp_stubs):
+        from booley.mcp.server import _mcp_tool_timeout_seconds as watchdog
+
+    mutation_def = {"default_timeout": 1800}
+    project = {"work_dir": str(tmp_path)}
+    # No override: the run's 30-minute default, exactly the outer wait it always had.
+    assert watchdog("mutation", project, mutation_def) == 1800
+    # A larger budget (which also raises the --count auto cap) is not cut off at 30 minutes.
+    assert watchdog("mutation", {**project, "timeout_ms": 3_600_000}, mutation_def) == 3600
+    # A smaller one never shrinks the wait below the Flow's default.
+    assert watchdog("mutation", {**project, "timeout_ms": 60_000}, mutation_def) == 1800
+
+
 class TestMcpToolTimeoutSeconds:
     @pytest.fixture(autouse=True)
     def _import(self):
@@ -982,15 +1004,15 @@ class TestResolveTranscriptDir:
     def test_creates_dir_under_logs(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
         counts = self._new_counts()
-        result = self._resolve("mutation_tester", counts)
-        assert result == tmp_path / ".runtime" / "transcripts" / "mutation_tester" / "1"
+        result = self._resolve("reviewer", counts)
+        assert result == tmp_path / ".runtime" / "transcripts" / "reviewer" / "1"
         assert result.is_dir()
 
     def test_sequential_numbering(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
         counts = self._new_counts()
-        r1 = self._resolve("mutation_tester", counts)
-        r2 = self._resolve("mutation_tester", counts)
+        r1 = self._resolve("reviewer", counts)
+        r2 = self._resolve("reviewer", counts)
         assert r1.name == "1"
         assert r2.name == "2"
 
@@ -998,7 +1020,7 @@ class TestResolveTranscriptDir:
         """Must still return a valid dir (not None) even without BOOLEY_LOGS_DIR."""
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
         counts = self._new_counts()
-        result = self._resolve("mutation_tester", counts)
+        result = self._resolve("reviewer", counts)
         assert result.is_dir()
         assert "transcripts" in str(result)
 
@@ -1015,7 +1037,7 @@ class TestMcpExposureFiltering:
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
 
-        assert catalog.tool_visible("mutation_tester", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("submit_run_report", catalog.Exposure.from_mapping(os.environ))
@@ -1026,7 +1048,7 @@ class TestMcpExposureFiltering:
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
         assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.tool_visible("mutation_tester", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
         assert catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
         bwave_tools = [

@@ -288,7 +288,7 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional capability the **Developer Agent** invokes for a single delegated task, with fresh context and no history from earlier invocations. The Specialists are the Reviewer and the [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md), which run a model, and the **Mutation Tester**, which runs none (the canonical list is in [CLI-REFERENCE.md](user/CLI-REFERENCE.md#booley-flows--specialists)). The Developer Agent writes testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional capability the **Developer Agent** invokes for a single delegated task, with fresh context and no history from earlier invocations. The Specialists are the Reviewer and the [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md), which run a model (the canonical list is in [CLI-REFERENCE.md](user/CLI-REFERENCE.md#booley-flows--specialists)). The Developer Agent writes testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
@@ -299,13 +299,9 @@ _Avoid_: optional blindness, reviewer independence
 A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence for declared Goals. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
 _Avoid_: Custom Tool, plugin, user tool, project tool
 
-**Mutation Tester**:
-The **Specialist** (`mutation_tester`) that measures how well a Target's tests catch injected RTL bugs. It injects **Mutants** made by the fixed **Mutation Operators** into the Target's own RTL, or into a caller-chosen scope, runs the Target's tests against each, and reports how many are detected. It runs no model, so the same sources and settings always produce the same Mutants and scores are comparable across runs.
-_Avoid_: mutation agent, LLM mutation, fault injection
-
 **Mutation Flow**:
-The Booley Flow `booley flow mutation` that the **Mutation Tester** becomes under [ADR 0088](adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md), because mutation testing runs no model and so is deterministic orchestration. Not built yet ([#2936](https://github.com/boldaxolotl/booley/issues/2936)); until then mutation testing is the Mutation Tester Specialist.
-_Avoid_: fault injection
+The Booley Flow `booley flow mutation` that measures how well a Target's tests catch injected RTL bugs. It injects **Mutants** made by the fixed **Mutation Operators** into the Target's own RTL, or into a caller-chosen scope, runs the Target's tests against each, and reports how many are detected. It runs no model, so the same sources and settings always produce the same Mutants and scores are comparable across runs ([ADR 0088](adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md)). It replaced the former Mutation Tester Specialist ([#2936](https://github.com/boldaxolotl/booley/issues/2936)).
+_Avoid_: mutation agent, LLM mutation, fault injection
 
 **Mutant**:
 One seeded source change with a stable ID, judged detected or not detected by the Target's tests. Its ID comes from the change and its place in the enclosing design unit, so it survives edits to other files and other design units. A Mutant that changes no observable behavior (an equivalent Mutant) can never be detected.
@@ -316,7 +312,7 @@ One rule in Booley's fixed table that turns a source site into Mutants, such as 
 _Avoid_: mutator, mutation rule
 
 **Mutation Campaign**:
-One **Mutation Tester** run on one **Target**: each selected **Mutant** is judged against the Target's selected tests, and the run reports how many are detected.
+One **Mutation Flow** run on one **Target**: each selected **Mutant** is judged against the Target's selected tests, and the run reports how many are detected.
 _Avoid_: mutation run, mutation session
 
 ### Simulation evidence

@@ -213,7 +213,9 @@ def test_exit_taxonomy_and_soft_warnings():
         ),
     ]:
         report = {
-            "flow" if endpoint in {"sim", "lint", "synth", "fpga"} else "mcp_tool": endpoint,
+            "flow"
+            if endpoint in {"sim", "lint", "synth", "fpga", "mutation"}
+            else "mcp_tool": endpoint,
             "exit_code": 0 if code != 0 else 1,
             "passed": code != 0,
             "detail": detail,
@@ -338,7 +340,7 @@ ROWS = [
         ["Major: 1", "Gate: passed"],
     ),
     (
-        "mutation_tester",
+        "mutation",
         {
             "detected": 3,
             "not_detected": 1,
@@ -370,7 +372,9 @@ ROWS = [
 def test_each_flow_report_row():
     for endpoint, detail, headline, required in ROWS:
         report = {
-            "flow" if endpoint in {"sim", "lint", "synth", "fpga"} else "mcp_tool": endpoint,
+            "flow"
+            if endpoint in {"sim", "lint", "synth", "fpga", "mutation"}
+            else "mcp_tool": endpoint,
             "exit_code": 0,
             "detail": detail,
         }
@@ -617,14 +621,14 @@ def test_multitarget_implementation_metrics_keep_target_names():
 
 def test_known_endpoint_unknown_detail_uses_safe_fallback():
 
-    for endpoint in ("lint", "reviewer", "mutation_tester", "coverage_analyst"):
+    for endpoint in ("lint", "reviewer", "mutation", "coverage_analyst"):
         for detail in (
             {"eda_tool_error": "launch failed"},
             {"total_warnings": {"bad": 1}},
             {"issues": None},
         ):
             report = {
-                "flow" if endpoint == "lint" else "mcp_tool": endpoint,
+                "flow" if endpoint in {"lint", "mutation"} else "mcp_tool": endpoint,
                 "exit_code": 2,
                 "detail": detail,
                 "report_text": 'Executable unavailable\n{"secret": 1}\n\x1b[31mbad',

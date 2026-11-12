@@ -33,7 +33,6 @@ NESTED_MCP_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "coverage_analyst": ("coverage_evidence",),
     # No MCP needed for these — they reason over text, not the design.
     "reviewer": (),
-    "mutation_tester": (),
 }
 
 

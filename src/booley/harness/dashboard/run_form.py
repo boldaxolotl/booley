@@ -29,6 +29,7 @@ FieldKind = Literal["toggle", "three-way", "list", "text", "target", "tests"]
 GROUP_PLACEMENT: Final[dict[str, Literal["field", "extra"]]] = {
     "Common": "field",
     "Lint options": "field",
+    "Mutation options": "field",
     "Simulation options": "field",
     "Synthesis options": "field",
     "FPGA options": "field",

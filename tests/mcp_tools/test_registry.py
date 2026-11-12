@@ -485,7 +485,7 @@ class TestSkipModules:
 
 class TestPerMcpToolAvailability:
     def test_only_explicitly_disabled_endpoint_is_filtered(self, tmp_path):
-        for endpoint_name in ("reviewer", "mutation_tester"):
+        for endpoint_name in ("reviewer", "coverage_analyst"):
             src = SPECIALIST_SRC.replace(
                 'name = "debug_agent"',
                 f'name = "{endpoint_name}"',
@@ -495,7 +495,7 @@ class TestPerMcpToolAvailability:
 
         results = _scan_directory(
             tmp_path,
-            {"mutation_tester": {"enabled": False}},
+            {"coverage_analyst": {"enabled": False}},
             builtin=True,
         )
 
@@ -527,6 +527,18 @@ def test_typed_builtin_base_preserves_import_free_metadata(tmp_path, base):
     info = extract_mcp_tool_info(source, builtin=True, package="flows/lint")
     assert info is not None
     assert (info.name, info.kind, info.satisfies) == ("lint", "flow", ("lint_clean",))
+
+
+def test_mutation_is_a_builtin_flow():
+    assert "mutation" in BUILTIN_FLOW_PACKAGES
+    info = next(item for item in discover_mcp_tools() if item.name == "mutation")
+    assert (info.kind, info.satisfies) == ("flow", ("mutation_score",))
+    assert info.path == "flows/mutation/flow.py"
+
+
+def test_no_mutation_tester_endpoint():
+    """The Specialist is gone with no alias: neither a Flow nor a Specialist has its name."""
+    assert "mutation_tester" not in {item.name for item in discover_mcp_tools()}
 
 
 def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):

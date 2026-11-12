@@ -50,7 +50,7 @@ def test_sync_writes_one_flat_copy_per_allowlisted_doc(tmp_path: Path) -> None:
     expected = sorted(Path(source).name for source in reference_docs.SHIPPED_DOCS)
     assert sorted(changed) == expected
     assert sorted(path.name for path in _packaged(root).iterdir()) == expected
-    assert len(expected) == len(reference_docs.SHIPPED_DOCS) == 13
+    assert len(expected) == len(reference_docs.SHIPPED_DOCS) == 14
     assert (_packaged(root) / "CONFIG.md").read_text(encoding="utf-8") == "# CONFIG.md\n"
 
 

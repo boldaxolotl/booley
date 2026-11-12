@@ -41,8 +41,8 @@ EXPECTED_ENDPOINTS = {
     ("flow", "lint"),
     ("flow", "synth"),
     ("flow", "fpga"),
+    ("flow", "mutation"),
     ("specialist", "coverage_analyst"),
-    ("specialist", "mutation_tester"),
     ("specialist", "reviewer"),
 }
 
@@ -216,7 +216,7 @@ def _schema_text(command: str, parameter: str) -> str:
         ("booley flow sim", "test", "MCP: array", "repeat the flag for more"),
         ("booley specialist reviewer", "steer", "over MCP pass an array", "Repeat the flag"),
         (
-            "booley specialist mutation_tester",
+            "booley flow mutation",
             "target",
             "MCP accepts one Target selector string",
             "whose tests judge each mutation",

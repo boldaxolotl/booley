@@ -374,7 +374,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
                     "bwave",
                     "coverage_analyst",
                     "lint",
-                    "mutation_tester",
+                    "mutation",
                     "reviewer",
                     "sim",
                 ],
@@ -704,7 +704,7 @@ def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
                 "bwave",
                 "coverage_analyst",
                 "lint",
-                "mutation_tester",
+                "mutation",
                 "reviewer",
                 "sim",
             ],
@@ -5606,7 +5606,7 @@ class TestAdvisoryMcpTools:
         flows = {
             name: config
             for name, config in endpoint_config.items()
-            if name in {"sim", "lint", "synth", "fpga"}
+            if name in {"sim", "lint", "synth", "fpga", "mutation"}
         }
         mcp_tools = {name: config for name, config in endpoint_config.items() if name not in flows}
         return doctor.ProjectAudit(
@@ -5674,11 +5674,11 @@ class TestAdvisoryMcpTools:
 
     def test_default_expects_all_specialists(self, tmp_path):
         p = self._project(tmp_path, {})
-        assert doctor._advisory_mcp_tools(p) == set(doctor._ADVISORY_INTERACTIVE_MCP_TOOLS)
+        assert doctor._advisory_mcp_tools(p) == {"mutation", "reviewer"}
 
     def test_explicitly_disabled_specialist_is_not_expected(self, tmp_path):
         p = self._project(tmp_path, {"reviewer": {"enabled": False}})
-        assert doctor._advisory_mcp_tools(p) == {"mutation_tester"}
+        assert doctor._advisory_mcp_tools(p) == {"mutation"}
 
     def _skill_default_endpoint_config(self, *, reviewer=False):
         """Every flow and optional specialist explicitly disabled."""
@@ -5686,7 +5686,7 @@ class TestAdvisoryMcpTools:
         for name in ("sim", "lint", "synth"):
             endpoint_config[name] = {"enabled": False}
         endpoint_config["reviewer"] = {"enabled": reviewer}
-        endpoint_config["mutation_tester"] = {"enabled": False}
+        endpoint_config["mutation"] = {"enabled": False}
         return endpoint_config
 
     def _payload(self, mcp_tool_names):
@@ -5710,7 +5710,7 @@ class TestAdvisoryMcpTools:
         )
         warns = [m for lvl, m in rec.events if lvl == "warn"]
         assert any("reviewer" in m for m in warns)
-        assert not any("mutation_tester" in m for m in warns)
+        assert not any("mutation" in m for m in warns)
 
 
 class TestFailPathSelfTest:
