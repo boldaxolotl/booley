@@ -345,20 +345,23 @@ impl FstBacking {
 
     /// One batched pass over several signals (used for clock/reset
     /// re-derivation at load). Returns raw transition lists per handle index.
+    ///
+    /// Unlike the query-time reads above, a failure here is reported: it means
+    /// the store is corrupt, and `load_fst` must say so instead of loading.
     fn read_many(
         reader: &mut FstReader<BufReader<File>>,
         handle_indices: &[usize],
-    ) -> rustc_hash::FxHashMap<usize, Vec<(u64, String)>> {
+    ) -> Result<rustc_hash::FxHashMap<usize, Vec<(u64, String)>>, String> {
         let mut by_handle: rustc_hash::FxHashMap<usize, Vec<(u64, String)>> =
             rustc_hash::FxHashMap::default();
         if handle_indices.is_empty() {
-            return by_handle;
+            return Ok(by_handle);
         }
         let handles: Vec<FstSignalHandle> = handle_indices
             .iter()
             .map(|&i| FstSignalHandle::from_index(i))
             .collect();
-        let _ = reader.read_signals(
+        let read = reader.read_signals(
             &FstFilter::filter_signals(handles),
             |time, h, value| -> Result<(), ()> {
                 if let Some(v) = canon_value(&value, false) {
@@ -367,7 +370,17 @@ impl FstBacking {
                 Ok(())
             },
         );
-        by_handle
+        match read {
+            Ok(()) => Ok(by_handle),
+            // Name the inner reader error: the wrapper's own text is the
+            // generic "Failed to read FST file.".
+            Err(error) => {
+                use std::error::Error;
+                Err(error
+                    .source()
+                    .map_or_else(|| error.to_string(), error_chain))
+            }
+        }
     }
 }
 
@@ -509,11 +522,99 @@ fn timescale_str_from_exponent(exp: i8) -> String {
     "1ns".to_string()
 }
 
+/// Why a waveform store could not be loaded. The payload is the rendered
+/// cause (see `error_chain`), ready to print.
+#[derive(Debug)]
+pub enum StoreLoadError {
+    /// The file does not exist (`io::ErrorKind::NotFound` on open).
+    Missing(String),
+    /// The file exists but cannot be opened, parsed or read as a complete FST
+    /// (truncated, corrupt, not an FST, permission denied, ...).
+    Unreadable(String),
+}
+
+impl std::fmt::Display for StoreLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreLoadError::Missing(cause) | StoreLoadError::Unreadable(cause) => {
+                f.write_str(cause)
+            }
+        }
+    }
+}
+
+impl std::error::Error for StoreLoadError {}
+
+/// Render an error and its `source()` chain as `a: b: c`. Trailing periods
+/// are trimmed and a source already quoted in its parent's text is skipped
+/// (some libraries repeat the cause in both places).
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string().trim_end_matches('.').to_string();
+    let mut source = error.source();
+    while let Some(inner) = source {
+        let part = inner.to_string().trim_end_matches('.').to_string();
+        if !part.is_empty() && !text.contains(&part) {
+            text.push_str(": ");
+            text.push_str(&part);
+        }
+        source = inner.source();
+    }
+    text
+}
+
+/// Fail if any FST block declares more bytes than the file holds.
+///
+/// An FST is a chain of blocks: a 1-byte type, then a big-endian u64 length
+/// that counts its own 8 bytes plus the payload. A truncated store usually
+/// still opens and lists its hierarchy (those blocks come first), so the
+/// truncation would otherwise surface only as silently empty query results.
+/// The walk reads one 9-byte header per block; it never decodes values.
+fn check_block_lengths(file: &mut File, size: u64) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut offset: u64 = 0;
+    while offset < size {
+        let mut header = [0u8; 9];
+        file.seek(SeekFrom::Start(offset))
+            .and_then(|_| file.read_exact(&mut header))
+            .map_err(|_| {
+                format!("store is truncated: block header at byte {offset} is cut short")
+            })?;
+        let length = u64::from_be_bytes(header[1..9].try_into().expect("8-byte slice"));
+        if length < 8 {
+            return Err(format!(
+                "store is corrupt: block at byte {offset} declares an invalid length {length}"
+            ));
+        }
+        // `offset + 1 + length` is the end of the block; saturate so a
+        // garbage length cannot overflow.
+        if offset.saturating_add(1).saturating_add(length) > size {
+            return Err(format!(
+                "store is truncated: block at byte {offset} declares {length} bytes but the file has {size}"
+            ));
+        }
+        offset += 1 + length;
+    }
+    Ok(())
+}
+
 /// Load a plain FST file behind the `ColumnCache` interface.
-/// Returns `None` if the file is missing or not a readable FST.
-pub fn load_fst(path: &Path) -> Option<ColumnCache> {
-    let file = File::open(path).ok()?;
-    let mut reader = FstReader::open(BufReader::new(file)).ok()?;
+/// Returns the cause if the file is missing, truncated or not a readable FST.
+pub fn load_fst(path: &Path) -> Result<ColumnCache, StoreLoadError> {
+    let mut file = File::open(path).map_err(|error| {
+        let cause = error_chain(&error);
+        if error.kind() == std::io::ErrorKind::NotFound {
+            StoreLoadError::Missing(cause)
+        } else {
+            StoreLoadError::Unreadable(cause)
+        }
+    })?;
+    let size = file
+        .metadata()
+        .map_err(|error| StoreLoadError::Unreadable(error_chain(&error)))?
+        .len();
+    check_block_lengths(&mut file, size).map_err(StoreLoadError::Unreadable)?;
+    let mut reader = FstReader::open(BufReader::new(file))
+        .map_err(|error| StoreLoadError::Unreadable(error_chain(&error)))?;
     let header = reader.get_header();
 
     // -- signal directory from the raw FST hierarchy -----------------------
@@ -579,7 +680,7 @@ pub fn load_fst(path: &Path) -> Option<ColumnCache> {
             }
             _ => {}
         })
-        .ok()?;
+        .map_err(|error| StoreLoadError::Unreadable(error_chain(&error)))?;
 
     let signals: Vec<CachedSignal> = vars
         .iter()
@@ -625,7 +726,8 @@ pub fn load_fst(path: &Path) -> Option<ColumnCache> {
     }
     probe_handles.sort_unstable();
     probe_handles.dedup();
-    let probe_data = FstBacking::read_many(&mut reader, &probe_handles);
+    let probe_data =
+        FstBacking::read_many(&mut reader, &probe_handles).map_err(StoreLoadError::Unreadable)?;
     let empty: Vec<(u64, String)> = Vec::new();
     let trans_of = |var_idx: usize| -> &Vec<(u64, String)> {
         probe_data.get(&vars[var_idx].handle_idx).unwrap_or(&empty)
@@ -781,7 +883,7 @@ pub fn load_fst(path: &Path) -> Option<ColumnCache> {
         prefix: Mutex::new(None),
     };
 
-    Some(ColumnCache::new_fst_backed(
+    Ok(ColumnCache::new_fst_backed(
         signals,
         sim_start_tick,
         sim_end_tick,
@@ -3150,6 +3252,89 @@ $enddefinitions $end\n";
                 assert_eq!(cache.timescale_str, "1ns");
             }
         }
+    }
+
+    /// Build a small store in `dir`; `signal` names its one 1-bit variable.
+    fn build_tiny_store(dir: &Path, signal: &str) -> std::path::PathBuf {
+        let path = dir.join("tiny.fst");
+        let vcd = format!("$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! {signal} $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n#20\n0!\n#30\n1!\n");
+        let mut reader = std::io::BufReader::new(vcd.as_bytes());
+        let header = crate::parser::parse_header(&mut reader);
+        let mut handler = FstBuildHandler::new(&header, None, &path).unwrap();
+        handler.parse_bytes(&mut reader, None).unwrap();
+        handler.finalize_and_write().unwrap();
+        path
+    }
+
+    fn unreadable_cause(path: &Path) -> String {
+        match load_fst(path) {
+            Err(StoreLoadError::Unreadable(cause)) => cause,
+            other => panic!("expected Unreadable, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn truncated_store_without_clock_or_reset_fails_to_load() {
+        let dir = tempfile::tempdir().unwrap();
+        // No clk/rst candidate, so the clock probe reads nothing: only the
+        // structural block-length check can notice the truncation.
+        let path = build_tiny_store(dir.path(), "data");
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(load_fst(&path).is_ok());
+        for keep in [bytes.len() / 2, bytes.len() - 1] {
+            std::fs::write(&path, &bytes[..keep]).unwrap();
+            assert!(unreadable_cause(&path).contains("store is truncated"));
+        }
+    }
+
+    #[test]
+    fn block_length_check_rejects_cut_headers_and_bad_lengths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blocks.fst");
+        // A block header cut short (type byte plus 3 length bytes).
+        std::fs::write(&path, [0u8, 0, 0, 0]).unwrap();
+        assert!(unreadable_cause(&path).contains("block header at byte 0 is cut short"));
+        // A length below its own 8 bytes can never be valid.
+        let mut invalid = vec![0u8];
+        invalid.extend_from_slice(&3u64.to_be_bytes());
+        std::fs::write(&path, invalid).unwrap();
+        assert!(unreadable_cause(&path).contains("invalid length 3"));
+        // An empty file has no blocks; FST open itself rejects it.
+        std::fs::write(&path, []).unwrap();
+        assert!(!unreadable_cause(&path).is_empty());
+    }
+
+    #[test]
+    fn missing_store_is_reported_as_missing_with_os_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        match load_fst(&dir.path().join("nope.fst")) {
+            Err(StoreLoadError::Missing(cause)) => assert!(cause.contains("No such file")),
+            other => panic!("expected Missing, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn error_chain_joins_sources_and_skips_repeats() {
+        #[derive(Debug)]
+        struct Layer(&'static str, Option<Box<Layer>>);
+        impl std::fmt::Display for Layer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Layer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_deref().map(|inner| inner as _)
+            }
+        }
+        let inner = Layer("disk gone.", None);
+        let outer = Layer("read failed.", Some(Box::new(inner)));
+        assert_eq!(error_chain(&outer), "read failed: disk gone");
+        let repeated = Layer(
+            "read failed: disk gone",
+            Some(Box::new(Layer("disk gone", None))),
+        );
+        assert_eq!(error_chain(&repeated), "read failed: disk gone");
     }
 
     #[test]
