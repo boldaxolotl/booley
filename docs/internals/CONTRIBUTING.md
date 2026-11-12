@@ -44,7 +44,7 @@ Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
 
 The Sandbox agents read a fixed set of user docs from `/booley-docs/`. The
 authored files stay in `docs/user/` (plus `docs/internals/FLOW_REPORTS.md`); the
-set is `SHIPPED_DOCS` in `src/booley/dev_support/reference_docs.py`. After
+set is `SHIPPED_DOCS` in `src/booley/runtime/packaged_docs.py`. After
 editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
 with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
 without writing. The same command mirrors `CHANGELOG.md` byte for byte to
@@ -54,8 +54,13 @@ installing Booley. Never edit a copy or the mirror by hand. The sync turns
 links to other shipped docs into sibling links and links to unshipped docs
 (`PLAIN_TEXT_TARGETS`) into plain text marked `(host doc, not shipped)`. A new
 link to a doc in neither set fails the sync with the file, the link and the fix.
-The regenerated copy lives under `src/booley/**`, so such an edit also runs the
-Python CI lane.
+The image and wheel builders (`build.sh`, `booley init`,
+`.github/scripts/build_development_wheel.py`, and the release and CI workflows)
+render the copies from their sources before building, so on a checkout whose
+sources were edited without the sync they rewrite the stale tracked copy. A bare
+`python -m build` packs the committed copies as they are, so run the sync before
+committing. The regenerated copy lives under `src/booley/**`, so such an edit
+also runs the Python CI lane.
 
 ### Building a development wheel
 

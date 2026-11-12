@@ -16,7 +16,9 @@ CHANGELOG_MIRROR = "src/booley/data/refs/CHANGELOG.md"
 
 
 def _render(text: str, source: str = SOURCE) -> str:
-    return reference_docs.render_packaged_doc(source, text)
+    from booley.runtime.packaged_docs import render_packaged_doc
+
+    return render_packaged_doc(source, text)
 
 
 def _fake_repo(tmp_path: Path, overrides: dict[str, str] | None = None) -> Path:
@@ -239,7 +241,44 @@ def test_link_form_the_scanner_misses_fails() -> None:
     ]
     for text in forms:
         with pytest.raises(reference_docs.UnclassifiedLinkError, match="cannot classify"):
-            _render(text)
+            reference_docs.check_link_forms(SOURCE, text)
+
+
+def test_renderer_alone_leaves_a_reference_style_link_unchanged() -> None:
+    """The stdlib renderer has no cross-check; the sync CLI and the doc test own it."""
+    from booley.runtime import packaged_docs
+
+    text = "[x][ref]\n\n[ref]: SETUP.md\n"
+
+    assert _render(text) == text
+    assert packaged_docs.link_destinations(text) == []
+
+
+def test_unclassified_link_leaves_the_packaged_directory_untouched(tmp_path: Path) -> None:
+    from booley.runtime import packaged_docs
+
+    root = _fake_repo(tmp_path)
+    packaged_docs.write_packaged_docs(root)
+    before = {path.name: path.read_bytes() for path in _packaged(root).iterdir()}
+    (root / "docs/user/TESTS.md").write_bytes(b"[new](NEW.md)\n")
+    (root / SOURCE).write_bytes(b"# changed\n")
+
+    with pytest.raises(reference_docs.UnclassifiedLinkError, match=r"NEW\.md"):
+        packaged_docs.write_packaged_docs(root)
+
+    assert {path.name: path.read_bytes() for path in _packaged(root).iterdir()} == before
+
+
+def test_missing_shipped_source_names_the_repository_path(tmp_path: Path) -> None:
+    from booley.runtime import packaged_docs
+
+    root = _fake_repo(tmp_path)
+    (root / "docs/user/TESTS.md").unlink()
+
+    with pytest.raises(
+        FileNotFoundError, match=r"shipped doc source is missing: docs/user/TESTS.md"
+    ):
+        packaged_docs.expected_copies(root)
 
 
 def test_check_fails_on_stale_copy(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -285,6 +324,8 @@ def test_check_passes_after_fresh_sync(tmp_path: Path, capsys: pytest.CaptureFix
 def test_atomic_write_failure_removes_temporary_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from booley.runtime import packaged_docs
+
     packaged = tmp_path / "packaged.md"
     packaged.write_text("original\n", encoding="utf-8")
 
@@ -294,7 +335,7 @@ def test_atomic_write_failure_removes_temporary_file(
     monkeypatch.setattr(Path, "replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated replace failure"):
-        reference_docs._atomic_write(packaged, b"replacement\n")
+        packaged_docs.atomic_write(packaged, b"replacement\n")
 
     assert packaged.read_text(encoding="utf-8") == "original\n"
     assert list(tmp_path.iterdir()) == [packaged]
