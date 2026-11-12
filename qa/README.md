@@ -24,6 +24,7 @@ step never hides the bugs behind it.
 | [taxi](missions/taxi/MISSION.md) | Port of the Taxi 10G MAC from a direct clone: setup, baseline, FST and B-Wave, submodule companion Project, mutation testing, two Goals, campaign, cleanup |
 | [uart](missions/uart/MISSION.md) | Clean-room UART from the OpenTitan documentation with an independent evaluator |
 | [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, policy, waivers, storage, retention, a coverage Goal, the Coverage Analyst |
+| [mutation](missions/mutation/MISSION.md) | Mutation Flow on a fixture Project with a hand-written list of every Mutant: sites and decoys, determinism, selection, scoring, hangs, bad input, removed surface |
 | [gui](missions/gui/MISSION.md) | Browser Codespace on the picorv32 demo with a candidate image: onboarding, Dashboard under a live Goal, B-Wave scoped views, stop and resume, terminal output, Review Package, themes, docs site, all checked against the CLI |
 
 Each mission's primary areas fit an 8-hour budget (`gui`: 4 hours) and run in
@@ -85,6 +86,7 @@ booley bootstrap --with-qa-skills
 | [`missions/`](missions/) | Mission files plus their prompts, Goalsets and ad-hoc Goal lists, fixtures, specs, and evaluators |
 | [`shared/GOAL-CHILD.md`](shared/GOAL-CHILD.md) | Rules for every mission area that runs a Goal child |
 | [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Native-coverage fixture Project, expected values, fault injectors, and evaluator |
+| [`shared/mutation/`](shared/mutation/RUNBOOK.md) | Mutation fixture Project, hand-written expected Mutants and outcomes, and fault files; used by the `mutation` mission |
 | [`shared/codespaces/`](shared/codespaces/RUNBOOK.md) | Browser-driven Codespace on the picorv32 demo with a candidate image: setup, reading the terminal, GUI-vs-CLI oracles, evidence, cleanup, candidate image deletion; used by the `gui` mission and `booley-gui-check` |
 
 ## Checking changes
