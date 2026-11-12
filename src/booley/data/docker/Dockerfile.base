@@ -43,9 +43,9 @@ WORKDIR /
 # fetched full (NOT --shallow-submodules): sv-elab/slang pin non-tip commits a
 # shallow submodule fetch can miss.
 # renovate: datasource=github-tags depName=YosysHQ/yosys
-ARG YOSYS_VERSION=v0.69
+ARG YOSYS_VERSION=v0.70
 # pin-companion: YOSYS_VERSION
-ARG YOSYS_REF=9f75ca1f9834a39a863915b5dae0c7b1e33533bc
+ARG YOSYS_REF=28ba3cb926fe376fa05ebfc1b921747d011d4557
 RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source (this takes a while)..." \
     && apt-get update && apt-get install -y --no-install-recommends \
         cmake gawk pkg-config tcl-dev libreadline-dev libffi-dev zlib1g-dev \
