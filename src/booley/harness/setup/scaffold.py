@@ -824,13 +824,13 @@ def _stealth_toml_lines(c: ScaffoldChoices) -> list[str]:
     if c.stealth:
         return [
             "# Requested with `--stealth`: Booley-authored cores live under .booley/cores/",
-            "# (outside the RTL repository) and commit messages are scrubbed.",
+            "# (outside the RTL repository) and commit messages with banned terms are rejected.",
             "enabled = true",
         ]
     return [
         "# Off for a scaffolded project: this repo exists to exercise Booley, so the",
-        "# commit-message policy (which redacts protected names and rejects",
-        "# machine-attribution footers) would only mangle honest history. Set this",
+        "# commit-message policy (which rejects messages naming protected terms and",
+        "# machine-attribution footers) would only get in the way of honest history. Set this",
         "# to true if the repo grows into IP whose commit log must not reveal agent",
         "# involvement (a missing key also means off).",
         "enabled = false",
