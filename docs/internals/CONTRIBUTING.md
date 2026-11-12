@@ -48,7 +48,8 @@ set is `SHIPPED_DOCS` in `src/booley/dev_support/reference_docs.py`. After
 editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
 with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
 without writing. The same command mirrors `CHANGELOG.md` byte for byte to
-`src/booley/data/refs/CHANGELOG.md`, so run it after editing `CHANGELOG.md` too.
+`src/booley/data/refs/CHANGELOG.md`; only release preparation edits
+`CHANGELOG.md` (`release_changelog.py assemble` updates the mirror itself).
 `python3 .github/scripts/sync_packaged_copies.py [--check]` runs it without
 installing Booley. Never edit a copy or the mirror by hand. The sync turns
 links to other shipped docs into sibling links and links to unshipped docs
@@ -345,6 +346,12 @@ Porting EDA tools is #1, but not the only way to help:
   [Getting set up](#getting-set-up) above); a change that breaks tests is yours
   to fix.
 - **Match the surrounding code**: comment density, naming, and idiom.
+- **Record a user-visible change as a changelog fragment.** Add
+  `changelog.d/<issue number>.md` (or `changelog.d/<lowercase-slug>.md` when
+  there is no issue) holding one or more `- ` bullets, written as they should
+  read under `## Unreleased`. Never edit `CHANGELOG.md` or its packaged mirror
+  for an ordinary change; the release assembles the fragments. The format rules
+  are in [changelog.d/README.md](../../changelog.d/README.md).
 - **Register tests of Sandbox-only code.** Windows CI skips tests listed in
   `tests/sandbox_only.py`, the `sandbox_only` marker's registry, because that code
   never runs on a Windows host. Add a test module there only when the module it
