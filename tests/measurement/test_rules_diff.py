@@ -187,16 +187,16 @@ ROWS = {
 }
 
 
-@pytest.mark.parametrize("row", ROWS)
-def test_each_metrics_change_is_classified_with_its_note(tmp_path: Path, row: str) -> None:
-    base, head, kind, direction, key, old, new, note = ROWS[row]
+def test_each_metrics_change_is_classified_with_its_note(tmp_path: Path) -> None:
+    for row, (base, head, kind, direction, key, old, new, note) in ROWS.items():
+        diff = metrics_diff(tmp_path / row, base, head)
 
-    diff = metrics_diff(tmp_path, base, head)
-
-    (change,) = diff.changes
-    assert (change.kind.value, change.direction.value, change.key) == (kind, direction, key)
-    assert (change.old, change.new, change.note_text) == (old, new, note)
-    assert diff.unreadable is None
+        (change,) = diff.changes
+        assert (change.kind.value, change.direction.value, change.key) == (kind, direction, key), (
+            row
+        )
+        assert (change.old, change.new, change.note_text) == (old, new, note), row
+        assert diff.unreadable is None, row
 
 
 def test_unreadable_base_metrics_is_reported_and_amber(tmp_path: Path) -> None:
@@ -240,23 +240,18 @@ def test_respelled_key_is_a_removal_and_an_addition(tmp_path: Path) -> None:
     assert header_amber(diff) == (AmberReason.RULES_LOOSENED,)
 
 
-@pytest.mark.parametrize(
-    ("head", "amber"),
-    [
-        (SYNTH + "area_kge_max = 80\n", ["rules loosened"]),
-        (SYNTH + "area_kge_max = 50\n", []),
-        (SYNTH + 'area_kge_max = 60\nnotes = { area_kge_max = "why" }\n', []),
-    ],
-    ids=["raised", "lowered", "notes"],
-)
-def test_max_raised_turns_header_amber_lowered_and_notes_do_not(
-    tmp_path: Path, head: str, amber: list[str]
-) -> None:
+def test_max_raised_turns_header_amber_lowered_and_notes_do_not(tmp_path: Path) -> None:
     from booley.measurement.rules_diff import header_amber
 
-    diff = metrics_diff(tmp_path, SYNTH + AREA, head)
+    cases = {
+        "raised": (SYNTH + "area_kge_max = 80\n", ["rules loosened"]),
+        "lowered": (SYNTH + "area_kge_max = 50\n", []),
+        "notes": (SYNTH + 'area_kge_max = 60\nnotes = { area_kge_max = "why" }\n', []),
+    }
+    for name, (head, amber) in cases.items():
+        diff = metrics_diff(tmp_path / name, SYNTH + AREA, head)
 
-    assert [reason.value for reason in header_amber(diff)] == amber
+        assert [reason.value for reason in header_amber(diff)] == amber, name
 
 
 def test_tests_toml_change_is_reported_with_diff_and_amber(tmp_path: Path) -> None:
@@ -326,10 +321,7 @@ def versioned_case(tmp_path: Path, layout: str) -> tuple[Path, Path]:
     return checkout, booley
 
 
-@pytest.mark.parametrize("layout", ["standalone", "paired-checkout"])
-def test_versioned_booley_directory_loosened_rule_and_protected_edit(
-    tmp_path: Path, layout: str
-) -> None:
+def test_versioned_booley_directory_loosened_rule_and_protected_edit(tmp_path: Path) -> None:
     from booley.measurement.protected_set import protected_set
     from booley.measurement.rules_diff import (
         AmberReason,
@@ -340,19 +332,22 @@ def test_versioned_booley_directory_loosened_rule_and_protected_edit(
     from booley.measurement.run_key import resolve_measurement_key
     from booley.runtime.commit_export import export_commit
 
-    checkout, _ = versioned_case(tmp_path, layout)
-    head = git(checkout, "rev-parse", "HEAD")
-    keyed = resolve_measurement_key(checkout, head)
+    for layout in ("standalone", "paired-checkout"):
+        root = tmp_path / layout
+        root.mkdir()
+        checkout, _ = versioned_case(root, layout)
+        head = git(checkout, "rev-parse", "HEAD")
+        keyed = resolve_measurement_key(checkout, head)
 
-    diff = rules_diff(checkout, keyed, None)  # no base run, no RTL base
-    protected = protected_set(export_commit(checkout, head, tmp_path / "out").root)
-    edits = paired_protected_edits(checkout, keyed, diff, protected)
+        diff = rules_diff(checkout, keyed, None)  # no base run, no RTL base
+        protected = protected_set(export_commit(checkout, head, root / "out").root)
+        edits = paired_protected_edits(checkout, keyed, diff, protected)
 
-    (change,) = diff.changes
-    assert (change.kind.value, change.old, change.new) == ("maximum raised", 60, 80)
-    assert header_amber(diff) == (AmberReason.RULES_LOOSENED,)
-    assert diff.paired_base is not None and diff.paired_base.no_base is None
-    assert edits == (".booley/booley.toml", ".booley/metrics.toml")
+        (change,) = diff.changes
+        assert (change.kind.value, change.old, change.new) == ("maximum raised", 60, 80), layout
+        assert header_amber(diff) == (AmberReason.RULES_LOOSENED,), layout
+        assert diff.paired_base is not None and diff.paired_base.no_base is None, layout
+        assert edits == (".booley/booley.toml", ".booley/metrics.toml"), layout
 
 
 def test_versioned_booley_directory_without_default_branch_reports_no_base(
