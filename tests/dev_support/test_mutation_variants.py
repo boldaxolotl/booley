@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
+from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
 
 
 @dataclass

@@ -30,6 +30,10 @@ _D8_REASON = (
     "each built-in Booley Flow owns its tool-specific implementation and cannot couple "
     "to a sibling Flow"
 )
+_D42_REASON = (
+    "the Mutation Flow composes the Simulation Flow's build and execution by design; the "
+    "dependency runs one way, so no sibling Flow or Flow-neutral module imports it"
+)
 _D9_REASON = (
     "Flow-neutral policy and evidence modules cannot select a concrete Flow implementation"
 )
@@ -345,6 +349,12 @@ DIRECTION_RULES = (
     ),
     *_D8_RULES,
     DirectionRule("D9", (package_files("booley.flows"),), _FLOW_PREFIXES, _D9_REASON),
+    DirectionRule(
+        "D42",
+        (*_FLOW_PREFIXES, package_files("booley.flows")),
+        (prefix("booley.flows.mutation"),),
+        _D42_REASON,
+    ),
     *_D10_SIM_RULES,
     DirectionRule(
         "D10",

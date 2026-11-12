@@ -1,12 +1,12 @@
 # Built-in Booley Flow implementation
 
-How Booley's four built-in Booley Flows (`sim`, `lint`, `synth`, `fpga`) turn
+How Booley's built-in Booley Flows (`sim`, `lint`, `synth`, `fpga`, `mutation`) turn
 a FuseSoC Target into an EDA command, and the EDA output back into evidence,
 and why they are built that way. It is for contributors and agents changing
 Flow code. Simulation has its own page,
 [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md), because it is the
-largest Flow; this page covers what all four share plus `lint`, `synth`, and
-`fpga`. To run a Flow, read [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and
+largest Flow; this page covers what the Flows share plus `lint`, `synth`,
+`fpga`, and `mutation`. To run a Flow, read [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and
 its per-Flow pages instead.
 
 | Document | Covers |
@@ -154,7 +154,7 @@ Which execution adapter runs decides whether Goal evidence is recorded:
 | Class or module | Owns |
 |---|---|
 | `FlowMechanics` (`flows/base.py`) | Subprocess execution, timeout and cancellation cleanup, artifact freshness checks, the Flow pre-state gate |
-| `BuiltinFlow` (`flows/base.py`) | Per-invocation state for the four built-ins. Every entry point (construction, `execute`, `execute_cli`, `parse_args`) starts a fresh invocation, so no state leaks between calls. |
+| `BuiltinFlow` (`flows/base.py`) | Per-invocation state for the built-ins. Every entry point (construction, `execute`, `execute_cli`, `parse_args`) starts a fresh invocation, so no state leaks between calls. |
 | `EndpointState` (`flows/endpoint_state.py`) | Per-invocation state, delegating to the acceptance, admission, reporting, and invocation modules |
 | `builtin_cli` | The CLI parser, built from common definitions plus each Flow's argument adapter, producing the same typed request |
 | `booley.mcp.flow_adapter` | MCP schema extraction and MCP-only adjustments (canonical timeout and mode fields, hidden CLI aliases); the MCP server keeps wire validation, dispatch, budgeting, and result conversion |
@@ -224,7 +224,9 @@ are validated before the first real command runs, so a bad later Target fails
 the call before any EDA time is spent. `synth` and `fpga` execute their
 planned recipes for candidate and baseline units; Lint's plan shows a command
 template and the real run resolves through `fusesoc run --setup`. Ordinary and
-coverage Simulation runs print a Simulation Campaign preview instead.
+coverage Simulation runs print a Simulation Campaign preview instead. `mutation`
+also inherits `BuiltinFlow` but keeps its own dry-run summary instead of a
+`FlowPlan`.
 
 `semantic_plan_fingerprint` hashes what the work means and leaves out dry-run
 status, cwd and scratch prefixes, report destinations, and invocation IDs,

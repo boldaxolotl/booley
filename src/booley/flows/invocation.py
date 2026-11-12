@@ -22,6 +22,7 @@ _BUILTIN_TIMEOUT_DEFAULTS_MS: Final[Mapping[str, int]] = MappingProxyType(
         "lint": 120_000,
         "synth": 1_800_000,
         "fpga": 7_200_000,
+        "mutation": 1_800_000,
     }
 )
 

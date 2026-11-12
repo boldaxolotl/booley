@@ -230,13 +230,14 @@ class TestCheatCommand:
         flows_out = capsys.readouterr().out
         assert "Booley Flows" in flows_out
         assert "\n  sim " in flows_out
+        assert "\n  mutation " in flows_out
         assert "review_rtl_protocol" not in flows_out
 
         assert tlr._cmd_cheat(self._parse(["cheat", "--specialists"]), Path.cwd()) == 0
         specialists_out = capsys.readouterr().out
         assert "Specialists" in specialists_out
         assert "REVIEW:rtl_protocol" in specialists_out
-        assert "Target campaign with target" in specialists_out
+        assert "\n  mutation " not in specialists_out  # a Flow, not a Specialist
         assert "\n  sim " not in specialists_out
 
     def _stub_terminal(self, monkeypatch, *, tty: bool, columns: int = 100, color: bool = False):

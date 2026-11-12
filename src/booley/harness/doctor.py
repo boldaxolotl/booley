@@ -246,14 +246,10 @@ _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 _CONTAINER_CLI = "doc" + "ker"
 # B-Wave is unconditionally required; enabled deterministic Flows are added below.
 _BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
-# Specialist MCP tools worth a heads-up when expected-but-absent from
-# the MCP surface. An explicit ``[specialists.<name>].enabled = false`` opts out.
-_ADVISORY_INTERACTIVE_MCP_TOOLS = frozenset(
-    {
-        "mutation_tester",
-        "reviewer",
-    }
-)
+# MCP tools worth a heads-up when expected-but-absent from the MCP surface. An explicit
+# ``[specialists.<name>].enabled = false`` (or ``[flows.<name>].enabled = false``) opts out.
+_ADVISORY_SPECIALIST_TOOLS = frozenset({"reviewer"})
+_ADVISORY_FLOW_TOOLS = frozenset({"mutation"})
 _MCP_PROBE_TIMEOUT_S = 60
 # Budget for the one Sandbox container that resolves every selected Target.
 _CORE_RESOLVE_TIMEOUT_S = 600
@@ -3663,11 +3659,13 @@ def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
     specialists_cfg = project.booley_toml.get("specialists", {})
     if not isinstance(specialists_cfg, dict):
         specialists_cfg = {}
-    return {
+    tools = {
         name
-        for name in _ADVISORY_INTERACTIVE_MCP_TOOLS
+        for name in _ADVISORY_SPECIALIST_TOOLS
         if config_section(specialists_cfg, name).get("enabled") is not False
     }
+    tools.update(name for name in _ADVISORY_FLOW_TOOLS if _flow_enabled(project, name))
+    return tools
 
 
 def _run_project_checks(
@@ -5046,7 +5044,7 @@ def _check_sim_target_tb_staging(
     the design:
 
     - files staged but none tagged ``tags:[tb]`` (ADR 0022 dec 13): Source
-      Isolation would mis-classify the TB as RTL (mutation_tester would
+      Isolation would mis-classify the TB as RTL (the Mutation Flow would
       mutate it).
     - ZERO files staged at all: the untagged-TB predicate needs RTL files to
       fire, so a sim Target whose filesets list stages nothing (e.g. the tb
