@@ -1,12 +1,14 @@
 ---
 name: booley-qa-run
 description: Only when the user explicitly asks, run a Booley QA mission — a timeboxed bug hunt on a pinned IP against a candidate Booley build — and write findings for later triage.
+disable-model-invocation: true
 ---
 
 # Run a Booley QA mission
 
-Use this skill only when the user explicitly invokes it. This is behavioral
-guidance for clients without enforceable invocation metadata.
+Use this skill only when the user explicitly invokes it. Claude Code enforces
+this through `disable-model-invocation` and Codex through
+`agents/openai.yaml`; other clients get it as behavioral guidance only.
 
 Before acting, resolve the real path of this loaded `SKILL.md` (following the
 installed link). Its parent is the skill directory, its grandparent is
@@ -21,7 +23,7 @@ errors, and friction points as the mission's timebox allows. The mission tells
 you *where* to look; you decide *how* to get there when the documented path
 breaks.
 
-Inputs from the user: a mission name (`picorv32`, `taxi`, `uart`, `coverage`, `gui` — a directory
+Inputs from the user: a mission name (`picorv32`, `taxi`, `uart`, `coverage`, `mutation`, `gui` — a directory
 under `qa/missions/`), a Booley build (an exact commit or a published version),
 an artifact root, and optionally `smoke` to also run the release smoke list.
 

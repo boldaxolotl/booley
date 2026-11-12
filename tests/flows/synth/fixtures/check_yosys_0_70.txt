@@ -1,0 +1,42 @@
+--- yosys.log ---
+4.4. Executing CHECK pass (checking for obvious problems).
+Checking module chk...
+Warning: multiple conflicting drivers for chk.\c:
+    module input c[0]
+    module input a[0]
+Warning: found logic loop in module chk:
+    cell $not$/work/v1/dut.v:3$2 ($not) source: /work/v1/dut.v:3.15-3.24
+      A[0] --> Y[0]
+    cell $and$/work/v1/dut.v:4$3 ($and) source: /work/v1/dut.v:4.17-4.23
+      B[0] --> Y[0]
+    cell $not$/work/v1/dut.v:4$4 ($not) source: /work/v1/dut.v:4.15-4.24
+      A[0] --> Y[0]
+    cell $and$/work/v1/dut.v:3$1 ($and) source: /work/v1/dut.v:3.17-3.23
+      B[0] --> Y[0]
+Found and reported 2 problems.
+4.24. Executing CHECK pass (checking for obvious problems).
+Checking module chk...
+Warning: multiple conflicting drivers for chk.\a:
+    module input c[0]
+    module input a[0]
+Warning: found logic loop in module chk:
+    cell $auto$simplemap.cc:106:simplemap_bitop$78 ($_AND_) source: /work/v1/dut.v:4.17-4.23
+      B[0] --> Y[0]
+    cell $auto$simplemap.cc:46:simplemap_not$79 ($_NOT_) source: /work/v1/dut.v:4.15-4.24
+      A[0] --> Y[0]
+    wire \l2 source: /work/v1/dut.v:2.12-2.14
+    cell $auto$simplemap.cc:106:simplemap_bitop$76 ($_AND_) source: /work/v1/dut.v:3.17-3.23
+      B[0] --> Y[0]
+    cell $auto$simplemap.cc:46:simplemap_not$77 ($_NOT_) source: /work/v1/dut.v:3.15-3.24
+      A[0] --> Y[0]
+    wire \l1 source: /work/v1/dut.v:2.8-2.10
+Found and reported 2 problems.
+Warnings: 4 unique messages, 5 total
+--- check_chk.txt ---
+
+9. Executing CHECK pass (checking for obvious problems).
+Checking module chk...
+Warning: multiple conflicting drivers for chk.\a:
+    module input c[0]
+    module input a[0]
+Found and reported 1 problems.

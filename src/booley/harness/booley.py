@@ -20,6 +20,7 @@ import argparse
 import itertools
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -48,6 +49,7 @@ from booley.harness import (
 from booley.harness.auth_cmd import run_auth
 from booley.harness.bootstrap_cli import run_bootstrap
 from booley.harness.chat_cmd import run as run_chat
+from booley.harness.chat_cmd import session_name
 from booley.harness.doctor import run_doctor
 from booley.harness.feedback_environment import resolve_feedback_environment
 from booley.harness.init_cmd import run_init
@@ -183,6 +185,9 @@ def command_project_bindings() -> dict[str, ProjectBinding]:
 
 
 def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
+    # `cheat --metrics` lists the selected Project's Targets, so it needs one.
+    if command == "cheat" and getattr(args, "metrics", False) and not _cheat_lists_sections(args):
+        return ProjectBinding.REQUIRED
     return command_project_bindings()[command]
 
 
@@ -942,15 +947,15 @@ def _add_utility_subparsers(sub) -> None:
         ),
         usage=(
             "%(prog)s [-h] [-C PATH | --project PATH] [--cli {claude,codex}] "
-            "[--new-worktree | --here] [--] [ARGS ...]"
+            "[--new-worktree | --here] [--name NAME] [--] [ARGS ...]"
         ),
         epilog=(
             "Arguments after `chat` and its own options are passed unchanged to the "
             "Agent CLI, after Booley's own launch arguments, for example "
             "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); "
             "a resumed conversation reopens in the worktree it ran in. "
-            "Booley reads -h/--help, -C/--project, --cli, --new-worktree and --here only "
-            "before any other argument. Put `--` first to forward them to the agent: "
+            "Booley reads -h/--help, -C/--project, --cli, --new-worktree, --here and --name "
+            "only before any other argument. Put `--` first to forward them to the agent: "
             "`booley chat -- --help`. Claude Code's own `--worktree` is not Booley's and "
             "goes to the agent."
         ),
@@ -985,6 +990,19 @@ def _add_utility_subparsers(sub) -> None:
         help=(
             "Start in the main checkout even if another session uses it; from inside a "
             "linked worktree, stay there (overrides [chat] worktree for this launch)"
+        ),
+    )
+    chat_p.add_argument(
+        "--name",
+        dest="session_name",
+        metavar="NAME",
+        type=session_name,
+        default=None,
+        help=(
+            "Label the session: the tab title and the Dashboard show `S3 · NAME` "
+            "(1-32 letters, digits, spaces, '.', '_' or '-', starting with a letter or "
+            "digit). A conversation resumed in its worktree keeps its label unless --name sets a "
+            "new one"
         ),
     )
     _add_cheat_subparser(sub)
@@ -1256,18 +1274,20 @@ def _argv_command_index(argv: list[str], globals_parser: argparse.ArgumentParser
 def _chat_option_width(tail: list[str], position: int) -> int:
     """Return how many tokens Booley's own `chat` option takes at `position`.
 
-    Those are -C/--project, --cli, --new-worktree and --here.
+    Those are -C/--project, --cli, --new-worktree, --here and --name.
     """
     if position >= len(tail):
         return 0
     token = tail[position]
     if token in ("-C", "--project"):
         return 2 if position + 1 < len(tail) else 1
-    if token == "--cli":
+    if token in ("--cli", "--name"):
         return 2 if position + 1 < len(tail) else 1
     if token in ("--new-worktree", "--here"):
         return 1
-    if token.startswith(("--project=", "--cli=")) or (token.startswith("-C") and len(token) > 2):
+    if token.startswith(("--project=", "--cli=", "--name=")) or (
+        token.startswith("-C") and len(token) > 2
+    ):
         return 1
     return 0
 
@@ -1275,10 +1295,11 @@ def _chat_option_width(tail: list[str], position: int) -> int:
 def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], list[str]]:
     """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
 
-    Booley keeps `-C`/`--project`, `--cli`, `--new-worktree` and `--here` only while they
-    lead the tail. Everything after them goes to the agent CLI untouched, with one leading
-    `--` dropped so `booley chat -- --help` forwards `--help`. A leading `-h`/`--help`
-    stays Booley's: the whole argv goes to argparse, which prints the `chat` help.
+    Booley keeps `-C`/`--project`, `--cli`, `--new-worktree`, `--here` and `--name` only
+    while they lead the tail. Everything after them goes to the agent CLI untouched, with
+    one leading `--` dropped so `booley chat -- --help` forwards `--help`. A leading
+    `-h`/`--help` stays Booley's: the whole argv goes to argparse, which prints the `chat`
+    help.
     """
     tail = argv[command_index + 1 :]
     own_end = 0
@@ -1420,6 +1441,26 @@ def _cheat_criteria_params_reference(text: str) -> str:
     return text
 
 
+# Stands for the raw metrics listing while `render` wraps the prose around it.
+_METRICS_PLACEHOLDER = "METRICSLISTING"
+_METRICS_BLOCK = re.compile(
+    r"<!-- BEGIN GENERATED: metrics -->.*?<!-- END GENERATED: metrics -->", re.DOTALL
+)
+
+
+def _cheat_metrics_listing(args: argparse.Namespace, project_root: Path | None) -> str | None:
+    """The live metrics listing when ``--metrics`` asks for it, else ``None``.
+
+    Raises ``FuseSocError``, ``OSError`` or ``ValueError`` when it cannot be built.
+    """
+    if not getattr(args, "metrics", False):
+        return None
+    from booley.measurement import metrics_listing
+
+    assert project_root is not None, "`cheat --metrics` is bound to a Project"
+    return metrics_listing.render_metrics_listing(project_root)
+
+
 def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     if _cheat_lists_sections(args):
         print("\n".join(cheatsheet.render_index(width_budget())))
@@ -1437,6 +1478,15 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     text = _cheat_flow_reference(text, project_root)
     text = _cheat_criteria_reference(text, project_root)
     text = _cheat_criteria_params_reference(text)
+    from booley.targets.domain import FuseSocError
+
+    try:
+        listing = _cheat_metrics_listing(args, project_root)
+    except (FuseSocError, OSError, ValueError) as exc:
+        print(f"ERROR: cannot list metrics: {exc}", file=sys.stderr)
+        return 2
+    if listing is not None:
+        text = _METRICS_BLOCK.sub(_METRICS_PLACEHOLDER, text)
 
     # Narrow to the requested sections (after splicing, so a filtered view still
     # shows live registry/criteria tables). --all keeps the whole sheet.
@@ -1450,7 +1500,9 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     # Drop the HTML-comment markers so they don't reach the terminal.
     text = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("<!--"))
 
-    print(render(text, width=width_budget()), end="")
+    rendered = render(text, width=width_budget())
+    # The listing is TOML, not prose: it is never wrapped or inline-formatted.
+    print(rendered if listing is None else rendered.replace(_METRICS_PLACEHOLDER, listing), end="")
     return 0
 
 
@@ -1769,7 +1821,7 @@ def _flow_listing(flows: list[McpToolInfo]) -> str:
 
 def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolInfo | int:
     """List or select a registered endpoint, with wrong-command guidance."""
-    from booley.targets.flow_names import canonical
+    from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW, canonical
 
     choices = [item for item in endpoints if item.kind == kind]
     heading = "Flows" if kind == "flow" else "Specialists"
@@ -1785,6 +1837,8 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
         _enforce_runtime_location(args.command)
     other = next((item for item in endpoints if item.name == canonical(raw_name)), None)
     suggestion = f" Use booley {other.kind} {other.name}." if other is not None else ""
+    if other is None and raw_name in RETIRED_SPECIALIST_TO_FLOW:
+        suggestion = f" Use booley flow {RETIRED_SPECIALIST_TO_FLOW[raw_name]}."
     # Colour follows stdout, so the stderr listing is printed plain.
     listing = colors.strip_ansi(f"Available {heading}\n{_flow_listing(choices)}")
     print(

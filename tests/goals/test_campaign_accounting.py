@@ -56,6 +56,8 @@ pytestmark = pytest.mark.timeout(120)
 A, B = build_test_run("a", seed=1), build_test_run("b", seed=1)
 MANIFEST_SHA = f"sha256:{'c' * 64}"
 CAMPAIGN = "22222222-2222-4222-8222-222222222222"
+#: Booley 0.3.0's own Simulation records, captured as it wrote them.
+FIXTURES_0_3_0 = Path(__file__).parents[1] / "flows" / "fixtures" / "booley_0_3_0"
 
 
 @pytest.fixture

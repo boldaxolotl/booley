@@ -90,7 +90,9 @@ def decode_cli_policies(raw: str) -> dict[str, str]:
 # so the key must equal ``Specialist.name``. Explicit rather than derived from the MCP
 # registry (importing it would drag the endpoint packages into the config layer); a
 # cross-check test fails if a new Specialist is added without extending this set.
-SPECIALISTS = frozenset({"reviewer", "mutation_tester", "coverage_analyst"})
+SPECIALISTS = frozenset({"reviewer", "coverage_analyst"})
+# ``[models]`` keys of the retired tier scheme; they get their own migration error.
+RETIRED_MODEL_KEYS = frozenset({"heavy", "standard", "light", "roles"})
 
 # Built-in models. Every Specialist takes the same default per Agent CLI; the internal
 # model serves Booley's own calls (Doctor memory probe), never a Specialist.
@@ -467,14 +469,15 @@ def parse_models_section(
     whose Agent CLI is outside *clis* still loads: the launch skips it, which lets
     one list serve visitors logged in to different Agent CLIs.
     """
-    if {"heavy", "standard", "light", "roles"} & set(models):
+    if RETIRED_MODEL_KEYS & set(models):
         raise _retired_models_error(models, default_cli)
     pins: dict[str, str | tuple[str, ...]] = {}
     for name, value in models.items():
         if name not in SPECIALISTS:
             raise BackendConfigError(
                 f"booley.toml [models] has an unknown key {name!r}; "
-                f"valid keys are {', '.join(sorted(SPECIALISTS))}."
+                f"valid keys are {', '.join(sorted(SPECIALISTS))}; "
+                f"delete [models] {name} or rename it to a valid key."
             )
         if isinstance(value, list):
             if not value:

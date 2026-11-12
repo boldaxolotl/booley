@@ -23,7 +23,7 @@
 # installed Booley distributions always pull the complete published image,
 # while local builds use data/docker/ as their otherwise-unused context.
 
-FROM docker.io/library/ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS riscv-tooling
+FROM docker.io/library/ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS riscv-tooling
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -110,11 +110,13 @@ ENV PATH="/opt/riscv/bin:${PATH}"
 # Spike has no maintained release series (v1.1.0, from 2021, no longer
 # compiles with modern GCC), so this pins a tested snapshot of official
 # upstream master by full SHA. ADR 0069 defines how the pin is selected,
-# refreshed, and accepted. The explicit checks make a broken build fail the
-# image loudly.
+# refreshed, and accepted. Spike builds softfloat from its
+# berkeley-softfloat-3 submodule, pinned by the superproject's gitlink and
+# fetched in full so a non-tip gitlink stays reachable. The explicit checks
+# make a broken build fail the image loudly.
 # ---------------------------------------------------------------------------
 # renovate: datasource=git-refs depName=riscv-isa-sim packageName=https://github.com/riscv-software-src/riscv-isa-sim currentValue=master
-ARG SPIKE_REF=609dbe0b9994154833039209fa37151e7c05e9d4
+ARG SPIKE_REF=4094d29094b690a7c4ae392c6d71260e5ec30b6b
 RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && git init /tmp/spike \
     && cd /tmp/spike \
@@ -122,6 +124,7 @@ RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && git fetch --depth 1 origin "${SPIKE_REF}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${SPIKE_REF}" \
+    && git -c protocol.version=0 submodule update --init --recursive \
     && mkdir -p /tmp/spike/build && cd /tmp/spike/build \
     && ../configure --prefix=/opt/riscv \
         --without-boost --without-boost-asio --without-boost-regex \

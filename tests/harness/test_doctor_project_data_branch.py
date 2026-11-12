@@ -227,6 +227,7 @@ def test_common_state_in_worktree_warns_on_planted_path(tmp_path: Path) -> None:
     root = tmp_path / "project"
     planted = worktree / ".booley" / "runtime" / "session_activity" / "a"
     _plant(planted)
+    _plant(worktree / ".booley" / "measurements" / ("a" * 40) / "r.json")
     # A main checkout full of Common state is where that state belongs.
     _plant(root / ".booley" / "runtime" / "session_activity" / "main")
     _plant(root / ".booley" / "findings.jsonl")
@@ -237,6 +238,7 @@ def test_common_state_in_worktree_warns_on_planted_path(tmp_path: Path) -> None:
     assert [finding.check_id for finding in warnings] == ["project-data.common-state-in-worktree"]
     assert warnings[0].subject == str(worktree / ".booley")
     assert "runtime/session_activity" in warnings[0].message
+    assert "measurements" in warnings[0].message
     assert "findings.jsonl" not in warnings[0].message
     assert "git worktree remove" in warnings[0].fix
     assert planted.is_file()  # Doctor reports; it never deletes.

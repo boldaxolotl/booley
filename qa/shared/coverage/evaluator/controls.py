@@ -43,7 +43,7 @@ def _manifest(header: dict, rollup: dict, compressed: bytes, raw: bytes) -> dict
         for metric in ["line", "branch", "expression"]
     ]
     return {
-        "$schema": "booley.coverage-campaign/v4",
+        "$schema": measurements.CAMPAIGN_SCHEMA,
         "campaign_id": "qa-control",
         "target": {"identity": header["target_identity"]},
         "tests": {"runs": [{"id": "r1", "test": "half"}]},

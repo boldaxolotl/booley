@@ -1,8 +1,14 @@
 # Goal Mode session identity spike (ADR 0067 and 0068, Phase 0)
 
-Validated on 06 OCT 2026 for [ADR 0068](../../adr/0068-booley-dashboard.md)
-(session registry) and ADR 0067's shared-worktree warning. Decides what the
-Session Registry can key a session on.
+Dated evidence record of a spike run on 06 OCT 2026 for
+[ADR 0068](../../adr/0068-booley-dashboard.md) (the session registry behind
+the Dashboard) and ADR 0067's shared-worktree warning. It measured what an
+agent client reveals about which tab made a Booley call, and decided what the
+registry keys a session on. Read it for the evidence behind that key. The
+decision went into
+[ADR 0068's 2026-10-06 amendments](../../adr/0068-booley-dashboard.md#amendments-2026-10-06),
+and later ADR 0068 amendments changed the key (for example, marked `booley chat`
+Codex launches now get a process key); the ADR is the current record.
 
 ## Setup
 
@@ -30,7 +36,7 @@ The port-to-PID lookup itself worked on every call (no misses). Both
 clients negotiate `2026-07-28`, whose `TransportContext` exposes headers
 only, so the ASGI scope remains the only place the peer address is visible.
 
-## Decision for D2
+## Decision
 
 The registry key is, in order:
 
@@ -45,7 +51,7 @@ The registry key is, in order:
    thread id).
 
 A PID key whose PID already owns a row with a different thread id is
-treated as rule 3 as well, as a second line of defence. Rows live
+treated as rule 3 as well, as a second line of defense. Rows live
 independently of HTTP connections, since both clients open a fresh
 connection per call (Claude PID 132 used ports 49874, 60700, and 59736
 across its calls): a row is upserted on every call and pruned when its

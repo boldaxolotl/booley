@@ -30,8 +30,8 @@ from uuid import uuid4
 
 from mcp import Client, StdioServerParameters
 
-from booley.dev_support import mutation_workspace
 from booley.dev_support.demo_contract_codec import load_contract
+from booley.flows.mutation import workspace as mutation_workspace
 from booley.fusesoc.core_projection import native_cores_ignored
 from booley.goals.model import GoalArg, GoalFamily, GoalRecord, GoalState, goal_arg_to_json
 from booley.goals.naming import resolve_spelling
@@ -65,7 +65,7 @@ BASELINE_KILL_FRACTION = 0.5
 _ENTRY = re.compile(r"^Goal Mode ([A-Za-z0-9-]+) entered in (.+)\.$", re.MULTILINE)
 _EXIT = re.compile(r"EXIT_CODE:\s*(-?\d+)")
 _RUN = re.compile(r"run_id=([^\s)]+)")
-# The Mutation Tester report line: ``N detected (T timeout), Z invalid, W not detected``.
+# The Mutation Flow report line: ``N detected (T timeout), Z invalid, W not detected``.
 _ZERO_INVALID = re.compile(r"\b0 invalid\b")
 
 
@@ -223,7 +223,7 @@ async def readiness(
     """Enter the full contract and list every Goal without a lifecycle exception.
 
     With *mutation_smoke_booley_dir* (the Main Booley Directory) set, also run
-    one small ``mutation_tester`` call inside the Goal worktree.
+    one small ``mutation`` call inside the Goal worktree.
     """
     entry = await enter(session, worktree, goals)
     result = await _status(session, worktree, entry, goals)
@@ -231,7 +231,7 @@ async def readiness(
         smoke = await mutation_smoke(
             session, worktree, mutation_smoke_booley_dir, entry["record_id"], goals
         )
-        result["steps"]["mutation_tester"] = smoke
+        result["steps"]["mutation"] = smoke
     return result
 
 
@@ -274,7 +274,7 @@ async def mutation_smoke(
     runtime_dir = record_paths(booley_dir, record_id).runtime_dir
     response = await run_flow(
         session,
-        "mutation_tester",
+        "mutation",
         {
             "work_dir": str(worktree),
             "target": target,
@@ -556,7 +556,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--mutation-smoke",
         action="store_true",
-        help="with --readiness, also run one small mutation_tester call in the Goal worktree",
+        help="with --readiness, also run one small mutation call in the Goal worktree",
     )
     parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args(argv)

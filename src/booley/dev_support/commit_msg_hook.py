@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
-"""Git commit-msg hook: reject attribution, sanitize, then validate.
+"""Git commit-msg hook: reject attribution and banned terms, then validate.
 
-1. Reject recognized machine-attribution footers from the raw message without
-   rewriting it, so the author can remove the footer and retry.
-2. Sanitize ordinary content: redact banned phrases from the subject *and* the
-   body in place so authored rationale survives.
-3. Validate via validate_commit_msg.validate_message().
+The hook never writes the message file. It reads it, and either accepts it
+untouched or rejects the commit with a diagnostic that names every problem and
+how to retry with the same text.
+
+1. Reject recognized machine-attribution footers.
+2. Reject banned terms in the subject and body, listing each match with its
+   location. Lines Git treats as comments (the comment prefix at column 0) and
+   everything below the scissors line are not part of the message and are not
+   checked; a term on a comment-prefixed line that Git keeps (``git commit -m``
+   keeps ``#`` lines) is left to the pre-push hook.
+3. Validate the subject convention and body-length cap, which
+   ``BOOLEY_SKIP_COMMIT_VALIDATION`` skips. Attribution footers and banned
+   terms are rejected even with that variable set.
 
 Project Initialization packages this module into the Project Git-hook
 bundle used by the RTL repository and its linked worktrees.
 
-**Bodies are kept.** They used to be truncated away on every non-merge commit
-("single-line messages only"), which quietly destroyed authored work: a long
-commit body explaining a port — every design decision, the QoR baseline — was
-dropped on the floor, and the notice saying so scrolled past in a wall of git
-output (taxi port, F-11). Stealth's job is to keep agent and EDA-tool names out of the
-history, not to keep *rationale* out of it; a redacted body leaks exactly as
-little as no body at all, and a history of terse one-liners is arguably the
-*less* human-looking outcome. Losing work to a lossy default is worse than
-either.
+**Rejecting beats rewriting.** Rewriting would change what the author wrote and
+make the committed history differ from the text the author had reviewed. A
+rejection costs one retry and loses nothing.
 """
 
 from __future__ import annotations
@@ -33,17 +35,11 @@ _DEV_SUPPORT_DIR = str(Path(__file__).resolve().parent)
 if _DEV_SUPPORT_DIR not in sys.path:
     sys.path.insert(0, _DEV_SUPPORT_DIR)
 
-from commit_msg_utils import find_banned, redact_banned, stealth_enabled
-
-
-class AttributionPolicyError(ValueError):
-    """A commit message contains a machine-attribution footer."""
-
+from commit_msg_utils import find_banned, stealth_enabled
 
 # These existing structural forms are unambiguous attribution markers and are
-# rejected regardless of Project vocabulary. They used to be silently dropped,
-# which made the hook's policy depend on footer spelling and destroyed the raw
-# message the author needed to correct.
+# rejected regardless of Project vocabulary, and the raw message is kept so the
+# author can correct it.
 _STRUCTURAL_ATTRIBUTION_LINE_RE = re.compile(
     r"""^\s*(?:
           co-authored-by\s*:          # the git trailer itself
@@ -58,28 +54,6 @@ _GENERATED_WITH_LINE_RE = re.compile(
 )
 
 _MARKDOWN_LINK_RE = re.compile(r"^\[(?P<label>[^]]+)\]\([^)]+\)$")
-
-
-def split_subject_body(msg: str) -> tuple[str, str]:
-    """Normalize line endings, drop git's ``#`` comment lines, split subject/body.
-
-    The subject is returned *unredacted* so callers can tell whether
-    sanitization actually changed it.
-    """
-    msg = msg.replace("\r\n", "\n").replace("\r", "\n")
-    non_comment = "\n".join(ln for ln in msg.split("\n") if not ln.lstrip().startswith("#"))
-    parts = non_comment.split("\n", 1)
-    return parts[0].strip(), (parts[1] if len(parts) > 1 else "")
-
-
-def _trim_blank_edges(body: str) -> str:
-    """Drop leading and trailing blank lines from *body*."""
-    lines = body.split("\n")
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    return "\n".join(lines)
 
 
 def _payload_names_protected_identity(
@@ -105,115 +79,171 @@ def _has_machine_attribution(body: str, project_root: Path | None = None) -> boo
     # Plain "Generated with ..." text is ambiguous, so only the final nonblank
     # body line has footer shape. Its visible payload must be exactly one
     # protected vocabulary entry: merely mentioning a protected term inside an
-    # authored sentence remains ordinary prose and takes the redaction path.
+    # authored sentence remains ordinary prose and is not attribution.
     footer = next((line for line in reversed(lines) if line.strip()), "")
     match = _GENERATED_WITH_LINE_RE.fullmatch(footer)
     return bool(match and _payload_names_protected_identity(match.group("payload"), project_root))
 
 
-def sanitize_body(body: str, project_root: Path | None = None) -> str:
-    """Redact a commit body in place without deleting authored lines.
+def _git_output(project_root: Path | None, *args: str) -> tuple[bool, str]:
+    """Run ``git`` in *project_root* and return (succeeded, stdout)."""
+    from validate_commit_msg import run_command
 
-    Returns the body with no leading/trailing blank lines, so the caller can
-    re-attach it under exactly one blank separator line (git's convention)
-    regardless of how the author spaced the original.
+    argv = ["git", *(["-C", str(project_root)] if project_root else []), *args]
+    run = run_command(argv)
+    return run.ok, run.stdout
+
+
+# Characters Git picks from when ``core.commentChar`` is ``auto``.
+_AUTO_COMMENT_CHARS = tuple("#;@!$%^&|:")
+
+
+def _comment_prefixes(project_root: Path | None) -> tuple[str, ...]:
+    """Return Git's comment prefixes: ``core.commentChar``/``commentString``, else ``#``.
+
+    Git treats the two keys as one setting where the last one set wins. With
+    ``auto`` Git picks a character the message does not use, which cannot be
+    known here (a retry with ``-F`` can switch it from ``#``), so every
+    character ``auto`` may pick counts as a comment prefix.
     """
-    return _trim_blank_edges(
-        "\n".join(redact_banned(line, project_root) for line in body.split("\n"))
-    )
+    ok, out = _git_output(project_root, "config", "--get-regexp", r"^core\.comment(char|string)$")
+    if not ok or not out.strip():
+        return ("#",)
+    # Keep the value's own spaces: only the line break is not part of it.
+    value = out.splitlines()[-1].partition(" ")[2]
+    if value == "auto":
+        return _AUTO_COMMENT_CHARS
+    return (value or "#",)
 
 
-def sanitize_message(msg: str, project_root: Path | None = None) -> str:
-    """Reject attribution or sanitize a commit message in place.
+def message_lines(raw: str, prefixes: tuple[str, ...]) -> list[tuple[int, str]]:
+    """Return ``(file line number, text)`` for the lines Git keeps in an edited message.
 
-    Raises :class:`AttributionPolicyError` before redaction when the raw body
-    contains recognized attribution. Otherwise both subject and body are
-    redacted in place and git comment lines are dropped.
+    Drops the scissors line and everything below it, and lines that start with
+    one of *prefixes* at column 0, as ``git commit`` does when it cleans up a
+    message the author edited.
     """
-    raw_subject, body = split_subject_body(msg)
-    if _has_machine_attribution(body, project_root):
-        raise AttributionPolicyError
-    subject = redact_banned(raw_subject, project_root)
-    clean_body = sanitize_body(body, project_root)
-    if clean_body:
-        return f"{subject}\n\n{clean_body}\n"
-    return subject + "\n"
+    scissors = {
+        f"{prefix} ------------------------ >8 ------------------------" for prefix in prefixes
+    }
+    kept: list[tuple[int, str]] = []
+    for number, line in enumerate(raw.replace("\r\n", "\n").replace("\r", "\n").split("\n"), 1):
+        if line in scissors:
+            break
+        if not line.startswith(prefixes):
+            kept.append((number, line))
+    return kept
 
 
-def _notify_if_redacted(
-    raw: str,
-    sanitized: str,
-    project_root: Path | None = None,
-) -> None:
-    """Tell the committer when sanitization rewrote their message (F-8/F-15).
-
-    Redaction is stealth-by-design but was also stealth-from-the-author: a
-    subject like ``feat(booley): ...`` silently landed as ``feat(redacted): ...``,
-    so a scope name turned into a useless one with nothing to notice — very
-    confusing on a first encounter. The commit still proceeds — this only makes
-    the substitution visible and names its cause (stealth mode). Prints the
-    *sanitized* text; echoing the banned phrase back would defeat the point.
-    """
-    raw_subject, raw_body = split_subject_body(raw)
-    sanitized_subject, _sanitized_body = split_subject_body(sanitized)
-    changed = False
-    if sanitized_subject != raw_subject:
-        print(
-            f"commit-msg: stealth-mode redaction rewrote the subject -> {sanitized_subject}",
-            file=sys.stderr,
-        )
-        changed = True
-    # Checked independently of the subject: an `elif` here meant a redacted
-    # subject swallowed the body notice, so body edits happened without a word.
-    # The body is redacted and kept, but the author still deserves to know their
-    # wording changed. Compare against the body
-    # with only its blank edges trimmed: that is what sanitize_body() would
-    # return if it had nothing to redact, so any difference is a real edit and
-    # re-spacing alone never trips the notice.
-    if _trim_blank_edges(raw_body) != sanitize_body(raw_body, project_root):
-        print(
-            "commit-msg: stealth-mode redaction rewrote the commit body "
-            "(banned phrases substituted); the body itself is kept",
-            file=sys.stderr,
-        )
-        changed = True
-    if changed:
-        # Names the knob but not the config file: the file is <booley-directory>/booley.toml, and spelling that out would print a banned word —
-        # the exact thing these notices promise not to echo back.
-        print(
-            "commit-msg: stealth mode did this — turn it off with [stealth] "
-            "enabled = false in the project config TOML to keep messages verbatim",
-            file=sys.stderr,
-        )
+def _subject_index(lines: list[tuple[int, str]]) -> int | None:
+    """Return the index of the first nonblank kept line, if any."""
+    return next((i for i, (_, text) in enumerate(lines) if text.strip()), None)
 
 
-def _validate_sanitized_message(sanitized: str, project_root: Path | None) -> int:
-    """Validate sanitized text, honoring the validation-only escape hatch."""
-    from validate_commit_msg import validate_message
+def banned_matches(
+    lines: list[tuple[int, str]], subject_index: int | None, project_root: Path | None
+) -> list[tuple[str, str]]:
+    """Return ``(term, location)`` once per term per kept line."""
+    matches: list[tuple[str, str]] = []
+    for index, (number, text) in enumerate(lines):
+        location = "in the subject" if index == subject_index else f"on line {number}"
+        matches.extend((term, location) for term in dict.fromkeys(find_banned(text, project_root)))
+    return matches
 
-    errors = validate_message(sanitized, project_root=project_root)
-    if not errors:
-        return 0
 
-    # Opt-out for human/upstream-style commits on non-Booley IP (SETUP-10):
-    # skip only the configured validation checks. Attribution rejection and
-    # sanitization have already run and cannot be bypassed here.
-    if os.environ.get("BOOLEY_SKIP_COMMIT_VALIDATION"):
-        print(
-            "commit-msg: convention check skipped "
-            "(BOOLEY_SKIP_COMMIT_VALIDATION set); message still sanitized",
-            file=sys.stderr,
-        )
-        return 0
-    print("Commit message validation FAILED:", file=sys.stderr)
-    for error in errors:
-        print(f"  - {error}", file=sys.stderr)
+def _is_merge(msg_file: Path, project_root: Path | None) -> bool:
+    """Return whether this commit concludes a merge."""
+    if msg_file.name == "MERGE_MSG":
+        return True
+    return _git_output(project_root, "rev-parse", "-q", "--verify", "MERGE_HEAD")[0]
+
+
+def _print_kept_and_retry(msg_file: Path, *, merge: bool = False) -> None:
+    """Say where the rejected message was kept and how to retry with it."""
+    path = msg_file.resolve()
+    print(f'Your message was kept unchanged in "{path}".', file=sys.stderr)
+    if merge:
+        # The merge stays in progress after a rejection, so plain git commit finishes it.
+        print(f'To retry with the same text, run: git commit -v -e -F "{path}"', file=sys.stderr)
+        return
     print(
-        "  (set BOOLEY_SKIP_COMMIT_VALIDATION=1 to skip this convention "
-        "check for one commit; sanitization still applies)",
+        "To retry with the same text, rerun your git commit command with the same "
+        f'options (-a, --amend, paths) and replace -m/-F with: -v -e -F "{path}"',
         file=sys.stderr,
     )
-    return 1
+
+
+def _print_banned_rejection(
+    matches: list[tuple[str, str]],
+    other_errors: list[str],
+    msg_file: Path,
+    *,
+    merge: bool,
+) -> None:
+    """Print the banned-term rejection with every match and both ways out."""
+    print(
+        "commit-msg: Stealth Mode rejected this commit message; it contains banned terms:",
+        file=sys.stderr,
+    )
+    for term, location in matches:
+        print(f"  - {term!r} {location}", file=sys.stderr)
+    for error in other_errors:
+        print(f"  - {error}", file=sys.stderr)
+    print(
+        "Reword the message, or, if a term is an ordinary name in this design, "
+        "remove it from [stealth] banned_words or banned_substrings in the "
+        "project config TOML.",
+        file=sys.stderr,
+    )
+    if merge:
+        print(
+            "This is a merge commit: finish it with a message of your own, "
+            'git commit -m "<message>" concludes the merge, or pass '
+            '-m "<message>" to git merge.',
+            file=sys.stderr,
+        )
+    _print_kept_and_retry(msg_file, merge=merge)
+
+
+def _check_message(msg_file: Path, raw: str, project_root: Path | None) -> int:
+    """Return the hook exit code for one message, printing any rejection."""
+    from validate_commit_msg import convention_errors
+
+    lines = message_lines(raw, _comment_prefixes(project_root))
+    subject_index = _subject_index(lines)
+    body = "\n".join(text for _, text in lines[(subject_index or 0) + 1 :])
+
+    # Attribution first, and without echoing the footer's identity.
+    if _has_machine_attribution(body, project_root):
+        print(
+            "commit-msg: attribution footer is not allowed in stealth mode; "
+            "remove the footer and retry the commit",
+            file=sys.stderr,
+        )
+        _print_kept_and_retry(msg_file)
+        return 1
+
+    matches = banned_matches(lines, subject_index, project_root)
+    skip_convention = bool(os.environ.get("BOOLEY_SKIP_COMMIT_VALIDATION"))
+    errors: list[str] = []
+    if not skip_convention:
+        text = "\n".join(text for _, text in lines[subject_index or 0 :])
+        errors = convention_errors(text, project_root=project_root)
+
+    if matches:
+        _print_banned_rejection(matches, errors, msg_file, merge=_is_merge(msg_file, project_root))
+        return 1
+    if errors:
+        print("Commit message validation FAILED:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        print(
+            "  (set BOOLEY_SKIP_COMMIT_VALIDATION=1 to skip this convention check "
+            "for one commit; banned terms and attribution footers are still rejected)",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def main() -> int:
@@ -225,10 +255,10 @@ def main() -> int:
 
     project_root = _current_repo_root()
 
-    # Stealth mode is opt-in ([stealth] enabled = true). When off, this hook —
-    # sanitizer and convention validator both — is a no-op, even if a prior
-    # setup left it installed. Ticket worktrees are set up fresh so the install
-    # is already gated; this makes the flag authoritative at runtime too.
+    # Stealth mode is opt-in ([stealth] enabled = true). When off, this hook is
+    # a no-op, even if a prior setup left it installed. Ticket worktrees are set
+    # up fresh so the install is already gated; this makes the flag
+    # authoritative at runtime too.
     if not stealth_enabled(project_root):
         return 0
 
@@ -238,20 +268,7 @@ def main() -> int:
         return 1
 
     raw = msg_file.read_text(encoding="utf-8", errors="replace")
-    try:
-        sanitized = sanitize_message(raw, project_root)
-    except AttributionPolicyError:
-        print(
-            "commit-msg: attribution footer is not allowed in stealth mode; "
-            "remove the footer and retry the commit",
-            file=sys.stderr,
-        )
-        return 1
-    msg_file.write_text(sanitized, encoding="utf-8")
-    _notify_if_redacted(raw, sanitized, project_root)
-
-    # Validate the sanitized, attribution-free message.
-    return _validate_sanitized_message(sanitized, project_root)
+    return _check_message(msg_file, raw, project_root)
 
 
 if __name__ == "__main__":

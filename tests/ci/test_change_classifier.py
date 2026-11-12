@@ -594,6 +594,13 @@ _PACKAGE_JOBS = {"build-dist", "package-artifacts"}
         pytest.param(["docs/architecture.md"], _BASE_JOBS, id="internal-docs"),
         pytest.param(["AGENTS.md"], _BASE_JOBS, id="root-markdown"),
         pytest.param(["qa/AREAS.md"], _BASE_JOBS, id="qa-markdown"),
+        # A changelog fragment is documentation, never the release category.
+        pytest.param(["changelog.d/3606.md"], _BASE_JOBS, id="changelog-fragment"),
+        pytest.param(
+            ["changelog.d/README.md", "changelog.d/fix-typo.md"],
+            _BASE_JOBS,
+            id="changelog-fragment-readme",
+        ),
         pytest.param(
             ["README.md", "website/docs/index.md"],
             _SITE_JOBS | _PACKAGE_JOBS,
@@ -606,6 +613,11 @@ def test_documentation_only_changes_select_the_narrow_job_set(
 ) -> None:
     """README, website and documentation changes skip the Python, Rust and image lanes."""
     assert required_jobs(classify(paths)) == expected
+
+
+def test_changelog_fragments_are_not_a_release_change() -> None:
+    """Only the changelog and its mirror are the ``release`` category, not fragments."""
+    assert "release" not in classify(["changelog.d/3606.md", "changelog.d/README.md"])
 
 
 def test_readme_and_website_pull_request_outputs_the_narrow_set(tmp_path: Path) -> None:

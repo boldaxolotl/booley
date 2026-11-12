@@ -258,7 +258,7 @@ Agent's chat to finish.
 
 **Setup asks whether to keep Booley out of your git history.** Yes turns on
 [Stealth Mode](STEALTH.md#stealth-mode), which keeps Booley's files out of
-your repository and cleans AI attribution out of commit messages. No, the
+your repository and rejects commit messages that name AI tools. No, the
 default, leaves Booley's setup in your repository for colleagues to share.
 
 ### Porting an existing project: plan, then execute

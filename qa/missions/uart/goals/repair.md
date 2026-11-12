@@ -1,12 +1,13 @@
 # Goalset: repair
 
-Repair standalone UART conformance, attempt 1/2, only after an actual independent
-mismatch on a finished implementation. Start from the preceding integrated
-finished commit. Supply only the original public contract and at most five
-bounded diagnostic excerpts. Reproduce first, then author a regression and fix
-owned RTL/TB. Retain the same complete Goals. Never weaken checks or reveal
-hidden evaluator material. The operator reruns the entire frozen manifest with
-the same seed; at most two repairs. Unfinished feature work is not a repair.
+Repair the UART's conformance, attempt 1 of 2. An independent check found a
+mismatch in the finished implementation; start from the integrated finished
+commit. You have the original public contract and at most five diagnostic
+excerpts. Reproduce each failure first, then add a regression test and fix the
+RTL or testbench. Keep all the original Goals and never weaken a check; the
+evaluator itself stays hidden. After Finish, the full frozen case list is rerun
+with the same seed. This is a repair, not a place to finish incomplete feature
+work.
 
 ## Goals
 

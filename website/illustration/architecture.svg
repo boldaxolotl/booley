@@ -33,7 +33,7 @@
   </style>
   <rect class="bg" width="1126" height="600"/>
   <title id="fig2t">Booley architecture</title>
-  <desc id="fig2d">VS Code opens an agent session (Claude Code or Codex, in Interactive or Goal Mode) inside the Booley devcontainer Sandbox. Example requests: debug the backpressure test failure on the heavy target; compare synth area between commits; run a security review on the control unit module. The agent enters and finishes Goals, such as LINT:lint_fifo with no unwaived findings, SIM:sim_fifo with all selected tests passing, REVIEW:rtl_bugs clean on Target sim_fifo, SYNTH:synth_fifo with area increase at most 10 percent, and FPGA:fpga_fifo with Fmax at least 100 MHz. The agent edits the Project Git worktree (RTL and testbenches) and calls the MCP Server, Booley Flows, which drives EDA tools through the Edalize API: a linter (Verilator), a simulator (Verilator or Icarus Verilog), and a synthesis tool (Yosys). The MCP Server sends evidence to the Goals and calls Specialist Agents: reviewer for single-focus code review, mutation_tester for mutation testing, and coverage_analyst to explain coverage and suggest next steps. Outside the Sandbox, an Egress Proxy Container lets the agent reach the internet for the LLM provider only, and a heavy tool installed on the host (Vivado) is mounted read-only.</desc>
+  <desc id="fig2d">VS Code opens an agent session (Claude Code or Codex, in Interactive or Goal Mode) inside the Booley devcontainer Sandbox. Example requests: debug the backpressure test failure on the heavy target; compare synth area between commits; run a security review on the control unit module. The agent enters and finishes Goals, such as LINT:lint_fifo with no unwaived findings, SIM:sim_fifo with all selected tests passing, REVIEW:rtl_bugs clean on Target sim_fifo, SYNTH:synth_fifo with area increase at most 10 percent, and FPGA:fpga_fifo with Fmax at least 100 MHz. The agent edits the Project Git worktree (RTL and testbenches) and calls the MCP Server, Booley Flows, which drives EDA tools through the Edalize API: a linter (Verilator), a simulator (Verilator or Icarus Verilog), and a synthesis tool (Yosys); the mutation Flow runs mutation testing on the simulator. The MCP Server sends evidence to the Goals and calls Specialist Agents: reviewer for single-focus code review and coverage_analyst to explain coverage and suggest next steps. Outside the Sandbox, an Egress Proxy Container lets the agent reach the internet for the LLM provider only, and a heavy tool installed on the host (Vivado) is mounted read-only.</desc>
   <defs>
     <marker id="f2a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
     <marker id="f2g" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah ok" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
@@ -90,26 +90,26 @@
 
   <path class="ln" d="M455 270 V320" marker-end="url(#f2a)"/>
   <text class="e" x="463" y="300">MCP</text>
-  <rect class="bx" x="370" y="320" width="260" height="64"/>
+  <rect class="bx" x="370" y="320" width="260" height="84"/>
   <text class="t" x="500" y="347" text-anchor="middle">MCP Server: Booley Flows</text>
   <text class="s" x="500" y="367" text-anchor="middle">(calls EDA tools using Edalize API)</text>
+  <text class="b" x="384" y="391">• <tspan class="k">mutation:</tspan> mutation testing</text>
 
   <path class="ln ok" d="M615 320 V270" marker-end="url(#f2g)"/>
   <text class="e ok" x="623" y="300">evidence</text>
 
   <!-- specialist agents -->
   <path class="ln" d="M630 352 H670" marker-end="url(#f2a)"/>
-  <rect class="bx" x="670" y="320" width="230" height="140"/>
+  <rect class="bx" x="670" y="320" width="230" height="124"/>
   <rect class="hd" x="670" y="320" width="230" height="32"/>
   <text class="t" x="684" y="341">Specialist Agents</text>
   <text class="b" x="684" y="374">• <tspan class="k">reviewer:</tspan> single-focus code review</text>
   <text class="s" x="694" y="392">(bugs, spec, protocol, security, ...)</text>
-  <text class="b" x="684" y="413">• <tspan class="k">mutation_tester:</tspan> mutation testing</text>
-  <text class="b" x="684" y="434">• <tspan class="k">coverage_analyst:</tspan> explains coverage,</text>
-  <text class="b" x="694" y="451">suggests next steps</text>
+  <text class="b" x="684" y="413">• <tspan class="k">coverage_analyst:</tspan> explains coverage,</text>
+  <text class="b" x="694" y="430">suggests next steps</text>
 
   <!-- EDA tools row -->
-  <path class="ln" d="M500 384 V484" marker-end="url(#f2a)"/>
+  <path class="ln" d="M500 404 V484" marker-end="url(#f2a)"/>
   <rect class="grp" x="370" y="484" width="530" height="84"/>
   <text class="s" x="384" y="502">EDA tools</text>
   <rect class="bx" x="390" y="510" width="150" height="46"/>

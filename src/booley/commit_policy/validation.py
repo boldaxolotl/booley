@@ -45,8 +45,11 @@ def _body_content_lines(msg: str) -> list[str]:
     ]
 
 
-def validate_message(msg: str, *, project_root: Path | None = None) -> list[str]:
-    """Validate a commit message and return every policy error."""
+def convention_errors(msg: str, *, project_root: Path | None = None) -> list[str]:
+    """Return the subject-convention and body-length errors for *msg*.
+
+    Banned terms are not reported here; :func:`validate_message` adds them.
+    """
     errors: list[str] = []
     subject = msg.split("\n", 1)[0]
     is_merge = subject.startswith("Merge ") or subject.startswith("merge(")
@@ -73,7 +76,12 @@ def validate_message(msg: str, *, project_root: Path | None = None) -> list[str]
             errors.append(
                 f"Body is {len(body)} line(s) ([stealth] max_body_lines = {cap}): {detail}"
             )
+    return errors
 
+
+def validate_message(msg: str, *, project_root: Path | None = None) -> list[str]:
+    """Validate a commit message and return every policy error."""
+    errors = convention_errors(msg, project_root=project_root)
     if stealth_enabled(project_root):
         errors.extend(
             f"Banned phrase in commit message: '{phrase}'"

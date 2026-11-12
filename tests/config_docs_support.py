@@ -15,4 +15,5 @@ CONFIG_PAGES = (
     "FLOW-LINT.md",
     "FLOW-SYNTH.md",
     "FLOW-FPGA.md",
+    "FLOW-MUTATION.md",
 )

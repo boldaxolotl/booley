@@ -282,6 +282,13 @@ def test_models_audit_reports_pins() -> None:
     ]
 
 
+def test_models_audit_fails_a_models_value_that_is_not_a_table() -> None:
+    audit = agent_schema.audit_models_table({"models": "reviewer"})
+
+    assert not audit.is_valid
+    assert audit.findings[0].message == "booley.toml [models] must be a table"
+
+
 def test_flow_audit_collects_shape_failures_and_ignored_knob_warning() -> None:
     audit = flow_schema.audit_flow_table(
         "lint",

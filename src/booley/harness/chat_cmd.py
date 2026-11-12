@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import functools
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -24,7 +25,7 @@ from booley.harness.chat_exit import CreatedWorktree
 from booley.harness.chat_resume import ResumeRefusedError, ResumeTarget
 from booley.runtime.booley_dir import resolve_checkout_booley_dir, resolve_common_booley_dir
 from booley.runtime.foreground_child import exec_agent, run_foreground_child
-from booley.runtime.handles import reserve_session_handle
+from booley.runtime.handles import launched_session_title, reserve_session_handle
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
 
@@ -39,6 +40,19 @@ def _names_session(agent_args: list[str]) -> bool:
     return False
 
 
+_SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}")
+
+
+def session_name(value: str) -> str:
+    """Validate a `--name` label (argparse ``type=``): the trimmed text, or a usage error."""
+    name = value.strip()
+    if _SESSION_NAME.fullmatch(name) is None:
+        raise argparse.ArgumentTypeError(
+            "use 1-32 letters, digits, spaces, '.', '_' or '-', starting with a letter or digit"
+        )
+    return name
+
+
 # How long the launch waits for the Session writer lock while reserving its handle.
 _HANDLE_WAIT_S = 10.0
 
@@ -49,29 +63,31 @@ def _claude_command(
     *,
     strict: bool,
     predecessors: tuple[str, ...] = (),
+    name: str | None = None,
 ) -> tuple[str, list[str], str | None]:
     """Use the launch process's persistent handle when naming is available.
 
-    The handle stays argv[0]; Booley adds `-n <handle>` unless the user named the session.
-    Without a handle the launch falls back to plain `claude`, or raises when *strict*.
-    A resumed tab keeps the handle of its *predecessors*.
+    The title (`S3 · uart-fix` with a *name*, else the handle) stays argv[0]; Booley adds
+    `-n <title>` unless the user named the session. Without a handle the launch falls
+    back to plain `claude`, or raises when *strict*. A resumed tab keeps the handle (and
+    stored label) of its *predecessors*.
     """
     try:
         identity = capture_process_identity(os.getpid())
         if identity is None:
             raise RuntimeError("launch process identity is unavailable")
+        booley_dir = resolve_common_booley_dir(project_root)
+        key = process_session_key(identity)
         handle = reserve_session_handle(
-            resolve_common_booley_dir(project_root),
-            process_session_key(identity),
-            wait_s=_HANDLE_WAIT_S,
-            predecessors=predecessors,
+            booley_dir, key, wait_s=_HANDLE_WAIT_S, predecessors=predecessors, name=name
         )
+        title = launched_session_title(booley_dir, key, handle, name)
     except (OSError, ValueError, RuntimeError) as exc:
         if strict:
             raise
         print(f"NOTE: Claude tab handle is unavailable: {exc}", file=sys.stderr)
         return "claude", ["claude"], None
-    argv = [handle] if _names_session(agent_args) else [handle, "-n", handle]
+    argv = [title] if _names_session(agent_args) else [title, "-n", title]
     return "claude", argv, handle
 
 
@@ -158,20 +174,26 @@ def _agent_command(
     *,
     strict: bool,
     predecessors: tuple[str, ...] = (),
+    name: str | None = None,
 ) -> tuple[str, list[str], str | None]:
     """Return the program, argv and reserved handle (``None`` when unnamed) for *provider*.
 
     With *strict* a handle that cannot be reserved raises `_NoHandleError` instead of
     falling back to an unnamed tab. A resumed tab keeps the handle of its *predecessors*.
+    *name* labels the Session in the tab title.
     """
     try:
         if provider == "codex":
             return codex_chat.command(
-                project_root, wait_s=_HANDLE_WAIT_S, strict=strict, predecessors=predecessors
+                project_root,
+                wait_s=_HANDLE_WAIT_S,
+                strict=strict,
+                predecessors=predecessors,
+                name=name,
             )
         if provider == "claude":
             return _claude_command(
-                project_root, agent_args, strict=strict, predecessors=predecessors
+                project_root, agent_args, strict=strict, predecessors=predecessors, name=name
             )
     except (OSError, ValueError, RuntimeError) as exc:
         raise _NoHandleError(str(exc)) from exc
@@ -249,6 +271,8 @@ def _launch(
     agent_args: list[str],
     placement: Placement,
     created: CreatedWorktree | None = None,
+    *,
+    name: str | None = None,
 ) -> int:
     """Exec the agent CLI; runs in the forked child, so identities are the agent's own.
 
@@ -267,6 +291,7 @@ def _launch(
             agent_args,
             strict=placement.worktree,
             predecessors=resume.predecessors if resume else (),
+            name=name,
         )
         if provider == "claude":
             _hide_gateway_from_claude()
@@ -329,7 +354,14 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     # A worktree that sat idle is removed before this launch allocates a handle and a name.
     chat_exit.collect_at_launch(project_root)
     # The child, not Booley, reserves the handle: the handle belongs to the agent's process.
-    launch = functools.partial(_launch, provider, project_root, args.agent_args)
+    # Bare `booley` has no chat options, so `session_name` may be absent too.
+    launch = functools.partial(
+        _launch,
+        provider,
+        project_root,
+        args.agent_args,
+        name=getattr(args, "session_name", None),
+    )
     resume = chat_resume.request(provider, args.agent_args)
     resolve = (
         None

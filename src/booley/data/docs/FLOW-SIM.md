@@ -14,8 +14,8 @@ What all Flows share (choosing Targets, common options, live progress, exit
 codes) is in [Running Flows](FLOW_REFERENCE.md). How to declare a Target's
 Tests, Test Variants and seeds is in [`tests.toml`](TESTS.md); measuring how much RTL
 the tests exercise is in [Coverage](COVERAGE.md); checking that the tests
-catch planted bugs is the Mutation Tester's job in
-Specialists (host doc, not shipped).
+catch planted bugs is the job of the Mutation Flow, see
+[Mutation testing](FLOW-MUTATION.md).
 
 ## Running a simulation
 

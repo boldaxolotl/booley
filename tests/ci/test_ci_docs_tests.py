@@ -22,6 +22,7 @@ _NAMED_CONTENT_TESTS = (
     "tests/test_site_contract.py",
     "tests/docs/test_links.py",
     "tests/docs/test_current_version_docs.py",
+    "tests/docs/test_changelog_fragments.py",
     "tests/runtime/test_docs_links.py",
     "tests/test_paths.py",
 )
@@ -61,6 +62,8 @@ def test_repository_derivation_includes_the_named_content_tests() -> None:
     derived = set(_script().derive(_ROOT))
 
     assert set(_NAMED_CONTENT_TESTS) <= derived
+    # The derivation fails loudly if it ever loses one of the pinned modules.
+    assert set(_NAMED_CONTENT_TESTS) <= set(_script().REQUIRED_CONTENT_TESTS)
     # A reader found only through the derivation rules, not the named list.
     assert "tests/qa/test_missions.py" in derived
 

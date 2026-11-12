@@ -15,6 +15,7 @@ from tests.conftest import reset_git_command_config
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
 
+from booley.dev_support.reference_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 from booley.runtime import build_stamp
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -136,6 +137,10 @@ def test_explicit_profile_selects_only_new_wheel_and_prints_absolute_path(
         assert namespace["COMMIT"].endswith("+dirty")
         assert len(namespace["DEVELOPMENT_CONTEXT_SHA256"]) == 64
         assert build_stamp.development_context_path(root).is_file()
+        # The shared step rendered every shipped doc before the frontend ran.
+        for source in SHIPPED_DOCS:
+            copy = root / PACKAGED_DOCS_RELATIVE_DIR / Path(source).name
+            assert copy.read_bytes() == (root / source).read_bytes()
         assert not (root / "build").exists()
         print("frontend log", file=sys.stderr)
         (staging / WHEEL).write_bytes(b"new")

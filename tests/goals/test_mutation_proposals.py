@@ -47,7 +47,7 @@ def publish_mutation(layout, argument):
             "total_valid": 10,
         },
     )
-    recorder.record_changes(state, changes, invocation_id="original", producer="mutation_tester")
+    recorder.record_changes(state, changes, invocation_id="original", producer="mutation")
     state.save()
     return store, observations(layout)[0]
 
@@ -116,7 +116,7 @@ def test_modern_mutation_relaxation_uses_implicit_floor_and_existing_evidence(la
         derived["detail"]["goal_derivation"]["source_evidence"][0]["sequence"]
         == original["sequence"]
     )
-    assert sum(row["producer"] == "mutation_tester" for row in rows) == 1
+    assert sum(row["producer"] == "mutation" for row in rows) == 1
 
 
 def test_relaxing_to_an_omitted_floor_replaces_the_stored_explicit_floor(layout, monkeypatch):

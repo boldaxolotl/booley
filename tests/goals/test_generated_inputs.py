@@ -492,10 +492,10 @@ def test_finish_refuses_a_0_3_0_producer_manifest_naming_its_invocation(layout):
     with pytest.raises(LifecycleError) as excinfo:
         finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
     message = str(excinfo.value)
-    assert "written by Booley 0.3.0 and is no longer supported" in message
+    assert "was written by an older Booley and is no longer supported" in message
     assert "booley.simulation-campaign-manifest/v1" in message
     assert "delete the Simulation invocation directory" in message
-    assert "/flow-reports/sim/7 by hand" in message.replace("\\", "/")
+    assert "/flow-reports/sim/7 and start a fresh run" in message.replace("\\", "/")
 
 
 def _prepare_target_less_generated_record(

@@ -12,6 +12,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
 from qa.shared.campaign_artifacts import validate_manifest_reference
 
+#: The only manifest schema Booley writes and reads (codec.MANIFEST_SCHEMA).
+MANIFEST_SCHEMA = "booley.simulation-campaign-manifest/v4"
+
 
 def _load(path: Path) -> tuple[dict[str, object], bytes]:
     raw = path.read_bytes()
@@ -136,11 +139,7 @@ def validate(manifest_path: Path, expected: list[str]) -> dict[str, object]:
     _need(len(expected) == len(set(expected)), "duplicate expected test name")
     manifest, raw = _load(manifest_path)
     _need(raw.endswith(b"\n"), "manifest is not newline-terminated")
-    _need(
-        manifest.get("$schema")
-        in {f"booley.simulation-campaign-manifest/v{version}" for version in (1, 2, 3)},
-        "unexpected manifest schema",
-    )
+    _need(manifest.get("$schema") == MANIFEST_SCHEMA, "unexpected manifest schema")
     _need(_work_item_names(manifest) == expected, "work-item order differs")
     required = manifest.get("required_suite")
     _need(isinstance(required, dict), "Required Simulation Suite is missing")

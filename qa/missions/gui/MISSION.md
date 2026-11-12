@@ -4,7 +4,9 @@ Bug-hunt Booley's GUI surfaces in a browser Codespace on the published PicoRV32
 demo: onboarding, the Dashboard, the B-Wave Waveform Viewer (VaporView), the
 terminal, the Review Package preview, Live Preview and the docs site. The main
 bug class is **the GUI disagrees with the CLI**: every GUI claim gets checked
-against a CLI oracle, or the missing oracle is logged as a gap.
+against a CLI oracle, or the missing oracle is logged as a gap. The
+`booley-qa-run` skill runs this mission; to check one PR's GUI change, use
+`booley-gui-check` instead.
 
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here), run
@@ -83,8 +85,8 @@ Try:
   A layout change is not a setting, so it doesn't break the default-settings
   rule.
 - Time to first sim: run `booley flow sim --target sim_core` in a command
-  terminal and note the time from the create click to its pass (2026-11-06:
-  the sim took 20 s, about 5.5 min from the click).
+  terminal and note the time from the create click to its pass (reference
+  from the 2026-11-06 run: the sim took 20 s, about 5.5 min from the click).
 Look for: onboarding steps that need knowledge the page doesn't give, a wrong
 Dashboard terminal in front (#2700), a Doctor line that disagrees with the
 CLI, slow or silent waits with no progress shown.
@@ -96,10 +98,10 @@ Intent: the Dashboard reads correctly for a user who changed nothing.
 Try:
 - Screenshots only: the terminal is a canvas, so read it from the image
   (blurry at 1280×800; zoom into the saved file when text is unclear). Take
-  the Sessions window, the Jobs window (`→`), and Help (`↑` into the top bar,
-  `→` until Help is highlighted, `Enter`; `↓` scrolls). Take a Job detail if
-  any Job exists; otherwise screenshot the empty Jobs window under Running and
-  All (#2298, see Known traps).
+  the Sessions window, the Jobs window (`→`), the Targets window (`→` again),
+  and Help (`↑` into the top bar, `→` until Help is highlighted, `Enter`; `↓`
+  scrolls). Take a Job detail if any Job exists; otherwise screenshot the
+  empty Jobs window under Running and All.
 - Compare each with its oracle from a command terminal, also read from a
   screenshot.
 - Then apply runbook step 6, which also pins the theme to `Dark 2026` for the
@@ -123,12 +125,15 @@ Try:
   sessions, branch, work dir, last call; `git worktree list`), session detail,
   Goal rows and Goal detail (`booley goal status --long` in
   `.booley/worktrees/zbb`), the Jobs window and Job detail (Job records and
-  `ps`). Check that a worktree session (ADR 0082) shows its own worktree and
-  that NEEDS YOU and `Sessions N◆` appear when the agent asks you to confirm.
+  `ps`; the shell Flows are Standalone Jobs and appear there too), and the
+  Targets window (`booley targets`). Check that a worktree session (ADR 0082)
+  shows its own worktree and that NEEDS YOU and `Sessions N◆` appear when the
+  agent asks you to confirm.
 - MCP from the in-Codespace client: in a second chat session, ask for the
-  project status, the Targets, and one Specialist review (an RTL bug
-  review of `picorv32.v`; `booley specialist reviewer --help`); the Dashboard shows the session and
-  its Jobs, and the answers match `booley targets` and the report on disk.
+  project status, the Targets, and one Specialist review (an RTL bug review of
+  `picorv32.v`; `booley specialist reviewer --help`); the Dashboard shows the
+  session and its Jobs, and the answers match `booley targets` and the report
+  on disk.
 - Background-task activity: while the agent waits on a long Flow, the session
   shows "waiting for tool call", not idle or stuck.
 - Session end and pruning: end a short second chat session (`/exit`) and
@@ -140,9 +145,9 @@ Try:
 - Reload recovery, last: Developer: Reload Window, then the documented way
   back to the Dashboard. #2857 (the Dashboard orphaned after reload) is
   known; record what you saw, not a new finding, unless it differs.
-- Dashboard launches (ADR 0084): only if `docs/adr/0084-*` exists in the
-  candidate. Launch one Flow from the Dashboard and compare it with the same
-  CLI run. Otherwise log the item as skipped.
+- Dashboard Run (ADR 0086): start one Flow from the top bar's Run item, check
+  the equivalent shell command it shows, and compare the resulting Job with
+  the same CLI run.
 Look for: Jobs missing or duplicated, stale status after a run ends, wrong
 session attribution between the Goal and the shell, counts that disagree with
 `booley goal status`, keys that do nothing or do something the footer doesn't
@@ -160,15 +165,18 @@ Try:
 - Compare three things for each: the request, the command's readback report,
   and the screenshot. Check a few values in the view with `bwave value` /
   `bwave signal` at the marker times.
-- Loud failure: a glob that matches nothing, a `--time` start past the trace
-  end, a `--cursor` outside the range, a missing trace. Each must fail with a
-  message; none may silently show the whole trace.
+- Loud failure: `-s` globs that all match nothing, a `--time` start past the
+  trace end, a `--cursor` past the trace end, a missing trace. Each must fail
+  with a message; none may silently show the whole trace. A glob that misses
+  while others match only warns on stderr.
 - Large trace: the largest trace the demo produces (`sim_dhry`'s
-  `testbench.vcd`; B-Wave converts it to FST when it registers it). Note the open time and whether the UI stays responsive.
+  `testbench.vcd`; `sim --trace` converts it to FST after the run). Note the
+  open time and whether the UI stays responsive.
 - Two traces in two VaporView tabs: a scoped view goes to the right one.
 - Reopen after a reload (Developer: Reload Window), then a scoped view again.
 - The bundled VaporView VSIX is the one installed: compare
-  `ls /usr/local/libexec/booley/*.vsix` with `code --list-extensions --show-versions`.
+  `ls /usr/local/libexec/booley/vaporview-*.vsix` with
+  `code --list-extensions --show-versions`.
 Look for: readback that differs from the screen, radix or color ignored,
 markers in the wrong place, a silent fallback, a view sent to the wrong tab.
 Evidence: `bwave-gui-*` screenshots, each with the command and its report as
@@ -200,8 +208,8 @@ Try:
   it lands on that line.
 - Device-code sign-in: run `codex login --device-auth` and check that the
   URL is a link and the code is legible. Stop with Ctrl+C before signing in.
-  Keep the code out of saved evidence. (`booley auth` has no device-code flow;
-  for Claude it asks for a pasted token, which the no-clipboard rule rules out.)
+  Keep the code out of saved evidence. (`booley auth` is host-only, so it
+  can't run in the Codespace.)
 Look for: mojibake, colors unreadable on the theme, links that open the wrong
 file or line, progress that floods the scrollback.
 Evidence: `terminal-output-*` screenshots.
@@ -253,9 +261,8 @@ Look for: anything the runbook's checks still list, a Codespace that won't
 delete.
 
 ## Known traps
-- Shell `booley flow` runs write no Job records yet (#2298), so they don't
-  appear in the Dashboard Jobs window. With a candidate that predates #2298,
-  area 3's shell Flows are visible only as a busy Job slot; log it once.
+- The Sessions preview pane appears only when the terminal is at least 120
+  columns wide; at the default panel width its absence is not a finding.
 - Area 3's Goal runs about half an hour. Start it as soon as area 3 begins,
   and do the keyboard and resize items while it works.
 - The demo's own `zbb` Goalset is the one to use here, unlike the picorv32

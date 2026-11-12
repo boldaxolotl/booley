@@ -24,7 +24,7 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.terminal_progress import ProgressText, TerminalProgress, current_progress
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from tests.criteria.ledger_support import FixtureRecorder
-from tests.subprocess_budget import run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 BUILTINS = (AsicSynthesizeFlow, FpgaImplFlow, SimulateFlow, LintFlow)
 
@@ -252,7 +252,7 @@ def test_separate_flood_captures_match_communicate(tmp_path, returncode):
         f"os.write(1,a); t.join(); sys.exit({returncode})"
     )
     command = [sys.executable, "-c", script]
-    expected = run_bounded_child(command, timeout=5)
+    expected = run_bounded_child(command, timeout=SUBPROCESS_TIMEOUT_S)
     sink = observer(tmp_path)
     with sink.installed():
         sink.begin_command()
@@ -264,7 +264,9 @@ def test_separate_flood_captures_match_communicate(tmp_path, returncode):
             encoding="utf-8",
             start_new_session=True,
         ) as process:
-            stdout, stderr, timed_out = communicate_observed(process, sink, timeout=5)
+            stdout, stderr, timed_out = communicate_observed(
+                process, sink, timeout=SUBPROCESS_TIMEOUT_S
+            )
     assert (stdout, stderr, process.returncode, timed_out) == (
         expected.stdout,
         expected.stderr,

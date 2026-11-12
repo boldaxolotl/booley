@@ -108,7 +108,7 @@ jobs:
             exit 1
           fi
 
-      # The checks are the session runtime contract's own [riscv] probes and
+      # The checks are the Sandbox Image contract's own [riscv] probes and
       # tooling paths, so the publisher and the composed-image contract can
       # never drift apart.
       - name: Verify candidate tooling

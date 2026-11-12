@@ -156,7 +156,7 @@ def _gateway_provider_lines(url: str, token_cwd: str) -> list[str]:
         "",
         *provider.splitlines(),
         "",
-        # Codex 0.160 ignores its default *TOKEN* filter, so exclude explicitly.
+        # Do not rely on Codex's default *TOKEN* filter (it was ignored in 0.160): exclude explicitly.
         "[shell_environment_policy]",
         f"exclude = [{json.dumps(GATEWAY_TOKEN_ENV)}]",
     ]
@@ -172,7 +172,7 @@ def _booley_server_lines(
         'command = "python"',
         'args = ["-m", "booley.mcp.server"]',
         # Codex CLI defaults to 120s MCP tool timeout — far too short for
-        # long-running Flows or Specialists such as asic_synthesize / mutation_tester
+        # long-running Flows or Specialists such as asic_synthesize / mutation
         # (up to 7200s subprocess timeout).
         "tool_timeout_sec = 3600",
         "",
