@@ -132,6 +132,7 @@ class Bench:
                 "sv2v_converted.v": "module dut(input clk); endmodule\n",
                 "yosys.log": "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
                 "stat_dut.txt": "Number of cells: 100\n",
+                "premap_check_dut.txt": "Found and reported 0 problems.\n",
                 "check_dut.txt": "Found and reported 0 problems.\n",
                 "synth_dut.v": self.netlist,
                 "sta_dut.v": self.netlist,
