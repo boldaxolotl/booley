@@ -395,11 +395,11 @@ python3 <asset>/faults/campaign.py <mode> <copied-target>/coverage.json --owned 
 
 Modes: `missing-points`, `truncated-gzip`, `trailing-data`,
 `duplicate-point`, `invalid-final-record`, `resource-ceiling`, `v1`, `v2`,
-`v3`, `symlink` and `wrong-evaluation` (the last needs a blocked or
+`v3`, `v4`, `symlink` and `wrong-evaluation` (the last needs a blocked or
 not-requested evaluation). The script follows the copied reference to the
-nested Campaign, damages it, then rewrites the nested manifest and the Target
-reference (new bytes and sha256) as compact JSON. Point faults keep the
-manifest's content, though its bytes change from Booley's formatting. The
+nested Campaign, damages it; manifest faults then rewrite the nested manifest and the Target
+reference (new bytes and sha256) in Booley's own JSON format. Point faults
+leave the manifest and the Target reference byte-identical. The
 original Campaign is never touched. It refuses symlinked or
 hard-linked input files before any write; linked sentinels outside the copy
 must stay byte-identical. Record the error code, field and message proving the
