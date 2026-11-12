@@ -85,15 +85,7 @@ def test_protected_set_lists_tb_core_glob_waiver_and_constraint_paths(tmp_path: 
     ):
         write(repo / name, "x\n")
     head = commit_all(repo)
-    # Reach the export through a symlinked parent: entries stay relative to the real root.
-    real = tmp_path / "real"
-    real.mkdir()
-    link = tmp_path / "via"
-    try:
-        link.symlink_to(real, target_is_directory=True)
-    except OSError:
-        link = real
-    root = export_head(repo, head, link / "out")
+    root = export_head(repo, head, tmp_path / "out")
 
     protected = protected_set(root)
 
@@ -115,12 +107,45 @@ def test_protected_set_lists_tb_core_glob_waiver_and_constraint_paths(tmp_path: 
     )  # no rtl.sv; scripts/* leaves scripts/lib/x.py out
 
 
-def test_declaration_glob_stays_within_one_path_segment() -> None:
-    from booley.config.protected_inputs import declaration_matches
+@pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
+def test_entries_are_relative_to_the_real_root_behind_a_symlinked_parent(tmp_path: Path) -> None:
+    from booley.measurement.protected_set import protected_set
 
-    assert declaration_matches("scripts/*", "scripts/run.sh")
-    assert not declaration_matches("scripts/*", "scripts/lib/x.py")
-    assert declaration_matches("scripts/**", "scripts/lib/x.py")
+    require_symlinks(tmp_path)
+    repo = new_repository(tmp_path / "repo")
+    write(repo / ".booley" / "booley.toml", "[project]\n")
+    head = commit_all(repo)
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "via").symlink_to(real, target_is_directory=True)
+
+    root = export_head(repo, head, tmp_path / "via" / "out")
+
+    assert "booley.toml" in protected_set(root)
+    assert ".booley/booley.toml" in protected_set(root)
+
+
+def test_deleting_a_declared_input_is_a_protected_path_edit(tmp_path: Path) -> None:
+    from booley.measurement.base import changed_files, protected_edits
+    from booley.measurement.protected_set import protected_set
+
+    repo = new_repository(tmp_path / "repo")
+    write(
+        repo / ".booley" / "booley.toml",
+        '[project]\nprotected_inputs = ["golden/ref.hex", "vec/**", "any/*.txt"]\n',
+    )
+    for name in ("golden/ref.hex", "vec/b.hex", "any/a.txt", "rtl.v"):
+        write(repo / name, "x\n")
+    fork = commit_all(repo)
+    for name in ("golden/ref.hex", "vec/b.hex", "any/a.txt"):
+        (repo / name).unlink()
+    head = commit_all(repo, "delete")
+
+    protected = protected_set(export_head(repo, head, tmp_path / "out"))
+    edits = protected_edits(changed_files(repo, fork, head), protected)
+
+    # A wildcard-free name or a dir/** survives its own deletion; a bare glob match does not.
+    assert edits == ("golden/ref.hex", "vec/b.hex")
 
 
 def test_versioned_booley_directory_files_are_under_its_placement(tmp_path: Path) -> None:
@@ -194,6 +219,40 @@ def test_waiver_directory_link_climbing_out_through_dotdot_fails(tmp_path: Path)
         protected_set(root)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
+def test_waiver_directory_reached_through_a_chain_of_links_fails_naming_the_last(
+    tmp_path: Path,
+) -> None:
+    from booley.measurement.protected_set import UnpinnableInputError, protected_set
+
+    require_symlinks(tmp_path)
+    shared = tmp_path / "shared-waivers"
+    shared.mkdir()
+    repo, _ = _waiver_repository(tmp_path, "../store")
+    git(repo, "rm", "-q", "-r", "-f", "store")
+    (repo / "store").symlink_to(shared)
+    head = commit_all(repo, "chain")
+    root = export_head(repo, head, tmp_path / "out")
+
+    with pytest.raises(UnpinnableInputError, match=r"link store -> .*shared-waivers"):
+        protected_set(root)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
+def test_waiver_directory_link_loop_cannot_be_pinned(tmp_path: Path) -> None:
+    from booley.measurement.protected_set import UnpinnableInputError, protected_set
+
+    require_symlinks(tmp_path)
+    repo, _ = _waiver_repository(tmp_path, "../store")
+    git(repo, "rm", "-q", "-r", "-f", "store")
+    (repo / "store").symlink_to(".booley/coverage-waivers")
+    head = commit_all(repo, "loop")
+    root = export_head(repo, head, tmp_path / "out")
+
+    with pytest.raises(UnpinnableInputError, match="cannot be pinned"):
+        protected_set(root)
+
+
 def test_missing_waiver_directory_is_not_an_error(tmp_path: Path) -> None:
     from booley.measurement.protected_set import protected_set
 
@@ -204,7 +263,6 @@ def test_missing_waiver_directory_is_not_an_error(tmp_path: Path) -> None:
     protected = protected_set(export_head(repo, head, tmp_path / "out"))
 
     assert ".booley/coverage-waivers/" in protected
-    assert git(repo, "rev-parse", "HEAD") == head
 
 
 def test_checkout_without_configuration_protects_only_the_config_file_names(

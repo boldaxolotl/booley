@@ -11,7 +11,6 @@ its approved coverage waiver directory, and its timing constraint files.
 from __future__ import annotations
 
 import os
-import posixpath
 import tomllib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -23,6 +22,9 @@ from booley.core.config_paths import resolve_toml
 from booley.measurement.base import is_constraint
 from booley.targets.catalog import TargetCatalog
 
+# Committed links followed before a waiver path is given up as unresolvable (a loop).
+_MAX_LINK_HOPS = 40
+_Link = tuple[PurePosixPath, str]  # a committed link's path and its text
 _CONFIG_FILES = ("booley.toml", "pipeline.toml", "tests.toml", "metrics.toml", "reviews.toml")
 
 
@@ -68,45 +70,76 @@ def _relative_to_root(root: Path, path: Path | str) -> str:
 
 
 def _declared_paths(declarations: tuple[str, ...], paths: list[str]) -> set[str]:
-    """Files the declarations match, plus each literal ``dir/`` declaration as a prefix."""
+    """Files the declarations match, plus the entries that survive deleting every match.
+
+    A wildcard-free declaration is listed as itself (a ``dir/`` as a prefix) and a
+    trailing ``/**`` as the ``dir/`` prefix, so deleting a declared input is still a
+    protected-path edit.
+    """
     found = {
         path for path in paths if any(declaration_matches(rule, path) for rule in declarations)
     }
-    found.update(rule for rule in declarations if rule.endswith("/") and not set("*?") & set(rule))
+    for rule in declarations:
+        literal = rule.removesuffix("**") if rule.endswith("/**") else rule
+        if not set("*?") & set(literal):
+            found.add(literal)
     return found
 
 
-def _escapes_checkout(parent: tuple[str, ...], text: str) -> bool:
-    """Whether a committed link's text leaves the checkout; reads the text, never the target."""
-    if PurePosixPath(text).is_absolute() or PureWindowsPath(text).drive:
-        return True
-    joined = posixpath.normpath(posixpath.join(*parent, text))
-    return joined == ".." or joined.startswith("../")
+def _committed_link_escape(root: Path, relative: PurePosixPath) -> _Link | None:
+    """The committed link that takes *relative* out of the checkout, with its text, else None.
+
+    Walks the path as a reader would, following committed links (a link may point at
+    another link) but only ever reading link text, never the host target, so the
+    answer is the same on every machine. A link loop counts as an escape: it cannot
+    be pinned either.
+    """
+    pending: list[tuple[str, _Link | None]] = [(part, None) for part in relative.parts]
+    resolved: list[str] = []
+    hops = 0
+    while pending:
+        part, via = pending.pop(0)
+        if part == "..":
+            if not resolved:
+                return via  # only link text can climb: ``relative`` itself has no ``..``
+            resolved.pop()
+            continue
+        candidate = root.joinpath(*resolved, part)
+        if not candidate.is_symlink():
+            resolved.append(part)
+            continue
+        text = str(candidate.readlink())
+        link = (PurePosixPath(*resolved, part), text)
+        hops += 1
+        if (
+            hops > _MAX_LINK_HOPS
+            or PurePosixPath(text).is_absolute()
+            or PureWindowsPath(text).drive
+        ):
+            return link
+        pending[:0] = [(piece, link) for piece in PurePosixPath(text).parts]
+    return None
 
 
 def _waiver_directory(root: Path, config: dict[str, Any]) -> str | None:
     """The coverage waiver directory as ``<rel>/``, or None when none is configured.
 
     Raises:
-        UnpinnableInputError: a path component is a committed symlink out of the checkout.
+        UnpinnableInputError: the path goes through a committed symlink that leaves the
+            checkout, directly or through other committed links.
     """
     waivers = parse_coverage_waiver_config(config)
     if waivers is None:
         return None
     anchor = root if waivers.anchor == "rtl_repository" else own_booley_dir(root)
     relative = PurePosixPath(*(anchor / waivers.directory).relative_to(root).parts)
-    current = root
-    for index, part in enumerate(relative.parts):
-        current = current / part
-        if not current.is_symlink():
-            continue
-        text = str(current.readlink())
-        if _escapes_checkout(relative.parts[:index], text):
-            raise UnpinnableInputError(
-                f"coverage waiver directory {relative} points outside the measured checkout "
-                f"through the committed link {PurePosixPath(*relative.parts[: index + 1])} -> "
-                f"{text}; it cannot be pinned to a commit"
-            )
+    escape = _committed_link_escape(root, relative)
+    if escape is not None:
+        link, text = escape
+        raise UnpinnableInputError(
+            f"coverage waiver directory {relative} points outside the measured checkout "
+            f"through the committed link {link} -> {text}; it cannot be pinned to a commit"
+        )
     return f"{relative}/"
 
 

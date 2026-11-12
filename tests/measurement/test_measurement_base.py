@@ -289,3 +289,6 @@ def test_protected_edits_match_files_directory_prefixes_and_submodule_files() ->
     assert protected_edits(changed, ["sub/"]) == ("sub",)
     assert protected_edits(changed, ["sub"]) == ("sub",)  # the submodule path itself
     assert protected_edits(changed, ["sub/other.v"]) == ()
+    nested = ChangedFiles((), (SubmoduleChange("sub", "a", "b", ("sub/inner",)),))
+    assert protected_edits(nested, ["sub/inner/tb.sv"]) == ("sub",)  # a bumped nested submodule
+    assert protected_edits(nested, ["sub/other/tb.sv"]) == ()

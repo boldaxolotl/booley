@@ -228,7 +228,11 @@ def _submodule_is_protected(change: SubmoduleChange, protected: Collection[str])
     if change.files is None:
         # The changed files are unknown, so any protected entry inside could have changed.
         return any(entry.startswith(f"{change.path}/") for entry in protected)
-    return any(is_protected(name, protected) for name in change.files)
+    # A changed path that is itself a nested submodule is one name for the files under it.
+    return any(
+        is_protected(name, protected) or any(entry.startswith(f"{name}/") for entry in protected)
+        for name in change.files
+    )
 
 
 def protected_edits(changed: ChangedFiles, protected: Collection[str]) -> tuple[str, ...]:
