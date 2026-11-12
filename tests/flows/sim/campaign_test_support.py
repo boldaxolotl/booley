@@ -214,11 +214,14 @@ def _simulation_outcome(
     required: tuple[str, ...] = ("half", "full"),
     complete: bool = True,
     role: str = "candidate",
+    seeds: Mapping[str, int] | None = None,
 ) -> CampaignOutcome:
+    """A Campaign outcome of *observations*; *seeds* names the seed of a test's Test Run."""
     runs: dict[str | None, TestRun] = {}
     for observation in observations:
         test = cast("str | None", observation["test"])
-        runs.setdefault(test, build_test_run(test))
+        seed = None if test is None or seeds is None else seeds.get(test)
+        runs.setdefault(test, build_test_run(test, seed=seed))
     recorded = _recorded_campaign(tmp_path, tuple(runs.values()), required)
     document = _acceptance_facts(recorded.digest)
     target = dict(document["target"])  # type: ignore[arg-type]

@@ -180,8 +180,8 @@ def test_summary_reader_rejects_corrupt_record(tmp_path, error):
 @pytest.mark.timeout(180)
 def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+    from booley.flows.sim.campaign_presentation import _pre_sim_projection
     from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.flow import _pre_sim_projection
 
     names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
 

@@ -10,15 +10,15 @@ import pytest
 
 from booley.flows.sim import campaign_reports
 from booley.flows.sim.campaign import collect_pre_sim_firings
-from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
-from booley.flows.sim.coverage_campaign import CoverageRollup
-from booley.flows.sim.flow import (
-    SimulateFlow,
+from booley.flows.sim.campaign_presentation import (
     _campaign_report_lines,
     _campaign_structured_details,
     _compact_coverage_number,
     _coverage_report_suffix,
 )
+from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+from booley.flows.sim.coverage_campaign import CoverageRollup
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.test_runs import build_test_run
 from booley.mcp.job_results import _read_report_json
@@ -107,7 +107,7 @@ def _no_files(count: int) -> list[Any]:
 
 
 def test_infrastructure_termination_is_reported_beyond_observation_preview() -> None:
-    from booley.flows.sim.flow import _campaign_observation_preview
+    from booley.flows.sim.campaign_presentation import _campaign_observation_preview
 
     observation = {
         "test": "first",
@@ -136,7 +136,7 @@ def test_infrastructure_termination_is_reported_beyond_observation_preview() -> 
 
 
 def test_campaign_build_diagnostics_survive_preview_limit() -> None:
-    from booley.flows.sim.flow import _campaign_observation_preview
+    from booley.flows.sim.campaign_presentation import _campaign_observation_preview
 
     observation = {
         "test": "ok",
@@ -169,7 +169,7 @@ def test_campaign_build_diagnostics_survive_preview_limit() -> None:
 def test_cycle_card_global_limits_and_utf8_names(tmp_path, monkeypatch, budget):
     from types import SimpleNamespace
 
-    from booley.flows.sim.flow import _campaign_report_lines
+    from booley.flows.sim.campaign_presentation import _campaign_report_lines
 
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget * 2))
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
@@ -212,20 +212,24 @@ def test_cycle_card_global_limits_and_utf8_names(tmp_path, monkeypatch, budget):
 def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from booley.flows.sim import flow
+    from booley.flows.sim import campaign_presentation
 
     resolved = []
     monkeypatch.setattr(
-        flow,
+        campaign_presentation,
         "_resolved_coverage_campaigns",
         lambda _outcomes: (
             resolved.append(True)
             or {"sim": SimpleNamespace(collection={"status": "collector_error"})}
         ),
     )
-    monkeypatch.setattr(flow, "_coverage_report_suffix", lambda _campaign: "coverage")
-    monkeypatch.setattr(flow, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"])
-    monkeypatch.setattr(flow, "source_gap_report_lines", lambda _campaign: [])
+    monkeypatch.setattr(
+        campaign_presentation, "_coverage_report_suffix", lambda _campaign: "coverage"
+    )
+    monkeypatch.setattr(
+        campaign_presentation, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"]
+    )
+    monkeypatch.setattr(campaign_presentation, "source_gap_report_lines", lambda _campaign: [])
 
     one, two = build_test_run("one"), build_test_run("two")
     recorded = _recorded_campaign(tmp_path, (one, two))
@@ -239,7 +243,7 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypa
             recorded.fact(two, test="two", cycle_count=None, detail={"reason": "y"}),
         ],
     )
-    rendered = flow._campaign_report_lines([outcome])[0]
+    rendered = campaign_presentation._campaign_report_lines([outcome])[0]
     assert f"\n  {reason}\n  y\n  one: cycles=7\ncoverage hint" in rendered
     assert resolved == [True]
 
@@ -258,7 +262,7 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
             "_checkpoint_coverage_campaign" if failure == "retention" else "supersede_progress"
         )
         monkeypatch.setattr(
-            "booley.flows.sim.flow." + symbol,
+            "booley.flows.sim.flow_resume." + symbol,
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after completed resume")),
         )
     resumed = tmp_path / "resumed"
@@ -286,8 +290,9 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
     from dataclasses import replace
 
     from booley.flows.endpoint_reporting import write_report
+    from booley.flows.sim.campaign_presentation import _campaign_observation_preview
     from booley.flows.sim.campaign_retention import _read_object
-    from booley.flows.sim.flow import SimulateFlow, _campaign_observation_preview
+    from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
     from booley.mcp.server import _structured_from_report
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
@@ -397,7 +402,7 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     tmp_path, monkeypatch
 ):
     from booley.flows.sim.campaign import ArtifactReferenceError, resolve_report_artifact_reference
-    from booley.flows.sim.flow import _campaign_hook_inputs, _pre_sim_projection
+    from booley.flows.sim.campaign_presentation import _campaign_hook_inputs, _pre_sim_projection
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
@@ -546,7 +551,7 @@ def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_pat
 
 
 def test_campaign_scan_error_retains_independently_authenticated_hook_lines():
-    from booley.flows.sim.flow import _pre_sim_integrity_failure
+    from booley.flows.sim.campaign_presentation import _pre_sim_integrity_failure
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     line = "pre_run_commands rc=0 duration=0.01s"
@@ -741,14 +746,14 @@ def test_published_hook_collection_scans_each_campaign_once(tmp_path, monkeypatc
 
 
 def _published_hook_budget_boundary(flow, candidate, roomy):
-    from booley.flows.sim import flow as module
+    from booley.flows.sim import campaign_presentation
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     baseline = EndpointOutcome(
-        report_text="\n".join(module._campaign_report_lines([candidate], {}, None))
+        report_text="\n".join(campaign_presentation._campaign_report_lines([candidate], {}, None))
     )
     baseline = flow._attach_published_pre_sim(baseline)
-    line = module._cycle_display_line(candidate.observations[0], 10000)
+    line = campaign_presentation._cycle_display_line(candidate.observations[0], 10000)
     allowance = len(line.encode()) + 1 + len(b"  1 cycle counts omitted") + 1
     budget = len(baseline.report_text.encode()) + 2 + (allowance if roomy else 0)
     assert len(baseline.report_text.encode()) + 2 <= budget
@@ -1103,13 +1108,15 @@ def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_pat
 def test_campaign_card_renders_each_target_once(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from booley.flows.sim import flow
+    from booley.flows.sim import campaign_presentation
 
     calls = []
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "12000")
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "12000")
     monkeypatch.setattr(
-        flow, "_campaign_test_run_lines", lambda selector, *args: calls.append(selector) or []
+        campaign_presentation,
+        "_campaign_test_run_lines",
+        lambda selector, *args: calls.append(selector) or [],
     )
     smoke = build_test_run("smoke")
     recorded = _recorded_campaign(tmp_path, (smoke,))
@@ -1122,7 +1129,7 @@ def test_campaign_card_renders_each_target_once(tmp_path, monkeypatch):
         )
         for name in ("one", "two")
     ]
-    text = "\n".join(flow._campaign_report_lines(outcomes))
+    text = "\n".join(campaign_presentation._campaign_report_lines(outcomes))
     assert text.count("smoke: cycles=0") == 2
     assert calls == ["one", "two"]
 
