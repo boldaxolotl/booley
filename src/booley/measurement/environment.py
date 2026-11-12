@@ -8,8 +8,8 @@ session routing, slot inheritance, credentials) is dropped by construction.
 The checkout has no Git repository, so ``git`` is refused: the run's ``PATH``
 starts with a directory holding a ``git`` that prints which command was refused
 and exits 128 (Git's own "not a repository" status). A Flow therefore cannot
-read the live working tree's history through Git. The refusal covers every
-``git`` found through ``PATH``, also commands that need no repository
+read the live working tree's history through a ``git`` found on ``PATH``. The
+refusal covers every such ``git``, also commands that need no repository
 (``git --version``, ``git config --file``): none is on a Flow's path here.
 """
 

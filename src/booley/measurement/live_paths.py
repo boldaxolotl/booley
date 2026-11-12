@@ -16,7 +16,8 @@ whitespace, so a live root whose spelling contains a space is not matched; the
 Sandbox roots (``/work``, ``/booley-project``) have none. A multi-letter option glued
 to its path (``-isystem/x``) is not a token start and is not matched either.
 
-Relative escapes (``../../live/x``) are deliberate reads and out of scope here.
+Relative escapes (``../../live/x``) are deliberate reads and out of scope for the static
+scan; :func:`resolved_findings` still refuses one that reaches a resolved file.
 """
 
 from __future__ import annotations
@@ -31,8 +32,9 @@ from booley.core.booley_dir import in_checkout_booley_dir
 from booley.runtime import booley_dir
 
 # Characters that end a path token: whitespace, quotes, and the separators of shell
-# words, TOML/YAML values, ``+incdir+/x``, ``--opt=/x`` and URLs.
-_DELIMITERS = r"""\s"'`<>|;,(){}\[\]=:+#"""
+# words (``a&&/x``, ``\n`` in a quoted command, ``@/x.f``), TOML/YAML values,
+# ``+incdir+/x``, ``--opt=/x`` and URLs.
+_DELIMITERS = r"""\s"'`<>|;,(){}\[\]=:+#\\&@!%"""
 # A candidate starts a token with ``/`` or with a one-letter option glued to ``/``
 # (``-I/x``). A relative ``sim/work/tb.sv`` is one token that does not start with ``/``.
 _CANDIDATE = re.compile(
@@ -64,7 +66,7 @@ def _text_findings(name: str, text: str, roots: Sequence[LiveRoot]) -> list[str]
         candidate = match.group(1)
         hit = _inside(Path(candidate), roots)
         if hit is not None:
-            root = hit[0]
+            root, _ = hit
             findings.append(f"{name} names {candidate}, inside the {root.label} {root.path}")
     return findings
 
@@ -75,26 +77,30 @@ def _read(path: Path) -> str:
 
 def input_findings(checkout: Path, roots: Sequence[LiveRoot]) -> list[str]:
     """Findings for committed symlinks and authored files of *checkout* that reach a live root."""
-    booley_toml = [checkout / "booley.toml", checkout / "fusesoc.conf"]
+    configuration = [checkout / "booley.toml", checkout / "fusesoc.conf"]
     config_dir = in_checkout_booley_dir(checkout)
     if config_dir.is_dir():
-        booley_toml.extend(sorted(config_dir.glob("*.toml")))
-    configuration = {path for path in booley_toml if path.is_file() and not path.is_symlink()}
+        configuration.extend(sorted(config_dir.glob("*.toml")))
     findings: list[str] = []
+    # Read through links: a configuration file or directory linked inside the checkout is
+    # still read by the Flow, and the walk below does not follow links.
+    for path in configuration:
+        if path.is_file():
+            findings.extend(
+                _text_findings(path.relative_to(checkout).as_posix(), _read(path), roots)
+            )
     for directory, subdirectories, files in os.walk(checkout, followlinks=False):
         here = Path(directory)
         for name in sorted((*subdirectories, *files)):
             path = here / name
             relative = path.relative_to(checkout).as_posix()
-            if path.is_symlink():
-                hit = _inside(path, roots)
-                if hit is not None:
-                    root = hit[0]
-                    target = path.readlink()
-                    findings.append(
-                        f"{relative} links to {target}, inside the {root.label} {root.path}"
-                    )
-            elif path in configuration or (name in files and name.endswith(".core")):
+            hit = _inside(path, roots) if path.is_symlink() else None
+            if hit is not None:
+                root, _ = hit
+                findings.append(
+                    f"{relative} links to {path.readlink()}, inside the {root.label} {root.path}"
+                )
+            elif name in files and name.endswith(".core") and path.is_file():
                 findings.extend(_text_findings(relative, _read(path), roots))
     return findings
 

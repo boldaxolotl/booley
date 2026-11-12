@@ -251,12 +251,17 @@ def _live_roots(main: Path) -> list[LiveRoot]:
 
     The runner runs only in the Sandbox, where the live working tree is the ``/work``
     mount and the Booley Directory a separate mount, so the live tree is not derivable
-    from *main*; other working trees are not mounted there.
+    from *main*; other working trees are not mounted there. A hand-written Sandbox has no
+    ``/work``: its live tree is the Git checkout around the caller's working directory.
     """
     roots = [LiveRoot("Main Booley Directory", main)]
     if os.environ.get("BOOLEY_DIR"):
         roots.append(LiveRoot("BOOLEY_DIR", Path(os.environ["BOOLEY_DIR"]).resolve()))
-    roots.append(LiveRoot("live working tree", Path(sandbox_layout.WORK_DIR)))
+    work_dir = Path(sandbox_layout.WORK_DIR)
+    if not work_dir.is_dir():
+        here = Path.cwd().resolve()
+        work_dir = next((d for d in (here, *here.parents) if has_git_worktree_marker(d)), work_dir)
+    roots.append(LiveRoot("live working tree", work_dir))
     return roots
 
 
@@ -320,29 +325,15 @@ def _launch(
         )
 
 
-def _preflight(
-    request: CheckoutFlowRequest,
+def _run_preflight_child(
+    command: list[str],
     checkout: Path,
-    roots: list[LiveRoot],
-    scratch: Path,
     environment: dict[str, str],
+    bound_s: float,
+    log_path: Path,
+    target: str,
 ) -> None:
-    """Resolve the Target in the measurement environment; raise when it reads a live root."""
-    target = request.target.strip()
-    result_path, log_path = scratch / "preflight.json", scratch / "preflight.log"
-    command = [
-        sys.executable,
-        "-c",
-        _PREFLIGHT_BOOTSTRAP,
-        str(_BOOLEY_SOURCE_ROOT),
-        target,
-        str(scratch / "tmp" / "preflight-build"),
-        str(result_path),
-    ]
-    if request.timeout_s is None:
-        bound_s: float = STANDALONE_TIMEOUT_S
-    else:
-        bound_s = max(request.timeout_s, _PREFLIGHT_MIN_S)
+    """Run the preflight child to completion; raise when it cannot start, hangs or fails."""
     try:
         with log_path.open("wb") as log:
             process = subprocess.Popen(
@@ -377,6 +368,32 @@ def _preflight(
         raise CheckoutFlowError(
             f"checkout run refused: the preflight could not resolve Target {target}:\n{tail}"
         )
+
+
+def _preflight(
+    request: CheckoutFlowRequest,
+    checkout: Path,
+    roots: list[LiveRoot],
+    scratch: Path,
+    environment: dict[str, str],
+) -> None:
+    """Resolve the Target in the measurement environment; raise when it reads a live root."""
+    target = request.target.strip()
+    result_path, log_path = scratch / "preflight.json", scratch / "preflight.log"
+    command = [
+        sys.executable,
+        "-c",
+        _PREFLIGHT_BOOTSTRAP,
+        str(_BOOLEY_SOURCE_ROOT),
+        target,
+        str(scratch / "tmp" / "preflight-build"),
+        str(result_path),
+    ]
+    if request.timeout_s is None:
+        bound_s: float = STANDALONE_TIMEOUT_S
+    else:
+        bound_s = max(request.timeout_s, _PREFLIGHT_MIN_S)
+    _run_preflight_child(command, checkout, environment, bound_s, log_path, target)
     document = as_dict(json.loads(result_path.read_bytes())) or {}
     files = document.get("files")
     if isinstance(files, list):
@@ -452,11 +469,9 @@ def _stop(process: subprocess.Popen[Any]) -> None:
     try:
         process.wait(timeout=_STOP_GRACE_S)
     except subprocess.TimeoutExpired:
-        force_group_termination(process, capture_process_group(process))
-        process.wait()
+        _kill(process)
     except BaseException:  # a second Ctrl-C: never leave the Flow running
-        force_group_termination(process, capture_process_group(process))
-        process.wait()
+        _kill(process)
         raise
 
 

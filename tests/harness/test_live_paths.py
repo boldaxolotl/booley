@@ -1,10 +1,14 @@
 """Absolute paths into a live root are found in the spellings tools and configs use."""
 
+import os
 from pathlib import Path
 
 import pytest
 
 from booley.measurement.live_paths import LiveRoot, input_findings
+
+# The runner runs only in the POSIX Sandbox; the cases spell POSIX paths.
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="live roots are POSIX Sandbox paths")
 
 
 @pytest.mark.parametrize(
@@ -13,9 +17,10 @@ from booley.measurement.live_paths import LiveRoot, input_findings
         "files: [{live}/rtl/top.v]",
         "-I{live}/include",
         "+incdir+{live}/include",
-        "--opt={live}/x",
-        "url = 'file://{live}/x'",
-        '"{live}"',
+        'cd "{live}" && make',
+        "cd {live}\\nmake",
+        "true&&{live}/gen.sh",
+        "x @{live}/args.f",
     ],
 )
 def test_input_findings_name_an_absolute_live_path_in_each_spelling(

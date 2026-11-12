@@ -1052,7 +1052,9 @@ def assert_refused_before_any_run(world: World) -> None:
 
 
 @linux_only
-@pytest.mark.parametrize("case", ["core", "booley-toml", "symlink"])
+@pytest.mark.parametrize(
+    "case", ["core", "booley-toml", "symlink", "core-symlink", "config-symlink"]
+)
 def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, case: str) -> None:
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
@@ -1066,6 +1068,21 @@ def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, ca
             {"files": {"rtl/other.v": ""}, "symlinks": {"rtl/shared.v": "{live}/data/shared.v"}},
             "rtl/shared.v",
         ),
+        # A link inside the checkout is read by the Flow, so its target is scanned too.
+        "core-symlink": (
+            {
+                "files": {"cores/ip.txt": PROBE_CORE.format(files="{live}/rtl/top.v")},
+                "symlinks": {"ip.core": "cores/ip.txt"},
+            },
+            "ip.core",
+        ),
+        "config-symlink": (
+            {
+                "files": {"cfg/tests.toml": 'tests = "{live}/data.txt"\n'},
+                "symlinks": {".booley/tests.toml": "../cfg/tests.toml"},
+            },
+            ".booley/tests.toml",
+        ),
     }
     build_arguments, offending = inputs[case]
     world = make_world(**build_arguments)
@@ -1076,6 +1093,24 @@ def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, ca
     message = str(refused.value)
     assert offending in message
     assert str(world.live) in message and "live working tree" in message
+    assert_refused_before_any_run(world)
+
+
+@linux_only
+def test_checkout_flow_finds_the_live_tree_without_a_work_mount(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+    from booley.runtime import sandbox_layout
+
+    # A hand-written Sandbox has no ``/work``: the live tree is the Git checkout of the cwd.
+    world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
+    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
+    monkeypatch.chdir(world.live)
+
+    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
+        run_checkout_flow(world.request("pass"))
+
     assert_refused_before_any_run(world)
 
 
@@ -1192,7 +1227,9 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
     use_fusesoc(monkeypatch)
-    monkeypatch.setattr(checkout_flow, "_PREFLIGHT_MIN_S", 0)  # the request's 2 s bound applies
+    monkeypatch.setattr(
+        checkout_flow, "_PREFLIGHT_MIN_S", 0
+    )  # the request's bound applies; generous, FuseSoC starts slowly on a loaded host
     world = make_world(
         files={
             "probe.core": GENERATOR_CORE,
@@ -1201,8 +1238,8 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
         }
     )
 
-    with pytest.raises(CheckoutFlowError, match=r"did not finish within 2 s"):
-        run_checkout_flow(world.request("probe", timeout_s=2))
+    with pytest.raises(CheckoutFlowError, match=r"did not finish within 8 s"):
+        run_checkout_flow(world.request("probe", timeout_s=8))
 
     assert_refused_before_any_run(world)
     pid = int((world.ctl / "generator.pid").read_text(encoding="utf-8"))
