@@ -513,3 +513,29 @@ def test_managed_runtime_view_follows_only_a_symlinked_booley_dir_entry(tmp_path
         selftest_overlay.SelftestOverlayError, match="generation parent is a symlink"
     ):
         selftest_overlay.doctor_runtime_view_path(checkout, booley_dir / "linked" / "g", "d" * 32)
+
+
+def test_sim_doctor_overlay_reads_the_checkouts_selftest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bad fixture comes from the checkout's ``selftest/``, not from ``$BOOLEY_DIR``."""
+    from booley.flows.sim import build
+    from booley.runtime import booley_dir
+
+    checkout = tmp_path / "checkout"
+    overlay_file = selftest_overlay.bad_overlay_dir(checkout / ".booley", "sim") / "bad.hex"
+    overlay_file.parent.mkdir(parents=True)
+    overlay_file.write_text("bad\n", encoding="utf-8")
+    other = tmp_path / "other-booley"
+    other.mkdir()
+    build_root = tmp_path / "build"
+    build_root.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(other))
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    booley_dir.reset_cache()
+    try:
+        build._stage_doctor_overlay(checkout, build_root)
+    finally:
+        booley_dir.reset_cache()
+
+    assert (build_root / "bad.hex").read_text(encoding="utf-8") == "bad\n"

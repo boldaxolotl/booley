@@ -4,7 +4,9 @@ The checkout comes from :func:`booley.runtime.commit_export.export_commit`: a
 Git-less directory that is the Project Root of the run. The Flow runs as a child
 process whose ``BOOLEY_DIR`` is the caller's Main Booley Directory, so admission
 and its settings, the Resource History and the Job record stay there, while
-nothing shared is written into the checkout. The child gets the scrubbed
+nothing shared is written into the checkout. Every input (configuration, cores,
+tests) comes from the checkout's own Booley Directory, which the run refuses to
+start without. The child gets the scrubbed
 :func:`~booley.measurement.environment.measurement_environment`, a fresh ``HOME``
 and ``TMPDIR`` beside the checkout, and its reports go to a directory the caller
 names outside the checkout. Once the entry point returns, no Job record names a
@@ -155,7 +157,37 @@ def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path, Path]:
     report_dir = request.report_dir.resolve()
     if report_dir.is_relative_to(checkout):
         raise CheckoutFlowError(f"report directory {report_dir} is inside the checkout {checkout}")
+    _require_own_booley_dir(checkout, main)
     return checkout, main, report_dir
+
+
+def _require_own_booley_dir(checkout: Path, main: Path) -> None:
+    """Refuse a checkout whose Booley configuration would not come from inside it.
+
+    The child reads every input from the checkout's own Booley Directory. A commit
+    without one would silently fall back to Main's (``BOOLEY_DIR``), and a
+    ``[project].dir`` in an ancestor ``booley.toml`` would select a directory
+    outside the checkout. Either would make the run measure something other than
+    the commit.
+    """
+    try:
+        own = booley_dir.resolve_authoritative_booley_dir(checkout)
+    except (OSError, RuntimeError, ValueError) as exc:  # includes BooleyLayoutError
+        raise CheckoutFlowError(
+            f"checkout {checkout} has an unusable Booley configuration: {exc}"
+        ) from exc
+    if own.is_dir():
+        own = own.resolve()
+        if own != checkout and own.is_relative_to(checkout):
+            return
+        where = own
+    else:
+        where = main  # no Booley Directory in the commit: the child would fall back to Main's
+    raise CheckoutFlowError(
+        f"checkout {checkout} would read its Booley configuration from {where}, outside it; "
+        "commit a Booley Directory inside the checkout and remove any [project].dir "
+        "that selects one from above it"
+    )
 
 
 def _launch(

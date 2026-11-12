@@ -13,6 +13,7 @@ from typing import Literal
 from booley.audit.resource_policy import GIB_BYTES, heavy_memory_reservation
 from booley.config.jobs import parse_caps
 from booley.core.boundary import as_dict, as_int
+from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.shared_infra import load_job_budget_config
 from booley.targets.domain import TargetInspection
 
@@ -110,6 +111,20 @@ def _cgroup_memory_limit(read_text: Callable[[Path], str | None]) -> int | None:
     return None
 
 
+def _load_common_job_budget(project_root: Path | None) -> dict:
+    """The Job budget settings of the Main Booley Directory, as admission reads them.
+
+    Never the checkout's own ``booley.toml``: a checkout run or a linked worktree
+    shares one machine budget, and its commit must not resize it. Bare
+    invocations without a resolvable Project get the defaults.
+    """
+    try:
+        common = resolve_common_booley_dir(project_root)
+    except (OSError, ValueError, RuntimeError):
+        return {}
+    return load_job_budget_config(booley_dir=common)
+
+
 def load_verilator_build_budget(
     lane_kind: LaneKind = "heavy",
     *,
@@ -128,7 +143,9 @@ def load_verilator_build_budget(
         )
     affinity_cpu_count = affinity_cpu_count or _affinity_cpu_count
     read_text = read_text or _read_text
-    config = config_loader() if config_loader is not None else load_job_budget_config(project_root)
+    config = (
+        config_loader() if config_loader is not None else _load_common_job_budget(project_root)
+    )
     caps = parse_caps(config)
     affinity = max(1, affinity_cpu_count())
     quota = _cgroup_cpu_count(read_text)

@@ -261,9 +261,13 @@ class FlowMechanics:
         cwd = self._get_cwd() if cwd is None else cwd
         env = {**os.environ, **self._extra_subprocess_env()}
         try:
-            cache_root = resolve_checkout_booley_dir(cwd) / ".runtime" / "python-artifacts"
+            checkout_dir = resolve_checkout_booley_dir(cwd)
         except (OSError, RuntimeError, ValueError):
             cache_root = Path(tempfile.gettempdir()) / "booley-python-artifacts"
+        else:
+            cache_root = checkout_dir / ".runtime" / "python-artifacts"
+            # Tools read this checkout's inputs, never another checkout's (ADR 0082).
+            env["BOOLEY_DIR"] = str(checkout_dir)
         env = relocate_python_artifacts(
             env,
             cache_root,

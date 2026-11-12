@@ -107,6 +107,7 @@ CALLER_ENV = {
     "BOOLEY_INHERITED_SLOT": "caller-slot",
     "BOOLEY_SLOTS_DIR": "/caller/slots",
     "BOOLEY_RUN_ID": "outer-run",
+    "BOOLEY_INTERNAL_SELFTEST_KIND": "bad",  # Doctor's fail-path fixture must not reach a run
     "CALLER_ONLY_VARIABLE": "x",
 }
 KEPT_ENV = {
@@ -308,6 +309,40 @@ def test_checkout_flow_refuses_live_state_paths(
     # Refused before anything was created: no Job record, no environment directory.
     assert not standalone_jobs_dir(request.main_booley_dir).exists()
     assert not list(request.checkout.parent.glob(".*env-*"))
+    assert not (world.ctl / "started").exists()
+
+
+@linux_only
+@pytest.mark.parametrize("case", ["no-own-dir", "ancestor-selects"])
+def test_checkout_flow_refuses_booley_config_outside_the_checkout(
+    world: World, tmp_path: Path, case: str
+) -> None:
+    """A checkout whose Booley configuration is not inside it is refused, naming the directory."""
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    if case == "no-own-dir":
+        # No Booley Directory in the commit: the child would fall back to Main's.
+        checkout = tmp_path / "bare" / "checkout"
+        checkout.mkdir(parents=True)
+        (checkout / "dut.sv").write_bytes(b"module dut; endmodule\n")
+        offending = world.main
+    else:
+        # An ancestor's ``[project].dir`` selects a directory outside the checkout.
+        offending = tmp_path / "selected"
+        offending.mkdir()
+        checkout = world.checkout
+        (checkout.parent / "booley.toml").write_bytes(
+            f'[project]\ndir = "{offending.as_posix()}"\n'.encode()
+        )
+    request = world.request("pass", checkout=checkout)
+
+    with pytest.raises(CheckoutFlowError) as refused:
+        run_checkout_flow(request)
+
+    assert str(offending.resolve()) in str(refused.value)
+    # Refused before anything was created: no Job record, no environment directory.
+    assert not standalone_jobs_dir(world.main).exists()
+    assert not list(checkout.parent.glob(".*env-*"))
     assert not (world.ctl / "started").exists()
 
 

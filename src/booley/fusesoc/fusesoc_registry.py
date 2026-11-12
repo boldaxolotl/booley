@@ -32,6 +32,7 @@ build dir next to the ``.eda.yml``.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import logging
@@ -49,7 +50,11 @@ from fusesoc.capi2.coreparser import Core2Parser
 from fusesoc.core import Core as FuseSocCore
 from fusesoc.vlnv import Vlnv
 
-from booley.core.booley_dir import BOOLEY_DIR_NAME, in_checkout_booley_dir
+from booley.core.booley_dir import (
+    BOOLEY_DIR_NAME,
+    in_checkout_booley_dir,
+    resolve_checkout_booley_dir,
+)
 from booley.core.booley_dir_links import resolve_through_entry
 from booley.core.boundary import as_dict, is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
@@ -2678,11 +2683,16 @@ def _run_setup_command(
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> ResolvedTarget:
     logger.debug("resolving target via: %s", " ".join(cmd))
+    child_env = {**os.environ} if env is None else dict(env)
+    # Generators and core hooks read this checkout's inputs (ADR 0082); a failed
+    # lookup keeps the inherited value.
+    with contextlib.suppress(OSError, RuntimeError, ValueError):
+        child_env["BOOLEY_DIR"] = str(resolve_checkout_booley_dir(project_root))
     try:
         proc = runner(
             cmd,
             cwd=str(project_root),
-            env=dict(env) if env is not None else None,
+            env=child_env,
             capture_output=True,
             text=True,
         )
