@@ -709,7 +709,7 @@ def _healthy_host_doctor(root: Path, monkeypatch) -> None:
             "bwave",
             "coverage_analyst",
             "lint",
-            "mutation_tester",
+            "mutation",
             "reviewer",
             "sim",
             "fpga",

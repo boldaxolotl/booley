@@ -13,6 +13,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FLOWS_ROOT = REPO_ROOT / "src" / "booley" / "flows"
 FLOW_PACKAGES = ("sim", "synth", "fpga", "lint")
+# The Mutation Flow is executable like the others but composes the Simulation Flow by
+# design, so it is outside the sibling-import test; nothing may import it (rule D42).
+EXECUTABLE_FLOW_PACKAGES = (*FLOW_PACKAGES, "mutation")
 OLD_FLOW_MODULES = (
     "simulate.py",
     "sim_edam.py",
@@ -29,7 +32,7 @@ OLD_FLOW_MODULES = (
 
 
 def test_each_builtin_flow_has_an_executable_package() -> None:
-    for package_name in FLOW_PACKAGES:
+    for package_name in EXECUTABLE_FLOW_PACKAGES:
         package_dir = FLOWS_ROOT / package_name
         assert (package_dir / "__init__.py").is_file()
         assert (package_dir / "__main__.py").is_file()
@@ -99,6 +102,7 @@ def test_native_coverage_execution_imports_no_private_serial_executor_names() ->
 def test_flow_packages_do_not_import_one_another() -> None:
     for owner in FLOW_PACKAGES:
         forbidden = {f"booley.flows.{other}" for other in FLOW_PACKAGES if other != owner}
+        forbidden.add("booley.flows.mutation")
         for source_file in (FLOWS_ROOT / owner).rglob("*.py"):
             imported = _imported_modules(source_file)
             violations = {
@@ -110,7 +114,7 @@ def test_flow_packages_do_not_import_one_another() -> None:
 
 
 def test_flow_neutral_modules_do_not_depend_on_concrete_flows() -> None:
-    forbidden = {f"booley.flows.{flow}" for flow in FLOW_PACKAGES}
+    forbidden = {f"booley.flows.{flow}" for flow in EXECUTABLE_FLOW_PACKAGES}
     for source_file in FLOWS_ROOT.glob("*.py"):
         imported = _imported_modules(source_file)
         violations = {
@@ -171,14 +175,16 @@ def test_synth_leaf_backends_do_not_import_flow_or_one_another() -> None:
             assert not violations, f"{source_file}: backend imports {sorted(violations)}"
 
 
-@pytest.mark.parametrize("package_name", FLOW_PACKAGES)
-def test_package_module_entry_point_has_help(package_name: str) -> None:
+@pytest.mark.parametrize("package_name", EXECUTABLE_FLOW_PACKAGES)
+@pytest.mark.parametrize("entry_suffix", ["", ".flow"], ids=["package", "flow-module"])
+def test_package_module_entry_point_has_help(package_name: str, entry_suffix: str) -> None:
+    """``python -m booley.flows.<name>[.flow]`` runs the Flow; the MCP server launches the latter."""
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
         part for part in (str(REPO_ROOT / "src"), env.get("PYTHONPATH", "")) if part
     )
     result = subprocess.run(
-        [sys.executable, "-m", f"booley.flows.{package_name}", "--help"],
+        [sys.executable, "-m", f"booley.flows.{package_name}{entry_suffix}", "--help"],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,

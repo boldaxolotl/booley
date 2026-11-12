@@ -104,13 +104,11 @@ Still missing:
 
 ## Mutation Flow
 
-**In progress.** The [Mutation Tester](../user/FEATURES.md#mutation-testing)
-already generates Mutants deterministically, without an LLM. It still runs as
-a Specialist with a `[models]` key it does not use;
-[#2936](https://github.com/boldaxolotl/booley/issues/2936) makes it the
-`booley flow mutation` Booley Flow that
+**Done.** The [Mutation Flow](../user/FLOW-MUTATION.md) (`booley flow
+mutation`) generates Mutants deterministically, without an LLM, as
 [ADR 0088](../adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md)
-describes.
+describes. The Mutation Tester Specialist and its `[models]` key are gone
+([#2936](https://github.com/boldaxolotl/booley/issues/2936)).
 
 ## Firmware Reviewer
 

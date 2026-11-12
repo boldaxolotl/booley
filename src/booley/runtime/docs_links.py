@@ -63,6 +63,7 @@ USER_DOCS = (
     UserDoc("FLOW-LINT.md", "flow-lint", "Lint", "Flows & Specialists"),
     UserDoc("FLOW-SYNTH.md", "flow-synth", "ASIC synthesis", "Flows & Specialists"),
     UserDoc("FLOW-FPGA.md", "flow-fpga", "FPGA implementation", "Flows & Specialists"),
+    UserDoc("FLOW-MUTATION.md", "flow-mutation", "Mutation testing", "Flows & Specialists"),
     UserDoc("SPECIALISTS.md", "specialists", "Specialists", "Flows & Specialists"),
     UserDoc("CONFIG.md", "config", "Config", "Reference"),
     UserDoc("TESTS.md", "tests", "tests.toml", "Reference"),

@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 from fusesoc.vlnv import Vlnv
 
-from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
+from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 

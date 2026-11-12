@@ -14,6 +14,7 @@ from booley.audit.config_common import (
 )
 from booley.config.goals import parse_dashboard
 from booley.core.boundary import BoundaryError, as_dict, as_str, is_str_list, require_bool
+from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
 KNOWN_BOOLEY_TOML_TABLES = frozenset(
     {
@@ -112,7 +113,15 @@ def audit_specialist_table(
                 fail_finding(f"{field} must be a table", "use enabled = true or false")
             )
             continue
-        if specialist_names is not None and name not in specialist_names:
+        if specialist_names is not None and name in RETIRED_SPECIALIST_TO_FLOW:
+            flow = RETIRED_SPECIALIST_TO_FLOW[name]
+            findings.append(
+                fail_finding(
+                    f"{field}: {name!r} is no longer a Specialist",
+                    f"replace [specialists.{name}] with [flows.{flow}]",
+                )
+            )
+        elif specialist_names is not None and name not in specialist_names:
             findings.append(
                 fail_finding(
                     f"{field}: {name!r} is not a discovered Specialist",
