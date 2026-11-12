@@ -1,11 +1,20 @@
 # Persistent compiler cache validation (#879)
 
-Validated on 30 SEP 2026 with a pinned public PicoRV32 CPU, real Booley Simulation
-execution, and host-sealed Sandbox specifications rendered through the Docker CLI
-translation. [Machine-readable evidence](../../../tests/runtime/fixtures/directory_migration/compiler-cache-879.json) records all
-47 successful measured builds, compiler commands, generated C++ identities,
-Make wall/child CPU times, total wall times, observed values, and cache statistics.
-Timing is evidence, never a normal CI assertion.
+Dated evidence record for issue
+[#879](https://github.com/boldaxolotl/booley/issues/879), which made Verilator
+simulation builds reuse compiled C++ across RTL edits through a persistent
+per-Project ccache. It was validated on 30 SEP 2026 with a pinned public
+PicoRV32 CPU, real Booley Simulation execution, and host-sealed Sandbox
+specifications rendered through the Docker CLI translation. Read it for the
+measured speedup, the correctness checks, and why the debug-path settings
+exist. How the cache policy is wired today is described in
+[FLOW_IMPLEMENTATION_SIM.md](../FLOW_IMPLEMENTATION_SIM.md#verilator-compiler-cache-ownership);
+the measurements below are not updated afterward.
+
+The [machine-readable evidence](../../../tests/runtime/fixtures/directory_migration/compiler-cache-879.json)
+records all 47 successful measured builds, compiler commands, generated C++
+identities, Make wall and child CPU times, total wall times, observed values,
+and cache statistics. Timing is evidence, never a normal CI assertion.
 
 ## Inputs and method
 
@@ -119,17 +128,10 @@ authored/runtime files while excluding only the legacy compiler-cache subtree.
 
 ## Ongoing verification
 
-The one-off measurement scripts have been retired; the results above and the
-linked machine-readable evidence remain the historical record from 30 SEP 2026.
-Current CI runs
+The measurement scripts were one-off and are not in the repository. CI keeps a
+smaller check:
 [`test_verilator_compiler_cache_smoke.py`](../../../tests/smoke/test_verilator_compiler_cache_smoke.py)
-in the coverage-release step inside the Booley Sandbox Image. It checks that an
-RTL edit is reflected while unchanged objects hit the cache, and that concurrent
-builds share the cache with independent correct results. The pytest-configuration
-suite pins this smoke test in that step.
-
-At the time of the measurement, complete Ruff check/format gates passed. The final full test suite
-passed **15,260 tests, 73 skipped**, including review regressions for inherited
-Make precedence, eval forms, broken selected-config links, and compiler-directory
-PATH availability. The real Docker
-acceptance gate and measured variants ran without optional-tool skips.
+runs in the `bwave-smoke` job's coverage-release step inside the Booley Sandbox
+Image. It checks that an RTL edit is reflected while unchanged objects hit the
+cache, and that concurrent builds share the cache with independent correct
+results. `tests/test_pytest_configuration.py` pins the test in that step.

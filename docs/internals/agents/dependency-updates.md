@@ -1,106 +1,135 @@
 # Dependency updates
 
-Renovate is the only update bot. Its config is `.github/renovate.json`; the
-runner is `.github/workflows/renovate.yml` (every 4 hours, plus
-`workflow_dispatch`). Dependabot version updates were removed in #2562.
-`tests/ci/test_renovate_config.py` pins the contract below.
+This runbook is for agents and maintainers who review, land, add, hold, or stop
+dependency updates. Renovate is Booley's only update bot: its configuration is
+`.github/renovate.json`, and `.github/workflows/renovate.yml` runs it every 4
+hours and on `workflow_dispatch`. `tests/ci/test_renovate_config.py` pins that
+configuration and parts of this page. Landing a PR follows
+[merge-queue.md](merge-queue.md).
 
 ## How updates arrive
 
+Schedules are UTC days; the first Renovate run of the day opens the PR.
+
 | Group | Schedule | Touches | Approval |
 |-------|----------|---------|----------|
-| ci-tooling | weekly | workflow and action `uses`, CI requirement files, CI tool pins | none |
-| dev-python | weekly | `pyproject.toml` extras and the CI pins they share | none |
-| sandbox-base | weekly | base image runtime pins, agent CLIs, Node, editor extensions, Ubuntu | none |
-| website | weekly | documentation site requirements | none |
-| sidecars | weekly | sidecar image parents | none |
-| riscv | monthly | RISC-V tooling image pins | none |
-| EDA tools | monthly | one PR per tool (Yosys, Verilator, ...) | none |
-| rust | monthly | bwave crates and the Rust builder image | none |
+| ci-tooling | Mondays | workflow and action `uses`, CI requirement files, CI tool pins | none |
+| dev-python | Mondays | `pyproject.toml` extras and the CI pins they share | none |
+| sandbox-base | Mondays | base image runtime pins, agent CLIs, Node, editor extensions, Ubuntu | none |
+| website | Mondays | documentation site requirements | none |
+| sidecars | Mondays | sidecar image parents | none |
+| riscv | 1st of the month | RISC-V tooling image pins | none |
+| EDA tools | 1st of the month | one PR per tool (Yosys, Verilator, ...) | none |
+| rust | 1st of the month | bwave crates and the Rust builder image | none |
 | openroad, bwave-vendor, picorv32-demo, ci-python, ci-rust-nightly | any time | manual rows | Dependency Dashboard checkbox |
-| major updates, Cargo lock-file maintenance | per group, monthly for maintenance | any | Dependency Dashboard checkbox |
+| major updates | the group's schedule | any group | Dependency Dashboard checkbox |
+| Cargo lock-file maintenance | 1st of the month | the `Cargo.lock` files under `crates/bwave/` | Dependency Dashboard checkbox |
 
 Tick the Dashboard checkbox to let a held update open its PR. Nothing
-automerges: land every PR through the Mergify queue (`merge-queue.md`).
+automerges: every PR lands through the Mergify queue.
 
 Security updates (`vulnerabilityAlerts`) open at the next run with no
-schedule, no Dashboard hold and no release-age wait. They carry
-`dependencies` and `urgent` on purpose: `urgent` is Mergify's high-priority
-tier. Renovate reads Dependabot **alerts**, so keep alerts on and keep the
-Renovate App's "Dependabot alerts: read" permission. Dependabot security-fix
-PRs are off; do not re-enable them while Renovate runs.
+schedule, Dashboard hold, release-age wait, or hourly PR limit, and they have
+their own concurrent-PR budget. They carry the `dependencies` and `urgent`
+labels; `urgent` puts them in Mergify's high-priority tier. Renovate reads
+Dependabot **alerts**, so keep alerts on and keep the Renovate App's
+"Dependabot alerts: read" permission. Keep Dependabot security-fix PRs off
+while Renovate runs, so each fix arrives once; this reports
+`"enabled":false` when they are off:
 
-Limits:
+```sh
+gh api 'repos/{owner}/{repo}/automated-security-fixes'
+```
+
+What a security update cannot do:
 
 - A fix for a Python range in `pyproject.toml` that already admits the fixed
-  version gets no PR (`pyproject.toml` has no lock file, and vulnerability
-  fixes use `rangeStrategy` `update-lockfile`).
-  Shipped images install the `==` pins in the requirement files, and those do
-  get PRs.
+  version gets no PR: security updates use `rangeStrategy` `update-lockfile`,
+  and `pyproject.toml` has no lock file. Shipped images install the `==` pins
+  in the requirement files, and those do get PRs.
 - SHA-pinned GitHub Actions raise no alerts; their fixes arrive through the
   weekly ci-tooling group.
-- Security settings are forced over every matching rule (Renovate's
-  `force` merge), so a security fix that crosses a major or hits a manual row
-  opens without the Dashboard hold. Renovate's hourly PR limit skips security
-  fixes; the concurrent PR limit still counts them, in a separate counter.
+- Renovate applies the security settings with `force`, over every matching
+  package rule. A security fix that crosses a major, hits a manual row, or
+  touches a held package therefore opens without the Dashboard hold.
 
 ## Review and land a Renovate PR
 
-1. Read the PR body: `prBodyNotes` list places no rewrite can reach.
-2. Check the CI jobs ran and passed. CI-only groups (ci-tooling, dev-python,
-   website, rust crates) need nothing more.
-3. Image groups (sandbox-base, EDA tools, riscv, openroad, sidecars, the Rust
-   builder image): PR CI builds a test copy of the image and runs the
-   `sidecar-smoke` and `bwave-smoke` jobs that
-   `.github/scripts/ci_changes.py` selects. Confirm they ran. When a smoke job
-   was not selected for a change that affects what a session runs, build the
-   image locally and run a smoke session.
-4. Never dispatch `docker-base-publish.yml`, `docker-publish.yml` or
-   `riscv-tooling-publish.yml` on a Renovate branch: a dispatch publishes and
-   moves shared tags.
-5. Queue it per `merge-queue.md`. The `queued` label is Renovate's
-   `stopUpdatingLabel`, so Renovate stops touching the branch while queued.
-   Mergify validates through its own draft PRs and does not push to the PR
-   branch; a dequeued PR resumes normal updates.
+1. Read the PR body: its `prBodyNotes` list places that no automatic rewrite
+   can reach. Update them in the PR.
+2. Check that the selected CI jobs ran and passed. The CI-only groups
+   (ci-tooling, dev-python, website, and the rust crates) need nothing more.
+3. For an image group (sandbox-base, EDA tools, riscv, openroad, sidecars, or
+   the Rust builder image), PR CI builds a test copy of the image and runs the
+   `bwave-smoke`, `sidecar-smoke`, and `riscv-image` jobs that
+   `.github/scripts/ci_changes.py` selects for the changed paths. Confirm
+   they ran. When no smoke job ran for a change that affects what a session
+   runs, build the image locally and run a smoke session. An update must
+   keep every behavior the
+   [Sandbox Image contract](../SANDBOX-IMAGE-CONTRACT.md) requires.
+4. Never dispatch `docker-base-publish.yml`, `docker-publish.yml`, or
+   `riscv-tooling-publish.yml` on a Renovate branch. They write to the shared
+   registry: a `docker-base-publish.yml` dispatch from any branch repoints the
+   shared `booley-sandbox-base:main` tag.
+5. Queue the PR per [merge-queue.md](merge-queue.md). The `queued` label is
+   Renovate's `stopUpdatingLabel`, so Renovate leaves the branch alone while
+   it is queued. Mergify validates through its own draft PRs and does not push
+   to the PR branch; a dequeued PR gets Renovate updates again.
 
-## OpenROAD manual regeneration checklist
+## Push to a Renovate branch
 
-An OpenROAD PR is a human job (`ready-for-human`). Same items as its
-`prBodyNotes`:
+Renovate treats a branch with a commit from another author as modified and
+makes no further commits to it: no rebase on conflict and no newer version.
+To get a fresh Renovate update, tick the PR's rebase checkbox; this discards
+the other commits. Keep the PR open: Renovate reads a closed, unmerged PR as
+"ignore this update" and does not reopen it for that version (for a major
+update, that major).
 
-- Refresh `OPENROAD_SOURCE_REF`, `OPENROAD_BINARY_VERSION` and
+## Regenerate OpenROAD by hand
+
+Renovate never bumps OpenROAD automatically: its builder images are
+digest-only, and the digests Renovate proposes follow `:latest`, not the
+release. An OpenROAD PR therefore carries `ready-for-human`. Its
+`prBodyNotes` repeat this checklist:
+
+- Refresh `OPENROAD_SOURCE_REF`, `OPENROAD_BINARY_VERSION`, and
   `OPENROAD_SOURCE_SENTINEL_SHA256` in `src/booley/data/docker/Dockerfile.base`.
 - Regenerate `src/booley/data/docker/openroad-source-manifest.json` (the
   submodule manifest).
 - Update `THIRD_PARTY_NOTICES.md`.
-- Update the OpenROAD row of `docs/user/SUPPORTED-EDA-TOOLS.md`.
+- Update the OpenROAD row of `docs/user/SUPPORTED-EDA-TOOLS.md`; its commit
+  and self-reported version cannot be derived from the release label. Then
+  regenerate the packaged copy with `python -m booley.dev_support.reference_docs`.
 - Update the source-archive path in `.github/contracts/session-runtime.toml`.
-- Verify the builder-image digests in the `LABEL` lines of `Dockerfile.base`
-  match its `FROM` lines.
+- Verify that the builder-image digests in the `LABEL` lines of
+  `Dockerfile.base` still match its `FROM` lines.
 
 ## Add a new pin
 
-1. Annotate the Dockerfile `ARG` as `tests/docker/test_dockerfile_pins.py`
-   specifies: `# renovate: datasource=... depName=...`; a pin that follows a
-   branch uses `packageName=` and `currentValue=<branch>` over a commit digest;
-   a tag-plus-commit pair adds `# pin-companion: <PRIMARY_ARG>`. A pin that
-   must not be bumped automatically (OpenROAD only) goes in `_MANUAL_PINS`
-   and needs a manual-row rule with a hold in `renovate.json`; a build input that
-   is not a pin goes in `_NOT_PINS`.
-2. A download with checksums or paired values: add it to `PINS` in
-   `.github/scripts/pin_checksums.py`. Keep `fileFilters` in `renovate.json`,
-   the allowlist in `.github/workflows/renovate.yml` and
-   `tests/ci/test_renovate_config.py` in step.
-3. A literal copy of the pin elsewhere needs a custom manager, or a
-   `prBodyNotes` entry when no rewrite can reach it. A manifest writes each pin
-   once: Renovate tracks one copy of a name per file, so extras that need the
-   same pin compose by self-reference (`dev = ["booley-rtl[test,quality]"]`),
-   never by repeating it. `test_manifests_write_each_pin_once` enforces this.
+1. Annotate the Dockerfile `ARG` in the format the docstring of
+   `tests/docker/test_dockerfile_pins.py` specifies: a
+   `# renovate: datasource=... depName=...` line, or
+   `# pin-companion: <PRIMARY_ARG>` for a value that moves with another pin.
+   A pin Renovate must not bump (OpenROAD only) goes in `_MANUAL_PINS` and
+   needs a manual-row rule with a Dashboard hold in `renovate.json`. A build
+   input that names no upstream dependency goes in `_NOT_PINS`.
+2. For a download with checksums or paired values, add it to `PINS` in
+   `.github/scripts/pin_checksums.py`, and add every file it writes to
+   `postUpgradeTasks.fileFilters` in `renovate.json`. A new post-upgrade
+   command also needs a pattern in `RENOVATE_ALLOWED_COMMANDS` in
+   `.github/workflows/renovate.yml`.
+   `test_post_upgrade_commands_are_allowlisted_default_branch_scripts` checks
+   both.
+3. Give each literal copy of the pin elsewhere a custom manager, or a
+   `prBodyNotes` entry when no rewrite can reach it. Write each pin once per
+   manifest: Renovate tracks one copy of a name per file, so extras that need
+   the same pin compose by self-reference (`dev = ["booley-rtl[test,quality]"]`).
+   `test_manifests_write_each_pin_once` enforces this.
 4. Assign a group rule in `packageRules`, and keep its exact-name selectors in
    step with `tests/ci/test_renovate_config.py`.
-5. Validate with the strict check (`renovate-config` CI job, or
+5. Validate with the strict check: the `renovate-config` CI job, or
    `renovate-config-validator --strict --no-global .github/renovate.json` from
-   the runner image).
+   the Renovate runner image.
 
 ## Hold a version
 
@@ -114,28 +143,22 @@ places that move together:
    `allowedVersions: "==<version>"`, and a `description` starting `Hold:` that
    gives the same reason and says how to lift it.
 
-Renovate reads only the rule; the comment is for the next reader.
-`test_version_holds_agree_with_renovate_rules` fails when one exists without
-the other or the versions differ. To lift a hold, delete the comment and the
-rule in one PR, then bump the pin. Security settings are forced over package
-rules (see above), so a security fix may still propose a held package: check
-such a PR against the reason for the hold.
+Renovate reads only the rule; the comment tells the next reader why the pin
+stays. `test_version_holds_agree_with_renovate_rules` fails when one exists
+without the other or the versions differ. To lift a hold, delete the comment
+and the rule in one PR, then bump the pin. A security fix can still propose a
+held package (see [How updates arrive](#how-updates-arrive)): check such a PR
+against the reason for the hold.
 
-## Pushing to a Renovate branch
+## Stop Renovate
 
-Renovate treats a branch with a commit from another author as modified and
-makes no further commits: no rebase on conflict, no newer version. For a fresh
-Renovate update, tick the PR's rebase checkbox; it discards the follow-up
-commits. Do not close the PR: Renovate reads a closed, unmerged PR as "ignore
-this update" and will not reopen it for that version (for a major, that major).
+Set top-level `"enabled": false` in `.github/renovate.json` and land it through
+the queue. While Renovate is stopped, turn Dependabot security-fix PRs on so
+security fixes keep arriving:
 
-## Rollback
+```sh
+gh api -X PUT 'repos/{owner}/{repo}/automated-security-fixes'
+```
 
-Revert the cutover in a PR: `git revert -m 1 <cutover merge commit>`. That
-restores `.github/dependabot.yml`, the global hold and the tests that assert
-them together, so the required `renovate-config` job stays green. Hand edits
-alone fail `test_cutover_lifts_the_global_hold_and_drops_dependabot`.
-
-To stop Renovate entirely, also set top-level `"enabled": false` in
-`.github/renovate.json`. Re-enable Dependabot security fixes with
-`gh api -X PUT repos/boldaxolotl/booley/automated-security-fixes`.
+Turn them off again (`gh api -X DELETE` on the same path) before re-enabling
+Renovate.

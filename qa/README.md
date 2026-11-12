@@ -39,6 +39,10 @@ booley bootstrap --with-qa-skills
 Plain Bootstrap reconciles live links from the recorded path. Check-only
 Bootstrap, Doctor and Project Initialization inspect without mutation. Missing
 checkouts or skills produce a non-blocking warning with recovery guidance.
+The opt-in is recorded in `~/.agents/booley-qa-skills.json`;
+`--with-qa-skills` and `--without-qa-skills` exit 2 when the QA step warns.
+After moving the checkout, rerun `booley bootstrap --with-qa-skills --force`
+from its new location.
 `booley bootstrap --without-qa-skills` removes only manifest-owned QA links,
 even if the selection document is corrupt. Product, hand-made and replaced
 entries remain. Unrecorded exact or equivalent QA links conflict even with

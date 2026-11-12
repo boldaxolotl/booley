@@ -123,8 +123,8 @@
 
 /* Variant callouts ("In stealth mode", "On Windows", ...): a collapsed
    <details> box that says only what changes in that variant. The prose
-   around it describes the baseline setup; docs/internals/CONTRIBUTING.md
-   ("Writing user docs") has the rule. GitHub renders the same markup. */
+   around it describes the baseline setup; docs/internals/DOCS_PRINCIPLES.md
+   (principle 26) has the rule. GitHub renders the same markup. */
 .doc-prose details { border: 1px solid var(--rule); margin: 0 0 1.2em; }
 .doc-prose summary { cursor: pointer; list-style: none; display: flex; gap: 10px; align-items: center;
   padding: 7px 14px; background: var(--fill-2); font: 650 15px/1.4 var(--sans); }
