@@ -578,12 +578,16 @@ def _riscv_parent_key_errors(workflow: dict[str, Any]) -> list[str]:
     except ValueError as error:
         return [f"{role}: parent key: {error}"]
     errors: list[str] = []
-    if key_step.path > substrate_step.path:
+    if key_step.path >= substrate_step.path:
         errors.append(f"{role}: parent key step must run before the substrate build")
     env = key_step.value.get("env")
     source = env.get("STANDARD_SUBSTRATE_DIGEST") if isinstance(env, dict) else None
     if source != "${{ needs.build-and-push.outputs.substrate-digest }}":
         errors.append(f"{role}: parent key must derive from the standard substrate digest output")
+    # The step must slice the 16 hex after "sha256:" and publish them as `key`.
+    script = str(key_step.value.get("run", ""))
+    if "${STANDARD_SUBSTRATE_DIGEST:7:16}" not in script or "GITHUB_OUTPUT" not in script:
+        errors.append(f"{role}: parent key must output the first 16 hex of the digest")
     return errors
 
 

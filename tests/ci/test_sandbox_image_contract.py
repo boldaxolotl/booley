@@ -334,7 +334,9 @@ def test_release_jobs_must_export_their_build_digest(job: str) -> None:
     assert "image-digest" in _errors(sources, role)
 
 
-@pytest.mark.parametrize("case", ["tag-without-parent", "key-from-contract", "key-after-build"])
+@pytest.mark.parametrize(
+    "case", ["tag-without-parent", "key-from-contract", "key-after-build", "key-constant"]
+)
 def test_release_riscv_substrate_tag_must_name_its_parent(case: str) -> None:
     """The tag must carry the exact parent digest key, fed from the digest output (#3650)."""
     sources = _sources()
@@ -347,7 +349,10 @@ def test_release_riscv_substrate_tag_must_name_its_parent(case: str) -> None:
         inputs["tags"] = _sub_once(
             r"-parent-\$\{\{ steps\.parent-key\.outputs\.key \}\}", "", str(inputs["tags"])
         )
-        expected = "tags"
+        expected = "-parent-"
+    elif case == "key-constant":
+        key_step["run"] = 'echo "key=fixed" >> "${GITHUB_OUTPUT}"'
+        expected = "first 16 hex"
     elif case == "key-from-contract":
         key_step["env"]["STANDARD_SUBSTRATE_DIGEST"] = (
             "${{ steps.version.outputs.standard_substrate_contract }}"

@@ -56,9 +56,9 @@ grading uses the typed channel.
 The authenticated result carries normalized per-test verdicts and diagnostics.
 The parent validates the result file as a fresh, contained current-attempt
 artifact before accepting it, and independently validates run logs and trace
-artifacts. Build, Pre-Sim Commands, workload, artifact, and infrastructure evidence all
-cross the execution boundary in the returned outcome instead of being rebuilt
-from output markers by the Flow.
+artifacts. Build, Pre-Sim Commands, workload, artifact, and infrastructure
+evidence all cross the execution boundary in the returned outcome instead of
+being rebuilt from output markers by the Flow.
 
 Project-owned settings are resolved from `TargetHandle.project_root` for each
 invocation. This applies equally to the active checkout and an ephemeral Cycle
