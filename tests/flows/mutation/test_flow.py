@@ -2295,3 +2295,55 @@ def test_mutation_preflight_alone_does_not_report_eda_tool(tmp_path, monkeypatch
     report = json.loads(endpoint.write_report(EndpointOutcome()).read_bytes())
     assert "eda_tool" not in report
     assert "eda_tools" not in report
+
+
+def test_mutation_dir_falls_back_when_no_project_runtime_exists(monkeypatch) -> None:
+    """Direct callers outside a Project get the relative scratch directory."""
+    from booley.flows.mutation import workspace
+
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+
+    def _no_project() -> Path:
+        raise FileNotFoundError
+
+    monkeypatch.setattr("booley.runtime.booley_dir.runtime_dir", _no_project)
+    assert workspace.mutation_dir() == Path("mutation_runtime") / "mutation"
+
+
+@pytest.mark.parametrize(
+    ("count", "min_detected", "seed", "fragment"),
+    [
+        (0, 0, 0, "--count must be positive"),
+        (3, 0, -1, "--seed must be a non-negative integer"),
+        (3, 4, 0, "--min-detected must be between 0 and --count"),
+        (3, -1, 0, "--min-detected must be between 0 and --count"),
+    ],
+)
+def test_validate_count_rejects_out_of_range_values(count, min_detected, seed, fragment) -> None:
+    outcome = MutationFlow._validate_count(count, min_detected, seed)
+    assert outcome is not None
+    assert outcome.exit_code == 2
+    assert fragment in outcome.report_text
+    assert MutationFlow._validate_count(3, 3, 0) is None
+
+
+def test_run_inputs_require_exactly_one_target(tmp_path: Path, monkeypatch) -> None:
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    outcome = endpoint._validate_run_inputs("a,b", tmp_path, [])
+    assert outcome is not None
+    assert outcome.report_text == "mutation: --target must select exactly one Target"
+
+
+def test_flow_overrides_run_so_the_template_hooks_are_inert(tmp_path: Path, monkeypatch) -> None:
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    assert endpoint._build_command() == []
+    outcome = endpoint._interpret_result(_fake_proc())
+    assert outcome.exit_code == 0
+
+
+def test_scope_validation_requires_a_target(tmp_path: Path, monkeypatch) -> None:
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="")
+    outcome = endpoint._validate_scope_against_target([])
+    assert outcome is not None
+    assert outcome.report_text == "mutation: scope validation requires a Target"
