@@ -255,12 +255,19 @@ def test_real_read_verilog_located_warning_is_frontend() -> None:
     assert group.message.startswith("Warning: Range select [5:4]")
 
 
-def test_located_loop_warning_keeps_structural_classification() -> None:
-    summary = parse_synth_diagnostics(
-        {"yosys": "top.v:7: Warning: found logic loop in module top\n"}
-    ).warnings
+@pytest.mark.parametrize(
+    ("body", "category"),
+    [
+        ("found logic loop in module top", "combinational_loop"),
+        ("multiple conflicting drivers for top.sig", "multi_driver"),
+    ],
+)
+def test_located_structural_warning_keeps_structural_classification(
+    body: str, category: str
+) -> None:
+    summary = parse_synth_diagnostics({"yosys": f"top.v:7: Warning: {body}\n"}).warnings
 
-    assert summary.by_category == {"combinational_loop": 1}
+    assert summary.by_category == {category: 1}
     assert summary.structural_warnings == 1
 
 

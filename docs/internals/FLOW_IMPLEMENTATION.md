@@ -550,13 +550,13 @@ Structural warnings become fatal when the final check confirms them. Other
 actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
 known to be benign is counted with its rationale and does not downgrade the
 result. A located Yosys warning (`file:line[:col]: Warning:`, in practice from
-the `read_verilog` and `slang` frontends) is counted under category `frontend`
+the `read_verilog` and `slang` frontends, slang on Yosys 0.69 and 0.70) is counted under category `frontend`
 with disposition `informational`: it never grades `warn`, because it reports
 the source rather than the synthesis. Its message drops the location and the
 echoed source line so the same warning groups across lines, and a trailing
 slang `[-W...]` is kept as the group's `code`. A located loop or multi-driver
 warning keeps its structural classification. Informational groups sort after
-all others in the representatives. Other unknown warning forms default to
+all others (the first-listed loop group aside) in the representatives. Other unknown warning forms default to
 actionable, so a new message is never silently ignored.
 
 The Criterion detail carries the area, cell, and wire counts, the
