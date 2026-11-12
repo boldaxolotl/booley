@@ -120,6 +120,18 @@ class TestSectionsMatchCheatsheet:
 
 
 class TestCheatCommand:
+    @pytest.fixture(autouse=True)
+    def _short_metrics_listing(self, monkeypatch):
+        """Serve a short listing: these tests run in the source checkout, which has no Targets.
+
+        The listing's raw TOML lines are exempt from wrapping by design, so the stub keeps
+        them short and the tests check the Metrics section's own prose and layout.
+        """
+        monkeypatch.setattr(
+            "booley.measurement.metrics_listing.render_metrics_listing",
+            lambda _root: "[sim_core.sim]\ntests_failed_max =  # tests, plain",
+        )
+
     @staticmethod
     def _parse(argv):
         return tlr._build_parser().parse_args(argv)
@@ -171,6 +183,7 @@ class TestCheatCommand:
         assert (
             out.index("\nCommands\n")
             < out.index("\nGoal Mode\n")
+            < out.index("\nMetrics\n")
             < out.index("\nBooley Flows\n")
             < out.index("\nSpecialists\n")
             < out.index("\nProject Files\n")

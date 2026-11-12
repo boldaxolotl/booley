@@ -23,6 +23,7 @@ in the wrong place stops and prints how to run it in the right one.
 `booley flow <name> --help` and `booley specialist <name> --help` also work on
 the host inside an initialized Project. `booley targets` lists Targets
 anywhere; showing one Target in full detail needs the Sandbox.
+`booley cheat --metrics` lists a Project's Targets, so it needs an initialized Project.
 
 `booley help` and `booley --help` print the same command list.
 `booley --version` prints the version, plus its commit and that commit's UTC
@@ -85,6 +86,7 @@ The Dashboard opens by itself when you attach to the container; see
 booley cheat                      # list the cheatsheet sections
 booley cheat --all                # the whole cheatsheet
 booley cheat --goals              # Goal Mode, the Goal catalog, and thresholds
+booley cheat --metrics            # each Target's runnable Flows and their metrics as metrics.toml text (needs a Project)
 booley coverage uncovered <coverage.json>   # uncovered points of a coverage run
 booley coverage uncovered <coverage.json> --metric branch --source rtl/fifo.sv
 booley doctor                     # check setup and environment health

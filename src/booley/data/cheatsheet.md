@@ -238,6 +238,14 @@ BRAM/DSP/utilization are not clock-scopable):
 `critical_path_ps_max` ⊕ `fmax_mhz_min` is mutually exclusive **per clock**.
 Example: `{"family": "SYNTH", "target": "synth_core", "thresholds": {"clk_i.fmax_mhz_min": 400, "clk_2x.critical_path_ps_max": 5000}}`.
 
+### Metrics
+
+The listing from `booley cheat --metrics` is `metrics.toml` text: save the blocks you keep as `.booley/metrics.toml`, give each bound you keep a number, delete the rest, and check the file with `booley measure --validate`.
+
+<!-- BEGIN GENERATED: metrics -->
+Run `booley cheat --metrics` in a Project to list its Targets' metrics.
+<!-- END GENERATED: metrics -->
+
 ### Booley Flows
 
 <!-- BEGIN GENERATED: flows -->
