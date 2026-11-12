@@ -314,7 +314,14 @@ def test_checkout_flow_refuses_live_state_paths(
 
 @linux_only
 @pytest.mark.parametrize(
-    "case", ["no-own-dir", "ancestor-selects", "ancestor-selects-inside", "own-root"]
+    "case",
+    [
+        "no-own-dir",
+        "ancestor-selects",
+        "ancestor-selects-inside",
+        "own-root",
+        "own-selects-outside",
+    ],
 )
 def test_checkout_flow_refuses_booley_config_outside_the_checkout(
     world: World, tmp_path: Path, case: str
@@ -344,17 +351,25 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
         (checkout.parent / "booley.toml").write_bytes(
             f'[project]\ndir = "{checkout.name}/steered"\n'.encode()
         )
-    else:
+    elif case == "own-root":
         # The checkout's own ``booley.toml`` selects the checkout root itself.
         checkout = world.checkout
         offending = checkout
         (checkout / "booley.toml").write_bytes(b'[project]\ndir = "."\n')
+    else:
+        # The checkout's own ``booley.toml`` selects a directory above it.
+        checkout = world.checkout
+        offending = checkout.parent / "selected"
+        offending.mkdir()
+        (checkout / "booley.toml").write_bytes(b'[project]\ndir = "../selected"\n')
     request = world.request("pass", checkout=checkout)
 
     with pytest.raises(CheckoutFlowError) as refused:
         run_checkout_flow(request)
 
     assert str(offending.resolve()) in str(refused.value)
+    if case == "own-root":
+        assert "selects its own root" in str(refused.value)
     # Refused before anything was created: no Job record, no environment directory.
     assert not standalone_jobs_dir(world.main).exists()
     assert not list(checkout.parent.glob(".*env-*"))

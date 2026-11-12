@@ -246,8 +246,11 @@ class FlowMechanics:
     def _tool_environment(self, cwd: Path) -> tuple[dict[str, str], Path]:
         """Return the child environment and Python artifact cache root for a tool in *cwd*.
 
-        ``BOOLEY_DIR`` names that checkout's own Booley Directory: tools read this
-        checkout's inputs, never another checkout's (ADR 0082).
+        *cwd* must be a checkout root (every caller passes ``work_dir`` or another
+        checkout's root): from a subdirectory the lookup would fall through to the
+        ambient ``BOOLEY_DIR``. ``BOOLEY_DIR`` names that checkout's own Booley
+        Directory: tools read this checkout's inputs, never another checkout's
+        (ADR 0082).
         """
         env = {**os.environ, **self._extra_subprocess_env()}
         try:

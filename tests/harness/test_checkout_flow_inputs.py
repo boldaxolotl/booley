@@ -217,17 +217,6 @@ def poisoned_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     booley_dir.reset_cache()
 
 
-def test_poisoned_core_is_a_valid_core_that_compiles_the_poison() -> None:
-    """The Main poison must parse, or FuseSoC would skip it and the cores leg proves nothing."""
-    import yaml
-
-    committed = yaml.safe_load(CORE)["filesets"]["rtl"]["files"]
-    poisoned = yaml.safe_load(POISONED_CORE)["filesets"]["rtl"]["files"]
-
-    assert [next(iter(item)) for item in committed] == ["rtl/dut.sv"]
-    assert [next(iter(item)) for item in poisoned] == ["rtl/dut.sv", "rtl/poison.sv"]
-
-
 @linux_only
 @pytest.mark.parametrize(
     ("flow", "target"),

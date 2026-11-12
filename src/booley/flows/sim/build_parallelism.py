@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -16,6 +17,8 @@ from booley.core.boundary import as_dict, as_int
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.shared_infra import load_job_budget_config
 from booley.targets.domain import TargetInspection
+
+logger = logging.getLogger(__name__)
 
 LaneKind = Literal["heavy", "unreserved"]
 _CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
@@ -121,6 +124,10 @@ def _load_common_job_budget(project_root: Path | None) -> dict:
     try:
         common = resolve_common_booley_dir(project_root)
     except FileNotFoundError:
+        return {}
+    except (ValueError, RuntimeError) as exc:
+        # Admission tolerates the same unusable selection; the build keeps defaults.
+        logger.warning("Failed to resolve the Main Booley Directory for the build budget: %s", exc)
         return {}
     return load_job_budget_config(booley_dir=common)
 

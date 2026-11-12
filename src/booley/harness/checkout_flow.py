@@ -177,6 +177,7 @@ def _require_own_booley_dir(checkout: Path, main: Path) -> None:
         raise CheckoutFlowError(f"the runner's environment is unusable: {exc}") from exc
     try:
         selected = booley_dir.resolve_authoritative_booley_dir(checkout)
+        own = booley_dir.own_booley_dir(checkout)
     except (OSError, RuntimeError, ValueError) as exc:  # includes BooleyLayoutError
         raise CheckoutFlowError(
             f"checkout {checkout} has an unusable Booley configuration: {exc}"
@@ -195,14 +196,12 @@ def _require_own_booley_dir(checkout: Path, main: Path) -> None:
         )
     # Only the checkout's own ``booley.toml`` may choose the directory: a selection
     # from an ancestor, even one landing inside the checkout, is steered from outside.
-    if (
-        not selected.is_relative_to(checkout)
-        or selected != booley_dir.own_booley_dir(checkout).resolve()
-    ):
+    if not selected.is_relative_to(checkout) or selected != own.resolve():
         raise CheckoutFlowError(
             f"checkout {checkout} would read its Booley configuration from {selected}, "
             "which its own booley.toml does not select inside it; commit a Booley "
-            "Directory inside the checkout and remove any [project].dir above it"
+            "Directory inside the checkout, remove any [project].dir above it and fix a "
+            "[project].dir of its own that names a missing directory"
         )
 
 

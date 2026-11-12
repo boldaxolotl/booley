@@ -269,3 +269,18 @@ def test_build_budget_defaults_outside_any_project(
         assert build_parallelism._load_common_job_budget(None) == {}
     finally:
         booley_dir.reset_cache()
+
+
+def test_build_budget_defaults_when_the_main_directory_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unusable selection that admission tolerates leaves the build on the defaults, loudly."""
+
+    def unusable(_start: Path | None) -> Path:
+        raise RuntimeError("selection is unusable")
+
+    monkeypatch.setattr(build_parallelism, "resolve_common_booley_dir", unusable)
+
+    with caplog.at_level("WARNING"):
+        assert build_parallelism._load_common_job_budget(None) == {}
+    assert "selection is unusable" in caplog.text
