@@ -171,8 +171,11 @@ async def test_test_field_offers_the_targets_test_runs_and_toggles_several(proje
         assert picks.highlighted == 0  # the highlight stays where the human toggled
         await pilot.press("space")  # no other key does anything
         assert pick_rows(wizard) == [
-            "[x] reset" if run == "reset" else f"[{'x' if run == 'stress+soak' else ' '}] {run}"
-            for run in SIM_FIFO_RUNS
+            "[x] reset",
+            "[ ] stress",
+            "[ ] stress+short",
+            "[x] stress+soak",
+            "[ ] slow",
         ]
         await pilot.press("escape")
         assert row_value(wizard, "--test") == "stress+soak, reset"
@@ -242,6 +245,24 @@ async def test_unreadable_tests_say_why_write_nothing_and_extra_arguments_still_
         write_files(root, {"top.v": "module top; endmodule\n", **files})
         await check_unreadable(root, expected)
     await check_unreadable_stealth(tmp_path / "stealth")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_test_read_is_tried_again_when_the_picker_reopens(project):
+    tests_toml = project / ".booley" / "tests.toml"
+    good = tests_toml.read_bytes()
+    tests_toml.write_bytes(b"[tests\n")  # not TOML: the read fails
+    app = make_app(project, FakeLauncher())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "sim")
+        await set_target(app, pilot, wizard, "--target", "sim_fifo")
+        await open_picker(app, pilot, wizard, "--test")
+        assert "Tests unavailable" in stage_hint(wizard)
+        assert pick_rows(wizard) == []
+        await pilot.press("escape")
+        tests_toml.write_bytes(good)  # fixed meanwhile
+        await open_picker(app, pilot, wizard, "--test")
+        assert pick_rows(wizard) == [f"[ ] {run}" for run in SIM_FIFO_RUNS]
 
 
 async def check_unreadable(root: Path, expected: str) -> None:
@@ -337,6 +358,7 @@ async def test_unlistable_or_crashed_targets_say_why_and_extra_arguments_still_t
         monkeypatch.setattr(targets, "collect_surface", real)  # fixed meanwhile
         await pilot.press("escape", "escape", "enter")  # back to the Flow list, lint again
         await settle(app, pilot)
+        assert row_value(wizard, "Extra arguments") == "--target t"  # what was typed stays
         await open_picker(app, pilot, wizard, "--target")
         assert pick_rows(wizard) == ["automatic", "lint_fifo"]
     crashed = DashboardApp(

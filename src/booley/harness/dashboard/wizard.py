@@ -2,7 +2,8 @@
 
 One modal screen shows one stage at a time. The form stage is generated from the
 Flow's human parser (``run_form``): a row per option, changed in a choice list or
-a text editor stage, plus one extra-arguments row. It dismisses with the new
+a text editor stage, or for the Target and test fields a picker over the worktree's
+Targets and the chosen Target's Test Runs, plus one extra-arguments row. It dismisses with the new
 Job's row key once submitted, or ``None`` when the human backs out of the first
 stage.
 """
@@ -26,6 +27,7 @@ from textual.worker import Worker, WorkerState
 
 from booley.harness.dashboard.launch import ArgumentsError, Launcher, shell_command
 from booley.harness.dashboard.run_form import (
+    AUTOMATIC,
     DEFAULT,
     NO_FORM,
     Field,
@@ -292,8 +294,11 @@ class RunWizard(ModalScreen[str | None]):
         self._flow = flow
         pair = (self._worktree, flow)
         listing_failed = self._listing is not None and bool(self._listing.problem)
-        if pair != self._form_for or self._form_error or listing_failed:
+        if pair != self._form_for or self._form_error:
             self._start_form(pair)
+        elif listing_failed:  # read the Targets again, keeping what was typed
+            self._listing = None
+            self._start_listing(pair[0])
         self._show_stage("form")
 
     def _start_form(self, pair: tuple[Path, str]) -> None:
@@ -310,19 +315,22 @@ class RunWizard(ModalScreen[str | None]):
         self._changing = 0
         # The old Flow's rows must not stay selectable while the new form builds.
         self.query_one("#run-form", OptionList).clear_options()
-        worktree = pair[0]
-        self.run_worker(
-            lambda: self._read_listing(worktree),
-            thread=True,
-            exclusive=True,
-            group=TARGETS_GROUP,
-            exit_on_error=False,
-        )
+        self._start_listing(pair[0])
         self._form_worker = self.run_worker(
             lambda: self._launcher.form(flow),
             thread=True,
             exclusive=True,
             group=FORM_GROUP,
+            exit_on_error=False,
+        )
+
+    def _start_listing(self, worktree: Path) -> None:
+        """Read *worktree*'s Targets in a worker."""
+        self.run_worker(
+            lambda: self._read_listing(worktree),
+            thread=True,
+            exclusive=True,
+            group=TARGETS_GROUP,
             exit_on_error=False,
         )
 
@@ -428,9 +436,11 @@ class RunWizard(ModalScreen[str | None]):
         """Open the Test Run picker, reading the chosen Target's Test Runs unless they are at hand."""
         assert self._form_for is not None
         worktree, target = self._form_for[0], self._target_value()
-        known = self._runs is not None and (self._runs.worktree, self._runs.selector) == (
-            worktree,
-            target,
+        # A failed read is tried again: the human may have fixed what it named.
+        known = (
+            self._runs is not None
+            and not self._runs.problem
+            and (self._runs.worktree, self._runs.selector) == (worktree, target)
         )
         if target and not known:
             self._runs = None
@@ -448,7 +458,7 @@ class RunWizard(ModalScreen[str | None]):
         return self._target_picker(field) if field.kind == "target" else self._tests_picker(field)
 
     def _target_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
-        rows = [] if field.required else [("automatic", "")]
+        rows = [] if field.required else [(AUTOMATIC, "")]
         listing = self._listing
         if listing is None:
             return LOADING_TARGETS, rows

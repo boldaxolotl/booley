@@ -69,9 +69,8 @@ class Field:
     spellings: tuple[str, ...]  # every option string of every action: all count as placed
     off_flag: str = ""
     choices: tuple[str, ...] = ()  # a list's value spellings; a three-way's are "on" and "off"
-    required: bool = (
-        False  # the Flow insists on this option: the Target field then has no automatic
-    )
+    # The Flow insists on this option: the Target field then has no automatic.
+    required: bool = False
 
     def values(self) -> tuple[str, ...]:
         """The values a choice list offers after the default, as stored."""
