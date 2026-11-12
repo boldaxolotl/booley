@@ -204,7 +204,7 @@ environment. Active builds also set `CCACHE_BASEDIR` and a
 the cache across build generations.
 
 Ordinary, campaign, coverage, Cocotb, and elaboration-only builds use this
-interface; Mutation Tester builds, which run Make directly, use
+interface; Mutation Flow builds, which run Make directly, use
 `simulation_build_environment`. Icarus builds do not resolve a cache policy.
 The policy takes the environment as an argument (build preparation passes
 `os.environ`). An unset root gives an inactive policy that compiles uncached

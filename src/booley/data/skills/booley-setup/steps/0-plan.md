@@ -89,7 +89,8 @@ and an explicit `review` star; evidence-forced and pre-set rows are unstarred.
 ## Part A — Feasibility triage (evidence)
 
 Booley can drive four flows: **`sim`**, **`lint`**, **`synth`**,
-and **`fpga`**. Feasibility is per-flow: a project may be a perfect fit
+and **`fpga`**. (A fifth, **`mutation`**, reuses a `sim` Target, so it needs no
+feasibility verdict of its own.) Feasibility is per-flow: a project may be a perfect fit
 for simulate and lint while its synthesis flow needs extra wiring. Per flow the
 verdict falls into one of three buckets. The authoritative EDA-tool → bucket mapping
 lives in the supported EDA tools matrix, `/booley-docs/SUPPORTED-EDA-TOOLS.md` — treat it as the
@@ -776,12 +777,9 @@ separate columns (see "How a row resolves"). The standard checklist:
 17. **Specialists** — a **defaults block** row: default = none disabled.
     Every installed Specialist is discovered automatically; Step 2 writes
     `[specialists.<name>].enabled = false` only for an intentional opt-out.
-    Show optional reviewers and mutation testers with that proposed default.
-    One reason to change it: **`mutation_tester` has not supported cocotb-based
-    sim Targets** — its baseline runner drives a `V<toplevel>` binary, and a
-    Cocotb Target builds `Vtop` driven from Python over VPI. Verify current
-    support before using it on a cocotb project; unsupported, it burns a full
-    specialist run to report an infra error. Unattended: take the default as
+    Show the optional Specialists (reviewer, coverage analyst) with that
+    proposed default. Mutation testing is the `mutation` Flow, not a
+    Specialist, so it is not part of this row. Unattended: take the default as
     `inferred`/high, **no star**; an existing opt-out stays `pre-set`.
 18. **Parity check (optional)** — a **defaults block** row: compare Booley's
     results against the repo's native build system after the Step 4 gate.

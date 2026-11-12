@@ -11,7 +11,7 @@ missing file, truncated/unparseable XML, empty testsuite — therefore maps to
 
 The run-half (:mod:`booley.flows.sim.backends.cocotb`) parses the XML in-sandbox and
 re-emits it as a single ``[COCOTB_RESULTS]`` JSON line beside the usual
-``[SIM_SUMMARY]``; the Mutation Tester parses that line back, while the
+``[SIM_SUMMARY]``; the Mutation Flow parses that line back, while the
 adapter itself publishes the results it already holds and never reads its own
 line. Both share this module so the shapes cannot drift.
 

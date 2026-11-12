@@ -7,6 +7,7 @@ import pytest
 
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
+from booley.flows.mutation.flow import MutationFlow
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.goals.flow_execution import GoalFlowExecution
@@ -29,6 +30,7 @@ def admitted(goal_mode, monkeypatch):
         ("sim", SimulateFlow),
         ("fpga", FpgaImplFlow),
         ("synth", AsicSynthesizeFlow),
+        ("mutation", MutationFlow),
     ],
 )
 def test_builtin_runner_forwards_args_and_admitted_adapter(admitted, monkeypatch, name, flow_type):

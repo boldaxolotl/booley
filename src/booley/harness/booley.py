@@ -1821,7 +1821,7 @@ def _flow_listing(flows: list[McpToolInfo]) -> str:
 
 def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolInfo | int:
     """List or select a registered endpoint, with wrong-command guidance."""
-    from booley.targets.flow_names import canonical
+    from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW, canonical
 
     choices = [item for item in endpoints if item.kind == kind]
     heading = "Flows" if kind == "flow" else "Specialists"
@@ -1837,6 +1837,8 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
         _enforce_runtime_location(args.command)
     other = next((item for item in endpoints if item.name == canonical(raw_name)), None)
     suggestion = f" Use booley {other.kind} {other.name}." if other is not None else ""
+    if other is None and raw_name in RETIRED_SPECIALIST_TO_FLOW:
+        suggestion = f" Use booley flow {RETIRED_SPECIALIST_TO_FLOW[raw_name]}."
     # Colour follows stdout, so the stderr listing is printed plain.
     listing = colors.strip_ansi(f"Available {heading}\n{_flow_listing(choices)}")
     print(

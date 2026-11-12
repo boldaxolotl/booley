@@ -528,7 +528,9 @@ def test_complete_specialist_schemas_are_compatible():
     import json
 
     expected = json.loads(
-        (Path(__file__).parents[1] / "mcp_tools/fixtures/specialist_schemas.json").read_text()
+        (Path(__file__).parents[1] / "mcp_tools/fixtures/specialist_schemas.json").read_text(
+            encoding="utf-8"
+        )
     )
     for info in discover_mcp_tools():
         if info.kind != "specialist":

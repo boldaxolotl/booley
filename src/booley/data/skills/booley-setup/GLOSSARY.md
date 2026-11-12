@@ -25,9 +25,10 @@ Choose a different Target when you need a different build configuration.
 
 ## Specialist
 Aliases: Specialists
-A Specialist is an optional AI helper, such as a code reviewer or mutation
-tester, given fresh context for one task. It advises or checks work rather than
-running the deterministic build job itself.
+A Specialist is an optional AI helper, such as a code reviewer, given fresh
+context for one task. It advises or checks work rather than running the
+deterministic build job itself. Mutation testing is not a Specialist: it is the
+Booley Flow `booley flow mutation`.
 
 ## EDA tool
 Aliases: EDA tools

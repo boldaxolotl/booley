@@ -20,7 +20,7 @@ from booley.core.exit_codes import (
 _ROW_LIMIT = 24
 _ITEM_LIMIT = 5
 # Endpoints whose reports are Flow reports; any other endpoint is an MCP tool.
-_FLOW_ENDPOINTS = frozenset({"sim", "lint", "synth", "fpga"})
+_FLOW_ENDPOINTS = frozenset({"sim", "lint", "synth", "fpga", "mutation"})
 
 
 @dataclass(frozen=True)
@@ -491,8 +491,8 @@ def _report_rows(report: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
         return _lint(detail)
     if endpoint == "reviewer":
         return _review(detail, mode)
-    specialist = {"mutation_tester": _mutation, "coverage_analyst": _analysis}.get(str(endpoint))
-    return specialist(detail) if specialist is not None else ("", [])
+    renderer = {"mutation": _mutation, "coverage_analyst": _analysis}.get(str(endpoint))
+    return renderer(detail) if renderer is not None else ("", [])
 
 
 def _fallback(report: Mapping[str, object]) -> list[ResultLine]:

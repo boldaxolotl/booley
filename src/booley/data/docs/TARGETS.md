@@ -2,7 +2,7 @@
 
 A **Target** is one named build configuration of your design: which source
 files, which top module, which parameters, and which EDA tool. Every Booley
-Flow (sim, lint, synth, fpga) builds from a Target, and the Developer Agent
+Flow (sim, lint, synth, fpga, mutation) builds from a Target, and the Developer Agent
 picks Targets by name instead of inventing its own tool arguments. So every
 result traces back to a configuration you can read and rerun.
 

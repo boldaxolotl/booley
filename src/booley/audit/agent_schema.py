@@ -12,7 +12,13 @@ from booley.audit.config_common import (
     failure,
     pass_finding,
 )
-from booley.config.agent import BackendConfigError, parse_agent_section, settings_from_data
+from booley.config.agent import (
+    RETIRED_MODEL_KEYS,
+    SPECIALISTS,
+    BackendConfigError,
+    parse_agent_section,
+    settings_from_data,
+)
 from booley.config.gateway import GatewayConfigError
 from booley.core.boundary import as_dict
 
@@ -54,17 +60,33 @@ def audit_agent_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     )
 
 
+def _models_table_problem(models: dict[str, Any] | None) -> ConfigTableAudit | None:
+    """Fail a ``[models]`` that is not a table or names a key that is not a Specialist."""
+    if models is None:
+        return failure(
+            "booley.toml [models] must be a table",
+            "rewrite [models] as a TOML table",
+        )
+    if unknown := sorted(set(models) - SPECIALISTS - RETIRED_MODEL_KEYS):
+        valid = ", ".join(sorted(SPECIALISTS))
+        keys = ", ".join(f"[models] {key}" for key in unknown)
+        return failure(
+            # Same text as the loader's error (parse_models_section): Doctor and loading agree.
+            f"booley.toml [models] has an unknown key {unknown[0]!r}; valid keys are {valid}; "
+            f"delete [models] {unknown[0]} or rename it to a valid key.",
+            f"delete {keys}; valid keys are {valid}",
+        )
+    return None
+
+
 def audit_models_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     """Audit the per-Specialist model pins against the configured Agent CLIs."""
     raw_models = data.get("models")
     if raw_models is None:
         return ConfigTableAudit()
     models = as_dict(raw_models)
-    if models is None:
-        return failure(
-            "booley.toml [models] must be a table",
-            "rewrite [models] as a TOML table",
-        )
+    if (problem := _models_table_problem(models)) is not None:
+        return problem
     try:
         settings = settings_from_data(data, lazy=False)
     except GatewayConfigError:

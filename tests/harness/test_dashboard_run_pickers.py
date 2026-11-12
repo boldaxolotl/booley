@@ -58,9 +58,12 @@ if TYPE_CHECKING:
 TARGETS_BY_FLOW = {
     "fpga": ["fpga_fifo"],
     "lint": ["lint_fifo"],
+    "mutation": ["sim_fifo", "sim_wide"],
     "sim": ["sim_fifo", "sim_wide"],
     "synth": ["synth_fifo"],
 }
+# Flows whose --target is required: their picker has no automatic row.
+REQUIRED_TARGET_FLOWS = {"mutation"}
 SIM_FIFO_RUNS = ["reset", "stress", "stress+short", "stress+soak", "slow"]
 
 
@@ -104,23 +107,25 @@ async def test_target_field_offers_only_the_flows_compatible_targets(project):
         app = make_app(project, FakeLauncher())
         async with app.run_test(size=(120, 40)) as pilot:
             wizard = await to_form(app, pilot, flow)
-            assert row_value(wizard, "--target") == "automatic"
+            unset = "" if flow in REQUIRED_TARGET_FLOWS else "automatic"
+            assert row_value(wizard, "--target") == unset
             await open_picker(app, pilot, wizard, "--target")
             assert wizard._stage == "target"
-            assert pick_rows(wizard) == ["automatic", *targets]
+            assert pick_rows(wizard) == ([] if unset == "" else ["automatic"]) + targets
             assert "One Target" in stage_hint(wizard)
             assert "esc back" in shown(wizard, "#run-footer")
             assert shown(wizard, "#run-title") == f"booley flow {flow}: --target"
             await pilot.press("escape")  # leaving changes nothing
-            assert row_value(wizard, "--target") == "automatic"
+            assert row_value(wizard, "--target") == unset
             await set_target(app, pilot, wizard, "--target", targets[-1])
             assert wizard._stage == "form"
             assert row_value(wizard, "--target") == targets[-1]
             await open_picker(app, pilot, wizard, "--target")  # opens on the chosen Target
             picks = wizard.query_one("#run-picks", OptionList)
             assert pick_rows(wizard)[picks.highlighted or 0] == targets[-1]
-            await press_pick(pilot, wizard, "automatic")  # and automatic goes back
-            assert row_value(wizard, "--target") == "automatic"
+            if unset:
+                await press_pick(pilot, wizard, "automatic")  # and automatic goes back
+                assert row_value(wizard, "--target") == "automatic"
 
 
 class RequiredTargetLauncher(FakeLauncher):

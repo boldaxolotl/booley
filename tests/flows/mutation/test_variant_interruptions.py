@@ -16,22 +16,22 @@ from pathlib import Path
 import pytest
 import yaml
 
-from booley.dev_support.mutation_build_sources import (
+from booley.flows.mutation.build_sources import (
     materialize_build_mutation,
     validate_mutation_closure,
 )
-from booley.dev_support.mutation_variants import MutationVariantPlan
+from booley.flows.mutation.flow import (
+    MutationFlow,
+    MutationRunPlan,
+    MutationSpec,
+    MutationTestRun,
+)
+from booley.flows.mutation.variants import MutationVariantPlan
 from booley.mcp import job_results
 from booley.mcp.call_context import CallContext
 from booley.mcp.job_lifecycle import JobLifecycle
 from booley.runtime import job_records
 from booley.runtime.pid import is_pid_alive
-from booley.specialists.mutation_tester import (
-    MutationRunPlan,
-    MutationSpec,
-    MutationTesterSpecialist,
-    MutationTestRun,
-)
 
 pytestmark = [
     pytest.mark.timeout(60),
@@ -41,7 +41,7 @@ SCOPE = "rtl/dut.sv"
 # Local, not ``tests.subprocess_budget``: a child process re-executes this file
 # with ``runpy`` where the ``tests`` package is not importable. Same 30 s budget.
 _GIT_TIMEOUT_S = 30
-SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
+SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
 
 
 def _git(root: Path, *args: str) -> bytes:
@@ -93,7 +93,7 @@ def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
     source = root / SCOPE
     specs = [MutationSpec(1, "operator", SCOPE, 1, "a + b", "a - b")]
     variants = MutationVariantPlan.resolve(specs, root, [SCOPE])
-    endpoint = MutationTesterSpecialist()
+    endpoint = MutationFlow()
     endpoint._args = types.SimpleNamespace(work_dir=root, tb_top="tb")
     endpoint.emit_progress = lambda _line: None
 
@@ -240,7 +240,7 @@ async def test_public_job_cancel_preserves_dirty_scope(
     jobs = JobLifecycle()
     with _readiness_pipe(tmp_path) as (fifo, descriptor):
         run_id = jobs.submit(
-            "mutation_tester", _command(dirty_worktree, fifo, stage), 30, context=context
+            "mutation", _command(dirty_worktree, fifo, stage), 30, context=context
         )
         try:
             await asyncio.to_thread(_await_ready, descriptor)

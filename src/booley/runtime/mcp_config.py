@@ -172,7 +172,7 @@ def _booley_server_lines(
         'command = "python"',
         'args = ["-m", "booley.mcp.server"]',
         # Codex CLI defaults to 120s MCP tool timeout — far too short for
-        # long-running Flows or Specialists such as asic_synthesize / mutation_tester
+        # long-running Flows or Specialists such as asic_synthesize / mutation
         # (up to 7200s subprocess timeout).
         "tool_timeout_sec = 3600",
         "",
