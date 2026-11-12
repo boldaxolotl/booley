@@ -265,12 +265,17 @@ with one of its Test Variants (written `test+variant`). `Enter` toggles a Test
 Run at once, and `Esc` only goes back to the form; choosing another Target
 clears them. **Extra arguments** takes seeds and further Targets too. When a
 list cannot be read, the open list says why, and **Extra arguments** still takes
-the Targets and Test Runs you type. Output and Expert options go in the **Extra arguments** field,
-typed as on the command line. `Esc` in a choice list or editor drops the change,
+the Targets and Test Runs you type. Output and Expert options go in the
+**Extra arguments** field, typed as on the command line. `Esc` in a choice list or editor drops the change,
 `Enter` keeps it. **Review the command** checks it and shows the equivalent
-`cd … && booley flow …` command. **Submit**
-starts the Job, **Copy command** asks your terminal to copy the command instead.
-The Jobs window then opens on All sessions with the new Job selected; a
+`cd … && booley flow …` command. The
+review screen also says whether the Job runs now or queues behind other Jobs
+(with its position), and warns when the worktree has a connected session,
+running Jobs, or uncommitted changes. A check it cannot make is reported as
+such. Synth and FPGA runs show their per-work-unit timeout. **Submit** starts
+the Job, unless the Job queue is full: then the screen says why and Submit does
+nothing until queued work drains. **Copy command** asks your terminal to copy the
+command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a
 Finished filter switches to Running, which keeps the Job listed after it
 finishes. `Esc` returns to where you started.
 

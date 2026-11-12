@@ -22,14 +22,17 @@ import pytest
 from textual.widgets import DataTable, OptionList, Static
 from textual.worker import WorkerFailed
 
+from booley.core.booley_layout import BooleyLayoutError
 from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.dashboard.topbar import TopBar
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_request_path
+from booley.harness.worktree_list import WorktreeListError
 from booley.mcp.registry import discover_mcp_tools
 from booley.runtime import detached_job, job_records
+from booley.runtime.job_slots import SlotStore, slots_dir
 from tests.harness.test_dashboard import STAMP, choose_in_bar, snapshot
 from tests.harness.test_dashboard_targets import (
     FIFO_CORE,
@@ -47,6 +50,7 @@ if TYPE_CHECKING:
 
 # Read from discovery, not from the Run code, which a Dashboard without Run lacks: its import
 # belongs in each test body, so a missing module fails there and not at collection.
+ARGUMENTS = "--target t --report-dir 'out dir'"  # typed into the Extra arguments row
 FLOW_NAMES = sorted(info.name for info in discover_mcp_tools() if info.kind == "flow")
 
 
@@ -116,10 +120,25 @@ class FakeLauncher:
     """A launcher whose check always passes and whose submit answers a fixed Job key.
 
     Its form is the real one, built from the Flow's parser.
+
+    ``facts`` (the arguments of ``RunFacts``) is what the check reports; ``outlook`` (``ahead``,
+    ``cap``, ``queue_max``) and ``uncommitted`` are what the review reads, an exception instance
+    being raised instead; ``outlook_reads`` counts the queue reads. Run-module types are built
+    when used, so this file still imports without them.
     """
 
-    def __init__(self, key: str = "", error: OSError | None = None) -> None:
+    def __init__(
+        self,
+        key: str = "",
+        error: OSError | None = None,
+        facts: tuple | None = None,
+        outlook: tuple[int, int, int] | Exception | None = None,
+        uncommitted: int | Exception = 0,
+    ) -> None:
         self.key, self.error = key, error
+        self.facts = facts or (None, False)
+        self.outlook_result, self.uncommitted_result = outlook, uncommitted
+        self.outlook_reads = 0
         self.submitted: list[tuple[Path, str, tuple[str, ...]]] = []
 
     def flows(self):
@@ -133,7 +152,23 @@ class FakeLauncher:
         return launch.form(flow)
 
     def check(self, worktree, flow, argv):
-        return ""
+        from booley.harness.dashboard.launch import CheckResult, RunFacts
+
+        return CheckResult(facts=RunFacts(*self.facts))
+
+    def outlook(self, job_class):
+        from booley.runtime.job_slots import AdmissionOutlook
+
+        self.outlook_reads += 1
+        if isinstance(self.outlook_result, Exception):
+            raise self.outlook_result
+        assert self.outlook_result is not None
+        return AdmissionOutlook(job_class, *self.outlook_result)
+
+    def uncommitted(self, worktree):
+        if isinstance(self.uncommitted_result, Exception):
+            raise self.uncommitted_result
+        return self.uncommitted_result
 
     def submit(self, worktree, flow, argv):
         if self.error is not None:
@@ -531,8 +566,8 @@ def test_check_resolves_relative_paths_in_the_worktree(tmp_path, monkeypatch):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    assert launch.check(worktree, "sim", ("--tests-file", "tests.txt")) == ""
-    assert "tests.txt" in launch.check(elsewhere, "sim", ("--tests-file", "tests.txt"))
+    assert launch.check(worktree, "sim", ("--tests-file", "tests.txt")).error == ""
+    assert "tests.txt" in launch.check(elsewhere, "sim", ("--tests-file", "tests.txt")).error
 
 
 def test_check_changes_no_environment_and_writes_nothing(tmp_path, capfd):
@@ -547,7 +582,7 @@ def test_check_changes_no_environment_and_writes_nothing(tmp_path, capfd):
 
     environment = dict(os.environ)
     # --timeout-ms is a deprecated alias: an in-process parse would warn here and set the environment.
-    assert launch.check(worktree, "lint", ("--timeout-ms", "1000")) == ""
+    assert launch.check(worktree, "lint", ("--timeout-ms", "1000")).error == ""
     assert dict(os.environ) == environment
     assert listing() == []
     captured = capfd.readouterr()
@@ -558,8 +593,8 @@ def test_check_reports_a_timeout_and_a_worktree_that_cannot_start_it(tmp_path, m
     from booley.harness.dashboard import launch
 
     monkeypatch.setattr(launch, "CHECK_TIMEOUT_S", 0.001)
-    assert launch.check(tmp_path, "lint", ()) == "argument check timed out after 0.001s"
-    message = launch.check(tmp_path / "missing", "lint", ())
+    assert launch.check(tmp_path, "lint", ()).error == "argument check timed out after 0.001s"
+    message = launch.check(tmp_path / "missing", "lint", ()).error
     assert "No such file or directory" in message or "cannot find" in message.lower()
     assert "\n" not in message
 
@@ -1058,7 +1093,7 @@ class GatedLauncher(FakeLauncher):
     def check(self, worktree, flow, argv):
         self.started.set()
         assert self.release.wait(timeout=60)
-        return ""
+        return super().check(worktree, flow, argv)
 
 
 @pytest.mark.asyncio
@@ -1078,6 +1113,314 @@ async def test_a_value_changed_while_a_check_runs_keeps_review_closed(checkout):
         assert not wizard.query_one("#run-command", Static).display
         assert shown(wizard, "#run-error") == ""
         assert row_value(wizard, "--dry-run") == "on"
+
+
+# --- the review screen: queue, timeout, warnings (#3440) --------------------------
+
+
+class Slots:
+    """Real slot entries under a Booley Directory, owned by live or dead processes."""
+
+    def __init__(self, booley_dir: Path, *, max_heavy: int = 1, queue_max: int = 8) -> None:
+        booley_dir.mkdir(parents=True, exist_ok=True)
+        (booley_dir / "booley.toml").write_bytes(
+            f"[jobs]\nmax_heavy = {max_heavy}\nqueue_max = {queue_max}\n".encode()
+        )
+        from booley.config.jobs import SlotCaps
+
+        root = slots_dir(booley_dir)
+        assert root is not None
+        self._store = SlotStore(root, SlotCaps(max_heavy=max_heavy, queue_max=queue_max))
+        self._tokens: list = []
+
+    def occupy(self, count: int) -> None:
+        """Add *count* claims by this live process: the first takes the slot, the rest queue."""
+        for _ in range(count):
+            token = self._store.submit("heavy", pid=os.getpid())
+            self._store.refresh(token)
+            self._tokens.append(token)
+
+    def add_dead_owner(self) -> None:
+        """Add a claim whose owner process has exited."""
+        import subprocess
+
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        self._tokens.append(self._store.submit("heavy", pid=child.pid))
+
+    def release(self) -> None:
+        for token in self._tokens:
+            self._store.release(token)
+
+
+@pytest.fixture
+def slots(tmp_path: Path):
+    """Factory for :class:`Slots` over the test's Booley Directory; releases what it claimed."""
+    made: list[Slots] = []
+
+    def make(**kwargs) -> Slots:
+        made.append(Slots(tmp_path / "booley", **kwargs))
+        return made[-1]
+
+    yield make
+    for entry in made:
+        entry.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("flow", "live", "dead", "queue", "timeout"),
+    [
+        ("sim", 0, 0, "Runs now", None),
+        ("sim", 1, 0, "Queues behind 1 Job (position 1) for a heavy slot", None),
+        ("sim", 2, 0, "Queues behind 2 Jobs (position 2) for a heavy slot", None),
+        ("sim", 0, 1, "Runs now", None),
+        ("synth", 0, 0, "Runs now", "Timeout: 30m 00s per work unit"),
+    ],
+    ids=["empty", "one-holder", "holder-and-waiter", "dead-owner-only", "synth-timeout"],
+)
+async def test_review_shows_whether_the_job_runs_now_or_queues(
+    checkout, tmp_path, slots, flow, live, dead, queue, timeout
+):
+    entries = slots()
+    entries.occupy(live)
+    for _ in range(dead):
+        entries.add_dead_owner()
+    app = make_app(checkout, real_launcher(tmp_path / "booley"))
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, flow)
+        await check_arguments(app, pilot, wizard, ARGUMENTS)
+        assert shown(wizard, "#run-review").splitlines()[0] == queue
+        assert ("Timeout: 30m 00s per work unit" in shown(wizard, "#run-review")) == (
+            timeout is not None
+        )
+        assert shown(wizard, "#run-error") == ""
+
+
+FULL = (9, 1, 8)  # ahead, cap, queue_max: 9 >= 1 + 8
+ROOMY = (0, 1, 8)
+HEAVY = ("heavy", False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("opened", "entered"), [(FULL, ROOMY), (ROOMY, FULL)], ids=["drains", "fills"]
+)
+async def test_full_queue_refuses_submit_and_rereads_on_enter(checkout, opened, entered):
+    launcher = FakeLauncher("key", facts=HEAVY, outlook=opened)
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "sim")
+        await check_arguments(app, pilot, wizard, "")
+        assert launcher.outlook_reads == 1  # read when the review screen opens
+        refused = "Refused: heavy queue is full (8 waiting). Retry when queued work drains"
+        assert shown(wizard, "#run-error").startswith(refused) == (opened is FULL)
+        launcher.outlook_result = entered
+        await pilot.press("enter")  # Submit
+        await pilot.pause()
+        assert launcher.outlook_reads == 2  # and read again on Enter
+        if entered is FULL:
+            assert launcher.submitted == []
+            assert shown(wizard, "#run-error").startswith(refused)
+            assert "Queues behind 9 Jobs (position 9)" in shown(wizard, "#run-review")
+            assert type(app.screen).__name__ == "RunWizard"
+        else:
+            assert len(launcher.submitted) == 1
+            assert app.window == "jobs"
+        if entered is FULL:  # Copy is never refused
+            copied: list[str] = []
+            app.copy_to_clipboard = copied.append
+            await pilot.press("down", "enter")
+            assert copied == [f"cd {checkout} && booley flow sim"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("flow", "text"), [("lint", ""), ("sim", "--target t --dry-run")])
+async def test_commands_without_a_slot_run_now_on_a_full_queue(
+    checkout, tmp_path, slots, spawned, flow, text
+):
+    slots(queue_max=0).occupy(1)  # the heavy class is full: one holder, no room to wait
+    app = make_app(checkout, real_launcher(tmp_path / "booley"))
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, flow)
+        await check_arguments(app, pilot, wizard, text)
+        assert shown(wizard, "#run-review").splitlines()[0] == "Runs now (takes no Job slot)"
+        assert shown(wizard, "#run-error") == ""
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.window == "jobs"
+    assert len(spawned) == 1
+
+
+def write_config(worktree: Path, text: str) -> None:
+    (worktree / ".booley").mkdir(exist_ok=True)
+    (worktree / ".booley" / "booley.toml").write_bytes(text.encode())
+
+
+@pytest.mark.parametrize(
+    ("flow", "argv", "config", "expected"),
+    [
+        ("sim", (), "", ("heavy", False, None)),
+        ("lint", (), "", (None, False, None)),
+        ("sim", ("--dry-run",), "", ("heavy", True, None)),
+        ("synth", (), "", ("heavy", False, 1_800_000)),
+        ("fpga", (), "", ("heavy", False, 7_200_000)),
+        ("synth", ("--timeout-ms", "5000"), "", ("heavy", False, 5000)),
+        ("synth", (), "[flows.synth]\ntimeout_ms = 60000\n", ("heavy", False, 60_000)),
+        (
+            "synth",
+            ("--dry-run",),
+            "[flows.synth]\ntimeout_ms = 60000\n",
+            ("heavy", True, 60_000),
+        ),
+        ("sim", (), "[flows.sim]\ntimeout_ms = 60000\n", ("heavy", False, None)),
+    ],
+    ids=[
+        "sim",
+        "lint-no-class",
+        "sim-dry-run",
+        "synth-default",
+        "fpga-default",
+        "synth-flag",
+        "synth-config",
+        "synth-dry-run-config",
+        "sim-short-default-has-no-timeout",
+    ],
+)
+def test_check_reports_run_facts(tmp_path, flow, argv, config, expected):
+    from booley.harness.dashboard import launch
+
+    write_config(tmp_path, config)
+    result = launch.check(tmp_path, flow, ("--target", "t", *argv))
+    facts = result.facts
+    assert result.error == ""
+    assert (facts.job_class, facts.dry_run, facts.timeout_ms) == expected
+
+
+def test_check_reports_a_configured_timeout_the_flow_rejects(tmp_path):
+    from booley.harness.dashboard import launch
+
+    write_config(tmp_path, "[flows.synth]\ntimeout_ms = -5\n")
+    facts = launch.check(tmp_path, "synth", ("--target", "t")).facts
+    assert facts is not None
+    assert facts.timeout_ms is None
+    assert "must be a positive integer" in facts.timeout_problem
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["", "not json\n", "[1]\n", '{"job_class": 3, "dry_run": false}\n', '{"dry_run": false}\n'],
+    ids=["silent", "text", "array", "bad-class", "missing-key"],
+)
+def test_check_refuses_a_child_that_gives_no_run_facts(stdout):
+    from booley.harness.dashboard import launch
+
+    assert launch._parse_facts(stdout) is None
+
+
+@pytest.mark.asyncio
+async def test_review_shows_a_timeout_problem_and_still_allows_submit(checkout):
+    facts = ("heavy", False, None, "[flows.synth].timeout_ms must be positive")
+    launcher = FakeLauncher("key", facts=facts, outlook=ROOMY)
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "synth")
+        await check_arguments(app, pilot, wizard, "")
+        assert (
+            "Timeout problem: [flows.synth].timeout_ms must be positive; the Flow will reject"
+            " this run"
+        ) in shown(wizard, "#run-review")
+        await pilot.press("enter")
+        assert len(launcher.submitted) == 1
+
+
+def running_job(handle: str, work_dir: Path, state: str = "running") -> JobView:
+    status = "running" if state == "running" else "done"
+    record = job_records.JobRecord(
+        f"run-{handle}", "sim", STAMP, 60, status=status, work_dir=str(work_dir)
+    )
+    return JobView(Path("/jobs"), record, state, handle=handle)
+
+
+@pytest.mark.asyncio
+async def test_review_warns_about_sessions_running_jobs_and_changes(checkout, tmp_path, spawned):
+    (checkout / "notes.txt").write_bytes(b"draft\n")  # one untracked file
+    current = replace(
+        world(session("S3", checkout)),
+        jobs=JobSnapshot((running_job("J-SIM25", checkout), running_job("J-SYN34", checkout))),
+    )
+    app = make_app(checkout, real_launcher(tmp_path / "booley"), current)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        await check_arguments(app, pilot, wizard, "")
+        assert shown(wizard, "#run-review").splitlines() == [
+            "Runs now (takes no Job slot)",
+            "Warning: session S3 Interactive is connected to this worktree",
+            "Warning: 2 running Jobs in this worktree (J-SIM25, J-SYN34)",
+            "Warning: 1 uncommitted change in this worktree",
+        ]
+        await pilot.press("enter")  # warnings do not block
+        await pilot.pause()
+        assert app.window == "jobs"
+    assert len(spawned) == 1
+
+
+@pytest.mark.asyncio
+async def test_review_shows_no_warnings_for_a_quiet_worktree(checkout, tmp_path):
+    other = tmp_path / "elsewhere"
+    current = replace(
+        world(session("S3", other)),
+        jobs=JobSnapshot(
+            (
+                running_job("J-DONE", checkout, "completed"),
+                running_job("J-OTHER", other),
+                JobView(Path("/jobs"), job_records.JobRecord("bare", "sim", STAMP, 60), "running"),
+            )
+        ),
+    )
+    app = make_app(checkout, real_launcher(tmp_path / "booley"), current)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        await check_arguments(app, pilot, wizard, "")
+        assert shown(wizard, "#run-review") == "Runs now (takes no Job slot)"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("launcher_args", "snapshot_read", "expected"),
+    [
+        (
+            {"uncommitted": WorktreeListError("git status failed")},
+            True,
+            "Cannot check uncommitted changes: git status failed",
+        ),
+        (
+            {"uncommitted": BooleyLayoutError("[project].dir is retired")},
+            True,
+            "Cannot check uncommitted changes: [project].dir is retired",
+        ),
+        ({}, False, "Cannot check sessions and running Jobs: the Dashboard has not read them yet"),
+        (
+            {"facts": HEAVY, "outlook": OSError("permission denied")},
+            True,
+            "Cannot check the queue: permission denied",
+        ),
+    ],
+    ids=["git-fails", "retired-layout", "snapshot-not-read", "queue-unreadable"],
+)
+async def test_review_says_which_checks_cannot_be_made(
+    checkout, launcher_args, snapshot_read, expected
+):
+    launcher = FakeLauncher("key", **launcher_args)
+    current = world() if snapshot_read else replace(world(), observed_at=0)
+    app = make_app(checkout, launcher, current)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "sim")
+        await check_arguments(app, pilot, wizard, "")
+        assert expected in shown(wizard, "#run-review").splitlines()
+        await pilot.press("enter")  # a check that cannot be made never blocks Submit
+        await pilot.pause()
+        assert len(launcher.submitted) == 1
 
 
 # --- the top bar and its footer -----------------------------------------------

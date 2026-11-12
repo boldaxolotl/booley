@@ -25,7 +25,22 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
-from booley.harness.dashboard.launch import ArgumentsError, Launcher, shell_command
+from booley.core.booley_layout import BooleyLayoutError
+from booley.harness.dashboard.launch import (
+    NO_FACTS,
+    ArgumentsError,
+    CheckResult,
+    Launcher,
+    RunFacts,
+    shell_command,
+)
+from booley.harness.dashboard.review import (
+    Occupants,
+    queue_line,
+    refusal,
+    timeout_line,
+    warning_lines,
+)
 from booley.harness.dashboard.run_form import (
     AUTOMATIC,
     DEFAULT,
@@ -42,6 +57,8 @@ from booley.harness.dashboard.targets import (
     WorktreeChoice,
     first_line,
 )
+from booley.harness.worktree_list import WorktreeListError
+from booley.runtime.job_slots import AdmissionOutlook
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +110,7 @@ _SHOWN: dict[str, tuple[str, ...]] = {
     "target": ("#run-hint", "#run-picks"),
     "tests": ("#run-hint", "#run-picks"),
     "edit": ("#run-hint", "#run-edit"),
-    "review": ("#run-command", "#run-actions"),
+    "review": ("#run-command", "#run-review", "#run-actions"),
 }
 
 
@@ -108,8 +125,17 @@ class _Request:
 
 @dataclass(frozen=True)
 class _Checked:
+    """A finished check: the shell's rejection, or the run's facts with the reads made for review.
+
+    ``outlook`` is ``None`` when the run takes no slot and a string when the queue cannot be
+    read; ``uncommitted`` is a string when the changes cannot be counted.
+    """
+
     request: _Request
     error: str
+    facts: RunFacts | None = None
+    outlook: AdmissionOutlook | str | None = None
+    uncommitted: int | str = 0
 
 
 class RunWizard(ModalScreen[str | None]):
@@ -124,6 +150,7 @@ class RunWizard(ModalScreen[str | None]):
     #run-box #run-form { max-height: 16; }
     #run-footer { color: $text-muted; }
     #run-error { color: $error; height: auto; }
+    #run-review { height: auto; }
     #run-note, #run-hint { color: $text-muted; height: auto; }
     """
 
@@ -134,6 +161,7 @@ class RunWizard(ModalScreen[str | None]):
         choices: tuple[WorktreeChoice, ...],
         message: str,
         preselect: Callable[[tuple[WorktreeChoice, ...]], Path | None],
+        occupants: Callable[[Path], Occupants],
     ) -> None:
         super().__init__()
         self._launcher = launcher
@@ -142,11 +170,13 @@ class RunWizard(ModalScreen[str | None]):
         self._choices = choices
         self._message = message
         self._preselect = preselect
+        self._occupants = occupants
         self._stage = "worktree"
         self._worktree: Path | None = None
         self._flow = ""
         self._argv: tuple[str, ...] = ()
         self._checking: _Request | None = None
+        self._checked: _Checked | None = None  # the check the review screen shows
         # The form belongs to one (worktree, Flow); None while it is being built or if it failed.
         self._form_for: tuple[Path, str] | None = None
         self._form: RunForm | None = None
@@ -178,6 +208,7 @@ class RunWizard(ModalScreen[str | None]):
             yield OptionList(id="run-picks", markup=False)
             yield Input(id="run-edit", select_on_focus=False)
             yield Static(id="run-command", markup=False)
+            yield Static(id="run-review", markup=False)
             yield OptionList(SUBMIT, COPY, id="run-actions", markup=False)
             yield Static(id="run-error", markup=False)
             yield Static(id="run-footer", markup=False)
@@ -531,9 +562,7 @@ class RunWizard(ModalScreen[str | None]):
         self._checking = request
         self._show_error("Checking…")
         self.run_worker(
-            lambda: _Checked(
-                request, self._launcher.check(request.worktree, request.flow, request.argv)
-            ),
+            lambda: self._check(request),
             thread=True,
             exclusive=True,
             group=CHECK_GROUP,
@@ -565,6 +594,29 @@ class RunWizard(ModalScreen[str | None]):
             self._runs = result
         if self._stage == ("target" if isinstance(result, TargetListing) else "tests"):
             self._fill_picks(self.query_one("#run-picks", OptionList).highlighted)
+
+    def _check(self, request: _Request) -> _Checked:
+        """The argument check, then (when it passes) the reads the review screen shows.
+
+        Runs in a worker thread: it spawns a child and reads the slot store and Git.
+        """
+        result: CheckResult = self._launcher.check(request.worktree, request.flow, request.argv)
+        if result.facts is None:
+            return _Checked(request, result.error or NO_FACTS)
+        try:
+            uncommitted: int | str = self._launcher.uncommitted(request.worktree)
+        except (WorktreeListError, BooleyLayoutError) as exc:
+            uncommitted = str(exc)
+        return _Checked(request, "", result.facts, self._read_outlook(result.facts), uncommitted)
+
+    def _read_outlook(self, facts: RunFacts) -> AdmissionOutlook | str | None:
+        """The queue a run would meet; ``None`` when it takes no slot, a reason when unreadable."""
+        if not facts.takes_slot or facts.job_class is None:
+            return None
+        try:
+            return self._launcher.outlook(facts.job_class)
+        except OSError as exc:
+            return str(exc) or type(exc).__name__
 
     def _form_built(self, event: Worker.StateChanged) -> None:
         """Apply a finished build for the form now wanted; a crash shows as the note."""
@@ -615,10 +667,25 @@ class RunWizard(ModalScreen[str | None]):
             self._show_error(checked.error)
             return
         self._argv = checked.request.argv
+        self._checked = checked
         self._show_stage("review")
         self.query_one("#run-command", Static).update(
             shell_command(checked.request.worktree, checked.request.flow, self._argv)
         )
+        self._render_review(checked.outlook)
+
+    def _render_review(self, outlook: AdmissionOutlook | str | None) -> None:
+        """Show the queue verdict, the timeout and the warnings; a full queue also says why in the error line."""
+        checked = self._checked
+        assert checked is not None and checked.facts is not None
+        occupants = self._occupants(checked.request.worktree)
+        lines = [queue_line(checked.facts, outlook), timeout_line(checked.facts)]
+        lines += warning_lines(occupants, checked.uncommitted)
+        self.query_one("#run-review", Static).update("\n".join(line for line in lines if line))
+        refusal_text = (
+            refusal(outlook) if isinstance(outlook, AdmissionOutlook) and outlook.full else ""
+        )
+        self._show_error(refusal_text)
 
     def _apply_action(self, action: str) -> None:
         assert self._worktree is not None
@@ -627,6 +694,13 @@ class RunWizard(ModalScreen[str | None]):
             self.app.copy_to_clipboard(command)
             self.notify(COPY_NOTICE)
             return
+        checked = self._checked
+        if checked is not None and checked.facts is not None and checked.facts.takes_slot:
+            # The queue may have changed since the screen opened: read it again.
+            outlook = self._read_outlook(checked.facts)
+            self._render_review(outlook)
+            if isinstance(outlook, AdmissionOutlook) and outlook.full:
+                return
         try:
             key = self._launcher.submit(self._worktree, self._flow, self._argv)
         except OSError as exc:
