@@ -78,8 +78,9 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
 4. **Run each step.** Act, take the screenshot (runbook step 9 naming, area
    `check`, for example `check-02-goal-row.png`), run the oracle, bring the GUI
    back and wait one refresh, then give the step exactly one result: `pass`,
-   `fail`, or `blocked`. No other result exists, such as a pass with a gap.
-   Write what the screenshot shows in a sentence.
+   `fail`, or `blocked`. No other result exists, such as a pass with caveats.
+   Step 5 can still turn a `pass` into `blocked`. Write what the screenshot
+   shows in a sentence.
    - `pass` only when a screenshot taken with the runbook's screenshot tool in
      this run shows every clause of the step's expected result: each element
      and its state (row present, order, color, layout). Text read from the DOM
@@ -95,14 +96,16 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
      as an ordering check on a list with one row, is `blocked: precondition`;
      name the setup that was missing.
 
-   Retry a failed step once after a refresh to rule out timing, and keep both
-   screenshots. Session views need sessions: without a signed-in agent, make
+   Retry a step whose result is `fail` once after a refresh to rule out timing,
+   keep both screenshots, and use the retry's result. Session views need sessions: without a signed-in agent, make
    them with the scripted MCP client in runbook step 8.
 5. **Publish the evidence.** Look at every image first: the text guard can't
    read images. Drop any image that shows a token, an email address, a device
    code, a private repo, or anything outside the Codespace tab, and retake it
-   if the step needs one. If it can't be retaken, a `pass` becomes `blocked`; a
-   `fail` stays `fail` and says its image was dropped. Then commit the kept images in a scratch clone:
+   if the step needs one. If it can't be retaken, a `pass` becomes
+   `blocked: image dropped`; a `fail` stays `fail`, and its seen cell says the
+   image was dropped. If no image is kept, skip the evidence commit below and
+   say so in the comment. Otherwise commit the kept images in a scratch clone:
 
    ```sh
    E=<run-dir>/scratch/evidence-repo
