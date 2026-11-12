@@ -10,10 +10,11 @@ checkout, the current directory, and acts only on the upgrades it owns::
 ``agent-cli-lock``: Renovate bumps the manifest but cannot find its lock, which
 ``npm install --package-lock-only`` regenerates from copies named as npm expects.
 ``constraints``: the command in the header of ``.github/ci/constraints.txt``
-(checked by ``ci_constraints.py``) regenerates it. uv keeps the existing pins, except each exact version Renovate
-proposes in ``pyproject.toml`` or a ``.github/ci/requirements-*.txt`` file, which is
-passed as an exact ``--upgrade-package`` request (a floor in ``pyproject.toml`` would
-otherwise keep the old pin).
+(checked by ``ci_constraints.py``) regenerates it. uv keeps the existing pins, except
+each exact version Renovate proposes in ``pyproject.toml`` or a
+``.github/ci/requirements-*.txt`` file, which is passed as an exact
+``--upgrade-package`` request (a floor in ``pyproject.toml`` would otherwise keep the
+old pin).
 
 The branch is data. npm runs where only the two copies exist (no branch ``.npmrc``)
 with ``--ignore-scripts``, and only after the manifest names exact registry
@@ -119,7 +120,8 @@ def _upgrade_requests(upgrades: Sequence[Upgrade]) -> list[str]:
             continue
         if _PROJECT_NAME.fullmatch(upgrade.dep_name) is None:
             raise ArtifactError(f"refusing the dependency name {upgrade.dep_name!r}")
-        exact = _EXACT_PIN.fullmatch(upgrade.new_value)
+        # Renovate keeps a space that precedes an environment marker in the value.
+        exact = _EXACT_PIN.fullmatch(upgrade.new_value.strip())
         if exact is None:
             if _RANGE_MARK.search(upgrade.new_value) is None:
                 raise ArtifactError(

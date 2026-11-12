@@ -312,8 +312,10 @@ def test_constraints_request_each_proposed_exact_version(
         # A range, even one that starts with ==, names no single version.
         _upgrade("pyproject.toml", "mcp", ">=2.1.1,<4"),
         _upgrade("pyproject.toml", "packaging", "==1.2,<3"),
-        # Not a Python manifest of the constraints.
-        _upgrade("src/booley/data/docker/Dockerfile.base", "hadolint", "==2.0"),
+        # A manifest-only proposal; Renovate keeps the space before an environment marker.
+        _upgrade("pyproject.toml", "twine", "==7.1.0 "),
+        # Not a Python manifest of the constraints, so its name is never checked.
+        _upgrade(".github/workflows/test.yml", "actions/checkout", "==6.0"),
     ]
 
     assert _run(root, "constraints", upgrades, tool, monkeypatch) == 0
@@ -323,6 +325,7 @@ def test_constraints_request_each_proposed_exact_version(
         "--upgrade-package=hypothesis==6.170.15",
         "--upgrade-package=pytest-asyncio==1.4.1.post1",
         "--upgrade-package=pyyaml==6.0.3",
+        "--upgrade-package=twine==7.1.0",
     )
 
 
