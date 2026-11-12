@@ -152,14 +152,14 @@ class _Body:
     notes: list[tuple[_Ref, str]]
 
 
-def _quote_part(part: str) -> str:
+def toml_key(part: str) -> str:
     """*part* as a TOML key: bare when it can be, else quoted."""
     return part if _BARE_KEY.fullmatch(part) else json.dumps(part)
 
 
 def table_header(*parts: str) -> str:
     """The TOML table header of dotted *parts*."""
-    return "[" + ".".join(_quote_part(part) for part in parts) + "]"
+    return "[" + ".".join(toml_key(part) for part in parts) + "]"
 
 
 def _toml_value(value: object) -> str:
