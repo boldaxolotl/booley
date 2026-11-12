@@ -25,7 +25,9 @@ def read_unpublished_results(manifest_path: Path, manifest_sha256: str) -> Durab
     """The durable results of the Simulation Campaign registered at *manifest_path*.
 
     Raises :class:`~booley.flows.campaign_results.CampaignBusyError` while a
-    scheduler owns the campaign, and ``ValueError`` when the path is not a
+    scheduler owns the campaign,
+    :class:`~booley.flows.campaign_results.OlderBooleyRecordError` when an older
+    Booley wrote it, and ``ValueError`` when the path is not a
     Simulation Campaign manifest (``campaign/manifest.json``), the campaign is
     not the registered one, or it cannot be authenticated.
     """
