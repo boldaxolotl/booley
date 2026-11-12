@@ -15,7 +15,7 @@ from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 # Spelled out: importing ``runtime.session_issuance`` for one name is far too heavy.
-_SANDBOX_IMAGE_ID_ENV = "BOOLEY_SANDBOX_IMAGE_ID"
+SANDBOX_IMAGE_ID_ENV = "BOOLEY_SANDBOX_IMAGE_ID"
 
 # Variables copied from the caller when present.
 _ALLOWED_NAMES = frozenset(
@@ -37,7 +37,7 @@ _ALLOWED_NAMES = frozenset(
         # The Sandbox marker and identity, and the image's build identity.
         "BOOLEY_CONTAINER",
         "BOOLEY_SANDBOX_FLAVOR",
-        _SANDBOX_IMAGE_ID_ENV,
+        SANDBOX_IMAGE_ID_ENV,
         "BOOLEY_EGRESS",
         "BOOLEY_VERSION",
         "BOOLEY_SOURCE_REVISION",
