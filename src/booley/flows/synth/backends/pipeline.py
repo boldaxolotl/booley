@@ -230,6 +230,7 @@ def _clear_stage_artifacts(build_dir: Path, design: str) -> None:
         syn_core.SV2V_OUTPUT_NAME,
         syn_core.effective_params_filename(design),
         f"stat_{design}.txt",
+        f"premap_check_{design}.txt",
         f"check_{design}.txt",
         f"log_abc_{design}.txt",
         # No longer emitted (the pre-mapping write_verilog is gone), but still
@@ -445,6 +446,7 @@ def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
     lines += [
         f"\tyosys -s synth.ys > yosys.log 2>&1 {_fail_tail('yosys.log')}",
         _required_output(token, "yosys", f"stat_{spec.design_name}.txt"),
+        _required_output(token, "yosys", f"premap_check_{spec.design_name}.txt"),
         _required_output(token, "yosys", f"check_{spec.design_name}.txt"),
         _required_output(token, "yosys", f"synth_{spec.design_name}.v"),
         "",
@@ -584,6 +586,7 @@ def _missing_output_marker(
     fresh_text: Callable[[str], str | None],
     returncode: int,
     stat_text: str | None,
+    premap_check: str | None,
     final_check: str | None,
 ) -> str | None:
     """Validate required outputs without changing the diagnostic owner."""
@@ -594,6 +597,7 @@ def _missing_output_marker(
     required_outputs = [
         ("yosys", "yosys.log", fresh_text("yosys.log")),
         ("yosys", f"stat_{spec.design_name}.txt", stat_text),
+        ("yosys", f"premap_check_{spec.design_name}.txt", premap_check),
         ("yosys", f"check_{spec.design_name}.txt", final_check),
         ("yosys", f"synth_{spec.design_name}.v", fresh_text(f"synth_{spec.design_name}.v")),
     ]
@@ -639,6 +643,9 @@ def _boundary_sections(
     if physical:
         parts.extend(_timing_sections(plan, fresh_text))
     diagnostic_sources = _diagnostic_sources(plan, fresh_text)
+    premap_check = diagnostic_sources.get("premap_check")
+    if premap_check is not None:
+        parts.append(f"--- premap_check_{spec.design_name}.txt ---\n{premap_check}")
     final_check = diagnostic_sources.get("final_check")
     if final_check is not None:
         parts.append(f"--- check_{spec.design_name}.txt ---\n{final_check}")
@@ -646,12 +653,13 @@ def _boundary_sections(
 
 
 def _yosys_complete(plan: SynthPlan, fresh_text: Callable[[str], str | None]) -> bool:
-    """Require mapping evidence, final stat, check, and mapped netlist together."""
+    """Require mapping evidence, final stat, both checks, and mapped netlist together."""
     return all(
         bool(fresh_text(name))
         for name in (
             "yosys.log",
             f"stat_{plan.spec.design_name}.txt",
+            f"premap_check_{plan.spec.design_name}.txt",
             f"check_{plan.spec.design_name}.txt",
             f"synth_{plan.spec.design_name}.v",
         )
@@ -686,7 +694,12 @@ def boundary_output(
         stage_marker = stage
     parts.append(
         _missing_output_marker(
-            plan, fresh_text, returncode, stat_text, diagnostic_sources.get("final_check")
+            plan,
+            fresh_text,
+            returncode,
+            stat_text,
+            diagnostic_sources.get("premap_check"),
+            diagnostic_sources.get("final_check"),
         )
         or ""
     )
@@ -731,6 +744,7 @@ def _diagnostic_sources(
         "sv2v": "sv2v.log",
         "yosys": "yosys.log",
         "openroad": "openroad.log",
+        "premap_check": f"premap_check_{plan.spec.design_name}.txt",
         "final_check": f"check_{plan.spec.design_name}.txt",
     }
     sources: dict[str, str] = {}
