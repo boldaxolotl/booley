@@ -37,6 +37,13 @@ _MANIFEST = "booley.simulation-campaign-manifest/"
 _RESULT_V2 = "booley.simulation-result/v2"
 _PROJECTION_V2 = "booley.simulation-projection/v2"
 _UNSUPPORTED = "UnsupportedSimulationCampaignFormatError"
+# Where a plain prune stops: a coverage run is refused at its Coverage Campaign reference,
+# which the retention code reads before the Simulation manifest.
+_REFUSED_AT_RECORD = pytest.mark.parametrize(
+    ("kind", "schema"),
+    [("complete", _MANIFEST + "v1"), ("coverage", "booley.coverage-campaign/v4")],
+    ids=["complete", "coverage"],
+)
 _FIXTURES_0_3_0 = Path(__file__).parents[1] / "fixtures" / "booley_0_3_0"
 
 
@@ -227,16 +234,16 @@ def test_resume_refuses_a_0_3_0_record_naming_its_invocation(
     _assert_refused(result.outcome.report_text, _MANIFEST + "v1", invocation)
 
 
-@pytest.mark.parametrize("kind", ["complete", "coverage"])
+@_REFUSED_AT_RECORD
 def test_full_prune_cli_refuses_a_0_3_0_record_naming_its_invocation(
-    kind: str, reports: Path
+    kind: str, schema: str, reports: Path
 ) -> None:
     invocation = copy_0_3_0_invocation(kind, reports)
 
     result = _run_retention_cli("--reports-root", str(reports), "--invocation", "1", "--full")
 
     assert result.returncode == 2
-    _assert_refused(result.stderr, _MANIFEST + "v1", invocation)
+    _assert_refused(result.stderr, schema, invocation)
     assert invocation.is_dir()
 
 
@@ -264,11 +271,7 @@ def test_native_prune_cli_refuses_a_0_3_0_coverage_record_at_its_manifest(report
     assert invocation.is_dir()
 
 
-@pytest.mark.parametrize(
-    ("kind", "schema"),
-    [("complete", _MANIFEST + "v1"), ("coverage", "booley.coverage-campaign/v4")],
-    ids=["complete", "coverage"],
-)
+@_REFUSED_AT_RECORD
 def test_dependents_pruning_refuses_a_0_3_0_record_naming_its_invocation(
     kind: str, schema: str, reports: Path
 ) -> None:
