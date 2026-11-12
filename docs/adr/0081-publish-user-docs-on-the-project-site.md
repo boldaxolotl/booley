@@ -1,6 +1,6 @@
 # Publish the user docs on the project site
 
-Status: accepted (amended 2026-10-26: site domain; 2026-11-10: agent-facing text and contributor docs, see Amendments)
+Status: accepted (amended 2026-10-26: site domain; 2026-11-10: agent-facing text and contributor docs; 2026-11-12: rendered doc copies, see Amendments)
 
 ## Context
 
@@ -90,3 +90,21 @@ moved: each stays in `docs/internals/`, where contributors and agents read it.
 the sidebar order. `docs_url()` still covers user docs only, because Booley
 prints no links to contributor docs. A contributor doc's relative links to
 published files stay on the site; its other links go to GitHub.
+
+### 2026-11-12
+
+The 2026-11-10 copies are no longer committed. The build step
+(`write_build_stamp`, which calls `write_packaged_docs`) renders them from
+`SHIPPED_DOCS` into `src/booley/data/docs/`, a Git-ignored directory. Nothing
+commits or syncs them: `python -m booley.dev_support.reference_docs` and
+`.github/scripts/sync_packaged_copies.py` cover only the packaged `CHANGELOG.md`
+mirror. Tests read the rendered output of the sources, so they never compare
+against a stale committed copy.
+
+Rejected alternatives:
+
+- **A setuptools build hook or custom build backend.** Build-backend code runs
+  in every isolated build, which is out of scope. The explicit build step
+  already renders before every wheel and sdist build.
+- **Committed copies regenerated only at release.** The copies would drift from
+  their sources between releases, and tests would read stale text.

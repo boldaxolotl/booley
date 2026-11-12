@@ -44,27 +44,23 @@ Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
 
 The Sandbox agents read a fixed set of user docs from `/booley-docs/`. The
 authored files stay in `docs/user/` (plus `docs/internals/FLOW_REPORTS.md`); the
-set is `SHIPPED_DOCS` in `src/booley/runtime/packaged_docs.py`. After
-editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
-with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
-without writing. The same command mirrors `CHANGELOG.md` byte for byte to
-`src/booley/data/refs/CHANGELOG.md`; only release preparation edits
-`CHANGELOG.md`, so run it after such an edit (`release_changelog.py assemble`
-updates the mirror itself).
+set is `SHIPPED_DOCS` in `src/booley/runtime/packaged_docs.py`. Edit only those
+sources. The build renders them into `src/booley/data/docs/`, a Git-ignored
+directory, through `write_build_stamp` in `src/booley/runtime/build_stamp.py`.
+Never edit a rendered copy. The render turns links to other shipped docs into
+sibling links and links to unshipped docs (`PLAIN_TEXT_TARGETS`) into plain text
+marked `(host doc, not shipped)`. A link to a doc in neither set fails the build
+and `tests/docs` with the file, the link and the fix. A bare `python -m build`
+runs no stamp step and packs no docs, so build through `build.sh`, `booley init`,
+or `dev_support/build_development_wheel.py`.
+
+`python -m booley.dev_support.reference_docs [--check]` now covers only the
+`CHANGELOG.md` mirror at `src/booley/data/refs/CHANGELOG.md`, byte for byte;
 `python3 .github/scripts/sync_packaged_copies.py [--check]` runs it without
-installing Booley. Never edit a copy or the mirror by hand. The sync turns
-links to other shipped docs into sibling links and links to unshipped docs
-(`PLAIN_TEXT_TARGETS`) into plain text marked `(host doc, not shipped)`. A new
-link to a doc in neither set fails the sync with the file, the link and the fix.
-Every stamped build renders the copies first, through `write_build_stamp` in
-`src/booley/runtime/build_stamp.py`. When a source was edited without the sync,
-the build rewrites the stale tracked copy and leaves it modified in the working
-tree. The render skips the `CHANGELOG.md` mirror, which only the sync updates. A
-bare `python -m build` runs no stamp and packs the copies on disk as they are, so
-run the sync before it. Run the sync before committing too: the readiness
-packaged-copies check and `tests/test_paths.py` fail on a stale copy. The
-regenerated copy lives under `src/booley/**`, so such an edit also runs the
-Python CI lane.
+installing Booley. Only release preparation edits `CHANGELOG.md`, so run it
+after such an edit (`release_changelog.py assemble` updates the mirror itself).
+Never edit the mirror by hand. A shipped-doc edit is documentation-only in CI
+and runs the docs-check lane.
 
 ### Building a development wheel
 
@@ -104,9 +100,8 @@ worktree's source. At `handoff` it names CI's lint-job checks: `ruff
 check .`, `ruff format --check .`, and `pyright` (the strict boundary check,
 configured by `[tool.pyright]` in `pyproject.toml`, resolving third-party
 imports in the shared environment). Its `packaged-copies.check` command
-(before commit) fails when a packaged doc copy or the packaged `CHANGELOG.md`
-mirror is stale. Its `coverage.changed-lines` handoff
-command repeats CI's 90% changed-line coverage gate against the newest merge
+(before commit) fails when the packaged `CHANGELOG.md` mirror is stale. Its
+`coverage.changed-lines` handoff command repeats CI's 90% changed-line coverage gate against the newest merge
 base with `main`, reading the coverage report that a passing `pytest.broad`
 run wrote for the same tree outside the checkout; it refuses a missing or
 stale report. Develop readiness defaults to the `python` test profile: its

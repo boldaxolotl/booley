@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
+from tests.shipped_docs_support import rendered_docs_outside_user_docs
 from tests.source_checkout_support import source_checkout_files
 
 from booley.flows.sim import campaign_retention
@@ -149,23 +150,23 @@ def _command_error(tokens: list[str]) -> str | None:
 def test_documented_command_paths_are_registered_and_allowed() -> None:
     failures = []
     count = 0
+    documents: dict[str, str] = {}
     for doc in source_checkout_files(ROOT, "src/booley/data", "docs/user"):
         if doc == ROOT / "src/booley/data/refs/CHANGELOG.md":
             continue
-        if (
-            doc.parent == ROOT / "src/booley/data/docs"
-            and (ROOT / "docs/user" / doc.name).is_file()
-        ):
-            continue  # generated copy of a docs/user page scanned at its source
         try:
-            text = doc.read_text(encoding="utf-8")
+            documents[doc.relative_to(ROOT).as_posix()] = doc.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue  # Binary packaged assets cannot contain shell examples.
+    # The rendered copies are Git-ignored build output; scan the shipped docs outside
+    # docs/user as rendered, under their source paths.
+    documents.update(rendered_docs_outside_user_docs(ROOT))
+    for name, text in documents.items():
         for line, tokens in _commands(text):
             count += 1
             error = _command_error(tokens)
             if error:
-                failures.append(f"{doc.relative_to(ROOT)}:{line}: {error}")
+                failures.append(f"{name}:{line}: {error}")
     assert count > 100, "Command extraction must exercise the documentation corpus"
     assert not failures, "\n".join(failures)
 

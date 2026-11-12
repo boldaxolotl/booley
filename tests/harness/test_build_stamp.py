@@ -25,7 +25,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from booley.dev_support.reference_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
 from booley.runtime import build_stamp as build_stamp_module
@@ -51,6 +50,7 @@ from booley.runtime.build_stamp import (
     wheel_embedded_source_fingerprint,
     write_build_stamp,
 )
+from booley.runtime.packaged_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
 
@@ -136,6 +136,20 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
+def test_rendered_docs_are_untracked_and_ignored() -> None:
+    """No rendered copy is committed and the build output directory is Git-ignored (#3658)."""
+    tracked = run_bounded_child(
+        ["git", "-C", str(SOURCE_ROOT), "ls-files", "--", PACKAGED_DOCS_RELATIVE_DIR], check=True
+    )
+    assert tracked.stdout == ""
+    paths = [
+        f"{PACKAGED_DOCS_RELATIVE_DIR}/{posixpath.basename(source)}" for source in SHIPPED_DOCS
+    ]
+    # Exit 1 means nothing matched, which the comparison below reports.
+    ignored = run_bounded_child(["git", "-C", str(SOURCE_ROOT), "check-ignore", "--", *paths])
+    assert sorted(ignored.stdout.split()) == sorted(paths)
+
+
 class TestResolveBuildCommit:
     def test_reports_short_head(self, repo: Path):
         head = subprocess.run(
@@ -210,32 +224,19 @@ class TestWriteBuildStamp:
         assert not stamp_path(repo).exists()
         assert not development_context_path(repo).exists()
 
-    def test_stale_tracked_copy_is_rewritten_after_the_commit_is_stamped(self, repo: Path):
-        """A clean tree with one stale tracked copy must not stamp ``+dirty``."""
-        for source in SHIPPED_DOCS:
-            copy = _copy_path(repo, source)
-            copy.parent.mkdir(parents=True, exist_ok=True)
-            copy.write_bytes(f"# {copy.name}\nsetup (host doc, not shipped)\n".encode())
-        stale = _copy_path(repo, "docs/user/CONFIG.md")
-        stale.write_bytes(b"stale\n")
-        _git(repo, "add", ".")
-        _git(repo, "commit", "-m", "stale copy")
+    def test_build_leaves_checkout_clean(self, repo: Path):
+        """After a build the checkout has no untracked or modified files (#3658).
 
-        commit = write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
+        The rendered copies are Git-ignored build output, so a clean tree that holds only
+        committed sources, with the repository's real ``.gitignore``, stays clean.
+        """
+        shutil.copyfile(SOURCE_ROOT / ".gitignore", repo / ".gitignore")
+        _git(repo, "add", ".gitignore")
+        _git(repo, "commit", "-m", "ignore build output")
 
-        assert commit != "" and not commit.endswith("+dirty")
-        assert stale.read_bytes() == b"# CONFIG.md\nsetup (host doc, not shipped)\n"
-
-    def test_build_on_current_checkout_leaves_tree_clean(self, repo: Path):
-        """Guard: rendering must not dirty a tree whose copies already match."""
-        from booley.runtime.packaged_docs import write_packaged_docs
-
-        write_packaged_docs(repo)
-        _git(repo, "add", ".")
-        _git(repo, "commit", "-m", "current copies")
-
-        with runtime_image_build_stamp(repo):
-            pass
+        with runtime_image_build_stamp(repo) as commit:
+            assert (repo / PACKAGED_DOCS_RELATIVE_DIR / "CONFIG.md").is_file()
+            assert commit != "" and not commit.endswith("+dirty")
 
         status = run_bounded_child(
             ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
@@ -562,7 +563,6 @@ class TestDevelopmentBuildContext:
             ".github/scripts",
             *build_stamp_module._DEVELOPMENT_CONTEXT_FILES,
         )
-        shutil.rmtree(root / PACKAGED_DOCS_RELATIVE_DIR)
 
         with monkeypatch.context() as build_patch:
             build_patch.setattr(build_stamp_module, "stamp_path", lambda _root: stamp_file)

@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tests.shipped_docs_support import is_rendered_docs_output, rendered_docs_outside_user_docs
 
 from booley.dev_support.flow_specialist_reference import (
     _FLOW_KEY_CONTROLS,
@@ -191,11 +192,16 @@ def test_shipped_documentation_never_dispatches_a_specialist_as_a_flow() -> None
     specialists = {
         endpoint.name for endpoint in discover_mcp_tools() if endpoint.kind == "specialist"
     }
-    for root in (REPO_ROOT / "docs" / "user", REPO_ROOT / "src" / "booley" / "data"):
-        for document in root.rglob("*.md"):
-            text = document.read_text(encoding="utf-8")
-            for name in specialists:
-                assert f"booley flow {name}" not in text, document
+    texts = {
+        str(document): document.read_text(encoding="utf-8")
+        for root in (REPO_ROOT / "docs" / "user", REPO_ROOT / "src" / "booley" / "data")
+        for document in root.rglob("*.md")
+        if not is_rendered_docs_output(REPO_ROOT, document)  # build output; see sources
+    }
+    texts.update(rendered_docs_outside_user_docs(REPO_ROOT))
+    for document, text in texts.items():
+        for name in specialists:
+            assert f"booley flow {name}" not in text, document
 
 
 def test_reviewer_reference_states_mode_kind_and_opposite_scope_contract():

@@ -18,9 +18,8 @@ Python code, and review checks it the same way: cite the principle number.
   (`changelog.d/README.md` stays in scope). ADRs record a decision as it stood
   when it was made, so principle 14 does not apply to them. Agent skills also follow
   `writing-for-agents` conventions where those are stricter.
-- **Part 2, user docs:** `README.md`, `docs/user/`, `website/`, the bwave docs
-  under `crates/bwave/docs/public/`, and the packaged copies under
-  `src/booley/data/docs/` except `FLOW_REPORTS.md`, which is a contributor doc.
+- **Part 2, user docs:** `README.md`, `docs/user/`, `website/`, and the bwave
+  docs under `crates/bwave/docs/public/`.
 
 In Part 1, "the reader" is whoever the doc is for: the user in a user doc, a
 contributor or agent in an internal doc.
@@ -90,8 +89,7 @@ Goals doesn't sit under a heading about one kind of Goal.
 
 ### 9. Each fact has one home
 
-Link instead of repeating. When a fact changes, search every doc, skill, and
-packaged copy for it and fix each one.
+Link instead of repeating. When a fact changes, search every doc and skill for it and fix each one.
 
 ## Language
 
@@ -151,10 +149,9 @@ covered under Notes below") and no sentence that carries nothing.
 
 ### 18. Edit the source, then regenerate copies
 
-Never edit a generated copy. After changing a shipped doc, regenerate the
-packaged copies under `src/booley/data/docs/` with
-`python -m booley.dev_support.reference_docs`, and rerun the generator of any
-generated block you touched (CLI-REFERENCE Specialists, ARCHITECTURE).
+The build renders shipped docs into `src/booley/data/docs/`. Never edit a
+rendered copy. Rerun the generator of any generated block you touched
+(CLI-REFERENCE Specialists, ARCHITECTURE).
 
 ### 19. Renaming a heading breaks its anchor
 
