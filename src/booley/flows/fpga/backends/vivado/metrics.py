@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.evidence.timing import ClockTiming, per_clock_to_json
+from booley.core.boundary import as_dict, as_float, as_int
+from booley.evidence.timing import ClockTiming, per_clock_from_json, per_clock_to_json
 from booley.flows.metric_declarations import (
     Better,
     CostTier,
@@ -38,6 +39,32 @@ FPGA_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
     MetricDeclaration("wns_ns", "ns", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
     MetricDeclaration("whs_ns", "ns", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
 )
+
+
+def report_metric_values(detail: dict[str, Any]) -> dict[str, FlowMetricValues]:
+    """Read each Target's :data:`FPGA_METRIC_DECLARATIONS` values from an aggregate *detail*.
+
+    Reads the implementation block's per-Target ``metrics``, mirroring
+    :meth:`FpgaMetrics.flow_metrics`. A Target without that block is skipped.
+    """
+    implementation = as_dict(detail.get("implementation")) or {}
+    results = as_dict(implementation.get("results")) or {}
+    values: dict[str, FlowMetricValues] = {}
+    for target, entry in results.items():
+        metrics = as_dict((as_dict(entry) or {}).get("metrics"))
+        if metrics is None:
+            continue
+        values[str(target)] = metric_values(
+            FPGA_METRIC_DECLARATIONS,
+            plain={
+                "lut_count": as_int(metrics.get("lut_count")),
+                "ff_count": as_int(metrics.get("ff_count")),
+                "bram_count": as_float(metrics.get("bram_count")),
+                "dsp_count": as_int(metrics.get("dsp_count")),
+            },
+            per_clock=per_clock_from_json(metrics.get("per_clock")),
+        )
+    return values
 
 
 @dataclass

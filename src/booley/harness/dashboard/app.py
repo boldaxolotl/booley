@@ -109,7 +109,7 @@ HELP = (
     "Activity is what the agent client last reported: working, waiting for tool call,\n"
     "or waiting for user input. Unknown means no fresh report, never a guess.\n"
     "Run in the top bar starts a built-in Booley Flow as a Standalone Job: pick the worktree,\n"
-    "the Flow and its arguments, then check the equivalent shell command and submit or copy it;\n"
+    "the Flow, then fill in its form; check the equivalent shell command and submit or copy it;\n"
     "the review also says if the Job runs now or queues (a full queue refuses Submit) and warns\n"
     "about sessions, running Jobs and uncommitted changes in the worktree\n"
     "After Run the Jobs window opens on All sessions with the new Job selected; a Finished\n"

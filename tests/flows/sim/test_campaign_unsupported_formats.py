@@ -327,7 +327,7 @@ def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch)
     def resumed(_executor, _request):
         raise KeyboardInterrupt("resume reached execution")
 
-    monkeypatch.setattr("booley.flows.sim.flow.OrdinaryHdlSerialExecutor.execute", resumed)
+    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)
 
     with pytest.raises(KeyboardInterrupt, match="resume reached execution"):
         SimulateFlow().execute(

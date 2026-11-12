@@ -502,7 +502,7 @@ def test_hostile_oom_build_output_publishes_and_decodes(
 def test_campaign_resume_failure_reports_build_timeout_first() -> None:
     error = build_module.SimulationBuildInfrastructureError("sim", _timeout_outcome())
 
-    with patch("booley.flows.sim.flow._fresh_campaign_recovery_detail", return_value={}):
+    with patch("booley.flows.sim.flow_resume._fresh_campaign_recovery_detail", return_value={}):
         endpoint = SimulateFlow()._campaign_resume_failure(
             SimpleNamespace(), SimpleNamespace(), Path(), error
         )
