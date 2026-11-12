@@ -62,7 +62,7 @@ class JobObserver:
         tokens = []
         if self._slots_root is not None:
             store = job_slots.SlotStore(self._slots_root)
-            for kind in ("heavy", "light"):
+            for kind in job_slots.JOB_CLASSES:
                 holders, waiters = store.observe(kind)
                 tokens.extend((*holders, *waiters))
         return tokens
