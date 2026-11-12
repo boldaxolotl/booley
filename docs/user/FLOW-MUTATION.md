@@ -65,6 +65,51 @@ Every run rebuilds the baseline and every Mutant, so a result never depends on
 stale builds. Some survivors may be equivalent Mutants that change no
 observable behavior, which is why the default threshold is 80 %, not all.
 
+## Which Mutants it plants
+
+Booley parses each scope file (Verilog or SystemVerilog) and finds every spot
+where one of six operators applies. Each operator makes one small change; a
+spot with several possible changes yields one candidate Mutant per change.
+
+| Operator | What it changes | Example |
+|---|---|---|
+| `relational` | Swaps a comparison for its neighbour. | `a < b` -> `a <= b`, `a == b` -> `a != b` |
+| `arithmetic-logical` | Swaps an arithmetic, bitwise, logical, or shift operator. | `a + b` -> `a - b`, `a & b` -> `a \| b`, `a << 2` -> `a >> 2` |
+| `condition` | Replaces the condition of an `if` or `?:` with its negation, `1'b1`, or `1'b0`. A `while`, `do`-`while`, or `for` condition is only forced to `1'b0`. | `if (valid)` -> `if (!(valid))` |
+| `constant` | Changes a numeric literal's value: lowest bit flipped, plus one, or minus one. Size and base stay. | `4'd5` -> `4'd4`, `'0` -> `'1` |
+| `bit-select` | Moves a literal bit index or slice bound up or down by one, within the declared range. | `data[3]` -> `data[2]`, `data[7:4]` -> `data[6:3]` |
+| `deletion` | Removes one assignment, net initializer, or `case` item. | `q <= d;` removed, `case` branch removed |
+
+`/`, `%`, and `**` are never swapped, so Mutants do not divide by zero.
+
+Only design code is mutated. Booley skips:
+
+- testbench, vendored, and generated files (by default);
+- classes, programs, checkers, covergroups, and every assertion, because a
+  mutated assertion fires and would count as a detection;
+- parameter defaults, widths, delays, attributes, and the parts of a `for`
+  loop that decide how long it runs;
+- code a macro or include supplies, and the inactive branch of an `ifdef`
+  (Booley applies the build's defines);
+- spots that could make a loop run forever or drive a variable from two
+  places, and `case` labels (moving one can overlap another item).
+
+## How it chooses which Mutants
+
+1. Booley collects the candidates from all scope files. Identical spots count
+   once.
+2. Within each operator, candidates are ranked by a hash of `--seed` and the
+   Mutant's ID. The ID comes from the operator, file, and position inside its
+   module, so editing code elsewhere in the file does not change it.
+3. The six operators are then taken in turn, one candidate each, in the order
+   of the table above, until `--count` Mutants are chosen. A small `--count`
+   therefore covers different kinds of bugs instead of many of one kind.
+
+If fewer candidates exist than `--count`, all of them run and the report
+says so. The knobs are `--scope` (where to look), `--count` (how many), and
+`--seed` (which sample); there is no filter by operator. The same RTL, scope,
+count, and seed always choose the same Mutants.
+
 ## Reading results
 
 The report starts with what reproduces the run, then the tally and the
@@ -75,7 +120,7 @@ verdict:
 [mutation_test] sim sweep: 10/10 tested              4m
   8 detected (1 timeout), 0 invalid, 2 not detected
   detected: 8/10 (required: 8/10, default 80% of --count)
-  NOT DETECTED [operator_change] rtl/alu.sv:42: 'a + b' -> 'a - b'
+  NOT DETECTED [arithmetic-logical] rtl/alu.sv:42: 'a + b' -> 'a - b'
 …
 RESULT: PASS (8/10 detected)
 ```
