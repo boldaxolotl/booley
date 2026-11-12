@@ -2,6 +2,8 @@
 
 **The open-source Agentic Development Environment (ADE) for FPGA and ASIC development**
 
+Sandboxed agents, built-in EDA flows, measured results
+
 [![Tests](https://github.com/boldaxolotl/Booley/actions/workflows/test.yml/badge.svg)](https://github.com/boldaxolotl/Booley/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/booley-rtl)](https://pypi.org/project/booley-rtl/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
