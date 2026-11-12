@@ -401,7 +401,7 @@ def _export_gitlinks(
         source = repository / relative
         shown = prefix / relative
         pinned = oid.decode("ascii")
-        if not (source / ".git").exists() or not _has_commit(source, pinned):
+        if not (source / ".git").exists() or not has_commit(source, pinned):
             raise CommitExportError(
                 f"submodule objects missing for {shown}: no initialized checkout holds the "
                 f"pinned commit {pinned}; run git submodule update --init"
@@ -411,7 +411,8 @@ def _export_gitlinks(
         _export_gitlinks(source, nested, root / relative, shown, None, frozenset(), drift)
 
 
-def _has_commit(repository: Path, oid: str) -> bool:
+def has_commit(repository: Path, oid: str) -> bool:
+    """Whether *oid* is a commit present in *repository*'s object database."""
     try:
         raw_git(repository, "cat-file", "-e", f"{oid}^{{commit}}")
     except FileCommitError:
