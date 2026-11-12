@@ -115,10 +115,14 @@ class _Supervisor:
             if self._kill(fatal.detail):
                 self.fatal = fatal
                 return True
-        elif time.monotonic() > self.deadline and self.proc.poll() is None:
+        elif (
+            time.monotonic() > self.deadline
+            and self.proc.poll() is None
             # Another abort already owns the dying child: no second kill or incident.
-            if self._abort() is None and self._kill(self._timeout_detail()):
-                self.timed_out = True
+            and self._abort() is None
+            and self._kill(self._timeout_detail())
+        ):
+            self.timed_out = True
         return False
 
     def drain(self) -> None:
