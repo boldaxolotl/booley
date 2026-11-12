@@ -12,10 +12,11 @@ uncommitted work. Two checks find the ways an input can still point there:
 
 The text match is deliberate: it needs no parser per file format, so a live path in a
 comment is refused too, and the finding names the file. A candidate path stops at
-whitespace and at the other token delimiters, so a live root whose spelling contains one
-(a space, ``+``, ``=``, ``,``, ``#``, ``@``, ``%``, ``!``, ``&``, ``\\``) is not matched; the
-Sandbox's ``/work`` and ``/booley-project`` have none. A multi-letter option glued
-to its path (``-isystem/x``) is not a token start and is not matched either.
+whitespace and at the other token delimiters (``_STARTERS`` and ``_STOPS`` below), so a
+live root whose spelling contains one (a space, ``+``, ``=``, ``,``, ``#``, ``:``, a
+quote or a bracket, ...) is not matched; the Sandbox's ``/work`` and ``/booley-project``
+have none. A multi-letter option glued to its path (``-isystem/x``) is not a token start
+and is not matched either.
 
 Relative escapes (``../../live/x``) are deliberate reads and out of scope for the static
 scan; :func:`resolved_findings` still refuses one that reaches a resolved file.
@@ -39,9 +40,12 @@ _STARTERS = r"""\s"'`<>|;,({\[=:+#&@"""
 # ``%OUT%/work``) and at an escape (``\n``), but one does not start after them: the text
 # that follows is relative to the placeholder. NUL ends a token too (a binary file).
 _STOPS = _STARTERS + r"""\)}\]\\!%\x00"""
-# A candidate starts a token with ``/`` or with a one-letter option glued to ``/``
-# (``-I/x``). A relative ``sim/work/tb.sv`` is one token that does not start with ``/``.
-_CANDIDATE = re.compile(rf"(?:^|(?<=[{_STARTERS}]))(?:-[A-Za-z])?(/[^{_STOPS}]*)", re.MULTILINE)
+# A candidate starts a token with ``/``, with ``-`` or a one-letter option glued to ``/``
+# (``-I/x``, ``${V:-/x}``), or after an undecoded ``\n``/``\r``/``\t`` escape. A relative
+# ``sim/work/tb.sv`` is one token that does not start with ``/``.
+_CANDIDATE = re.compile(
+    rf"(?:^|(?<=[{_STARTERS}])|(?<=\\[nrt]))(?:-[A-Za-z]?)?(/[^{_STOPS}]*)", re.MULTILINE
+)
 
 
 @dataclass(frozen=True)

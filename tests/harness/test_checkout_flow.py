@@ -1116,6 +1116,44 @@ def test_checkout_flow_finds_the_live_tree_without_a_work_mount(
 
 
 @linux_only
+def test_checkout_flow_does_not_trust_an_empty_work_directory_outside_the_issued_sandbox(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+    from booley.runtime import sandbox_layout
+
+    # The image's ``WORKDIR /work`` exists in a hand-written Sandbox without being the tree.
+    world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
+    empty_work = tmp_path / "empty-work"
+    empty_work.mkdir()
+    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(empty_work))
+
+    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
+        run_checkout_flow(world.request("pass"))
+
+    assert_refused_before_any_run(world)
+
+
+@linux_only
+def test_checkout_flow_skips_a_booley_directory_that_is_its_own_checkout(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+    from booley.runtime import sandbox_layout
+
+    # A linked Booley Directory with its own repository is not the live tree around it.
+    world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
+    git(world.main, "init", "-q")
+    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
+    monkeypatch.chdir(world.checkout.parent)
+
+    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
+        run_checkout_flow(world.request("pass"))
+
+    assert_refused_before_any_run(world)
+
+
+@linux_only
 def test_checkout_flow_refuses_when_no_live_working_tree_is_found(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:

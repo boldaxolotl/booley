@@ -247,29 +247,45 @@ def _require_own_booley_dir(checkout: Path, main: Path) -> None:
         )
 
 
+def _enclosing_checkout(start: Path, outside: Path) -> Path | None:
+    """The nearest Git checkout at or above *start* that is not *outside* or inside it."""
+    return next(
+        (
+            directory
+            for directory in (start, *start.parents)
+            if has_git_worktree_marker(directory) and not directory.is_relative_to(outside)
+        ),
+        None,
+    )
+
+
 def _live_roots(main: Path) -> list[LiveRoot]:
     """The directories that hold uncommitted work, most specific first.
 
-    The Sandbox mounts the live working tree at ``/work`` and the Booley Directory at a
-    separate mount, so the tree is not derivable from *main* there; other working trees
-    are not mounted. A hand-written Sandbox has no ``/work``: its live tree is then the
-    Git checkout around *main* or around the caller's working directory, and the run is
-    refused when neither is found, since nothing could be scanned for.
+    The Booley-issued Sandbox mounts the live working tree at ``/work`` and the Booley
+    Directory at a separate mount, so the tree is not derivable from *main* there; other
+    working trees are not mounted. A hand-written Sandbox's ``/work`` (the image's empty
+    ``WORKDIR``) is not the live tree, which is the Git checkout around *main* or around
+    the caller's working directory, outside the Booley Directory itself. The run is
+    refused there when no such checkout is found, since nothing could be scanned for.
     """
     roots = [LiveRoot("Main Booley Directory", main)]
     if os.environ.get("BOOLEY_DIR"):
         roots.append(LiveRoot("BOOLEY_DIR", Path(os.environ["BOOLEY_DIR"]).resolve()))
     work_dir = Path(sandbox_layout.WORK_DIR)
     trees = [work_dir] if work_dir.is_dir() else []
-    for start in () if trees else (main, Path.cwd().resolve()):
-        owner = next((d for d in (start, *start.parents) if has_git_worktree_marker(d)), None)
-        if owner is not None and owner not in trees:
-            trees.append(owner)
-    if not trees:
-        raise CheckoutFlowError(
-            f"no live working tree found: {work_dir} is not mounted and no Git checkout "
-            f"contains {main} or the working directory"
-        )
+    if runtime_context.runtime_location() is not runtime_context.RuntimeLocation.ISSUED_SANDBOX:
+        derived = [
+            owner
+            for start in (main, Path.cwd().resolve())
+            if (owner := _enclosing_checkout(start, outside=main)) is not None
+        ]
+        if not derived:
+            raise CheckoutFlowError(
+                f"no live working tree found: no Git checkout contains {main} "
+                "or the working directory"
+            )
+        trees.extend(dict.fromkeys(owner for owner in derived if owner not in trees))
     return [*roots, *(LiveRoot("live working tree", tree) for tree in trees)]
 
 
