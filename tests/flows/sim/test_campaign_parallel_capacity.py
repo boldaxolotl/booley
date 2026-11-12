@@ -820,7 +820,7 @@ def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
     runs = sorted(state.intervals, key=lambda interval: interval[1])
     assert [name for name, _start, _end in runs] == ["alpha", "beta", "gamma"]
     assert all(left[2] <= right[1] for left, right in pairwise(runs))
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     attempts = [
         json.loads(path.read_bytes())
         for path in store.root.glob("work-items/*/attempts/*/attempt.json")
