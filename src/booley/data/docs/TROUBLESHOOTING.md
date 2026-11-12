@@ -18,8 +18,7 @@ before you run Doctor on the host: host-side Doctor can trigger it.
 <details markdown>
 <summary>On Windows</summary>
 
-Windows-only first-run problems are on the Windows (host doc, not shipped)
-page.
+First-run problems are on the Windows (host doc, not shipped) page.
 
 </details>
 
@@ -425,7 +424,8 @@ once. See Windows (host doc, not shipped).
 
 Removing a pending invalidation file skips its cleanup of the Project's FlexNet
 relay containers and networks, which then need removing by hand in Docker. See
-[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning)
+and the [Vivado host-provisioning policy](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
 
 </details>
 

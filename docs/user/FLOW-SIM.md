@@ -173,7 +173,7 @@ The paths:
   with `--trace`. It is printed under passing Test Runs too, and not at all
   for a run without a waveform.
 
-The card prints these two paths for the first eight Test Runs of
+The card prints the `log` and `waveform` paths for the first eight Test Runs of
 a Target, failures first, then says how many more there are; a coverage run
 prints none. A Test Run that was interrupted and then
 [resumed](#resuming-an-interrupted-run) names the files of the attempt that
@@ -246,6 +246,14 @@ the test fails. `booley doctor` warns when a sim Target's testbench doesn't
 contain the default pass sentinel; a custom one it can't find is only a note,
 because the testbench may build the message at run time.
 
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+A [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) takes its
+verdicts from cocotb, so pass and fail sentinels don't apply to it.
+
+</details>
+
 **Error and assertion messages.** A pass sentinel isn't enough on its own.
 A test also fails, on any simulator and testbench kind, when its output
 contains `$error`, `$fatal`, `] Error:` or `Fatal:`, a line with `Assertion`
@@ -272,9 +280,9 @@ from.
 <details markdown>
 <summary>With a cocotb testbench</summary>
 
-A [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) takes its
-verdicts from cocotb, so sentinels don't apply to it. Cycle counts still
-appear on its verdict card and in the report.
+Cycle counts still appear for a
+[Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches), on its verdict
+card and in the report.
 
 </details>
 

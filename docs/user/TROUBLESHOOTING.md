@@ -18,8 +18,7 @@ before you run Doctor on the host: host-side Doctor can trigger it.
 <details markdown>
 <summary>On Windows</summary>
 
-Windows-only first-run problems are on the [Windows](https://booley.dev/docs/windows/)
-page.
+First-run problems are on the [Windows](https://booley.dev/docs/windows/) page.
 
 </details>
 
@@ -425,7 +424,8 @@ once. See [Windows](https://booley.dev/docs/windows/).
 
 Removing a pending invalidation file skips its cleanup of the Project's FlexNet
 relay containers and networks, which then need removing by hand in Docker. See
-[Commercial EDA provisioning](https://booley.dev/docs/sandbox/#commercial-eda-provisioning).
+[Commercial EDA provisioning](https://booley.dev/docs/sandbox/#commercial-eda-provisioning)
+and the [Vivado host-provisioning policy](https://booley.dev/docs/supported-eda-tools/#vivado-host-provisioning-policy).
 
 </details>
 

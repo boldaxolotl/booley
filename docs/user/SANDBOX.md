@@ -82,10 +82,11 @@ exits non-zero.
 <details markdown>
 <summary>With host-installed licensed tools</summary>
 
-A Sandbox
-using a [floating license](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy)
-can't be refreshed in place; see [Applying Sandbox changes](#applying-sandbox-changes).
-See also [Commercial EDA provisioning](#commercial-eda-provisioning).
+A Sandbox using a
+[floating license](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy)
+can't be refreshed in place; see
+[Applying Sandbox changes](#applying-sandbox-changes) and
+[Commercial EDA provisioning](#commercial-eda-provisioning).
 
 </details>
 
@@ -93,7 +94,8 @@ See also [Commercial EDA provisioning](#commercial-eda-provisioning).
 
 Booley fixes a Sandbox's settings, `[agent]` CLIs and logins, EDA requests and
 Grants, and image when it issues the Sandbox. A running Sandbox keeps its
-previous values until you apply the change. Use the first case that applies:
+previous values until you apply the change. Use the first case that applies
+(with host-installed licensed tools, read the callout below the list first):
 
 - **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
   then **Dev Containers: Rebuild Container**.
@@ -106,7 +108,8 @@ previous values until you apply the change. Use the first case that applies:
 
 Two more cases apply. Check **After an EDA Grant change** before every case
 above, and **Floating license** before the headless case. See
-[Commercial EDA provisioning](#commercial-eda-provisioning).
+[Commercial EDA provisioning](#commercial-eda-provisioning) and the
+[Vivado host-provisioning policy](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
 
 - **After an EDA Grant change** (`booley eda grant add` or `revoke`): Booley
   withdraws the Sandbox's issuance, so the running Sandbox can't be refreshed. Stop

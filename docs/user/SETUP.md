@@ -76,8 +76,8 @@ is best).
 <details markdown>
 <summary>On Windows</summary>
 
-If the checkout has Windows (CRLF) line endings, which is common on
-Windows, init converts them to LF, and it refuses to do that on a dirty tree.
+If the checkout has CRLF line endings, which is common with Git for Windows,
+init converts them to LF, and it refuses to do that on a dirty tree.
 See [Windows](WINDOWS.md#every-file-shows-as-modified-inside-the-container).
 
 </details>

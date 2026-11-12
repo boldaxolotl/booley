@@ -52,7 +52,7 @@ _VOCABULARY: tuple[tuple[str, str], ...] = (
 )
 
 _SUMMARY = re.compile(r"^\s*<summary>(.*)</summary>\s*$")
-_FENCE = re.compile(r"^ *(```+|~~~+)")
+_FENCE = re.compile(r"^ *(```+|~~~+)(.*)$")
 _DETAILS = "<details markdown>"
 _SITE_DOC_FILES = {doc.slug: doc.file for doc in USER_DOCS}
 
@@ -122,13 +122,23 @@ def callout_problems(
     for index, line in enumerate(lines):
         fence_match = _FENCE.match(line)
         if fence:
-            fence = None if fence_match and fence_match.group(1).startswith(fence) else fence
+            # Only a bare fence line closes a block: a fence with an info string opens none.
+            closes = (
+                fence_match
+                and fence_match.group(1).startswith(fence)
+                and not fence_match.group(2).strip()
+            )
+            fence = None if closes else fence
             continue
         if fence_match:
             fence = fence_match.group(1)
             continue
         summary = _SUMMARY.match(line)
         if not summary:
+            if "<summary" in line:
+                problems.append(
+                    f"docs/user/{doc}:{index + 1}: put '<summary>label</summary>' alone on its line"
+                )
             continue
         label = summary.group(1).strip()
         where = f"docs/user/{doc}:{index + 1}"
@@ -277,6 +287,23 @@ def test_unclosed_callout_fails() -> None:
 def test_callout_example_inside_a_code_fence_is_ignored() -> None:
     text = "```markdown\n<details markdown>\n<summary>On windows</summary>\n```\n"
     assert callout_problems(text, "X.md") == []
+
+
+def test_fence_with_info_string_does_not_end_a_code_block() -> None:
+    text = "```markdown\n```text\n<summary>On windows</summary>\n```\n"
+    assert callout_problems(text, "X.md") == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "<details markdown><summary>On windows</summary>",
+        '<summary class="x">On windows</summary>',
+    ],
+)
+def test_summary_not_alone_on_its_line_fails(line: str) -> None:
+    [problem] = callout_problems(f"Baseline.\n\n{line}\n", "X.md")
+    assert problem == "docs/user/X.md:3: put '<summary>label</summary>' alone on its line"
 
 
 @pytest.mark.parametrize("doc", sorted(USER_DOC_DIR.glob("*.md")), ids=lambda path: path.name)

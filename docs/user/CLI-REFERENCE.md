@@ -123,16 +123,16 @@ build trees; to import a Project nested inside another, name its path directly.
 
 `forget` lists what the Project still holds in Docker, with sizes: images,
 agent state volumes (a copy of the agent's login and history), containers, and
-networks. It removes none of them unless you add `--purge`, which removes the unused
-ones, even for a Project already forgotten or deleted. To use a forgotten
-Project again, run `booley init` in it.
+networks. It removes none of them unless you add `--purge`, which removes the
+unused ones, even for a Project already forgotten or deleted. To use a
+forgotten Project again, run `booley init` in it.
 
 <details markdown>
 <summary>With host-installed licensed tools</summary>
 
 `forget` refuses while the Project still has a live Grant (see
-[Commercial EDA](#commercial-eda--host)). See [Commercial EDA
-provisioning](SANDBOX.md#commercial-eda-provisioning).
+[Commercial EDA](#commercial-eda--host) and
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning)).
 
 </details>
 

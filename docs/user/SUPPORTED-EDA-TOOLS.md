@@ -44,7 +44,7 @@ the [roadmap](../internals/ROADMAP.md#commercial-eda-tools).
 
 The image ships cocotb 2.x. A testbench pinned to cocotb 1.x
 still runs once you [bake its own pins](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
-See [cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+See [Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
 
 </details>
 
