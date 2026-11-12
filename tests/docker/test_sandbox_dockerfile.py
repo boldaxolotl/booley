@@ -24,6 +24,7 @@ from tests.sidecar_image_helpers import (
     SIDECAR_ALPINE_BASE,
     SIDECAR_BOOKWORM_BASE,
     SIDECAR_DOCKER_CLI,
+    sidecar_python_version,
 )
 from tests.subprocess_budget import run_bounded_child
 
@@ -412,10 +413,11 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
         "Dockerfile.reaper",
     ):
         assert dockerfile in evidence_script
-    assert evidence_script.count(":py314") >= 3
+    assert evidence_script.count(":py315") >= 3
     assert ":py313" not in evidence_script
     assert '"Python 3.13.15"' not in evidence_script
-    assert '"Python 3.14' not in evidence_script
+    # No hard-coded sidecar Python version: the script derives it from the Dockerfiles.
+    assert re.search(r'"Python \d', evidence_script) is None
     assert "source-repodigests.tsv" in evidence_script
     assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
     assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
@@ -433,8 +435,8 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
     assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
     assert archive_script.count(":py313") >= 3
     assert '"Python 3.13.15"' in archive_script
-    assert "BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314" in workflow
-    assert "BOOLEY_REAPER_IMAGE: booley-reaper:py314" in workflow
+    assert "BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py315" in workflow
+    assert "BOOLEY_REAPER_IMAGE: booley-reaper:py315" in workflow
     assert "BOOLEY_FLEXNET_DOCKER_TEST" in workflow
     assert "test_egress_proxy_image_e2e.py" in workflow
     assert "test_reaper_image_e2e.py" in workflow
@@ -465,6 +467,12 @@ def test_sidecars_pin_expected_python_bases_without_changing_distributions() -> 
     assert [r.image for r in dockerfile_syntax.from_references(flexnet)] == [SIDECAR_ALPINE_BASE]
     # Flexnet and the reaper share one Alpine base: two declarations held equal.
     assert dockerfile_syntax.from_references(reaper)[-1].image == SIDECAR_ALPINE_BASE
+    # Both flavours track one Python version, whichever release the pins name.
+    assert sidecar_python_version(SIDECAR_BOOKWORM_BASE) == sidecar_python_version(
+        SIDECAR_ALPINE_BASE
+    )
+    assert re.fullmatch(r"python:[0-9.]+-slim-bookworm@sha256:[0-9a-f]{64}", SIDECAR_BOOKWORM_BASE)
+    assert re.fullmatch(r"python:[0-9.]+-alpine3\.24@sha256:[0-9a-f]{64}", SIDECAR_ALPINE_BASE)
 
 
 def test_sandbox_downloads_are_verified_before_use() -> None:
