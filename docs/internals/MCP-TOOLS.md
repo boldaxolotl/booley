@@ -57,7 +57,7 @@ Booley has three agent-facing implementation families:
 | Family | Built-in examples | Responsibility |
 |--------|-------------------|----------------|
 | `BuiltinFlow` | `sim`, `lint`, `synth`, `fpga` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
-| `Specialist` | `reviewer`, `mutation_tester` | Run a focused LLM agent with a purpose-built prompt and interpret its response |
+| `Specialist` | `reviewer`, `mutation_tester` | Run a focused check (an LLM agent for `reviewer`; `mutation_tester` runs none) and interpret its result |
 | Direct `McpTool` subclass | Project-local custom endpoint | Implement orchestration that is neither a deterministic Flow nor a Specialist; Project-local custom tools can use the same contract |
 
 Built-in and custom MCP tools share the same base interfaces and MCP surface. Their source differs, but the calling model does not. Every agent-facing MCP tool and every subprocess it launches runs inside the Sandbox. A supported host-provisioned EDA installation changes where immutable tool files originate, not where the command executes.
@@ -264,7 +264,7 @@ Criteria themselves are defined and expanded.
 |-------|----------|-------------------|
 | `BuiltinFlow` | Execute typed requests as their own invocation-state owner | `sim`, `lint`, `synth`, `fpga` |
 | `BooleyFlow` | Preserve the Custom Flow CLI/subprocess extension contract | Project-local Flows |
-| `Specialist` | Build a focused prompt, run an LLM agent loop, and interpret its output | `reviewer`, `mutation_tester` |
+| `Specialist` | Run a focused check (a prompt-driven LLM agent loop for `reviewer`; none for `mutation_tester`) and interpret its output | `reviewer`, `mutation_tester` |
 | `McpTool` | Implement orchestration directly when neither higher-level contract fits; also available to Project-local custom tools | Project-local custom endpoint |
 
 Import `McpTool` / `McpToolResult` from `booley.mcp.base`, `Specialist`
@@ -424,7 +424,7 @@ output set.
 |---|---|
 | `log` | This run's primary log, often outside the build-artifact directory |
 | `report` | The durable structured report itself |
-| `dirs` | `{role: path}` for artifact directories, such as `build`, `timing`, `impl`, `synth`, `mutant_logs`, or `verification_rounds` |
+| `dirs` | `{role: path}` for artifact directories, such as `build`, `timing`, `impl`, `synth`, or `mutant_logs` |
 
 A multi-target Flow nests one block per Target (`artifacts[target]`). Two rules
 make every pointer trustworthy:

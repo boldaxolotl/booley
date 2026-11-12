@@ -132,7 +132,7 @@ def test_verilator_baseline_sees_copyto_input(tmp_path: Path, monkeypatch) -> No
     project = _make_project(tmp_path, monkeypatch)
     result = project.endpoint._run_pristine_baseline(project.plan())
 
-    assert result is None, result.report_text
+    assert isinstance(result, dict), result  # the per-test Mutant time limits, not a failure
     assert not project.staged.exists()
     assert project.leftovers() == []
 
@@ -151,7 +151,7 @@ def test_verilator_mutant_sees_copyto_input(tmp_path: Path, monkeypatch) -> None
     )
     spec = SimpleNamespace(index=1)
 
-    result, reason = endpoint._run_one_variant(project.plan(), spec, object())
+    result, reason = endpoint._run_one_variant(project.plan(), spec, object(), {})
 
     assert not result.invalid, result.sim_output_snippet
     assert not result.detected, result.sim_output_snippet
@@ -245,7 +245,7 @@ def test_identical_existing_destination_is_left_untouched(tmp_path: Path, monkey
 
     result = project.endpoint._run_pristine_baseline(project.plan())
 
-    assert result is None, result.report_text
+    assert isinstance(result, dict), result  # the per-test Mutant time limits, not a failure
     assert project.staged.is_file() and not project.staged.is_symlink()
     assert project.staged.read_text(encoding="utf-8") == _PAYLOAD
     assert project.staged.stat().st_ino == inode

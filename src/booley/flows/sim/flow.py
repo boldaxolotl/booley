@@ -63,6 +63,7 @@ from booley.flows.progress_lifecycle import (
 )
 from booley.flows.request import FlowRequest
 from booley.flows.run_log import RUN_LOG_NAME, write_run_log
+from booley.flows.sim.bwave_registration import register_trace_sessions
 from booley.flows.sim.campaign.test_run_files import TestRunFiles, campaign_test_run_files
 from booley.flows.sim.campaign.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
 from booley.flows.sim.campaign.test_run_report import (
@@ -1923,6 +1924,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 outcome, outcomes, self._simulation_acceptance_outcomes
             )
             raise
+        # After acceptance, in this process (never a sim child with a private TMPDIR).
+        register_trace_sessions(outcomes)
         return True
 
     def generic_binding_gate_applies(self) -> bool:

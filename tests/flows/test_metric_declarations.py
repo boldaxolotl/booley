@@ -8,6 +8,7 @@ collection.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -140,6 +141,9 @@ def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
     ).flow_metrics()
 
 
+# Flows whose reports do not carry their metric values yet, so no report reader exists.
+_FLOWS_WITHOUT_REPORT_READER = {"sim", "coverage", "lint"}
+
 # Every Flow that declares metrics maps to a run that returns its typed values.
 _SAMPLE_RUNS: dict[str, Callable[[Path, pytest.MonkeyPatch], Any]] = {
     "synth": lambda _tmp, _mp: _synth_metrics().flow_metrics(),
@@ -195,6 +199,63 @@ def test_fpga_run_returns_lut_count_and_per_clock_timing() -> None:
     assert values.per_clock["whs_ns"] == pytest.approx({"clk": 0.1, "clk2": 0.05})
 
 
+def test_synth_report_yields_declared_metric_values() -> None:
+    from booley.flows.synth.flow import _aggregate_detail
+    from booley.measurement.flow_metrics import report_metric_values
+
+    metrics = _synth_metrics()
+    metrics.area_kge = 65.8
+    # The report file stores the detail as JSON, so read it back the way a caller does.
+    detail = json.loads(json.dumps(_aggregate_detail(["asic"], {"asic": metrics})))
+
+    values = report_metric_values("synth", detail)
+
+    assert set(values) == {"asic"}
+    assert values["asic"].plain == {"area_um2": 52480.0, "area_kge": 65.8, "cell_count": 12345}
+    assert values["asic"].per_clock["fmax_mhz"] == pytest.approx(
+        {"clk_core": 800.0, "clk_io": 166.667}, rel=1e-4
+    )
+    assert values["asic"].per_clock["wns_ns"] == pytest.approx({"clk_core": 0.75, "clk_io": -1.0})
+
+
+def test_fpga_report_yields_declared_metric_values() -> None:
+    from booley.flows.fpga.flow import FpgaImplFlow
+    from booley.flows.fpga.implementation_report import build_fpga_implementation_report
+    from booley.flows.implementation_report import (
+        ImplementationContext,
+        build_implementation_aggregate,
+    )
+    from booley.measurement.flow_metrics import report_metric_values
+
+    context = ImplementationContext(flow="fpga", target="board", eda_tool="vivado")
+    report = build_fpga_implementation_report(context, _fpga_metrics(), None)
+    aggregate = build_implementation_aggregate({"board": report})
+    detail = json.loads(
+        json.dumps(
+            FpgaImplFlow._aggregate_detail(["board"], {"board": _fpga_metrics()}, aggregate)
+        )
+    )
+
+    values = report_metric_values("fpga", detail)
+
+    assert set(values) == {"board"}
+    assert values["board"].plain["lut_count"] == 18
+    assert values["board"].per_clock["fmax_mhz"] == pytest.approx(
+        {"clk": 102.5641, "clk2": 196.0784}, rel=1e-4
+    )
+    assert values["board"].per_clock["wns_ns"] == pytest.approx({"clk": 0.25, "clk2": -0.1})
+
+
+def test_report_without_declared_metrics_or_targets_yields_none() -> None:
+    from booley.measurement.flow_metrics import report_metric_values
+
+    assert report_metric_values("lint", {"targets": ["asic"], "asic": {"cells": 3}}) == {}
+    # A Target whose summary is missing or malformed is skipped, not guessed.
+    assert report_metric_values("synth", {"targets": ["a", "b"], "a": "oops"}) == {}
+    assert report_metric_values("fpga", {"implementation": {"results": {"a": {}}}}) == {}
+    assert report_metric_values("fpga", {}) == {}
+
+
 @pytest.mark.parametrize("flow", list(_EXPECTED_DECLARATIONS))
 def test_flow_emits_exactly_its_declarations(
     flow: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -203,6 +264,13 @@ def test_flow_emits_exactly_its_declarations(
 
     # A Flow that declares metrics must be covered here, so a new one cannot go untested.
     assert set(_SAMPLE_RUNS) == set(flows_with_metric_declarations())
+    # ...and a Flow that declares metrics must have a report reader, or its values read back
+    # as ``{}``; the Flows below declare theirs but their reports carry no metrics yet.
+    from booley.measurement import flow_metrics
+
+    assert set(flow_metrics._READERS_BY_FLOW) | _FLOWS_WITHOUT_REPORT_READER == set(
+        flows_with_metric_declarations()
+    )
 
     values = _SAMPLE_RUNS[flow](tmp_path, monkeypatch)
 
