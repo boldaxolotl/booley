@@ -703,8 +703,6 @@ def sandbox_agent_clis() -> tuple[str, ...]:
     rest in record order. A hand-written spec allows only the CLI
     ``BOOLEY_AGENT_APP`` names; ``none``, unset or an unknown value allows none.
     """
-    import os
-
     from booley.config import agent_app
 
     if choice := agent_app.auto_choice():

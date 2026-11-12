@@ -884,9 +884,10 @@ class TestRegister:
         assert reg.claude_config_path(tmp_path).exists()
         assert requested_modes == ["interactive"]
 
-    def test_main_skips_server_without_app(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("app", ["none", "", "gemini"])
+    def test_main_skips_server_without_app(self, tmp_path, monkeypatch, app):
         monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("BOOLEY_AGENT_APP", "none")
+        monkeypatch.setenv("BOOLEY_AGENT_APP", app)
 
         def fail(**kw):
             raise AssertionError("must not start a server with no client app")

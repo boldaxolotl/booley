@@ -141,8 +141,17 @@ def test_shell_refuses_auto_on_the_host_instead_of_a_traceback(sandbox, monkeypa
         '"clis": []',
         '"clis": ["codex"]',  # the default must lead the set
         '"clis": ["claude", "gemini"]',
+        '"clis": ["claude", {}]',  # an unhashable entry is refused, not a TypeError
     ],
-    ids=["schema-1", "text-set", "number-set", "empty-set", "default-not-first", "unknown-cli"],
+    ids=[
+        "schema-1",
+        "text-set",
+        "number-set",
+        "empty-set",
+        "default-not-first",
+        "unknown-cli",
+        "unhashable-entry",
+    ],
 )
 def test_a_record_with_a_misshaped_cli_set_is_refused(sandbox, fields):
     record = {"schema": 2, "app": "claude", "clis": ["claude"], "policy": None, "reason": "x"}

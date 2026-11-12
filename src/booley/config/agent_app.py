@@ -96,7 +96,7 @@ def auto_choice() -> AgentAppChoice | None:
     except (KeyError, TypeError) as exc:
         raise AgentAppError(unresolved) from exc
     # The default leads the set, and the set names only real CLIs.
-    if choice.clis[:1] != (choice.app,) or not set(choice.clis) <= set(agent.AGENT_CLIS):
+    if choice.clis[:1] != (choice.app,) or not all(cli in agent.AGENT_CLIS for cli in choice.clis):
         raise AgentAppError(unresolved)
     return choice
 

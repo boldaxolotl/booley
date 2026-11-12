@@ -115,8 +115,7 @@ entry), keeping unrelated keys:
   `booley_gateway` table, plus `model_provider` and `model` when they still
   hold the gateway's values. `features.fast_mode` and the token exclusion stay.
   A start whose allowed set excludes Codex leaves the Codex config untouched.
-  An `auto` start that allows both CLIs, with Codex on a non-gateway policy,
-  removes the routing entries as above. An issued Sandbox that lists
+  An issued Sandbox that lists
   `codex = "gateway"` registers Codex, whichever CLI is the default, and so
   writes the provider.
 
