@@ -617,6 +617,28 @@ def test_trace_identity_reports_multiple_root_scopes(tmp_path, monkeypatch, caps
     assert "header-only" not in err
 
 
+def test_trace_identity_surfaces_store_load_cause(tmp_path, monkeypatch, capsys):
+    """#3648: a failed identity probe prints bwave's cause line, not only the guess."""
+    from booley.bwave import cli as bwave
+    from booley.bwave import sessions as bwave_sessions
+
+    cause = (
+        "ERROR: cannot load waveform store 'cut.fst': store is truncated; "
+        "re-run the simulation or rebuild it with `bwave build <trace.vcd> -o cut.fst`"
+    )
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-bin"])
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=f"noise\n{cause}\n"
+        ),
+    )
+
+    assert bwave_sessions._trace_identity(tmp_path / "cut.fst") == ""
+    assert f"[bwave] WARNING: {cause}" in capsys.readouterr().err
+
+
 def test_unknown_alias_error():
     _write_sessions({"baseline": _make_entry(str(BWAVE.resolve()))})
     r = _query("@nonexistent", "--wave", "-t", "1:5")
@@ -1107,3 +1129,55 @@ def test_register_human_trace_age_without_native_reader(
     monkeypatch.setattr(sessions, "register_trace", remove_trace)
     sessions.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
     assert "written" not in capsys.readouterr().err
+
+
+def _help_section_lines(text: str, headings: tuple[str, ...]) -> list[str]:
+    """Indented lines under each heading line, up to the next blank line."""
+    lines = text.splitlines()
+    collected: list[str] = []
+    for index, line in enumerate(lines):
+        if not any(line.startswith(heading) for heading in headings):
+            continue
+        for body in lines[index + 1 :]:
+            if not body.strip():
+                break
+            collected.append(body)
+    return collected
+
+
+def _help_entry_names(entries: list[str]) -> set[str]:
+    """First token of each `name  description` entry; `a / b` names both."""
+    names: set[str] = set()
+    for entry in entries:
+        head = entry.strip().split("  ")[0]
+        names.update(part.split()[0] for part in head.split(" / "))
+    return names
+
+
+def test_wrapper_help_command_lists_match_accepted_commands():
+    """Every wrapper help surface names exactly the commands it accepts (#3648)."""
+    from booley.bwave import cli as bwave
+
+    wrapper_only = {"register", "markers", "gui"}
+
+    # (a) argparse epilog (the parser's declared help): wrapper + query commands.
+    epilog = bwave._build_parser().format_help()
+    wrapper_names = _help_entry_names(_help_section_lines(epilog, ("Wrapper commands:",)))
+    query_lines = _help_section_lines(epilog, ("Query subcommands",))
+    query_names: set[str] = set()
+    for line in query_lines:
+        # Drop the "Trace-consuming:" / "Meta (no trace):" label, keep the names.
+        body = line.split(":", 1)[1] if ":" in line else line
+        query_names.update(body.split())
+    assert wrapper_names | query_names == bwave._V02_SUBCOMMANDS | wrapper_only | {"query"}
+
+    # (b) `bwave --help` text.
+    top_lines = _help_section_lines(
+        bwave._TOP_HELP_TEXT,
+        ("Setup:", "Viewing", "Trace commands:", "Meta/direct subcommands:"),
+    )
+    assert _help_entry_names(top_lines) == bwave._V02_SUBCOMMANDS | wrapper_only
+
+    # (c) `bwave query --help` text.
+    query_help = _help_entry_names(_help_section_lines(bwave._QUERY_HELP_TEXT, ("Subcommands",)))
+    assert query_help == bwave._V02_CONSUMER_SUBCOMMANDS | bwave._V02_META_SUBCOMMANDS

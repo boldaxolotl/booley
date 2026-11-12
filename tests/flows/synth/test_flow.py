@@ -4865,6 +4865,52 @@ class TestAggregateDetailIsSelfContained:
         assert implementation["status"]["grade"] == "pass"
         assert implementation["conditions"]["warning_summary"]["by_disposition"] == {"benign": 1}
 
+    def test_frontend_eda_warnings_do_not_downgrade_pass(self, flow_and_state):
+        flow, _ = flow_and_state
+        slang = (Path(__file__).parent / "fixtures/slang_warning_yosys_0_70.txt").read_text()
+        summary = parse_synth_diagnostics(
+            {"yosys": slang, "final_check": "Found and reported 0 problems.\n"}
+        ).warnings
+        metrics = self._metrics(warning_summary=summary, log_path="build/lite/run.log")
+
+        result = flow._aggregate_results(["lite"], {"lite": metrics}, {}, None)
+
+        assert result.exit_code == EXIT_SUCCESS
+        assert "RESULT: PASS" in result.report_text
+        assert "NOTE -- 2 EDA warnings" in result.report_text
+        assert "actionable EDA warning" not in result.report_text
+        implementation = result.detail["implementation"]["results"]["lite"]
+        assert implementation["status"]["grade"] == "pass"
+        assert implementation["conditions"]["warning_summary"]["by_disposition"] == {
+            "informational": 2
+        }
+
+    def test_frontend_eda_warnings_keep_actionable_warn_output_unchanged(self, flow_and_state):
+        flow, _ = flow_and_state
+        slang = (Path(__file__).parent / "fixtures/slang_warning_yosys_0_70.txt").read_text()
+        advisory = "Warning: something advisory\n"
+        outputs = []
+        for yosys in (advisory, advisory + slang):
+            summary = parse_synth_diagnostics(
+                {"yosys": yosys, "final_check": "Found and reported 0 problems.\n"}
+            ).warnings
+            metrics = self._metrics(warning_summary=summary, log_path="build/lite/run.log")
+            outputs.append(flow._aggregate_results(["lite"], {"lite": metrics}, {}, None))
+
+        for result in outputs:
+            assert "WARNING --" in result.report_text
+            assert "1 actionable EDA warning(s)" in result.report_text
+            status = result.detail["implementation"]["results"]["lite"]["status"]
+            assert status["grade"] == "warn"
+            assert (
+                "1 actionable EDA warning occurrence(s) across 1 unique diagnostic(s)"
+                in " ".join(status["warning_reasons"])
+            )
+        assert (
+            outputs[0].detail["implementation"]["results"]["lite"]["status"]
+            == outputs[1].detail["implementation"]["results"]["lite"]["status"]
+        )
+
     def test_baseline_warning_summary_is_preserved(self, flow_and_state):
         flow, _ = flow_and_state
         baseline_summary = parse_synth_diagnostics(

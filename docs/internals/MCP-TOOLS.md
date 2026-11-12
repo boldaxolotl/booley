@@ -604,7 +604,7 @@ category        = "none"
 | Field | Values | Meaning |
 |---|---|---|
 | `description` | string | What the Criterion checks |
-| `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | Its [Workflow Region](../GLOSSARY.md#execution), used only to order advice; it never blocks a run |
+| `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | When it applies: `pre_sim` (before simulation), `core_loop` (the edit-and-test loop), `post_sim` (after simulation); it only orders advice and never blocks a run |
 | `per_target` | `true`, `false` | Whether it expands to one key per Target |
 | `category` | `rtl`, `tb`, `none` | Which source changes reset it |
 

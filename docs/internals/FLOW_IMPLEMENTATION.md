@@ -30,11 +30,16 @@ means porting its build description ([SETUP.md](../user/SETUP.md)).
 A `.core` file (CAPI2, FuseSoC's YAML schema) declares Targets. A
 [Target](../GLOSSARY.md#configuration) fixes everything needed to build the
 design: filesets (with `file_type` and `tags: [tb]` testbench markers), typed
-parameters, the toplevel, and `flow_options.tool`, the EDA tool FuseSoC
-resolves for (Verilator, Icarus, Verible, Yosys, or Vivado). `--target` names
-one or more Targets; when it is omitted, the one eligible Target is selected.
-The CLI (`booley flow sim --target sim_core`) and the MCP call run the same
-Flow code.
+parameters, the toplevel, and `flow_options.tool`, the EDA tool FuseSoC resolves
+for (Verilator, Icarus, Verible, Yosys, or Vivado). `--target` names one or more
+Targets; when it is omitted, the one eligible Target is selected, but only for
+built-in Flows: a Custom Flow requires an explicit Target by default. A Target's
+identity is its declaring core's VLNV (the `.core` file's
+Vendor:Library:Name:Version identifier) plus its Target name; the Flow receives
+the shortest selector that is unambiguous in the Project, the bare name when
+unique, otherwise a VLNV suffix and `#name`. Goals and evidence compare
+identity, while commands render selectors. The CLI (`booley flow sim --target
+sim_core`) and the MCP call run the same Flow code.
 
 `booley.fusesoc.fusesoc_registry` resolves a Target in two steps. A cheap,
 side-effect-free YAML read lists Target names, to validate `--target` and
@@ -310,7 +315,8 @@ Drift warns at once, discards run evidence at publication, refuses Goal Change
 Proposals, and blocks Finish until reverted.
 
 A Goal without a bound Target is checked against authored sources only.
-[Generated Build Artifacts](../GLOSSARY.md#flows-eda-tools-and-mcp-tools) are
+Generated build artifacts, the Git-ignored files a Target consumes other than
+HDL, `.core` files, and declared programs, are
 left out of its fingerprints and of the committed-input check at Finish, so
 regenerating one does not stale the Goal unless the Reviewer's scope names it.
 HDL, `.core` files, declared programs, symlinks, paths outside the repository,
@@ -549,8 +555,15 @@ representative message per group; `artifacts.log` keeps every raw message.
 Structural warnings become fatal when the final check confirms them. Other
 actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
 known to be benign is counted with its rationale and does not downgrade the
-result. Unknown warning forms default to actionable, so a new message is never
-silently ignored.
+result. A located Yosys warning (`file:line[:col]: Warning:`, in practice from
+the `read_verilog` and `slang` frontends, slang on Yosys 0.69 and 0.70) is counted under category `frontend`
+with disposition `informational`: it never grades `warn`, because it reports
+the source rather than the synthesis. Its message drops the location and the
+echoed source line so the same warning groups across lines, and a trailing
+slang `[-W...]` is kept as the group's `code`. A located loop or multi-driver
+warning keeps its structural classification. Informational groups sort after
+all others (the first-listed loop group aside) in the representatives. Other unknown warning forms default to
+actionable, so a new message is never silently ignored.
 
 The Criterion detail carries the area, cell, and wire counts, the
 `warning_summary`, the timing fields of the mode, the latch, loop,

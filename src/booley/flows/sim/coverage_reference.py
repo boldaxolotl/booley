@@ -109,7 +109,16 @@ def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
         error=CoverageCampaignReferenceError,
         booley_dir=crossed_booley_dir_entry(absolute),
     )
-    return _resolve_coverage_campaign_reference_bytes(absolute, raw)
+    # Imported here: ``booley.flows.sim.campaign`` imports this module through its coordinator.
+    from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
+
+    try:
+        return _resolve_coverage_campaign_reference_bytes(absolute, raw)
+    except UnsupportedSimulationCampaignFormatError as exc:
+        # ``<invocation>/targets/<target>/coverage.json``: name the directory to delete.
+        if absolute.parent.parent.name == "targets":
+            raise exc.located(absolute.parents[2]) from None
+        raise
 
 
 def _resolve_coverage_campaign_reference_bytes(
@@ -365,6 +374,10 @@ def _validate_reference(value: Mapping[str, object]) -> None:
 
 
 def _validate_nested_reference(nested: Mapping[str, object]) -> None:
+    # Imported here: ``booley.flows.sim.campaign`` imports this module through its coordinator.
+    from booley.flows.sim.campaign.codec import raise_if_retired_schema
+
+    raise_if_retired_schema(nested["schema"])
     if nested["path_base"] != "origin_target" or nested["schema"] != CAMPAIGN_SCHEMA_V5:
         raise CoverageCampaignReferenceError("coverage_campaign storage contract is invalid")
     nested_path = _relative_path(nested["path"])
