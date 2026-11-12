@@ -255,6 +255,16 @@ FORM_SCRIPTS: dict[str, FormScript] = {
         argv=("--target", "t", "--dry-run", "--scope", "a.sv", "-q"),
         shown="--target t --dry-run --scope a.sv -q",
     ),
+    "mutation": FormScript(
+        steps=(
+            ("text", "--target", "t"),
+            ("text", "--scope", "a.sv"),
+            ("text", "--count", "3"),
+        ),
+        extra="--seed 7",
+        argv=("--target", "t", "--scope", "a.sv", "--count", "3", "--seed", "7"),
+        shown="--target t --scope a.sv --count 3 --seed 7",
+    ),
     "sim": FormScript(
         steps=(
             ("text", "--target", "t"),
@@ -700,7 +710,7 @@ async def test_the_form_is_kept_for_the_same_pair_and_fresh_for_another_flow(che
         assert row_value(wizard, "--target") == "t"
         assert row_value(wizard, "--dry-run") == "on"
         assert row_value(wizard, "Extra arguments") == "-q"
-        await pilot.press("escape", "down", "enter")  # another Flow
+        await pilot.press("escape", "down", "down", "enter")  # another Flow: sim, past mutation
         await settle_form(app, pilot)
         assert row_value(wizard, "--target") == "automatic"
         assert row_value(wizard, "Extra arguments") == ""
