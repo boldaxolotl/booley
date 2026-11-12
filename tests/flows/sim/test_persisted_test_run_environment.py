@@ -20,7 +20,7 @@ from booley.flows.sim.campaign.serial_execution import _work_item_test_runs
 from booley.flows.sim.campaign.test_run_binding import observation_test_runs
 from booley.flows.sim.campaign.test_run_report import _manifest_test_runs
 from booley.flows.sim.execution.engine import _export_line
-from booley.flows.sim.flow import _manifest_run_groups
+from booley.flows.sim.flow_resume import _manifest_run_groups
 from booley.flows.test_runs import (
     build_test_run,
     declared_inputs_fingerprint,

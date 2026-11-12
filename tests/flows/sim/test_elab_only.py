@@ -20,7 +20,8 @@ from booley.flows.sim.build import (
     build_stage_script,
     classify_build_outcome,
 )
-from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow
+from booley.flows.sim.elab_only import ElabOnlyTargetResult
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
@@ -641,7 +642,7 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
         image.chmod(0o755)
         return prepared
 
-    monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", fake_prepare)
+    monkeypatch.setattr("booley.flows.sim.elab_only.prepare_simulation_build", fake_prepare)
     monkeypatch.setattr(flow, "_target_sim_env", lambda target: {})
     monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 3_600_000)
     monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)
@@ -764,7 +765,7 @@ def test_setup_failure_archives_current_error_without_reusing_old_log(
     def fail_setup(*args: object, **kwargs: object) -> PreparedSimulationBuild:
         raise SimulationBuildPreparationError("current setup exploded")
 
-    monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", fail_setup)
+    monkeypatch.setattr("booley.flows.sim.elab_only.prepare_simulation_build", fail_setup)
 
     with flow.publication_resources:
         result = flow._run_one_elab_only("sim_dut")
@@ -803,7 +804,7 @@ def test_elab_only_dry_run_renders_setup_failures(
         lambda _target: MagicMock(),
     )
     monkeypatch.setattr(
-        "booley.flows.sim.flow.simulation_setup_command",
+        "booley.flows.sim.elab_only.simulation_setup_command",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             SimulationBuildPreparationError("cgroup denied")
         ),
@@ -830,10 +831,12 @@ def test_elab_only_branch_skips_test_and_cocotb_discovery(
             outcome=BuildOutcome(True, "pass", None),
         ),
     )
-    monkeypatch.setattr(
-        "booley.flows.sim.flow._get_test_names",
-        lambda *_args, **_kwargs: pytest.fail("test discovery ran in elab-only mode"),
-    )
+    # Guard every module that looks the name up, so discovery is caught wherever it runs.
+    for module in ("booley.flows.sim.flow", "booley.flows.sim.test_selection"):
+        monkeypatch.setattr(
+            f"{module}._get_test_names",
+            lambda *_args, **_kwargs: pytest.fail("test discovery ran in elab-only mode"),
+        )
     monkeypatch.setattr(
         flow,
         "_validate_cocotb_targets",

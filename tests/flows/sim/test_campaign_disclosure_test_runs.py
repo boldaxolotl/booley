@@ -107,7 +107,7 @@ def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch
     for the resume comparison must prepare exactly those runs, not the
     default Variants of the same Tests (which could not even share a batch).
     """
-    from booley.flows.sim import flow as flow_module
+    from booley.flows.sim import flow_resume as resume_module
     from booley.flows.test_runs import build_test_run
     from tests.flows.sim.test_campaign_test_runs import _cocotb_plan
 
@@ -136,14 +136,14 @@ def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch
     flow = _flow(tmp_path, monkeypatch)
     monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
     monkeypatch.setattr(
-        flow_module.TargetCatalog,
+        resume_module.TargetCatalog,
         "build",
         lambda _root: SimpleNamespace(inspect=lambda _handle: object()),
     )
-    monkeypatch.setattr(flow_module, "git_full_sha", lambda *_args: "c" * 40)
+    monkeypatch.setattr(resume_module, "git_full_sha", lambda *_args: "c" * 40)
     planned: dict[str, object] = {}
     monkeypatch.setattr(
-        flow_module,
+        resume_module,
         "plan_coarse_simulation_campaign",
         lambda **kwargs: planned.update(kwargs) or "plan",
     )
