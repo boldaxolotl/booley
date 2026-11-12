@@ -86,6 +86,15 @@ def _load(path: Path) -> StoredRun:
         raise MeasurementStoreError(f"unreadable Measurement Run {path}: {error}") from error
 
 
+def _clock_names_of(document: dict[str, Any], identity: str, flow: str) -> tuple[str, ...]:
+    """Sorted clock names of the table's per-clock values in *document*, empty when it has none."""
+    for table in document["tables"]:
+        values = table["values"] or {}
+        if (table["identity"], table["flow"]) == (identity, flow) and values.get("per_clock"):
+            return tuple(sorted({clock for c in values["per_clock"].values() for clock in c}))
+    return ()
+
+
 def _order(run: StoredRun) -> tuple[datetime, datetime, str]:
     return run.finished_at, run.started_at, run.run_id
 
@@ -182,14 +191,12 @@ class MeasurementStore:
     def clock_names(self, identity: str, flow: str) -> tuple[str, ...]:
         """Clock names of the newest stored run that has per-clock values for the table."""
         for run in sorted(self._readable_runs(), key=_order, reverse=True):
-            for table in run.document["tables"]:
-                values = table["values"] or {}
-                if (table["identity"], table["flow"]) == (identity, flow) and values.get(
-                    "per_clock"
-                ):
-                    return tuple(
-                        sorted({clock for c in values["per_clock"].values() for clock in c})
-                    )
+            try:
+                names = _clock_names_of(run.document, identity, flow)
+            except (KeyError, TypeError, AttributeError):
+                continue  # a document with a damaged table body has no usable clock names
+            if names:
+                return names
         return ()
 
     def _readable_runs(self) -> Iterator[StoredRun]:

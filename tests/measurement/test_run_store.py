@@ -49,10 +49,12 @@ def in_tree_repository(root: Path) -> tuple[Path, str]:
     return repo, commit_all(repo)
 
 
-def rules(*, with_tracked: bool = False) -> MetricsRules:
+def rules(
+    *, with_tracked: bool = False, identity: str = IDENTITY, flow: str = "syn"
+) -> MetricsRules:
     bound = Bound("cell_count_max", "cell_count", "max", 100, None, None, None)
     tracked = (TrackedMetric("area", "area", None, None),) if with_tracked else ()
-    table = TableRules("syn", IDENTITY, "syn", (bound,), tracked)
+    table = TableRules(flow, identity, flow, (bound,), tracked)
     return MetricsRules(Path("metrics.toml"), (table,))
 
 
@@ -73,6 +75,8 @@ def make_run(
     toolchain: ToolchainFingerprint | None = None,
     per_clock: dict[str, dict[str, float]] | None = None,
     omit_results: bool = False,
+    identity: str = IDENTITY,
+    flow: str = "syn",
 ) -> MeasurementRun:
     from booley.measurement.run_document import (
         MeasurementRun,
@@ -86,7 +90,7 @@ def make_run(
         () if omit_results else (MetricResult("cell_count_max", 100, 90, Verdict(verdict), None),)
     )
     values = FlowMetricValues({}, per_clock or {})
-    table = TableRun(IDENTITY, "syn", 1.5, values, results)
+    table = TableRun(identity, flow, 1.5, values, results)
     finished = EPOCH + timedelta(minutes=minute)
     started = finished - timedelta(seconds=30)
     if start_minute is not None:
@@ -98,7 +102,7 @@ def make_run(
         started,
         finished,
         30.0,
-        rules(),
+        rules(identity=identity, flow=flow),
         toolchain or fingerprint(),
         (),
         (table,),

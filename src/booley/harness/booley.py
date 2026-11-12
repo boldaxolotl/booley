@@ -20,6 +20,7 @@ import argparse
 import itertools
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -183,6 +184,9 @@ def command_project_bindings() -> dict[str, ProjectBinding]:
 
 
 def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
+    # `cheat --metrics` lists the selected Project's Targets, so it needs one.
+    if command == "cheat" and getattr(args, "metrics", False) and not _cheat_lists_sections(args):
+        return ProjectBinding.REQUIRED
     return command_project_bindings()[command]
 
 
@@ -1420,6 +1424,26 @@ def _cheat_criteria_params_reference(text: str) -> str:
     return text
 
 
+# Stands for the raw metrics listing while `render` wraps the prose around it.
+_METRICS_PLACEHOLDER = "METRICSLISTING"
+_METRICS_BLOCK = re.compile(
+    r"<!-- BEGIN GENERATED: metrics -->.*?<!-- END GENERATED: metrics -->", re.DOTALL
+)
+
+
+def _cheat_metrics_listing(args: argparse.Namespace, project_root: Path | None) -> str | None:
+    """The live metrics listing when ``--metrics`` asks for it, else ``None``.
+
+    Raises ``FuseSocError``, ``OSError`` or ``ValueError`` when it cannot be built.
+    """
+    if not getattr(args, "metrics", False):
+        return None
+    from booley.measurement import metrics_listing
+
+    assert project_root is not None, "`cheat --metrics` is bound to a Project"
+    return metrics_listing.render_metrics_listing(project_root)
+
+
 def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     if _cheat_lists_sections(args):
         print("\n".join(cheatsheet.render_index(width_budget())))
@@ -1437,6 +1461,15 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     text = _cheat_flow_reference(text, project_root)
     text = _cheat_criteria_reference(text, project_root)
     text = _cheat_criteria_params_reference(text)
+    from booley.targets.domain import FuseSocError
+
+    try:
+        listing = _cheat_metrics_listing(args, project_root)
+    except (FuseSocError, OSError, ValueError) as exc:
+        print(f"ERROR: cannot list metrics: {exc}", file=sys.stderr)
+        return 2
+    if listing is not None:
+        text = _METRICS_BLOCK.sub(_METRICS_PLACEHOLDER, text)
 
     # Narrow to the requested sections (after splicing, so a filtered view still
     # shows live registry/criteria tables). --all keeps the whole sheet.
@@ -1450,7 +1483,9 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     # Drop the HTML-comment markers so they don't reach the terminal.
     text = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("<!--"))
 
-    print(render(text, width=width_budget()), end="")
+    rendered = render(text, width=width_budget())
+    # The listing is TOML, not prose: it is never wrapped or inline-formatted.
+    print(rendered if listing is None else rendered.replace(_METRICS_PLACEHOLDER, listing), end="")
     return 0
 
 
