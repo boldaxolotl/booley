@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Git pre-push hook: block pushes whose outgoing commits leak or misattribute.
 
-The commit-msg sanitizer covers ``git commit`` and ``git merge`` — but git
+The commit-msg check covers ``git commit`` and ``git merge`` — but git
 runs no message hook at all for ``git revert``/``git cherry-pick``, and
 ``--no-verify`` disables commit-msg entirely (F-17). This hook is the safety
 net at the last interception point git offers: it scans every newly exposed commit
