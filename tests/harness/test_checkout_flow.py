@@ -1103,12 +1103,30 @@ def test_checkout_flow_finds_the_live_tree_without_a_work_mount(
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
     from booley.runtime import sandbox_layout
 
-    # A hand-written Sandbox has no ``/work``: the live tree is the Git checkout of the cwd.
+    # A hand-written Sandbox has no ``/work``: the live tree is the Git checkout around
+    # Main, whatever directory the caller stands in.
     world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
     monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
-    monkeypatch.chdir(world.live)
+    monkeypatch.chdir(world.checkout.parent)
 
     with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
+        run_checkout_flow(world.request("pass"))
+
+    assert_refused_before_any_run(world)
+
+
+@linux_only
+def test_checkout_flow_refuses_when_no_live_working_tree_is_found(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+    from booley.runtime import sandbox_layout
+
+    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
+    monkeypatch.setattr(checkout_flow, "has_git_worktree_marker", lambda _path: False)
+
+    with pytest.raises(CheckoutFlowError, match="no live working tree found"):
         run_checkout_flow(world.request("pass"))
 
     assert_refused_before_any_run(world)
@@ -1154,7 +1172,6 @@ def test_preflight_resolution_runs_in_the_measurement_environment(
     from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
 
     use_fusesoc(monkeypatch)
-    monkeypatch.setenv("CALLER_ONLY_VARIABLE", "x")
     world = make_world(
         files={
             "probe.core": GENERATOR_CORE,
@@ -1162,6 +1179,8 @@ def test_preflight_resolution_runs_in_the_measurement_environment(
             "top.v": "module top; endmodule\n",
         }
     )
+    # After ``make_world``, which clears the caller variables it knows of.
+    monkeypatch.setenv("CALLER_ONLY_VARIABLE", "x")
 
     # The stub Flow resolves nothing, so the generator's record comes from the preflight.
     result = run_checkout_flow(world.request("probe"))
@@ -1199,9 +1218,8 @@ def test_pre_sim_git_call_fails_with_the_checkout_message(
     assert presim["stderr"].strip() == (
         "booley: git rev-parse HEAD: the measurement checkout is not a git repository"
     )
-    assert (
-        presim["revision"] is None
-    )  # run evidence reads "unversioned", as for any non-git Project
+    # Run evidence reads "unversioned", as for any non-git Project.
+    assert presim["revision"] is None
 
 
 @linux_only

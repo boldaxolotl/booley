@@ -109,7 +109,7 @@ def measurement_environment(
             "PYTHONSAFEPATH": "1",
             "PYTHONNOUSERSITE": "1",
             "PYTHONPYCACHEPREFIX": str(tmp / "pycache"),
-            "PATH": os.pathsep.join([str(git_refusal), source.get("PATH", os.defpath)]),
+            "PATH": os.pathsep.join([str(git_refusal), source.get("PATH") or os.defpath]),
         }
     )
     return environment

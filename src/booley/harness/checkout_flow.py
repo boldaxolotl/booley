@@ -15,7 +15,8 @@ path inside the checkout.
 Before the Flow starts, two checks keep live inputs out of the run. A static scan
 of the checkout refuses committed symlinks and absolute paths in ``.core`` files,
 ``fusesoc.conf`` and the Booley configuration that point into a live root (the
-Sandbox's ``/work`` mount of the working tree, the Main Booley Directory and
+Sandbox's ``/work`` mount of the working tree, or the Git checkout around Main or the
+caller's working directory in a hand-written Sandbox, the Main Booley Directory and
 ``$BOOLEY_DIR``). A preflight child then resolves the Target the way the Flow will
 (FuseSoC's ``--no-export`` mode, so each file keeps its original place), in the
 measurement environment, and refuses a resolved file or core file inside a live
@@ -249,20 +250,27 @@ def _require_own_booley_dir(checkout: Path, main: Path) -> None:
 def _live_roots(main: Path) -> list[LiveRoot]:
     """The directories that hold uncommitted work, most specific first.
 
-    The runner runs only in the Sandbox, where the live working tree is the ``/work``
-    mount and the Booley Directory a separate mount, so the live tree is not derivable
-    from *main*; other working trees are not mounted there. A hand-written Sandbox has no
-    ``/work``: its live tree is the Git checkout around the caller's working directory.
+    The Sandbox mounts the live working tree at ``/work`` and the Booley Directory at a
+    separate mount, so the tree is not derivable from *main* there; other working trees
+    are not mounted. A hand-written Sandbox has no ``/work``: its live tree is then the
+    Git checkout around *main* or around the caller's working directory, and the run is
+    refused when neither is found, since nothing could be scanned for.
     """
     roots = [LiveRoot("Main Booley Directory", main)]
     if os.environ.get("BOOLEY_DIR"):
         roots.append(LiveRoot("BOOLEY_DIR", Path(os.environ["BOOLEY_DIR"]).resolve()))
     work_dir = Path(sandbox_layout.WORK_DIR)
-    if not work_dir.is_dir():
-        here = Path.cwd().resolve()
-        work_dir = next((d for d in (here, *here.parents) if has_git_worktree_marker(d)), work_dir)
-    roots.append(LiveRoot("live working tree", work_dir))
-    return roots
+    trees = [work_dir] if work_dir.is_dir() else []
+    for start in () if trees else (main, Path.cwd().resolve()):
+        owner = next((d for d in (start, *start.parents) if has_git_worktree_marker(d)), None)
+        if owner is not None and owner not in trees:
+            trees.append(owner)
+    if not trees:
+        raise CheckoutFlowError(
+            f"no live working tree found: {work_dir} is not mounted and no Git checkout "
+            f"contains {main} or the working directory"
+        )
+    return [*roots, *(LiveRoot("live working tree", tree) for tree in trees)]
 
 
 def _refuse_live_inputs(checkout: Path, roots: list[LiveRoot]) -> None:
@@ -292,8 +300,8 @@ def _prepare_scratch(checkout: Path) -> Path:
 def _launch(
     request: CheckoutFlowRequest,
     checkout: Path,
-    report_dir: Path,
     main: Path,
+    report_dir: Path,
     run_id: str,
     log_path: Path,
     environment: dict[str, str],
@@ -600,7 +608,7 @@ def _execute(
     try:
         job_records.write_record_strict(record, jobs_root)
         register_job(main, run_id, request.flow, None)
-        process = _launch(request, checkout, report_dir, main, run_id, log_path, environment)
+        process = _launch(request, checkout, main, report_dir, run_id, log_path, environment)
     except OSError as exc:
         # Best effort: an unwritable log must not stop the record turning failed.
         with contextlib.suppress(OSError), log_path.open("ab") as log:

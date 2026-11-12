@@ -12,8 +12,9 @@ uncommitted work. Two checks find the ways an input can still point there:
 
 The text match is deliberate: it needs no parser per file format, so a live path in a
 comment is refused too, and the finding names the file. A candidate path stops at
-whitespace, so a live root whose spelling contains a space is not matched; the
-Sandbox roots (``/work``, ``/booley-project``) have none. A multi-letter option glued
+whitespace and at the other token delimiters, so a live root whose spelling contains one
+(a space, ``+``, ``=``, ``,``, ``#``, ``@``, ``%``, ``!``, ``&``, ``\\``) is not matched; the
+Sandbox's ``/work`` and ``/booley-project`` have none. A multi-letter option glued
 to its path (``-isystem/x``) is not a token start and is not matched either.
 
 Relative escapes (``../../live/x``) are deliberate reads and out of scope for the static
@@ -31,15 +32,16 @@ from pathlib import Path
 from booley.core.booley_dir import in_checkout_booley_dir
 from booley.runtime import booley_dir
 
-# Characters that end a path token: whitespace, quotes, and the separators of shell
-# words (``a&&/x``, ``\n`` in a quoted command, ``@/x.f``), TOML/YAML values,
-# ``+incdir+/x``, ``--opt=/x`` and URLs.
-_DELIMITERS = r"""\s"'`<>|;,(){}\[\]=:+#\\&@!%"""
+# Characters after which a path token may start: whitespace, quotes, and the separators of
+# shell words (``a&&/x``, ``@/x.f``), TOML/YAML values, ``+incdir+/x``, ``--opt=/x`` and URLs.
+_STARTERS = r"""\s"'`<>|;,({\[=:+#&@"""
+# A token also ends at the closers of a placeholder (``${VAR}/work``, ``$(pwd)/work``,
+# ``%OUT%/work``) and at an escape (``\n``), but one does not start after them: the text
+# that follows is relative to the placeholder. NUL ends a token too (a binary file).
+_STOPS = _STARTERS + r"""\)}\]\\!%\x00"""
 # A candidate starts a token with ``/`` or with a one-letter option glued to ``/``
 # (``-I/x``). A relative ``sim/work/tb.sv`` is one token that does not start with ``/``.
-_CANDIDATE = re.compile(
-    rf"(?:^|(?<=[{_DELIMITERS}]))(?:-[A-Za-z])?(/[^{_DELIMITERS}]*)", re.MULTILINE
-)
+_CANDIDATE = re.compile(rf"(?:^|(?<=[{_STARTERS}]))(?:-[A-Za-z])?(/[^{_STOPS}]*)", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,8 @@ def input_findings(checkout: Path, roots: Sequence[LiveRoot]) -> list[str]:
             )
     for directory, subdirectories, files in os.walk(checkout, followlinks=False):
         here = Path(directory)
+        file_names = set(files)
+        subdirectories.sort()  # os.walk descends in this order: findings stay deterministic
         for name in sorted((*subdirectories, *files)):
             path = here / name
             relative = path.relative_to(checkout).as_posix()
@@ -100,7 +104,7 @@ def input_findings(checkout: Path, roots: Sequence[LiveRoot]) -> list[str]:
                 findings.append(
                     f"{relative} links to {path.readlink()}, inside the {root.label} {root.path}"
                 )
-            elif name in files and name.endswith(".core") and path.is_file():
+            elif name.endswith(".core") and name in file_names and path.is_file():
                 findings.extend(_text_findings(relative, _read(path), roots))
     return findings
 
