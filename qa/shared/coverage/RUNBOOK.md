@@ -186,7 +186,7 @@ exclusive `consumed` marker permits exactly one EIO across descendants.
 
 | Fault | Operation / destination / controller gate |
 |---|---|
-| Campaign publication | link to the nested Campaign manifest (destination suffix `/coverage-campaign/coverage.json`); fail before link. Point store publication has already completed. The Target `coverage.json` reference is created afterward by an exclusive open, not a link. |
+| Campaign publication | link to the nested Campaign manifest (destination suffix `/coverage-campaign/coverage.json`); fail before link. Point store publication has already completed. The Target reference file is created afterward as a new file, never a link. |
 | Simulation publication | rename to exact Target `/simulation.json`; fail before replacement. |
 | Acceptance state | rename to the captured Goal Record `goals/<record-id>/booley_state.json`; fail only when temporary JSON adds an acceptance transaction absent from the baseline state. |
 | Terminal progress | rename to exact invocation `/progress.json`; fail only when temporary JSON has `complete: true`. Earlier observational writes pass through. |
@@ -248,7 +248,7 @@ Create `.qa-coverage-fault-copy` at that new owned root and invoke
 `faults/campaign.py <mode> <copied-target>/coverage.json --owned <copy-root>`, passing
 the copied Target reference. The script follows the reference to the nested
 Campaign and mutates it. Point faults change only the point store; manifest faults
-rewrite the manifest in Booley's layout and rebind the Target reference. The original
+re-encode the manifest in Booley's JSON format (sorted keys, 2-space indent) and rebind the Target reference. The original
 Campaign is never mutated. Note the
 particular error code, field, and message proving that boundary; an unrelated earlier parse
 error does not show the deeper validation works. Restore by discarding only that

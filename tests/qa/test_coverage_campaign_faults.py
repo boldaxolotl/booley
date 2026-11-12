@@ -99,17 +99,6 @@ _PRODUCT_FAULTS = {
     "resource-ceiling": {"COV_POINT_LIMIT"},
 }
 
-#: Modes that damage only the point store, so the manifest and reference stay as published.
-_POINT_FAULTS = {
-    "missing-points",
-    "truncated-gzip",
-    "trailing-data",
-    "duplicate-point",
-    "invalid-final-record",
-    "resource-ceiling",
-    "symlink",
-}
-
 
 def _product_faults() -> dict[str, set[str]]:
     """Every retired schema version gets a mode; resource-ceiling stays last (it patches)."""
@@ -153,7 +142,7 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
         faults.mutate(reference, owned, mode)
 
         manifest_after = faults.nested_campaign(reference, owned)[0].read_bytes()
-        if mode in _POINT_FAULTS:
+        if mode in faults.POINT_FAULTS:
             # A point fault damages only the point store.
             assert manifest_after == manifest_before
             assert reference.read_bytes() == reference_before

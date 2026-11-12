@@ -3,11 +3,12 @@
 import copy
 import importlib.util
 import json
-import subprocess
+import os
 import sys
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import run_bounded_child
 
 ROOT = Path(__file__).resolve().parents[2] / "qa/shared/coverage"
 SPEC = importlib.util.spec_from_file_location(
@@ -252,7 +253,7 @@ def test_oracle_reads_campaign_the_product_publishes(tmp_path):
     manifest, points = oracle.read_campaign(published)
     document = json.loads(published.read_text())
     assert manifest["campaign_id"] == document["campaign_id"]
-    assert len(points) >= 1
+    assert len(points) == document["point_store"]["point_count"]
 
 
 @pytest.mark.parametrize(
@@ -262,14 +263,10 @@ def test_oracle_controls_accept_positive_and_detect_negatives(tmp_path, mode):
     """Run the controls as a subprocess so the module name `controls` never enters sys.modules."""
     scratch = tmp_path / "tmp"
     scratch.mkdir()
-    completed = subprocess.run(
+    completed = run_bounded_child(
         [sys.executable, "controls.py", mode],
         cwd=ROOT / "evaluator",
-        env={"TMPDIR": str(scratch), "TEMP": str(scratch), "TMP": str(scratch)},
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+        env={**os.environ, "TMPDIR": str(scratch), "TEMP": str(scratch), "TMP": str(scratch)},
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)

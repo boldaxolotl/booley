@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA
+
 ROOT = Path(__file__).resolve().parents[2]
 TAXI = ROOT / "qa/missions/taxi/fixtures/simulation-campaign"
 # Documents captured unchanged from one Taxi QA run; ``timeline.json`` is the operator's
@@ -76,7 +78,7 @@ def _write_campaign(campaign: Path) -> None:
     _write_json(
         campaign / "manifest.json",
         {
-            "$schema": "booley.simulation-campaign-manifest/v4",
+            "$schema": MANIFEST_SCHEMA,
             "campaign_id": CAMPAIGN_ID,
             "fingerprints": {"workload_sha256": WORKLOAD},
             "origin": {"execution_id": OUTER, "invocation_id": 12},

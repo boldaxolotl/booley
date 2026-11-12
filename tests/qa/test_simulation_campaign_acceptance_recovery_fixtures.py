@@ -16,6 +16,7 @@ from tests.goals.conftest import git
 
 from booley.criteria.evidence_ledger import AcceptanceTransaction, record_or_verify_transaction
 from booley.criteria.state import DevelopmentState
+from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA
 from booley.goals.binding import bind_run
 from booley.goals.input_view import capture_path_roots
 from booley.goals.model import (
@@ -278,7 +279,7 @@ def _recover_transaction(
 def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> RecoveryEvidence:
     campaign_id = "c3fa3451-3a73-4a43-936c-9a2c40f88d30"
     manifest_value = {
-        "$schema": "booley.simulation-campaign-manifest/v4",
+        "$schema": MANIFEST_SCHEMA,
         "campaign_id": campaign_id,
     }
     manifest = _write(tmp_path / "manifest.json", manifest_value)

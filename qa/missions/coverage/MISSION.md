@@ -176,7 +176,7 @@ Try:
   line/branch/expression/toggle. `sim_scale`: valid, compact sim response (pointer only); note
   bytes/time/RSS.
 - Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy>/coverage.json --owned <root>`
-  (Target reference; the script rebinds it only after a manifest fault, point faults leave the manifest and reference unchanged), then run the Analyst CLI on that reference → rejected before
+  (Target reference; manifest faults rebind it, point faults leave it unchanged), then run the Analyst CLI on that reference → rejected before
   the model: v1, v2, v3, v4, missing points, truncated gzip, trailing data, symlink, invalid final record,
   duplicate point, wrong evaluation (forged pass), resource ceiling (over-ceiling decompression).
 - Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage-campaign/coverage.json`, `rename

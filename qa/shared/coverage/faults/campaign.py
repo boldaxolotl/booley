@@ -123,12 +123,12 @@ def mutate(reference: Path, owned: Path, mode: str) -> None:
     regular_owned(reference, owned)
     path, reference_document = nested_campaign(reference, owned)
     regular_owned(path.parent / "coverage-points.jsonl.gz", owned)
-    document = json.loads(path.read_text())
     points = path.parent / "coverage-points.jsonl.gz"
     if mode in POINT_FAULTS:
         # Only the point store changes; Booley trusts its recorded identity.
         corrupt_points(mode, points, owned)
         return
+    document = json.loads(path.read_text())
     if mode in RETIRED_SCHEMAS:
         # The schema gate rejects an unsupported version before any decode.
         document["$schema"] = "booley.coverage-campaign/" + mode
