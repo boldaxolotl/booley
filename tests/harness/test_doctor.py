@@ -5617,6 +5617,61 @@ class TestAdvisoryMcpTools:
             first_target="",
         )
 
+    def test_disabled_endpoints_are_named_in_one_note(self, tmp_path, monkeypatch):
+        """AC5: one NOTE names disabled Specialists and custom Flows, not built-in Flows."""
+        tools_dir = tmp_path / ".booley" / "mcp_tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "custom_flow.py").write_text(
+            "from booley.flows.base import BooleyFlow\n\n\n"
+            "class CustomFlow(BooleyFlow):\n"
+            '    name = "custom_flow"\n'
+            '    description = "A project Flow."\n',
+            encoding="utf-8",
+        )
+        audit = self._project(
+            tmp_path, {"reviewer": {"enabled": False}, "lint": {"enabled": False}}
+        )
+        # A project Flow is configured under [flows]; the helper files unknown names elsewhere.
+        audit.booley_toml["flows"]["custom_flow"] = {"enabled": False}
+        for name in (
+            "_check_ticket_leftovers",
+            "_check_handle_map_size",
+            "_check_project_gitignore",
+            "_check_goal_history_ignored",
+            "_check_project_trackability",
+            "_check_git_state",
+            "_check_repo_footprint",
+            "_check_custom_endpoints_and_criteria",
+            "_check_agent_backend_health",
+        ):
+            monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
+        reporter = doctor._Reporter.create()
+
+        doctor._run_project_checks(audit, reporter)
+
+        notes = [f for f in reporter.findings or [] if f.severity is Severity.NOTE]
+        assert [f.message for f in notes] == [
+            "MCP endpoints disabled in booley.toml: custom_flow, reviewer"
+        ]
+
+    @pytest.mark.parametrize("endpoint_config", [{}, {"sim": {"enabled": False}}])
+    def test_no_disabled_endpoints_prints_nothing(self, tmp_path, endpoint_config):
+        """AC5: nothing disabled, or only a built-in Flow the Flow audit names, prints no line."""
+        notes: list[str] = []
+
+        doctor._check_disabled_endpoints(self._project(tmp_path, endpoint_config), notes.append)
+
+        assert notes == []
+
+    def test_invalid_endpoint_config_is_left_to_the_endpoint_check(self, tmp_path):
+        """A disabled name no endpoint carries makes the registry raise: stay silent, never crash."""
+        notes: list[str] = []
+        audit = self._project(tmp_path, {"typo": {"enabled": False}})
+
+        doctor._check_disabled_endpoints(audit, notes.append)
+
+        assert notes == []
+
     def test_default_expects_all_specialists(self, tmp_path):
         p = self._project(tmp_path, {})
         assert doctor._advisory_mcp_tools(p) == set(doctor._ADVISORY_INTERACTIVE_MCP_TOOLS)
