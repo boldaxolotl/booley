@@ -1,72 +1,92 @@
 # Contributing to Booley
 
-## Overview
+This guide is for anyone changing Booley itself, human or agent: how to set up
+a development environment, which contributions help most, and how a change
+reaches `main`. Read the [README](../../README.md) first for what Booley is.
+Neighboring docs own the rest: [ARCHITECTURE.md](ARCHITECTURE.md) for how the
+pieces fit, [CODING_PRINCIPLES.md](CODING_PRINCIPLES.md) for Python code,
+[DOCS_PRINCIPLES.md](DOCS_PRINCIPLES.md) for docs,
+[`.github/ci/README.md`](../../.github/ci/README.md) for CI policy, and
+[`AGENTS.md`](../../AGENTS.md) for the repository rules agents follow. The
+[glossary map](../../GLOSSARY-MAP.md) points to the glossary for each part of
+Booley; keep the relevant one open.
 
-Thanks for wanting to help. Booley is early and the surface is wide, so almost
-any contribution is useful, but some help is worth far more than others.
+There are three ways to help:
 
-This guide assumes you've read the [README](../../README.md). The
-[context map](../../GLOSSARY-MAP.md) locates Booley's controlled vocabularies;
-keep the relevant glossary open if a term is unfamiliar. For how the pieces fit
-together, read [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Port a commercial EDA tool.** The highest-priority work. It needs access
+  to a real licensed installation for validation.
+- **Improve the framework.** Architecture review, custom MCP tools,
+  Specialists, tests, and focused code fixes.
+- **Improve the experience.** Bug reports, documentation corrections, setup
+  feedback, and feature requests, none of which need a code change.
 
-There are three main contribution paths:
-
-- **Port a commercial EDA tool.** This is the highest-priority work and requires access to a real licensed installation for validation.
-- **Improve the framework.** Architecture review, custom MCP tools, Specialists, tests, and focused code fixes are all welcome.
-- **Improve the experience.** Reproducible bug reports, documentation corrections, setup feedback, and feature requests are useful without a code change.
-
-Code contributors should complete [Getting set up](#getting-set-up) before starting. The sections that follow explain the commercial-EDA-tool port first, then the other contribution paths and the development rules shared by all code changes.
+Any code change starts with [Getting set up](#getting-set-up): you can't
+validate a change without a working environment and a green test suite.
 
 ## Getting set up
 
-Do this once before attempting any contribution below, including the #1 port
-path: you can't validate a change without a working dev env and a green suite.
+Booley needs Python 3.11 or later.
 
 ```bash
 git clone https://github.com/boldaxolotl/Booley.git
 cd Booley
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"     # editable install + test deps (pytest, pytest-asyncio, …)
-pytest                      # full suite, serial; scope to a path/-k for a fast subset
+pip install -e ".[dev]"     # editable install plus test and lint tools (pytest, Ruff, Pyright)
+pytest                      # tests/ serially; pass a path or -k for a fast subset
 ```
 
-CI installs with `-c .github/ci/constraints.txt`, a committed file that pins every
-dependency version. The plain install above always works; to reproduce CI's exact
-versions, add the flag: `pip install -e ".[dev]" -c .github/ci/constraints.txt`.
-After changing dependencies in `pyproject.toml`, regenerate the file with
-`uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o .github/ci/constraints.txt`
-or CI fails with that command in its message.
+A bare `pytest` skips `tests/goals/` until Goal Mode is removed (#3276); run
+those with `pytest tests/goals`. Tests that need the native B-Wave binary skip
+until you build it (see [Agent source-development checks](#agent-source-development-checks)).
 
-Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
-[TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md).
+CI installs with `-c .github/ci/constraints.txt`, a committed file that pins
+every dependency version. The plain install above always works; to reproduce
+CI's exact versions, add the flag:
+`pip install -e ".[dev]" -c .github/ci/constraints.txt`. After changing
+dependencies in `pyproject.toml`, regenerate the file, or CI fails and prints
+this command:
 
-The Sandbox agents read a fixed set of user docs from `/booley-docs/`. The
-authored files stay in `docs/user/` (plus `docs/internals/FLOW_REPORTS.md`); the
-set is `SHIPPED_DOCS` in `src/booley/dev_support/reference_docs.py`. After
-editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
-with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
-without writing. The same command mirrors `CHANGELOG.md` byte for byte to
-`src/booley/data/refs/CHANGELOG.md`, so run it after editing `CHANGELOG.md` too.
-`python3 .github/scripts/sync_packaged_copies.py [--check]` runs it without
-installing Booley. Never edit a copy or the mirror by hand. The sync turns
-links to other shipped docs into sibling links and links to unshipped docs
-(`PLAIN_TEXT_TARGETS`) into plain text marked `(host doc, not shipped)`. A new
-link to a doc in neither set fails the sync with the file, the link and the fix.
-The regenerated copy lives under `src/booley/**`, so such an edit also runs the
-Python CI lane.
+```bash
+uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o .github/ci/constraints.txt
+```
+
+### Development environment troubleshooting
+
+Debian and Ubuntu ship `venv` as a separate package. If `python3 -m venv .venv`
+fails with `ensurepip is not available`, install the package for your
+interpreter's minor version, then recreate the environment:
+
+```bash
+python3 --version                       # e.g. Python 3.12.3
+sudo apt install python3.12-venv        # match the version above
+rm -r .venv                             # only the failed local environment
+python3 -m venv .venv
+```
+
+The editable install puts `booley` in `.venv/bin`; activate the environment
+before running contributor commands. If another `booley` runs instead, find it
+with `type -a booley` and remove it. Don't link `.venv/bin/booley` into a
+global bin directory instead: every project would then run whatever branch
+this checkout has checked out.
 
 ### Building a development wheel
 
-Use the editable development environment and a complete checkout. From its root:
+Build a development wheel when you need an installed Booley made from your
+checkout, for example to test Host Bootstrap or a Sandbox Image built from
+your changes. A plain `python -m build` wheel lacks the embedded source
+context that Booley needs to build a Sandbox Image, so Booley refuses it. From
+the root of a complete checkout, with the editable environment active:
+
 ```bash
 python3 -m pip install build
 wheel=$(python3 -P .github/scripts/build_development_wheel.py)
 ```
-The script stamps `DEVELOPMENT_WHEEL`, removes generated src stamp/context even
-on failure, and prints the exact built wheel path. Only after a successful build,
-inspect it without replacing the editable install:
+
+The script stamps the build, removes the stamp files from `src/` even when the
+build fails, and prints the path of the wheel it wrote to `dist/`. To check the
+wheel without touching your editable install:
+
 ```bash
 if [ -n "$wheel" ]; then
     wheel_env=$(mktemp -d)
@@ -76,334 +96,376 @@ if [ -n "$wheel" ]; then
     rm -rf -- "$wheel_env"
 fi
 ```
-Host Bootstrap refuses the disposable environment above because its package
-is under the system temporary directory. One installed wheel per machine owns
-the host integrations (the skills under `~/.agents` and `~/.claude`); Booley
-records it in `~/.config/booley/host-installation.json` and refuses host
-commands from any other. Persistent installed-wheel venvs can become canonical;
-source/editable installs and named ephemeral workspace paths remain ineligible.
-To use this wheel on the host on purpose, run `booley bootstrap --update` from
-it; see [host installation guidance](../user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment).
+
+Host commands such as `booley bootstrap` refuse this throwaway environment. One
+installed wheel per machine owns the host integrations (the skills under
+`~/.agents` and `~/.claude`). Booley records it in
+`~/.config/booley/host-installation.json` and refuses host commands from any
+other installation, so a stray test install can't rewrite them. Only a wheel
+installed in a persistent environment qualifies: editable installs and
+packages under the system temporary directory, `.worktrees`, `.runtime`, or
+`qa-runs` never do. To make your development wheel the host installation on
+purpose, install it in a persistent environment and run
+`booley bootstrap --update` from it; see
+[The wrong `booley` runs](../user/TROUBLESHOOTING.md#the-wrong-booley-runs).
 
 ### Agent source-development checks
 
-Agents use the read-only Agent Readiness Check at
-`.github/scripts/agent_readiness.py` before creating a linked worktree and
-again before editing it. It uses one shared tools-only environment, never
-installs Booley from any checkout, and runs commands against the active
-worktree's source. At `handoff` it names CI's lint-job checks: `ruff
-check .`, `ruff format --check .`, and `pyright` (the strict boundary check,
-configured by `[tool.pyright]` in `pyproject.toml`, resolving third-party
-imports in the shared environment). Its `packaged-copies.check` command
-(before commit) fails when a packaged doc copy or the packaged `CHANGELOG.md`
-mirror is stale. Its `coverage.changed-lines` handoff
-command repeats CI's 90% changed-line coverage gate against the newest merge
-base with `main`, reading the coverage report that a passing `pytest.broad`
-run wrote for the same tree outside the checkout; it refuses a missing or
-stale report. Develop readiness defaults to the `python` test profile: its
-broad command runs `tests/ --test-profile python`, excluding every
-`native_bwave` test. `tests/` collection skips `tests/goals/` (temporary, until
-Goal Mode removal #3276); run those with unprofiled `pytest tests/goals`.
+Agents don't use the `.venv` workflow above. They run the read-only Agent
+Readiness Check, `.github/scripts/agent_readiness.py`, at the points
+[`AGENTS.md`](../../AGENTS.md) names. It needs only the standard library, so it
+runs before anything is installed. It never installs Booley; it runs every
+command from one shared tools-only environment against the active worktree's
+source, so parallel worktrees share one set of tools and can't test each
+other's code. Its output lists the verification commands, each tagged with the
+point at which to run it:
 
-Use `python3 .github/scripts/agent_readiness.py --test-profile full` before a
-full test run. `full` covers `tests/` (minus `tests/goals/`), including native integration; it
-does not include Rust tests or `crates/bwave/tests/`. Native source tests all
-use the active checkout's `crates/bwave/target/debug/bwave` (`bwave.exe` on
-Windows), ignoring release builds and runtime binary overrides. This test-only
-policy leaves production binary lookup unchanged. Rebuilding or deleting the
-binary during testing invalidates the run. Readiness checks that this is an
-executable native file and runs its bounded `--version` probe. The probe
-executes that local build but never builds or changes it. When unavailable,
-readiness is blocked, advertises `cargo build --locked --manifest-path
-crates/bwave/Cargo.toml --target-dir crates/bwave/target`, and omits the test
-command. If Cargo is absent, install the Rust toolchain first. The explicit
-target directory overrides Cargo output-directory configuration. Run remediation
-and repeat full readiness before testing; use the default Python profile for
-editing without a native build.
+| Command ID | Runs | When |
+|---|---|---|
+| `ruff.agent-gate` | `ruff check src/ tests/` | Before commit |
+| `packaged-copies.check` | `sync_packaged_copies.py --check`: fails on stale packaged docs or `CHANGELOG.md` mirror | Before commit |
+| `pytest.broad` | `pytest tests/` (which skips `tests/goals/`) with coverage, up to eight xdist workers | Optional broad verification |
+| `ruff.ci-check`, `ruff.ci-format`, `pyright.ci-check` | CI's lint job: `ruff check .`, `ruff format --check .`, `pyright` | Handoff |
+| `coverage.changed-lines` | CI's 90% changed-line coverage gate, against the newest merge base with `main` | Handoff |
 
-The emitted pytest command repeats preflight in the controller before xdist
-starts workers. Full-profile native tests fail on missing-prerequisite skips;
-FIFO tests may still skip on platforms without POSIX FIFOs; expected xfails
-remain xfails. Full runs require the complete `tests/` path without marker,
-keyword, ignore, deselect, last-failed, or stepwise filters. Use unprofiled
-pytest for subset diagnostics. `--help` does not run native preflight.
-Unprofiled pytest keeps its existing selection and skip behavior, including CI's
-`-m native_bwave`. Explicit Python profiles combine the exclusion with any
-existing marker expression. The readiness JSON schema stays at version 1:
-`pytest.broad` and `optional-broad-verification` retain their IDs, while the
-command's arguments explicitly identify the selected profile. Passing an
-explicit profile to prepare is a usage error.
+`coverage.changed-lines` reads the coverage report that a passing
+`pytest.broad` run wrote for the same tree, outside the checkout, and refuses
+a missing or stale one. `pytest.broad` pins `--basetemp` to a per-checkout
+directory on disk on POSIX, because `/tmp` is often a small in-memory file
+system that parallel tests can fill. Set `PYTEST_XDIST_AUTO_NUM_WORKERS` to
+use fewer workers on a smaller host, or drop the xdist options to run
+serially.
 
-Both profiles use up to eight xdist workers (`-n auto --maxprocesses=8`) with a
-disk-backed per-checkout `--basetemp` on POSIX. Set
-`PYTEST_XDIST_AUTO_NUM_WORKERS` to use fewer workers on a smaller host, or drop
-the xdist options to run serially.
-Human contributors may continue using the editable `.venv` workflow above.
-Readiness output contains local paths and is diagnostic material; do not
-publish it.
+`develop` uses the `python` test profile by default, which leaves out every
+`native_bwave` test. `--test-profile full` adds them. Native tests always use
+this checkout's debug build, `crates/bwave/target/debug/bwave` (`bwave.exe` on
+Windows), never a release build or an installed binary, so a run tests exactly
+the Rust code in the worktree. Readiness probes that binary with `--version`
+but never builds it; when the binary is missing it reports `blocked`, leaves
+out the test command, and gives the build command
+(`cargo build --locked --manifest-path crates/bwave/Cargo.toml --target-dir crates/bwave/target`;
+install the Rust toolchain first if Cargo is missing). Rebuilding or deleting
+the binary during a test run invalidates the run. Neither profile covers Rust
+tests or `crates/bwave/tests/`.
 
-### Test assertion safety
-
-Run `python3 .github/scripts/check_suppressed_assertions.py` before submitting
-test changes. CI runs the same command in lint. See the
-[suppressed test assertions rule](suppressed-test-assertions.md) for supported
-syntax, narrowly reviewed exemptions, and the static-analysis boundary.
+A `full` run must collect all of `tests/` with no marker, keyword, ignore,
+deselect, last-failed, or stepwise filter, and a skipped native test counts as
+a failure (except FIFO tests on platforms without POSIX FIFOs). Use plain
+`pytest` without `--test-profile` for diagnosing a subset. Readiness output
+contains local paths; don't publish it.
 
 ### Maintainer QA skills
 
-Maintainers may install the repository-owned QA skills from any primary
-Booley source checkout containing all QA skills, including from a nested
-directory. Branch, dirty-tree and installed-version differences do not matter:
-
-```bash
-cd /path/to/Booley
-booley bootstrap --with-qa-skills
-```
-
-The canonical host-installed `booley` records the absolute checkout path in
-`~/.agents/booley-qa-skills.json`; extra fields in existing records are ignored.
-Plain Bootstrap reconciles live links. Check-only Bootstrap, Doctor and Project
-Initialization inspect them without mutation. Missing checkouts or skills warn
-without changing the ordinary exit status. Restore the recorded checkout or
-re-enable from its new location with `--force` to relink. Explicit QA selection
-commands exit 2 if the QA step warns. Recover from unreadable or corrupt state
-with explicit opt-out.
-
-Disable with `booley bootstrap --without-qa-skills`. Only links owned by the
-independent `.booley-qa-skill-links.json` manifest are removed; product links,
-hand-made links and replaced entries remain. Unrecorded exact or equivalent QA
-links conflict even with `--force`; force may relink already recorded links.
-QA skills stay outside release wheels and Sandbox host-skill mounts and require
-explicit invocation. When `mount_host_skills` is enabled, rerun
-`booley init --seed` after enabling or removing them to refresh generated mounts.
-
-### Development environment troubleshooting
-
-Debian and Ubuntu split `venv` out of the Python package. If `python3 -m venv
-.venv` fails with `ensurepip is not available`, install the package matching the
-interpreter's minor version, then recreate the incomplete environment:
-
-```bash
-python3 --version                       # e.g. Python 3.12.3
-sudo apt install python3.12-venv        # match the version above
-rm -r .venv                             # only the failed local environment
-python3 -m venv .venv
-```
-
-An editable install places `booley` in `.venv/bin`; activate that environment
-before contributor commands. If another installation wins, use `command -v -a
-booley` to find the earlier entry and remove it rather than symlinking a
-checkout-specific virtual environment into a global bin directory.
+The repository's QA skills under `qa/` drive agent bug hunts against a
+candidate build. Maintainers install them with
+`booley bootstrap --with-qa-skills` from a primary source checkout; see
+[QA skills](../../qa/README.md#skills).
 
 ## The #1 priority: port commercial EDA tools
 
-Booley's biggest gap isn't code quality or features: it's **EDA tool coverage**.
-The open-source stack (Verilator, Icarus, Yosys, sv2v) runs first-class today.
-**AMD Vivado 2025.2** is the sole supported commercial policy: an administrator
-registers and grants a host installation, which is mounted read-only while the
-Vivado process still runs inside the Sandbox. Everything else from the
-"Big-3" is still on the [roadmap](ROADMAP.md#commercial-eda-tools): Synopsys,
-Siemens (Mentor), and the rest of the Cadence line.
+Booley's biggest gap isn't code quality or features: it's **EDA tool
+coverage**. The open-source stack (Verilator, Icarus, Verible, Yosys,
+OpenROAD) runs inside the Sandbox Image today. The one supported commercial
+EDA tool is **AMD Vivado 2025.2**, a
+[Host-Provisioned Sandbox EDA Tool](../GLOSSARY.md#execution): the host
+supplies its installation files read-only, and Vivado still runs inside the
+Sandbox. Synopsys, Cadence, and Siemens tools are on the
+[roadmap](ROADMAP.md#commercial-eda-tools).
 
-The reason is blunt: **the maintainer has no license for most of these EDA tools and
-cannot develop or validate a backend without one.** If you have access to a
-licensed installation of any of them, porting it is the single most valuable thing you can contribute:
+The reason is blunt: **the maintainer has no license for these EDA tools and
+cannot develop or validate an integration without one.** If you have access
+to a licensed installation of any of them, porting it is the most valuable
+thing you can contribute. The last column says whether Edalize 0.6.8, the
+version Booley pins, already has a node for its flow API (see below):
 
-| Vendor | EDA tools worth porting |
-|---|---|
-| Synopsys | **VCS**, **SpyGlass** (lint), **Verdi** (waveform/debug), **Design Compiler**, **Fusion Compiler** |
-| Cadence | **Genus** (synth), **HAL** (lint), **Xcelium** |
-| Siemens (Mentor) | **Questa / ModelSim** (sim), **Questa Lint / AutoCheck** (lint) |
+| Vendor | EDA tool | Edalize |
+|---|---|---|
+| Synopsys | **VCS** (sim) | Flow-API node |
+| Synopsys | **SpyGlass** (lint), **Design Compiler** (synth) | Legacy API only |
+| Synopsys | **Verdi** (waveform/debug), **Fusion Compiler** | None |
+| Cadence | **Xcelium** (sim) | Flow-API node |
+| Cadence | **Genus** (synth) | Legacy API only |
+| Cadence | **HAL** (lint) | None |
+| Siemens | **Questa / ModelSim** (sim) | Legacy API only (`modelsim`) |
+| Siemens | **Questa Lint / AutoCheck** (lint) | None |
 
-**Lint is the cheapest high-value port on that table.** Booley's `lint` Flow
-already normalizes findings from two engines (Verilator, Verible) into one
-structured verdict, so a third linter reuses the whole result surface.
+**Lint is the cheapest high-value port.** Booley's `lint` Flow already turns
+the findings of two EDA tools (Verilator, Verible) into one structured
+verdict, so a third linter reuses the whole result path.
 
-Edalize has two backend interfaces. New work targets the newer **flow API**,
-where each EDA tool is a *node* in a named *flow* (`lint`, `sim`, `synth`); the
-older **legacy API** is the single-class backend style and has to be ported to
-a flow node before Booley can drive it. Two linters have a head start: Edalize
-ships a legacy-API
-[SpyGlass backend](https://github.com/olofk/edalize/blob/main/edalize/spyglass.py)
-(methodology + goals + rule parameters). Cadence **HAL** is commonly delivered
-with `xrun`, but Booley has no supported Cadence installation or licensing
-policy. Both still need a flow-API EDA-tool node for the Edalize `lint` flow;
-the Verible port (`src/booley/data/edalize/verible.py`) is the worked example.
+Formal is a separate item. **JasperGold**, Questa Formal, and VC Formal check
+properties; they don't lint. They need a new Booley Flow with its own verdict
+shape (the "Formal verification" line on the
+[roadmap](ROADMAP.md#additional-booley-flows)), not a `lint` EDA tool. The
+exception is **Jasper Superlint**, which wraps formal engines behind a
+lint-style report and could fit under `lint`. The CDC/RDC apps (SpyGlass CDC,
+Questa CDC) are related but also a separate roadmap line.
 
-Formal is a different item. **JasperGold** (and Siemens' Questa Formal, Synopsys
-VC Formal) is property checking, not lint. That's the "Formal verification"
-line on the [roadmap](ROADMAP.md#additional-booley-flows), and it needs a
-new Booley Flow with its own verdict shape, not a `lint` engine. The exception is
-**Jasper Superlint**, which wraps formal engines behind a lint-style report and
-could plausibly land under `lint`. Same for the CDC/RDC apps (SpyGlass CDC,
-Questa CDC): related EDA tools, separate roadmap line.
-
-Booley never distributes any proprietary code. An integration drives the EDA
-tool's own CLI inside the Sandbox. Commercial integrations additionally
-need a reviewed, fixed provisioning and licensing policy; Project configuration
+Booley never distributes proprietary code: an integration drives the EDA
+tool's own CLI inside the Sandbox. Project configuration comes from the
+repository being worked on, so Booley doesn't trust it with host access: it
 cannot supply host paths, commands, mounts, or arbitrary environment values.
-Each host-provisioned tool policy must define one canonical, read-only container
-mount target; only the administrator-registered host source may vary.
+A commercial integration therefore needs a reviewed, built-in provisioning and
+licensing policy like Vivado's: a host-owned
+[EDA Installation Registration](../GLOSSARY.md#configuration) and
+[Project Grant](../GLOSSARY.md#configuration), and one fixed read-only mount
+point in the container (Vivado's is `/opt/booley-eda/vivado`). Only the host
+source path the administrator registers may vary.
 
 ### How a port works: two moving parts
-Porting an EDA tool is **almost always these two steps**, in order:
+
+A port is almost always these two steps, in order.
 
 **1. Invocation: does FuseSoC/Edalize already drive it?**
 
-Booley resolves and invokes designs through the FuseSoC → Edalize stack.
-Edalize is the layer that actually shells out to the EDA tool. So the **first
-question for any EDA tool is: does Edalize already have a backend for it?**
+Booley resolves and builds designs through FuseSoC and Edalize; Edalize is the
+layer that runs the EDA tool. Edalize has two interfaces. Booley uses the
+newer **flow API**, where each EDA tool is a node in a named Edalize flow
+such as `sim`, `lint`, or `generic`. A **legacy-API** backend (one class per EDA tool)
+must be ported to a flow-API node before Booley can drive it. For a linter,
+the Verible node Booley ships (`src/booley/data/edalize/verible.py`) is the
+worked example; Edalize's legacy
+[SpyGlass backend](https://github.com/olofk/edalize/blob/main/edalize/spyglass.py)
+gives SpyGlass a head start.
 
-- **Yes** (VCS, Genus, DC, Questa, … many are already in Edalize) → you get
-  much of the invocation layer. Point the EDA-tool selector at it: a `.core` Target's
-  `default_tool` field (or a per-flow `flow_options.tool`) chooses which EDA tool
-  normally builds that Target. FPGA implementation is the fixed-backend exception:
-  the Target's `fpga` name axis selects the Flow, its EDA-selection field controls
-  FuseSoC resolution inputs, and Booley always rebuilds those inputs into a Vivado
-  EDAM. Then wire the tool through the built-in Booley Flow path. There is one
-  builder (Booley's FuseSoC/Edalize flow) and no `backend` or execution-location
-  knob: every Flow executes inside the Sandbox. For commercial EDA, an
-  Edalize backend is necessary but not sufficient—the contribution also needs a
-  built-in installation, licensing, security, Doctor, and end-to-end validation
-  policy comparable to Vivado's. See
-  [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
-- **No** → contribute the backend upstream to Edalize, then integrate that
-  flow node with the same Sandbox and commercial-policy requirements.
-  Booley has no Project-defined host-command escape hatch.
+- **Edalize has a flow-API node:** a Target's `flow_options.tool` selects the
+  EDA tool that builds it ([TARGETS.md](../user/TARGETS.md)); wire the new
+  value through the built-in Booley Flow. The `fpga` Flow is the exception: it
+  always builds with Vivado.
+- **Edalize has no node:** contribute one upstream to Edalize first.
+  Booley has no Project-defined escape hatch for host commands.
 
-**2. Interpretation: Booley needs the result-parsing logic.**
+Either way, a commercial EDA tool also needs the provisioning, licensing,
+security, Doctor, and end-to-end validation policy described above; an
+Edalize node is necessary but not enough. See
+[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) for how Vivado is set
+up today and [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) for how the
+built-in Flows run.
 
-Getting the EDA tool to *run* is only half the port. Booley's whole value is turning
-raw EDA-tool output into a **normalized structured verdict** (`pass` / `fail` /
-`inconclusive` / `timeout`) plus extracted metrics. The agent never reads raw
-logs. That parsing lives in Booley and has to be written per EDA tool:
+**2. Interpretation: Booley needs the result parsing.**
 
-- **Simulators** parse raw output into the structured sim result (shared
-  helpers in `result.py`). See the existing adapters in
-  [src/booley/flows/sim/backends/](../../src/booley/flows/sim/backends/):
-  `cocotb.py`, `icarus.py`, and `verilator.py`. A new simulator adapter can start as a sibling
-  module, but it does not become public eligibility until the complete runtime
-  policy and real licensed end-to-end evidence land with it.
-- **Synthesis / timing / impl** parse vendor report files into QoR
-  (quality-of-results: area, timing, power) metrics.
-  See how `fpga` reads Vivado's routed reports and how Yosys+OpenROAD timing is
-  interpreted in the built-in Flow implementations.
-- **Waveform EDA tools** (e.g. Verdi/FSDB) feed the `bwave` debug surface, the
-  harder, more valuable end of the spectrum.
+Getting the EDA tool to run is half the port. Booley's value is turning raw
+EDA-tool output into a structured verdict plus extracted metrics, so the
+Developer Agent doesn't have to read raw logs. That parsing lives in Booley
+and is written per EDA tool:
 
-Freeze the parsers against **real logs from a real licensed run** and commit a
-sanitized fixture (see the "IP rule" below). A parser validated only against
-synthetic output is provisional at best.
+- **Simulators** parse raw output into the structured simulation result. See
+  the adapters in [`src/booley/flows/sim/backends/`](../../src/booley/flows/sim/backends/)
+  (`cocotb.py`, `icarus.py`, `verilator.py`) and
+  [Adapter boundary](FLOW_IMPLEMENTATION_SIM.md#adapter-boundary).
+  A new adapter can start as a sibling module, but users can't select it until
+  the full runtime policy and real licensed end-to-end evidence land with it.
+- **Synthesis, timing, and implementation** parse vendor report files into
+  QoR (quality of results: area, timing, power) metrics. The `fpga` Flow's
+  Vivado reports (`src/booley/flows/fpga/`) and the `synth` Flow's
+  Yosys/OpenROAD timing (`src/booley/flows/synth/`) are the examples.
+- **Waveform tools** (such as Verdi with FSDB) would feed B-Wave, Booley's
+  waveform debug tool: the harder, more valuable end.
+
+Build the parsers against **real logs from a real licensed run**, then commit
+a sanitized fixture (see the IP rule below). A parser checked only against
+made-up output is provisional at best.
 
 ### Before you start a port
 
-- **Open an issue first** describing the EDA tool, your license/host situation, and
-  whether Edalize already covers invocation. The maintainer can't reproduce your
-  environment, so a port is a collaboration: the more of the real-EDA-tool
-  validation you can carry, the faster it lands.
-- **Check the Edalize backend list** before assuming you have to write
-  invocation from scratch.
-- **IP rule: do not commit proprietary output.** Vendor logs, reports, and VCD/FSDB
-  headers can leak design and even EDA-tool-internal details. Contribute a
-  *synthetic* fixture in the EDA tool's dialect, and keep real dumps out of the repo
-  entirely
+- **Open an issue first** describing the EDA tool, your license and host
+  situation, and whether Edalize already covers invocation. The maintainer
+  can't reproduce your environment, so a port is a collaboration: the more of
+  the real-tool validation you carry, the faster it lands.
+- **IP rule: don't commit proprietary output.** Vendor logs, reports, and
+  VCD/FSDB headers can leak design details and even EDA-tool internals.
+  Commit a *synthetic* fixture in the EDA tool's output format and keep real
+  dumps out of the repository entirely.
 
 ## Other welcome contributions
 
-Porting EDA tools is #1, but not the only way to help:
-
 - **Architecture review.** Booley is "hardware engineer writing software", and
   the parts most likely to be wrong are the load-bearing ones: the Booley Flow
-  boundary, the Sandbox/host-authority split, the job model, where
-  state lives. If you've
-  built and maintained software at this size, read
-  [ARCHITECTURE.md](ARCHITECTURE.md) and tell the
-  maintainer what's going to hurt in a year. An issue arguing that a decision is
-  wrong, with the reasoning, is worth more than a PR that tidies the code
-  implementing it. Style and idiom nits are the cheap part; see
-  [CODING_PRINCIPLES.md](CODING_PRINCIPLES.md) if you want them anyway.
-- **MCP tool architecture and custom extensions** ([MCP-TOOLS.md](MCP-TOOLS.md)).
-- **Bug reports and reproductions**, especially around setup on new projects.
-  You do not need this repo, a GitHub account, or a PR to send one. Tell the
-  `/booley-feedback` skill from your own project while the evidence is still on
-  screen. It captures the failure, writes your local report, and shows the exact
-  redacted text before anything goes anywhere
+  boundary, the split between Sandbox and host authority, the Job model, and
+  where state lives. If you've built and maintained software at this size,
+  read [ARCHITECTURE.md](ARCHITECTURE.md) and tell the maintainer what's going
+  to hurt in a year. An issue arguing that a decision is wrong, with the
+  reasoning, is worth more than a PR that tidies the code implementing it.
+- **Custom MCP tools and Custom Flows**: see [MCP-TOOLS.md](MCP-TOOLS.md).
+- **Bug reports and reproductions**, especially from setting up new projects.
+  You don't need this repository, a GitHub account, or a PR. Tell the
+  `/booley-feedback` skill in your own project while the evidence is still on
+  screen. It captures the failure, writes a local report, and shows you the
+  exact redacted text before anything leaves your machine
   ([USAGE.md](../user/USAGE.md#when-booley-itself-misbehaves)).
 - **Telling us what you think.** Tell the same `/booley-feedback` skill what
   you'd want built, what you liked, what you gave up on, or whether Booley
-  earned its setup cost on a real project. Bug reports say what is broken and
-  never whether the thing is worth using; that second question is the one the
-  roadmap actually turns on. No reproduction is required; one sentence is a
-  complete report.
+  earned its setup cost on a real project. Bug reports say what is broken,
+  never whether the thing is worth using, and that second question is what
+  the roadmap turns on. One sentence is a complete report.
 - **Docs**: corrections, gaps, and clearer onboarding. A doc that lies is a
-  first-class bug. Give `/booley-feedback` the contradiction and the file; it
-  needs no reproduction.
+  bug. Give `/booley-feedback` the contradiction and the file; it needs no
+  reproduction.
 
 ## Development basics
 
-- **Run the test suite before opening a PR** (setup is under
-  [Getting set up](#getting-set-up) above); a change that breaks tests is yours
-  to fix.
-- **Match the surrounding code**: comment density, naming, and idiom.
-- **Register tests of Sandbox-only code.** Windows CI skips tests listed in
-  `tests/sandbox_only.py`, the `sandbox_only` marker's registry, because that code
-  never runs on a Windows host. Add a test module there only when the module it
-  exercises runs only in the Sandbox. Every new module under a registered
-  directory such as `tests/goals/` is Sandbox-only unless it is listed in
-  `WINDOWS_HOST_TESTS`. A guard test fails if a module a host command can
-  import is left with only Sandbox-only tests. See
-  [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests).
-- **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are three PRs.
+- **Run the test suite before opening a PR**; a change that breaks tests is
+  yours to fix.
+- **Match the surrounding code**: comment density, naming, and idiom. Design
+  and test rules are in [CODING_PRINCIPLES.md](CODING_PRINCIPLES.md).
+- **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are
+  three PRs. Size caps are in
+  [coding principle 18](CODING_PRINCIPLES.md#18-pull-requests-stay-small).
+- **Record a user-visible change as a changelog fragment.** Add
+  `changelog.d/<issue number>.md` (or `changelog.d/<lowercase-slug>.md` when
+  there is no issue) holding one or more `- ` bullets, written as they should
+  read under `## Unreleased`. Never edit `CHANGELOG.md` or its packaged mirror
+  for an ordinary change; the release assembles the fragments. The format rules
+  are in [changelog.d/README.md](../../changelog.d/README.md).
+- **Register tests of Sandbox-only code.** Windows CI skips the test modules
+  listed in `tests/sandbox_only.py`, because their code never runs on a
+  Windows host. See [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests)
+  for when to add a module and the guard test that checks the list.
 - **Keep slow tests well inside their time budget.** CI gives each test 60
   seconds unless a `@pytest.mark.timeout(N)` marker says otherwise. On Windows
-  an expired budget kills the whole xdist worker with no traceback, so Windows
-  CI watches how much of its budget each passing test uses. On pull requests,
-  the merge queue, and `main`, CI runs with `--timeout-headroom=0.8
-  --timeout-headroom-warn=0.5`: a test above 50% gets a warning annotation and
-  a test above 80% fails. The weekly full Python matrix runs with
-  `--timeout-headroom=0.5`, so drift is fixed in one batch instead of failing
-  unrelated pull requests. Both messages name the marker value to use. Size a
-  budget at three times the test's slowest Windows CI duration, rounded up to
-  a 30-second multiple. Per-test durations are the `time` values in the
-  uploaded `junit-windows-*` and `full-junit-windows-latest-*` artifacts, and
-  each test's `timeout_headroom_ratio` property records how much of its
+  an expired budget kills the whole xdist worker with no traceback, so the
+  Windows legs of the `Tests` workflow warn on a passing test that uses more
+  than 50% of its budget and fail one above 80%. The Windows legs of the
+  weekly full Python matrix fail above 50%, so creeping slowdowns get fixed in one batch instead of
+  failing unrelated pull requests. Both messages name the marker value to use.
+  To size a budget yourself, take three times the test's slowest Windows CI
+  duration and round up to a multiple of 30 seconds. Durations are the `time`
+  values in the `junit-windows-*` and `full-junit-windows-latest-*` artifacts;
+  each test's `timeout_headroom_ratio` property records the share of its
   budget it used.
+
+### Test assertion safety
+
+An assertion inside `contextlib.suppress` can let a test pass without checking
+anything: an earlier exception in the block skips the assertion, and
+suppressing `AssertionError` or `Exception` swallows the failure itself. Keep
+every contract assertion outside `contextlib.suppress`. CI's lint job enforces
+this; run the same check before submitting test changes:
+
+```sh
+python3 .github/scripts/check_suppressed_assertions.py
+```
+
+It parses every `tests/**/*.py` file without importing it and prints one
+`path:line:column: rule (scope)` line per violation. It also fails on a file
+it can't read or parse (CI runs it on Python 3.13, so tests must parse there)
+and on a bad exemption entry.
+
+| Rule | Flags | Fix |
+|---|---|---|
+| `suppressed-assertion` | An `assert` inside the `with` block, including nested blocks and class bodies | Move it after the block |
+| `suppressed-assertion-call` | A call inside the block named `fail`, `assert<Upper>…` (unittest), or starting with `assert_`, `_assert_`, `check_`, or `_check_`, mock assertions included; `subprocess.check_call`, `subprocess.check_output`, and `check_returncode` don't count | Move it after the block |
+| `broad-suppression` | Suppressing `Exception`, `BaseException`, `AssertionError`, or a `failureException` such as `pytest.fail.Exception`, even with no visible assertion, because any helper called in the block may assert | Suppress only the exception you expect |
+| `unsupported-suppress-use` | `contextlib.suppress(...)` built anywhere but directly in a `with` item, such as in `ExitStack.enter_context` or saved for later | Write `with contextlib.suppress(...)` |
+| `unsupported-suppress-reference` | `suppress` passed through a container, factory, tuple unpacking, walrus, or attribute assignment | Call it directly or through a plain name alias |
+| `unsupported-suppress-arguments` | A keyword argument, or an exception argument the checker can't trace to a name | Pass exception classes by name |
+| `unsupported-contextlib-star-import` | `from contextlib import *` | Import names explicitly |
+
+The checker follows `import contextlib`, renamed and `from` imports, simple
+aliases, several context managers in one `with`, and async code. It tracks
+every name a scope might bind, so reassigning an imported alias can produce a
+finding even where the code is safe.
+
+To test that code raises, require the exception with a specific match and
+assert afterwards:
+
+```python
+with pytest.raises(RuntimeError, match="expected failure"):
+    operation()
+assert observed_result == expected_result
+```
+
+For best-effort cleanup, suppress only the cleanup errors you expect and put
+required assertions after the cleanup block.
+
+The check is lexical, not a proof. It doesn't see assertions inside helpers
+called under a narrow suppression, dynamic imports, reflective lookups, or
+`global`/`nonlocal` rebinding. Related hazards it doesn't check at all: a
+broad `try`/`except` that swallows failures, and assertions placed after the
+raising call inside `pytest.raises`. Review those by hand.
+
+**Exemptions** live in `.github/scripts/suppressed_assertion_exemptions.json`,
+which is empty. One is allowed only where the assertion is itself the test
+input, in a test of how assertions are handled or skipped; a test of the
+checker should feed it source strings instead. Each entry matches exactly one
+current finding of rule `suppressed-assertion`, `suppressed-assertion-call`,
+or `broad-suppression`:
+
+```json
+{
+  "path": "tests/example.py",
+  "line": 12,
+  "column": 9,
+  "scope": "TestHandler.test_assertion_input",
+  "rule": "suppressed-assertion",
+  "purpose": "intentional-assertion-input",
+  "reason": "Describe why this assertion is deliberately test input.",
+  "verification": "Identify the assertion outside suppression that checks the outcome."
+}
+```
+
+A broad suppression around an intentional assertion needs two entries, one
+per finding. Duplicate, stale, or malformed entries fail the check. The
+checker validates only the match and the fields, so the reviewer must confirm
+the reason and that the named outside assertion exists.
+`tests/ci/test_suppressed_assertions.py` holds the checker's regression tests.
 
 ## Writing docs
 
 Follow [DOCS_PRINCIPLES.md](DOCS_PRINCIPLES.md) when you write, edit, or
-review a doc. Part 2 covers user docs, including how variants such as Stealth
-Mode go in collapsed callouts.
+review a doc.
+
+The Developer Agent in the Sandbox can't read this repository, so a fixed set
+of docs ships inside the package and appears at `/booley-docs/` in the
+Sandbox: `SHIPPED_DOCS` in `src/booley/runtime/packaged_docs.py`, all from
+`docs/user/` plus `docs/internals/FLOW_REPORTS.md`. After editing one of them,
+regenerate the packaged copies in `src/booley/data/docs/`:
+
+```bash
+python -m booley.dev_support.reference_docs            # add --check to verify only
+python3 .github/scripts/sync_packaged_copies.py        # same, without installing Booley
+```
+
+Never edit a copy by hand. The sync rewrites links between shipped docs, turns
+links to listed unshipped docs (`PLAIN_TEXT_TARGETS`) into plain text, and
+fails on a link to any other doc; `booley.runtime.packaged_docs` has the rules.
+The same command mirrors `CHANGELOG.md` to `src/booley/data/refs/`, which only
+release preparation edits.
+
+Run the sync before committing: the readiness packaged-copies check and
+`tests/test_paths.py` fail on a stale copy. A stamped build
+(`write_build_stamp` in `src/booley/runtime/build_stamp.py`) renders the
+copies too and leaves a stale tracked copy rewritten in the working tree, but
+a bare `python -m build` packs the copies as they are. The copies live under
+`src/booley/`, so a docs edit that regenerates them also runs the Python CI
+jobs.
 
 ## Branch and pull request workflow
 
-Booley uses a mainline workflow; there is no permanent development integration
-branch. Start each feature, fix, refactor, or documentation branch from the
-latest `main`, and open its pull request directly into `main`. Keep the branch
-focused on one concern and make sure the required checks pass. A repository
-maintainer or agent then adds the ready PR to the Mergify queue; external
-contributors do not need write access to request review. A PR labelled
-`confidential-review` waits for a maintainer to review it first. Mergify updates
-and validates queued PRs one at a time before merging them. Delete the branch
-only after Mergify reports the PR merged.
+Booley uses a mainline workflow with no long-lived integration branch. Start
+each branch from the latest `main`, keep it to one concern, and open its pull
+request into `main`. Once the required checks pass, a maintainer or
+repository agent adds the PR to the Mergify merge queue, which tests and
+merges queued PRs; you don't need write access. A PR labeled
+`confidential-review` waits for a maintainer's review first. Delete your
+branch only after Mergify reports the PR merged.
 
 A pull request from a fork needs no setup, such as allowlisting your commit
-identity, if you do not have write access. The `confidential-content` check
-treats findings on commits you author and on your PR text as advisory: they do
-not block the check, and a maintainer reviews any flagged confidential-term
-match. A commit whose author is an allowlisted maintainer identity is still checked.
+identity. The `confidential-content` check, which scans for terms that must
+not become public, treats findings on commits you authored and on your PR text
+as advisory: they don't fail the check, and a maintainer reviews any flagged
+match.
 
 CI skips draft pull requests: `Tests`, the PicoRV32 demo contract, and the
-project site build start when the PR is opened ready or marked ready for
-review. `confidential-content` still runs on drafts. Open a draft while the
-change is still moving to save shared runner time; to test a draft anyway, run
-`Tests` through `workflow_dispatch` on its branch (the full suite, image builds
-included).
+site build start when the PR is opened ready or marked ready for review.
+`confidential-content` runs on drafts too. Open a draft while the change is
+still moving to save shared runner time. To test a draft anyway, run the
+`Tests` workflow manually (`workflow_dispatch`) on its branch; a manual run
+selects every job, image builds included.
 
-`main` is kept releasable, but merging a pull request does not publish a new
-Booley version. Releases are deliberate: a versioned commit on `main` is tagged
-with a matching `v*` tag, which triggers the package and container publishing
+Merging into `main` doesn't publish a release. A release is a versioned commit
+on `main` tagged `v*`; the tag triggers the package and container publishing
 workflows.
 
-Questions? Open an issue. Especially if it starts with "I have a licensed
-copy of…".
+Questions? Open an issue, especially if it starts with "I have a licensed copy
+of…".

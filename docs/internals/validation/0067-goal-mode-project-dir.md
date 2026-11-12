@@ -1,8 +1,12 @@
-# Goal Mode Booley Directory spike (ADR 0067, Phase 0, fact 19)
+# Goal Mode Booley Directory spike (ADR 0067, Phase 0)
 
-Validated on 06 OCT 2026 for [ADR 0067](../../adr/0067-replace-ticket-mode-with-goal-mode.md).
-Decides where the committed Goal summary is written so it lands on the Goal
-Branch.
+Dated evidence record of a spike run on 06 OCT 2026 for
+[ADR 0067](../../adr/0067-replace-ticket-mode-with-goal-mode.md). It decided where the committed Goal summary is written so it lands
+on the [Goal Branch](../../GLOSSARY.md), and where the local
+[Goal Record](../../GLOSSARY.md) lives. Read it for the evidence behind those
+paths; the decision went into
+[ADR 0067's 2026-10-06 amendments](../../adr/0067-replace-ticket-mode-with-goal-mode.md#amendments-2026-10-06).
+Results hold for the Booley build named below and are not updated afterward.
 
 ## Setup
 
@@ -12,8 +16,8 @@ Run inside the picorv32 Sandbox (Booley 0.3.0 at `07aef4f3f`,
 linked worktree with Booley's own `worktree_create.sh` on that branch, then
 recorded the resolution APIs, wrote
 `<worktree>/.booley/goals/history/x.md`, and committed it with
-`runtime.history_commit.commit_file` (the Step 0 R7 publisher: private
-index, compare-and-swap on the branch).
+`runtime.history_commit.commit_file` (Booley's history publisher: it commits
+from a private index and updates the branch with compare-and-swap).
 
 Variants:
 
@@ -47,15 +51,15 @@ Two more facts the spike surfaced:
 
 - `worktree_create.sh` with an empty `branch_ref` creates a detached
   worktree, and `commit_file` refuses a detached HEAD. The Goal Branch must
-  exist and be checked out at publication; D8 (branch created in place at
-  entry) creates it, and the `check_branch` binding above enforces it at
+  exist and be checked out at publication: Goal entry creates the branch in
+  place, and the `check_branch` callback described below enforces it at
   Finish.
 - Inside the Sandbox, `BOOLEY_DIR` points every `resolve_booley_dir`
   call at the Main Booley Directory even with an explicit `start`, so a
   Goal record keyed by that resolution lives in the shared directory, not
   in the worktree's copy. That is the intended place for the local record.
 
-## Decision for D9
+## Decision
 
 - The local Goal record stays in the Booley Directory that discovery
   returns (`.booley/goals/<goal-id>/`, shared in a Sandbox).

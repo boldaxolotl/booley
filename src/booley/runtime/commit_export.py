@@ -262,7 +262,7 @@ def export_commit(repository: Path, commit: str, destination: Path) -> CommitExp
 
 def _export_commit(repository: Path, commit: str, destination: Path) -> CommitExport:
     validate_pin(repository, commit)
-    bd_repository = _versioned_booley_dir(repository)
+    bd_repository = versioned_booley_dir(repository)
     _require_new_destination(repository, bd_repository, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(dir=destination.parent, prefix=f".{destination.name}.export-"))
@@ -276,7 +276,7 @@ def _export_commit(repository: Path, commit: str, destination: Path) -> CommitEx
     return CommitExport(destination, drift, paired_commit)
 
 
-def _versioned_booley_dir(repository: Path) -> Path | None:
+def versioned_booley_dir(repository: Path) -> Path | None:
     """The checkout's own Versioned Booley Directory, from its structure only.
 
     A linked (Paired Checkout) or standalone Git repository at the checkout's own

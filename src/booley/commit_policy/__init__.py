@@ -2,7 +2,6 @@
 
 from booley.commit_policy.policy import (
     BANNED_PHRASES,
-    REDACTION_PLACEHOLDER,
     StealthPolicy,
     allowed_authors,
     banned_phrases,
@@ -11,7 +10,6 @@ from booley.commit_policy.policy import (
     has_banned_content,
     identity_allowed,
     max_body_lines,
-    redact_banned,
     source_checkout_policy_owner,
     stealth_choice_unset,
     stealth_enabled,
@@ -21,6 +19,7 @@ from booley.commit_policy.validation import (
     ALLOWED_TYPES,
     MAX_SUMMARY_LEN,
     SUBJECT_RE,
+    convention_errors,
     validate_message,
 )
 
@@ -28,17 +27,16 @@ __all__ = [
     "ALLOWED_TYPES",
     "BANNED_PHRASES",
     "MAX_SUMMARY_LEN",
-    "REDACTION_PLACEHOLDER",
     "SUBJECT_RE",
     "StealthPolicy",
     "allowed_authors",
     "banned_phrases",
+    "convention_errors",
     "enforce_convention",
     "find_banned",
     "has_banned_content",
     "identity_allowed",
     "max_body_lines",
-    "redact_banned",
     "source_checkout_policy_owner",
     "stealth_choice_unset",
     "stealth_enabled",

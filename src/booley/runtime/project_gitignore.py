@@ -74,6 +74,8 @@ PROJECT_GITIGNORE_PATTERNS = (
     "/BOOLEY-FEEDBACK.md",
     "/setup-evidence/",
     "/PARITY-REPORT.md",
+    # Measurement Runs (Common Booley State): local results, never committed.
+    "/measurements/",
 )
 
 # Each ``!`` re-include and the required pattern it overrides. Git applies the

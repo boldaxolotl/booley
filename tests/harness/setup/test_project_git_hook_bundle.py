@@ -218,22 +218,21 @@ def test_bundle_identifier_tiers_refresh_from_current_config(tmp_path):
     assert first.content == build_project_git_hook_bundle().content
     config = directory / "booley.toml"
     message = project / "message.txt"
-    for setting, expected in (
-        (
-            'banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]',
-            "fix: redacted_config redactedRunner myredactedfile axi_redacted reagent precursor\n",
-        ),
-        (
-            "banned_words = []\nbanned_substrings = []",
-            "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n",
-        ),
+    original = "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n"
+    for setting, rejected in (
+        ('banned_words = ["booley", "agent"]\nbanned_substrings = ["quokka"]', True),
+        ("banned_words = []\nbanned_substrings = []", False),
     ):
         config.write_text("[stealth]\nenabled = true\n" + setting + "\n")
-        message.write_text(
-            "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n"
-        )
+        message.write_text(original)
         result = run_bounded_child(
             ["python3", "-I", "-S", str(bundle), "commit-msg", str(message)], cwd=project
         )
-        assert result.returncode == 0, result.stderr
-        assert message.read_text() == expected
+        # The hook never rewrites the message, accepted or rejected.
+        assert message.read_text() == original
+        if rejected:
+            assert result.returncode == 1
+            for term in ("booley", "agent", "quokka"):
+                assert f"'{term}' in the subject" in result.stderr
+        else:
+            assert result.returncode == 0, result.stderr

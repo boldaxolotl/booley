@@ -43,8 +43,6 @@ _LEGACY_PATTERNS = (
 
 # path relative to src/booley -> string literals allowed there
 _ALLOWED_LITERALS: dict[str, tuple[str, ...]] = {
-    # Allowed class: banned commit-message token.
-    "commit_policy/policy.py": ("ticket",),
     # Allowed class: internal identifiers and stored format keys.
     "criteria/freshness.py": ("ticket",),
     "criteria/unbound_ledger.py": ("ticket",),

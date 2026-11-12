@@ -13,8 +13,7 @@ suites for core/AXI/WB. The disabled test arms a distinct MMIO marker immediatel
 before its first Zbb encoding and requires that illegal-instruction trap.
 Keep existing core `main`/`axi`, WB `wb`, Dhrystone `dhry` tests and genuinely
 execute them. Keep Target definitions and owned test tables for future regressions.
-Mutation steering covers Zbb decode, result generation, PCPI handshake and enable
-gating. Implementation assets are `picorv32.v`, `testbench.v`, `testbench_wb.v`,
+Implementation assets are `picorv32.v`, `testbench.v`, `testbench_wb.v`,
 `Makefile`, and new `tests/zbb.S`, plus needed Project Target/test definitions.
 
 ## Goals

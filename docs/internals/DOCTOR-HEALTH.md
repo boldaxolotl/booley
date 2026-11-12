@@ -1,10 +1,16 @@
 # Doctor diagnostics and shared health
 
-How Doctor's checks are split across owners, what each owner may touch, and how
-Doctor, MCP and the Dashboard read one shared health observation. The import
-rules that keep these owners apart are in
-[the source-dependency contract](SOURCE-DEPENDENCY-CONTRACT.md#doctor-diagnostic-boundary);
-waiver syntax is in [DOCTOR.md](../user/DOCTOR.md#doctor-waivers-doctor-waiverstoml).
+This doc explains how Doctor's checks are split across owner modules, what
+each owner may touch, and how Doctor, MCP, and the Dashboard read one shared
+health observation. It is for contributors and agents adding or changing a
+Doctor check, or reading Doctor results from new code. What users see and
+waiver syntax are in [DOCTOR.md](../user/DOCTOR.md); the import rule that
+keeps the owners apart (D26) is in the
+[Source Dependency Contract](SOURCE-DEPENDENCY-CONTRACT.md#direction-rules).
+
+The split exists so that each check's knowledge lives with the code it
+checks, and so that MCP and the Dashboard can read Doctor's verdict without
+importing the Doctor command.
 
 ## Diagnostic owners
 
@@ -39,7 +45,7 @@ deduplication, and interleaves details (verbose-only unless marked) without chan
 | Operation | Permitted effects and bounds |
 | --- | --- |
 | Runtime inspection | Reads Project/spec state; invokes bounded Git/Docker probes; calls authoritative validation. With active EDA, validation may create the private authority directory and acquire/create its lock. It does not issue, provision, repair, or start the persistent Sandbox. No-active-EDA validation does not require writable authority state. |
-| Runtime version check | Runs a temporary `docker run --rm --pull=never --network none` version probe with a 30-second CLI timeout. A CLI timeout does not prove remote container cleanup. |
+| Runtime version check | Compares the issued Sandbox Image's Booley build identity with the host installation by reading `docker image inspect` metadata (15-second timeout); starts no container. |
 | In-runtime validation | Checks runtime isolation and mounted Vivado locally (90-second probe timeout), without reading host-private authority. |
 | Retained-resource inspection | Lists state volumes and image keepers; does not delete them. |
 | Host inspection | Uses Bootstrap `Intent.CHECK` and bounded environment probes; installs and repairs nothing. Host preparation/clock probes are skipped inside the Sandbox. |
@@ -58,23 +64,25 @@ checks while skipping operations that require validated Project configuration.
 
 ## Adding a diagnostic owner
 
-Remaining Doctor checks move to owners by one convention:
+A new owner, or a check moved out of `harness.doctor`, follows one
+convention:
 
 - The owner takes a typed, frozen request and returns a `DiagnosticReport` built
   with `audit.diagnostic_results.Findings`. Every WARN carries a `check_id`, plus
   `subject` and `dedupe` where the check had them. The owner accepts no Doctor
   callbacks.
-- The owner imports no Doctor, CLI orchestration or rendering module, and its
-  module is listed in D26 of the executable contract
-  (`tests/architecture/booley_contract.py`) and the
-  [source-dependency contract](SOURCE-DEPENDENCY-CONTRACT.md). D26 applies to
-  owners that take a request and return a report; the shared single-fact helpers
-  in the table (`audit.host_environment`, `runtime.interactive_docker`) and the
-  value module `audit.diagnostic_results` stay outside it.
+- The owner imports no Doctor, CLI orchestration, or rendering module. Add
+  its module to D26's sources in `tests/architecture/booley_contract.py` and
+  in the D26 row of the
+  [Source Dependency Contract](SOURCE-DEPENDENCY-CONTRACT.md#direction-rules).
+  D26 covers owners that take a request and return a report; the single-fact
+  helpers in the table (`audit.host_environment`,
+  `runtime.interactive_docker`) and the value module
+  `audit.diagnostic_results` stay outside it.
 - Doctor builds the request, calls the owner, and renders the report with
-  `_Reporter.diagnostics` at the check's existing position, so message, fix text,
-  severity, check ID, waiver behavior, order and exit code are unchanged by the
-  move.
+  `_Reporter.diagnostics` at the check's position. Moving a check this way
+  changes none of its message, fix text, severity, check ID, waiver behavior,
+  order, or exit code.
 - Tests assert on the returned report and patch no private Doctor name. Only
   tests about waivers, deduplication, `finish()` or the persisted Doctor record
   render the report through `_Reporter.diagnostics`.
@@ -125,7 +133,8 @@ simulation correctly is a healthy machine reporting an unhealthy design.
 
 Input drift is checked first: any change to the Doctor fingerprint (config,
 guidance, core files, Booley version, upgrade-review state) makes the
-observation due. Then age:
+observation due. Then age (the user-facing summary is in
+[DOCTOR.md](../user/DOCTOR.md#automatic-checks)):
 
 | Observation | Expires after |
 | --- | --- |
@@ -138,9 +147,10 @@ version-drift guidance.
 
 ### Announcements
 
-Each channel (`session-up`, `mcp-tool`, …) remembers the identity of the last
+Each channel (`session-up` for `booley session up` and `booley session
+refresh`, `mcp-tool` for the MCP server) remembers the identity of the last
 observation it announced and reports a changed one once. Channels are
-independent. Readers and renderers never write announcement state; only
+independent; `mcp-tool` is `issues_only`. Readers and renderers never write announcement state; only
 `consume_changed_snapshot` does.
 
 An `issues_only` channel does not record clean observations. So issue A, then

@@ -11,11 +11,9 @@ import pytest
 
 from booley.commit_policy.policy import (
     _DEFAULT_BANNED_PHRASES,
-    REDACTION_PLACEHOLDER,
     _build_banned_res,
     find_banned,
     has_banned_content,
-    redact_banned,
     source_checkout_policy_owner,
     validate_push_configuration,
 )
@@ -429,31 +427,6 @@ class TestIdentityAllowed:
         assert not identity_allowed("mut-creator", "mut@local", allow)
 
 
-class TestRedactBanned:
-    """redact_banned replaces phrases in place (unlike drop-the-line body scrub)."""
-
-    def test_clean_text_unchanged(self):
-        assert redact_banned("fix a memory leak") == "fix a memory leak"
-
-    def test_single_word_redacted(self):
-        out = redact_banned("fix by claude")
-        assert "claude" not in out
-        assert REDACTION_PLACEHOLDER in out
-
-    def test_case_insensitive_redaction(self):
-        assert "CLAUDE" not in redact_banned("CLAUDE shipped it")
-
-    def test_multi_word_phrase_redacted(self):
-        out = redact_banned("co-authored-by: bot")
-        assert "co-authored-by" not in out
-
-    def test_result_has_no_banned_content(self):
-        """Redacted output must never re-trip the detector (validation re-runs)."""
-        out = redact_banned("booley agent generated this via docker")
-        assert find_banned(out) == []
-        assert has_banned_content(out) is False
-
-
 def _selective_import_error(blocked_module: str):
     """Return an __import__ replacement that raises ImportError for one module."""
     real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
@@ -476,15 +449,14 @@ def test_default_inventory_is_exhaustively_audited() -> None:
         "chatgpt",
         "gemini",
         "booley",
-        "ticket",
-        "cursor",
         "gpt",
         "llm",
         "co-authored-by",
     }
     ordinary = "generated agent docker auto-review auto-approve per review findings as suggested by automated fix suggested fix"
     assert find_banned(ordinary) == []
-    assert redact_banned(ordinary) == ordinary
+    # Words that are ordinary engineering vocabulary are not banned by default.
+    assert find_banned("ticket_fifo cursor_reg") == []
 
 
 @pytest.mark.parametrize(
@@ -652,11 +624,6 @@ class TestIdentifierRegression:
         )
         assert [find_banned(text) for text in spellings] == [["booley"]] * 5
 
-    def test_identifier_original_spans(self):
-        assert (
-            redact_banned("é booley_config BooleyRunner Ω") == "é redacted_config redactedRunner Ω"
-        )
-
     def test_identifier_generic_controls(self):
         assert find_banned("precursor.txt reagent.sv") == []
         from booley.commit_policy.policy import StealthPolicy
@@ -718,16 +685,10 @@ class TestVocabularyTiers:
             with pytest.raises(BoundaryError, match="banned_substrings"):
                 parse_stealth_vocabulary({"banned_substrings": value})
 
-    def test_literal_overlap_preserves_utf8_and_second_pass(self, tmp_path):
-        directory = tmp_path / ".booley"
-        directory.mkdir()
-        (directory / "booley.toml").write_text(
-            '[stealth]\nbanned_words = []\nbanned_substrings = ["quokka", "okkafi", "a+b"]\n'
-        )
-        original = "é myquokkafile_QuokkaRunner a+b aab Ω"
-        expected = "é myredactedle_redactedRunner redacted aab Ω"
-        assert redact_banned(original, tmp_path).encode() == expected.encode()
-        assert redact_banned(expected, tmp_path) == expected
+        # A reserved entry is named and the reason (feedback redaction) is given.
+        with pytest.raises(BoundaryError, match="feedback-redaction placeholder") as reserved:
+            parse_stealth_vocabulary({"banned_substrings": ["quokka", "<module-42>"]})
+        assert "'<module-42>'" in str(reserved.value)
 
     def test_matching_contract(self):
         from booley.commit_policy.policy import StealthPolicy
@@ -781,7 +742,7 @@ def test_token_ascii_edges_and_overlapping_repeated_literal(tmp_path):
     (directory / "booley.toml").write_text(
         '[stealth]\nbanned_words = []\nbanned_substrings = ["aba"]\n'
     )
-    assert redact_banned("é ababa Ω", tmp_path) == "é redacted Ω"
+    assert find_banned("é ababa Ω", tmp_path) == ["aba"]
 
 
 def test_all_identity_overrides_and_placeholder_unicode_equivalence():

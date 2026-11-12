@@ -1,344 +1,286 @@
 # Roadmap
 
-Directions Booley hasn't taken yet, ordered by impact: the highest-leverage
-items come first. Commercial EDA backends are the best place for an outside
-contribution; coverage measurement is the highest-impact item for the quality of
-Booley's output. Each item opens with a status tag:
+Directions Booley hasn't taken yet, for contributors choosing work and for
+users asking what is coming. Items are ordered by impact, highest first.
+Commercial EDA backends are the best place for an outside contribution. What
+ships today is in [FEATURES.md](../user/FEATURES.md) and
+[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md); work already in
+progress is tracked in GitHub issues, linked from each item. Each item opens
+with a status:
 
-- **Planned** — not started.
-- **Prototype** — code exists, but is not reliable enough for unattended use.
-- **Partial** — works in some supported configurations but not all.
-- **In tree, hidden** — built, but de-registered from the MCP tool registry until it matures.
+- **Planned**: not started.
+- **In progress**: issues are open and work has started.
+- **Partial**: works in some supported configurations but not all.
 
 ## Verification Engineering
 
-**Planned.** Booley will grow from an agentic development environment (ADE) for RTL
-design into one that serves verification engineers as well as RTL design engineers. The
-verification workflow should build on a Project's existing SystemVerilog or
-cocotb environment and carry work from test execution through reproducible,
-machine-checkable evidence rather than treating the testbench only as support
-for an RTL ticket. This fits Booley's existing role as the common orchestrator
-for configured Targets, Booley Flows, the Sandbox, verification intent,
-and their evidence: the same control plane can resolve, build, and run a full
-regression matrix and report it consistently in local and CI environments
-without a second collection of project-specific scripts.
+**Planned.** Booley should serve verification engineers as well as RTL design
+engineers: build on a Project's existing SystemVerilog or cocotb testbench and
+carry work from test execution to reproducible, machine-checkable evidence,
+instead of treating the testbench only as support for an RTL change. Booley
+already resolves Targets and runs Booley Flows in the Sandbox, so the same
+machinery can run a full regression and report it the same way locally and in
+CI, without a second set of project-specific scripts.
 
-The three highest-value capabilities are [coverage
-measurement](#native-coverage-campaigns), regression management, and failure
-triage. Durable single-Target Simulation Campaigns now retain an immutable
-exact suite, authenticated shared Simulator Bundles, isolated append-only
-attempts, strict resume, and bounded Project-local parallel execution. Cocotb
-is one resumable batch work item and native coverage is one aggregate work item
-with an attempt-scoped nested Coverage Campaign; resume finishes its publication
-but refuses an unfinished collection. This delivers local durable
-regression management and bounded campaign parallelism; multi-Target/seed
-matrices, named/nightly scheduling, and cross-Campaign result exploration remain
-planned. Failure triage should cluster related failures, distinguish
-design, testbench, and infrastructure problems, and rerun representative
-failures with waveform capture for focused diagnosis.
+Today one `booley flow sim` run takes several Targets and multi-seed Test Runs
+(`stress@x20`), and each Target's run is a resumable
+[Simulation Record](../GLOSSARY.md) with bounded parallel Test Runs. Still
+missing:
+
+- **Regression management**: named regressions, scheduled (for example
+  nightly) runs, and browsing and comparing results across runs.
+  [Measurement Runs](#continuous-integration) cover the "does this commit
+  pass" part.
+- **Failure triage**: cluster related failures, tell design, testbench, and
+  infrastructure problems apart, and rerun a representative failure with a
+  waveform for focused diagnosis.
 
 ## Commercial EDA Tools
 
-**Partial.** Host-provisioned Vivado 2025.2 on Linux x86-64 is the first
-supported commercial policy. The fixed-destination FlexNet relay remains
-experimental because a real paid-seat checkout/accounting/return matrix was not
-available. Windows supports the image-provisioned toolchain, not mounted native
-Windows EDA installations. Future work includes
-Cadence, Synopsys, and Siemens tools such as Xcelium, VCS, Design Compiler,
-Questa, Genus, and HAL. A future policy must provide an equivalent built-in
-installation contract, read-only runtime provisioning, licensing relay,
-Doctor checks, security tests, and full-Flow proof; a wrapper script alone is
+**Partial.** Host-provisioned Vivado 2025.2 on Linux x86-64 hosts is the one
+supported commercial EDA tool. The FlexNet license relay is experimental: no
+real paid-seat checkout, accounting, and return test was available. Planned:
+Cadence, Synopsys, and Siemens tools such as Xcelium
+([#1456](https://github.com/boldaxolotl/booley/issues/1456)), VCS, Questa,
+Design Compiler, Genus, and HAL; newer Vivado releases
+([#1065](https://github.com/boldaxolotl/booley/issues/1065)); seat caps for
+licensed tools ([#3244](https://github.com/boldaxolotl/booley/issues/3244));
+and cocotb on each new simulator.
+
+Each new tool needs what Vivado has: a built-in installation contract,
+read-only provisioning into the Sandbox, a license relay, Doctor checks,
+security tests, and proof that the whole Flow works. A wrapper script alone is
 not support.
 
-The blocker is licenses, not design: the maintainer can't validate a Flow for an EDA tool they can't run, which makes this the best place for an outside contribution. [CONTRIBUTING.md](CONTRIBUTING.md#the-1-priority-port-commercial-eda-tools) lists the specific EDA tools worth porting per vendor, which of them Edalize already invokes, and what a port actually takes. For what ships today, see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
+The blocker is licenses, not design: the maintainer can't validate a Flow for
+an EDA tool they can't run. [CONTRIBUTING.md](CONTRIBUTING.md#the-1-priority-port-commercial-eda-tools)
+lists the tools worth porting per vendor, which of them Edalize already
+drives, and what a port takes.
 
 ## VHDL and GHDL Support
 
-**Planned.** Add VHDL as a first-class source language without creating a
-second design-description path. FuseSoC and Edalize already carry VHDL source
-types, ordered files, logical libraries, standards, and generic parameters;
-Booley must preserve that metadata through Target resolution, Flow planning,
-fingerprints, Doctor, source isolation, and evidence instead of reconstructing
-Verilog-only inputs from file suffixes.
+**Planned.** Add VHDL as a first-class source language without a second
+design-description path. FuseSoC and Edalize already carry VHDL source types,
+ordered files, logical libraries, standards, and generics; Booley must keep
+that metadata through Target resolution, Flow planning, fingerprints, Doctor,
+source isolation, and evidence, instead of rebuilding Verilog-only inputs from
+file suffixes.
 
-The first production slice is pure-VHDL simulation with a pinned
-[GHDL](https://ghdl.github.io/ghdl/) Sandbox tool, initially using cocotb for
-structured per-test verdicts and GHDL's direct FST output for Trace Artifacts.
-The supported VHDL-2008 subset will be characterized by acceptance fixtures
-rather than inferred from the standard name; GHDL describes its VHDL-2008
-support as partial. Native VHDL testbenches need a separate, explicit mapping
-from assertions and test cases to Booley's per-test evidence contract.
+The first slice is pure-VHDL simulation with a pinned
+[GHDL](https://ghdl.github.io/ghdl/) in the Sandbox, using cocotb for per-test
+verdicts and GHDL's own FST output for [Trace Artifacts](../GLOSSARY.md).
+Acceptance fixtures define the supported VHDL-2008 subset, because GHDL calls
+its VHDL-2008 support partial. Native VHDL testbenches need their own mapping
+from assertions and test cases to Booley's per-test evidence.
 
-Later slices add GHDL analysis/elaboration as the first VHDL correctness-lint
-lane, pass VHDL libraries and generics through the existing Vivado FPGA Flow,
-and evaluate GHDL's experimental Yosys frontend for ASIC synthesis before the
-existing ABC/OpenROAD stages. The synthesis lane must publish a tested language
-subset because GHDL and `ghdl-yosys-plugin` label that integration experimental.
-Verilator-native coverage remains specific to Verilog/SystemVerilog until a
-separate VHDL coverage contract is designed and qualified.
+Later slices add GHDL analysis as a VHDL lint, pass VHDL libraries and generics
+through the Vivado `fpga` Flow, and try GHDL's Yosys frontend
+(`ghdl-yosys-plugin`) ahead of the existing `synth` stages. Both GHDL and the
+plugin call that integration experimental, so the synthesis slice must publish
+a tested language subset. Coverage stays Verilog/SystemVerilog-only until a VHDL
+coverage design exists.
 
-GHDL does not make mixed VHDL/SystemVerilog simulation a supported Booley
-configuration. That capability depends on promoting a mixed-language simulator
-such as Xcelium or VCS under the complete commercial installation, licensing,
-trace, verdict, and Doctor contracts above (or adding a separately qualified
-Vivado XSim policy).
+Mixed VHDL/SystemVerilog simulation needs a mixed-language simulator, such as
+Xcelium or VCS under the commercial requirements above, or a separately
+qualified Vivado XSim; GHDL alone does not provide it.
 
-## Native Coverage Campaigns
+## Coverage
 
-The implementation of [#213](https://github.com/boldaxolotl/booley/issues/213) provide
-Verilator-native measurement, immutable Campaigns, deterministic Criteria,
-transactional waivers, canonical persistence, exact pruning, and the report-driven
-Coverage Analyst. The Analyst is exposed with an exact `coverage.json` input;
-it explains evidence and proposes advisory candidates without evaluating Criteria.
-V3 Campaign persistence keeps overall and deterministic per-source-file statistics
-in the manifest and lossless points in a compressed point store whose identity the manifest records.
-V1 and V2 Campaigns are rejected at the schema boundary and must be recollected.
-The Coverage Analyst still receives every validated point. A deterministic, disclosed bounded
-evidence packet or query-driven Analyst remains future work; V3 does not silently sample evidence.
-The previous waveform/LLM scorer and mutable waiver cache have been removed.
+**Partial.** Verilator line, branch, expression, toggle, and `cover property`
+coverage ships with thresholds, waivers, and the Coverage Analyst (see
+[COVERAGE.md](../user/COVERAGE.md) and the
+[Simulation Coverage glossary](../../src/booley/flows/sim/GLOSSARY.md)).
+Still missing:
 
-Simulation collection controls and the Coverage Criterion are public alongside
-the Analyst. The [release gate](coverage-release-gate.md) records cross-mode and
-real-tool verification status. Native FSM and covergroup records
-remain unscored evidence in V1. B-Wave has no coverage measurement role.
+- Thresholds for FSM and covergroup coverage. Booley records both but scores
+  neither.
+- Combined coverage across Targets, such as unit and top level
+  ([#2748](https://github.com/boldaxolotl/booley/issues/2748)).
+- Resuming an interrupted coverage run per Test Run instead of refusing it
+  ([#2712](https://github.com/boldaxolotl/booley/issues/2712)).
+- Waivers as plain per-file waiver files reviewed in the diff
+  ([#3605](https://github.com/boldaxolotl/booley/issues/3605)).
+- Coverage-driven stimulus: use coverage holes to guide new tests.
 
-## Deterministic Mutation Testing
+## Mutation Flow
 
-**In progress.** The deterministic Mutant generator now drives the
-[Mutation Tester](../user/FEATURES.md#mutation-testing): the same RTL, count,
-and seed always produce the same Mutants, so kill rates are reproducible,
-comparable across runs, and free of LLM cost. Still pending (#2936): moving it
-into a `booley flow mutation` Booley Flow and removing its `[models]` setting.
+**In progress.** The [Mutation Tester](../user/FEATURES.md#mutation-testing)
+already generates Mutants deterministically, without an LLM. It still runs as
+a Specialist with a `[models]` key it does not use;
+[#2936](https://github.com/boldaxolotl/booley/issues/2936) makes it the
+`booley flow mutation` Booley Flow that
 [ADR 0088](../adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md)
-records the design: a rule-based Mutant generator in the `booley flow
-mutation` Booley Flow.
+describes.
 
 ## Firmware Reviewer
 
 **Planned.** The RTL and testbench Reviewers read firmware as context but
-report no findings in it ([ADR 0091](../adr/0091-review-commits-outside-measurement.md)).
-A firmware Reviewer would review firmware sources in their own right, for
-example driver code against the register map and the spec, and would become a
-`fw` role that Targets can declare reviews for.
+report no findings in it
+([ADR 0091](../adr/0091-review-commits-outside-measurement.md)). A firmware
+Reviewer would review firmware in its own right, for example driver code
+against the register map and the spec, and add a `fw` role that a
+[Declared Review](../GLOSSARY.md) can name.
 
-## Continuous Integration (`booley ci`)
+## Continuous Integration
 
-**Planned.** `booley ci` runs a named set of Criteria against the current
-checkout using Ticket Mode's catalog, syntax, Target bindings, threshold rules,
-and evidence model. CI has no separate check system. Project policies for pull
-requests and nightly runs choose Criteria, which choose Targets and Booley
-Flows. The usual starting point is `sim_pass`: every registered test must pass
-for each relevant Target. Other choices include lint, Cycle Count, area, Fmax,
-FPGA resources, coverage, and Custom Flow Criteria.
+**In progress.** `booley measure`
+([#3045](https://github.com/boldaxolotl/booley/issues/3045),
+[ADR 0092](../adr/0092-measure-commits-against-target-metrics.md)) measures a
+commit in a clean checkout against the [Target Metrics](../GLOSSARY.md) it
+declares. A local result is advisory, because the Developer Agent can write to
+the store from the Sandbox; a CI run, with no live working tree, is the
+trusted one. Hosted CI gets its own design. The direction so far:
 
-Each required Criterion has a deterministic verdict. An unmet Criterion is a CI
-failure with normalized evidence; an unavailable tool, invalid configuration,
-or failed runner is a CI execution error. Both fail the run. Separate names stop
-infrastructure faults from looking like design regressions. The report groups
-results and evidence by Criterion.
-
-Relative Criteria pin an immutable pull request merge base or configured target
-branch commit, never a previous CI result. Ticket Mode's per-test Cycle Count
-model also covers area, Fmax, FPGA resources, and coverage. Results such as
-"+2.2% area, −6 MHz, +4.1% cycles" appear beside the diff. Crossing a threshold
-fails CI.
-
-Phase one saves the candidate diff, baseline and candidate identities, Criterion
-parameters, normalized results, logs, waveforms, and detailed tool reports.
-Area and timing reports include hierarchy as well as totals. This lets later
-investigations work from evidence instead of scraped logs.
-
-Phase two is opt-in. After a deterministic failure, CI starts an investigator
-agent with the failed Criterion and saved evidence. The agent reports a probable
-cause, confidence, and possible fixes or mitigations. It uses logs, waveforms,
-and the diff for simulation failures; for area failures, it compares baseline
-and candidate synthesis breakdowns. It may find the evidence insufficient. Its
-advice cannot change the verdict, edit code, or push changes.
-
-Ticket Mode and CI call the same Criterion evaluator but keep separate
-orchestration. Ticket Mode passes a recorded Ticket baseline and owns its lifecycle. CI
-passes Criteria, reports the verdict, and may start the investigator without
-depending on the Ticket Board or Harness lifecycle.
-
-The sandbox image contains the EDA stack, so a hosted workflow needs no setup
-and takes only a handful of lines. Slow Targets can run nightly. [Stealth
-mode](../user/STEALTH.md#stealth-mode) keeps scheduling, structured results, and
-history in `.booley/`, with no hosted checks or files in the RTL
-repository. Execution and reporting differ; Criteria, baselines, and regression
-limits stay the same.
-
-`booley ci` also fills the local [Result
-Cache](../adr/0076-reuse-results-at-committed-states-through-a-project-result-cache.md#8-filling-the-cache-booley-ci-at-a-commit).
-It takes a commit (default `HEAD`) and runs each Job in its own throwaway
-checkout at that commit, so the tree is clean. Locally it runs at the lowest Job
-priority (one Job at a time by default), reports the same verdict as hosted CI,
-counts only verified cache hits, and stores each pass. It runs manually or from
-a configurable `post-merge` hook on `main`. The next agent session starting from
-that commit then gets hits instead of paying for the same runs. Hosted results
-stay on the runner; reusing them across hosts is future work.
-
-## GitHub Issues in Ticket Mode
-
-**Planned.** GitHub Issues should be first-class Ticket sources alongside the
-local Markdown Ticket Board. Ticket creation, queue selection, execution, and
-triage should work through either surface. Booley should discover eligible
-issues from configured repositories and labels, claim each issue for exactly
-one active `booley run` invocation, record the baseline commits in the
-executable Ticket, and report
-blocked, review, and done transitions back through labels and comments. Issue
-references should be usable for dependencies, while local Tickets retain the
-complete offline workflow.
-
-**The Harness contract does not change.** GitHub is the collaboration surface,
-but each run snapshots the issue into a durable local record before execution.
-Edits to an issue after it is claimed must not silently change its published authored
-inputs, Criteria, or base revision; retries and recovery use the same snapshot and
-evidence history. Credentials and network operations belong in a trusted
-host-side integration rather than the Sandbox or Developer Agent, and
-remote updates must be idempotent and conflict-aware so a GitHub outage cannot
-corrupt local work or Criterion evidence.
+- Run `booley measure` on the pull request head as a required check, and
+  measure `main` after each merge so the comparison run for the next pull
+  request already exists.
+- Reuse a run when a merge commit's tree equals a tree already measured.
+- The Sandbox Image carries the EDA stack, so a hosted workflow needs only a
+  few lines. A Stealth Mode Project keeps Booley out of its RTL repository, so
+  its CI needs a home outside it.
+- Optionally, after a failure, start an investigator agent with the saved
+  evidence. It reports a probable cause, its confidence, and possible fixes. It
+  never changes the verdict, edits code, or pushes.
 
 ## Enterprise Model Endpoints
 
 **Partial.** A company running Booley on its own servers rarely sends model
-traffic straight to OpenAI or Anthropic. It goes through a gateway (LiteLLM,
-Portkey, Kong, an in-house proxy) that handles billing, logging, and policy; to
-a private cloud deployment (AWS Bedrock, Google Vertex AI, Azure OpenAI); or to
-open-weight models served with vLLM. Booley has one such path today, the
-[model gateway](GATEWAY.md): it routes Codex alone to one `https://` endpoint on
-the OpenAI Responses API with a bearer token. It was built for the Codespaces
-demo, and it shows: Claude never uses it, and one gateway's quirks (no priority
-tier, a generated model catalog) are hardcoded.
+traffic straight to OpenAI or Anthropic. Traffic goes through a gateway
+(LiteLLM, Portkey, Kong, an in-house proxy) for billing, logging, and policy;
+to a private cloud deployment (AWS Bedrock, Google Vertex AI, Azure OpenAI); or
+to open-weight models served with vLLM. Booley has one such path today, the
+[model gateway](GATEWAY.md): Codex only, one `https://` endpoint, a bearer
+token. It was built for the Codespaces demo: Claude never uses it, and one
+gateway's quirks (no priority tier, its own model catalog) are hardcoded.
 
-The generic version treats a model endpoint as a named, operator-owned
-definition, separate from the Project:
+The general version treats a model endpoint as a named definition owned by the
+operator, separate from the Project:
 
 - **Endpoint.** URL and protocol: Anthropic Messages, OpenAI Responses, OpenAI
   chat completions, Bedrock, Vertex AI, or Azure OpenAI. Gateway quirks become
   per-endpoint settings.
-- **Credential.** A static token, a token command for short-lived tokens,
+- **Credential.** A static token, a command that prints a short-lived token,
   custom headers, client certificates, or the cloud's own identity (AWS or GCP
   credentials). A definition names where a secret comes from (an environment
-  variable or a command); it never holds the secret.
-- **Model names.** Gateways rename models, and Bedrock has its own model ids. A
-  per-endpoint alias map keeps `[models]` and the
+  variable or a command), never the secret itself.
+- **Model names.** Gateways rename models, and Bedrock has its own model IDs.
+  A per-endpoint alias map keeps `[models]` and the
   [model-to-CLI rule](../adr/0084-run-each-specialist-on-the-agent-cli-its-model-implies.md)
   working.
-- **Binding.** A Project binds each listed Agent CLI to an endpoint or to the
-  vendor's own service. Each agent process receives only its own endpoint's
-  secrets, which generalizes the rule that keeps the Codex gateway token away
-  from Claude today.
+- **Binding.** A Project binds each Agent CLI it lists to an endpoint or to the
+  vendor's own service. Each agent process gets only its own endpoint's
+  secrets, the rule that already keeps the Codex gateway token away from
+  Claude.
 
 Endpoint definitions live in the host config next to the egress policy, not in
-`booley.toml`: the URL depends on the deployment, and
+`booley.toml`, because the URL depends on the deployment and
 [ADR 0080](../adr/0080-route-codex-specialists-through-an-env-selected-gateway.md)
 already keeps secret locations out of committed files. Both Agent CLIs support
-custom endpoints natively (Claude Code through `ANTHROPIC_BASE_URL`,
-`apiKeyHelper`, and its Bedrock and Vertex AI modes; Codex through
-`model_providers`), so Booley translates one definition into each CLI's
-configuration instead of proxying model traffic itself. One module owns that
-translation, the Sandbox hand-off, and the Doctor checks. Today's `gateway`
-policy becomes a built-in endpoint, so existing setups keep working.
+custom endpoints (Claude Code through `ANTHROPIC_BASE_URL`, `apiKeyHelper`, and
+its Bedrock and Vertex AI modes; Codex through `model_providers`), so Booley
+translates one definition into each CLI's configuration instead of proxying
+model traffic itself. One module owns that translation, the hand-off into the
+Sandbox, and the Doctor checks. Today's gateway becomes a built-in endpoint, so
+existing setups keep working.
 
-A related gap is in the network rather than the API. Corporate networks often
-require an outbound HTTPS proxy and a TLS-inspecting CA. Booley's egress proxy
-cannot forward to an upstream proxy, and a Sandbox cannot be given an extra CA
-bundle. That blocks Booley on such networks with or without a model gateway,
-so it ships as its own slice.
+A separate slice covers the network: corporate networks often require an
+outbound HTTPS proxy and a TLS-inspecting CA. Booley's egress proxy cannot
+forward to an upstream proxy, and a Sandbox cannot be given an extra CA bundle,
+which blocks Booley on such networks with or without a model gateway.
 
 Open questions: whether a Project may define endpoints too; whether a model
 alias or the endpoint's protocol picks the Agent CLI; and whether cloud
 identities (Bedrock, Vertex AI) belong in the first slice.
 
-## Cocotb Support
-
-**Partial.** [cocotb](https://www.cocotb.org/) testbenches run on the sandbox simulators today (see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md)). What's left:
-
-- Cocotb on the planned GHDL VHDL simulation lane.
-- Cocotb on future commercial policies. The hard part is proving the complete
-  image/runtime and licensing contract, not a host Python environment.
-
 ## Full IP Design from Spec
 
-**Prototype.** Provide an IP-level specification and Booley breaks it down into a dependency-ordered queue of tickets, then executes them all autonomously. Design an SPI controller, implement a complete AES core, etc. The breakdown tooling exists in prototype form but the end-to-end flow is not reliable enough for an unattended run yet.
+**Planned.** Give Booley an IP-level specification, such as an SPI controller
+or a complete AES core, and it breaks the work into dependency-ordered tasks,
+runs each in a Developer Agent session, and measures each result, without
+supervision.
 
 ## HDL Dependency Graph (intra-Target file pruning)
 
-**Planned.** This item assumes the FuseSoC Target/fileset model: a **Target** is a named `.core` build target, and its *fileset* is the ordered list of source files that Target resolves to (see [GLOSSARY.md](../GLOSSARY.md) for the vocabulary and [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) for how the Flow uses it).
+**Planned.** Hand a Booley Flow only the files its top module needs. A FuseSoC
+[Target](../GLOSSARY.md) resolves to an ordered fileset that covers that
+Target's top, but filesets are shared across Targets and `depends` pulls in
+whole dependency cores, so a fileset is often much larger than what one top
+instantiates. The extra files cost resolution time and surface syntax errors
+from unrelated sources.
 
-Prune a resolved Target's fileset down to the module a Booley Flow actually
-needs. **The chosen front-end is slang; Booley will not implement its own
-Verilog/SystemVerilog parser.** Booley passes slang the Target's ordered files,
-defines, include directories, parameters, and top, then uses source information
-for `include` and `import` edges and the elaborated hierarchy for instantiation
-edges. A small Booley-owned adapter emits the dependency graph and hands a Flow
-only the transitive closure of its top. The result is cached until its sources
-or compilation inputs change. This cuts the time Booley Flows spend resolving
-files they do not need and stops spurious syntax errors surfacing from unrelated
-ones.
+Booley will use slang as the front end and not write its own
+Verilog/SystemVerilog parser; pyslang already ships in the Sandbox Image for
+the Mutant generator. Booley passes slang the Target's ordered files, defines,
+include directories, parameters, and top, takes `include` and `import` edges
+from the sources and instantiation edges from the elaborated hierarchy, and
+keeps only the transitive closure of the top. The result is cached until a
+source or compilation input changes.
 
-The gap here is *inside* a Target, not across them. FuseSoC already answers "which files does Target X build": a `.core` Target resolves to a concrete ordered fileset and every Booley Flow selects one via `--target`. What it deliberately doesn't do is prune within that fileset: the fileset covers **that Target's top** (its top-level module), not the minimal closure for some other module you want to lint or elaborate in isolation. Filesets get shared across Targets and `depends` composition (a Target pulling in other cores it builds on) pulls in more of a dependency core than any one top instantiates, so in practice they run coarse.
-
-**Fileset hygiene remains complementary.** Narrow, per-flow Targets, a pattern
-the FuseSoC model already expects, reduce the work before slang runs and keep the
-resolved fileset close to the required closure. The dependency graph provides
-automatic pruning when shared filesets and `depends` composition are still too
-coarse, without requiring project authors to maintain additional fine-grained
-Targets.
+Narrow per-Flow Targets, which the FuseSoC model already expects, still help:
+they shrink the work before slang runs. The graph covers the cases where
+shared filesets and `depends` are still too coarse, without asking Project
+authors to maintain more Targets.
 
 ## Additional Booley Flows
 
-**Planned.** The current Booley Flows cover simulation, synthesis (ASIC and FPGA), and lint. (Note: `synth` is a **fast PPA estimate to guide RTL optimization**, not tape-out sign-off; see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows).) Production RTL workflows need more:
+**Planned.** The built-in Flows cover simulation, lint, ASIC synthesis, and
+FPGA implementation. `synth` is a fast area and timing estimate to guide RTL
+work, not tape-out sign-off (see
+[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows)).
+Production RTL work needs more:
 
 - Logic equivalence checking (LEC)
 - Formal verification
 - Clock domain crossing (CDC) and reset domain crossing (RDC) checks
 - Design for test (DFT) insertion
 - Static timing analysis (STA)
-- Power analysis / UPF
-- Coverage-driven verification: functional coverage collection and hole analysis to guide stimulus generation
-- FPGA synthesis and PnR beyond AMD Vivado (Intel); Vivado already ships as the EDA tool driven by the built-in [`fpga`](FLOW_IMPLEMENTATION.md#fpga) Flow
+- Power analysis and UPF
+- FPGA implementation beyond AMD Vivado: an open-source Yosys and nextpnr
+  backend ([#3603](https://github.com/boldaxolotl/booley/issues/3603)) and
+  Intel tools
+- `synth` on PDKs other than Nangate45
+  ([#3599](https://github.com/boldaxolotl/booley/issues/3599),
+  [#3600](https://github.com/boldaxolotl/booley/issues/3600))
 
-## Best-of-N Goal Runs
+## Best-of-N Sessions
 
-**Planned.** Hardware Goals are measured, not judged: Fmax, area, Cycle Count,
-coverage, and pass/fail come from fresh Booley Flow results. That makes
-fan-out cheap to evaluate. One Goalset starts N Goal Mode sessions, each in its
-own linked worktree with its own Developer Agent. Sessions may differ in model,
+**Planned.** Hardware results are measured, not judged: Fmax, area, Cycle
+Count, coverage, and pass/fail come from fresh Booley Flow results, so
+comparing several attempts at one task is cheap. One request starts N Developer
+Agent sessions, each in its own linked worktree. Sessions may differ in model,
 provider, effort, or a short strategy hint ("pipeline the multiplier",
 "retime the adder tree").
 
-Each session finishes with its own Review Package. Booley then re-runs the
-Goals at each candidate's final commit and ranks the candidates by those
-results: first by Goals met, then by a primary metric the user picks when
-starting (for example area or Fmax), then by diff size. The user reviews the
-ranking and the winner's Review Package and merges by hand, as today. Booley
-never merges a candidate itself.
+Booley measures each candidate's final commit with `booley measure` and ranks
+the candidates: first by enforced Target Metrics met, then by one metric the
+user picks when starting (for example area or Fmax), then by diff size. The
+user reviews the ranking and the winner and merges by hand; Booley never
+merges a candidate.
 
-Constraints: cost grows N-fold, so the fan-out size is explicit and capped.
-Concurrent sessions share `[jobs]` limits, commercial EDA license seats, and
-model-provider rate limits, so the scheduler must queue rather than fail. An
-optional early stop cancels the remaining sessions once one meets every Goal.
-Losing candidates stay available for inspection until the user cleans them
-up, which needs a worktree removal command Booley does not have yet.
+Constraints: cost grows N-fold, so N is explicit and capped. Concurrent
+sessions share `[jobs]` limits, commercial license seats, and model-provider
+rate limits, so the scheduler must queue rather than fail. An optional early
+stop cancels the remaining sessions once one candidate meets every enforced
+metric. Losing candidates stay until the user removes them with `booley
+worktree rm` or `booley worktree gc`.
 
 ## Notifications
 
-**Planned.** Goal Mode sessions and slow Booley Flows run for hours. Today the
+**Planned.** Agent sessions and slow Booley Flows run for hours, and today the
 only signal is the Dashboard's NEEDS YOU group, so the user has to keep
 watching it. Booley should push a short notice to the desktop, a phone, or
-email when a Goal is met, a Goal change needs a human decision, a session
-stops or crashes, or a long Flow job finishes or fails.
+email when a session waits for the user, stops, or crashes, or when a long
+Flow Job finishes or fails.
 
 The hard part is security. A notification service is a path out of the
-Sandbox, and the Sandbox must not gain one. Push services such as ntfy.sh stay
-off the egress allowlist. Notifications therefore come from the host, never
-from the agent:
+Sandbox, and the Sandbox must not gain one, so push services such as ntfy.sh
+stay off the egress allowlist and notices come from the host, never from the
+agent:
 
-- A host-side process watches Booley's own records (Goal records, job records,
-  session state) and sends the notice. The agent has no tool that sends one.
+- A host-side process watches Booley's own records (Job records, session
+  state) and sends the notice. The agent has no tool that sends one.
 - Message text comes from fixed templates filled with Booley-owned fields:
-  event kind, Goal status, durations, and a Project label the user chose.
+  event kind, status, durations, and a Project label the user chose.
   Agent-written text, file contents, and agent-chosen paths never appear.
 - Notices are rate-limited and coalesced, so an agent cannot encode data in
   the timing or number of events it triggers.
@@ -347,6 +289,14 @@ from the agent:
 
 ## Native ADE Surface
 
-**Planned.** Booley is an agentic development environment, but today its agent-facing chrome is thin: Developer Agent sessions run in VS Code terminals, and the Booley Dashboard is the one native view of sessions, Goals, and Jobs. The next step is UI for supervising agents rather than editing code: a session and Goal panel, inline Goal and evidence status, a Flow-run view, one-click waveform open, and a review view for Review Packages. That turns "ADE" from a description into visible product.
+**Planned.** Booley is an agentic development environment (ADE), but its
+agent-facing UI is thin: Developer Agent sessions run in VS Code terminals,
+and the Booley Dashboard, a terminal view, is the one native view of
+sessions, Jobs, and Targets. The next step is UI for supervising agents
+rather than editing code: a session panel, a Flow-run view, one-click
+waveform open, and views for Measurement Reports and reviews.
 
-The end state of this direction is Booley as a **standalone ADE**: an app built around running and reviewing Developer Agent sessions, with the editor as one pane among many. Whether it embeds VS Code, forks it, or uses a lighter editor is open. That's a long way off; the VS Code-based surface above is the path there.
+The end state is Booley as a **standalone ADE**: an app built around running
+and reviewing Developer Agent sessions, with the editor as one pane among
+many. Whether it embeds VS Code, forks it, or uses a lighter editor is open;
+the VS Code-based surface above is the path there.

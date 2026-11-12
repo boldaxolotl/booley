@@ -1,12 +1,14 @@
 ---
 name: booley-gui-check
-description: Only when the user explicitly asks, check one Booley pull request's GUI change in a browser Codespace on the PR head's candidate image, post screenshot evidence on the PR, and return pass or fail per check step.
+description: Only when the user explicitly asks, check one Booley pull request's GUI change in a browser Codespace on the PR head's candidate image, post screenshot evidence on the PR, and return pass, fail, or blocked per check step.
+disable-model-invocation: true
 ---
 
 # Check a PR's GUI change in a Codespace
 
-Use this skill only when the user explicitly invokes it. This is behavioral
-guidance for clients without enforceable invocation metadata.
+Use this skill only when the user explicitly invokes it. Claude Code enforces
+this through `disable-model-invocation` and Codex through
+`agents/openai.yaml`; other clients get it as behavioral guidance only.
 
 Before acting, resolve the real path of this loaded `SKILL.md` (following the
 installed link). Its parent is the skill directory, its grandparent is `qa/`,
@@ -31,7 +33,8 @@ caller names the source checkout to use instead.
   against the same demo repo at once.
 - Write the check steps, with what each expects, before opening any Codespace
   or browser tab. Don't change them after seeing the GUI; a step that turns out
-  to be wrong is reported as wrong, not quietly rewritten.
+  to be wrong is reported as `blocked: step wrong` with the reason, not
+  quietly rewritten.
 - External writes are limited to: one `docker-publish.yml` dispatch when no
   candidate image exists and later the deletion of that build's image
   versions, the runbook's `qa/<short>` branch and Codespace, one evidence
@@ -76,15 +79,35 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    default settings; then run that step first.
 4. **Run each step.** Act, take the screenshot (runbook step 9 naming, area
    `check`, for example `check-02-goal-row.png`), run the oracle, bring the GUI
-   back and wait one refresh, then mark the step `pass`, `fail`, or `blocked`
-   (the step couldn't run; say why). Write what you saw in a sentence. Retry a
-   failed step once after a refresh to rule out timing, and keep both
-   screenshots. Session views need sessions: without a signed-in agent, make
+   back and wait one refresh, then give the step exactly one result: `pass`,
+   `fail`, or `blocked`. No other result exists, such as a pass with caveats.
+   Step 5 can still turn a `pass` into `blocked`. Write what the screenshot
+   shows in a sentence.
+   - `pass` only when a screenshot taken with the runbook's screenshot tool in
+     this run shows every clause of the step's expected result: each element
+     and its state (row present, order, color, layout). Text read from the DOM
+     in the same state may supply exact values for an element the screenshot
+     visibly shows; it never stands in for a missing screenshot.
+   - Otherwise `fail` when the GUI showed something else, or `blocked` when the
+     result could not be shown; say why.
+   - When the screenshot tool fails, retry as runbook step 7 ("Snapshot
+     timeouts") says, then mark the step `blocked` with the tool's error. An
+     image made any other way (a local headless browser, page content rendered
+     again, an image from an earlier run) is not evidence: don't post it.
+   - A step whose precondition makes the expected result trivially true, such
+     as an ordering check on a list with one row, is `blocked: precondition`;
+     name the setup that was missing.
+
+   Retry a step whose result is `fail` once after a refresh to rule out timing,
+   keep both screenshots, and use the retry's result. Session views need sessions: without a signed-in agent, make
    them with the scripted MCP client in runbook step 8.
 5. **Publish the evidence.** Look at every image first: the text guard can't
    read images. Drop any image that shows a token, an email address, a device
    code, a private repo, or anything outside the Codespace tab, and retake it
-   if the step needs one. Then commit the kept images in a scratch clone:
+   if the step needs one. If it can't be retaken, a `pass` becomes
+   `blocked: image dropped`; a `fail` stays `fail`, and its seen cell says the
+   image was dropped. If no image is kept, skip the evidence commit below and
+   say so in the comment. Otherwise commit the kept images in a scratch clone:
 
    ```sh
    E=<run-dir>/scratch/evidence-repo
@@ -108,10 +131,13 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    repro, follow the runbook's exception instead: stop the Codespace, keep the
    branch and the image, and name all three in the comment (step 7) and the
    return. Mark every `resources.md` row released or kept.
-7. **Comment.** Draft the PR comment in `<run-dir>/comment.md`:
-   - a first line with the verdict (`GUI check: pass` or `GUI check: fail`)
-     and the head SHA checked;
-   - a table with step, expected, seen, pass (one row per `checks.md` step);
+7. **Comment.** A check that ran its steps posts a comment for every
+   verdict, `blocked` included. Draft it in `<run-dir>/comment.md`:
+   - a first line with the verdict (`GUI check: pass`, `GUI check: fail`, or
+     `GUI check: blocked`) and the head SHA checked;
+   - a table with step, expected, seen, result (one row per `checks.md` step).
+     Result is `pass`, `fail`, or `blocked` with its reason. Seen states only
+     what a posted screenshot shows; a step with none says so;
    - the screenshots, each under its step number;
    - the image tag (noting that step 6 deleted it, if it did), the Codespace
      machine type, and the timings from step 3;
@@ -127,6 +153,9 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
 
    Record the `GitHub reference:` URL it prints in `log.md`. If the guard
    refuses, fix the draft and post again; never post around it.
-8. **Return.** Tell the caller: the verdict (`pass` only if every step
-   passed), the per-step results with what was seen, the criteria not checked,
-   the comment URL, and anything kept or not cleaned up.
+8. **Return.** Tell the caller: the verdict, the per-step results (each
+   `pass`, `fail`, or `blocked`) with what was seen, the criteria not checked,
+   the comment URL, and anything kept or not cleaned up. The verdict is `pass`
+   only if every step passed; any failed step makes it `fail`; with no failed
+   step, any blocked step makes it `blocked`, returned with each blocked
+   step's reason.

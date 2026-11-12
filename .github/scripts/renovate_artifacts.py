@@ -5,12 +5,16 @@ Each task is a post-upgrade command (``.github/renovate.json``) run in the branc
 checkout, the current directory, and acts only on the upgrades it owns::
 
     python3 renovate_artifacts.py agent-cli-lock   # agent-clis-package.json -> its lock
-    python3 renovate_artifacts.py constraints      # pyproject.toml -> CI constraints
+    python3 renovate_artifacts.py constraints      # pyproject.toml, CI requirements -> constraints
 
 ``agent-cli-lock``: Renovate bumps the manifest but cannot find its lock, which
 ``npm install --package-lock-only`` regenerates from copies named as npm expects.
 ``constraints``: the command in the header of ``.github/ci/constraints.txt``
-(checked by ``ci_constraints.py``) regenerates it; uv keeps the existing pins.
+(checked by ``ci_constraints.py``) regenerates it. uv keeps the existing pins, except
+each exact version Renovate proposes in ``pyproject.toml`` or a
+``.github/ci/requirements-*.txt`` file, which is passed as an exact
+``--upgrade-package`` request (a floor in ``pyproject.toml`` would otherwise keep the
+old pin).
 
 The branch is data. npm runs where only the two copies exist (no branch ``.npmrc``)
 with ``--ignore-scripts``, and only after the manifest names exact registry
@@ -50,6 +54,13 @@ _COMPILE_COMMAND = re.compile(
     r"uv pip compile pyproject\.toml --all-extras --universal"
     r" --python-version \d+\.\d+ -o \.github/ci/constraints\.txt"
 )
+# The CI requirements files, with the manifest, that the constraints file must agree with.
+_CI_REQUIREMENTS = re.compile(r"\.github/ci/requirements-[^/]+\.txt")
+# The one exact form Renovate renders for a pin, and the marks of a range.
+_EXACT_PIN = re.compile(r"==\s*(?P<version>[0-9][0-9A-Za-z.+!_-]*)")
+_RANGE_MARK = re.compile(r"[<>,*]|~=|!=")
+# A PEP 508 project name: it lands in uv's argv, so a URL or extras form is refused.
+_PROJECT_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 # An exact version, or an alias of one: what the agent CLI manifest holds today.
 _EXACT_SPEC = re.compile(r"(npm:(@[\w.-]+/)?[\w.-]+@)?\d+\.\d+\.\d+([-+][\w.+-]*)?")
 _DEPENDENCY_SECTIONS = (
@@ -90,6 +101,36 @@ def _run_tool(argv: list[str], cwd: Path) -> None:
 
 def _upgrades_file(upgrades: Sequence[Upgrade], package_file: str) -> bool:
     return any(upgrade.package_file == package_file for upgrade in upgrades)
+
+
+def _feeds_constraints(package_file: str) -> bool:
+    """Whether an upgrade of ``package_file`` can change the constraints file."""
+    return package_file == PYPROJECT or _CI_REQUIREMENTS.fullmatch(package_file) is not None
+
+
+def _upgrade_requests(upgrades: Sequence[Upgrade]) -> list[str]:
+    """Return the sorted ``--upgrade-package`` arguments for the exact upgrades.
+
+    A range (a major widening in ``pyproject.toml``) names no single version and asks
+    for nothing: uv resolves it from the new manifest. Anything else is refused.
+    """
+    requests: set[str] = set()
+    for upgrade in upgrades:
+        if not _feeds_constraints(upgrade.package_file):
+            continue
+        if _PROJECT_NAME.fullmatch(upgrade.dep_name) is None:
+            raise ArtifactError(f"refusing the dependency name {upgrade.dep_name!r}")
+        # Renovate keeps a space that precedes an environment marker in the value.
+        exact = _EXACT_PIN.fullmatch(upgrade.new_value.strip())
+        if exact is None:
+            if _RANGE_MARK.search(upgrade.new_value) is None:
+                raise ArtifactError(
+                    f"refusing the new value {upgrade.new_value!r} of {upgrade.dep_name}"
+                )
+            continue
+        name = re.sub(r"[-_.]+", "-", upgrade.dep_name).lower()
+        requests.add(f"--upgrade-package={name}=={exact['version']}")
+    return sorted(requests)
 
 
 def _require_registry_only(manifest_text: str, lock_text: str) -> None:
@@ -140,8 +181,12 @@ def agent_cli_lock(root: Path) -> None:
             raise ArtifactError(f"cannot write {AGENT_CLI_LOCK}: {error}") from error
 
 
-def constraints(root: Path) -> None:
-    """Regenerate the CI constraints file with the command in its own header."""
+def constraints(root: Path, upgrades: Sequence[Upgrade]) -> None:
+    """Regenerate the CI constraints file with the command in its own header.
+
+    Each exact upgrade of the branch is requested from uv, so a package that
+    ``pyproject.toml`` only floors still moves to the version Renovate proposed.
+    """
     try:
         lines = (root / CONSTRAINTS_FILE).read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError) as error:
@@ -151,6 +196,7 @@ def constraints(root: Path) -> None:
         raise ArtifactError(
             f"{CONSTRAINTS_FILE} line {_HEADER_LINE + 1} is not the expected compile command"
         )
+    requests = _upgrade_requests(upgrades)  # refused before uv runs
     # uv resolves before it writes, so a failed resolution leaves the file untouched.
     _run_tool(
         [
@@ -158,6 +204,7 @@ def constraints(root: Path) -> None:
             "--no-build",
             "--no-config",
             "--no-sources",
+            *requests,
             "--custom-compile-command",
             header,
         ],
@@ -175,12 +222,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    trigger = AGENT_CLI_MANIFEST if args.task == "agent-cli-lock" else PYPROJECT
-    if not _upgrades_file(upgrades, trigger):
+    if args.task == "agent-cli-lock":
+        triggered = _upgrades_file(upgrades, AGENT_CLI_MANIFEST)
+        trigger = AGENT_CLI_MANIFEST
+    else:
+        triggered = any(_feeds_constraints(upgrade.package_file) for upgrade in upgrades)
+        trigger = f"{PYPROJECT} or the CI requirements files"
+    if not triggered:
         print(f"{args.task}: no upgrade of {trigger}, nothing to do", file=sys.stderr)
         return 0
     try:
-        (agent_cli_lock if args.task == "agent-cli-lock" else constraints)(Path.cwd())
+        if args.task == "agent-cli-lock":
+            agent_cli_lock(Path.cwd())
+        else:
+            constraints(Path.cwd(), upgrades)
     except ArtifactError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

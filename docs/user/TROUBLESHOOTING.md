@@ -363,6 +363,31 @@ git -C .booley checkout -- booley.toml
 If `git -C .booley rev-parse --git-dir` fails, those files aren't under version
 control at all: copy a file aside before you edit it.
 
+### A commit is rejected for a banned term
+
+```text
+commit-msg: Stealth Mode rejected this commit message; it contains banned terms:
+  - 'booley' in the subject
+  - 'booley' on line 3
+Reword the message, or, if a term is an ordinary name in this design, remove it from [stealth] banned_words or banned_substrings in the project config TOML.
+Your message was kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
+```
+
+[Stealth Mode](https://booley.dev/docs/stealth/) rejects a commit message that
+contains a banned word instead of rewriting it, and an attribution footer
+(`Co-Authored-By:`, `Generated with <tool>`) is rejected first. Reword the
+message, or remove the term from `[stealth] banned_words` / `banned_substrings`
+in `.booley/booley.toml` if it is an ordinary name in your design. Your text
+stays in the file the error names.
+
+To retry, rerun the same `git commit` command with its options, replacing
+`-m` or `-F` with `-v -e -F "<that path>"`; the editor opens on the kept message.
+[Stealth Mode](https://booley.dev/docs/stealth/#commit-messages) covers merge
+commits and the rest.
+
+`BOOLEY_SKIP_COMMIT_VALIDATION=1` doesn't bypass this check. If the hook still
+replaces words with `redacted`, run `booley init` to install the current hook.
+
 ### Doctor reports a Sandbox whose egress mode differs from the host
 
 You changed

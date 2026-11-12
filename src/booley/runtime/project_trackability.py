@@ -56,7 +56,7 @@ def fix() -> str:
 
 STEALTH_UNSET = (
     "git info/exclude hides /{name}, but booley.toml leaves [stealth] enabled unset, "
-    "so Stealth Mode is off (commit messages are not scrubbed)"
+    "so Stealth Mode is off (commit messages are not checked)"
 )
 STEALTH_UNSET_FIX = (
     "keep Stealth Mode: add `[stealth] enabled = true` to booley.toml and rerun booley init; "
@@ -362,7 +362,7 @@ def unrecorded_stealth_exclusions(root: Path, booley_dir: Path) -> tuple[str, ..
 
     Stealth Mode used to default on, so ``booley init`` hid the Booley Directory
     without recording ``[stealth] enabled``. A missing key now means off, which
-    silently stops the commit scrub there. Unreadable Git metadata yields no names:
+    silently stops the commit check there. Unreadable Git metadata yields no names:
     the trackability inspection reports repository access problems itself.
     """
     if not stealth_choice_unset(root, booley_dir=booley_dir):

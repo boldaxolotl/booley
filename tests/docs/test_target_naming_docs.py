@@ -26,7 +26,11 @@ _YAML_KEY = re.compile(rf"^ {{2}}(?:{_AXES}):(?:\s|$)")
 
 
 def _doc_paths() -> list[Path]:
-    return [*sorted((ROOT / "docs/user").glob("*.md")), ROOT / "docs/internals/FLOW-EXECUTION.md"]
+    return [
+        *sorted((ROOT / "docs/user").glob("*.md")),
+        ROOT / "docs/internals/FLOW_IMPLEMENTATION.md",
+        ROOT / "docs/internals/FLOW_IMPLEMENTATION_SIM.md",
+    ]
 
 
 def _paragraphs(text: str) -> list[str]:

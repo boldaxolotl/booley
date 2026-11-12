@@ -107,6 +107,7 @@ except ImportError:
 ALLOWED_TYPES = _shared_validation.ALLOWED_TYPES
 MAX_SUMMARY_LEN = _shared_validation.MAX_SUMMARY_LEN
 SUBJECT_RE = _shared_validation.SUBJECT_RE
+convention_errors = _shared_validation.convention_errors
 validate_message = _shared_validation.validate_message
 
 

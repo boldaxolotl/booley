@@ -61,7 +61,7 @@ def _versioned(root: Path) -> Path:
     # Common Booley State is ignored in a real Booley Directory; `plans/` stays tracked.
     (booley_dir / ".gitignore").write_bytes(
         b"/handoffs/\n/reviewer-evidence/\n/flow-reports/\n/.runtime/\n/findings.jsonl\n"
-        b"/setup-evidence/\n"
+        b"/setup-evidence/\n/measurements/\n"
     )
     git(booley_dir, "add", "booley.toml", ".gitignore")
     git(booley_dir, "commit", "-qm", "project")
@@ -417,6 +417,7 @@ def _evidence_files(booley_dir: Path) -> dict[str, bytes]:
         "flow-reports/sim/1/artifacts/candidate/trace.fst": b"\x00\x01trace\xff",
         ".runtime/mcp-tool-reports/x/1/report.json": b"{}\n",
         "findings.jsonl": b'{"finding": 1}\n',
+        "measurements/" + "a" * 40 + "/r.json": b'{"schema": 1}\n',
         "setup-evidence/attachments/rows/a.txt": b"attachment\n",
     }
     for relative, content in files.items():

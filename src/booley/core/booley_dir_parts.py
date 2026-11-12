@@ -63,6 +63,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         # Checkout: versioned with the RTL.
         "booley.toml": _VERSIONED,
         "tests.toml": _VERSIONED,
+        "metrics.toml": _VERSIONED,
         "criteria.toml": _VERSIONED,
         "doctor-waivers.toml": _VERSIONED,
         "configs.toml": _VERSIONED,
@@ -119,6 +120,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/upgrade_review.json": _COMMON,
         ".runtime/compiler-cache/": _COMMON,
         "result-cache/": _COMMON,
+        "measurements/": _COMMON,
         "worktrees/": _COMMON,
         ".baseline-wt-*/": _COMMON,
         "directory-layout.lock": _COMMON,

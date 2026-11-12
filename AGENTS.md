@@ -1,8 +1,8 @@
 # Booley
 
-Booley is an agentic development environment (ADE) for FPGA and ASIC
-development, written in Python: engineers direct sandboxed Developer Agents
-through simulation, synthesis, linting, and Goal workflows.
+Booley is an agentic development environment (ADE) for RTL design and verification,
+written in Python: engineers direct sandboxed Developer Agents through
+simulation, synthesis, linting, and Goal workflows.
 
 ## Repository Rules
 
@@ -59,7 +59,8 @@ through simulation, synthesis, linting, and Goal workflows.
   configuration, follow `docs/internals/agents/confidential-content.md`.
 - **Issue tracker:** GitHub Issues stores issues and specs. See
   `docs/internals/agents/issue-tracker.md`.
-- **Triage labels:** Use the standard Matt Pocock labels. See
+- **Triage labels:** state labels (including `tracker`) and category labels
+  (`bug`, `enhancement`, `documentation`). See
   `docs/internals/agents/triage-labels.md`.
 - **Agent Briefs:** `ready-for-agent` issues need one. See
   `docs/internals/agents/agent-brief.md`.

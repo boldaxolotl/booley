@@ -242,8 +242,9 @@ def mcp_post_start_command() -> str:
     container-side config (ADR 0023). Because the hook re-runs on every
     container start — including a plain stop→start resume — the endpoint is
     always back before the agent app needs it; the app holds only the URL, so
-    it reconnects instead of being stranded with a dead stdio child. The app
-    to register comes from ``BOOLEY_AGENT_APP``.
+    it reconnects instead of being stranded with a dead stdio child. The CLIs
+    to register are the default one (``BOOLEY_AGENT_APP``) plus every CLI in
+    ``BOOLEY_AGENT_CLIS``.
     """
     return "python -m booley.harness.incontainer_register"
 
@@ -356,9 +357,9 @@ def spec_agent_app(spec: dict) -> str | None:
     """The agent app *spec* configures, from ``remoteEnv.BOOLEY_AGENT_APP``.
 
     :func:`build_devcontainer_spec` always exports this, and it is what the
-    in-container registrar reads to decide which app's config gets the Booley
-    MCP entry — so every "which app is this spec for?" question below routes
-    through here. ``None`` when absent or malformed.
+    in-container registrar reads as the default app (it also registers the other
+    CLIs of ``BOOLEY_AGENT_CLIS``) — so every "which app is this spec for?"
+    question below routes through here. ``None`` when absent or malformed.
     """
     remote_env = spec.get("remoteEnv")
     app = remote_env.get("BOOLEY_AGENT_APP") if isinstance(remote_env, dict) else None

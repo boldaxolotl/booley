@@ -740,7 +740,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     - **Yes (hidden):** `.booley/` stays **untracked** in the RTL repo,
       excluded through the parent repo's `.git/info/exclude` (never tracked
       `.gitignore`), **and stealth mode turns on**: the commit-message scrub
-      removes protected AI/tool names from new commit messages, and hidden-core
+      rejects new commit messages that name protected AI/tools, and hidden-core
       projection makes ignored root copies when Booley authors cores.
       Row 16 = `hidden`, row 20 = `enabled = true`; both are `user-confirmed`
       from this one answer, including for hidden config-only projects.
@@ -806,14 +806,14 @@ separate columns (see "How a row resolves"). The standard checklist:
     Interactive hidden → `enabled = true`, including config-only projects;
     open → `enabled = false`. Preserve an existing hand-set `[stealth]` block
     as `pre-set`, including when it differs from those interactive defaults.
-    A commit-msg hook scrubs a configured banned-word list (`claude`,
-    `anthropic`, `codex`, `booley`, …) from new commit messages; it can also cap
+    A commit-msg hook rejects new commit messages that contain a configured
+    banned word (`claude`, `anthropic`, `codex`, `booley`, …); it can also cap
     the body (`max_body_lines`) or allowlist author identities
     (`allowed_authors`). Authored hidden cores remain self-contained under
     `.booley/cores/` and are projected into ignored RTL-root copies.
     **Unattended: write `enabled = false`**, matching row 16's unattended
-    `open`; star the choice `review` unless pre-set. Nobody consented to a
-    commit-message rewrite, so unattended setup never enables the scrub.
+    `open`; star the choice `review` unless pre-set. Nobody consented to
+    commit-message rejection, so unattended setup never enables the scrub.
     `booley init` creates `.booley/`'s own inner git repo *only* while
     `[stealth] enabled` is on. With the scrub off, a hidden-footprint Booley Directory is versioned nowhere until someone `git init`s it — flag that for
     Step 4's footprint work rather than letting the combination pass silently.

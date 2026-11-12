@@ -51,12 +51,10 @@ _DEFAULT_BANNED_PHRASES = [
     "claude",
     "anthropic",
     "copilot",
-    "cursor",
     "codex",
     "openai",
     "chatgpt",
     "gemini",
-    "ticket",
     "gpt",
     "llm",
     "booley",
@@ -81,7 +79,6 @@ def _unique_terms(terms: tuple[str, ...]) -> tuple[str, ...]:
 def _reserved_substring(term: str) -> bool:
     lowered = term.lower()
     fixed = (
-        "redacted",
         "<redacted>",
         "<author>",
         "<author-email>",
@@ -120,9 +117,11 @@ def parse_stealth_vocabulary(
     if not is_str_list(raw_substrings):
         raise BoundaryError("[stealth] banned_substrings must be a list of strings")
     substrings = tuple(word for word in raw_substrings if word)
-    if any(_reserved_substring(word) for word in substrings):
+    offender = next((word for word in substrings if _reserved_substring(word)), None)
+    if offender is not None:
         raise BoundaryError(
-            "[stealth] banned_substrings must not match reserved redaction placeholders"
+            f"[stealth] banned_substrings entry {offender!r} matches a reserved "
+            "feedback-redaction placeholder"
         )
     identities = tuple(word for word in words if word.lower() in _SUBSTRING_IDENTITIES)
     return _unique_terms(words + substrings), _unique_terms(identities + substrings)
@@ -462,7 +461,7 @@ def enforce_convention(project_root: Path | None = None) -> bool:
     ``BOOLEY_SKIP_COMMIT_VALIDATION`` env var is the escape hatch for the odd
     upstream commit.
 
-    Independent of sanitization: the IP-leak scrub always runs when stealth is
+    Independent of this knob: the banned-term check always runs when stealth is
     enabled, regardless of this knob. Read per call for the same reason as
     :func:`max_body_lines` — the config may change under a long-lived process.
     """
@@ -553,16 +552,6 @@ def banned_spans(
     ]
 
 
-def _merged_spans(spans: list[tuple[int, int, str]]) -> list[tuple[int, int]]:
-    merged: list[tuple[int, int]] = []
-    for start, end, _phrase in sorted(spans):
-        if merged and start < merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
-        else:
-            merged.append((start, end))
-    return merged
-
-
 # Compatibility view of the shipped defaults. Project consumers must call
 # :func:`banned_phrases` or :func:`find_banned` with their explicit root.
 BANNED_PHRASES: list[str] = list(_DEFAULT_BANNED_PHRASES)
@@ -581,22 +570,3 @@ def find_banned(text: str, project_root: Path | None = None) -> list[str]:
 def has_banned_content(text: str, project_root: Path | None = None) -> bool:
     """Return True if text contains any banned phrase."""
     return bool(find_banned(text, project_root))
-
-
-# Placeholder substituted for a banned phrase when the surrounding text must
-# survive (e.g. a commit subject, which — unlike a merge-body line — cannot
-# simply be dropped). Kept to [a-zA-Z0-9] so a redacted scope like
-# ``fix(booley): ...`` -> ``fix(redacted): ...`` still satisfies SUBJECT_RE.
-REDACTION_PLACEHOLDER = "redacted"
-
-
-def redact_banned(text: str, project_root: Path | None = None) -> str:
-    """Replace covered original spans once, preserving all surrounding text.
-
-    A custom legacy banned_words entry may itself match the fixed placeholder.
-    """
-    policy = stealth_policy(project_root)
-    spans = _merged_spans(banned_spans(text, policy.banned_phrases, policy.banned_substrings))
-    for start, end in reversed(spans):
-        text = text[:start] + REDACTION_PLACEHOLDER + text[end:]
-    return text
