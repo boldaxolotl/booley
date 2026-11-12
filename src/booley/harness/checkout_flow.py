@@ -248,7 +248,7 @@ def _require_own_booley_dir(checkout: Path, main: Path) -> None:
 
 
 def _enclosing_checkout(start: Path, outside: Path) -> Path | None:
-    """The nearest Git checkout at or above *start* that is not *outside* or inside it."""
+    """The nearest Git checkout at or above *start* that is not at or below *outside*."""
     return next(
         (
             directory
@@ -274,12 +274,17 @@ def _live_roots(main: Path) -> list[LiveRoot]:
         roots.append(LiveRoot("BOOLEY_DIR", Path(os.environ["BOOLEY_DIR"]).resolve()))
     work_dir = Path(sandbox_layout.WORK_DIR)
     trees = [work_dir] if work_dir.is_dir() else []
-    if runtime_context.runtime_location() is not runtime_context.RuntimeLocation.ISSUED_SANDBOX:
+    if runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX:
+        if not trees:
+            raise CheckoutFlowError(f"no live working tree found: {work_dir} is not mounted")
+    else:
         derived = [
             owner
             for start in (main, Path.cwd().resolve())
             if (owner := _enclosing_checkout(start, outside=main)) is not None
         ]
+        if trees and has_git_worktree_marker(work_dir):
+            derived.append(work_dir)
         if not derived:
             raise CheckoutFlowError(
                 f"no live working tree found: no Git checkout contains {main} "

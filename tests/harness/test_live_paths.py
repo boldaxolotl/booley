@@ -21,7 +21,8 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="live roots are POSIX
         "cd {live}\\nmake",
         "true&&{live}/gen.sh",
         "x @{live}/args.f",
-        "vlib ${{SIM:-{live}/lib}}",
+        "vlib ${SIM:-{live}/lib}",
+        "vlib ${SIM-{live}/lib}",
         "cd sim\\n{live}/gen.sh",
     ],
 )

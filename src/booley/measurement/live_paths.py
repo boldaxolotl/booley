@@ -41,10 +41,12 @@ _STARTERS = r"""\s"'`<>|;,({\[=:+#&@"""
 # that follows is relative to the placeholder. NUL ends a token too (a binary file).
 _STOPS = _STARTERS + r"""\)}\]\\!%\x00"""
 # A candidate starts a token with ``/``, with ``-`` or a one-letter option glued to ``/``
-# (``-I/x``, ``${V:-/x}``), or after an undecoded ``\n``/``\r``/``\t`` escape. A relative
-# ``sim/work/tb.sv`` is one token that does not start with ``/``.
+# (``-I/x``), after the default operator of a variable (``${V:-/x}``, ``${V-/x}``) or after
+# an undecoded ``\n``/``\r``/``\t`` escape. A relative ``sim/work/tb.sv`` is one token that
+# does not start with ``/``.
 _CANDIDATE = re.compile(
-    rf"(?:^|(?<=[{_STARTERS}])|(?<=\\[nrt]))(?:-[A-Za-z]?)?(/[^{_STOPS}]*)", re.MULTILINE
+    rf"(?:^|(?<=[{_STARTERS}])|(?<=\\[nrt]))(?:\$\{{\w+:?[-=+?])?(?:-[A-Za-z]?)?(/[^{_STOPS}]*)",
+    re.MULTILINE,
 )
 
 

@@ -196,9 +196,15 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
     ``{ctl}`` name the live tree and the control directory) are committed too, and
     ``config`` is appended to the committed and to Main's ``booley.toml``.
     """
-    from booley.runtime import sandbox_layout
+    from booley.runtime import runtime_context, sandbox_layout
 
     built: list[World] = []
+    # The tests' verdict must not depend on the mounts of the host that runs them.
+    monkeypatch.setattr(
+        runtime_context,
+        "runtime_location",
+        lambda: runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX,
+    )
 
     def build(
         files: Mapping[str, str] | None = None,
@@ -1103,8 +1109,8 @@ def test_checkout_flow_finds_the_live_tree_without_a_work_mount(
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
     from booley.runtime import sandbox_layout
 
-    # A hand-written Sandbox has no ``/work``: the live tree is the Git checkout around
-    # Main, whatever directory the caller stands in.
+    # Without a ``/work`` mount the live tree is the Git checkout around Main, whatever
+    # directory the caller stands in.
     world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
     monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
     monkeypatch.chdir(world.checkout.parent)
@@ -1150,6 +1156,38 @@ def test_checkout_flow_skips_a_booley_directory_that_is_its_own_checkout(
     with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
         run_checkout_flow(world.request("pass"))
 
+    assert_refused_before_any_run(world)
+
+
+@linux_only
+@pytest.mark.parametrize("case", ["live-path", "clean", "no-mount"])
+def test_checkout_flow_in_the_issued_sandbox_trusts_the_work_mount_alone(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import (
+        CheckoutFlowError,
+        CheckoutFlowStatus,
+        run_checkout_flow,
+    )
+    from booley.runtime import runtime_context, sandbox_layout
+
+    files = {"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")} if case == "live-path" else {}
+    world = make_world(files=files)
+    issued = runtime_context.RuntimeLocation.ISSUED_SANDBOX
+    monkeypatch.setattr(runtime_context, "runtime_location", lambda: issued)
+    # The issued Sandbox's Main has an empty ``.git`` sentinel, not a repository around it.
+    monkeypatch.setattr(checkout_flow, "has_git_worktree_marker", lambda _path: False)
+    monkeypatch.chdir(world.checkout.parent)
+    if case == "no-mount":
+        monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
+
+    if case == "clean":
+        assert run_checkout_flow(world.request("pass")).status is CheckoutFlowStatus.PASSED
+        return
+    message = r"ip\.core names .*live working tree" if case == "live-path" else "is not mounted"
+    with pytest.raises(CheckoutFlowError, match=message):
+        run_checkout_flow(world.request("pass"))
     assert_refused_before_any_run(world)
 
 
@@ -1283,9 +1321,8 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
     use_fusesoc(monkeypatch)
-    monkeypatch.setattr(
-        checkout_flow, "_PREFLIGHT_MIN_S", 0
-    )  # the request's bound applies; generous, FuseSoC starts slowly on a loaded host
+    # The request's bound applies; it is generous, FuseSoC starts slowly on a loaded host.
+    monkeypatch.setattr(checkout_flow, "_PREFLIGHT_MIN_S", 0)
     world = make_world(
         files={
             "probe.core": GENERATOR_CORE,
@@ -1294,10 +1331,11 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
         }
     )
 
-    with pytest.raises(CheckoutFlowError, match=r"did not finish within 8 s"):
-        run_checkout_flow(world.request("probe", timeout_s=8))
+    with pytest.raises(CheckoutFlowError, match=r"did not finish within 20 s"):
+        run_checkout_flow(world.request("probe", timeout_s=20))
 
     assert_refused_before_any_run(world)
+    assert (world.ctl / "generator.pid").exists(), "the generator never started within the bound"
     pid = int((world.ctl / "generator.pid").read_text(encoding="utf-8"))
     poll(lambda: not Path(f"/proc/{pid}").exists(), "the generator to be gone")
 
