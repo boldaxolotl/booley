@@ -490,5 +490,5 @@ as written.
   worktree's branch reads the branch Git registered, so a worktree made under
   one setting works after Stealth Mode is switched. A branch that occupies
   `wt/<name>` (the name itself, a leading path such as `wt`, or a branch below
-  it) is named in the creation error. The numbering amendment of ADR 0068 is
+  it) is named in the creation error; `booley/<name>` is checked the same way. The numbering amendment of ADR 0068 is
   extended, not changed.

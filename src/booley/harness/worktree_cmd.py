@@ -343,7 +343,7 @@ def _run_current(name: str, project_root: Path) -> _Created | int:
             )
         if not isinstance(exc, _REPORTED_FAILURES):
             raise
-        return _report_failure(project_root, worktree, name, exc, source)
+        return _report_failure(project_root, worktree, name, exc, source, new_branch)
     return _Created(worktree, source, paired=pairing is not None, new_branch=new_branch)
 
 
@@ -363,7 +363,9 @@ def _finish_setup(name: str, project_root: Path, created: _Created) -> int:
         )
         if not isinstance(exc, _REPORTED_FAILURES):
             raise
-        return _report_failure(project_root, created.worktree, name, exc, created.source)
+        return _report_failure(
+            project_root, created.worktree, name, exc, created.source, created.new_branch
+        )
     # The stamp is bookkeeping: a failure must not hide a worktree that exists.
     try:
         stamp_worktree(resolve_common_booley_dir(project_root), name)
@@ -378,12 +380,17 @@ def _report_failure(
     name: str,
     failure: BaseException,
     source: Path | None,
+    new_branch: NewBranch | None,
 ) -> int:
     """Print a rolled-back creation's error, plus removal steps if a rollback left the pair."""
     print(f"ERROR: {failure}", file=sys.stderr)
     if source is not None and _is_named_pair(worktree, name):
         # A <branch>--<description> name checks out an existing branch and creates none.
-        branch = None if "--" in name else worktree_branch(project_root, name)
+        # A refusal before the branch was chosen (an existing pair) names the current setting's.
+        if new_branch is not None:
+            branch: str | None = new_branch.name
+        else:
+            branch = None if "--" in name else worktree_branch(project_root, name)
         print(
             worktree_removal_instructions(project_root, worktree, name, branch=branch),
             file=sys.stderr,

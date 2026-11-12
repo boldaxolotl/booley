@@ -147,8 +147,9 @@ push that the destination doesn't already have, and blocks the push when:
 File contents aren't checked. The hook lists each offending commit and what it
 found; rewrite those commits and push again.
 
-It also blocks a push that creates or updates a branch or tag whose name on the
-remote contains a banned word, and names the ref and the word. Push it under
+It also blocks a push that creates or updates a branch, tag or other ref whose
+name on the remote contains a word from the same list (`ticket`, for example,
+so `ticket/123` is blocked too), and names the ref and the word. Push it under
 another name (`git push <remote> <local>:<new-name>`) or rename it; only the
 remote name is checked, and deleting such a remote branch or tag is always
 allowed. To skip every check for one push,

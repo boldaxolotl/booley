@@ -256,26 +256,38 @@ def test_new_names_the_branch_in_the_way(
     assert _git(project, "rev-parse", blocking).stdout == before
 
 
+@pytest.mark.parametrize(
+    ("created_enabled", "branch"), [("true", "wt/demo"), ("false", "booley/demo")]
+)
 @_real_script
-def test_wt_worktree_survives_switching_stealth_off(versioned_project: Path, capsys) -> None:
-    """A worktree made under Stealth Mode is listed and removed after it is switched off."""
+def test_worktree_survives_switching_stealth(
+    versioned_project: Path, capsys, created_enabled: str, branch: str
+) -> None:
+    """A worktree made under one Stealth Mode setting is listed and removed after a switch."""
     from booley.harness import booley as tlr
 
+    toml = versioned_project / ".booley" / "booley.toml"
+    original = toml.read_text(encoding="utf-8")
+    switched = "false" if created_enabled == "true" else "true"
+    _write(toml, original.replace("enabled=true", f"enabled={created_enabled}"))
     assert _new("demo", versioned_project) == 0
-    _write(versioned_project / ".booley" / "booley.toml", "[stealth]\nenabled = false\n")
+    _write(toml, original.replace("enabled=true", f"enabled={switched}"))
     capsys.readouterr()
 
     listing = worktree_cmd.run(
         tlr._build_parser().parse_args(["worktree", "list"]), versioned_project
     )
     assert listing == 0
-    assert "wt/demo" in capsys.readouterr().out
+    assert branch in capsys.readouterr().out
 
     args = tlr._build_parser().parse_args(["worktree", "rm", "demo"])
     assert worktree_cmd.run(args, versioned_project) == 0
-    assert "Branches kept:" in capsys.readouterr().out
+    kept = next(
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("Branches kept:")
+    )
+    assert branch in kept.removeprefix("Branches kept:").replace(" ", "").split(",")
     assert not worktree_cmd.worktree_path(versioned_project, "demo").exists()
-    assert _git(versioned_project, "rev-parse", "--verify", "wt/demo").returncode == 0
+    assert _git(versioned_project, "rev-parse", "--verify", branch).returncode == 0
 
 
 @_real_script

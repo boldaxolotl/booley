@@ -36,8 +36,8 @@ _STAMP_DIR = ".last-used"
 # ``booley/<name>``, or ``wt/<name>`` under Stealth Mode so that no default banned
 # term reaches a branch name. The Versioned Booley Directory holds
 # ``booley-worktree/<name>`` whatever the setting.
-WORKTREE_BRANCH_PREFIXES = ("booley/", "wt/")
-_BRANCH_PREFIXES = (*WORKTREE_BRANCH_PREFIXES, "booley-worktree/")
+_WORKTREE_BRANCH_PREFIXES = ("booley/", "wt/")
+_BRANCH_PREFIXES = (*_WORKTREE_BRANCH_PREFIXES, "booley-worktree/")
 # Allocation runs under the Session writer lock that every tool call's registry
 # upsert waits on, so Git gets far less than the usual 30 s.
 _GIT_TIMEOUT_SECONDS = 5
@@ -151,9 +151,9 @@ def session_number_taken(common: Path) -> Callable[[int], bool]:
 
     Occupied means ``<common>/worktrees/s<N>`` exists in any form (a half-created
     or dangling entry still holds the name), or a ``booley/s<N>``,
-    ``wt/s<N>`` or ``booley-worktree/s<N>`` branch exists (or one below either name) in the RTL
-    checkout owning *common* or in *common* itself when it is a Versioned
-    Booley Directory. Branches are read on first use and cached, so one
+    ``wt/s<N>`` or ``booley-worktree/s<N>`` branch exists (or one below any of
+    those names) in the RTL checkout owning *common* or in *common* itself when
+    it is a Versioned Booley Directory. Branches are read on first use and cached, so one
     allocation costs at most two Git calls.
     """
     branches: set[str] | None = None

@@ -2360,7 +2360,9 @@ def test_ref_name_check_only_scans_the_name_below_the_namespace(
 @pytest.mark.parametrize("mode", ["stealth-off", "skip-env"])
 def test_ref_name_check_is_skipped(repo: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     if mode == "stealth-off":
-        (repo / ".booley" / "booley.toml").write_text("[stealth]\nenabled = false\n")
+        (repo / ".booley" / "booley.toml").write_text(
+            "[stealth]\nenabled = false\n", encoding="utf-8"
+        )
         monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
     else:
         monkeypatch.setenv("BOOLEY_SKIP_PUSH_GUARD", "1")

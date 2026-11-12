@@ -12,8 +12,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Stealth Mode keeps the product name out of branch names. `booley worktree new`
   and `booley chat` create the worktree branch `wt/<name>` instead of
   `booley/<name>`, and the pre-push hook blocks a push that creates or updates a
-  remote branch or tag whose name contains a banned word (push it under another
-  name, `git push <remote> <local>:<new-name>`; deleting such a ref is allowed).
+  remote branch or tag whose name contains a banned word from the `[stealth]`
+  list (push it under another name,
+  `git push <remote> <local>:<new-name>`; deleting such a ref is allowed).
   Existing worktrees keep their branch and work either way, a branch occupying
   `wt/<name>` is named in the error, and handle allocation skips a number taken
   under either prefix. Run `booley init` in each existing Stealth Project so its
