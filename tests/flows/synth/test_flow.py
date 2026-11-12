@@ -74,7 +74,7 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import relocated_project
-from tests.subprocess_budget import run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -5611,7 +5611,7 @@ def _run_generated_latch_case(flow_and_state, tmp_path, monkeypatch, frontend, m
             cmd,
             cwd=tmp_path,
             env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
-            timeout=5,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         return SubprocessResult(
             returncode=process.returncode, stdout=process.stdout, stderr=process.stderr
