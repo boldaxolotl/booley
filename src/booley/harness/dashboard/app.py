@@ -195,7 +195,8 @@ class SessionOrientation:
     """
 
     key: str
-    handle: str
+    #: ``S3``, or ``S3 · uart-fix`` for a named session.
+    title: str
     checkout: str
     branch: str
     mode: str
@@ -1117,9 +1118,9 @@ class DashboardApp(App[None]):
         row, connected = self._session_row()
         attention = SEMANTIC_STYLE["attention"]
         if row is None:
-            handle = self._session_handle(self.navigation.session or "")
+            title = self._session_title(self.navigation.session or "")
             return _join(
-                (f"{handle} ", "bold " + _ACCENT),
+                (f"{title} ", "bold " + _ACCENT),
                 ("disconnected", attention),
                 "retained Jobs remain available",
             ), None
@@ -1128,7 +1129,7 @@ class DashboardApp(App[None]):
         state = self.snapshot.activity.get(info.key, Activity()).state
         connection_style = "green" if info.connection == "connected" else attention
         header = _join(
-            info.handle,
+            info.title,
             info.checkout,
             info.branch or "branch unavailable",
             info.mode,
@@ -1164,7 +1165,7 @@ class DashboardApp(App[None]):
         now = self.snapshot.observed_at
         return SessionOrientation(
             key=facts.key,
-            handle=self._session_handle(facts.key),
+            title=self._session_title(facts.key),
             checkout=checkout,
             branch=branch,
             mode="Goal Mode" if goal else "Interactive",
@@ -1462,6 +1463,10 @@ class DashboardApp(App[None]):
     def _session_handle(self, key: str) -> str:
         return self.snapshot.session_handles.get(key, "S?")
 
+    def _session_title(self, key: str) -> str:
+        """The handle with its ``--name`` label when the session has one."""
+        return self.snapshot.session_titles.get(key) or self._session_handle(key)
+
     def _owned_by(self, job: JobView, key: str | None) -> bool:
         """Aliases affect presentation membership only; routing keeps durable keys."""
         if key is None:
@@ -1502,6 +1507,7 @@ class DashboardApp(App[None]):
         return sessions.SessionFacts(
             key=facts.key,
             handle=self._session_handle(facts.key),
+            title=self._session_title(facts.key),
             mode=mode,
             branch=branch,
             work_dir=checkout,
@@ -1771,7 +1777,7 @@ class DashboardApp(App[None]):
                 f"{info.last_call} · {info.last_age}" if info.last_call else _ABSENT,
             ),
         ]
-        text = Text(f"{info.handle} · {info.mode}", style="bold " + _ACCENT)
+        text = Text(f"{info.title} · {info.mode}", style="bold " + _ACCENT)
         for label, value in lines:
             text.append("\n")
             text.append(label + ":", style=_CHROME)
@@ -2020,7 +2026,11 @@ class DashboardApp(App[None]):
         return text
 
     def _session_checkouts(self) -> list[tuple[Path, str]]:
-        """Each connected session's checkout and ``S3 Interactive`` label, in handle order."""
+        """Each connected session's checkout and ``S3 · uart-fix Interactive`` label, by handle number.
+
+        The label starts with the session title (the bare handle when unnamed); the order
+        follows the handle number, never the title.
+        """
 
         def number(row: SessionRow) -> int:
             match = _HANDLE_NUMBER.fullmatch(self._session_handle(row.attribution.key))
@@ -2031,7 +2041,7 @@ class DashboardApp(App[None]):
             facts = row.attribution
             checkout = facts.work_dir or facts.default_work_dir
             if checkout:
-                label = f"{self._session_handle(facts.key)} {self._session_facts(row).mode}"
+                label = f"{self._session_title(facts.key)} {self._session_facts(row).mode}"
                 pairs.append((Path(checkout), label))
         return pairs
 
