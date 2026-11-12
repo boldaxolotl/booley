@@ -132,3 +132,35 @@ proposed a deterministic generator; its triage settled the decisions below.
   [#2936](https://github.com/boldaxolotl/booley/issues/2936) (rename to
   `booley flow mutation`), #2937 (Result Cache), #2938 (QA mission). User docs
   change as each piece ships.
+
+## Amendments (2026-11-13)
+
+Recorded while implementing
+[#3626](https://github.com/boldaxolotl/booley/issues/3626).
+
+The operator names, their order, the selection rule, and the Mutant ID recipe
+are unchanged; every Mutant of generator version 2 keeps its ID and text. The
+generator version is 3. What each operator now includes:
+
+1. relational and equality operator swap (unchanged);
+2. arithmetic, bitwise, and logical operator swap, plus removal of unary `~`,
+   `-`, and `!` (`!x` becomes `x != 0`, one bit wide); a reduction swap;
+   dropping one operand of `&&`, `||`, `&`, and `|` by putting the operator's
+   neutral value there, never for an operand that calls a function or changes
+   a variable; `>>` and `>>>` exchanged where the shifted operand is signed;
+   `$signed` and `signed'()` turned unsigned;
+3. condition negation or forcing (unchanged);
+4. constant and reset-value change, plus an enum member replaced by the
+   previous or next member of an enum declared in the same file, and numeric
+   literals in the initializers of module- and interface-level variables;
+5. bit-select or slice off by one, plus the swap of two neighbouring
+   concatenation operands;
+6. deletion of an assignment or a `case` item (unchanged).
+
+Two kinds of site become reachable by every mutation above and by the swaps,
+conditions, and constants: the arguments of `$signed` and `$unsigned`, and the
+expressions in the port connections of module and interface instances.
+Bit-select moves and deletions never apply in a connection. A connection that
+is a bare name, a parameter override, a gate primitive, a `bind` directive, and
+a checker instance yield no site. No new mutation applies inside a `while`,
+`do`-`while`, `forever`, procedural `for`, or a `case` label.
