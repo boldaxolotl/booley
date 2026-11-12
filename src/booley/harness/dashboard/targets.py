@@ -86,6 +86,20 @@ class TargetDetail:
 
 
 @dataclass(frozen=True)
+class RunChoices:
+    """The Test Runs one Target offers as ``--test`` values, or why they cannot be listed.
+
+    ``worktree`` and ``selector`` name the request it answers. Not called ``Test*``:
+    pytest would try to collect such a class.
+    """
+
+    worktree: Path
+    selector: str
+    runs: tuple[str, ...]
+    problem: str = ""
+
+
+@dataclass(frozen=True)
 class WorktreeList:
     """Git's registered worktrees (the first is the main checkout) or why they are unknown."""
 
@@ -194,6 +208,30 @@ class TargetsReader:
         """
         with self._detail_lock:
             return self._detail(worktree, selector)
+
+    def test_runs(self, worktree: Path, selector: str) -> RunChoices:
+        """The Test Runs of one Target: each Test, then ``test+variant`` per Test Variant.
+
+        Reads nothing when inspecting the Target would write Stealth core
+        projections (the same guard as :meth:`detail`); the reason is the problem.
+        """
+        with self._detail_lock:
+            blocker = inspection_blocker(worktree)
+            if blocker:
+                return RunChoices(worktree, selector, (), f"Tests unavailable: {blocker}")
+            try:
+                plan = load_checkout_target_test_plan(worktree, selector)
+            except _READ_ERRORS as exc:
+                return RunChoices(worktree, selector, (), f"Tests unavailable: {first_line(exc)}")
+        runs: list[str] = []
+        for test in plan.tests:
+            runs.append(test)
+            table = plan.variants_of(test)
+            if table is not None:
+                runs.extend(f"{test}+{item.name}" for item in table.variants)
+        if not runs:
+            return RunChoices(worktree, selector, (), "This Target registers no tests")
+        return RunChoices(worktree, selector, tuple(runs))
 
     def _detail(self, worktree: Path, selector: str) -> TargetDetail:
         try:
