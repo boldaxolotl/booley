@@ -9,11 +9,11 @@ the work at hand.
 
 | Context | Canonical glossary | Owns |
 |---|---|---|
-| Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Jobs, Projects, Booley Directory and Project Root, Targets, Booley Flows and Specialists, EDA provisioning, simulation evidence, Metric-Driven Development, and presentation |
-| Goal Mode | [src/booley/goals/GLOSSARY.md](src/booley/goals/GLOSSARY.md) | Goal States, Worktree Identity, Goal Origins, Goal Changes, Interrupted Applies, Run Binding, and Frozen Test Runs inside one Goal Record; retires with Goal Mode in 0.5.0 |
+| Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Jobs, Goals and Goal Changes, Projects, Booley Directory and Project Root, Stealth, Targets, Booley Flows and Specialists, EDA provisioning, simulation evidence, Metric-Driven Development, and presentation |
+| Goal Mode | [src/booley/goals/GLOSSARY.md](src/booley/goals/GLOSSARY.md) | Worktree Identity, Run Binding, and Frozen Test Runs inside one Goal Record; retires with Goal Mode in 0.5.0 |
 | B-Wave | [crates/bwave/GLOSSARY.md](crates/bwave/GLOSSARY.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
 | Simulation Coverage | [src/booley/flows/sim/GLOSSARY.md](src/booley/flows/sim/GLOSSARY.md) | Coverage Records, measurement points, evaluation policy, waivers, and analysis |
-| Feedback | [src/booley/feedback/GLOSSARY.md](src/booley/feedback/GLOSSARY.md) | Findings, friction, impressions, wins, and their durable log |
+| Feedback | [src/booley/feedback/GLOSSARY.md](src/booley/feedback/GLOSSARY.md) | Findings, their kinds, and their durable log |
 | Public QA | [qa/GLOSSARY.md](qa/GLOSSARY.md) | Missions, Mission Areas, QA Runs, Operator, Release Smoke List, and Capability Map |
 
 ## Relationships

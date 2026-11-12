@@ -462,6 +462,10 @@ itself an **Unproxied Sandbox**:
 | anything else | `booley` and `booley-mcp` refuse to start (exit 2). `booley doctor` still runs and FAILs. |
 
 Booley never guesses this from the platform (for example from `CODESPACES`).
+The host `[sandbox] egress` setting decides the network of a Sandbox Booley
+creates. `BOOLEY_EGRESS` must match it: Booley refuses to create a Sandbox
+whose declaration differs, and
+[Doctor reports a running one](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
 In an Unproxied Sandbox Doctor WARNs `sandbox.unproxied`; to accept that,
 waive the check (host doc, not shipped).
 
