@@ -189,7 +189,7 @@ def test_long_title_is_cut_before_other_columns_drop():
     # its 40-cell floor.
     from booley.harness.dashboard import sessions
 
-    long_title = "S1 \u00b7 " + "a" * 27  # the longest allowed label, 32 characters
+    long_title = "S1 \u00b7 " + "a" * 32  # the longest allowed label
     busy = facts(1, title=long_title, jobs=("\u25b6 J-SIM3 sim fifo_top_level_with_a_long_name",))
     other = facts(2)
     overview = sessions.build([busy, other], [], NOW, 80)

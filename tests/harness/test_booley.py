@@ -263,7 +263,7 @@ def test_chat_help_documents_name_option(monkeypatch, capsys):
     assert "[--name NAME]" in help_text
     assert "--name NAME" in help_text
     assert "S3 \u00b7 NAME" in help_text
-    assert "keeps its label unless --name sets a new one" in help_text
+    assert "resumed in its worktree keeps its label unless --name sets a new one" in help_text
     assert "--here and --name only before any other argument" in help_text
 
 

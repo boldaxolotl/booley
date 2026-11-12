@@ -997,7 +997,8 @@ def _add_utility_subparsers(sub) -> None:
         help=(
             "Label the session: the tab title and the Dashboard show `S3 · NAME` "
             "(1-32 letters, digits, spaces, '.', '_' or '-', starting with a letter or "
-            "digit). A resumed session keeps its label unless --name sets a new one"
+            "digit). A conversation resumed in its worktree keeps its label unless --name sets a "
+            "new one"
         ),
     )
     _add_cheat_subparser(sub)
@@ -1291,9 +1292,10 @@ def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], li
     """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
 
     Booley keeps `-C`/`--project`, `--cli`, `--new-worktree`, `--here` and `--name` only
-    while they lead the tail. Everything after them goes to the agent CLI untouched, with one leading
-    `--` dropped so `booley chat -- --help` forwards `--help`. A leading `-h`/`--help`
-    stays Booley's: the whole argv goes to argparse, which prints the `chat` help.
+    while they lead the tail. Everything after them goes to the agent CLI untouched, with
+    one leading `--` dropped so `booley chat -- --help` forwards `--help`. A leading
+    `-h`/`--help` stays Booley's: the whole argv goes to argparse, which prints the `chat`
+    help.
     """
     tail = argv[command_index + 1 :]
     own_end = 0

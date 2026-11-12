@@ -282,13 +282,14 @@ Sessions have short handles such as `S17`; Jobs carry their kind, as in
 `J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
 handle, except a conversation resumed in its worktree, which keeps its handle.
 
-`booley chat --name uart-fix` labels a session: the terminal tab (Claude and
-Codex), the Claude session name and the Dashboard's session list, header and
-worktree picker show `S3 · uart-fix`. The label is a display aid only; the
-worktree and branch keep the handle (`s3`, `booley/s3`). A conversation resumed
-in its worktree keeps its handle and label, and `--name` on a resume sets a new
-label. A name is 1-32 letters, digits, spaces, `.`, `_` or `-`, starting with a
-letter or digit. Claude's own `--name` is still reachable as
+`booley chat --name uart-fix` labels a session: the terminal tab, the Claude
+session name and the Dashboard's session list, header and worktree picker show
+`S3 · uart-fix`. The Codex tab shows the label on Linux only; elsewhere Booley
+prints a note and the Dashboard still shows it. The label is a display aid only;
+the worktree and branch keep the handle (`s3`, `booley/s3`). A conversation
+resumed in its worktree keeps its handle and label, and `--name` on a resume sets
+a new label. The allowed characters are in the
+[CLI reference](CLI-REFERENCE.md#work-in-the-sandbox--container). Pass Claude's own `--name` as
 `booley chat -- --name <name>`.
 
 ### Several agents at once
