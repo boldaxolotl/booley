@@ -103,7 +103,12 @@ def harness(
     Both run their real prepared-invocation kind: the Simulation Campaign (which
     borrows admission) and Target selection (which does not).
     """
-    flow = FLOW_TYPES[request.param]()
+    return _build_harness(request.param, runtime, monkeypatch)
+
+
+def _build_harness(kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch) -> _Harness:
+    """The harness of Flow *kind* (``sim`` or ``synth``), patched through *monkeypatch*."""
+    flow = FLOW_TYPES[kind]()
     typed_request = flow.request_type(
         target="demo", work_dir=runtime, report_dir=runtime / "reports"
     )
@@ -113,7 +118,7 @@ def harness(
         observed.invocations.append(object())
         return observed.behavior()
 
-    if request.param == "sim":
+    if kind == "sim":
 
         def run_prepared_simulation(
             _prepared: object, admission: object | None
@@ -686,7 +691,7 @@ def test_memory_admission_survives_a_budget_it_cannot_compute(
 
 
 def test_over_budget_job_result_carries_the_memory_warning(
-    harness: _Harness, memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
+    runtime: Path, memory_runtime: Path
 ) -> None:
     from booley.flows.job_estimates import JobRequest
     from booley.flows.prepared_invocation import TargetSelectionInvocation
@@ -695,18 +700,22 @@ def test_over_budget_job_result_carries_the_memory_warning(
     # A 2,000 MiB peak is a 2,500 MiB estimate against the 1,000 MiB budget.
     _seed_history(memory_runtime, ("a", 2000))
     request = (JobRequest("synth", "a"),)
-    monkeypatch.setattr(TargetSelectionInvocation, "job_requests", lambda _self: request)
-    monkeypatch.setattr(SimulationCampaignInvocation, "job_requests", lambda _self: request)
-    harness.behavior = lambda: EndpointOutcome(report_text="RESULT: PASS")
     warning = "Memory estimate 2500 MiB exceeds the Memory Budget of 1000 MiB; this Job ran alone."
 
-    result = harness.execute()
+    for kind in ("sim", "synth"):
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(TargetSelectionInvocation, "job_requests", lambda _self: request)
+            patch.setattr(SimulationCampaignInvocation, "job_requests", lambda _self: request)
+            harness = _build_harness(kind, runtime, patch)
+            harness.behavior = lambda: EndpointOutcome(report_text="RESULT: PASS")
 
-    assert result.exit_code == 0
-    assert result.outcome.detail["memory_admission_warning"] == warning
-    assert result.outcome.report_text.splitlines()[:2] == ["RESULT: PASS", warning]
-    (borrowed,) = harness.admissions
-    assert borrowed is not None and borrowed.memory_warning == warning
+            result = harness.execute()
+
+        assert result.exit_code == 0, kind
+        assert result.outcome.detail["memory_admission_warning"] == warning, kind
+        assert result.outcome.report_text.splitlines()[:2] == ["RESULT: PASS", warning], kind
+        (borrowed,) = harness.admissions
+        assert borrowed is not None and borrowed.memory_warning == warning, kind
 
 
 def test_unwarned_job_result_is_unchanged(harness: _Harness, memory_runtime: Path) -> None:
