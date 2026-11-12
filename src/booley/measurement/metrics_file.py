@@ -10,6 +10,11 @@ for a per-test metric, as the Flow declares (ADR 0092, issue #3045).
 load error, and raises them together so ``booley measure --validate`` can list
 each one. Entries are compared by their resolved address (metric, limit, Test
 Run or clock), never by key text, so ``smoke`` and ``smoke@1`` are one address.
+
+:func:`parse_metrics_as_written` reads a file's text with no checkout, so a
+commit's rules can be compared with another commit's from Git objects alone
+(#3697): Target keys and test prefixes stay as spelled and the checks that need
+the Target catalog or Test Run plan are skipped.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ METRICS_FILE = "metrics.toml"
 TABLE_FLOWS = flows_with_metric_declarations()
 
 Limit = Literal["max", "min"]
+_Address = tuple[str, Limit | None, str | None]  # (metric, limit, Test Run or clock)
 
 _RESERVED_KEYS = ("track", "off", "notes")
 _BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
@@ -81,7 +87,7 @@ class TableRules:
     """The effective rules of one ``[<target>.<flow>]`` table."""
 
     target: str  # the Target key as written
-    identity: str  # ``vlnv#name``
+    identity: str  # ``vlnv#name``; the Target key as written when read without a checkout
     flow: str
     bounds: tuple[Bound, ...]
     tracked: tuple[TrackedMetric, ...]
@@ -93,6 +99,17 @@ class MetricsRules:
 
     path: Path  # <Booley Directory>/metrics.toml; it may not exist
     tables: tuple[TableRules, ...]
+
+
+@dataclass(frozen=True)
+class WrittenRules:
+    """The rules of a ``metrics.toml`` text read without a checkout (keys as spelled)."""
+
+    tables: tuple[TableRules, ...]
+    # Default bounds each table's ``off`` removed, by ``(target, flow)``: addresses as
+    # written, so "turned off" can be told from "removed". ``TableRules`` stays as it is
+    # because it is serialized into every stored Measurement Run.
+    switched_off: dict[tuple[str, str], frozenset[_Address]]
 
 
 @dataclass(frozen=True)
@@ -133,7 +150,7 @@ class _Ref:
     test_run: str | None
 
     @property
-    def address(self) -> tuple[str, Limit | None, str | None]:
+    def address(self) -> _Address:
         """The resolved address two entries are compared by."""
         return (
             self.metric,
@@ -207,11 +224,16 @@ def _syntax_error(text: str, failure: tomllib.TOMLDecodeError) -> MetricsLoadErr
 
 
 class _Loader:
-    """One load of one checkout's ``metrics.toml``; accumulates every error."""
+    """One load of one ``metrics.toml``; accumulates every error.
 
-    def __init__(self, checkout: Path) -> None:
+    With a *checkout* the Target keys and test prefixes are resolved against its
+    catalog and Test Run plans; without one (``None``) they are kept as written.
+    """
+
+    def __init__(self, checkout: Path | None) -> None:
         self.checkout = checkout
         self.errors: list[MetricsLoadError] = []
+        self.switched_off: dict[tuple[str, str], frozenset[_Address]] = {}
         self._catalog: TargetCatalog | None = None
         self._catalog_failed = False
         self._plans: dict[str, TargetTestPlan | str] = {}
@@ -302,10 +324,13 @@ class _Loader:
         rules = self._effective(header, parsed, defaults.get(flow, []))
         if rules is None:
             return None
+        self.switched_off[(target, flow)] = frozenset(ref.address for ref in parsed.off)
         return TableRules(target, identity, flow, rules[0], rules[1])
 
     def _resolve_target(self, header: str, target: str) -> str | None:
         """The identity (``vlnv#name``) a Target key selects, or ``None`` after an error."""
+        if self.checkout is None:
+            return target
         if self._catalog_failed:
             return None
         try:
@@ -443,9 +468,13 @@ class _Loader:
             return None
         test_run = None
         if kind is MetricKind.PER_TEST:
-            test_run = self._resolve_test_run(header, key, metric, prefix, identity)
-            if test_run is None:
-                return None
+            if self.checkout is None:
+                if not self._check_written_test(header, key, metric, prefix, identity):
+                    return None
+            else:
+                test_run = self._resolve_test_run(header, key, metric, prefix, identity)
+                if test_run is None:
+                    return None
         return _Ref(key, metric, limit, prefix, test_run)
 
     def _relative_error(
@@ -463,11 +492,46 @@ class _Loader:
 
     # --- test prefixes ----------------------------------------------------------------
 
-    def _plan(self, identity: str) -> TargetTestPlan | str:
+    def _needs_target_error(self, header: str, key: str, metric: str) -> None:
+        self.error(
+            header,
+            key,
+            f"{metric} is per test and needs a test prefix, which a default cannot hold: "
+            "Tests belong to one Target; bound it in the Target's own table",
+        )
+
+    def _seed_count_error(self, header: str, key: str, prefix: str) -> bool:
+        """Record an error and return ``True`` when *prefix* asks for random seeds (``@xN``).
+
+        Such a prefix draws N random seeds on every load: no stable Test Run to bind to.
+        """
+        if not isinstance(parse_test_selector(prefix).seed_form, SeedCount):
+            return False
+        self.error(
+            header,
+            key,
+            f"test prefix {prefix!r} asks for random seeds; name one Test Run "
+            "(`<test>` or `<test>@<seed>`)",
+        )
+        return True
+
+    def _check_written_test(
+        self, header: str, key: str, metric: str, prefix: str | None, identity: str | None
+    ) -> bool:
+        """The checks on a per-test key that need no Test Run plan; ``False`` after an error."""
+        if identity is None:
+            self._needs_target_error(header, key, metric)
+            return False
+        try:
+            return prefix is None or not self._seed_count_error(header, key, prefix)
+        except ValueError:
+            return True  # whether the selector names a Test Run needs the plan: not judged
+
+    def _plan(self, checkout: Path, identity: str) -> TargetTestPlan | str:
         """The Target's Test Run plan, or why it cannot be built (cached per load)."""
         if identity not in self._plans:
             try:
-                self._plans[identity] = load_checkout_target_test_plan(self.checkout, identity)
+                self._plans[identity] = load_checkout_target_test_plan(checkout, identity)
             except (FuseSocError, ValueError, OSError) as exc:
                 self._plans[identity] = str(exc)
         return self._plans[identity]
@@ -476,27 +540,17 @@ class _Loader:
         self, header: str, key: str, metric: str, prefix: str | None, identity: str | None
     ) -> str | None:
         """The one Test Run a per-test key addresses, or ``None`` after recording why not."""
+        checkout = self.checkout
+        assert checkout is not None  # written keys never resolve a Test Run
         if identity is None:
-            self.error(
-                header,
-                key,
-                f"{metric} is per test and needs a test prefix, which a default cannot hold: "
-                "Tests belong to one Target; bound it in the Target's own table",
-            )
+            self._needs_target_error(header, key, metric)
             return None
-        plan = self._plan(identity)
+        plan = self._plan(checkout, identity)
         if isinstance(plan, str):
             self.error(header, key, f"unknown test prefix {prefix!r}: {plan}")
             return None
         try:
-            if prefix is not None and isinstance(parse_test_selector(prefix).seed_form, SeedCount):
-                # `@xN` draws N random seeds on every load: no stable Test Run to bind to.
-                self.error(
-                    header,
-                    key,
-                    f"test prefix {prefix!r} asks for random seeds; name one Test Run "
-                    "(`<test>` or `<test>@<seed>`)",
-                )
+            if prefix is not None and self._seed_count_error(header, key, prefix):
                 return None
             runs = plan.default_runs() if prefix is None else plan.resolve([prefix])
         except (ValueError, OSError) as exc:
@@ -528,10 +582,10 @@ class _Loader:
         for ref in parsed.off:
             if ref.address not in default_addresses:
                 self.error(header, ref.key, "`off` names no default bound")
-        own: dict[tuple[str, Limit | None, str | None], Bound] = {}
+        own: dict[_Address, Bound] = {}
         for bound in parsed.bounds:
             first = own.setdefault(_address_of(bound), bound)
-            if first is not bound:
+            if first is not bound and self.checkout is not None:
                 self.error(header, bound.key, f"same address as `{first.key}`")
         switched_off = {ref.address for ref in parsed.off}
         inherited = [
@@ -545,6 +599,8 @@ class _Loader:
         for tracked in parsed.tracked:
             slot = (tracked.metric, _where(tracked))
             twin = slots.get(slot)
+            if self.checkout is None:
+                continue  # twins and duplicates are judged by resolved address, not spelling
             if twin is not None:
                 self.error(header, tracked.key, f"also bounded by `{twin.key}`")
             elif slot in seen:
@@ -567,12 +623,13 @@ class _Loader:
     ) -> list[Bound]:
         """*bounds* with each note attached to the bound at its address."""
         index = {_address_of(bound): position for position, bound in enumerate(bounds)}
-        noted: dict[tuple[str, Limit | None, str | None], str] = {}
+        noted: dict[_Address, str] = {}
         for ref, note in notes:
             position = index.get(ref.address)
             if position is None:
-                self.error(header, ref.key, "`notes` names no effective bound")
-            elif ref.address in noted:
+                if self.checkout is not None:  # as written, a respelled note is dropped
+                    self.error(header, ref.key, "`notes` names no effective bound")
+            elif ref.address in noted and self.checkout is not None:
                 self.error(header, ref.key, f"same address as `{noted[ref.address]}`")
             else:
                 noted[ref.address] = ref.key
@@ -585,9 +642,27 @@ def _where(item: Bound | TrackedMetric) -> str | None:
     return item.test_run if item.test_run is not None else item.prefix
 
 
-def _address_of(bound: Bound) -> tuple[str, Limit | None, str | None]:
+def _address_of(bound: Bound) -> _Address:
     """The resolved address a bound is compared by."""
     return (bound.metric, bound.limit, _where(bound))
+
+
+def _parse_bytes(raw: bytes, loader: _Loader) -> tuple[TableRules, ...]:
+    """Decode and load a ``metrics.toml``; raises :class:`MetricsFileError` with every error."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MetricsFileError(
+            (MetricsLoadError("", None, f"{METRICS_FILE} is not UTF-8: {exc}"),)
+        ) from exc
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise MetricsFileError((_syntax_error(text, exc),)) from exc
+    tables = loader.load(data)
+    if loader.errors:
+        raise MetricsFileError(tuple(loader.errors))
+    return tables
 
 
 def load_metrics_rules(checkout: Path) -> MetricsRules:
@@ -598,19 +673,20 @@ def load_metrics_rules(checkout: Path) -> MetricsRules:
     """
     path = resolve_checkout_booley_dir(checkout) / METRICS_FILE
     try:
-        text = path.read_bytes().decode("utf-8")
+        raw = path.read_bytes()
     except FileNotFoundError:
         return MetricsRules(path, ())
-    except UnicodeDecodeError as exc:
-        raise MetricsFileError(
-            (MetricsLoadError("", None, f"{METRICS_FILE} is not UTF-8: {exc}"),)
-        ) from exc
-    try:
-        data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise MetricsFileError((_syntax_error(text, exc),)) from exc
-    loader = _Loader(checkout)
-    tables = loader.load(data)
-    if loader.errors:
-        raise MetricsFileError(tuple(loader.errors))
-    return MetricsRules(path, tables)
+    return MetricsRules(path, _parse_bytes(raw, _Loader(checkout)))
+
+
+def parse_metrics_as_written(raw: bytes) -> WrittenRules:
+    """The rules of ``metrics.toml`` content *raw*, read without a checkout.
+
+    Target keys and test prefixes stay as written, and the checks that need the
+    Target catalog or a Test Run plan (unknown Target, unknown test prefix, two
+    spellings of one Test Run) are skipped, so a file that :func:`load_metrics_rules`
+    accepts always parses. A note whose spelling names no bound is dropped.
+    Raises :class:`MetricsFileError` holding every load error.
+    """
+    loader = _Loader(None)
+    return WrittenRules(_parse_bytes(raw, loader), loader.switched_off)
