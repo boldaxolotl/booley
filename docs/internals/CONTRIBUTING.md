@@ -54,13 +54,15 @@ installing Booley. Never edit a copy or the mirror by hand. The sync turns
 links to other shipped docs into sibling links and links to unshipped docs
 (`PLAIN_TEXT_TARGETS`) into plain text marked `(host doc, not shipped)`. A new
 link to a doc in neither set fails the sync with the file, the link and the fix.
-The image and wheel builders (`build.sh`, `booley init`,
-`.github/scripts/build_development_wheel.py`, and the release and CI workflows)
-render the copies from their sources before building, so on a checkout whose
-sources were edited without the sync they rewrite the stale tracked copy. A bare
-`python -m build` packs the committed copies as they are, so run the sync before
-committing. The regenerated copy lives under `src/booley/**`, so such an edit
-also runs the Python CI lane.
+Every stamped build renders the copies first, through `write_build_stamp` in
+`src/booley/runtime/build_stamp.py`. When a source was edited without the sync,
+the build rewrites the stale tracked copy and leaves it modified in the working
+tree. The render skips the `CHANGELOG.md` mirror, which only the sync updates. A
+bare `python -m build` runs no stamp and packs the copies on disk as they are, so
+run the sync before it. Run the sync before committing too: the readiness
+packaged-copies check and `tests/test_paths.py` fail on a stale copy. The
+regenerated copy lives under `src/booley/**`, so such an edit also runs the
+Python CI lane.
 
 ### Building a development wheel
 

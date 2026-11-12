@@ -15,8 +15,8 @@ from tests.conftest import reset_git_command_config
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
 
-from booley.dev_support.reference_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 from booley.runtime import build_stamp
+from booley.runtime.packaged_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL = "booley_rtl-0.2.15-py3-none-any.whl"

@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from booley.dev_support.reference_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 from booley.runtime import image_build_contracts as contracts
 from booley.runtime.build_stamp import BuildProfile, write_build_stamp
+from booley.runtime.packaged_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child

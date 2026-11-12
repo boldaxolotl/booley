@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import posixpath
 import re
+import shutil
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -88,6 +89,10 @@ _SLUG_TO_FILE = {doc.slug: doc.file for doc in USER_DOCS}
 _GITHUB_BLOB = re.compile(r"^/boldaxolotl/booley/blob/[^/]+/(?P<path>.+)$", re.IGNORECASE)
 _FENCE = re.compile(r"^ *(```+|~~~+)")
 _REMEDY = "add the target to SHIPPED_DOCS or PLAIN_TEXT_TARGETS in booley/runtime/packaged_docs.py"
+
+
+class MissingShippedDocError(ValueError):
+    """A ``SHIPPED_DOCS`` source file is absent (a ValueError, so it is never read as a missing tool)."""
 
 
 class UnclassifiedLinkError(ValueError):
@@ -324,17 +329,22 @@ def render_packaged_doc(source: str, text: str) -> str:
     )
 
 
+def read_shipped_source(root: Path, source: str) -> str:
+    """Return the text of one shipped doc source; raise MissingShippedDocError if absent."""
+    path = root / source
+    if not path.is_file():
+        raise MissingShippedDocError(f"shipped doc source is missing: {source}")
+    return path.read_bytes().decode("utf-8")
+
+
 def expected_copies(root: Path) -> dict[str, bytes]:
     """Return the packaged file name and bytes expected for every shipped doc."""
-    copies: dict[str, bytes] = {}
-    for source in SHIPPED_DOCS:
-        path = root / source
-        if not path.is_file():
-            raise FileNotFoundError(f"shipped doc source is missing: {source}")
-        copies[posixpath.basename(source)] = render_packaged_doc(
-            source, path.read_bytes().decode("utf-8")
+    return {
+        posixpath.basename(source): render_packaged_doc(
+            source, read_shipped_source(root, source)
         ).encode("utf-8")
-    return copies
+        for source in SHIPPED_DOCS
+    }
 
 
 def write_packaged_docs(root: Path) -> list[str]:
@@ -354,13 +364,20 @@ def write_packaged_docs(root: Path) -> list[str]:
             changed.append(name)
     for path in sorted(directory.iterdir()):
         if path.name not in expected:
-            path.unlink()
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
             changed.append(path.name)
     return changed
 
 
 def atomic_write(path: Path, content: bytes) -> None:
-    """Publish one generated document without exposing a partial file."""
+    """Publish one generated document without exposing a partial file.
+
+    Stdlib-only on purpose: ``runtime.atomic_files`` imports ``core``, which the
+    build-stamp step must not need (it runs with ``PYTHONPATH=src`` alone).
+    """
     temporary: Path | None = None
     try:
         mode = path.stat().st_mode if path.exists() else 0o644

@@ -195,8 +195,7 @@ def files_fingerprint(booley_root: Path, files: Iterable[Path]) -> str:
 
     Each file contributes ``<posix path relative to booley_root>\\0<bytes>\\0``.
     The digest is persisted in image labels and stamps, so its layout is a
-    compatibility contract. The pinned digests of the fingerprint tests changed
-    once, when the shipped doc sources (``SHIPPED_DOCS``) joined the inputs.
+    compatibility contract.
     """
     digest = hashlib.sha256()
     for path in files:

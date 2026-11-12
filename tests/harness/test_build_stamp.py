@@ -25,7 +25,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from booley.dev_support.reference_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
 from booley.runtime import build_stamp as build_stamp_module
@@ -50,6 +49,11 @@ from booley.runtime.build_stamp import (
     stamp_path,
     wheel_embedded_source_fingerprint,
     write_build_stamp,
+)
+from booley.runtime.packaged_docs import (
+    PACKAGED_DOCS_RELATIVE_DIR,
+    SHIPPED_DOCS,
+    MissingShippedDocError,
 )
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
@@ -204,7 +208,7 @@ class TestWriteBuildStamp:
     def test_missing_shipped_source_fails_naming_it(self, repo: Path):
         (repo / "docs/user/TESTS.md").unlink()
 
-        with pytest.raises(FileNotFoundError, match=r"docs/user/TESTS\.md"):
+        with pytest.raises(MissingShippedDocError, match=r"docs/user/TESTS\.md"):
             write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
 
         assert not stamp_path(repo).exists()
@@ -287,8 +291,9 @@ class TestWriteBuildStamp:
     def test_fingerprints_of_fixed_tree_are_pinned(self, tmp_path: Path):
         """Fingerprints are persisted in image labels and stamps (ADR 0053).
 
-        The literal digests below were computed before the tree digest was
-        shared; changing them invalidates every previously built image.
+        Changing the literal digests below invalidates every previously built
+        image; they last changed when the shipped doc sources joined the inputs
+        (#3657).
         The fixture omits ``VERSION``: ``Path`` sorting is case-insensitive on
         Windows, so a mixed-case sibling would order differently there.
         """

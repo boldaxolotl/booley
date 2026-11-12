@@ -29,10 +29,12 @@ from markdown_it import MarkdownIt
 from booley.runtime.packaged_docs import (
     PACKAGED_DOCS_RELATIVE_DIR,
     SHIPPED_DOCS,
+    MissingShippedDocError,
     UnclassifiedLinkError,
     atomic_write,
     expected_copies,
     link_destinations,
+    read_shipped_source,
     write_packaged_docs,
 )
 
@@ -86,7 +88,7 @@ def check_link_forms(source: str, text: str) -> None:
 def _check_shipped_link_forms(root: Path) -> None:
     """Run the cross-check on every shipped source."""
     for source in SHIPPED_DOCS:
-        check_link_forms(source, (root / source).read_bytes().decode("utf-8"))
+        check_link_forms(source, read_shipped_source(root, source))
 
 
 def packaged_doc_problems(root: Path = _REPOSITORY_ROOT) -> list[str]:
@@ -162,7 +164,7 @@ def main(
             return 1 if problems else 0
         # Docs first: a bad link raises before anything is written.
         changed = sync_packaged_docs(root) + sync_packaged_changelog(root)
-    except UnclassifiedLinkError as error:
+    except (UnclassifiedLinkError, MissingShippedDocError) as error:
         print(error)
         return 1
     print(
