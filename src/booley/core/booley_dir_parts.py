@@ -123,6 +123,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/upgrade_review.json": _COMMON,
         ".runtime/compiler-cache/": _COMMON,
         "result-cache/": _COMMON,
+        "measurements/": _COMMON,
         "worktrees/": _COMMON,
         ".baseline-wt-*/": _COMMON,
         "directory-layout.lock": _COMMON,

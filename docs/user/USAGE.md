@@ -256,11 +256,17 @@ Job. Pick the worktree and the Flow, then fill in the form the Dashboard
 builds from that Flow's options (the Project comes from the worktree, so `-C`,
 `--project`, and `--work-dir` are never offered). Each Common and Flow option is
 a field: `Enter` flips an on/off flag, opens a short list for an option with
-choices or a default/on/off pair, or opens a text editor (the Target field takes
-a Target name or a comma list, empty means automatic; the test field takes one
-Test Run). Output and Expert options go in the **Extra arguments** field, typed
-as on the command line. `Esc` in a list or editor drops the change, `Enter`
-keeps it. **Review the command** checks it and shows the equivalent
+choices or a default/on/off pair, or opens a text editor. The Target field picks
+one Target of the worktree that the Flow can drive, or `automatic`; put more
+Targets in **Extra arguments**. Once you have chosen a Target, the test field of
+the Simulation Flow lists its [Test Runs](TESTS.md): each test, and each test
+with one of its Test Variants (written `test+variant`). `Enter` toggles a Test
+Run at once, and `Esc` only goes back to the form; choosing another Target
+clears them. **Extra arguments** takes seeds and further Targets too. When a
+list cannot be read, the open list says why, and **Extra arguments** still takes
+the Targets and Test Runs you type. Output and Expert options go in the
+**Extra arguments** field, typed as on the command line. `Esc` in a choice list or editor drops the change,
+`Enter` keeps it. **Review the command** checks it and shows the equivalent
 `cd … && booley flow …` command. The
 review screen also says whether the Job runs now or queues behind other Jobs
 (with its position), and warns when the worktree has a connected session,
@@ -268,8 +274,7 @@ running Jobs, or uncommitted changes. A check it cannot make is reported as
 such. Synth and FPGA runs show their per-work-unit timeout. **Submit** starts
 the Job, unless the Job queue is full: then the screen says why and Submit does
 nothing until queued work drains. **Copy command** asks your terminal to copy the
-command instead and always works.
-The Jobs window then opens on All sessions with the new Job selected; a
+command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a
 Finished filter switches to Running, which keeps the Job listed after it
 finishes. `Esc` returns to where you started.
 

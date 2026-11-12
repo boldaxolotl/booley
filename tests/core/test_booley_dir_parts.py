@@ -112,6 +112,7 @@ WRITTEN_PATH_SAMPLES = {
     "plans/x": "common",
     "logs/x": "common",
     "human-logs/x.md": "common",
+    "measurements/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/r.json": "common",
 }
 
 # Atomic-write temporaries take the part of the file they replace.

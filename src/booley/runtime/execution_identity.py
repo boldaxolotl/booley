@@ -56,6 +56,7 @@ from pathlib import Path
 
 BUILD_DISTRIBUTIONS: tuple[str, ...] = ("booley", "fusesoc", "edalize")
 _FORMAT_TAG = b"booley-build-identity/1"
+_SOURCE_FORMAT_TAG = b"booley-source-identity/1"
 _CHUNK_BYTES = 1 << 20
 
 # cpuinfo keys that identify the CPU model (x86 and aarch64); clocks,
@@ -114,6 +115,27 @@ def booley_build_identity(search_path: Sequence[str] | None = None) -> str:
                 digest.update(_encode_entry(key, path, key in record_keys))
         except (OSError, UnicodeError, ValueError) as error:
             raise IdentityError(f"cannot hash {name}: {error}") from error
+    return "sha256:" + digest.hexdigest()
+
+
+def booley_source_identity(search_path: Sequence[str] | None = None) -> str:
+    """Return ``sha256:<hex>`` over the ``booley`` package files the interpreter imports.
+
+    The fallback for a development install, which has no RECORD for
+    :func:`booley_build_identity`: relative paths and contents of every file under
+    the package's import locations, without ``__pycache__`` and ``*.pyc``.
+    Raises ``IdentityError`` when a location cannot be read.
+    """
+    digest = hashlib.sha256(_frame(_SOURCE_FORMAT_TAG))
+    try:
+        for location in _package_locations("booley", search_path):
+            for path in sorted(location.rglob("*")):
+                if "__pycache__" in path.parts or path.suffix == ".pyc" or not path.is_file():
+                    continue
+                content = hashlib.sha256(path.read_bytes()).digest()
+                digest.update(_frame(path.relative_to(location).as_posix().encode(), content))
+    except OSError as error:
+        raise IdentityError(f"cannot hash booley sources: {error}") from error
     return "sha256:" + digest.hexdigest()
 
 
