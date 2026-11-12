@@ -91,11 +91,13 @@ def _commit_block(
     keyed: KeyedCommit, tree: str, message: str, document: Mapping[str, Any]
 ) -> dict[str, Any]:
     stored_sha = document["commit"]["sha"]
-    subject, _, body = message.partition("\n")
+    # Git's subject is the whole first paragraph, its lines joined by a space.
+    paragraph, _, body = message.partition("\n\n")
+    subject = " ".join(line.strip() for line in paragraph.splitlines())
     return {
         "sha": keyed.commit,
         "tree": tree,
-        "subject": subject.strip(),
+        "subject": subject,
         "body": body.strip(),
         "measured_as": stored_sha if stored_sha != keyed.commit else None,
         "booley_commit": document["booley_commit"],
@@ -168,14 +170,19 @@ def _results(document: Mapping[str, Any]) -> list[dict[str, Any]]:
 def _history_block(store: MeasurementStore, run: StoredRun) -> dict[str, Any]:
     runs, problems = store.readable_history(run.key)
     position = [stored.run_id for stored in runs].index(run.run_id)
+    earlier: list[dict[str, str]] = []
+    unreadable = list(problems)
+    for stored in runs[:position]:
+        try:
+            earlier.append({"run_id": stored.run_id, "outcome": _outcome(stored.document)})
+        except (KeyError, TypeError):
+            # The loader reads only the results it needs: a damaged later result passes it.
+            unreadable.append(f"{stored.path}: results cannot be read")
     return {
         "position": position + 1,
         "total": len(runs),
-        "earlier": [
-            {"run_id": earlier.run_id, "outcome": _outcome(earlier.document)}
-            for earlier in runs[:position]
-        ],
-        "problems": list(problems),
+        "earlier": earlier,
+        "problems": unreadable,
     }
 
 

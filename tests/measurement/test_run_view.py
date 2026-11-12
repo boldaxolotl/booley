@@ -287,6 +287,10 @@ def test_history_gives_position_earlier_outcomes_and_problems(tmp_path: Path) ->
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     keyed = key_of(repo, head)
+    # build_run counts from a later epoch than make_run: -100_000 minutes sorts it first.
+    both = build_run(keyed, "r0a", (Table("synth", synth_entries()),), minute=-100_000)
+    store.write(both, [])
+    store.write(make_run(keyed, "r0b", minute=0, status="stopped", flow="synth"), [])
     store.write(make_run(keyed, "r1", minute=1, verdict="error", flow="synth"), [])
     store.write(
         make_run(keyed, "r2", minute=2, status="cancelled", verdict="error", flow="synth"), []
@@ -300,8 +304,10 @@ def test_history_gives_position_earlier_outcomes_and_problems(tmp_path: Path) ->
 
     history = view_of(repo, store, viewed, head)["view"]["history"]
 
-    assert (history["position"], history["total"]) == (3, 4)
+    assert (history["position"], history["total"]) == (5, 6)
     assert history["earlier"] == [
+        {"run_id": "r0a", "outcome": "error"},  # error wins over unmet
+        {"run_id": "r0b", "outcome": "stopped"},
         {"run_id": "r1", "outcome": "error"},
         {"run_id": "r2", "outcome": "cancelled"},
     ]
@@ -309,7 +315,42 @@ def test_history_gives_position_earlier_outcomes_and_problems(tmp_path: Path) ->
     assert "rX.json" in problem
     latest = store.readable_history(keyed.key)[0][-1]
     last = view_of(repo, store, latest, head)["view"]["history"]
-    assert (last["position"], last["earlier"][-1]) == (4, {"run_id": "r3", "outcome": "met"})
+    assert (last["position"], last["earlier"][-1]) == (6, {"run_id": "r3", "outcome": "met"})
+
+
+def test_history_carries_an_earlier_run_with_a_damaged_result_as_a_problem(
+    tmp_path: Path,
+) -> None:
+    repo, _, head = feature_repo(tmp_path)
+    store = MeasurementStore(repo / ".booley")
+    keyed = key_of(repo, head)
+    entries = (
+        Entry("area_um2_max", "area_um2", 9, bound=5, verdict=Verdict.UNMET, detail="big"),
+        Entry("cell_count_max", "cell_count", 90, bound=100),
+    )
+    damaged = store.write(build_run(keyed, "r1", (Table("synth", entries),), minute=-100_000), [])
+    document = json.loads(damaged.path.read_bytes())
+    del document["tables"][0]["results"][1]["verdict"]
+    damaged.path.write_bytes(json.dumps(document).encode())
+    viewed = store.write(make_run(keyed, "r2", minute=2, flow="synth"), [])
+
+    history = view_of(repo, store, viewed, head)["view"]["history"]
+
+    assert history["earlier"] == []
+    (problem,) = history["problems"]
+    assert "r1.json" in problem
+
+
+def test_commit_subject_is_the_first_paragraph(tmp_path: Path) -> None:
+    repo, _ = in_tree_repository(tmp_path / "repo")
+    write(repo / "rtl.v", "module b; endmodule\n")
+    head = commit_all(repo, "wrapped\nsubject line\n\nthe body")
+    store = MeasurementStore(repo / ".booley")
+    stored = store.write(make_run(key_of(repo, head), "r1", flow="synth"), [])
+
+    commit = view_of(repo, store, stored, head)["view"]["commit"]
+
+    assert (commit["subject"], commit["body"]) == ("wrapped subject line", "the body")
 
 
 def synth_entries() -> tuple[Entry, ...]:
