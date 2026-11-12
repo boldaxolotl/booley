@@ -337,17 +337,28 @@ def refusal_requests(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> dict[str, CheckoutFlowRequest]:
     """One request per refusal rule; each names the path it is refused for."""
-    from booley.runtime import sandbox_layout
+    from booley.runtime import runtime_context, sandbox_layout
 
     plain_main, env_dir = tmp_path / "main-bd", tmp_path / "env-bd"
     live_checkout = world.live / "exported"
-    live_checkout.mkdir()
-    # The Sandbox's ``/work`` mount: a live tree whose ``.git`` marker the walk cannot see.
     sandbox_work = tmp_path / "sandbox-work"
+
+    def exported(destination: Path) -> Path:
+        """A real export: an empty directory fails the own-Booley-Directory rule first."""
+        shutil.copytree(world.checkout, destination, symlinks=True)
+        return destination
+
+    # The Sandbox's ``/work`` mount: a live tree whose ``.git`` marker the walk cannot see.
     monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(sandbox_work))
+    # Only the issued Sandbox trusts ``/work`` without a ``.git`` marker.
+    monkeypatch.setattr(
+        runtime_context,
+        "runtime_location",
+        lambda: runtime_context.RuntimeLocation.ISSUED_SANDBOX,
+    )
     monkeypatch.setenv("BOOLEY_DIR", str(env_dir))
     return {
-        "work-dir": world.request("pass", checkout=sandbox_work / "co"),
+        "work-dir": world.request("pass", checkout=exported(sandbox_work / "co")),
         "live-tree": world.request("pass", checkout=live_checkout),
         "main-booley-dir": world.request(
             "pass", checkout=plain_main / "co", main_booley_dir=plain_main
@@ -386,6 +397,9 @@ def test_checkout_flow_refuses_live_state_paths(
         run_checkout_flow(request)
 
     assert str(offending.resolve()) in str(refused.value)
+    if case == "work-dir":
+        # The ``/work`` rule refused it, not the rule for a checkout without its own directory.
+        assert "is inside the live working tree" in str(refused.value)
     # Refused before anything was created: no Job record, no environment directory.
     assert not standalone_jobs_dir(request.main_booley_dir).exists()
     assert not list(request.checkout.parent.glob(".*env-*"))
@@ -1064,15 +1078,21 @@ def assert_refused_before_any_run(world: World) -> None:
 def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, case: str) -> None:
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
-    inputs: dict[str, tuple[dict[str, Any], str]] = {
-        "core": ({"files": {"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")}}, "ip.core"),
+    inputs: dict[str, tuple[dict[str, Any], str, str]] = {
+        "core": (
+            {"files": {"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")}},
+            "ip.core",
+            "{live}/rtl/top.v",
+        ),
         "booley-toml": (
             {"config": '[flows.sim]\npre_run_commands = ["cat {live}/data.txt"]\n'},
             ".booley/booley.toml",
+            "{live}/data.txt",
         ),
         "symlink": (
             {"files": {"rtl/other.v": ""}, "symlinks": {"rtl/shared.v": "{live}/data/shared.v"}},
             "rtl/shared.v",
+            "{live}/data/shared.v",
         ),
         # A link inside the checkout is read by the Flow, so its target is scanned too.
         "core-symlink": (
@@ -1081,6 +1101,7 @@ def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, ca
                 "symlinks": {"ip.core": "cores/ip.txt"},
             },
             "ip.core",
+            "{live}/rtl/top.v",
         ),
         "config-symlink": (
             {
@@ -1088,9 +1109,10 @@ def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, ca
                 "symlinks": {".booley/tests.toml": "../cfg/tests.toml"},
             },
             ".booley/tests.toml",
+            "{live}/data.txt",
         ),
     }
-    build_arguments, offending = inputs[case]
+    build_arguments, offending, named_path = inputs[case]
     world = make_world(**build_arguments)
 
     with pytest.raises(CheckoutFlowError) as refused:
@@ -1098,7 +1120,8 @@ def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, ca
 
     message = str(refused.value)
     assert offending in message
-    assert str(world.live) in message and "live working tree" in message
+    assert named_path.replace("{live}", str(world.live)) in message
+    assert f"inside the live working tree {world.live}" in message
     assert_refused_before_any_run(world)
 
 
@@ -1158,6 +1181,40 @@ def test_checkout_flow_does_not_trust_an_empty_work_directory_outside_the_issued
         run_checkout_flow(world.request("pass"))
 
     assert_refused_before_any_run(world)
+
+
+@linux_only
+def test_checkout_flow_refuses_a_path_into_the_booley_dir_variable(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    env_dir = tmp_path / "env-bd"
+    env_dir.mkdir()
+    world = make_world(files={"ip.core": PROBE_CORE.format(files=f"{env_dir}/rtl/top.v")})
+    monkeypatch.setenv("BOOLEY_DIR", str(env_dir))
+
+    with pytest.raises(CheckoutFlowError, match=rf"{env_dir}/rtl/top\.v, inside the BOOLEY_DIR"):
+        run_checkout_flow(world.request("pass"))
+
+    assert_refused_before_any_run(world)
+
+
+@linux_only
+def test_checkout_flow_ignores_a_path_under_an_empty_work_directory(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
+    from booley.runtime import sandbox_layout
+
+    # The image's ``WORKDIR /work`` exists in a hand-written Sandbox without being the
+    # tree: naming a path under it is not a read of uncommitted work.
+    empty_work = tmp_path / "empty-work"
+    empty_work.mkdir()
+    world = make_world(files={"ip.core": PROBE_CORE.format(files=f"{empty_work}/rtl/top.v")})
+    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(empty_work))
+
+    assert run_checkout_flow(world.request("pass")).status is CheckoutFlowStatus.PASSED
 
 
 @linux_only

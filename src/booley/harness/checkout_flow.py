@@ -65,7 +65,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.core.booley_layout import validate_environment
 from booley.core.boundary import as_dict
@@ -90,6 +90,9 @@ from booley.runtime.process_group import (
 from booley.runtime.project_discovery import discover_project_root, has_git_worktree_marker
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 from booley.targets.flow_names import canonical
+
+if TYPE_CHECKING:
+    from booley.fusesoc.fusesoc_registry import ResolvedTarget
 
 # The Flow's tools run in sessions of their own: SIGINT lets the Flow reap them
 # before this grace period ends and the process group is killed.
@@ -275,24 +278,24 @@ def _live_roots(main: Path) -> list[LiveRoot]:
     if os.environ.get("BOOLEY_DIR"):
         roots.append(LiveRoot("BOOLEY_DIR", Path(os.environ["BOOLEY_DIR"]).resolve()))
     work_dir = Path(sandbox_layout.WORK_DIR)
-    trees = [work_dir] if work_dir.is_dir() else []
     if runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX:
-        if not trees:
+        if not work_dir.is_dir():
             raise CheckoutFlowError(f"no live working tree found: {work_dir} is not mounted")
+        trees = [work_dir]
     else:
-        derived = [
+        # Only a ``/work`` with a Git marker is a live tree here: the image's is empty.
+        derived = [work_dir] if has_git_worktree_marker(work_dir) else []
+        derived.extend(
             owner
             for start in (main, Path.cwd().resolve())
             if (owner := _enclosing_checkout(start, outside=main)) is not None
-        ]
-        if trees and has_git_worktree_marker(work_dir):
-            derived.append(work_dir)
+        )
         if not derived:
             raise CheckoutFlowError(
                 f"no live working tree found: no Git checkout contains {main} "
                 "or the working directory"
             )
-        trees.extend(dict.fromkeys(owner for owner in derived if owner not in trees))
+        trees = list(dict.fromkeys(derived))
     return [*roots, *(LiveRoot("live working tree", tree) for tree in trees)]
 
 
@@ -445,6 +448,27 @@ def _kill(process: subprocess.Popen[Any]) -> None:
     process.wait()
 
 
+def _resolved_paths(resolved: ResolvedTarget) -> dict[str, object]:
+    """The paths a resolved Target reads: its files (with include paths) and its core files."""
+    import yaml
+
+    edam = as_dict(yaml.safe_load(resolved.edam_path.read_text(encoding="utf-8"))) or {}
+    cores = as_dict(edam.get("cores")) or {}
+    entries = [as_dict(item) or {} for item in edam.get("files") or ()]
+    include_paths = [str(entry["include_path"]) for entry in entries if entry.get("include_path")]
+    return {
+        "files": [
+            os.path.normpath(resolved.build_root / name)
+            for name in (*(f.name for f in resolved.files), *include_paths)
+        ],
+        "cores": [
+            os.path.normpath(resolved.build_root / str(entry["core_file"]))
+            for entry in (as_dict(item) or {} for item in cores.values())
+            if entry.get("core_file")
+        ],
+    }
+
+
 def preflight_main(argv: list[str] | None = None) -> int:
     """The preflight child: resolve the Target in the cwd and write the paths it reads.
 
@@ -453,8 +477,6 @@ def preflight_main(argv: list[str] | None = None) -> int:
     resolved file paths, and ``cores`` the core files that contributed, both lexical
     and absolute.
     """
-    import yaml
-
     from booley.fusesoc import fusesoc_registry
     from booley.targets.catalog import TargetCatalog
     from booley.targets.domain import UnknownTargetError
@@ -480,23 +502,7 @@ def preflight_main(argv: list[str] | None = None) -> int:
         except fusesoc_registry.FuseSocError as exc:
             print(exc, file=sys.stderr)
             return _START_FAILURE_EXIT_CODE
-        edam = as_dict(yaml.safe_load(resolved.edam_path.read_text(encoding="utf-8"))) or {}
-        cores = as_dict(edam.get("cores")) or {}
-        entries = [as_dict(item) or {} for item in edam.get("files") or ()]
-        include_paths = [
-            str(entry["include_path"]) for entry in entries if entry.get("include_path")
-        ]
-        result = {
-            "files": [
-                os.path.normpath(resolved.build_root / name)
-                for name in (*(f.name for f in resolved.files), *include_paths)
-            ],
-            "cores": [
-                os.path.normpath(resolved.build_root / str(entry["core_file"]))
-                for entry in (as_dict(item) or {} for item in cores.values())
-                if entry.get("core_file")
-            ],
-        }
+        result = _resolved_paths(resolved)
     Path(result_file).write_text(json.dumps(result), encoding="utf-8")
     return 0
 

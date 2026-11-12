@@ -12,11 +12,14 @@ uncommitted work. Two checks find the ways an input can still point there:
 
 The text match is deliberate: it needs no parser per file format, so a live path in a
 comment is refused too, and the finding names the file. A candidate path stops at
-whitespace and at the other token delimiters (``_STARTERS`` and ``_STOPS`` below), so a
-live root spelled with one (a space, ``+``, ``=``, ``,``, ``#``, a quote or a bracket, ...)
-is matched by its own literal spelling at a token start instead; only another spelling
-of such a root (a second mount) is missed. A multi-letter option glued to its path (``-isystem/x``) is not a token start
-and is not matched either.
+whitespace and at the other token delimiters (``_STARTERS`` and ``_STOPS`` below).
+
+What the match misses:
+
+* a live root spelled with a delimiter (a space, ``+``, ``=``, ``,``, ``#``, a quote or a
+  bracket) is matched by its own literal spelling at a token start, so only another
+  spelling of such a root (a second mount) is missed;
+* a multi-letter option glued to its path (``-isystem/x``) is not a token start.
 
 Relative escapes (``../../live/x``) are deliberate reads and out of scope for the static
 scan; :func:`resolved_findings` still refuses one that reaches a resolved file.
@@ -44,10 +47,8 @@ _STOPS = _STARTERS + r"""\)}\]\\!%\x00"""
 # (``-I/x``), after the default operator of a variable (``${V:-/x}``, ``${V-/x}``) or after
 # an undecoded ``\n``/``\r``/``\t`` escape. A relative ``sim/work/tb.sv`` is one token that
 # does not start with ``/``.
-_CANDIDATE = re.compile(
-    rf"(?:^|(?<=[{_STARTERS}])|(?<=\\[nrt]))(?:\$\{{\w+:?[-=+?])?(?:-[A-Za-z]?)?(/[^{_STOPS}]*)",
-    re.MULTILINE,
-)
+_TOKEN_START = rf"(?:^|(?<=[{_STARTERS}])|(?<=\\[nrt]))(?:\$\{{\w+:?[-=+?])?(?:-[A-Za-z]?)?"
+_CANDIDATE = re.compile(rf"{_TOKEN_START}(/[^{_STOPS}]*)", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -75,9 +76,9 @@ def _candidates(text: str, roots: Sequence[LiveRoot]) -> list[str]:
     """
     found = {match.start(1): match.group(1) for match in _CANDIDATE.finditer(text)}
     for root in roots:
+        # The root must end at a delimiter: ``/workspace`` is not inside ``/work``.
         literal = re.compile(
-            rf"(?:^|(?<=[{_STARTERS}])|(?<=\\[nrt]))(?:-[A-Za-z]?)?"
-            rf"({re.escape(str(root.path))}(?:/[^{_STOPS}]*)?)",
+            rf"{_TOKEN_START}({re.escape(str(root.path))}(?:/[^{_STOPS}]*)?)(?![^{_STOPS}])",
             re.MULTILINE,
         )
         found.update({match.start(1): match.group(1) for match in literal.finditer(text)})

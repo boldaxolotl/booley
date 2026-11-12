@@ -42,13 +42,28 @@ def test_input_findings_name_an_absolute_live_path_in_each_spelling(
     assert f"inside the live working tree {live}" in findings[0]
 
 
+def test_input_findings_name_the_whole_path_not_the_root(tmp_path: Path) -> None:
+    live = (tmp_path / "live").resolve()
+    live.mkdir()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "ip.core").write_text(f"files: [{live}/rtl/top.v]\n", encoding="utf-8")
+
+    assert input_findings(checkout, [LiveRoot("live working tree", live)]) == [
+        f"ip.core names {live}/rtl/top.v, inside the live working tree {live}"
+    ]
+
+
 def test_input_findings_ignore_paths_outside_every_live_root(tmp_path: Path) -> None:
     live = (tmp_path / "live").resolve()
     live.mkdir()
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     (checkout / "ip.core").write_text(
-        f"files: [rtl/top.v, {tmp_path}/elsewhere/x.v, make-{live}]\n", encoding="utf-8"
+        f"files: [rtl/top.v, {tmp_path}/elsewhere/x.v, make-{live}]\n"
+        # A path that only starts with the root's spelling is another directory.
+        f"-I{live}2/inc {live}space/x.v {live}-old\n",
+        encoding="utf-8",
     )
 
     assert input_findings(checkout, [LiveRoot("live working tree", live)]) == []
@@ -90,8 +105,11 @@ def test_input_findings_match_a_live_root_spelled_with_a_delimiter(
     live.mkdir()
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    (checkout / "booley.toml").write_text(f'cmd = "make -I{live}/inc"\n', encoding="utf-8")
+    (checkout / "booley.toml").write_text(
+        f'cmd = "make -I{live}/inc"\nlib = "${{SIM-{live}/lib}}"\n', encoding="utf-8"
+    )
 
     findings = input_findings(checkout, [LiveRoot("live working tree", live)])
 
-    assert len(findings) == 1 and findings[0].startswith("booley.toml names ")
+    assert len(findings) == 2
+    assert all(finding.startswith("booley.toml names ") for finding in findings)
