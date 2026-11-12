@@ -13,6 +13,10 @@ from pathlib import Path
 SOURCE_METRICS = {"line", "branch", "expression", "toggle"}
 
 
+#: Must equal the Campaign schema Booley writes; tests/qa guards the match.
+CAMPAIGN_SCHEMA = "booley.coverage-campaign/v5"
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
@@ -22,7 +26,7 @@ def read_campaign(path: Path) -> tuple[dict, list[dict]]:
     """Read the bounded public pair and independently verify its integrity."""
     require(path.stat().st_size <= 16 * 1024 * 1024, "manifest size ceiling")
     manifest = json.loads(path.read_text())
-    require(manifest["$schema"] == "booley.coverage-campaign/v4", "expected V4")
+    require(manifest["$schema"] == CAMPAIGN_SCHEMA, f"expected {CAMPAIGN_SCHEMA}")
     ref = manifest["point_store"]
     require(ref["path"] == "coverage-points.jsonl.gz", "noncanonical point path")
     points_path = path.parent / ref["path"]
