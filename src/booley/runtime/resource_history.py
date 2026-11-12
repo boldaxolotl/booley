@@ -16,7 +16,7 @@ import statistics
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from booley.core.boundary import as_dict
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
@@ -37,9 +37,19 @@ def history_path(booley_dir: Path) -> Path:
     return booley_dir / "runtime" / "resources" / "history.json"
 
 
-def _key(record: dict[str, Any]) -> tuple[str, str, tuple[str, ...], str]:
+class HistoryKey(NamedTuple):
+    """What one history record is about: a Target's phase, with its flags and Test Run."""
+
+    target: str
+    phase: str
+    flags: tuple[str, ...]
+    test_run: str
+
+
+def history_key(record: dict[str, Any]) -> HistoryKey:
+    """The :class:`HistoryKey` of a stored record."""
     key = record["key"]
-    return key["target"], key["phase"], tuple(key["flags"]), key["test_run"]
+    return HistoryKey(key["target"], key["phase"], tuple(key["flags"]), key["test_run"])
 
 
 def load_records(booley_dir: Path) -> list[dict[str, Any]]:
@@ -56,11 +66,11 @@ def load_records(booley_dir: Path) -> list[dict[str, Any]]:
 
 def _retained(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep each key's newest samples, minus keys idle for longer than ``MAX_KEY_AGE``."""
-    per_key: Counter[tuple[str, str, tuple[str, ...], str]] = Counter()
-    newest_run: dict[tuple[str, str, tuple[str, ...], str], datetime] = {}
+    per_key: Counter[HistoryKey] = Counter()
+    newest_run: dict[HistoryKey, datetime] = {}
     kept: list[dict[str, Any]] = []
     for record in reversed(records):
-        key = _key(record)
+        key = history_key(record)
         if per_key[key] < MAX_SAMPLES_PER_KEY:
             per_key[key] += 1
             kept.append(record)
@@ -69,7 +79,7 @@ def _retained(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             newest_run[key] = max(finished, newest_run.get(key, finished))
     cutoff = datetime.now(UTC) - MAX_KEY_AGE
     kept.reverse()
-    return [record for record in kept if newest_run[_key(record)] >= cutoff]
+    return [record for record in kept if newest_run[history_key(record)] >= cutoff]
 
 
 def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
@@ -107,9 +117,9 @@ def _spread(values: list[float | None]) -> dict[str, float | None] | None:
 
 def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Statistics per history key, in key order."""
-    groups: dict[tuple[str, str, tuple[str, ...], str], list[dict[str, Any]]] = {}
+    groups: dict[HistoryKey, list[dict[str, Any]]] = {}
     for record in records:
-        groups.setdefault(_key(record), []).append(record)
+        groups.setdefault(history_key(record), []).append(record)
     summaries = []
     for _, group in sorted(groups.items()):
         solo = [
