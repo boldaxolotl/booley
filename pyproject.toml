@@ -91,7 +91,7 @@ test = [
     # The coverage rule in .github/renovate.json repeats this hold.
     "coverage==7.17.0",
     # CI quality gate (changed-line coverage). Exact pin keeps hosted results reproducible.
-    "diff-cover==10.6.0",
+    "diff-cover==11.0.1",
     # The Mutant generator tests parse real Verilog.
     "booley-rtl[hdl-parser]",
 ]

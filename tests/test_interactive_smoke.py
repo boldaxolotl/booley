@@ -320,7 +320,7 @@ class TestBwaveRoundTrip:
         fake_trace = tmp_path / "test.fst"
         fake_trace.write_bytes(b"")
 
-        alias = bwave._register_trace(fake_trace, alias="smoke")
+        alias = bwave.register_trace(fake_trace, alias="smoke")
 
         assert alias == "smoke"
         sessions = bwave._load_sessions()
@@ -345,7 +345,7 @@ class TestBwaveRoundTrip:
 
         fake_trace = tmp_path / "test.fst"
         fake_trace.write_bytes(b"")
-        bwave._register_trace(fake_trace, alias="smoke")
+        bwave.register_trace(fake_trace, alias="smoke")
 
         captured: list[list[str]] = []
         monkeypatch.setattr(bwave, "_run", lambda cmd: captured.append(cmd) or 0)
