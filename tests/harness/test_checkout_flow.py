@@ -313,7 +313,9 @@ def test_checkout_flow_refuses_live_state_paths(
 
 
 @linux_only
-@pytest.mark.parametrize("case", ["no-own-dir", "ancestor-selects"])
+@pytest.mark.parametrize(
+    "case", ["no-own-dir", "ancestor-selects", "ancestor-selects-inside", "own-root"]
+)
 def test_checkout_flow_refuses_booley_config_outside_the_checkout(
     world: World, tmp_path: Path, case: str
 ) -> None:
@@ -326,7 +328,7 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
         checkout.mkdir(parents=True)
         (checkout / "dut.sv").write_bytes(b"module dut; endmodule\n")
         offending = world.main
-    else:
+    elif case == "ancestor-selects":
         # An ancestor's ``[project].dir`` selects a directory outside the checkout.
         offending = tmp_path / "selected"
         offending.mkdir()
@@ -334,6 +336,19 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
         (checkout.parent / "booley.toml").write_bytes(
             f'[project]\ndir = "{offending.as_posix()}"\n'.encode()
         )
+    elif case == "ancestor-selects-inside":
+        # Even a directory inside the checkout is refused when an ancestor chose it.
+        checkout = world.checkout
+        offending = checkout / "steered"
+        offending.mkdir()
+        (checkout.parent / "booley.toml").write_bytes(
+            f'[project]\ndir = "{checkout.name}/steered"\n'.encode()
+        )
+    else:
+        # The checkout's own ``booley.toml`` selects the checkout root itself.
+        checkout = world.checkout
+        offending = checkout
+        (checkout / "booley.toml").write_bytes(b'[project]\ndir = "."\n')
     request = world.request("pass", checkout=checkout)
 
     with pytest.raises(CheckoutFlowError) as refused:
@@ -841,3 +856,31 @@ def test_child_that_exited_zero_without_a_done_record_is_reported_failed(tmp_pat
 
     assert final.status == "failed"
     assert result.status is checkout_flow.CheckoutFlowStatus.FAILED
+
+
+@linux_only
+def test_checkout_flow_refuses_an_unusable_booley_configuration(world: World) -> None:
+    """A Booley Directory that is not a directory is refused as the checkout's problem."""
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    shutil.rmtree(world.checkout / ".booley")
+    (world.checkout / ".booley").write_bytes(b"not a directory\n")
+
+    with pytest.raises(CheckoutFlowError, match="unusable Booley configuration") as refused:
+        run_checkout_flow(world.request("pass"))
+
+    assert str(world.checkout.resolve()) in str(refused.value)
+
+
+@linux_only
+def test_checkout_flow_blames_the_runner_environment_for_a_bad_selection_variable(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retired selection variable in the runner's environment is not the checkout's fault."""
+    from booley.core.booley_layout import RETIRED_ENV
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    monkeypatch.setenv(RETIRED_ENV, "")
+
+    with pytest.raises(CheckoutFlowError, match="runner's environment is unusable"):
+        run_checkout_flow(world.request("pass"))

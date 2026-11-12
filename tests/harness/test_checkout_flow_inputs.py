@@ -25,8 +25,9 @@ from booley.harness import checkout_flow
 from booley.runtime import booley_dir
 from booley.runtime.commit_export import export_commit
 from tests.harness.test_checkout_flow import git, linux_only
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
-TIMEOUT_S = 120
+TIMEOUT_S = SUBPROCESS_TIMEOUT_S
 
 # The commit's design: one core with a Target per Flow. The HDL is never compiled
 # for real; the fake tools stand in for the simulator, linter and synthesizer.
@@ -66,7 +67,7 @@ CORE = textwrap.dedent(
 POISONED_CORE = CORE.replace(
     "- rtl/dut.sv: {file_type: systemVerilogSource}",
     "- rtl/dut.sv: {file_type: systemVerilogSource}\n"
-    "          - rtl/poison.sv: {file_type: systemVerilogSource}",
+    "      - rtl/poison.sv: {file_type: systemVerilogSource}",
 )
 
 # Settings of the commit (committed) and Main (poison). Each Main value would change
@@ -81,7 +82,6 @@ expected_latches = 1
 """
 POISONED_SETTINGS = """\
 [flows.sim]
-enabled = false
 pre_run_commands = ["exit 1"]
 [flows.lint]
 enabled = false
@@ -215,6 +215,17 @@ def poisoned_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     booley_dir.reset_cache()
     yield PoisonedWorld(live / ".booley", checkout, tmp_path / "reports", ctl)
     booley_dir.reset_cache()
+
+
+def test_poisoned_core_is_a_valid_core_that_compiles_the_poison() -> None:
+    """The Main poison must parse, or FuseSoC would skip it and the cores leg proves nothing."""
+    import yaml
+
+    committed = yaml.safe_load(CORE)["filesets"]["rtl"]["files"]
+    poisoned = yaml.safe_load(POISONED_CORE)["filesets"]["rtl"]["files"]
+
+    assert [next(iter(item)) for item in committed] == ["rtl/dut.sv"]
+    assert [next(iter(item)) for item in poisoned] == ["rtl/dut.sv", "rtl/poison.sv"]
 
 
 @linux_only

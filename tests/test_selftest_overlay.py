@@ -539,3 +539,38 @@ def test_sim_doctor_overlay_reads_the_checkouts_selftest(
         booley_dir.reset_cache()
 
     assert (build_root / "bad.hex").read_text(encoding="utf-8") == "bad\n"
+
+
+def test_prepared_group_runtime_view_reads_the_checkouts_selftest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Doctor view of a prepared group mirrors the checkout's ``selftest/``, not ``$BOOLEY_DIR``'s."""
+    from types import SimpleNamespace
+
+    from booley.flows.sim.execution.engine import PreparedOrdinaryGroup
+    from booley.runtime import booley_dir
+
+    checkout = tmp_path / "checkout"
+    overlay_file = selftest_overlay.bad_overlay_dir(checkout / ".booley", "sim") / "bad.hex"
+    overlay_file.parent.mkdir(parents=True)
+    overlay_file.write_text("bad\n", encoding="utf-8")
+    other = tmp_path / "other-booley"
+    other.mkdir()
+    run_cwd = tmp_path / "run"
+    run_cwd.mkdir()
+    work_root = checkout / ".booley" / ".runtime" / "g" / "work"
+    work_root.mkdir(parents=True)
+    # Only the two attributes ``runtime_view`` reads: the Target's root and the work root.
+    group = object.__new__(PreparedOrdinaryGroup)
+    group._handle = SimpleNamespace(project_root=checkout)  # type: ignore[assignment]
+    group._attempt = SimpleNamespace(  # type: ignore[assignment]
+        prepared=SimpleNamespace(work_root=work_root)
+    )
+    monkeypatch.setenv("BOOLEY_DIR", str(other))
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    booley_dir.reset_cache()
+    try:
+        with group.runtime_view(run_cwd, "e" * 32) as view:
+            assert (view / "bad.hex").read_text(encoding="utf-8") == "bad\n"
+    finally:
+        booley_dir.reset_cache()

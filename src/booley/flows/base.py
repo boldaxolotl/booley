@@ -243,6 +243,20 @@ class FlowMechanics:
         """Return working directory for subprocess."""
         return self.args.work_dir
 
+    def _tool_environment(self, cwd: Path) -> tuple[dict[str, str], Path]:
+        """Return the child environment and Python artifact cache root for a tool in *cwd*.
+
+        ``BOOLEY_DIR`` names that checkout's own Booley Directory: tools read this
+        checkout's inputs, never another checkout's (ADR 0082).
+        """
+        env = {**os.environ, **self._extra_subprocess_env()}
+        try:
+            checkout_dir = resolve_checkout_booley_dir(cwd)
+        except (OSError, RuntimeError, ValueError):
+            return env, Path(tempfile.gettempdir()) / "booley-python-artifacts"
+        env["BOOLEY_DIR"] = str(checkout_dir)
+        return env, checkout_dir / ".runtime" / "python-artifacts"
+
     def _execute_local(
         self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
     ) -> SubprocessResult:
@@ -259,15 +273,7 @@ class FlowMechanics:
 
         timeout = self._get_timeout() if timeout is None else timeout
         cwd = self._get_cwd() if cwd is None else cwd
-        env = {**os.environ, **self._extra_subprocess_env()}
-        try:
-            checkout_dir = resolve_checkout_booley_dir(cwd)
-        except (OSError, RuntimeError, ValueError):
-            cache_root = Path(tempfile.gettempdir()) / "booley-python-artifacts"
-        else:
-            cache_root = checkout_dir / ".runtime" / "python-artifacts"
-            # Tools read this checkout's inputs, never another checkout's (ADR 0082).
-            env["BOOLEY_DIR"] = str(checkout_dir)
+        env, cache_root = self._tool_environment(cwd)
         env = relocate_python_artifacts(
             env,
             cache_root,

@@ -120,7 +120,7 @@ def _load_common_job_budget(project_root: Path | None) -> dict:
     """
     try:
         common = resolve_common_booley_dir(project_root)
-    except (OSError, ValueError, RuntimeError):
+    except FileNotFoundError:
         return {}
     return load_job_budget_config(booley_dir=common)
 

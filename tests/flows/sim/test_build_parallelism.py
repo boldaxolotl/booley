@@ -254,3 +254,18 @@ def test_checkout_build_budget_uses_the_main_job_budget(
         booley_dir.reset_cache()
 
     assert arguments == ("-j8", "VM_PARALLEL_BUILDS=1")
+
+
+def test_build_budget_defaults_outside_any_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare invocation with no resolvable Project gets the default budget, not a crash."""
+    from booley.runtime import booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    booley_dir.reset_cache()
+    try:
+        assert build_parallelism._load_common_job_budget(None) == {}
+    finally:
+        booley_dir.reset_cache()
