@@ -55,6 +55,7 @@ Initialization only; a Booley-issued Sandbox refuses it. See
 ```bash
 booley                            # open the Developer Agent (same as booley chat)
 booley chat --cli codex           # open another Agent CLI your Project allows
+booley chat --name uart-fix       # name the session: its tab and the Dashboard show S3 · uart-fix
 booley chat --new-worktree        # start in a new worktree s<N> even if the main checkout is free
 booley chat --here                # start in the main checkout even if it is in use (in a linked worktree: stay there)
 booley chat --resume <id>         # Claude: arguments after chat and its options go to the agent CLI

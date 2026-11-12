@@ -1107,7 +1107,7 @@ class DashboardApp(App[None]):
         row, connected = self._session_row()
         attention = SEMANTIC_STYLE["attention"]
         if row is None:
-            handle = self._session_handle(self.navigation.session or "")
+            handle = self._session_title(self.navigation.session or "")
             return _join(
                 (f"{handle} ", "bold " + _ACCENT),
                 ("disconnected", attention),
@@ -1154,7 +1154,7 @@ class DashboardApp(App[None]):
         now = self.snapshot.observed_at
         return SessionOrientation(
             key=facts.key,
-            handle=self._session_handle(facts.key),
+            handle=self._session_title(facts.key),
             checkout=checkout,
             branch=branch,
             mode="Goal Mode" if goal else "Interactive",
@@ -1452,6 +1452,10 @@ class DashboardApp(App[None]):
     def _session_handle(self, key: str) -> str:
         return self.snapshot.session_handles.get(key, "S?")
 
+    def _session_title(self, key: str) -> str:
+        """The handle with the session's `--name`, for display only; matching uses handles."""
+        return self.snapshot.session_titles.get(key) or self._session_handle(key)
+
     def _owned_by(self, job: JobView, key: str | None) -> bool:
         """Aliases affect presentation membership only; routing keeps durable keys."""
         if key is None:
@@ -1491,7 +1495,7 @@ class DashboardApp(App[None]):
         checkout, branch = self._checkout_label(facts, goal)
         return sessions.SessionFacts(
             key=facts.key,
-            handle=self._session_handle(facts.key),
+            handle=self._session_title(facts.key),
             mode=mode,
             branch=branch,
             work_dir=checkout,
@@ -2021,7 +2025,7 @@ class DashboardApp(App[None]):
             facts = row.attribution
             checkout = facts.work_dir or facts.default_work_dir
             if checkout:
-                label = f"{self._session_handle(facts.key)} {self._session_facts(row).mode}"
+                label = f"{self._session_title(facts.key)} {self._session_facts(row).mode}"
                 pairs.append((Path(checkout), label))
         return pairs
 

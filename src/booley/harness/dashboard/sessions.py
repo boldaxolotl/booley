@@ -116,7 +116,8 @@ def order_key(facts: SessionFacts) -> tuple[bool, float, float, str]:
         since, parsed = parse_timestamp(facts.activity.since).timestamp(), True
     except ValueError:
         since, parsed = 0.0, False
-    number = re.fullmatch(r"S(\d+)", facts.handle)
+    # A named session's handle reads `S3 · uart-fix`; its number still orders it.
+    number = re.match(r"S(\d+)(?: · |$)", facts.handle)
     return (not parsed, since, int(number[1]) if number else math.inf, facts.key)
 
 

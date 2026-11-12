@@ -630,3 +630,26 @@ def test_chat_worktree_flags_lead_and_claude_worktree_passes_through(monkeypatch
     with pytest.raises(SystemExit):
         _parse_chat(monkeypatch, "--new-worktree", "--here")
     assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_named_session_titles_the_tab_for_both_clis_and_survives_resume(tmp_path, monkeypatch):
+    # Bugs caught: `--name` reached only one CLI, Claude's `-n` kept the bare handle, or a
+    # resumed tab (no `--name`) dropped the stored name from its title.
+    from booley.runtime import handles
+
+    monkeypatch.setattr(chat_cmd, "reserve_session_handle", handles.reserve_session_handle)
+    _use_real_codex_command(monkeypatch, tmp_path)
+    monkeypatch.setattr(codex_chat, "resolve_common_booley_dir", lambda root: root)
+    executed = _capture_exec(monkeypatch)
+    for provider in ("claude", "codex"):
+        _configure_claude(monkeypatch, provider)
+        with pytest.raises(_ExecCalledError):
+            chat_cmd.run(argparse.Namespace(agent_args=[], session_name="uart fix"), tmp_path)
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
+
+    assert executed == [
+        ("claude", ["S1 · uart fix", "-n", "S1 · uart fix"]),
+        (str(tmp_path / "codex"), ["S2 · uart fix", "--no-daemon"]),
+        (str(tmp_path / "codex"), ["S2 · uart fix", "--no-daemon"]),
+    ]

@@ -209,6 +209,7 @@ def test_concurrent_sessions_use_registry_lock_for_unique_allocations(tmp_path):
         {"next_number": True},
         {"entries": {"one": 1}},
         {"aliases": {"old": 1}},
+        {"names": {"one": 1}},
     ],
 )
 def test_invalid_map_is_diagnosed_never_reset(tmp_path, mutation):
@@ -615,3 +616,33 @@ def test_dropping_an_entry_drops_the_marker_of_a_resumed_tab():
 
     assert handles_map.aliases == {}
     assert handles_map.entries == {"pid:other": "S2"}
+
+
+def test_session_name_rides_with_the_handle_through_resume_rename_and_drop(tmp_path):
+    # Bugs caught: a resumed tab (no `--name`) lost its name, a new `--name` did not replace
+    # it, an alias key showed no name, or a dropped entry left its name behind.
+    store = handles.HandleStore(tmp_path)
+    assert store.reserve("pid:old", "S", name="uart-fix") == "S1"
+    assert store.reserve("pid:other", "S") == "S2"
+    store.reserve("pid:new", "S", predecessors=("pid:old",))
+    assert store.titled_snapshot()[1] == {
+        "pid:old": "S1 · uart-fix",
+        "pid:new": "S1 · uart-fix",
+        "pid:other": "S2",
+    }
+
+    store.reserve("pid:new", "S", name="fifo")
+    assert handles.stored_session_title(tmp_path, "pid:old", "S1") == "S1 · fifo"
+
+    store.prune(lambda _map: {"pid:old"}, wait_s=1)
+    assert store.load().names == {}
+
+
+def test_handle_map_without_names_still_loads(tmp_path):
+    # Bug caught: maps written by a release without session names became unreadable.
+    store = handles.HandleStore(tmp_path)
+    store.root.mkdir(parents=True)
+    store.path.write_text(
+        json.dumps({"schema": 1, "entries": {"k": "S1"}, "aliases": {}, "next_number": 2})
+    )
+    assert store.titled_snapshot()[1] == {"k": "S1"}

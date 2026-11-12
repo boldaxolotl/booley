@@ -9,7 +9,9 @@ from pathlib import Path
 
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.chat_sessions import CODEX_NATIVE_NAMES, reserve_codex_chat
+from booley.runtime.handles import stored_session_title
 from booley.runtime.pid import capture_process_identity
+from booley.runtime.session_activity import process_session_key
 
 
 def _command(executable: Path) -> tuple[str, list[str], list[str]]:
@@ -35,9 +37,12 @@ class NamingUnsupportedError(ValueError):
 
 
 def _named_command(
-    project_root: Path, wait_s: float | None, predecessors: tuple[str, ...]
+    project_root: Path, wait_s: float | None, predecessors: tuple[str, ...], name: str | None
 ) -> tuple[str, list[str], str]:
-    """Reserve the handle and build the named command; raise when naming is unavailable."""
+    """Reserve the handle and build the named command; raise when naming is unavailable.
+
+    The tab shows the session title: the handle, followed by the session's name if any.
+    """
     if not sys.platform.startswith("linux"):
         raise NamingUnsupportedError("Codex tab handles need Linux")
     installed = shutil.which("codex")
@@ -48,13 +53,12 @@ def _named_command(
     identity = capture_process_identity(os.getpid())
     if identity is None:
         raise ValueError("launch process identity is unavailable")
+    common = resolve_common_booley_dir(project_root)
     handle = reserve_codex_chat(
-        resolve_common_booley_dir(project_root),
-        identity,
-        wait_s=wait_s,
-        predecessors=predecessors,
+        common, identity, wait_s=wait_s, predecessors=predecessors, name=name
     )
-    return program, [*before, handle, *after], handle
+    title = stored_session_title(common, process_session_key(identity), handle)
+    return program, [*before, title, *after], handle
 
 
 def command(
@@ -63,6 +67,7 @@ def command(
     wait_s: float | None = None,
     strict: bool = False,
     predecessors: tuple[str, ...] = (),
+    name: str | None = None,
 ) -> tuple[str, list[str], str | None]:
     """Return the program, its argv and the reserved handle (``None`` when unnamed).
 
@@ -70,9 +75,10 @@ def command(
     adds a NOTE. With *strict*, every reason the handle cannot be reserved is raised
     instead, for a caller that cannot start without one. *wait_s* bounds the wait for
     the Session writer lock. A resumed tab keeps the handle of its *predecessors*.
+    A *name* is stored with the handle and shown beside it on the tab.
     """
     try:
-        return _named_command(project_root, wait_s, predecessors)
+        return _named_command(project_root, wait_s, predecessors, name)
     except NamingUnsupportedError:
         if strict:
             raise
