@@ -12,8 +12,8 @@ The documentation is split at the public-interface seam:
 
 | Document | Owns |
 |---|---|
-| **This document** | The implementation and evidence contracts of the built-in `sim`, `lint`, `synth`, and `fpga` Booley Flows |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How to run those built-in Flows and interpret their verdicts and Criteria |
+| **This document** | The implementation and evidence contracts of the built-in `sim`, `lint`, `synth`, `fpga`, and `mutation` Booley Flows |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md), [FLOW-MUTATION.md](../user/FLOW-MUTATION.md)) | How to run those built-in Flows and interpret their verdicts and Criteria |
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of those built-in Flows |
 | [MCP-TOOLS.md](MCP-TOOLS.md) | The generic MCP tool framework: discovery, lifecycle, base classes, result routing, and Custom Flows |
 | [CONFIG.md](../user/CONFIG.md) | The Project-wide `booley.toml` surface: exact keys, defaults, and examples; each Flow page owns its `[flows.*]` keys |
@@ -143,14 +143,15 @@ unwritable checkpoints never change the already determined Job outcome.
 
 ### Shared planning and dry-run lifecycle
 
-The four shipped Flows inherit `BuiltinFlow` and project their authoritative
+The shipped Flows inherit `BuiltinFlow`; `sim`, `lint`, `synth` and `fpga` project their authoritative
 preparation into `FlowPlan` / `WorkUnitPlan` records. A work unit keeps the
 timeout-bearing execution identity together: Target and revision role, selected
 tests or modules, EDA tool, sources, constraints, parameters, concrete recipe,
 ordered argv, and expected artifacts. Simulation and Lint consume their planned
 recipes during real execution; ASIC and FPGA implementation do the same for
 candidate and optional baseline work units. All requested units are validated
-before the first real command is dispatched.
+before the first real command is dispatched. `mutation` also inherits
+`BuiltinFlow` but keeps its own dry-run summary instead of a `FlowPlan`.
 
 `semantic_plan_fingerprint` hashes execution meaning while excluding dry-run
 status, cwd and scratch prefixes, report destinations, and invocation IDs. It is

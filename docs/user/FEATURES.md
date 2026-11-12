@@ -25,7 +25,7 @@ New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, T
 
 ## Same Flows Across Developer Agents and EDA Tools
 
-A Booley Flow (`sim`, `lint`, `synth`, `fpga`) looks the same no matter which Developer Agent calls it or which EDA tool runs underneath.
+A Booley Flow (`sim`, `lint`, `synth`, `fpga`, `mutation`) looks the same no matter which Developer Agent calls it or which EDA tool runs underneath.
 
 - **Claude Code or Codex.** Booley exposes its Flows as MCP tools, which both Claude Code and Codex call natively. Switch Developer Agents and the Flows, Targets, and results stay the same ([details](#llm-backend-selection)).
 - **Same call and result format, whichever EDA tool.** `sim` takes the same call and reports its verdict in the same normalized format whether the Target uses Verilator or Icarus; `lint` does the same for Verilator and Verible. The verdict itself comes from the tool the Target names, so two tools can still disagree on the same design. Open-source tools ship in the Sandbox Image, and Vivado comes from a licensed install on a Linux x86-64 host ([SANDBOX.md](SANDBOX.md#commercial-eda-provisioning)); the Developer Agent drives it the same way.
@@ -68,7 +68,7 @@ Developer Agents run with permission prompts turned off so they can work without
 
 ## Independent Specialists
 
-Specialists (the Reviewer, Mutation Tester, and Coverage Analyst) are separate agents that Booley runs to check the Developer Agent's work. The Reviewer and Coverage Analyst are LLM agents; the Mutation Tester runs no LLM. A Specialist didn't write the code and has no memory of the reasoning behind it, so it judges what is actually there rather than what was intended. A Developer Agent reviewing its own work tends to confirm it. Each Specialist also starts from a fresh context, free of the stale logs and drafts a long session accumulates.
+Specialists (the Reviewer and Coverage Analyst) are separate LLM agents that Booley runs to check the Developer Agent's work. A Specialist didn't write the code and has no memory of the reasoning behind it, so it judges what is actually there rather than what was intended. A Developer Agent reviewing its own work tends to confirm it. Each Specialist also starts from a fresh context, free of the stale logs and drafts a long session accumulates.
 
 A Developer Agent could spawn its own subagent, but then it writes the brief, decides what the subagent sees, and reads back a free-form reply. Specialists close those gaps:
 
@@ -100,7 +100,7 @@ The early reviews are the equivalent of an engineer's quick look at freshly writ
 
 ## Mutation Testing
 
-Booley includes a mutation testing framework to validate test quality, which matters more in agentic workflows than in human-driven ones. The Mutation Tester generates Mutants deterministically from the RTL with no LLM involved: the same RTL, count, and seed always produce the same Mutants, so detection rates are reproducible and comparable across runs. It never reads the testbench, so its bugs aren't shaped around what the tests already check. Booley runs an untouched baseline, then applies and compiles one isolated Mutant at a time; a Mutant that doesn't elaborate is reported `invalid` and not scored. The harness counts which Mutants the testbench detects and compares the detection rate against a threshold (80 % by default, configurable). Some survivors may be equivalent Mutants, which the default threshold allows for.
+Booley includes a mutation testing framework to validate test quality, which matters more in agentic workflows than in human-driven ones. The `mutation` Flow (`booley flow mutation`, [details](FLOW-MUTATION.md)) generates Mutants deterministically from the RTL with no LLM involved: the same RTL, count, and seed always produce the same Mutants, so detection rates are reproducible and comparable across runs. The Flow never reads the testbench, so its bugs aren't shaped around what the tests already check. Booley runs an untouched baseline, then applies and compiles one isolated Mutant at a time; a Mutant that doesn't elaborate is reported `invalid` and not scored. The harness counts which Mutants the testbench detects and compares the detection rate against a threshold (80 % by default, configurable). Some survivors may be equivalent Mutants, which the default threshold allows for.
 
 ## Lint Triage
 

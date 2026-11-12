@@ -13,8 +13,8 @@ The documentation is split by responsibility, not by reader type:
 | Document | Owns |
 |---|---|
 | **This document** | The MCP tool framework: discovery, lifecycle, base classes, `McpToolResult`, Criteria routing, and Custom Flows and MCP tools and built-in Specialist evidence contracts |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How RTL developers run built-in Booley Flows and interpret their results |
-| [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `lint`, `synth`, and `fpga` Booley Flows |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md), [FLOW-MUTATION.md](../user/FLOW-MUTATION.md)) | How RTL developers run built-in Booley Flows and interpret their results |
+| [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `lint`, `synth`, `fpga`, and `mutation` Booley Flows |
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of the built-in Flows |
 | [CONFIG.md](../user/CONFIG.md) | The Project-wide `booley.toml` surface: exact keys, defaults, and examples; each Flow page owns its `[flows.*]` keys |
 | [TARGETS.md](../user/TARGETS.md) | The `.core` design description and Targets |
@@ -56,8 +56,8 @@ Booley has three agent-facing implementation families:
 
 | Family | Built-in examples | Responsibility |
 |--------|-------------------|----------------|
-| `BuiltinFlow` | `sim`, `lint`, `synth`, `fpga` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
-| `Specialist` | `reviewer`, `mutation_tester` | Run a focused check (an LLM agent for `reviewer`; `mutation_tester` runs none) and interpret its result |
+| `BuiltinFlow` | `sim`, `lint`, `synth`, `fpga`, `mutation` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
+| `Specialist` | `reviewer`, `coverage_analyst` | Run a focused check with an LLM agent and interpret its result |
 | Direct `McpTool` subclass | Project-local custom endpoint | Implement orchestration that is neither a deterministic Flow nor a Specialist; Project-local custom tools can use the same contract |
 
 Built-in and custom MCP tools share the same base interfaces and MCP surface. Their source differs, but the calling model does not. Every agent-facing MCP tool and every subprocess it launches runs inside the Sandbox. A supported host-provisioned EDA installation changes where immutable tool files originate, not where the command executes.
@@ -165,8 +165,8 @@ Built-in MCP worktree routing:
 
 | Accepts `work_dir` | Does not accept `work_dir` |
 | --- | --- |
-| `sim`, `lint`, `synth`, `fpga` | `booley_status` |
-| `reviewer`, `mutation_tester`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
+| `sim`, `lint`, `synth`, `fpga`, `mutation` | `booley_status` |
+| `reviewer`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
 | `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
 | `booley_targets`, `booley_report` | `bwave` |
 
@@ -262,9 +262,9 @@ Criteria themselves are defined and expanded.
 
 | Class | Contract | Built-in examples |
 |-------|----------|-------------------|
-| `BuiltinFlow` | Execute typed requests as their own invocation-state owner | `sim`, `lint`, `synth`, `fpga` |
+| `BuiltinFlow` | Execute typed requests as their own invocation-state owner | `sim`, `lint`, `synth`, `fpga`, `mutation` |
 | `BooleyFlow` | Preserve the Custom Flow CLI/subprocess extension contract | Project-local Flows |
-| `Specialist` | Run a focused check (a prompt-driven LLM agent loop for `reviewer`; none for `mutation_tester`) and interpret its output | `reviewer`, `mutation_tester` |
+| `Specialist` | Run a focused check (a prompt-driven LLM agent loop) and interpret its output | `reviewer`, `coverage_analyst` |
 | `McpTool` | Implement orchestration directly when neither higher-level contract fits; also available to Project-local custom tools | Project-local custom endpoint |
 
 Import `McpTool` / `McpToolResult` from `booley.mcp.base`, `Specialist`
@@ -443,8 +443,8 @@ worktree, so paths relativized there could resolve to unrelated current-run
 files from the real worktree. Baseline metrics therefore carry no `artifacts`
 block.
 
-Specialists that expose durable evidence follow the same convention. For
-example, `mutation_tester` stages one self-contained campaign directory in its
+Flows and Specialists that expose durable evidence follow the same convention. For
+example, `mutation` stages one self-contained campaign directory in its
 numbered report invocation. Its atomic manifest cites the pristine baseline log,
 one log per mutant, verification rounds, mutation specifications, results, and
 isolated source variants; the `mutant_logs` role points at the durable invocation copy,
@@ -906,7 +906,7 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 
 ## Built-in Flow calls
 
-The built-in `sim`, `lint`, `synth`, and `fpga` endpoints expose the same
+The built-in `sim`, `lint`, `synth`, `fpga`, and `mutation` endpoints expose the same
 controls as their CLI ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)), with
 these MCP-specific shapes.
 

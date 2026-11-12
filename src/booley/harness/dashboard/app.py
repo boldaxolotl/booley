@@ -586,7 +586,10 @@ def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]
         tool = tool or job.eda_tool
     elif not tool and (
         report.get("flow")
-        or (job.report is None and job.record.endpoint in {"sim", "lint", "synth", "fpga"})
+        or (
+            job.report is None
+            and job.record.endpoint in {"sim", "lint", "synth", "fpga", "mutation"}
+        )
     ):
         tool = "not recorded by this Flow"
     if tool:

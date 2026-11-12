@@ -1,6 +1,6 @@
 # Built-in Flow execution
 
-Built-in `sim`, `lint`, `synth` and `fpga` Flows consume typed requests and return
+Built-in `sim`, `lint`, `synth`, `fpga` and `mutation` Flows consume typed requests and return
 `runtime.endpoint_execution.ExecutionResult`, whose `outcome` is the existing
 `EndpointOutcome`. They do not inherit `McpTool` or generate MCP schemas.
 
@@ -112,7 +112,7 @@ is authoritative for compilation. `simulation_build_script` finalizes storage
 availability only for execution and scopes compiler exports to the build half;
 simulator environment and testbench fingerprints retain their existing owners.
 Ordinary, compatibility, campaign, coverage, Cocotb, and elaboration-only builds
-consume this shared interface; Mutation Tester builds, which run Make directly,
+consume this shared interface; Mutation Flow builds, which run Make directly,
 use `simulation_build_environment`. Icarus preparation does not resolve cache
 policy. The cache policy module takes the environment as an argument: build
 preparation passes `os.environ` in. An unset root yields an inactive policy that

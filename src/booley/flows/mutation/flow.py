@@ -1,4 +1,4 @@
-"""MutationTesterSpecialist — deterministic, isolated mutation testing.
+"""MutationFlow — the Booley Flow ``booley flow mutation``: deterministic, isolated mutation testing.
 
 A run needs no model and no agent CLI:
 
@@ -23,7 +23,6 @@ Exit codes:
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import json
 import logging
@@ -36,23 +35,26 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 from urllib.parse import quote
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.boundary import BoundaryError, as_int
-from booley.dev_support import mutation_workspace as workspace
-from booley.dev_support.mutation_build_sources import (
+from booley.flows import artifacts as _artifacts
+from booley.flows.base import BuiltinFlow, SubprocessResult
+from booley.flows.cli_help import CliHelp, SurfaceHelp
+from booley.flows.flow_config import tb_top_for_target
+from booley.flows.mutation import workspace
+from booley.flows.mutation.build_sources import (
     materialize_build_mutation,
     validate_mutation_closure,
 )
-from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
-from booley.flows import artifacts as _artifacts
-from booley.flows.cli_help import CliHelp, SurfaceHelp
-from booley.flows.flow_config import tb_top_for_target
+from booley.flows.mutation.cli import MutationArguments
 from booley.flows.mutation.generator import GENERATOR_VERSION, generate_mutants, parser_version
 from booley.flows.mutation.operators import MissingPyslangError, MutantGeneratorError
+from booley.flows.mutation.request import MutationRequest
 from booley.flows.mutation.score import default_min_detected
+from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
@@ -104,14 +106,18 @@ from booley.flows.target_test_suite import (
     require_runnable_target_test_suite,
 )
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime import job_slots
+from booley.runtime.endpoint_execution import (
+    EXIT_ERROR,
+    EXIT_FAILURE,
+    EXIT_SUCCESS,
+    EndpointOutcome,
+)
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetInspection
 from booley.targets.selection import TargetSectionConflictError
-
-from .specialist import Specialist
 
 
 def _target_environment(work_dir: Path, identity: str) -> dict[str, str]:
@@ -531,7 +537,7 @@ class UnsupportedSimTargetError(RuntimeError):
     """The mutation loop cannot drive this sim Target, and says why.
 
     Raised at ``_run`` time (before any build) so an unsupported Target costs
-    one ``.core`` read. The message is surfaced verbatim as the Specialist's
+    one ``.core`` read. The message is surfaced verbatim as the Flow's
     ``report_text`` — it must name the Target and the concrete reason
     (SETUP-F-40).
     """
@@ -614,20 +620,22 @@ class GeneratedMutants:
 
 
 # ---------------------------------------------------------------------------
-# Specialist implementation
+# Flow implementation
 # ---------------------------------------------------------------------------
 
 
-class MutationTesterSpecialist(Specialist):
-    """Deterministic mutation testing; it runs no model."""
+class MutationFlow(BuiltinFlow[MutationRequest]):
+    """Deterministic mutation testing of one Simulation Target; it runs no model."""
 
-    name: str = "mutation_tester"
+    request_type = MutationRequest
+    argument_adapter = MutationArguments
+
+    name: str = "mutation"
     description: str = (
         "Deterministic mutation testing: seeded Mutants from fixed Mutation "
         "Operators, each built and tested in isolation"
     )
     code_modifying: bool = False
-    workspace_access: Literal["read_only"] = "read_only"
 
     target_required: bool = True
     target_help: str = SurfaceHelp(
@@ -635,7 +643,7 @@ class MutationTesterSpecialist(Specialist):
         "MCP accepts one Target selector string.",
         cli=(
             "The one Simulation Target whose tests judge each mutation. "
-            "List available Targets with `booley targets`."
+            "List available Targets with `booley targets --for sim`."
         ),
     )
     cli_help: ClassVar[CliHelp | None] = CliHelp(
@@ -648,67 +656,24 @@ class MutationTesterSpecialist(Specialist):
             "tests pass, to find checks the testbench is missing. Mutants are built "
             "in private staged copies; your sources are not changed."
         ),
-        example="booley specialist mutation_tester --target sim_soc --count 10 --seed 0",
+        example="booley flow mutation --target sim_soc --count 10 --seed 0",
     )
-    non_persisting_dry_run: bool = True
-    announce_success_report: bool = True
-    default_timeout: int = 1800
-    min_timeout: int = 1200
+    # A run builds and simulates, yet keeps the admission class it always had.
+    JOB_CLASS = job_slots.CLASS_LIGHT
+    default_timeout: ClassVar[int] = 1800
     satisfies: ClassVar[list[str]] = ["mutation_score"]
 
-    def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--scope",
-            default=None,
-            help=(
-                "Comma-separated RTL files eligible for mutation "
-                "(default: the Target's own RTL, without testbench, vendored "
-                "and generated files)"
-            ),
-        )
-
-        def _count_type(v: str) -> int | str:
-            return v if v.strip().lower() == "auto" else int(v)
-
-        parser.add_argument(
-            "--count",
-            type=_count_type,
-            default=None,
-            help="Number of Mutants: integer or 'auto' (default: 10)",
-        )
-        parser.add_argument(
-            "--min-detected",
-            type=int,
-            default=None,
-            help=(
-                "Pass threshold: minimum Mutants that must be detected "
-                "(default: ceil(0.8 x --count); some survivors may be equivalent "
-                "Mutants). Raise it to demand more, lower it to accept less."
-            ),
-        )
-        parser.add_argument(
-            "--seed",
-            type=int,
-            default=0,
-            help=(
-                "Non-negative integer that selects the Mutants (default: 0). "
-                "The same RTL, --count and --seed give the same Mutants."
-            ),
-        )
-        self._add_dry_run_arg(parser)
-
     # ------------------------------------------------------------------
-    # Abstract method stubs — _run() drives the flow directly.
+    # Command-backed Flow hooks — _run() drives the campaign directly.
     # ------------------------------------------------------------------
 
-    def _workspace_isolation_category(self) -> str:
-        return "rtl"
+    def _build_command(self) -> list[str]:
+        """Not used — MutationFlow overrides _run()."""
+        return []
 
-    def _build_prompt(self) -> str:
-        raise NotImplementedError("MutationTesterSpecialist overrides _run() directly")
-
-    def _interpret_output(self, output: str, structured: dict | None) -> McpToolResult:
-        raise NotImplementedError("MutationTesterSpecialist overrides _run() directly")
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
+        """Not used — MutationFlow overrides _run()."""
+        return EndpointOutcome()
 
     # ------------------------------------------------------------------
     # Scope / DUT helpers
@@ -721,7 +686,7 @@ class MutationTesterSpecialist(Specialist):
             if (raw := value.strip())
         ]
 
-    def _resolve_campaign(self, scope: str | None) -> TargetCampaign | McpToolResult | None:
+    def _resolve_campaign(self, scope: str | None) -> TargetCampaign | EndpointOutcome | None:
         """Resolve this Target's campaign for *scope*; ``None`` when no scope is known."""
         try:
             return resolve_target_campaign(
@@ -737,18 +702,16 @@ class MutationTesterSpecialist(Specialist):
         except CampaignScopeError as exc:
             if exc.reason == "missing":
                 return None
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_FAILURE,
-                report_text=(
-                    "mutation_tester: --scope does not match the sealed Target criterion scope"
-                ),
+                report_text=("mutation: --scope does not match the sealed Target criterion scope"),
             )
         except UnsupportedSimTargetError as exc:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
         except (NoRunnableTestsError, TargetSectionConflictError) as exc:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=f"mutation_tester: {exc}")
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"mutation: {exc}")
 
-    def _apply_campaign_defaults(self) -> McpToolResult | None:
+    def _apply_campaign_defaults(self) -> EndpointOutcome | None:
         """Default mutation controls from this Target's criterion parameters.
 
         With neither ``--scope`` nor a criterion scope, the scope is the Target's own RTL.
@@ -757,16 +720,16 @@ class MutationTesterSpecialist(Specialist):
         if campaign is None:
             default_scope = self._default_scope()
             if not default_scope:
-                return McpToolResult(
+                return EndpointOutcome(
                     exit_code=EXIT_FAILURE,
                     report_text=(
-                        f"mutation_tester: Target {self.args.target!r} has no mutable RTL "
+                        f"mutation: Target {self.args.target!r} has no mutable RTL "
                         "(only testbench, vendored, generated or non-Verilog inputs); "
                         "pass --scope."
                     ),
                 )
             campaign = self._resolve_campaign(",".join(default_scope))
-        if isinstance(campaign, McpToolResult):
+        if isinstance(campaign, EndpointOutcome):
             return campaign
         assert campaign is not None, "an explicit scope is never missing"
         self._target_campaign = campaign
@@ -810,7 +773,7 @@ class MutationTesterSpecialist(Specialist):
                 scope[path] = None
         return list(scope)
 
-    def _validate_scope_against_target(self, scope_files: list[str]) -> McpToolResult | None:
+    def _validate_scope_against_target(self, scope_files: list[str]) -> EndpointOutcome | None:
         """Fail fast when a ``--scope`` entry isn't a source file of ``--target``.
 
         A plausible-but-wrong scope (classically the stealth-cores mirror
@@ -824,15 +787,15 @@ class MutationTesterSpecialist(Specialist):
         """
         for entry in scope_files:
             if Path(entry).suffix.lower() not in _MUTATION_SUFFIXES:
-                return McpToolResult(
+                return EndpointOutcome(
                     exit_code=EXIT_FAILURE,
-                    report_text=f"mutation_tester: --scope entry '{entry}' is not an HDL RTL mutation source",
+                    report_text=f"mutation: --scope entry '{entry}' is not an HDL RTL mutation source",
                 )
         target = getattr(self.args, "target", "") or ""
         if not target:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_FAILURE,
-                report_text="mutation_tester: scope validation requires a Target",
+                report_text="mutation: scope validation requires a Target",
             )
         try:
             catalog = TargetCatalog.build(self.args.work_dir)
@@ -842,14 +805,14 @@ class MutationTesterSpecialist(Specialist):
                 for path in resolved
             }
         except Exception as exc:  # noqa: BLE001 — boundary diagnostic refuses before model/build
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_FAILURE,
-                report_text=f"mutation_tester: cannot inspect Target '{target}' for scope {scope_files}: {exc}",
+                report_text=f"mutation: cannot inspect Target '{target}' for scope {scope_files}: {exc}",
             )
         if not resolved:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_FAILURE,
-                report_text=f"mutation_tester: Target '{target}' has no RTL sources for scope {scope_files}",
+                report_text=f"mutation: Target '{target}' has no RTL sources for scope {scope_files}",
             )
         by_base = {Path(r).name: r for r in resolved}
         for entry in scope_files:
@@ -857,10 +820,10 @@ class MutationTesterSpecialist(Specialist):
                 continue
             suggestion = by_base.get(Path(entry).name)
             hint = f" Did you mean '{suggestion}'?" if suggestion else ""
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_FAILURE,
                 report_text=(
-                    f"mutation_tester: --scope entry '{entry}' does not match any "
+                    f"mutation: --scope entry '{entry}' does not match any "
                     f"source file resolved for config '{target}'.{hint} "
                     f"Resolved sources: {', '.join(resolved)}"
                 ),
@@ -886,25 +849,6 @@ class MutationTesterSpecialist(Specialist):
         except Exception:  # noqa: BLE001 — best-effort source-file lookup; degrades to an empty list
             return []
 
-    def _validate_interactive_args(self) -> McpToolResult | None:
-        """Validate that the selected Target can run a mutation campaign."""
-        target = getattr(self.args, "target", "") or ""
-        if not target.strip():
-            return McpToolResult(
-                exit_code=EXIT_FAILURE,
-                report_text=(
-                    "mutation_tester: --target is required. Pass --target "
-                    "<name>; it names a Target in the project's .core file "
-                    "(list them with `booley targets`)."
-                ),
-            )
-        try:
-            self._validate_target_runner(target, self.args.work_dir)
-            self.cocotb_target(target, self.args.work_dir)
-        except UnsupportedSimTargetError as exc:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
-        return None
-
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
@@ -922,7 +866,7 @@ class MutationTesterSpecialist(Specialist):
         if self.args.count == "auto":
             source_size_budget = compute_source_size_budget(scope_files, work_dir)
             formula_count = source_size_budget["formula_count"]
-            timeout = self.timeout_seconds()
+            timeout = (self._timeout_ms() + 999) // 1000
             budget_cap = max(3, timeout // 150)
             source_size_budget.update(timeout_seconds=timeout, budget_cap=budget_cap)
             count = min(formula_count, budget_cap)
@@ -943,17 +887,17 @@ class MutationTesterSpecialist(Specialist):
             self.emit_progress(f"target: {count} Mutants")
         return count, source_size_budget, formula_count, auto_mode
 
-    def _run(self) -> McpToolResult:
+    def _run(self) -> EndpointOutcome:
         if campaign_error := self._apply_campaign_defaults():
             return campaign_error
         prepared = self._prepare_run_plan()
-        if isinstance(prepared, McpToolResult):
+        if isinstance(prepared, EndpointOutcome):
             return prepared
         result = self._run_campaign(prepared)
         self._add_residue_warning(result, prepared.scope_hashes, prepared.work_dir)
         return result
 
-    def _prepare_run_plan(self) -> MutationRunPlan | McpToolResult:
+    def _prepare_run_plan(self) -> MutationRunPlan | EndpointOutcome:
         work_dir = self.args.work_dir
         target = self.args.target
         scope_files = self._scope_files()
@@ -962,14 +906,14 @@ class MutationTesterSpecialist(Specialist):
         try:
             tb_top = tb_top_for_target(target, work_dir, resolved=None)
         except (OSError, fusesoc_registry.FuseSocError) as exc:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
-                report_text=f"mutation_tester: could not derive Target toplevel: {exc}",
+                report_text=f"mutation: could not derive Target toplevel: {exc}",
             )
         if not tb_top:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
-                report_text="mutation_tester: selected Target does not declare a toplevel",
+                report_text="mutation: selected Target does not declare a toplevel",
             )
         count, source_size_budget, formula_count, auto_mode = self._resolve_count(
             scope_files,
@@ -1001,14 +945,14 @@ class MutationTesterSpecialist(Specialist):
         self.args.count = count
         return plan
 
-    def _dry_run_preview(self, plan: MutationRunPlan) -> McpToolResult:
+    def _dry_run_preview(self, plan: MutationRunPlan) -> EndpointOutcome:
         """Describe the validated mutation campaign without executing it."""
         budget = plan.source_size_budget or compute_source_size_budget(
             plan.scope_files,
             plan.work_dir,
         )
         summary = (
-            f"mutation_tester dry-run: target={plan.target}; "
+            f"mutation dry-run: target={plan.target}; "
             f"scope={len(plan.scope_files)} file(s); top={plan.tb_top}; "
             f"count={plan.count}; min_detected={plan.min_detected}; seed={plan.seed}"
         )
@@ -1018,7 +962,7 @@ class MutationTesterSpecialist(Specialist):
             else [f"count source: fixed; count={plan.count} (not auto-derived)"]
         )
         lines.append(summary)
-        result = self._dry_run_result(
+        result = self._dry_run_outcome(
             summary="\n".join(lines),
             detail={
                 "target": plan.target,
@@ -1036,6 +980,16 @@ class MutationTesterSpecialist(Specialist):
         result.summary = summary
         return result
 
+    @staticmethod
+    def _dry_run_outcome(*, summary: str, detail: dict[str, Any]) -> EndpointOutcome:
+        """Build the successful, non-acceptance dry-run result."""
+        return EndpointOutcome(
+            exit_code=EXIT_SUCCESS,
+            report_text=summary,
+            display_lines=[summary],
+            detail={"mode": "dry_run", **detail},
+        )
+
     def _auto_count_explanation(self, plan: MutationRunPlan, budget: dict) -> list[str]:
         """Render the source formula and time cap that resolved this preview's count."""
         total = budget["source_lines"]
@@ -1052,15 +1006,15 @@ class MutationTesterSpecialist(Specialist):
         ]
 
     @staticmethod
-    def _validate_count(count: int, min_detected: int, seed: int) -> McpToolResult | None:
+    def _validate_count(count: int, min_detected: int, seed: int) -> EndpointOutcome | None:
         if count <= 0:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text="--count must be positive")
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text="--count must be positive")
         if seed < 0:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR, report_text="--seed must be a non-negative integer"
             )
         if min_detected < 0 or min_detected > count:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="--min-detected must be between 0 and --count",
             )
@@ -1071,11 +1025,11 @@ class MutationTesterSpecialist(Specialist):
         target: str,
         work_dir: Path,
         scope_files: list[str],
-    ) -> McpToolResult | None:
+    ) -> EndpointOutcome | None:
         if len([part for part in target.split(",") if part.strip()]) != 1:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
-                report_text="mutation_tester: --target must select exactly one Target",
+                report_text="mutation: --target must select exactly one Target",
             )
         if scope_error := self._validate_scope_against_target(scope_files):
             return scope_error
@@ -1084,26 +1038,26 @@ class MutationTesterSpecialist(Specialist):
             self.cocotb_target(target, work_dir)
             self._target_test_suite(target)
         except UnsupportedSimTargetError as exc:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
         return None
 
     # ------------------------------------------------------------------
     # Campaign
     # ------------------------------------------------------------------
 
-    def _run_campaign(self, plan: MutationRunPlan) -> McpToolResult:
+    def _run_campaign(self, plan: MutationRunPlan) -> EndpointOutcome:
         """Generate the Mutants, build and run the baseline, then sweep every Mutant."""
-        # Earlier releases kept a proposal lock (and its builds) here; nothing reads it.
-        shutil.rmtree(workspace.legacy_lock_dir(), ignore_errors=True)
+        # The retired Specialist kept its scratch tree under its own name; nothing reads it.
+        shutil.rmtree(workspace.legacy_runtime_dir(), ignore_errors=True)
         # A smaller --count than the last run must not leave its extra builds behind.
         shutil.rmtree(workspace.builds_dir(), ignore_errors=True)
         shutil.rmtree(workspace.variants_dir(), ignore_errors=True)
         generated = self._generate(plan)
-        if isinstance(generated, McpToolResult):
+        if isinstance(generated, EndpointOutcome):
             return generated
         plan = generated.plan
         timeouts = self._run_pristine_baseline(plan)
-        if isinstance(timeouts, McpToolResult):
+        if isinstance(timeouts, EndpointOutcome):
             return timeouts
         specs = generated.specs
         results, elapsed, infra = self._run_variant_sweep(
@@ -1164,7 +1118,7 @@ class MutationTesterSpecialist(Specialist):
                     include_dirs[PurePosixPath(path).parent.as_posix()] = None
         return defines, list(include_dirs)
 
-    def _generate(self, plan: MutationRunPlan) -> GeneratedMutants | McpToolResult:
+    def _generate(self, plan: MutationRunPlan) -> GeneratedMutants | EndpointOutcome:
         """Select the run's Mutants with the deterministic generator and resolve their variants."""
         defines, include_dirs = self._generator_inputs()
         try:
@@ -1204,9 +1158,9 @@ class MutationTesterSpecialist(Specialist):
                 if isinstance(exc, MissingPyslangError)
                 else f"{exc}\npass --scope to choose the files to mutate"
             )
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
-                report_text=f"mutation_tester: cannot generate Mutants: {reason}",
+                report_text=f"mutation: cannot generate Mutants: {reason}",
                 detail=_failure_detail(
                     phase="mutant_generation",
                     reason=reason,
@@ -1219,14 +1173,14 @@ class MutationTesterSpecialist(Specialist):
             plan = replace(plan, min_detected=default_min_detected(len(specs)))
         return GeneratedMutants(plan, specs, variants, identity, selection.shortfall)
 
-    def _run_pristine_baseline(self, plan: MutationRunPlan) -> dict[str, int] | McpToolResult:
+    def _run_pristine_baseline(self, plan: MutationRunPlan) -> dict[str, int] | EndpointOutcome:
         """Build and run the byte-identical project before any Mutant is applied.
 
         Returns each test's Mutant time limit, scaled from its baseline duration.
         """
         run_cwd_problem = literal_run_cwd_problem(plan.work_dir)
         if run_cwd_problem is not None:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"mutation baseline cannot run: {run_cwd_problem}",
                 detail=_failure_detail(
@@ -1243,7 +1197,7 @@ class MutationTesterSpecialist(Specialist):
         elab = self._run_elab(plan.target, plan.work_dir, build_path)
         elab_output = (elab.stdout or "") + (elab.stderr or "")
         if elab.returncode != 0:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="mutation baseline did not elaborate from pristine source\n"
                 + _tail(elab_output, 50),
@@ -1266,13 +1220,13 @@ class MutationTesterSpecialist(Specialist):
         self._persist_baseline_log(output)
         inconclusive = self._suite_inconclusive_reason(runs)
         if inconclusive:
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"mutation baseline was inconclusive: {inconclusive}\n"
                 + _tail(output, 50),
             )
         if not self._baseline_suite_passed(runs):
-            return McpToolResult(
+            return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="mutation baseline failed on pristine source\n" + _tail(output, 50),
             )
@@ -1283,7 +1237,7 @@ class MutationTesterSpecialist(Specialist):
         generated: GeneratedMutants,
         summary: MutationSummary,
         reason: str,
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         plan, specs, variants = generated.plan, generated.specs, generated.variants
         detail = _failure_detail(
             phase="variant_infrastructure",
@@ -1308,7 +1262,7 @@ class MutationTesterSpecialist(Specialist):
         artifact_lines = self._artifact_display_lines(detail)
         if artifact_lines:
             report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=report_text,
             detail=detail,
@@ -1429,7 +1383,7 @@ class MutationTesterSpecialist(Specialist):
             handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
         except fusesoc_registry.FuseSocError as exc:
             raise UnsupportedSimTargetError(
-                f"mutation_tester: cannot select Simulation Target {target!r}: {exc}"
+                f"mutation: cannot select Simulation Target {target!r}: {exc}"
             ) from exc
         module = handle.cocotb_module
         if not module:
@@ -1437,7 +1391,7 @@ class MutationTesterSpecialist(Specialist):
         eda_tool = self.target_eda_tool(target, work_dir)
         if eda_tool not in ("icarus", "verilator"):
             raise UnsupportedSimTargetError(
-                f"mutation_tester: Target {target!r} is a Cocotb Target "
+                f"mutation: Target {target!r} is a Cocotb Target "
                 f"(cocotb_module={module!r}) that resolves to {eda_tool!r}. "
                 "The cocotb run-half supports icarus and verilator only — "
                 "point --target at an icarus or verilator Target."
@@ -1459,7 +1413,7 @@ class MutationTesterSpecialist(Specialist):
             )
             if configured != declared:
                 raise UnsupportedSimTargetError(
-                    f"mutation_tester: Target {target!r} declared {declared!r} but cached "
+                    f"mutation: Target {target!r} declared {declared!r} but cached "
                     f"build metadata names {configured!r}"
                 )
             return configured
@@ -1471,7 +1425,7 @@ class MutationTesterSpecialist(Specialist):
             declared = TargetCatalog.build(work_dir).select(target, for_flow="sim").eda_tool
         except fusesoc_registry.FuseSocError as exc:
             raise UnsupportedSimTargetError(
-                f"mutation_tester: cannot select Simulation Target {target!r}: {exc}"
+                f"mutation: cannot select Simulation Target {target!r}: {exc}"
             ) from exc
         return self._supported_sim_tool(declared, target)
 
@@ -1486,7 +1440,7 @@ class MutationTesterSpecialist(Specialist):
         try:
             family = matching_eda_tool(declared, configured, target=target)
         except ValueError as exc:
-            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+            raise UnsupportedSimTargetError(f"mutation: {exc}") from exc
         return cls._supported_sim_tool(family, target)
 
     @staticmethod
@@ -1496,12 +1450,11 @@ class MutationTesterSpecialist(Specialist):
             family = normalize_eda_tool(eda_tool)
         except ValueError as exc:
             raise UnsupportedSimTargetError(
-                f"mutation_tester: Target {target!r} has unsupported simulator "
-                f"metadata {eda_tool!r}"
+                f"mutation: Target {target!r} has unsupported simulator metadata {eda_tool!r}"
             ) from exc
         if family not in {"icarus", "verilator"}:
             raise UnsupportedSimTargetError(
-                f"mutation_tester: Target {target!r} resolves to {family!r}; "
+                f"mutation: Target {target!r} resolves to {family!r}; "
                 "the mutation run-many loop supports icarus and verilator only"
             )
         return family
@@ -1511,7 +1464,7 @@ class MutationTesterSpecialist(Specialist):
         eda_tool = self.target_eda_tool(target, work_dir)
         if eda_tool not in ("icarus", "verilator"):
             raise UnsupportedSimTargetError(
-                f"mutation_tester: Target {target!r} resolves to {eda_tool!r}. "
+                f"mutation: Target {target!r} resolves to {eda_tool!r}. "
                 "The mutation run-many loop supports Icarus and Verilator only — "
                 "point --target at an icarus or verilator Target."
             )
@@ -1545,7 +1498,7 @@ class MutationTesterSpecialist(Specialist):
         try:
             return TargetCatalog.build(self.args.work_dir).select(target, for_flow="sim").identity
         except fusesoc_registry.FuseSocError as exc:
-            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+            raise UnsupportedSimTargetError(f"mutation: {exc}") from exc
 
     def _registered_tests(self, target: str) -> dict[str, Any]:
         """*target*'s identity plus the Test registry and skips of the mutated checkout.
@@ -1565,7 +1518,7 @@ class MutationTesterSpecialist(Specialist):
         try:
             return require_runnable_target_test_suite(target, **self._registered_tests(target))
         except (NoRunnableTestsError, TargetSectionConflictError) as exc:
-            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+            raise UnsupportedSimTargetError(f"mutation: {exc}") from exc
 
     def _campaign_for_target(self, target: str) -> TargetCampaign:
         """Return the resolved campaign or a suite-only compatibility view."""
@@ -1598,7 +1551,7 @@ class MutationTesterSpecialist(Specialist):
             parameters = catalog.inspect(handle).parameters
             return target_test_plan(handle, adapter, parameters), parameters
         except (fusesoc_registry.FuseSocError, ValueError) as exc:
-            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+            raise UnsupportedSimTargetError(f"mutation: {exc}") from exc
 
     def _default_test_run_launch(
         self,
@@ -1620,7 +1573,7 @@ class MutationTesterSpecialist(Specialist):
             launch = plan.launch(plan.default_runs_for(test_names))
             return launch, simulation_plusargs(launch, parameters)
         except ValueError as exc:
-            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+            raise UnsupportedSimTargetError(f"mutation: {exc}") from exc
 
     def _cocotb_suite_batches(
         self, target: str, work_dir: Path, campaign: TargetCampaign
@@ -1640,7 +1593,7 @@ class MutationTesterSpecialist(Specialist):
         eda_tool = self.target_eda_tool(target, work_dir, build_path)
         if eda_tool not in {"icarus", "verilator"}:
             raise UnsupportedSimTargetError(
-                f"mutation_tester: cached Target {target!r} resolves to unsupported "
+                f"mutation: cached Target {target!r} resolves to unsupported "
                 f"EDA toolchain {eda_tool!r}"
             )
         return eda_tool
@@ -1822,7 +1775,7 @@ class MutationTesterSpecialist(Specialist):
     def _suite_inconclusive_reason(runs: list[MutationTestRun]) -> str:
         """Reject outcomes that cannot establish pass or fail for every test."""
         for run in runs:
-            verdict = MutationTesterSpecialist._classify_mutation_run(
+            verdict = MutationFlow._classify_mutation_run(
                 run,
                 timeout_is_inconclusive=True,
             )
@@ -1836,7 +1789,7 @@ class MutationTesterSpecialist(Specialist):
         *,
         timeout_is_inconclusive: bool,
     ) -> VariantSuiteVerdict:
-        early = MutationTesterSpecialist._preclassify_mutation_run(
+        early = MutationFlow._preclassify_mutation_run(
             run,
             timeout_is_inconclusive=timeout_is_inconclusive,
         )
@@ -1844,7 +1797,7 @@ class MutationTesterSpecialist(Specialist):
             return early
         parsed = parse_results_line(run.output)
         if parsed is not None:
-            return MutationTesterSpecialist._classify_cocotb_run(run, parsed)
+            return MutationFlow._classify_cocotb_run(run, parsed)
         if run.requires_cocotb_results:
             return VariantSuiteVerdict(
                 inconclusive_reason=f"{run.test_name}: cocotb result line is missing or malformed"
@@ -1911,7 +1864,7 @@ class MutationTesterSpecialist(Specialist):
     def _classify_variant_suite(runs: list[MutationTestRun]) -> VariantSuiteVerdict:
         """Classify one mutant once so status and first-kill evidence cannot drift."""
         verdicts = [
-            MutationTesterSpecialist._classify_mutation_run(
+            MutationFlow._classify_mutation_run(
                 run,
                 timeout_is_inconclusive=False,
             )
@@ -2068,7 +2021,7 @@ class MutationTesterSpecialist(Specialist):
 
     def _add_residue_warning(
         self,
-        result: McpToolResult,
+        result: EndpointOutcome,
         baseline: Mapping[str, str],
         work_dir: Path,
     ) -> None:
@@ -2093,7 +2046,7 @@ class MutationTesterSpecialist(Specialist):
         self,
         plan: MutationRunPlan,
         inputs: RunResultInputs,
-    ) -> McpToolResult:
+    ) -> EndpointOutcome:
         # Unpack the plan config + run outcome the assembly below reads.
         min_detected, target = plan.min_detected, plan.target
         auto_mode, formula_count, source_size_budget = (
@@ -2155,7 +2108,7 @@ class MutationTesterSpecialist(Specialist):
         if artifact_lines:
             report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
 
-        return McpToolResult(
+        return EndpointOutcome(
             exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
             criterion_key=criterion_key,
             criterion_met=passed,
@@ -2475,7 +2428,7 @@ def _failure_detail(
 ) -> dict[str, Any]:
     """Structured detail for a run that never reached a verdict.
 
-    A failed run used to write ``mutation_tester.json`` with ``detail: {}``,
+    A failed run used to write a report with ``detail: {}``,
     stranding the tally and the mutation list in the transcripts where no
     downstream reader looks (SETUP-F-39).  Everything the run did learn goes
     here, whatever the exit code.
@@ -2559,7 +2512,3 @@ def _tail(text: str, max_lines: int) -> str:
         return ""
     lines = text.splitlines()
     return "\n".join(lines[-max_lines:])
-
-
-if __name__ == "__main__":
-    MutationTesterSpecialist().cli()

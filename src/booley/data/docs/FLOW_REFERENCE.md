@@ -3,7 +3,7 @@
 A **Booley Flow** runs an EDA tool on one of your Targets the same way every
 time and turns the output into a verdict: pass, fail, or "could not tell". No
 LLM is involved, so you can trust a Flow's verdict as you would a script's.
-Booley ships four:
+Booley ships five:
 
 - [Simulation (`sim`)](FLOW-SIM.md): build and run a Target's tests and report
   whether each one passed. A Target's Tests, Test Variants and seeds are
@@ -16,11 +16,12 @@ Booley ships four:
   quickly while you iterate on RTL.
 - [FPGA implementation (`fpga`)](FLOW-FPGA.md): implement the design for an
   FPGA and report resources and timing.
+- [Mutation testing (`mutation`)](FLOW-MUTATION.md): plant small bugs in the
+  RTL and check that your tests catch them.
 
 This page covers what they share: choosing Targets, common options, following
-a run, and reading the result. **Specialists**, the helpers that review code
-(an LLM agent) or test your testbench (no LLM), have their own page:
-Specialists (host doc, not shipped).
+a run, and reading the result. **Specialists**, the LLM agents that review code
+or explain coverage, have their own page: Specialists (host doc, not shipped).
 
 For everyday work Usage (host doc, not shipped) is enough: the Developer Agent picks the
 Flow, Target, and options for you. Read on when you want to understand a
@@ -48,6 +49,7 @@ booley flow lint  --target lint_soc
 booley flow sim   --target sim_soc --test reset
 booley flow synth --target synth_soc
 booley flow fpga  --target fpga_soc
+booley flow mutation --target sim_soc
 booley flow <name> --help                     # every option of one Flow
 ```
 
@@ -107,6 +109,9 @@ page.
 | `--report-dir <path>` | Write reports here instead of the default location. |
 | `--diagnostic` | Mark the run as diagnostic so it never counts as Goal evidence. |
 | `-q/--quiet` | Hide live progress and log paths; show only the verdict and errors. |
+
+`mutation` is the exception to the Target rules above: it requires `--target`
+and takes exactly one simulation Target.
 
 Without `--timeout`, a Flow uses `[flows.<name>].timeout_ms` from
 `booley.toml`, or its built-in default. Simulation builds have their own limit,

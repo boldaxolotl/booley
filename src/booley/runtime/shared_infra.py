@@ -146,7 +146,7 @@ def _core_source_dirs(
     used to yield. Falls back to the legacy defaults outside a ``.core``
     project — these accessors feed module-level path constants that must
     stay importable anywhere; the Source-Isolation-critical consumers
-    (mutation_tester, diff classification) call
+    (the Mutation Flow, diff classification) call
     ``fusesoc_registry.source_dirs_from_core`` directly and get the hard
     ADR 0039 no-``.core`` error instead of a guessed partition.
     """

@@ -382,7 +382,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D5 | Prefix `booley.runtime` | Prefixes `booley.mcp`, `booley.specialists` | Forbid | Sandbox mechanisms must remain usable without agent-facing mechanisms. |
 | D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Forbid | Shared Sandbox mechanisms must not acquire Harness knowledge; exact entry-point composition remains explicit. |
 | D7 | Exact modules `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp` | Forbid | shared Target/Criteria policy is independent of presentation and agent exposure |
-| D8 | Each prefix in `booley.flows.{sim,synth,fpga,lint}` | The other three prefixes in that set | Forbid | Each built-in Booley Flow owns its tool-specific implementation and cannot couple to a sibling Flow. |
+| D8 | Each prefix in `booley.flows.{sim,synth,fpga,lint}` | The other three prefixes in that set | Forbid | Each built-in Booley Flow owns its tool-specific implementation and cannot couple to a sibling Flow. The Mutation Flow is a composite Flow over `sim`, outside this set and governed by D42. |
 | D9 | Root module and direct file-module children of `booley.flows` (not child package initializers) | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | Flow-neutral policy and evidence modules cannot select a concrete Flow implementation. |
 | D10 | One exact adapter selector set S1-S5 below | The other selector sets for the same Flow (S1-S3 or S4-S5) | Forbid | An EDA adapter satisfies its Flow's internal seam without knowing a sibling adapter. |
 | D11 | Prefixes `booley.flows.synth.backends.yosys`, `booley.flows.synth.backends.openroad` | Exact module `booley.flows.synth.flow` and the sibling backend prefix | Forbid | Leaf synthesis adapters do not orchestrate their Flow or one another. |
@@ -412,6 +412,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D39 | Prefix `booley.flows` | Prefix `booley.harness` | Forbid | Flows run under any composition; the Harness command layer supplies human CLI concerns through the invocation, never by Flow import. |
 | D40 | Prefix `booley.presentation` | Prefixes `booley.harness`, `booley.mcp`, `booley.runtime`, `booley.goals`, `booley.flows` | Forbid | Shared presentation primitives stay beneath every composition and execution owner. |
 | D41 | Prefix `booley.runtime` | Prefix `booley.flows` | Forbid | Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through `booley.core` and never imports a Flow. |
+| D42 | Prefixes `booley.flows.{sim,synth,fpga,lint}`, root module and direct file-module children of `booley.flows` | Prefix `booley.flows.mutation` | Forbid | The Mutation Flow composes the Simulation Flow's build and execution by design; the dependency runs one way, so no sibling Flow or Flow-neutral module imports it. |
 
 ## Simulation Campaign storage boundary
 

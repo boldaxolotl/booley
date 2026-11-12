@@ -349,12 +349,13 @@ Deterministic end-to-end orchestration; no LLM:
 | `lint` | Run lint for one or more Targets | `LINT:{target}` |
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `SYNTH:{target}` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `FPGA:{target}` |
+| `mutation` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation | `MUTATION:{target}` |
 
-Shared Flow options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in [FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), [FLOW-SYNTH.md](FLOW-SYNTH.md), and [FLOW-FPGA.md](FLOW-FPGA.md), including the report files each one writes; `booley flow <name> --help` prints the options too.
+Shared Flow options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in [FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), [FLOW-SYNTH.md](FLOW-SYNTH.md), [FLOW-FPGA.md](FLOW-FPGA.md), and [FLOW-MUTATION.md](FLOW-MUTATION.md), including the report files each one writes; `booley flow <name> --help` prints the options too.
 
 **Specialists**
 
-Specialists (the Mutation Tester runs no LLM) running in scoped, isolated workspaces:
+Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
@@ -363,7 +364,6 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
 | `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
-| `mutation_tester` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation | `MUTATION:{target}` | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
 
 #### `coverage_analyst`
@@ -397,26 +397,6 @@ Call the `reviewer` Specialist from your Developer Agent session with `category=
 **Goal Mode:** the Review Goal fixes scope, spec and verdict, so `scope`, `spec`, `spec_text`, `fail_on` and `steer` are refused. Declare each Review Goal with exactly one `target` or `paths` (see `booley cheat --goals`).
 
 **Verify fixes (both modes):** after fixing findings, call `reviewer` with `verify=true` (CLI: `--verify`). It rechecks only the latest review's open findings and finds nothing new; none remaining open is a pass. To argue a finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: `--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts or rejects each. Outside Goal Mode `fail_on` (CLI: `--fail-on`) is the one other argument accepted with verify, and counts the findings still open. After repeated failed verifies, Goal Mode stops and asks you to change or abandon the Goal; Interactive Mode refuses further verifies.
-
-#### `mutation_tester`
-
-Deterministic mutation testing; it runs no LLM. Booley generates Mutants from the RTL, runs a pristine baseline, then compiles and tests each Mutant in isolation. The same RTL, `count`, and `seed` give identical Mutants, so results are reproducible.
-
-**Mutation campaign modes:**
-
-| Campaign | Goal arguments | Interactive Mode arguments |
-|----------|-----------------------------------------|------------------------|
-| Default fixed | Target campaign with `target` — generate 10 Mutants and require 8 detected (80 %) | _(no goal arguments)_ — the same 10-Mutant, 8-detected campaign |
-| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires 80 % of N, rounded up; add `min_detected=K` to require K |
-| Size-scaled | add `auto: true` — choose 3-25 Mutants from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
-
-The default threshold is ceil(0.8 x count) detected Mutants, also for a Goal without `min_detected`; an explicit `min_detected` overrides it. Survivors are reported as `not detected`, with one note that some survivors may be equivalent Mutants, which the threshold allows for. An invalid (non-elaborating) Mutant is reported `invalid` and not scored.
-
-`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without running a simulator.
-
-Call the `mutation_tester` Specialist from your Developer Agent session: `target="<sim-target>"` chooses exactly one complete runnable Target suite; `scope="<rtl-file,...>"` optionally chooses mutation sites (default: the Target's own RTL, meaning the Project's Verilog/SystemVerilog sources in the Target closure, minus testbench, vendored, and generated files and include headers); `seed=<int>` (default 0) picks a different reproducible Mutant set. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
-
-Each Mutant's per-test timeout is max(10 x that test's baseline duration, 30 s), capped at 300 s. A timed-out Mutant counts as detected and is reported separately as `detected (timeout)`. Results and criterion detail record the reproducibility identity: scope file hashes, generator version, pyslang version, seed, and count.
 <!-- END GENERATED: flows -->
 
 ## Running a Flow yourself

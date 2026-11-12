@@ -411,7 +411,7 @@ RequestT = TypeVar("RequestT", bound=FlowRequest)
 
 
 class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
-    """Invocation seam shared only by Booley's four shipped Flows.
+    """Invocation seam shared only by Booley's five shipped Flows.
 
     The Flow is the single owner of its per-invocation state; every entry point
     starts an invocation through ``_start_invocation``.

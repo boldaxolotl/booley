@@ -1,10 +1,10 @@
-"""Scratch paths and scope hashes of one Mutation Tester run.
+"""Scratch paths and scope hashes of one Mutation Flow run.
 
 A run rebuilds everything: nothing here outlives its run as an input.  The
 runtime directory keeps the last run's builds, variants and logs only so that
 their paths can be shown to the user.
 
-Layout under ``$BOOLEY_RUNTIME_DIR/mutation_tester/campaign/``::
+Layout under ``$BOOLEY_RUNTIME_DIR/mutation/campaign/``::
 
     campaign/
     ├── baseline.log
@@ -21,16 +21,16 @@ import hashlib
 import os
 from pathlib import Path
 
-# The directory earlier releases kept their proposal lock in; a run removes it.
-LEGACY_LOCK_DIR = "lock"
+# The scratch directory earlier releases used, before the Mutation Flow renamed it.
+LEGACY_RUNTIME_DIR = "mutation_tester"
 
 
-def mutation_tester_dir(logs_dir: Path | str | None = None) -> Path:
-    """Return the directory that holds every Mutation Tester scratch tree.
+def mutation_dir(logs_dir: Path | str | None = None) -> Path:
+    """Return the directory that holds every Mutation Flow scratch tree.
 
     Resolution order: explicit ``logs_dir`` -> ``$BOOLEY_RUNTIME_DIR`` ->
     ``$BOOLEY_LOGS_DIR/.runtime`` -> the Project's runtime directory ->
-    ``./mutation_tester_runtime`` (direct callers in tests only).
+    ``./mutation_runtime`` (direct callers in tests only).
     """
     if logs_dir is None:
         runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR")
@@ -45,18 +45,21 @@ def mutation_tester_dir(logs_dir: Path | str | None = None) -> Path:
 
                 logs_dir = str(runtime_dir())
             except (FileNotFoundError, ImportError):
-                logs_dir = "mutation_tester_runtime"
-    return Path(logs_dir) / "mutation_tester"
+                logs_dir = "mutation_runtime"
+    return Path(logs_dir) / "mutation"
 
 
-def legacy_lock_dir(logs_dir: Path | str | None = None) -> Path:
-    """Return the proposal-lock directory of earlier releases; nothing reads it."""
-    return mutation_tester_dir(logs_dir) / LEGACY_LOCK_DIR
+def legacy_runtime_dir(logs_dir: Path | str | None = None) -> Path:
+    """Return the scratch directory of earlier releases; nothing reads it.
+
+    A run removes it so an upgraded checkout keeps no stale tree of the retired Specialist.
+    """
+    return mutation_dir(logs_dir).parent / LEGACY_RUNTIME_DIR
 
 
 def workspace_dir(logs_dir: Path | str | None = None) -> Path:
     """Return the scratch directory of the current campaign."""
-    return mutation_tester_dir(logs_dir) / "campaign"
+    return mutation_dir(logs_dir) / "campaign"
 
 
 def builds_dir(logs_dir: Path | str | None = None) -> Path:

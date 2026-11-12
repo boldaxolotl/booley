@@ -104,11 +104,11 @@ remain unscored evidence in V1. B-Wave has no coverage measurement role.
 
 ## Deterministic Mutation Testing
 
-**In progress.** The deterministic Mutant generator now drives the
-[Mutation Tester](../user/FEATURES.md#mutation-testing): the same RTL, count,
-and seed always produce the same Mutants, so kill rates are reproducible,
-comparable across runs, and free of LLM cost. Still pending (#2936): moving it
-into a `booley flow mutation` Booley Flow and removing its `[models]` setting.
+**Done.** The deterministic Mutant generator drives the
+[Mutation Flow](../user/FLOW-MUTATION.md) (`booley flow mutation`): the same
+RTL, count, and seed always produce the same Mutants, so kill rates are
+reproducible, comparable across runs, and free of LLM cost. The Mutation
+Tester Specialist and its `[models]` setting are gone (#2936).
 [ADR 0088](../adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md)
 records the design: a rule-based Mutant generator in the `booley flow
 mutation` Booley Flow.

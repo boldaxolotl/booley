@@ -55,6 +55,7 @@ SHIPPED_DOCS: tuple[str, ...] = (
     "docs/user/FLOW-LINT.md",
     "docs/user/FLOW-SYNTH.md",
     "docs/user/FLOW-FPGA.md",
+    "docs/user/FLOW-MUTATION.md",
     "docs/user/COVERAGE.md",
     "docs/user/SUPPORTED-EDA-TOOLS.md",
     "docs/user/TROUBLESHOOTING.md",

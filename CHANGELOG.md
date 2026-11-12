@@ -9,7 +9,7 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- The Mutation Tester now generates Mutants deterministically and runs no LLM:
+- Mutation testing now generates Mutants deterministically and runs no LLM:
   the same RTL, `--count`, and the new `--seed` (default 0) give identical
   Mutants. `--scope` is optional and defaults to the Target's own RTL. The
   default pass threshold is 80 % of the count, rounded up, also for an
@@ -18,6 +18,13 @@ Packaged release history starts at 0.2.7. For older changes, see
   as detected and is reported as `detected (timeout)`. Results record scope
   file hashes, generator and pyslang versions, seed, and count. `--steer` and
   `--regen-lock` are removed, and the mutation lock is no longer used.
+  Mutation testing is now the Booley Flow `booley flow mutation` (same flags,
+  MCP tool `mutation`, plus the shared Flow options). `booley specialist
+  mutation_tester`, its MCP tool, and the `[models] mutation_tester` key are
+  removed: delete the key, and replace a `[specialists.mutation_tester]` table
+  with `[flows.mutation]` (`enabled`, `timeout_ms`). Reports move from
+  `mcp-tool-reports/` to `flow-reports/mutation/<N>/`. The `mutation_score`
+  criterion and `MUTATION:` Goals are unchanged.
 
 - The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
   as a Standalone Job: choose the worktree, the Flow, and its arguments, check

@@ -377,7 +377,7 @@ def prepare_core_library_plan(project_root: Path | str) -> CoreLibraryPlan:
 def prepare_private_mirror_plan(project_root: Path | str, mirror_root: Path) -> CoreLibraryPlan:
     """Describe a private per-build registry that names in-checkout files relatively.
 
-    Used by builds that edit their own exported sources (Mutation Tester) in a
+    Used by builds that edit their own exported sources (Mutation Flow) in a
     Project whose shared isolated registry names every source by absolute path.
     """
     try:
@@ -1555,7 +1555,7 @@ def _target_source_files(
     the C++/firmware assets while ``ibex_top_tracing.sv`` arrives transitively —
     so a root-core-only read yields an empty RTL list and callers conclude the
     Target has no design to work on (F-27). Still pure YAML: the closure walk
-    keeps the subprocess-free ordering guarantee that ``mutation_tester``'s
+    keeps the subprocess-free ordering guarantee that the Mutation Flow's
     in-place mux swap depends on.
 
     Raises :class:`~booley.targets.domain.UnknownTargetError` /
@@ -2129,7 +2129,7 @@ def source_dirs_from_core(
     A resolvable ``.core`` is a precondition for every Booley Flow (ADR 0039):
     a project with none raises rather than guessing — the old hardcoded
     ``(["rtl", "fw"], ["tb"])`` fallback silently fed a wrong partition into
-    the Specialist Source Isolation boundary (Reviewer snapshot / MutationTester
+    the Specialist Source Isolation boundary (Reviewer snapshot / Mutation Flow
     blindness). ``booley doctor`` FAILs the same condition up front.
     """
     root = Path(project_root)

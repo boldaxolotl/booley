@@ -96,6 +96,10 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
     return ConfigTableAudit(tuple(findings))
 
 
+# Specialists that became Flows, by the Flow that replaced them.
+_RETIRED_SPECIALISTS = {"mutation_tester": "mutation"}
+
+
 def audit_specialist_table(
     data: Mapping[str, Any], specialist_names: Collection[str] | None = None
 ) -> ConfigTableAudit:
@@ -112,7 +116,15 @@ def audit_specialist_table(
                 fail_finding(f"{field} must be a table", "use enabled = true or false")
             )
             continue
-        if specialist_names is not None and name not in specialist_names:
+        if specialist_names is not None and name in _RETIRED_SPECIALISTS:
+            flow = _RETIRED_SPECIALISTS[name]
+            findings.append(
+                fail_finding(
+                    f"{field}: {name!r} is no longer a Specialist",
+                    f"replace [specialists.{name}] with [flows.{flow}]",
+                )
+            )
+        elif specialist_names is not None and name not in specialist_names:
             findings.append(
                 fail_finding(
                     f"{field}: {name!r} is not a discovered Specialist",

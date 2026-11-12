@@ -213,13 +213,13 @@ Try:
   timestamp vs SFD; `tuser=0` counters vs `tuser=1` strings. Elab, full sim and
   clean TB-quality evidence must bind to the intended Goal/Target.
 - Mutation on `src/eth/rtl/taxi_eth_mac_10g.sv` has explicit total 8/min 7.
-  New tests stay hidden from the Mutation Tester; proposals target PFC req/ack,
-  RX error, statistics and TX tag/timestamp, and lock before execution. Preserve
+  Proposals target PFC req/ack, RX error, statistics and TX tag/timestamp, and
+  are fixed before execution. Preserve
   pristine baseline, 8 isolated variants, first killing tests and source restoration.
 - Finish with fresh evidence at a clean committed HEAD; inspect package and
   non-Stealth history commit, then the operator integrates the printed branches using the shared rules.
   The new Target stays selectable for the repair Goal.
-Look for: weakened upstream tests, mutants seeing new tests, missing restoration,
+Look for: weakened upstream tests, missing restoration,
 incorrect evidence binding or a Target lost during integration.
 
 ### 10. goal-repair — Seeded PFC fault and bugfix Goal (~60 min)

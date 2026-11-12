@@ -164,8 +164,8 @@ logging.basicConfig(
 # ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
 # detached background jobs (submit → poll) instead of holding the call open.
 # Everything else stays synchronous — it finishes inside the inline wait.
-# The LLM specialists (reviewer / mutation_tester / coverage_analyst) joined
-# 2026-07-06 for the same reason: each drives a full sub-agent loop with a
+# The Specialists (reviewer / coverage_analyst) and the mutation Flow joined
+# 2026-07-06 for the same reason: each runs a long loop with a
 # 20-30 min default_timeout, so an interactive call reliably outran the ~60s
 # client cap and came back as a bare timeout — no run_id, no poll, recoverable
 # only via booley_report. They are lightweight on memory (Read/Grep/Glob +
@@ -1718,6 +1718,24 @@ def _lint_budget_plan(
     )
 
 
+def _mutation_mcp_tool_timeout_seconds(
+    arguments: dict[str, Any], default: int, context: CallContext
+) -> int:
+    """Outer MCP wait for a mutation run: its time budget, never less than *default*.
+
+    The budget also sizes ``--count auto``, so a caller who raises ``timeout_ms``
+    must not be cut off at the default wait.
+    """
+    from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
+
+    timeout_ms = resolve_timeout_ms(
+        "mutation",
+        context.explicit_work_dir,
+        requested_timeout_ms(arguments),
+    )
+    return max(default, -(-timeout_ms // 1000))
+
+
 def _mcp_tool_timeout_seconds(
     name: str,
     arguments: dict[str, Any],
@@ -1744,6 +1762,9 @@ def _mcp_tool_timeout_seconds(
 
     if name == "lint":
         return _lint_budget_plan(arguments, default, context).outer_timeout_s
+
+    if name == "mutation":
+        return _mutation_mcp_tool_timeout_seconds(arguments, default, context)
 
     if name != "sim":
         return default

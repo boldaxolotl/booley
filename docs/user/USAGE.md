@@ -29,11 +29,10 @@ code, and the hardware results.
 
 Booley offers two kinds of capability:
 
-- **Flows** (`sim`, `lint`, `synth`, `fpga`) run EDA tools in a fixed,
-  predictable way. No AI is involved.
-- **Specialists** (`reviewer`, `mutation_tester`, `coverage_analyst`) are small
-  capabilities that each do one focused job; `mutation_tester` runs no LLM. See
-  [Specialists](SPECIALISTS.md).
+- **Flows** (`sim`, `lint`, `synth`, `fpga`, `mutation`) run EDA tools, or
+  your tests, in a fixed, predictable way. No AI is involved.
+- **Specialists** (`reviewer`, `coverage_analyst`) are small AI capabilities
+  that each do one focused job. See [Specialists](SPECIALISTS.md).
 
 Both run inside the **Sandbox**, a Docker container that holds the EDA tools
 and keeps the Developer Agent away from the rest of your computer.
@@ -162,8 +161,8 @@ kind of run that Project Setup configured, so ask the agent which ones you have.
 | `lint` | Lints with Verilator (structure and semantics) or Verible (style) | *"Run lint and explain every finding."* | [FLOW-LINT.md](FLOW-LINT.md) |
 | `synth` | Quick ASIC area and timing estimate with Yosys and OpenROAD | *"Compare synth area between these two commits: ..."* | [FLOW-SYNTH.md](FLOW-SYNTH.md) |
 | `fpga` | FPGA implementation with AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
+| `mutation` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [FLOW-MUTATION.md](FLOW-MUTATION.md) |
 | `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) |
-| `mutation_tester` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#mutation_tester) |
 | `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md), [CLI-REFERENCE.md](CLI-REFERENCE.md#coverage_analyst) |
 
 You don't need to know Flow names, flags, or where reports go. Give the agent

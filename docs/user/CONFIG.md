@@ -21,6 +21,7 @@ here to look up what a setting means and what its default is.
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
 | `[flows.synth]` | [ASIC synthesis](FLOW-SYNTH.md#configuration-flowssynth) |
 | `[flows.fpga]` | [FPGA implementation](FLOW-FPGA.md#configuration-flowsfpga) |
+| `[flows.mutation]` | [Mutation testing](FLOW-MUTATION.md#configuration-flowsmutation) |
 | `[sandbox]`, host `config.toml`, custom images | [SANDBOX.md](SANDBOX.md) |
 | `[eda.<tool>]` | [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning) |
 | `[stealth]` | [STEALTH.md](STEALTH.md) |
@@ -262,11 +263,11 @@ default = "claude"
 reviewer = "gpt-6-astra"   # runs on Codex
 ```
 
-The `[models]` keys are `reviewer`, `mutation_tester`, and `coverage_analyst`.
-`mutation_tester` currently runs no model, so its key has no effect.
-Any other key, a model that is neither `claude-*` nor `gpt-*`, or a model whose
-CLI isn't in `clis` stops Booley from loading the config, and `booley doctor`
-names the entry. The Developer Agent itself uses your Agent CLI's own model
+The `[models]` keys are `reviewer` and `coverage_analyst`. Any other key, a
+model that is neither `claude-*` nor `gpt-*`, or a model whose CLI isn't in
+`clis` stops Booley from loading the config, and `booley doctor`
+names the entry. A leftover `mutation_tester` key is such a key: mutation testing
+is now a [Flow](FLOW-MUTATION.md) and uses no model, so delete it. The Developer Agent itself uses your Agent CLI's own model
 setting, not this table.
 
 A Specialist without an entry, and Booley's own small internal steps, use the

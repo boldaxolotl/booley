@@ -17,9 +17,8 @@ Implement five deterministic registered tests:
   verify the ID namespace; never count strings as counters.
 
 Mutation proposals cover PFC req/ack, RX error propagation, statistics enable/output
-and TX timestamp/tag wiring. Hide new Cocotb/wrapper sources from the Mutation
-Tester. Retain lock, pristine baseline, isolated variants, first killing tests,
-restoration proof and atomic manifest. One survivor is allowed; seven kills are
+and TX timestamp/tag wiring. Retain pristine baseline, isolated variants, first
+killing tests, restoration proof and atomic manifest. One survivor is allowed; seven kills are
 mandatory. Do not edit existing Taxi files or weaken upstream tests.
 
 ## Goals
