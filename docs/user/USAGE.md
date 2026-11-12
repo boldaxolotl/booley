@@ -32,7 +32,7 @@ Booley offers two kinds of capability:
 - **Flows** (`sim`, `lint`, `synth`, `fpga`) run EDA tools in a fixed,
   predictable way. No AI is involved.
 - **Specialists** (`reviewer`, `mutation_tester`, `coverage_analyst`) are small
-  LLM-powered capabilities that each do one focused job. See
+  capabilities that each do one focused job; `mutation_tester` runs no LLM. See
   [Specialists](SPECIALISTS.md).
 
 Both run inside the **Sandbox**, a Docker container that holds the EDA tools
@@ -252,9 +252,18 @@ The Dashboard has three windows; press `←` or `→` to switch:
   Variants, and constraints. The **Worktree** item in the top bar picks the
   worktree: those with a connected session come first, the main checkout last.
 
+The **Run** item in the top bar starts a built-in Booley Flow as a Standalone
+Job. Pick the worktree, the Flow, and its arguments (the Project comes from the
+worktree, so `-C`, `--project`, and `--work-dir` are refused); the Dashboard
+checks them and shows the equivalent `cd … && booley flow …` command. **Submit**
+starts the Job, **Copy command** asks your terminal to copy the command instead.
+The Jobs window then opens on All sessions with the new Job selected; a
+Finished filter switches to Running, which keeps the Job listed after it
+finishes. `Esc` returns to where you started.
+
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
-the first row to reach the top bar with the tabs, filters, and Help; the footer
-shows the keys you can use.
+the first row to reach the top bar with the tabs, filters, Run, and Help; the
+footer shows the keys you can use.
 
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
 `J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
@@ -266,14 +275,26 @@ Agents that share a checkout overwrite each other's edits, so `booley chat`
 keeps them apart. The first session runs in the main checkout. While it is
 running, the next `booley chat` creates a worktree `s<N>` on branch
 `booley/s<N>`, named after the session handle (`S3` gets `s3`), and starts
-there. It prints one line first:
+there. When the worktree is ready it prints:
 
 ```text
 Booley session S3 works in worktree <path> on branch booley/s3 (<reason>).
 ```
 
-A session that runs in the main checkout prints no such line. A worktree is
-made only when the main checkout is taken, so a lone session behaves as before.
+The reason is `the main checkout is in use by another booley chat`,
+`Session S2 is working in the main checkout`, `--new-worktree`, or
+`[chat] worktree = "always"`. A lone session runs in the main checkout and
+prints no such line.
+
+The worktree starts at the main checkout's last commit, so commit first what
+the new session needs: uncommitted changes to the Project's files are not
+copied. Booley also fills the Git submodules and runs the Project's post-setup
+hook before the agent starts, which can take minutes on a large Project; if a
+step fails, it removes the worktree and starts no agent (see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-fails-in-the-post-setup-hook)).
+The worktree gets your current Booley configuration; in Stealth Mode, one
+warning names the uncommitted Booley Directory files left out (see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-lacks-my-uncommitted-booley-changes)).
 
 - `booley chat --new-worktree` always starts in a new worktree.
 - `booley chat --here` always starts in the main checkout, for example to
@@ -308,12 +329,18 @@ A session in the main checkout gets no question.
 
 Booley keeps the worktree without asking, and prints `Kept worktree s3: <path>`,
 when nobody can answer: output goes to a pipe or a file, the terminal was
-closed, or the agent was stopped by a signal. A kept worktree is normal; find it
-with `booley worktree list` and remove it with `booley worktree rm`.
+closed, or the agent was stopped by a signal. A kept worktree is normal.
 
-Every `booley chat` launch also runs `booley worktree gc` first and prints only
-the worktrees it removed, so idle ones do not pile up. See
-[Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+Manage worktrees from a container terminal:
+
+- `booley worktree list` shows each worktree's branch, unmerged work, and
+  live sessions.
+- `booley worktree rm <name>` removes one and keeps its branches. It refuses
+  while a session runs there, a Goal is active, or work would be lost.
+- `booley worktree gc` removes worktrees idle longer than `[worktree]
+  gc_older_than` (default `7d`). `booley chat` runs it at every launch.
+
+See [Worktrees](CLI-REFERENCE.md#worktrees).
 
 #### Resuming a conversation
 
@@ -357,10 +384,12 @@ own `--worktree` still goes to the agent.
 
 The check is best effort for agents that did not start through Booley. A plain
 `claude` tab or a VS Code panel does not hold the main checkout, so Booley only
-notices it once it has made a Booley tool call. Start such sessions in a
-worktree yourself (ask the agent: *"Create a worktree named `fifo-fix` and work
-there."*) or use `booley chat`. Read-only sessions, such as one that only
-explains code or runs reviews, can share the main checkout. See
+notices it once it has made a Booley tool call. To keep such a session apart,
+start it with `booley chat --new-worktree` from a container terminal. Asking a
+running agent to create a worktree is not enough: its Booley tool calls still
+run on the main checkout. Start Codex with `booley chat` too. Read-only
+sessions, such as one that only explains code or runs reviews, can share the
+main checkout. See
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-developer-agents-keep-clobbering-each-others-edits).
 
 ### What the Developer Agent is allowed to do

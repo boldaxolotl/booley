@@ -39,6 +39,7 @@ from booley.flows.progress_lifecycle import (
     progress_document,
 )
 from booley.flows.request import FlowRequest
+from booley.flows.sim.bwave_registration import register_trace_sessions
 from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
@@ -396,6 +397,8 @@ class SimulateFlow(
                 outcome, outcomes, self._simulation_acceptance_outcomes
             )
             raise
+        # After acceptance, in this process (never a sim child with a private TMPDIR).
+        register_trace_sessions(outcomes)
         return True
 
     def generic_binding_gate_applies(self) -> bool:

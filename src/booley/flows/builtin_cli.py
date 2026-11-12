@@ -75,7 +75,14 @@ def _cli_flag(field: str) -> str:
     return "--" + field.replace("_", "-")
 
 
-def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocation):
+def prepare_request(
+    flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocation
+) -> tuple[FlowRequest, bool]:
+    """Parse *argv* into the typed request and the ``--quiet`` choice; changes no environment.
+
+    ``parser.error`` exits with argparse's usage text on a bad argument; the
+    Dashboard's argument check relies on this being the shell's own parse.
+    """
     from booley.flows.cli_selection import normalize_endpoint_args
 
     parser = build_cli_parser(flow, invocation)
@@ -90,6 +97,11 @@ def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocat
         parser.error(exc.describe(_cli_flag))
     except ValueError as exc:
         parser.error(str(exc))
+    return request, quiet
+
+
+def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocation):
+    request, quiet = prepare_request(flow, argv, invocation)
     apply_environment(request, flow.endpoint_kind)
     return request, quiet
 

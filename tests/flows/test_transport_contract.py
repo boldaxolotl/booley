@@ -1317,13 +1317,12 @@ def test_mutation_tester_qualified_target_keeps_headline(
     )
     target = "vendor:a:x:1.0#first"
 
-    def run_cold(self, _plan):
+    def run_campaign(self, _plan):
         self.set_criterion(f"mutation_score_{target}", False, source_target=target)
         return McpToolResult(exit_code=EXIT_FAILURE)
 
     monkeypatch.setattr(MutationTesterSpecialist, "_prepare_run_plan", lambda _self: object())
-    monkeypatch.setattr(MutationTesterSpecialist, "_load_reusable_lock", lambda _self, _plan: None)
-    monkeypatch.setattr(MutationTesterSpecialist, "_run_cold", run_cold)
+    monkeypatch.setattr(MutationTesterSpecialist, "_run_campaign", run_campaign)
     result = MutationTesterSpecialist().execute_cli(
         [
             "--work-dir",

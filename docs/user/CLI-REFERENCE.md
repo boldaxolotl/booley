@@ -147,8 +147,8 @@ A worktree is a second checkout of your Project where a separate Developer
 Agent can work without touching your files, for example one per Goal Mode
 session. `booley chat` creates one (`s<N>`, on branch `booley/s<N>`) when the
 main checkout is in use; see
-[Several agents at once](USAGE.md#several-agents-at-once). You can also ask the
-agent to create one, or run, in a container terminal from the main checkout:
+[Several agents at once](USAGE.md#several-agents-at-once). You can also run, in
+a container terminal from the main checkout:
 
 ```bash
 booley worktree new <name>
@@ -200,7 +200,7 @@ under `.booley/worktrees/`, from the main checkout or from any worktree:
 | `UNMERGED` | Commits not yet in the main checkout's branch. Commits whose change is already there count as merged, including a branch merged by squash. A Paired Checkout reads `N, paired M` |
 | `SESSION` | Handles of live sessions in the worktree |
 | `GOAL` | Its active Goal, if any |
-| `LAST USED` | When the worktree was created or a Booley tool call last ran there; `never` for a worktree that predates the record |
+| `LAST USED` | When the worktree was created, a Booley tool call last ran there, `booley chat` was last launched inside it, or the session of a worktree that `booley chat` created ended (a resumed session counts through its tool calls); `never` for a worktree that predates the record |
 
 A worktree whose directory is gone is not listed; a warning names it.
 
@@ -354,7 +354,7 @@ Shared Flow options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), e
 
 **Specialists**
 
-LLM-powered Specialists running in scoped, isolated workspaces:
+Specialists (the Mutation Tester runs no LLM) running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
@@ -363,7 +363,7 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
 | `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
-| `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `MUTATION:{target}` | — |
+| `mutation_tester` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation | `MUTATION:{target}` | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
 
 #### `coverage_analyst`
@@ -400,19 +400,23 @@ Call the `reviewer` Specialist from your Developer Agent session with `category=
 
 #### `mutation_tester`
 
-Proposal-locked mutation testing. A read-only LLM creator returns exact source replacements; Booley runs a pristine baseline, then compiles and tests each replacement in isolation. It does not parse HDL or inject runtime selectors.
+Deterministic mutation testing; it runs no LLM. Booley generates Mutants from the RTL, runs a pristine baseline, then compiles and tests each Mutant in isolation. The same RTL, `count`, and `seed` give identical Mutants, so results are reproducible.
 
 **Mutation campaign modes:**
 
 | Campaign | Goal arguments | Interactive Mode arguments |
 |----------|-----------------------------------------|------------------------|
-| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
-| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
-| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
+| Default fixed | Target campaign with `target` — generate 10 Mutants and require 8 detected (80 %) | _(no goal arguments)_ — the same 10-Mutant, 8-detected campaign |
+| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires 80 % of N, rounded up; add `min_detected=K` to require K |
+| Size-scaled | add `auto: true` — choose 3-25 Mutants from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
 
-`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking a Specialist or simulator.
+The default threshold is ceil(0.8 x count) detected Mutants, also for a Goal without `min_detected`; an explicit `min_detected` overrides it. Survivors are reported as `not detected`, with one note that some survivors may be equivalent Mutants, which the threshold allows for. An invalid (non-elaborating) Mutant is reported `invalid` and not scored.
 
-Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
+`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without running a simulator.
+
+Call the `mutation_tester` Specialist from your Developer Agent session: `target="<sim-target>"` chooses exactly one complete runnable Target suite; `scope="<rtl-file,...>"` optionally chooses mutation sites (default: the Target's own RTL, meaning the Project's Verilog/SystemVerilog sources in the Target closure, minus testbench, vendored, and generated files and include headers); `seed=<int>` (default 0) picks a different reproducible Mutant set. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
+
+Each Mutant's per-test timeout is max(10 x that test's baseline duration, 30 s), capped at 300 s. A timed-out Mutant counts as detected and is reported separately as `detected (timeout)`. Results and criterion detail record the reproducibility identity: scope file hashes, generator version, pyslang version, seed, and count.
 <!-- END GENERATED: flows -->
 
 ## Running a Flow yourself

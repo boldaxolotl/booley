@@ -56,6 +56,15 @@ def detached_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key not in excluded}
 
 
+def worker_environment() -> dict[str, str]:
+    """The environment a detached worker runs in: the detached one plus this source tree on the path."""
+    environment = detached_environment()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (_SOURCE_ROOT, environment.get("PYTHONPATH")))
+    )
+    return environment
+
+
 def worker_command(*args: str) -> list[str]:
     """The worker argv; recorded in the Job record and used to spawn it."""
     return [sys.executable, "-m", WORKER_MODULE, *args]
@@ -76,10 +85,7 @@ def spawn(
     calls *on_unstarted* with the exit code, then marks the record ``failed``.
     If this process dies first too, the record stays pid-less.
     """
-    environment = detached_environment()
-    environment["PYTHONPATH"] = os.pathsep.join(
-        filter(None, (_SOURCE_ROOT, environment.get("PYTHONPATH")))
-    )
+    environment = worker_environment()
     with log_path.open("ab") as log:
         process = subprocess.Popen(
             command,
