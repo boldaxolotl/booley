@@ -7,6 +7,7 @@ logger -warn "parameter \\SYNTHESIS (0|[0-9]+'s?0+)[[:space:]]*$"
 logger -werror "parameter \\SYNTHESIS (0|[0-9]+'s?0+)[[:space:]]*$"
 tee -o effective_params_dut.il dump -n dut
 synth -top dut -noabc -flatten
+tee -q -o ./premap_check_dut.txt check
 dfflibmap -liberty /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib
 tee -o ./log_abc_dut.txt abc -liberty /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib -dont_use FA_X1 -dont_use HA_X1 -script +strash;ifraig;balance;rewrite;rewrite,-z;balance;refactor;balance;rewrite;map;print_stats
 opt
