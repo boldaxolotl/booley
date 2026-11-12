@@ -18,12 +18,21 @@ __all__ = [
     "CampaignBusyError",
     "CampaignResultsReader",
     "DurableCampaignResults",
+    "OlderBooleyRecordError",
     "StartedCampaign",
 ]
 
 
 class CampaignBusyError(RuntimeError):
     """A scheduler owns the Simulation Campaign: its results are still being written."""
+
+
+class OlderBooleyRecordError(ValueError):
+    """A record an older Booley wrote: intact, only too old.
+
+    Never report it as unreadable or corrupt. It lets Goal Mode name the refusal
+    without importing the Flow that raises it.
+    """
 
 
 @dataclass(frozen=True)
@@ -61,7 +70,8 @@ class DurableCampaignResults:
 
 #: Authenticate and return the terminal results of the campaign whose
 #: manifest is at the path and has the given digest. Raises
-#: :class:`CampaignBusyError` while a scheduler owns the campaign and
-#: ``ValueError`` when the campaign is gone, is another one, or any of its
-#: results cannot be authenticated.
+#: :class:`CampaignBusyError` while a scheduler owns the campaign,
+#: :class:`OlderBooleyRecordError` when an older Booley wrote the campaign, and
+#: ``ValueError`` when it is gone, is another one, or any of its results cannot be
+#: authenticated.
 CampaignResultsReader = Callable[[Path, str], DurableCampaignResults]
