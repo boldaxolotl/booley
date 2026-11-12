@@ -1,6 +1,6 @@
 """Fail-closed Codex composition with no built-in execution capabilities.
 
-Codex 0.160.0 registers apply_patch from model metadata independently of shell
+Codex 0.167.1 registers apply_patch from model metadata independently of shell
 feature flags. A private exact-model catalog removes that metadata; explicit
 startup overrides remove the remaining tool registration gates. No user/project
 MCP configuration or skills are inherited into the empty analysis workspace.
@@ -133,7 +133,7 @@ def _write_config(private: Path, params: AgentCallParams, gateway_url: str | Non
 def _generated_model(name: str, effort: str | None) -> dict[str, object]:
     """Catalog entry for *name* when the gateway or a cache without it supplies none.
 
-    Mirrors Codex ``model_info_from_slug`` (rust-v0.160.0, the fallback for an
+    Mirrors Codex ``model_info_from_slug`` (rust-v0.167.1, the fallback for an
     unknown slug) with three deviations: the tool fields (forced off by
     ``_write_catalog``), the reasoning levels (the configured *effort*), and a
     short ``base_instructions`` instead of Codex's coding-agent prompt. Every

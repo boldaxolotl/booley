@@ -23,7 +23,7 @@
 # installed Booley distributions always pull the complete published image,
 # while local builds use data/docker/ as their otherwise-unused context.
 
-FROM docker.io/library/ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS riscv-tooling
+FROM docker.io/library/ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96 AS riscv-tooling
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
