@@ -355,7 +355,7 @@ def test_published_runtime_images_include_sbom_attestations() -> None:
     release = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
     base_release = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
 
-    assert release.count("sbom: true") == 4
+    assert release.count("sbom: true") == 5
     assert base_release.count("sbom: true") == 1
 
 
