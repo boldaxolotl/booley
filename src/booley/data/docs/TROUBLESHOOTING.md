@@ -695,9 +695,9 @@ and synthesis Targets at the wrapper. Simulation is unaffected.
 The `slang` frontend is stricter than Verilator, and its error can name the
 wrong thing. Known case: `$size()` on an array of interface instances
 (`.S_COUNT($size(stat_if))`) fails with
-`error: 'stat_if' cannot be used in an expression`. Put the count in a
-`localparam` and use it in both the declaration and the instantiation. If you
-don't need `slang`, stay on the default `sv2v` frontend; see
+`<file>:<line>: ERROR: 'stat_if' cannot be used in an expression`. Put the
+count in a `localparam` and use it in both the declaration and the
+instantiation. If you don't need `slang`, stay on the default `sv2v` frontend; see
 [the frontends](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
 
 ### Yosys rejects transpiled Verilog after `sv2v` succeeds

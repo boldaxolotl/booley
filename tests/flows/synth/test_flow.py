@@ -5271,8 +5271,8 @@ def _run_latch_case(flow_and_state, tmp_path, case):
 @pytest.mark.parametrize("expected", [0, 1])
 def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expected):
     # Mapping rows and final stat captured from the one-latch physical probe
-    # using bundled Yosys 0.69+ (9f75ca1f9) and pinned Nangate45 Liberty.
-    captured = (Path(__file__).parent / "fixtures/mapped_latch_yosys_0_69.txt").read_text()
+    # using bundled Yosys 0.70+ (28ba3cb92) and pinned Nangate45 Liberty.
+    captured = (Path(__file__).parent / "fixtures/mapped_latch_yosys_0_70.txt").read_text()
     yosys, stat = captured.split("--- stat_latch_probe.txt ---\n")
     result, report = _run_latch_case(
         flow_and_state,
