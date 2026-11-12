@@ -1964,7 +1964,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
 
 def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
     """`booley measure --validate`: read the working tree's metrics.toml; run no Flow."""
-    from booley.measurement.metrics_file import MetricsFileError, load_metrics_rules
+    from booley.measurement.metrics_file import MetricsFileError, load_metrics_rules, table_header
 
     if not args.validate:
         print(
@@ -1985,10 +1985,11 @@ def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
     elif not rules.tables:
         print("metrics.toml is valid and declares no `[<target>.<flow>]` table")
     else:
-        print(f"metrics.toml is valid: {len(rules.tables)} tables")
+        count = len(rules.tables)
+        print(f"metrics.toml is valid: {count} table{'s' if count != 1 else ''}")
         for table in rules.tables:
             print(
-                f"  [{table.target}.{table.flow}] {len(table.bounds)} bounds, "
+                f"  {table_header(table.target, table.flow)} {len(table.bounds)} bounds, "
                 f"{len(table.tracked)} tracked"
             )
     return 0

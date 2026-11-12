@@ -156,6 +156,26 @@ LOAD_ERRORS = {
         "nope.cycle_count_max",
         "unknown test prefix",
     ),
+    "single-random-seed-prefix": (
+        '[sim_core.sim]\n"smoke@x1.cycle_count_max" = 5\n',
+        "[sim_core.sim]",
+        "smoke@x1.cycle_count_max",
+        "random seeds",
+    ),
+    "duplicate-track": (
+        '[sim_core.sim]\ntrack = ["tests_total", "tests_total"]\n',
+        "[sim_core.sim]",
+        "tests_total",
+        "same address",
+    ),
+    "duplicate-note": (
+        "[sim_core.sim]\ntests_failed_max = 0\n"
+        'notes = { "smoke.cycle_count_max" = "a", "smoke@1.cycle_count_max" = "b" }\n'
+        "cycle_count_max = 5\n",
+        "[sim_core.sim]",
+        "smoke@1.cycle_count_max",
+        "same address",
+    ),
     "relative-bound": (
         "[sim_core.sim]\ntests_failed_increase_at_most = 1\n",
         "[sim_core.sim]",
@@ -164,6 +184,13 @@ LOAD_ERRORS = {
     ),
     "nested-table": (
         "[synth_core.synth]\nclk_i.fmax_mhz_min = 400\n",
+        "[synth_core.synth]",
+        "clk_i",
+        "nested",
+    ),
+    "nested-table-unwritable-values": (
+        "[synth_core.synth]\nclk_i.fmax_mhz_min = 1979-05-27\nclk_i.a = inf\nclk_i.b = true\n"
+        'clk_i.c = "x"\n',
         "[synth_core.synth]",
         "clk_i",
         "nested",
@@ -313,7 +340,7 @@ def test_test_prefix_matching_no_test_is_a_load_error(tmp_path: Path) -> None:
 def test_test_prefix_matching_several_seeds_is_a_load_error(tmp_path: Path) -> None:
     (error,) = _errors(tmp_path, '[sim_core.sim]\n"smoke@x3.cycle_count_max" = 5\n')
     assert error.key == "smoke@x3.cycle_count_max"
-    assert "3 Test Runs" in error.message
+    assert "random seeds" in error.message
 
 
 def test_unknown_clock_prefix_loads(tmp_path: Path) -> None:
@@ -349,10 +376,11 @@ notes = { "smoke.cycle_count_max" = "one cycle per beat" }
 """
     rules = _load(tmp_path, text)
     synth = _table(rules, "synth_core", "synth")
-    assert {bound.key: (bound.value, bound.note) for bound in synth.bounds} == {
-        "area_kge_max": (50, "after sharing"),
-        "clk_i.fmax_mhz_min": (300, "from the library"),
-    }
+    # A list, not a dict by key: the table's own area bound must replace the default, not join it.
+    assert [(bound.key, bound.value, bound.note) for bound in synth.bounds] == [
+        ("clk_i.fmax_mhz_min", 300, "from the library"),
+        ("area_kge_max", 50, "after sharing"),
+    ]
     assert [(m.key, m.metric, m.prefix) for m in synth.tracked] == [
         ("cell_count", "cell_count", None),
         ("clk_i.critical_path_ps", "critical_path_ps", "clk_i"),

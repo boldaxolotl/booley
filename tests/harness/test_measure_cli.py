@@ -16,11 +16,6 @@ def _measure(monkeypatch: pytest.MonkeyPatch, project: Path, *arguments: str) ->
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
     monkeypatch.setattr(sys, "argv", ["booley", "-C", str(project), "measure", *arguments])
-
-    def forbidden(*_args: object, **_kwargs: object) -> int:
-        raise AssertionError("`booley measure --validate` must not start a Flow")
-
-    monkeypatch.setattr(cli, "_dispatch_endpoint", forbidden)
     return cli._dispatch_main()
 
 

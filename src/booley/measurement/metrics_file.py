@@ -15,6 +15,7 @@ Run or clock), never by key text, so ``smoke`` and ``smoke@1`` are one address.
 from __future__ import annotations
 
 import json
+import math
 import re
 import tomllib
 from dataclasses import dataclass, replace
@@ -26,6 +27,7 @@ from booley.core.boundary import is_str_list, require_finite_number_value
 from booley.flows.metric_declarations import MetricKind
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
+from booley.flows.test_runs import SeedCount, parse_test_selector
 from booley.measurement.flow_metrics import flows_with_metric_declarations, metric_declarations
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
@@ -155,9 +157,20 @@ def _quote_part(part: str) -> str:
     return part if _BARE_KEY.fullmatch(part) else json.dumps(part)
 
 
-def _header(*parts: str) -> str:
+def table_header(*parts: str) -> str:
     """The TOML table header of dotted *parts*."""
     return "[" + ".".join(_quote_part(part) for part in parts) + "]"
+
+
+def _toml_value(value: object) -> str:
+    """*value* written as TOML, or a ``<value>`` placeholder for a kind a bound cannot hold."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) or (isinstance(value, float) and math.isfinite(value)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    return "<value>"
 
 
 def _flatten(path: str, value: object) -> list[tuple[str, object]]:
@@ -177,11 +190,15 @@ def _syntax_error(text: str, failure: tomllib.TOMLDecodeError) -> MetricsLoadErr
     if match and int(match[1]) <= len(lines):
         number = int(match[1])
         assignment = _UNQUOTED_ASSIGNMENT.fullmatch(lines[number - 1])
-        headers = [line.strip() for line in lines[: number - 1] if line.strip().startswith("[")]
+        headers = [
+            header[0]
+            for line in lines[: number - 1]
+            if (header := re.match(r"\s*\[[^\]]*\]+", line))
+        ]
         if assignment and headers and re.search(r"[+@]", assignment["key"]):
             key = assignment["key"]
             return MetricsLoadError(
-                headers[-1],
+                headers[-1].strip(),
                 key,
                 "a test selector with `+` or `@` is not a TOML bare key; quote the whole key",
                 f'"{key}" = {assignment["value"]}',
@@ -196,6 +213,7 @@ class _Loader:
         self.checkout = checkout
         self.errors: list[MetricsLoadError] = []
         self._catalog: TargetCatalog | None = None
+        self._catalog_failed = False
         self._plans: dict[str, TargetTestPlan | str] = {}
 
     def error(
@@ -219,7 +237,7 @@ class _Loader:
                 continue
             for flow, body in cast(dict[str, Any], sections).items():
                 if not isinstance(body, dict):
-                    self.error(_header(target), flow, self._holds_only(target))
+                    self.error(table_header(target), flow, self._holds_only(target))
                     continue
                 table = self._load_table(
                     target, flow, cast(dict[str, Any], body), defaults, identities
@@ -247,11 +265,11 @@ class _Loader:
             self.error("", "defaults", self._holds_only("defaults"))
             return defaults
         for flow, body in cast(dict[str, Any], section).items():
-            header = _header("defaults", flow)
+            header = table_header("defaults", flow)
             if not self._flow_known(header, flow):
                 continue
             if not isinstance(body, dict):
-                self.error(_header("defaults"), flow, self._holds_only("defaults"))
+                self.error(table_header("defaults"), flow, self._holds_only("defaults"))
                 continue
             defaults[flow] = self._parse_body(
                 header, flow, cast(dict[str, Any], body), None
@@ -267,7 +285,7 @@ class _Loader:
         identities: dict[tuple[str, str], str],
     ) -> TableRules | None:
         """One ``[<target>.<flow>]`` table's effective rules, or ``None`` after an error."""
-        header = _header(target, flow)
+        header = table_header(target, flow)
         if not self._flow_known(header, flow):
             return None
         identity = self._resolve_target(header, target)
@@ -288,9 +306,17 @@ class _Loader:
 
     def _resolve_target(self, header: str, target: str) -> str | None:
         """The identity (``vlnv#name``) a Target key selects, or ``None`` after an error."""
+        if self._catalog_failed:
+            return None
         try:
             if self._catalog is None:
                 self._catalog = TargetCatalog.build(self.checkout)
+        except FuseSocError as exc:
+            # One file-level error: every table would only repeat it.
+            self._catalog_failed = True
+            self.error("", None, str(exc))
+            return None
+        try:
             return self._catalog.select(target).identity
         except FuseSocError as exc:
             self.error(header, None, str(exc))
@@ -322,7 +348,7 @@ class _Loader:
     def _nested_error(self, header: str, key: str, value: object) -> None:
         """A table nested under the Flow table: an unquoted dotted key parses to one."""
         corrected = [
-            f"{json.dumps(path)} = {json.dumps(leaf)}" for path, leaf in _flatten(key, value)
+            f"{json.dumps(path)} = {_toml_value(leaf)}" for path, leaf in _flatten(key, value)
         ]
         self.error(
             header,
@@ -339,7 +365,7 @@ class _Loader:
         if ref is None:
             return
         try:
-            number = require_finite_number_value(value, field=f"{key}")
+            number = require_finite_number_value(value, field=key)
         except ValueError as exc:
             self.error(header, key, str(exc))
             return
@@ -463,6 +489,15 @@ class _Loader:
             self.error(header, key, f"unknown test prefix {prefix!r}: {plan}")
             return None
         try:
+            if prefix is not None and isinstance(parse_test_selector(prefix).seed_form, SeedCount):
+                # `@xN` draws N random seeds on every load: no stable Test Run to bind to.
+                self.error(
+                    header,
+                    key,
+                    f"test prefix {prefix!r} asks for random seeds; name one Test Run "
+                    "(`<test>` or `<test>@<seed>`)",
+                )
+                return None
             runs = plan.default_runs() if prefix is None else plan.resolve([prefix])
         except (ValueError, OSError) as exc:
             self.error(header, key, f"unknown test prefix {prefix!r}: {exc}")
@@ -506,10 +541,16 @@ class _Loader:
         ]
         bounds = self._attach_notes(header, [*inherited, *own.values()], parsed.notes)
         slots = {(bound.metric, _where(bound)): bound for bound in bounds}
+        seen: dict[tuple[str, str | None], str] = {}
         for tracked in parsed.tracked:
-            twin = slots.get((tracked.metric, _where(tracked)))
+            slot = (tracked.metric, _where(tracked))
+            twin = slots.get(slot)
             if twin is not None:
                 self.error(header, tracked.key, f"also bounded by `{twin.key}`")
+            elif slot in seen:
+                self.error(header, tracked.key, f"same address as `{seen[slot]}`")
+            else:
+                seen[slot] = tracked.key
         if not bounds and not parsed.tracked:
             self.error(
                 header,
@@ -526,11 +567,15 @@ class _Loader:
     ) -> list[Bound]:
         """*bounds* with each note attached to the bound at its address."""
         index = {_address_of(bound): position for position, bound in enumerate(bounds)}
+        noted: dict[tuple[str, Limit | None, str | None], str] = {}
         for ref, note in notes:
             position = index.get(ref.address)
             if position is None:
                 self.error(header, ref.key, "`notes` names no effective bound")
+            elif ref.address in noted:
+                self.error(header, ref.key, f"same address as `{noted[ref.address]}`")
             else:
+                noted[ref.address] = ref.key
                 bounds[position] = replace(bounds[position], note=note)
         return bounds
 
