@@ -53,7 +53,7 @@ class _Campaign:
 
     def __init__(self, tmp_path: Path, names: tuple[str, ...], max_heavy: int) -> None:
         self.manifest = _named_manifest(names)
-        self.store = CampaignStore(tmp_path / "campaign")
+        self.store = CampaignStore(tmp_path / "record")
         self.store.publish_manifest(self.manifest)
         project = tmp_path / "project"
         project.mkdir()

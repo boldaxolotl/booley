@@ -76,7 +76,7 @@ def run_target(plan, execution, **options):
     return run_coverage_target(
         plan,
         execution,
-        embedded_root=plan.invocation_dir / "attempt" / "coverage-campaign",
+        embedded_root=plan.invocation_dir / "attempt" / "coverage-record",
         **options,
     )
 

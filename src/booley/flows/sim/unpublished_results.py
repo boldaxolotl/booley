@@ -2,7 +2,7 @@
 
 Goal Mode registers every campaign a bound run starts and later asks what it
 durably observed (:mod:`booley.flows.campaign_results`). The Simulation Flow
-starts a **Simulation Campaign** (``campaign/manifest.json``): each finished
+starts a **Simulation Campaign** (``record/manifest.json``): each finished
 work item leaves an authenticated result
 (:func:`booley.flows.sim.campaign.read_durable_results`).
 
@@ -28,7 +28,7 @@ def read_unpublished_results(manifest_path: Path, manifest_sha256: str) -> Durab
     scheduler owns the campaign,
     :class:`~booley.flows.campaign_results.OlderBooleyRecordError` when an older
     Booley wrote it, and ``ValueError`` when the path is not a
-    Simulation Campaign manifest (``campaign/manifest.json``), the campaign is
+    Simulation Campaign manifest (``record/manifest.json``), the campaign is
     not the registered one, or it cannot be authenticated.
     """
     return read_durable_results(manifest_path, manifest_sha256)

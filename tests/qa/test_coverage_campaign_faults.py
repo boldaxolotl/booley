@@ -15,7 +15,7 @@ SPEC = importlib.util.spec_from_file_location(
 faults = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(faults)
 
-NESTED = "campaign/coverage-campaign/coverage.json"
+NESTED = "record/coverage-record/coverage.json"
 
 
 def _reference(target: Path, nested: Path) -> Path:

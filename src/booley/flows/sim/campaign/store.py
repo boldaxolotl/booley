@@ -40,6 +40,7 @@ from booley.flows.sim.campaign_files import (
 )
 from booley.flows.sim.campaign_reports import is_report_link
 from booley.flows.sim.coverage_json import content_digest
+from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import nonblocking_file_lock
 
@@ -131,7 +132,7 @@ class SharedBuildRecovery:
 
 
 def _invocation_of(campaign_root: Path) -> Path | None:
-    """The invocation directory holding ``<invocation>/targets/<target>/campaign``, if laid out so."""
+    """The invocation directory holding ``<invocation>/targets/<target>/record``, if laid out so."""
     parents = campaign_root.parents
     if len(parents) > 2 and parents[1].name == "targets":
         return parents[2]
@@ -766,7 +767,8 @@ def collect_pre_sim_firings(
             raise SimulationCampaignIntegrityError("prerequisite hook evidence exceeds DAG bound")
         allowed_pops -= 1
         path, expected, ancestors = pending.pop()
-        if path.name != "manifest.json" or path.parent.name != "campaign":
+        refuse_older_manifest_path(path)
+        if path.name != "manifest.json" or path.parent.name != RECORD_DIRECTORY:
             raise SimulationCampaignIntegrityError("expected exact Campaign manifest path")
         store = CampaignStore(path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()

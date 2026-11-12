@@ -582,7 +582,7 @@ def _publish_current_base_simulation(layout):
         }
     )
     paths = record_paths(layout.control, layout.record.id)
-    path = paths.runtime_dir / "flow-reports/sim/8/targets/base/campaign/manifest.json"
+    path = paths.runtime_dir / "flow-reports/sim/8/targets/base/record/manifest.json"
     path.parent.mkdir(parents=True)
     path.write_bytes(encode_simulation_campaign_manifest(manifest))
     facts = campaign_facts()

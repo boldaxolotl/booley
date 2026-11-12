@@ -570,8 +570,8 @@ def test_large_campaign_keeps_manifest_and_summary_work_constant(tmp_path: Path)
 
 def test_image_alias_store_readers_and_suffix_links(project_alias):
     alias, target = project_alias
-    published = publish_coverage_campaign(target / "campaign", _campaign())
-    path = alias / "campaign/coverage.json"
+    published = publish_coverage_campaign(target / "record", _campaign())
+    path = alias / "record/coverage.json"
     assert (
         load_coverage_campaign(path).campaign
         == load_coverage_campaign(published.campaign).campaign
@@ -579,7 +579,7 @@ def test_image_alias_store_readers_and_suffix_links(project_alias):
     assert (
         load_coverage_campaign_bytes(path, published.campaign.read_bytes()).campaign == _campaign()
     )
-    (target / "linked").symlink_to(target / "campaign", target_is_directory=True)
+    (target / "linked").symlink_to(target / "record", target_is_directory=True)
     for read in (
         load_coverage_campaign,
         lambda p: load_coverage_campaign_bytes(p, published.campaign.read_bytes()),

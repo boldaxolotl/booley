@@ -111,7 +111,7 @@ def _run_owned_campaign(
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
-    campaigns = tuple(report_root.glob(f"sim/*/targets/{target}/campaign"))
+    campaigns = tuple(report_root.glob(f"sim/*/targets/{target}/record"))
     assert len(campaigns) == 1
     return campaigns[0], compiler_log
 

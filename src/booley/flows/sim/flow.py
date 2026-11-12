@@ -57,6 +57,7 @@ from booley.flows.sim.live_progress import (
     install_progress,
     publish_checkpoint,
 )
+from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_suite import (
@@ -624,7 +625,7 @@ class SimulateFlow(
         if invocation is None:
             return result
         try:
-            paths = sorted((invocation / "targets").glob("*/campaign/manifest.json"))
+            paths = sorted((invocation / "targets").glob(f"*/{RECORD_DIRECTORY}/manifest.json"))
             if len(paths) > 4000:
                 raise SimulationCampaignIntegrityError("invocation Campaign count exceeds bound")
             if origin_manifest is not None:
@@ -1771,7 +1772,7 @@ class SimulateFlow(
             target_report_directory(
                 Path(), f"{target}@baseline-{target_document['revision'][:12]}"
             )
-            / "campaign"
+            / RECORD_DIRECTORY
             / "manifest.json"
         )
         documents = self._campaign_prerequisite_documents(plan, relative)

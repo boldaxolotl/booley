@@ -12,7 +12,7 @@ CAMPAIGN_ID = "01234567-89ab-4def-8123-456789abcdef"
 
 
 def _origin(tmp_path):
-    origin = tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
+    origin = tmp_path / "reports/sim/1/targets/sim_0/record/manifest.json"
     origin.parent.mkdir(parents=True)
     origin.write_text(json.dumps({"campaign_id": CAMPAIGN_ID}) + "\n", encoding="utf-8")
     digest = "sha256:" + hashlib.sha256(origin.read_bytes()).hexdigest()
@@ -244,7 +244,7 @@ def test_detached_dependency_receipt_is_inventory_but_not_deletion_authority(tmp
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
-    copied = tmp_path / "copied/sim/1/targets/sim_0/campaign"
+    copied = tmp_path / "copied/sim/1/targets/sim_0/record"
     shutil.copytree(origin.parent, copied)
     copied_manifest = copied / "manifest.json"
 
@@ -550,7 +550,7 @@ def test_a_campaign_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monke
         "role": "cycle_count_baseline",
         "manifest": {
             "path_base": "origin_invocation",
-            "path": "targets/self/campaign/manifest.json",
+            "path": "targets/self/record/manifest.json",
             "bytes": 1,
             "sha256": "sha256:" + "a" * 64,
             "kind": "simulation_campaign_manifest",
@@ -589,7 +589,7 @@ def _write_candidate_with_prerequisite(tmp_path, manifest_path):
         "work_item_id": "item:0000:0123456789abcdef",
     }
     document["prerequisites"] = [entry]
-    path = tmp_path / "reports/1/targets/sim/campaign/manifest.json"
+    path = tmp_path / "reports/1/targets/sim/record/manifest.json"
     path.parent.mkdir(parents=True)
     path.write_bytes(canonical_json_bytes(document))
     return path
@@ -603,7 +603,7 @@ def test_an_escaping_prerequisite_manifest_path_is_refused_before_use(tmp_path, 
     from booley.flows.sim.campaign.resume import validate_resume_manifest
 
     path = _write_candidate_with_prerequisite(
-        tmp_path, "../outside/targets/x/campaign/manifest.json"
+        tmp_path, "../outside/targets/x/record/manifest.json"
     )
     walk_function = (
         collect_pre_sim_firings
@@ -612,7 +612,7 @@ def test_an_escaping_prerequisite_manifest_path_is_refused_before_use(tmp_path, 
     )
 
     with pytest.raises(
-        SimulationCampaignIntegrityError, match=r"is not targets/<Target>/campaign/manifest\.json"
+        SimulationCampaignIntegrityError, match=r"is not targets/<Target>/record/manifest\.json"
     ):
         walk_function(path)
 
@@ -628,7 +628,7 @@ def test_an_escaping_work_item_id_is_refused_before_use(tmp_path):
     document = _manifest()
     escaping = "item:0000:x/../../e"
     document["work_items"][0]["work_item_id"] = escaping
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/record")
     store.root.mkdir(parents=True)
     store.manifest_path.write_bytes(canonical_json_bytes(document))
 

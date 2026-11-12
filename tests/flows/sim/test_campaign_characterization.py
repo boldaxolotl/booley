@@ -252,7 +252,7 @@ def test_adapter_termination_reaches_normalized_campaign_result(tmp_path: Path) 
     )
 
     assert outcome.complete is True
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     result = store.scan().items[0].result
     assert result is not None
     observation = result.document["observations"][0]
@@ -316,7 +316,7 @@ def _run_campaign_result(tmp_path: Path, plan: Any, execution: Any) -> Any:
         )
     )
     assert outcome.complete
-    result = CampaignStore(invocation / "targets/sim/campaign").scan().items[0].result
+    result = CampaignStore(invocation / "targets/sim/record").scan().items[0].result
     assert result is not None
     # Publish encodes and scan decodes: the record round-trips by construction.
     assert decode_simulation_result(encode_simulation_result(result)) == result
@@ -507,7 +507,7 @@ def test_infrastructure_guard_publishes_terminal_campaign(
         )
     )
     assert outcome.complete
-    result = CampaignStore(invocation / "targets/sim/campaign").scan().items[0].result
+    result = CampaignStore(invocation / "targets/sim/record").scan().items[0].result
     assert result is not None
     assert decode_simulation_result(encode_simulation_result(result)) == result
     assert result.document["state"] == "aborted"
@@ -555,7 +555,7 @@ def test_infrastructure_without_tests_retains_selected_identities(
         )
     )
     assert outcome.complete
-    result = CampaignStore(invocation / "targets/sim/campaign").scan().items[0].result
+    result = CampaignStore(invocation / "targets/sim/record").scan().items[0].result
     assert result is not None
     assert result.document["grade"] == "error"
     assert [item["test"] for item in result.document["observations"]] == list(names)
@@ -608,7 +608,7 @@ def test_infrastructure_failure_of_the_unnamed_invocation_is_one_observation_of_
     (observation,) = result.document["observations"]
     assert observation["test_run"] == "<default>@9"
     assert observation["failure_class"] == "infrastructure"
-    (record,) = (tmp_path / "reports/1/targets/sim/campaign").rglob("*infrastructure-failure*")
+    (record,) = (tmp_path / "reports/1/targets/sim/record").rglob("*infrastructure-failure*")
     assert json.loads(record.read_text(encoding="utf-8"))["selected_tests"] == [None]
 
 
@@ -622,7 +622,7 @@ def test_cleanup_failure_preserves_completed_tests_and_guard(tmp_path, monkeypat
 
     monkeypatch.setattr(Path, "unlink", denied_partial)
     test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", True)
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/record")
     result = store.scan().items[0].result
     assert result is not None
     assert any(
@@ -647,7 +647,7 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
         )
     )
     assert outcome.complete
-    result = CampaignStore(invocation / "targets/sim/campaign").scan().items[0].result
+    result = CampaignStore(invocation / "targets/sim/record").scan().items[0].result
     assert result is not None
     assert result.document["grade"] == "error"
     assert result.document["observations"][0]["test"] is None
@@ -671,7 +671,7 @@ def test_standalone_campaign_final_report_is_run_local(tmp_path, monkeypatch, me
 
 def test_campaign_scan_takes_a_published_infrastructure_verdict_as_published(tmp_path) -> None:
     test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", False)
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/record")
     published = store.scan().items[0].result
     assert published is not None
     for reference in published.document["evidence"]:
@@ -736,7 +736,7 @@ def test_backend_timeout_on_campaign_path_preserves_detail_and_adds_hint(
     )
     assert f"{backend_detail} (rc=" in timeout_line
     assert hint in timeout_line
-    campaign = CampaignStore(tmp_path / "reports/sim/1/targets/sim/campaign").scan()
+    campaign = CampaignStore(tmp_path / "reports/sim/1/targets/sim/record").scan()
     published = campaign.items[0].result
     assert published is not None
     assert published.document["state"] == "timeout"

@@ -264,7 +264,7 @@ def test_campaign_build_timeout_publishes_terminal_infrastructure_result(
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
     assert campaign.observations[0]["detail"]["reason"].splitlines()[0] == TIMEOUT_REASON
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     result = _first_build_result(store)
     assert result["state"] == "infrastructure_error"
     observation = result["observation"]
@@ -383,7 +383,7 @@ def test_coverage_campaign_build_failure_message_is_reason(tmp_path: Path) -> No
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
 
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
     observation = _first_build_result(store)["observation"]
     assert observation["message"] == TIMEOUT_REASON
     assert LAST_LINE in observation["detail"]["text"]
@@ -397,7 +397,7 @@ def test_coverage_campaign_build_timeout_is_not_an_integrity_error(tmp_path: Pat
     campaign, _invocation = _run_coverage_campaign(tmp_path, failing)
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
     assert store.scan().interrupted == ()
 
 
@@ -410,7 +410,7 @@ def test_reasonless_coverage_infrastructure_keeps_its_message(tmp_path: Path) ->
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
 
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
     message = _first_build_result(store)["observation"]["message"]
     assert message == "coverage Verilator identity mismatch"
 
@@ -488,7 +488,7 @@ def test_hostile_oom_build_output_publishes_and_decodes(
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
 
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     result = _first_build_result(store)
     text = result["observation"]["detail"]["text"]
     assert result["state"] == "infrastructure_error"
@@ -578,7 +578,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
         )
     )
     assert campaign.complete
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     result = store.scan().items[0].result
     assert result is not None
     assert result.document["grade"] == "error"
@@ -618,7 +618,7 @@ def test_escaped_build_metadata_stays_within_canonical_detail_budget(
     executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
     campaign = SimulationCampaign(executor).run(request)
     assert campaign.complete
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     detail = _first_build_result(store)["observation"]["detail"]
     assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES
     assert detail["build_stage"]["timed_out"] is True

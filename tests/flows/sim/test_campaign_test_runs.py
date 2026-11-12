@@ -366,7 +366,7 @@ def _stored_result(tmp_path: Path):
             plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     return outcome, [item.result for item in store.scan().items]
 
 
