@@ -1198,6 +1198,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     request_type = SynthRequest
     argument_adapter = SynthArguments
+    _PAIR_CRITERION_PREFIX = "synthesis_ok_"
 
     def _resolve_job_class(self) -> str:
         """Synthesis is a heavy Sandbox workload."""

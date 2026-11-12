@@ -11,6 +11,7 @@ from booley.runtime.endpoint_execution import EndpointOutcome
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
+    from booley.flows.job_estimates import JobRequest
     from booley.flows.sim.flow import CandidateWorkload, PreparedSimulationEndpoint, SimulateFlow
 
 
@@ -42,6 +43,9 @@ class SimulationCampaignInvocation(PreparedInvocation):
 
     def run(self, admission: object | None) -> EndpointOutcome:
         return self.flow.run_prepared_simulation(self.prepared, admission)
+
+    def job_requests(self) -> tuple[JobRequest, ...] | None:
+        return self.flow.campaign_job_requests(self.prepared)
 
     def report_scope(self, endpoint: EndpointState) -> ReportScope:
         workloads, coverage = self.flow.report_candidate_workloads(self.prepared)

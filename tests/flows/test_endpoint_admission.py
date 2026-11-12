@@ -7,18 +7,24 @@ non-Simulation Flow, and must not depend on the endpoint's name.
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from booley.config.jobs import SlotCaps
 from booley.flows import endpoint_admission
-from booley.flows.endpoint_admission import AdmissionContext, AdmissionIdentityError
+from booley.flows.endpoint_admission import (
+    AdmissionContext,
+    AdmissionGate,
+    AdmissionIdentityError,
+)
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.sim.flow import SimulateFlow
@@ -97,7 +103,12 @@ def harness(
     Both run their real prepared-invocation kind: the Simulation Campaign (which
     borrows admission) and Target selection (which does not).
     """
-    flow = FLOW_TYPES[request.param]()
+    return _build_harness(request.param, runtime, monkeypatch)
+
+
+def _build_harness(kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch) -> _Harness:
+    """The harness of Flow *kind* (``sim`` or ``synth``), patched through *monkeypatch*."""
+    flow = FLOW_TYPES[kind]()
     typed_request = flow.request_type(
         target="demo", work_dir=runtime, report_dir=runtime / "reports"
     )
@@ -107,7 +118,7 @@ def harness(
         observed.invocations.append(object())
         return observed.behavior()
 
-    if request.param == "sim":
+    if kind == "sim":
 
         def run_prepared_simulation(
             _prepared: object, admission: object | None
@@ -564,3 +575,208 @@ def test_target_authorization_precedes_job_admission(
     refusal = flow.prepare_endpoint_invocation()
     assert isinstance(refusal, EndpointOutcome)
     assert refusal.report_text == result.outcome.report_text
+
+
+# --- memory admission behind BOOLEY_DEV_MEMORY_ADMISSION (#3701) ---------------------
+
+
+def _seed_history(booley_dir: Path, *peaks: tuple[str, float]) -> None:
+    """Write a Resource History whose records say each Target's synth peak (MiB)."""
+    from booley.runtime.resource_history import SCHEMA
+
+    records = [
+        {
+            "key": {"target": target, "phase": "synth", "flags": [], "test_run": ""},
+            "peak_memory_mb": peak,
+            "wall_s": 1.0,
+        }
+        for target, peak in peaks
+    ]
+    path = booley_dir / "runtime" / "resources" / "history.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"$schema": SCHEMA, "records": records}), encoding="utf-8")
+
+
+@pytest.fixture
+def memory_runtime(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The runtime with the switch set, a real slots root and a 1,000 MiB Memory Budget."""
+    booley_dir = runtime / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
+    monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
+    return booley_dir
+
+
+def _selection_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExecution:
+    """The preparation of *flow* as a Target-selection invocation over its one Target ``a``."""
+    from booley.flows.prepared_invocation import TargetSelectionInvocation
+    from tests.target_test_support import make_target_handle
+
+    handle = make_target_handle(work_dir, "a", drivable_by=("synth",))
+    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
+    flow._args = SimpleNamespace(work_dir=work_dir, target="a")
+    selection = SimpleNamespace(handles=(handle,), matches=lambda *_args: True)
+    return PreparedExecution(
+        display_target=None,
+        display_label=None,
+        dry_run=False,
+        non_persisting_dry_run=False,
+        invocation=TargetSelectionInvocation(flow, selection, flow._run),  # type: ignore[arg-type]
+    )
+
+
+def _held(booley_dir: Path, job_class: str) -> list[job_slots.SlotToken]:
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=MAX_HEAVY))
+    return store.observe(job_class)[0]
+
+
+def test_memory_admission_claims_the_estimated_reservation(
+    memory_runtime: Path, runtime: Path
+) -> None:
+    _seed_history(memory_runtime, ("a", 400))
+    flow = AsicSynthesizeFlow()
+
+    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter() as context:
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.memory == job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0)
+        assert _held(memory_runtime, job_slots.CLASS_HEAVY) == []
+        assert context.mode == "managed"
+        assert context.memory_warning is None
+        # A memory-admitted Job has one lane, whatever the heavy cap says.
+        assert context.max_heavy == 1
+
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+
+
+@pytest.mark.parametrize("case", ("unknown_invocation", "inherited"))
+def test_memory_admission_without_a_known_job_or_under_a_parent(
+    case: str, memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_history(memory_runtime, ("a", 400))
+    if case == "inherited":
+        monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "memory/entry")
+
+    with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
+        holders = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        if case == "inherited":
+            assert (context.mode, holders) == ("unmanaged", [])
+        else:
+            # No invocation says what the Job runs: it takes the whole budget.
+            assert [token.memory for token in holders] == [
+                job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True)
+            ]
+
+
+@pytest.mark.parametrize("budget", ("lots", None))
+def test_memory_admission_survives_a_budget_it_cannot_compute(
+    budget: str | None, memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bad ``[jobs].memory_budget`` or unreadable MemTotal serializes the Job; never refuses."""
+    if budget is None:
+        (memory_runtime / "booley.toml").unlink()
+        monkeypatch.setattr(
+            "booley.flows.memory_admission.compute_memory_budget",
+            lambda _config: (_ for _ in ()).throw(OSError("MemTotal unreadable")),
+        )
+    else:
+        (memory_runtime / "booley.toml").write_text(f'[jobs]\nmemory_budget = "{budget}"\n')
+
+    with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.memory == job_slots.MemoryClaim(budget_mb=0.0, run_alone=True)
+        assert context.memory_warning is not None
+        assert context.memory_warning.startswith("Memory Budget unavailable (")
+
+
+def test_over_budget_job_result_carries_the_memory_warning(
+    runtime: Path, memory_runtime: Path
+) -> None:
+    from booley.flows.job_estimates import JobRequest
+    from booley.flows.prepared_invocation import TargetSelectionInvocation
+    from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
+
+    # A 2,000 MiB peak is a 2,500 MiB estimate against the 1,000 MiB budget.
+    _seed_history(memory_runtime, ("a", 2000))
+    request = (JobRequest("synth", "a"),)
+    warning = "Memory estimate 2500 MiB exceeds the Memory Budget of 1000 MiB; this Job ran alone."
+
+    for kind in ("sim", "synth"):
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(TargetSelectionInvocation, "job_requests", lambda _self: request)
+            patch.setattr(SimulationCampaignInvocation, "job_requests", lambda _self: request)
+            harness = _build_harness(kind, runtime, patch)
+            harness.behavior = lambda: EndpointOutcome(report_text="RESULT: PASS")
+
+            result = harness.execute()
+
+        assert result.exit_code == 0, kind
+        assert result.outcome.detail["memory_admission_warning"] == warning, kind
+        assert result.outcome.report_text.splitlines()[:2] == ["RESULT: PASS", warning], kind
+        (borrowed,) = harness.admissions
+        assert borrowed is not None and borrowed.memory_warning == warning, kind
+
+
+def test_unwarned_job_result_is_unchanged(harness: _Harness, memory_runtime: Path) -> None:
+    held: list[int] = []
+
+    def behavior() -> EndpointOutcome:
+        held.append(len(_held(memory_runtime, job_slots.CLASS_MEMORY)))
+        return EndpointOutcome(report_text="RESULT: PASS")
+
+    harness.behavior = behavior
+
+    result = harness.execute()
+
+    assert held == [1]
+    assert "memory_admission_warning" not in result.outcome.detail
+    assert result.outcome.report_text.splitlines()[0] == "RESULT: PASS"
+    assert "ran alone" not in result.outcome.report_text
+
+
+def test_specialist_keeps_its_light_slot_under_memory_admission(
+    memory_runtime: Path,
+) -> None:
+    endpoint = _StubEndpoint("reviewer", job_slots.CLASS_LIGHT)
+
+    with endpoint_admission.admission(endpoint, _prepared()) as borrowed:  # type: ignore[arg-type]
+        assert isinstance(borrowed, AdmissionContext)
+        assert borrowed.mode == "managed"
+        assert borrowed.memory_warning is None
+        assert len(_held(memory_runtime, job_slots.CLASS_LIGHT)) == 1
+        assert not (job_slots.slots_dir(memory_runtime) / job_slots.CLASS_MEMORY).exists()
+    assert endpoint.acquisitions == 1
+
+
+def test_memory_queue_narration_names_the_estimate_and_the_holders(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class Store:
+        def describe_holders(self, job_class: str) -> str:
+            return f"pid 7 ({job_class})"
+
+    endpoint = SimpleNamespace(name="synth", _display_identity=None)
+    narrate = endpoint_admission._queue_narrator(
+        endpoint,  # type: ignore[arg-type]
+        Store(),  # type: ignore[arg-type]
+        job_slots.CLASS_MEMORY,
+        "memory",
+        ": needs 500 MiB of the 1,000 MiB Memory Budget",
+    )
+
+    narrate(0)
+
+    assert capsys.readouterr().err == (
+        "[slot] synth: waiting for memory (position 1): needs 500 MiB of the "
+        "1,000 MiB Memory Budget; held by pid 7 (memory)\n"
+    )
+
+
+def test_unparseable_holder_timeout_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BOOLEY_SLOT_TIMEOUT_S", "soon")
+    assert endpoint_admission._holder_deadline_seconds() is None
+    monkeypatch.setenv("BOOLEY_SLOT_TIMEOUT_S", "30")
+    assert endpoint_admission._holder_deadline_seconds() == 60.0
+    monkeypatch.delenv("BOOLEY_SLOT_TIMEOUT_S")
+    assert endpoint_admission._holder_deadline_seconds() is None

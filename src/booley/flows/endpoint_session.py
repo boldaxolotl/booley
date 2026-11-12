@@ -231,8 +231,20 @@ def invoke_endpoint(
             result = _exception_outcome(endpoint, prepared, exc)
     finally:
         sys.stdout = witness.wrapped
+    _attach_memory_warning(result, admission)
     endpoint._finalize_result(result)
     return result
+
+
+def _attach_memory_warning(result: EndpointOutcome, admission: object | None) -> None:
+    """Put the Memory Reservation warning of *admission* in the Job's result."""
+    # Local import: ``endpoint_admission`` imports this module at load.
+    from booley.flows.endpoint_admission import AdmissionContext
+
+    if not isinstance(admission, AdmissionContext) or admission.memory_warning is None:
+        return
+    result.detail["memory_admission_warning"] = admission.memory_warning
+    result.report_text = "\n".join(filter(None, (result.report_text, admission.memory_warning)))
 
 
 def finish_execution(
