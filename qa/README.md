@@ -52,7 +52,7 @@ behavioral guidance, not a security boundary.
 | [`booley-qa-run`](booley-qa-run/SKILL.md) | Run one mission against a Booley build; writes `findings.md`, `log.md`, `resources.md`, `evidence/` |
 | [`booley-qa-triage`](booley-qa-triage/SKILL.md) | Triage findings with the maintainer one cluster at a time: verify against current main, decide, then file issues or fix the mission |
 | [`booley-add-to-qa`](booley-add-to-qa/SKILL.md) | Add a behavior, fault idea, or known trap to a mission |
-| [`booley-gui-check`](booley-gui-check/SKILL.md) | Check one PR's GUI change in a Codespace on its candidate image; posts a screenshot table on the PR and returns pass/fail per step |
+| [`booley-gui-check`](booley-gui-check/SKILL.md) | Check one PR's GUI change in a Codespace on its candidate image; posts a screenshot table on the PR and returns pass, fail, or blocked per step |
 
 ## Other files
 
