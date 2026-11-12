@@ -85,15 +85,6 @@ class _Checked:
     error: str
 
 
-@dataclass(frozen=True)
-class _Built:
-    """A built form and the worktree and Flow it was built for."""
-
-    worktree: Path
-    flow: str
-    form: RunForm
-
-
 class RunWizard(ModalScreen[str | None]):
     """Choose where and what to run, fill in the form, then submit or copy the command it builds."""
 
@@ -130,6 +121,7 @@ class RunWizard(ModalScreen[str | None]):
         # The form belongs to one (worktree, Flow); None while it is being built or if it failed.
         self._form_for: tuple[Path, str] | None = None
         self._form: RunForm | None = None
+        self._form_worker: Worker[RunForm] | None = None  # the one build whose result counts
         self._building = False
         self._form_error = ""
         self._values: dict[str, str] = {}
@@ -266,7 +258,7 @@ class RunWizard(ModalScreen[str | None]):
 
     def _start_form(self, pair: tuple[Path, str]) -> None:
         """Forget the old form and build the one for *pair* in a worker."""
-        worktree, flow = pair
+        _, flow = pair
         self._form_for = pair
         self._form = None
         self._form_error = ""
@@ -274,8 +266,10 @@ class RunWizard(ModalScreen[str | None]):
         self._values = {}
         self._extra = ""
         self._changing = 0
-        self.run_worker(
-            lambda: _Built(worktree, flow, self._launcher.form(flow)),
+        # The old Flow's rows must not stay selectable while the new form builds.
+        self.query_one("#run-form", OptionList).clear_options()
+        self._form_worker = self.run_worker(
+            lambda: self._launcher.form(flow),
             thread=True,
             exclusive=True,
             group=FORM_GROUP,
@@ -309,6 +303,8 @@ class RunWizard(ModalScreen[str | None]):
         rows.highlighted = min(self._changing, len(prompts) - 1)
 
     def _form_row_selected(self, row: int) -> None:
+        if self._building:  # no row exists until the build lands
+            return
         fields = self._fields()
         self._changing = row
         if row == len(fields) + 1:
@@ -374,6 +370,8 @@ class RunWizard(ModalScreen[str | None]):
 
     def _form_built(self, event: Worker.StateChanged) -> None:
         """Apply a finished build for the form now wanted; a crash shows as the note."""
+        if event.worker is not self._form_worker:
+            return  # a build the human replaced after it had finished, before this message ran
         if event.state is WorkerState.ERROR:
             error = event.worker.error
             self._form_error = (
@@ -381,10 +379,9 @@ class RunWizard(ModalScreen[str | None]):
             )
         elif event.state is WorkerState.SUCCESS:
             built = event.worker.result
-            assert isinstance(built, _Built)
-            if (built.worktree, built.flow) != self._form_for:
-                return  # the human chose another worktree or Flow meanwhile
-            self._form = built.form
+            assert isinstance(built, RunForm)
+            self._form = built
+            self._form_error = ""
         else:
             return
         event.stop()
@@ -403,8 +400,9 @@ class RunWizard(ModalScreen[str | None]):
             event.state is WorkerState.ERROR
         ):  # the check itself crashed: say so, never hang on "Checking…"
             event.stop()
-            self._checking = None
-            self._show_error(f"Argument check failed: {event.worker.error}")
+            if self._checking is not None:  # else the human moved on or changed the form
+                self._checking = None
+                self._show_error(f"Argument check failed: {event.worker.error}")
             return
         if event.state is not WorkerState.SUCCESS:
             return

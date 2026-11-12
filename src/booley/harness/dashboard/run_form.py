@@ -43,6 +43,7 @@ _HINTS: Final[dict[str, str]] = {
     "test": "One Test Run; put more of them in the extra arguments.",
 }
 _EMPTY_TEXT: Final[dict[str, str]] = {"target": "automatic"}
+TEXT_NOTE: Final = "Typed as one value: no quoting needed."
 DEFAULT = "default"  # what a list or three-way field shows while nothing is chosen
 
 
@@ -166,7 +167,7 @@ def _single_field(dest: str, action: argparse.Action) -> Field | None:
         "text",
         flag,
         flag,
-        _HINTS.get(dest, hint),
+        f"{_HINTS.get(dest, hint)} {TEXT_NOTE}",
         tuple(action.option_strings),
         empty=_EMPTY_TEXT.get(dest, ""),
     )

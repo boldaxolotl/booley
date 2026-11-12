@@ -8,6 +8,7 @@ Job reads are replaced.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from textual.widgets import DataTable, OptionList, Static
+from textual.worker import WorkerFailed
 
 from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard.app import DashboardApp, Navigation
@@ -749,6 +751,45 @@ async def test_only_the_note_shows_while_the_form_builds(checkout):
         assert wizard.query_one("#run-form", OptionList).highlighted == 0
 
 
+@pytest.mark.asyncio
+async def test_keys_do_nothing_while_the_next_form_builds_and_the_old_rows_are_gone(checkout):
+    launcher = FormGate()
+    launcher.release.set()
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "synth")  # many rows: the old cursor can go far
+        launcher.release.clear()
+        await pilot.press("escape", "up", "enter")  # lint: building
+        await pilot.pause()
+        rows = wizard.query_one("#run-form", OptionList)
+        assert rows.option_count == 0
+        wizard._form_row_selected(9)  # a late Enter on a row of the old form
+        await pilot.press(*["down"] * 9, "enter")
+        assert wizard._stage == "form"
+        assert shown(wizard, "#run-note") == "Building the form…"
+        launcher.release.set()
+        await settle_form(app, pilot)
+        assert row_value(wizard, "--target") == "automatic"
+        assert row_value(wizard, "Extra arguments") == ""
+        assert "--flatten" not in " ".join(form_rows(wizard))
+
+
+@pytest.mark.asyncio
+async def test_a_result_of_a_replaced_build_is_dropped(checkout):
+    from types import SimpleNamespace
+
+    from textual.worker import WorkerState
+
+    app = make_app(checkout, FakeLauncher())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        before = form_rows(wizard)
+        other = SimpleNamespace(worker=object(), state=WorkerState.ERROR)
+        wizard._form_built(other)  # an old build's message, still queued when the human moved on
+        assert form_rows(wizard) == before
+        assert not wizard.query_one("#run-note", Static).display
+
+
 def build_failure(kind: str) -> Exception:
     from booley.harness.dashboard.run_form import FormError
 
@@ -1068,3 +1109,25 @@ async def test_a_crashed_check_is_reported_in_the_form(checkout):
         await check_arguments(app, pilot, wizard, "--target t")
         assert "Argument check failed: embedded null byte" in shown(wizard, "#run-error")
         assert wizard.query_one("#run-form", OptionList).display
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_crashes_after_the_human_moved_on_is_not_shown(checkout):
+    gate = threading.Event()
+
+    class SlowCrash(FakeLauncher):
+        def check(self, worktree, flow, argv):
+            assert gate.wait(timeout=60)
+            raise ValueError("embedded null byte")
+
+    app = make_app(checkout, SlowCrash())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "lint")
+        await goto_row(pilot, wizard, "Review the command")
+        await pilot.press("enter")  # the check starts and waits
+        await pilot.press("escape")  # the human steps back to the Flow list
+        gate.set()
+        with contextlib.suppress(WorkerFailed):  # the crash itself is what the wizard must ignore
+            await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert shown(wizard, "#run-error") == ""
