@@ -369,13 +369,13 @@ FORM_SCRIPTS: dict[str, FormScript] = {
     ),
     "mutation": FormScript(
         steps=(
-            ("text", "--target", "t"),
+            ("target", "--target", "sim_fifo"),
             ("text", "--scope", "a.sv"),
             ("text", "--count", "3"),
         ),
         extra="--seed 7",
-        argv=("--target", "t", "--scope", "a.sv", "--count", "3", "--seed", "7"),
-        shown="--target t --scope a.sv --count 3 --seed 7",
+        argv=("--target", "sim_fifo", "--scope", "a.sv", "--count", "3", "--seed", "7"),
+        shown="--target sim_fifo --scope a.sv --count 3 --seed 7",
     ),
     "sim": FormScript(
         steps=(
