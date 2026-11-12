@@ -1,10 +1,10 @@
 # Generic checkout-specific wheel overlay.  BuildKit maps the symbolic parent
 # to a verified standard, RISC-V, or Project substrate.
 # The native B-Wave binary is compiled on a bookworm builder on purpose: its
-# glibc (2.36) is older than the final image's Ubuntu 24.04 (2.39), so the
+# glibc (2.36) is older than the final image's Ubuntu 26.04 (2.43), so the
 # binary's symbol requirements resolve there.  Identical to the legacy
 # Dockerfile stage so BuildKit shares the cache between the two recipes.
-FROM rust:1.99.0-slim-bookworm@sha256:452176c0cefca88c0b3184ce85a4eb03e3d4fa05d2afb5366abcba853221019e AS bwave-builder
+FROM rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS bwave-builder
 COPY crates/bwave/ /build/bwave/
 RUN CARGO_TARGET_DIR=/build/target cargo build --release --locked \
         --manifest-path /build/bwave/Cargo.toml

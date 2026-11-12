@@ -1,6 +1,6 @@
 # Booley
 
-**The open-source Agentic Development Environment (ADE) for FPGA and ASIC development**
+**The open-source Agentic Development Environment (ADE) for RTL design and verification**
 
 [![Tests](https://github.com/boldaxolotl/Booley/actions/workflows/test.yml/badge.svg)](https://github.com/boldaxolotl/Booley/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/booley-rtl)](https://pypi.org/project/booley-rtl/)
