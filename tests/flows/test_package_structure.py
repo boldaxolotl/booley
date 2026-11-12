@@ -176,13 +176,15 @@ def test_synth_leaf_backends_do_not_import_flow_or_one_another() -> None:
 
 
 @pytest.mark.parametrize("package_name", EXECUTABLE_FLOW_PACKAGES)
-def test_package_module_entry_point_has_help(package_name: str) -> None:
+@pytest.mark.parametrize("entry_suffix", ["", ".flow"], ids=["package", "flow-module"])
+def test_package_module_entry_point_has_help(package_name: str, entry_suffix: str) -> None:
+    """``python -m booley.flows.<name>[.flow]`` runs the Flow; the MCP server launches the latter."""
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
         part for part in (str(REPO_ROOT / "src"), env.get("PYTHONPATH", "")) if part
     )
     result = subprocess.run(
-        [sys.executable, "-m", f"booley.flows.{package_name}", "--help"],
+        [sys.executable, "-m", f"booley.flows.{package_name}{entry_suffix}", "--help"],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,

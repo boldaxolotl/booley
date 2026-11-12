@@ -14,6 +14,7 @@ from booley.audit.config_common import (
 )
 from booley.config.goals import parse_dashboard
 from booley.core.boundary import BoundaryError, as_dict, as_str, is_str_list, require_bool
+from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
 KNOWN_BOOLEY_TOML_TABLES = frozenset(
     {
@@ -96,10 +97,6 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
     return ConfigTableAudit(tuple(findings))
 
 
-# Specialists that became Flows, by the Flow that replaced them.
-_RETIRED_SPECIALISTS = {"mutation_tester": "mutation"}
-
-
 def audit_specialist_table(
     data: Mapping[str, Any], specialist_names: Collection[str] | None = None
 ) -> ConfigTableAudit:
@@ -116,8 +113,8 @@ def audit_specialist_table(
                 fail_finding(f"{field} must be a table", "use enabled = true or false")
             )
             continue
-        if specialist_names is not None and name in _RETIRED_SPECIALISTS:
-            flow = _RETIRED_SPECIALISTS[name]
+        if specialist_names is not None and name in RETIRED_SPECIALIST_TO_FLOW:
+            flow = RETIRED_SPECIALIST_TO_FLOW[name]
             findings.append(
                 fail_finding(
                     f"{field}: {name!r} is no longer a Specialist",

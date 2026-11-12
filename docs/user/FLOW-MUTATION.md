@@ -109,9 +109,10 @@ enabled = true         # false turns the Flow off
 timeout_ms = 1800000   # default: 30 minutes for the whole run
 ```
 
-`timeout_ms` (or `--timeout`) bounds the whole run, not one test. It is also
-what `--count auto` divides to cap the number of Mutants, so a larger limit
-allows more of them. See
+`timeout_ms` (or `--timeout`) sizes `--count auto`: the budget is divided to cap
+the number of Mutants, so a larger limit allows more of them. Over MCP it also
+raises the wait before the call hands back a run id. The command line does not
+stop a run when the budget passes. See
 [Flow and Specialist availability](CONFIG.md#flow-and-specialist-availability-enabled).
 
 ## Goals

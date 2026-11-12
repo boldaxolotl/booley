@@ -898,7 +898,7 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | Use host-provisioned Vivado | Follow [SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning) for the Project request, [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#fpga) for the Flow contract, and [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy) for requirements |
 | Add another host-provisioned EDA tool | Implement and validate a built-in policy; custom MCP tools cannot add host mounts or execution paths |
 | Define when my Flow should run | Create a Criterion in `criteria.toml`, reference it in `satisfies` |
-| Configure a built-in Booley Flow | Use the Configuration section of its Flow page: [sim](../user/FLOW-SIM.md#configuration-flowssim), [lint](../user/FLOW-LINT.md#configuration-flowslint), [synth](../user/FLOW-SYNTH.md#configuration-flowssynth), [fpga](../user/FLOW-FPGA.md#configuration-flowsfpga) |
+| Configure a built-in Booley Flow | Use the Configuration section of its Flow page: [sim](../user/FLOW-SIM.md#configuration-flowssim), [lint](../user/FLOW-LINT.md#configuration-flowslint), [synth](../user/FLOW-SYNTH.md#configuration-flowssynth), [fpga](../user/FLOW-FPGA.md#configuration-flowsfpga), [mutation](../user/FLOW-MUTATION.md#configuration-flowsmutation) |
 | Try a custom MCP tool | Request a fresh MCP tool list, then ask the Interactive Mode agent to invoke it |
 | Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect shared endpoint-validation diagnostics |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |

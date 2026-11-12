@@ -589,11 +589,10 @@ def test_health_consumers_reach_shared_health_without_the_doctor_worker(
     [("flows", "sim", "rogue"), ("flows", "lint", "rogue"), ("flows", "rogue")],
     ids=["sim", "lint", "flow-neutral"],
 )
-def test_d40_forbids_imports_of_the_mutation_flow(tmp_path, importer):
+def test_d42_forbids_imports_of_the_mutation_flow(tmp_path, importer):
     """Sibling Flows and Flow-neutral modules never import the Mutation Flow.
 
-    The rule is numbered D42 in the contract: D40 and D41 were taken before this one landed,
-    and the test keeps the name the issue plan gave it.
+    This is rule D42 in the contract.
     """
     root = tmp_path / "booley"
     packages = (root, root / "flows", root / "flows" / "mutation", root / "flows" / "sim")

@@ -659,7 +659,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         example="booley flow mutation --target sim_soc --count 10 --seed 0",
     )
     # A run builds and simulates, yet keeps the admission class it always had.
-    JOB_CLASS = job_slots.CLASS_LIGHT
+    JOB_CLASS: ClassVar[str | None] = job_slots.CLASS_LIGHT
     default_timeout: ClassVar[int] = 1800
     satisfies: ClassVar[list[str]] = ["mutation_score"]
 
@@ -2512,3 +2512,7 @@ def _tail(text: str, max_lines: int) -> str:
         return ""
     lines = text.splitlines()
     return "\n".join(lines[-max_lines:])
+
+
+if __name__ == "__main__":
+    MutationFlow().cli()

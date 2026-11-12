@@ -122,6 +122,7 @@ def test_specialist_command_no_longer_runs_mutation_tester(capsys) -> None:
     assert booley_cli._select_endpoint(args, endpoints, "specialist") == 2
     error = capsys.readouterr().err
     assert "'mutation_tester' is not a specialist" in error
+    assert "Use booley flow mutation." in error
     assert "coverage_analyst" in error
     assert not any(row.name == "mutation_tester" for row in endpoints)
 

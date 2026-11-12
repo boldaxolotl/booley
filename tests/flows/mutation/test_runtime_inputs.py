@@ -1,8 +1,8 @@
 """The Mutation Flow exposes Target-declared ``copyto`` runtime inputs (issue #2061).
 
 A testbench that opens a data file reads it from the configured ``run_cwd``.
-FuseSoC ``copyto`` only places the file in the build root, so the mutation
-tester must stage it the way the Simulation Flow does: before each run, removed
+FuseSoC ``copyto`` only places the file in the build root, so the Mutation
+Flow must stage it the way the Simulation Flow does: before each run, removed
 afterwards, with a missing declared ``$readmemh`` input read as infrastructure.
 """
 
