@@ -49,6 +49,7 @@ def _probe(executable: str, arguments: tuple[str, ...], timeout_s: int) -> str:
             [executable, *arguments],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout_s,
             check=False,
         )

@@ -228,7 +228,6 @@ def test_unversioned_booley_directory_without_commits_is_refused(tmp_path: Path)
 
     repo, _ = make_versioned_booley_directory(tmp_path, "standalone")
     empty = new_repository(tmp_path / "empty-rules")
-    git(repo, "rm", "-rq", "--cached", ".gitignore")
     (repo / ".booley").rename(tmp_path / "moved")
     empty.rename(repo / ".booley")
 
@@ -344,12 +343,16 @@ def test_duplicate_report_and_repeated_run_id_are_refused(tmp_path: Path) -> Non
         store.write(make_run(keyed, "r1"), [])
 
 
-@pytest.mark.parametrize("flaw", ["missing-result", "unknown-table", "stray-table"])
+@pytest.mark.parametrize(
+    "flaw",
+    ["missing-result", "unknown-table", "stray-table", "bound-as-tracked", "tracked-as-bound"],
+)
 def test_write_rejects_a_run_whose_results_do_not_cover_its_rules(
     tmp_path: Path, flaw: str
 ) -> None:
     from dataclasses import replace
 
+    from booley.measurement.run_document import Verdict
     from booley.measurement.run_store import MeasurementStore
 
     repo, head = in_tree_repository(tmp_path / "repo")
@@ -359,6 +362,13 @@ def test_write_rejects_a_run_whose_results_do_not_cover_its_rules(
         run = replace(run, tables=())
     if flaw == "stray-table":
         run = replace(run, tables=(*run.tables, replace(run.tables[0], flow="sim")))
+    if flaw in ("bound-as-tracked", "tracked-as-bound"):
+        # An enforced result written as tracked (or the reverse) must never reach the store.
+        bound = None if flaw == "bound-as-tracked" else 5
+        verdict = Verdict.TRACKED if bound is None else Verdict.MET
+        table = run.tables[0]
+        results = (replace(table.results[0], bound=bound, verdict=verdict),)
+        run = replace(run, tables=(replace(table, results=results),))
 
     with pytest.raises(ValueError):
         store.write(run, [])
@@ -446,3 +456,60 @@ def test_failed_publication_leaves_no_report_copies(
         store.write(make_run(keyed, "r1"), [report])
 
     assert not (repo / ".booley" / "measurements" / keyed.key.project_tree / "r1").exists()
+
+
+def test_lost_publication_race_keeps_the_winners_report_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.measurement import run_store
+    from booley.measurement.run_store import FlowReport, MeasurementStore
+    from booley.runtime.atomic_files import WriteOnceConflictError
+
+    repo, head = in_tree_repository(tmp_path / "repo")
+    store = MeasurementStore(repo / ".booley")
+    keyed = key_of(repo, head)
+    report = FlowReport(IDENTITY, "syn", write(tmp_path / "a.rpt", "x"))
+
+    def lose(_path: Path, _content: bytes) -> bool:
+        raise WriteOnceConflictError("another writer published this run")
+
+    monkeypatch.setattr(run_store, "atomic_write_once", lose)
+
+    with pytest.raises(WriteOnceConflictError):
+        store.write(make_run(keyed, "r1"), [report])
+
+    assert (repo / ".booley" / "measurements" / keyed.key.project_tree / "r1").is_dir()
+
+
+def test_report_of_no_rules_table_is_refused(tmp_path: Path) -> None:
+    from booley.measurement.run_store import FlowReport, MeasurementStore
+
+    repo, head = in_tree_repository(tmp_path / "repo")
+    store = MeasurementStore(repo / ".booley")
+    report = FlowReport(IDENTITY, "sim", write(tmp_path / "a.rpt", "x"))
+
+    with pytest.raises(ValueError, match="no rules table"):
+        store.write(make_run(key_of(repo, head), "r1"), [report])
+
+
+def test_non_commit_booley_commit_and_non_text_timestamp_are_refused(tmp_path: Path) -> None:
+    from booley.measurement.run_key import resolve_measurement_key
+    from booley.measurement.run_store import MeasurementStore, MeasurementStoreError
+    from booley.runtime.pinned_history import FileCommitError
+
+    repo, booley = make_versioned_booley_directory(tmp_path, "standalone")
+    head = git(repo, "rev-parse", "HEAD")
+    with pytest.raises(FileCommitError, match="full canonical"):
+        resolve_measurement_key(repo, head, booley_commit="HEAD")
+
+    store = MeasurementStore(booley)
+    keyed = key_of(repo, head)
+    stored = store.write(make_run(keyed, "r1"), [])
+    stored.path.write_text(
+        stored.path.read_text(encoding="utf-8").replace(
+            '"finished_at": "', '"finished_at": 7, "x": "'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(MeasurementStoreError, match=r"r1\.json"):
+        store.measured(keyed.key)

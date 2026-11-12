@@ -106,7 +106,9 @@ def resolve_measurement_key(
             raise ValueError("booley_commit needs a Versioned Booley Directory")
         _require_rules_in_commit(repository, commit)
     else:
-        if booley_commit is None:
+        if booley_commit is not None:
+            validate_pin(versioned, booley_commit)
+        else:
             try:
                 booley_commit = _text(versioned, "rev-parse", "--verify", "HEAD^{commit}")
             except FileCommitError as exc:

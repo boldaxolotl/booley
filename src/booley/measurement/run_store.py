@@ -82,7 +82,7 @@ def _load(path: Path) -> StoredRun:
             measured=is_measured(document),
             document=document,
         )
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         raise MeasurementStoreError(f"unreadable Measurement Run {path}: {error}") from error
 
 
@@ -104,7 +104,11 @@ def _plan_reports(
     seen: set[tuple[int, str]] = set()
     total = 0
     for report in reports:
-        index, name = indexes[(report.identity, report.flow)], report.path.name
+        index, name = indexes.get((report.identity, report.flow)), report.path.name
+        if index is None:
+            raise ValueError(
+                f"report {name} belongs to no rules table {report.identity} {report.flow}"
+            )
         if (index, name) in seen:
             raise ValueError(f"duplicate report {name} of {report.identity} {report.flow}")
         seen.add((index, name))
@@ -132,7 +136,8 @@ class MeasurementStore:
         report is listed in the document with its size. Only full runs belong here.
 
         Raises:
-            ValueError: the results do not match the rules, or a report name repeats.
+            ValueError: the results do not match the rules, or a report name repeats
+                or belongs to no rules table.
             WriteOnceConflictError: a run with this ``run_id`` is already stored.
         """
         tree = self._root / run.keyed.key.project_tree
@@ -147,6 +152,8 @@ class MeasurementStore:
                 shutil.copyfile(source, tree / relative)
             tree.mkdir(parents=True, exist_ok=True)
             atomic_write_once(document_path, content.encode("utf-8"))
+        except WriteOnceConflictError:
+            raise  # a concurrent writer of this run_id owns the report directory
         except BaseException:
             shutil.rmtree(tree / run.run_id, ignore_errors=True)
             raise

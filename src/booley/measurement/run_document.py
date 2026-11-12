@@ -93,6 +93,11 @@ def tables_in_rules_order(run: MeasurementRun) -> list[tuple[TableRun, list[Metr
         keys = [entry.key for entry in (*rules.bounds, *rules.tracked)]
         if len(keys) != len(table.results) or set(keys) != set(results):
             raise ValueError(f"results of {rules.identity} {rules.flow} do not match its rules")
+        # ``is_measured`` reads enforcement from the stored result, so it must be the rules'.
+        if any(results[bound.key].bound != bound.value for bound in rules.bounds) or any(
+            results[tracked.key].bound is not None for tracked in rules.tracked
+        ):
+            raise ValueError(f"bounds of {rules.identity} {rules.flow} do not match its rules")
         ordered.append((table, [results[key] for key in keys]))
     if runs:
         raise ValueError(f"runs without rules: {sorted(runs)}")
