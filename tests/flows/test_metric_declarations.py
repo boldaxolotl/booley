@@ -1,4 +1,4 @@
-"""Typed metric declarations of the synth and FPGA Flows (issue #3496).
+"""Typed metric declarations of the synth, FPGA, sim, coverage and lint Flows (#3496, #3497).
 
 Each Flow declares the metrics it emits (name, unit, better direction, cost tier,
 kind); a run returns typed values through ``flow_metrics()``. The modules under
@@ -8,15 +8,24 @@ collection.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tests.flows.sim.campaign_test_support import _observation, _simulation_outcome
+from tests.flows.sim.test_sim_flow_metrics import _coverage_outcome, _MixedCoverageExecution
+
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "vivado_reports"
 
 # name -> (unit, better, kind), written out literally so a wrong direction, unit or
 # kind in a declaration cannot hide behind the code that produced it.
+_SIM_DECLARATIONS = {
+    "tests_failed": ("tests", "lower", "plain"),
+    "tests_total": ("tests", "higher", "plain"),
+}
 _EXPECTED_DECLARATIONS: dict[str, dict[str, tuple[str, str, str]]] = {
     "synth": {
         "area_um2": ("μm²", "lower", "plain"),
@@ -37,6 +46,28 @@ _EXPECTED_DECLARATIONS: dict[str, dict[str, tuple[str, str, str]]] = {
         "wns_ns": ("ns", "higher", "per_clock"),
         "whs_ns": ("ns", "higher", "per_clock"),
     },
+    "sim": {**_SIM_DECLARATIONS, "cycle_count": ("cycles", "lower", "per_test")},
+    "coverage": {
+        **_SIM_DECLARATIONS,
+        "line_coverage": ("%", "higher", "plain"),
+        "branch_coverage": ("%", "higher", "plain"),
+        "expression_coverage": ("%", "higher", "plain"),
+        "toggle_coverage": ("%", "higher", "plain"),
+        "cover_property_coverage": ("%", "higher", "plain"),
+    },
+    "lint": {
+        "warnings": ("warnings", "lower", "plain"),
+        "errors": ("errors", "lower", "plain"),
+    },
+}
+
+# Cost tier of every declaration of a Flow: lint < sim < coverage <= synth, FPGA.
+_EXPECTED_TIERS = {
+    "synth": "HIGH",
+    "fpga": "HIGH",
+    "sim": "MEDIUM",
+    "coverage": "HIGH",
+    "lint": "LOW",
 }
 
 # Vivado "Clock Summary" + "Intra Clock Table" for two clocks.
@@ -79,10 +110,51 @@ def _fpga_metrics() -> Any:
     return FpgaImplFlow._metrics_from_parsed_reports(raw, elapsed_s=1.0)
 
 
-_SAMPLE_RUNS = {"synth": _synth_metrics, "fpga": _fpga_metrics}
+def _sim_values(tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Sim values of a passing run that reported a Cycle Count."""
+    from booley.flows.sim.metrics import simulation_flow_metrics
+
+    outcome = _simulation_outcome(tmp_path, [_observation("reset") | {"cycle_count": 40}])
+    return simulation_flow_metrics(outcome)
 
 
-@pytest.mark.parametrize("flow", ["synth", "fpga"])
+def _coverage_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Coverage values of a real ``sim --coverage`` run."""
+    from booley.flows.sim.metrics import simulation_flow_metrics
+
+    outcome = _coverage_outcome(tmp_path, monkeypatch, _MixedCoverageExecution())
+    return simulation_flow_metrics(outcome)
+
+
+def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Lint values of one Target with a warning and an error."""
+    from booley.flows.lint.flow import LintConfigResult, count_lint_errors, parse_warnings
+
+    output = (
+        "%Warning-UNUSEDSIGNAL: rtl/a.v:3:5: Signal is not used: 'x'\n"
+        "%Error: rtl/a.v:4:1: rejected\n"
+    )
+    return LintConfigResult(
+        target="lite",
+        warnings=parse_warnings(output, "lite"),
+        error_count=count_lint_errors(output, "verilator"),
+    ).flow_metrics()
+
+
+# Flows whose reports do not carry their metric values yet, so no report reader exists.
+_FLOWS_WITHOUT_REPORT_READER = {"sim", "coverage", "lint"}
+
+# Every Flow that declares metrics maps to a run that returns its typed values.
+_SAMPLE_RUNS: dict[str, Callable[[Path, pytest.MonkeyPatch], Any]] = {
+    "synth": lambda _tmp, _mp: _synth_metrics().flow_metrics(),
+    "fpga": lambda _tmp, _mp: _fpga_metrics().flow_metrics(),
+    "sim": _sim_values,
+    "coverage": _coverage_values,
+    "lint": _lint_values,
+}
+
+
+@pytest.mark.parametrize("flow", list(_EXPECTED_DECLARATIONS))
 def test_flow_declarations_expose_name_unit_direction_tier_kind(flow: str) -> None:
     from booley.flows.metric_declarations import CostTier
     from booley.measurement.flow_metrics import metric_declarations
@@ -92,14 +164,15 @@ def test_flow_declarations_expose_name_unit_direction_tier_kind(flow: str) -> No
     actual = {d.name: (d.unit, d.better.value, d.kind.value) for d in declarations}
     assert actual == _EXPECTED_DECLARATIONS[flow]
     assert len(actual) == len(declarations)  # no duplicate names
-    assert {d.cost_tier for d in declarations} == {CostTier.HIGH}
+    assert {d.cost_tier for d in declarations} == {CostTier[_EXPECTED_TIERS[flow]]}
 
 
 def test_undeclared_flow_is_a_lookup_error() -> None:
     from booley.measurement.flow_metrics import metric_declarations
 
-    with pytest.raises(LookupError, match="lint"):
-        metric_declarations("lint")
+    # Elaboration Check is a mode of the sim Flow with no metrics.toml table.
+    with pytest.raises(LookupError, match="elab"):
+        metric_declarations("elab")
 
 
 def test_synth_run_returns_cell_count_and_per_clock_timing() -> None:
@@ -126,16 +199,82 @@ def test_fpga_run_returns_lut_count_and_per_clock_timing() -> None:
     assert values.per_clock["whs_ns"] == pytest.approx({"clk": 0.1, "clk2": 0.05})
 
 
-@pytest.mark.parametrize("flow", ["synth", "fpga"])
-def test_flow_emits_exactly_its_declarations(flow: str) -> None:
+def test_synth_report_yields_declared_metric_values() -> None:
+    from booley.flows.synth.flow import _aggregate_detail
+    from booley.measurement.flow_metrics import report_metric_values
+
+    metrics = _synth_metrics()
+    metrics.area_kge = 65.8
+    # The report file stores the detail as JSON, so read it back the way a caller does.
+    detail = json.loads(json.dumps(_aggregate_detail(["asic"], {"asic": metrics})))
+
+    values = report_metric_values("synth", detail)
+
+    assert set(values) == {"asic"}
+    assert values["asic"].plain == {"area_um2": 52480.0, "area_kge": 65.8, "cell_count": 12345}
+    assert values["asic"].per_clock["fmax_mhz"] == pytest.approx(
+        {"clk_core": 800.0, "clk_io": 166.667}, rel=1e-4
+    )
+    assert values["asic"].per_clock["wns_ns"] == pytest.approx({"clk_core": 0.75, "clk_io": -1.0})
+
+
+def test_fpga_report_yields_declared_metric_values() -> None:
+    from booley.flows.fpga.flow import FpgaImplFlow
+    from booley.flows.fpga.implementation_report import build_fpga_implementation_report
+    from booley.flows.implementation_report import (
+        ImplementationContext,
+        build_implementation_aggregate,
+    )
+    from booley.measurement.flow_metrics import report_metric_values
+
+    context = ImplementationContext(flow="fpga", target="board", eda_tool="vivado")
+    report = build_fpga_implementation_report(context, _fpga_metrics(), None)
+    aggregate = build_implementation_aggregate({"board": report})
+    detail = json.loads(
+        json.dumps(
+            FpgaImplFlow._aggregate_detail(["board"], {"board": _fpga_metrics()}, aggregate)
+        )
+    )
+
+    values = report_metric_values("fpga", detail)
+
+    assert set(values) == {"board"}
+    assert values["board"].plain["lut_count"] == 18
+    assert values["board"].per_clock["fmax_mhz"] == pytest.approx(
+        {"clk": 102.5641, "clk2": 196.0784}, rel=1e-4
+    )
+    assert values["board"].per_clock["wns_ns"] == pytest.approx({"clk": 0.25, "clk2": -0.1})
+
+
+def test_report_without_declared_metrics_or_targets_yields_none() -> None:
+    from booley.measurement.flow_metrics import report_metric_values
+
+    assert report_metric_values("lint", {"targets": ["asic"], "asic": {"cells": 3}}) == {}
+    # A Target whose summary is missing or malformed is skipped, not guessed.
+    assert report_metric_values("synth", {"targets": ["a", "b"], "a": "oops"}) == {}
+    assert report_metric_values("fpga", {"implementation": {"results": {"a": {}}}}) == {}
+    assert report_metric_values("fpga", {}) == {}
+
+
+@pytest.mark.parametrize("flow", list(_EXPECTED_DECLARATIONS))
+def test_flow_emits_exactly_its_declarations(
+    flow: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from booley.measurement.flow_metrics import flows_with_metric_declarations, metric_declarations
 
     # A Flow that declares metrics must be covered here, so a new one cannot go untested.
     assert set(_SAMPLE_RUNS) == set(flows_with_metric_declarations())
+    # ...and a Flow that declares metrics must have a report reader, or its values read back
+    # as ``{}``; the Flows below declare theirs but their reports carry no metrics yet.
+    from booley.measurement import flow_metrics
 
-    values = _SAMPLE_RUNS[flow]().flow_metrics()
+    assert set(flow_metrics._READERS_BY_FLOW) | _FLOWS_WITHOUT_REPORT_READER == set(
+        flows_with_metric_declarations()
+    )
 
-    emitted = set(values.plain) | set(values.per_clock)
+    values = _SAMPLE_RUNS[flow](tmp_path, monkeypatch)
+
+    emitted = set(values.plain) | set(values.per_clock) | set(values.per_test)
     assert emitted == {d.name for d in metric_declarations(flow)}
 
 
@@ -168,3 +307,34 @@ def test_metric_values_drops_unmeasured_values() -> None:
 
     assert values.plain == {"cell_count": 7}
     assert values.per_clock == {"wns_ns": {"clk": 0.5}}
+
+
+def test_metric_values_rejects_undeclared_per_test_metric() -> None:
+    from booley.flows.metric_declarations import UndeclaredMetricError, metric_values
+    from booley.measurement.flow_metrics import metric_declarations
+
+    with pytest.raises(UndeclaredMetricError, match="cycles"):
+        metric_values(metric_declarations("sim"), plain={}, per_test={"cycles": {"reset": 1}})
+    # A declared plain metric is not a per-test one.
+    with pytest.raises(UndeclaredMetricError, match="tests_total"):
+        metric_values(metric_declarations("sim"), plain={}, per_test={"tests_total": {"a": 1}})
+
+
+def test_metric_values_carries_per_test_values_and_drops_unmeasured_ones() -> None:
+    from booley.flows.metric_declarations import metric_values
+    from booley.measurement.flow_metrics import metric_declarations
+
+    values = metric_values(
+        metric_declarations("sim"),
+        plain={"tests_total": 2},
+        per_test={"cycle_count": {"reset": 40, "smoke@7": None}},
+    )
+
+    assert values.plain == {"tests_total": 2}
+    assert values.per_test == {"cycle_count": {"reset": 40}}
+    assert values.per_clock == {}
+
+    only_unmeasured = metric_values(
+        metric_declarations("sim"), plain={}, per_test={"cycle_count": {"reset": None}}
+    )
+    assert only_unmeasured.per_test == {}

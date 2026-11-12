@@ -44,8 +44,8 @@ class TestTranscriptPathForLabel:
     def test_non_run_indexed_base_keeps_legacy_behavior(self):
         # Specialist bases (no run tag) keep the plain label swap
         base = Path("/x/whatever.jsonl")
-        assert transcript_path_for_label(base, "mutation_creator_round2") == Path(
-            "/x/mutation_creator_round2.jsonl"
+        assert transcript_path_for_label(base, "reviewer_round2") == Path(
+            "/x/reviewer_round2.jsonl"
         )
 
     def test_non_run_indexed_base_keeps_retry_suffix(self):

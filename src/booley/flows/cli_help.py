@@ -201,6 +201,19 @@ def project_help(
     return parser
 
 
+def option_groups(
+    parser: argparse.ArgumentParser,
+) -> tuple[tuple[str, tuple[argparse.Action, ...]], ...]:
+    """Each help group's title and actions in display order, as ``--help`` lists them.
+
+    The read-only counterpart of :func:`project_help`: callers that need the
+    groups (a generated form) use this, not argparse's private group lists.
+    """
+    return tuple(
+        (group.title or "", tuple(group._group_actions)) for group in parser._action_groups
+    )
+
+
 def add_quiet(parser: argparse.ArgumentParser, *, human: bool) -> None:
     """Add CLI-only quiet directly to Output on the human parser."""
     owner = parser

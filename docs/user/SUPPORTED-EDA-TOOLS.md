@@ -144,7 +144,7 @@ can replace the Python packages.
 |---|---|
 | Base image | Ubuntu 26.04 |
 | Python | 3.14 |
-| Verilator | v5.052 (commit `ea338be98e1e838d3518809ce8899f85a009963c`) |
+| Verilator | v5.054 (commit `bbb60a403932a9f695cb6ff001ceb73de6ad9234`) |
 | Icarus Verilog | v13_0 |
 | Yosys | v0.69, with its built-in `slang` frontend |
 | sv2v | v0.0.13 |
@@ -156,7 +156,7 @@ can replace the Python packages.
 
 The RISC-V image (`booley-sandbox-riscv`) adds the xPack RISC-V GCC
 `15.2.0-1` and upstream Spike at commit
-`609dbe0b9994154833039209fa37151e7c05e9d4` (`1.1.1-dev`). This is upstream
+`4094d29094b690a7c4ae392c6d71260e5ec30b6b` (`1.1.1-dev`). This is upstream
 Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation needs.
 
 To see what your image actually has, run these on the host:

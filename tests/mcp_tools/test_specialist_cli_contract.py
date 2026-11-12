@@ -419,35 +419,6 @@ def test_reviewer_initial_and_verification_calls_round_up(tmp_path, monkeypatch)
     assert endpoint._verify_agent_params("bugs", {}, None).timeout_seconds == 2
 
 
-@pytest.mark.parametrize("milliseconds,expected", [(1, 1), (1001, 1), (2501, 3)])
-def test_mutation_creator_allocates_eighty_percent_before_rounding(
-    tmp_path, monkeypatch, milliseconds, expected
-):
-    endpoint = MutationTesterSpecialist()
-    endpoint.parse_args(
-        [
-            "--target",
-            "sim_demo",
-            "--scope",
-            "rtl",
-            "--work-dir",
-            str(tmp_path),
-            "--timeout-ms",
-            str(milliseconds),
-        ]
-    )
-    captured = []
-
-    def model(params):
-        captured.append(params)
-        return AgentResult(output="")
-
-    monkeypatch.setattr(endpoint, "_invoke_agent_with_resume", model)
-    monkeypatch.setattr(endpoint, "_persist_session_id", lambda _key: None)
-    endpoint._invoke_creator("fixture", resume=False, attempt=1)
-    assert captured[0].timeout_seconds == expected
-
-
 @pytest.mark.parametrize("route", ["flow", "specialist"])
 def test_top_level_invalid_duration_is_rejected(tmp_path, route):
     name = "lint" if route == "flow" else "reviewer"

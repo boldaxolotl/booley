@@ -16,11 +16,11 @@ from booley.flows.sim.campaign.test_run_report import (
     campaign_test_run_rows,
     test_run_report_lines,
 )
-from booley.flows.sim.flow import (
-    SimulateFlow,
+from booley.flows.sim.campaign_presentation import (
     _campaign_report_detail,
     _campaign_test_run_lines,
 )
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from tests.flows.sim.campaign_test_support import _recorded_campaign

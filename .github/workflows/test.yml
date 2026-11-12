@@ -1163,9 +1163,9 @@ jobs:
         shell: bash
         env:
           BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-sidecar
-          BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314
+          BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py315
           BOOLEY_FLEXNET_DOCKER_TEST: "1"
-          BOOLEY_REAPER_IMAGE: booley-reaper:py314
+          BOOLEY_REAPER_IMAGE: booley-reaper:py315
         run: |
           set -o pipefail
           .github/scripts/run_with_container_cleanup.sh \

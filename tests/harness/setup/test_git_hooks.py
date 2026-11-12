@@ -469,6 +469,110 @@ class TestProjectCommitMsgHookVendoring:
         assert "remove" in result.stderr.lower()
         assert "retry" in result.stderr.lower()
 
+    def _stealth_hook_repo(
+        self, tmp_path: Path, monkeypatch, request: pytest.FixtureRequest, config_text: str
+    ) -> tuple[Path, str]:
+        """Return a repository with the installed commit-msg hook and its baseline commit."""
+        from booley.runtime.booley_dir import reset_cache
+
+        repo = tmp_path / "project"
+        _run_git(tmp_path, "init", "-q", "-b", "main", str(repo))
+        _run_git(repo, "config", "user.name", "T")
+        _run_git(repo, "config", "user.email", "t@example.test")
+        (repo / ".gitignore").write_text(".booley/\n", encoding="utf-8")
+        config = repo / ".booley" / "booley.toml"
+        config.parent.mkdir()
+        config.write_text(config_text, encoding="utf-8")
+        (repo / "baseline.txt").write_text("baseline\n", encoding="utf-8")
+        _run_git(repo, "add", ".gitignore", "baseline.txt")
+        _run_git(repo, "commit", "-qm", "baseline")
+        baseline = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        booley_dir = tmp_path / "project-state"
+        booley_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+        reset_cache()
+        request.addfinalizer(reset_cache)
+        step_project_git_hooks(_ctx(repo))
+        return repo, baseline
+
+    @pytest.mark.parametrize("mode", ["staged", "all"])
+    def test_rejected_banned_message_retries_with_same_text(
+        self, tmp_path: Path, monkeypatch, request: pytest.FixtureRequest, mode: str
+    ):
+        """A banned-term rejection keeps the text and the printed command reuses it."""
+        repo, baseline = self._stealth_hook_repo(
+            tmp_path,
+            monkeypatch,
+            request,
+            '[stealth]\nenabled = true\nbanned_words = ["quokka"]\n',
+        )
+        if mode == "staged":
+            (repo / "change.txt").write_text("change\n", encoding="utf-8")
+            _run_git(repo, "add", "change.txt")
+            options = ["commit"]
+            retry_options = ["commit"]
+        else:
+            (repo / "baseline.txt").write_text("changed\n", encoding="utf-8")
+            options = ["commit", "-a"]
+            retry_options = ["commit", "-a"]
+        original = "fix(core): repair quokka path\n\nBody line.\n"
+        message = tmp_path / "message.txt"
+        message.write_text(original, encoding="utf-8")
+
+        rejected = _run_git(repo, *options, "-F", str(message), check=False)
+
+        kept = (repo / ".git" / "COMMIT_EDITMSG").resolve()
+        assert rejected.returncode != 0
+        assert _run_git(repo, "rev-parse", "HEAD").stdout.strip() == baseline
+        assert kept.read_text(encoding="utf-8") == original
+        assert f'-v -e -F "{kept}"' in rejected.stderr
+        assert "-a" in rejected.stderr and "--amend" in rejected.stderr
+        assert "'quokka' in the subject" in rejected.stderr
+
+        # Remove the term from the vocabulary and rerun the printed command.
+        (repo / ".booley" / "booley.toml").write_text(
+            "[stealth]\nenabled = true\nbanned_words = []\n", encoding="utf-8"
+        )
+        env = {**os.environ, "GIT_EDITOR": "true"}
+        retried = run_bounded_child(
+            ["git", "-C", str(repo), *retry_options, "-v", "-e", "-F", str(kept)], env=env
+        )
+        assert retried.returncode == 0, retried.stderr
+        assert _run_git(repo, "log", "-1", "--format=%B").stdout.strip() == original.strip()
+        files = _run_git(repo, "show", "--name-only", "--format=").stdout.split()
+        assert files == (["change.txt"] if mode == "staged" else ["baseline.txt"])
+
+    def test_generated_merge_subject_rejected_with_merge_hint(
+        self, tmp_path: Path, monkeypatch, request: pytest.FixtureRequest
+    ):
+        """Git's generated merge subject can carry a banned branch name; say how to finish."""
+        repo, baseline = self._stealth_hook_repo(
+            tmp_path, monkeypatch, request, "[stealth]\nenabled = true\n"
+        )
+        _run_git(repo, "checkout", "-q", "-b", "booley/feature")
+        (repo / "feature.txt").write_text("feature\n", encoding="utf-8")
+        _run_git(repo, "add", "feature.txt")
+        _run_git(repo, "commit", "-qm", "fix(core): feature work")
+        _run_git(repo, "checkout", "-q", "main")
+
+        rejected = _run_git(repo, "merge", "--no-ff", "--no-edit", "booley/feature", check=False)
+
+        assert rejected.returncode != 0
+        assert _run_git(repo, "rev-parse", "HEAD").stdout.strip() == baseline
+        assert "'booley' in the subject" in rejected.stderr
+        assert 'git commit -m "<message>"' in rejected.stderr
+        assert "git merge" in rejected.stderr and '-m "<message>"' in rejected.stderr
+
+        # The merge is still in progress, so a message from -m is also a merge message.
+        again = _run_git(repo, "commit", "-m", "fix(core): booley merge", check=False)
+        assert again.returncode != 0
+        assert 'git commit -v -e -F "' in again.stderr
+
+        _run_git(repo, "commit", "-m", "Merge feature work")
+        parents = _run_git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()
+        assert len(parents) == 3
+
 
 class TestInstalledPrePushGuard:
     def test_launcher_derives_booley_dir_when_environment_is_absent(
@@ -2820,13 +2924,22 @@ def test_paired_hooks_use_main_bundle_without_local_copy(tmp_path, monkeypatch, 
         _tracking_git(repo, "config", key, value)
     (repo / "change.v").write_text("module changed; endmodule\n")
     _tracking_git(repo, "add", "change.v")
-    _tracking_git(repo, "commit", "-qm", "fix(core): primaryphrase pairedphrase")
-    expected = (
-        "fix(core): redacted pairedphrase"
-        if checkout == "main"
-        else "fix(core): primaryphrase redacted"
+    head = _tracking_git(repo, "rev-parse", "HEAD")
+    rejected = run_bounded_child(
+        ["git", "-C", str(repo), "commit", "-qm", "fix(core): primaryphrase pairedphrase"],
+        timeout=10,
     )
-    assert _tracking_git(repo, "log", "-1", "--format=%s").strip() == expected
+    # Each checkout's own policy rejects its own phrase and names only that one.
+    present, absent = (
+        ("primaryphrase", "pairedphrase")
+        if checkout == "main"
+        else ("pairedphrase", "primaryphrase")
+    )
+    assert rejected.returncode != 0
+    assert f"'{present}' in the subject" in rejected.stderr
+    assert f"'{absent}'" not in rejected.stderr
+    assert _tracking_git(repo, "rev-parse", "HEAD") == head
+    _tracking_git(repo, "commit", "-qm", "fix(core): ordinary change")
     remote = tmp_path / "local-remote.git"
     _tracking_git(tmp_path, "init", "--bare", "-q", str(remote))
     banned = "primaryphrase" if checkout == "main" else "pairedphrase"

@@ -118,7 +118,7 @@ the license named by the group.
 
 ### BSD-3-Clause
 
-- `fst-reader 0.17.0` — Copyright (c) 2023, The Regents of the University of California
+- `fst-reader 0.17.1` — Copyright (c) 2023, The Regents of the University of California
 - `fst-writer 0.3.1` — Copyright (c) 2024, Cornell University
 
 Redistribution and use in source and binary forms, with or without
@@ -146,7 +146,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### MIT
 
-- `aho-corasick 1.1.4`, `globset 0.4.18`, and `memchr 2.8.0` — Copyright (c) 2015 Andrew Gallant
+- `aho-corasick 1.1.4`, `globset 0.4.21`, and `memchr 2.8.3` — Copyright (c) 2015 Andrew Gallant
 - `include_dir 0.7.4` and `include_dir_macros 0.7.4`
 - `lz4_flex 0.11.6` and `lz4_flex 0.13.1` — Copyright (c) 2020 Pascal Seitz
 - `strsim 0.11.1` — Copyright (c) 2015 Danny Guo; Copyright (c) 2016 Titus Wormer; Copyright (c) 2018 Akash Kurdekar
@@ -182,16 +182,16 @@ Apache-2.0 terms are in the repository's `LICENSE` file.
 - `bitflags 2.11.1`
 - `bstr 1.12.1`
 - `cfg-if 1.0.4`
-- `clap 4.6.0`, `clap_builder 4.6.0`, `clap_derive 4.6.0`, and `clap_lex 1.1.0`
+- `clap 4.6.7`, `clap_builder 4.6.7`, `clap_derive 4.6.7`, and `clap_lex 1.1.0`
 - `crossbeam-deque 0.8.6`, `crossbeam-epoch 0.9.18`, and `crossbeam-utils 0.8.21`
-- `fastrand 2.4.1`, `getrandom 0.4.2`, `libc 0.2.186`, `once_cell 1.21.4`, and `tempfile 3.27.0`
+- `fastrand 2.4.1`, `getrandom 0.4.2`, `libc 0.2.191`, `once_cell 1.21.4`, and `tempfile 3.27.0`
 - `rustix 1.1.4` and `linux-raw-sys 0.12.1`
 - `either 1.15.0`, `equivalent 1.0.2`, `hashbrown 0.17.1`, `heck 0.5.0`, and `indexmap 2.14.0`
 - `itoa 1.0.18`, `log 0.4.29`, `miniz_oxide 0.8.9`, and `miniz_oxide 0.9.1`
-- `num_enum 0.7.6`, `num_enum_derive 0.7.6`, `proc-macro-crate 3.5.0`, `proc-macro2 1.0.106`, `quote 1.0.45`, and `syn 2.0.117`
+- `num_enum 0.7.6`, `num_enum_derive 0.7.6`, `proc-macro-crate 3.5.0`, `proc-macro2 1.0.106`, `quote 1.0.45`, `syn 2.0.117`, and `syn 3.0.10`
 - `rayon 1.12.0` and `rayon-core 1.13.0`
-- `regex-automata 0.4.14`, `regex-syntax 0.8.10`, `rustc-hash 2.1.2`, and `rustversion 1.0.22`
-- `serde 1.0.228`, `serde_core 1.0.228`, `serde_derive 1.0.228`, and `serde_json 1.0.149`
+- `regex-automata 0.4.18`, `regex-syntax 0.8.10`, `rustc-hash 2.1.3`, and `rustversion 1.0.22`
+- `serde 1.0.229`, `serde_core 1.0.229`, `serde_derive 1.0.229`, and `serde_json 1.0.154`
 - `thiserror 2.0.18` and `thiserror-impl 2.0.18`
 - `toml_datetime 1.1.1+spec-1.1.0`, `toml_edit 0.25.12+spec-1.1.0`, and `toml_parser 1.1.2+spec-1.1.0`
 - `unicode-ident 1.0.24` and `utf8parse 0.2.2`

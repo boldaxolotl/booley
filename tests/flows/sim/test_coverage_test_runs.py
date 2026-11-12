@@ -310,6 +310,7 @@ def _resumable_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The multi-Variant Project at one fixed revision, as resume requires."""
     revision = "c" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
+    monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: revision)
     monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
     _project(tmp_path, monkeypatch)
 

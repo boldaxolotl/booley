@@ -124,6 +124,11 @@ and no login. The Developer Agent's window connects to the CLI that was `default
 when the Sandbox was issued (run `booley session refresh` after changing `default`
 to move it); Specialists use whichever listed CLI their model needs.
 
+Booley registers its MCP server and skills for every listed CLI, so a plain
+`claude` or `codex` session in the Sandbox terminal sees Booley's tools whichever
+CLI is `default`. If one CLI's registration fails (for example its user config is
+unreadable), the start reports it as `<cli>:refused` and still registers the others.
+
 After you change `clis` or `auth`, or change `default` in a Project that sets
 no `clis` (the set is then just the default CLI), the Sandbox refuses to start until you run
 `booley session refresh` (see [Applying Sandbox
@@ -463,22 +468,30 @@ waive the check (host doc, not shipped).
 ### Agent app in a hand-written spec (`BOOLEY_AGENT_APP`)
 
 `BOOLEY_AGENT_APP` names the agent app Booley connects to: `claude`, `codex`,
-`none`, or `auto`. With `auto`, Booley picks at every Sandbox start from the
-credentials present:
+`none`, or `auto`. With `auto`, Booley decides at every Sandbox start from the
+credentials present, and allows every CLI that has one:
 
 1. Claude, if there is a Claude credential (`ANTHROPIC_API_KEY`,
-   `CLAUDE_CODE_OAUTH_TOKEN`, a `booley auth` token, or a Claude login), even
-   when a Codex one is also present.
-2. Otherwise Codex, if there is a Codex credential (`OPENAI_API_KEY`, a
+   `CLAUDE_CODE_OAUTH_TOKEN`, a `booley auth` token, or a Claude login).
+2. Codex, if there is a Codex credential (`OPENAI_API_KEY`, a
    `booley auth` token, or a Codex login).
-3. Otherwise Codex through a configured model gateway.
-4. Otherwise Claude, which then asks you to log in.
+
+With both credentials, both CLIs are registered and Claude is the default; with
+one, only that CLI is. With neither, the fallbacks are unchanged (a visitor's own
+credential always beats the gateway):
+
+3. Codex through a configured model gateway.
+4. Claude, which then asks you to log in.
+
+The other allowed CLI works as a plain `claude` or `codex` session in the Sandbox
+terminal. `booley chat --cli` and `[models]` pins still follow
+[`[agent] clis`](CONFIG.md#agent-clis-agent) in `booley.toml`.
 
 Booley makes the choice in its start-up step, so the spec's
 `postStartCommand` (and `postCreateCommand`, if it has one) must run the
 registrar module `booley.harness.incontainer_register` with `python -m`.
 
-`booley doctor` in the Sandbox shows which app `auto` picked and why. If
+`booley doctor` in the Sandbox shows which CLIs `auto` allowed, which is the default, and why. If
 [`[agent] default`](CONFIG.md#agent-clis-agent) (or the older `provider`) pins an app, set
 `BOOLEY_AGENT_APP` to that app or remove the pin. `auto` works only inside a
 container.

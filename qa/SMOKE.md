@@ -1,7 +1,10 @@
 # Release smoke list
 
-Ten must-pass items for a release candidate, run against the pinned PicoRV32
-demo Project from the picorv32 mission. Record a table in `log.md`:
+The Release Smoke List: ten must-pass items for a release candidate. The
+operator walks it when `booley-qa-run` is given `smoke`, before the mission,
+against the pinned PicoRV32 demo Project from the picorv32 mission. Unlike a
+mission it is not a bug hunt: each item passes or fails. Record a table in
+`log.md`:
 
 | # | Item | Result | Finding |
 |---|---|---|---|
@@ -25,5 +28,6 @@ first line of the report.
    Code), enter with a lint Goal, clear the chat with `/clear`, invoke it
    again with `start`, run lint with `work_dir`, inspect
    `goal_status`, commit the work, and Finish with a Session Summary. Read the
-   Review Package and committed summary (or explicit local-publication reason).
+   Review Package and the committed summary, or the `summary kept local; ...`
+   reason Finish reports instead.
 10. Booley's cleanup leaves no orphan containers, worktrees, or branches.

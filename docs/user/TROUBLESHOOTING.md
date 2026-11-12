@@ -222,14 +222,60 @@ They share one worktree. Sessions started with `booley chat` get their own
 automatically: while the main checkout is in use, the next one starts in a
 worktree `s<N>`. A plain `claude` tab or VS Code panel started before any
 Booley tool call is not counted, so it may still share the main checkout. Start
-those in a worktree: ask the agent to create one (`booley worktree new <name>`
-in the Sandbox), then start Goal Mode there with `/booley-goal`. The Dashboard
-warns about a shared worktree but doesn't separate the agents.
+such a session in a worktree from a container terminal: run
+`booley chat --new-worktree`, or run `booley worktree new <name>`, `cd` to the
+path it prints, and start `claude` there. Asking an agent that already runs in
+the main checkout to create a worktree is not enough: its Booley tool calls
+keep running on the main checkout. A VS Code panel cannot be started in a
+worktree that way, so use a terminal with `booley chat` for a second editing session,
+and start Codex with `booley chat` too. See
+[Several agents at once](https://booley.dev/docs/usage/#several-agents-at-once).
+The Dashboard warns about a shared worktree but doesn't separate the agents.
 
-If `booley chat` keeps opening worktrees because a Codex session ended without
-notice, Booley counts the main checkout as in use until that session goes quiet
-(`[goals] quiet_after`, two hours by default). Run `booley chat --here` to use
-the main checkout now.
+### `booley chat` starts in a worktree although the main checkout looks free
+
+Read the reason at the end of the `Booley session S<N> works in worktree ...`
+line:
+
+- `the main checkout is in use by another booley chat`: another `booley chat`
+  whose agent runs in the main checkout is still running, perhaps in another
+  terminal or stopped with Ctrl-Z. That includes one started with
+  `--new-worktree` or under `[chat] worktree = "always"` while the main checkout
+  was free: it holds the main checkout until its session ends, although its
+  agent works in a worktree. A `booley chat` that `auto` placed in a worktree
+  holds nothing. A `booley chat` that
+  crashed or was killed does not cause this, because the hold ends when its
+  process exits, however it exits. If the launch also printed
+  `NOTE: main-checkout lock unavailable: ...`, Booley could not open or lock
+  `runtime/chat-main.lock` in the Main Booley Directory and counts the main
+  checkout as in use; fix the error the note names.
+- `Session S<N> is working in the main checkout`: that session made a Booley
+  tool call from the main checkout and has not ended. A Codex started by hand, or a
+  session Booley could not tell apart by process, that ended without notice counts as
+  in use until it goes quiet (`[goals] quiet_after`, two hours by default).
+
+Either way, `booley chat --here` starts in the main checkout now.
+
+### `booley worktree rm` refuses a worktree that is locked by Git
+
+```text
+... is locked by Git (initializing)
+```
+
+`booley worktree gc` keeps such a worktree too. Someone ran
+`git worktree lock`, or a worktree creation stopped abruptly while
+`git worktree add` was checking out (killed with SIGKILL, or the Sandbox
+stopped), which leaves the reason `initializing`. Git removes that lock itself
+when the creation is merely interrupted.
+
+Make sure no `booley chat` or `booley worktree new` is still creating the
+worktree. Then, in the Sandbox, either run `git worktree unlock <path>` followed
+by `booley worktree rm <name>`, or run `booley worktree rm --force <name>`;
+`--force` also removes a Git-locked worktree, and a half-made checkout may
+otherwise be refused again for uncommitted changes.
+
+If `booley worktree rm` itself was interrupted, run it again with the same options:
+it finishes the removal.
 
 ### Worktrees show as `prunable` on the host
 
@@ -239,17 +285,35 @@ commands inside the Sandbox, and remove a worktree with
 `booley worktree rm <name>` (see the
 [CLI reference](https://booley.dev/docs/cli-reference/#worktrees)).
 
-### `booley worktree new` fails in the post-setup hook
+### A new worktree fails in the post-setup hook
 
 ```text
 ERROR: post-setup hook failed (rc=3); log: .../.booley/worktrees/.logs/<name>.log
 ```
+
+The same error appears from `booley worktree new` and from `booley chat` when it
+creates the worktree. Under `booley chat`, the agent does not start and
+`booley chat` exits 1.
 
 Booley removed the worktree and its `booley/<name>` branch, so nothing is left
 to clean up, unless the error also says `outer rollback failed` or the hook
 committed on `booley/<name>`, which Booley keeps. Read the log the error names
 for the hook's output. Fix `.booley/hooks/post-setup.*` and run the command
 again. The same cleanup follows a failed submodule fill.
+
+`booley chat` can also stop before setup starts:
+
+```text
+ERROR: cannot name a worktree for this session: ... Run booley chat --here to use the main checkout.
+```
+
+Booley could not reserve the session handle that names the worktree. Run
+`booley chat --here`, or try again once other launches have finished.
+
+If you press Ctrl-C during setup, `booley chat` prints
+`Worktree setup interrupted; <name> was rolled back.` and nothing is left. If it
+prints `Worktree setup interrupted; <name> may be left behind.` instead, run the
+removal steps printed below it.
 
 <details markdown>
 <summary>In stealth mode</summary>
@@ -266,10 +330,17 @@ Checkout starts from that repository's last commit. See
 This happens only in [Stealth Mode](https://booley.dev/docs/stealth/), where
 the Booley Directory is its own Git repository.
 
-`booley worktree new` warned that files were left out. A Paired Checkout starts
-from the last commit of your Booley Directory's repository, so uncommitted and
-untracked files there are not copied. Commit the files the warning names, then
-create the worktree again with a new name.
+`booley chat` or `booley worktree new` warned that files were left out:
+
+```text
+WARNING: the Paired Checkout was made from the last commit of <dir>; N uncommitted or untracked file(s) there were left out: ... Commit them in <dir> to include them in later worktrees.
+```
+
+A Paired Checkout starts from the last commit of your Booley Directory's
+repository, so uncommitted and untracked files there are not copied. Commit the
+files the warning names, then create the worktree again with a new name. Under
+`booley chat`, commit them, end the session, discard its worktree, and start
+`booley chat` again.
 
 ### `git` cannot see files under `.booley/`
 
@@ -291,6 +362,31 @@ git -C .booley checkout -- booley.toml
 
 If `git -C .booley rev-parse --git-dir` fails, those files aren't under version
 control at all: copy a file aside before you edit it.
+
+### A commit is rejected for a banned term
+
+```text
+commit-msg: Stealth Mode rejected this commit message; it contains banned terms:
+  - 'booley' in the subject
+  - 'booley' on line 3
+Reword the message, or, if a term is an ordinary name in this design, remove it from [stealth] banned_words or banned_substrings in the project config TOML.
+Your message was kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
+```
+
+[Stealth Mode](https://booley.dev/docs/stealth/) rejects a commit message that
+contains a banned word instead of rewriting it, and an attribution footer
+(`Co-Authored-By:`, `Generated with <tool>`) is rejected first. Reword the
+message, or remove the term from `[stealth] banned_words` / `banned_substrings`
+in `.booley/booley.toml` if it is an ordinary name in your design. Your text
+stays in the file the error names.
+
+To retry, rerun the same `git commit` command with its options, replacing
+`-m` or `-F` with `-v -e -F "<that path>"`; the editor opens on the kept message.
+[Stealth Mode](https://booley.dev/docs/stealth/#commit-messages) covers merge
+commits and the rest.
+
+`BOOLEY_SKIP_COMMIT_VALIDATION=1` doesn't bypass this check. If the hook still
+replaces words with `redacted`, run `booley init` to install the current hook.
 
 ### Doctor reports a Sandbox whose egress mode differs from the host
 

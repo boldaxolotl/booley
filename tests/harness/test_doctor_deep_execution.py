@@ -139,9 +139,12 @@ def test_project_alias_doctor_executes_real_simulation(
     request.addfinalizer(reset_cache)
     audit, data, alias = _alias_doctor_project(flow_project, tmp_path, monkeypatch, host)
     if not build_failure:
-        (data / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl/tb.sv").write_text(
-            "module tb;\n// [SIM_RESULT] FAILED\nendmodule\n"
-        )
+        # The Flow reads the checkout's own Booley Directory (a copy here, the alias in
+        # a real Sandbox), so the fixture changes both.
+        for booley_dir in (data, flow_project / ".booley"):
+            (booley_dir / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl/tb.sv").write_text(
+                "module tb;\n// [SIM_RESULT] FAILED\nendmodule\n"
+            )
     executions, launches = _real_simulation_transport(monkeypatch, flow_project, alias, data, host)
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._run_deep_checks(

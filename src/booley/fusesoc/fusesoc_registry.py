@@ -32,6 +32,7 @@ build dir next to the ``.eda.yml``.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import logging
@@ -49,7 +50,11 @@ from fusesoc.capi2.coreparser import Core2Parser
 from fusesoc.core import Core as FuseSocCore
 from fusesoc.vlnv import Vlnv
 
-from booley.core.booley_dir import BOOLEY_DIR_NAME, in_checkout_booley_dir
+from booley.core.booley_dir import (
+    BOOLEY_DIR_NAME,
+    in_checkout_booley_dir,
+    resolve_checkout_booley_dir,
+)
 from booley.core.booley_dir_links import resolve_through_entry
 from booley.core.boundary import as_dict, is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
@@ -1413,6 +1418,31 @@ def vendored_files(project_root: Path | str) -> set[str]:
     return vendored
 
 
+def files_tagged(project_root: Path | str, tags: Collection[str]) -> set[str]:
+    """Canonical project paths any ``.core`` fileset or file tags with one of *tags*.
+
+    A cheap ``.core`` YAML read, no resolve: a Target inspection keeps only a
+    file's testbench role, so ``vendored`` and ``generated`` tags are read here.
+    """
+    root = Path(project_root)
+    wanted = set(tags)
+    found: set[str] = set()
+    for core_file in discover_cores(root):
+        try:
+            filesets = read_core(core_file).get("filesets")
+        except FuseSocError:
+            continue
+        for fileset in filesets.values() if isinstance(filesets, Mapping) else ():
+            for name, file_tags, _include in _fileset_entries(fileset):
+                if wanted & set(file_tags):
+                    found.add(
+                        canonical_project_path(
+                            root, core_relative_to_project(core_file, root, name)
+                        )
+                    )
+    return found
+
+
 def effective_source_tags(tags: tuple[str, ...], file_type: str, *, sim: bool) -> tuple[str, ...]:
     """Preserve explicit roles; typed C/C++ Sim inputs otherwise belong to TB."""
     if sim and file_type.lower() in {"cppsource", "csource"} and not ({"tb", "rtl"} & set(tags)):
@@ -2653,11 +2683,17 @@ def _run_setup_command(
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> ResolvedTarget:
     logger.debug("resolving target via: %s", " ".join(cmd))
+    child_env = dict(env) if env is not None else {**os.environ}
+    if env is None:
+        # Generators and core hooks read this checkout's inputs (ADR 0082); a failed
+        # lookup keeps the inherited value. A caller that passes its own *env* owns it.
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
+            child_env["BOOLEY_DIR"] = str(resolve_checkout_booley_dir(project_root))
     try:
         proc = runner(
             cmd,
             cwd=str(project_root),
-            env=dict(env) if env is not None else None,
+            env=child_env,
             capture_output=True,
             text=True,
         )

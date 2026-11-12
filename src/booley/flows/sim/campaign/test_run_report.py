@@ -42,6 +42,7 @@ __all__ = [
     "campaign_test_run_rows",
     "evidence_test_run_rows",
     "informative_test_run_lines",
+    "observation_grade",
     "observation_test_run_rows",
     "test_run_grade",
     "test_run_report_lines",
@@ -99,7 +100,7 @@ test_run_grade.__test__ = False  # type: ignore[attr-defined]
 test_run_row.__test__ = False  # type: ignore[attr-defined]
 
 
-def _grade(observation: Mapping[str, object]) -> str:
+def observation_grade(observation: Mapping[str, object]) -> str:
     """Grade a campaign observation."""
     return test_run_grade(
         passed=(
@@ -177,7 +178,7 @@ def _observed_rows(outcome: _Outcome) -> list[tuple[dict[str, object], int]]:
     for index, observation in enumerate(outcome.observations):
         run = _observed_run(observation, recorded)
         if run is not None:
-            rows.append((test_run_row(run, _grade(observation)), index))
+            rows.append((test_run_row(run, observation_grade(observation)), index))
     return rows
 
 
@@ -214,7 +215,7 @@ def campaign_test_run_lines(
         run, batch = _resolve_observation(observation, recorded)
         if run is None:
             continue
-        rows.append(test_run_row(run, _grade(observation)))
+        rows.append(test_run_row(run, observation_grade(observation)))
         files.append(evidence[index])
         if batch is not None:
             batches[run.name] = batch
@@ -278,7 +279,7 @@ def observation_test_run_rows(
                 f"observation of Test Run {observation['test_run']!r} has no recorded "
                 "Test Run with its fingerprint in the Simulation Campaign manifest"
             )
-        row = test_run_row(run, _grade(observation))
+        row = test_run_row(run, observation_grade(observation))
         if row["grade"] == "fail":
             row["functional_failure"] = (
                 observation["execution"] == "completed"
