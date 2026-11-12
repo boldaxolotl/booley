@@ -18,6 +18,7 @@ import pytest
 from tests.devcontainer_spec_support import build_spec
 
 from booley.config import agent as config_agent
+from booley.config import agent_app
 from booley.config.agent import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.config.settings import set_agent_settings
 from booley.harness import auth_cmd, chat_cmd, doctor
@@ -121,31 +122,34 @@ def _refusal(action) -> str:
     return ""
 
 
-# What each credential situation resolves to: (app, policy the consumers see).
+# What each credential situation resolves to: (default app, policy the consumers see,
+# every allowed CLI with the default first).
 _CASES = {
-    "claude-api-key": ("claude", "auto"),
-    "claude-oauth-token": ("claude", "auto"),
-    "claude-login": ("claude", "auto"),
-    "codex-api-key": ("codex", "auto"),
-    "codex-login": ("codex", "auto"),
-    "both": ("claude", "auto"),
-    "gateway": ("codex", "gateway"),
-    "nothing": ("claude", "auto"),
+    "claude-api-key": ("claude", "auto", ("claude",)),
+    "claude-oauth-token": ("claude", "auto", ("claude",)),
+    "claude-login": ("claude", "auto", ("claude",)),
+    "codex-api-key": ("codex", "auto", ("codex",)),
+    "codex-login": ("codex", "auto", ("codex",)),
+    "both": ("claude", "auto", ("claude", "codex")),
+    "gateway": ("codex", "gateway", ("codex",)),
+    "nothing": ("claude", "auto", ("claude",)),
 }
 
 
 @pytest.mark.parametrize("kind", list(_CASES))
 def test_auto_choice_reaches_every_consumer(sandbox, monkeypatch, capsys, kind):
-    app, policy = _CASES[kind]
+    app, policy, clis = _CASES[kind]
     _give(kind, sandbox.home, monkeypatch)
 
     status = _start(capsys)
 
     assert f"app:{app} (BOOLEY_AGENT_APP=auto: " in status
-    if app == "claude":
-        assert _claude_registered(sandbox.home)
-    else:
-        assert "[mcp_servers.booley]" in _codex_config(sandbox.home)
+    assert (" clis:claude,codex" in status) == (len(clis) > 1)
+    assert agent_app.auto_choice().clis == clis
+    assert config_agent.sandbox_agent_clis() == clis
+    assert _claude_registered(sandbox.home) == ("claude" in clis)
+    assert ("[mcp_servers.booley]" in _codex_config(sandbox.home)) == ("codex" in clis)
+    if app == "codex":
         assert ('model_provider = "booley_gateway"' in _codex_config(sandbox.home)) == (
             policy == "gateway"
         )
@@ -269,7 +273,7 @@ def _explicit_files(home: Path) -> dict[str, str]:
     "kind", ["claude-api-key", "codex-api-key", "gateway"], ids=["claude", "codex", "gateway"]
 )
 def test_auto_registration_matches_the_explicit_app(sandbox, monkeypatch, capsys, tmp_path, kind):
-    app, policy = _CASES[kind]
+    app, policy, _clis = _CASES[kind]
     _give(kind, sandbox.home, monkeypatch)
     _start(capsys)
     resolved = _explicit_files(sandbox.home)
@@ -341,20 +345,35 @@ def test_doctor_reports_the_auto_choice_and_accepts_an_unpinned_auto_spec(
 ):
     _give(kind, sandbox.home, monkeypatch)
     _start(capsys)
-    app, _policy = _CASES[kind]
+    app, _policy, _clis = _CASES[kind]
 
     findings = _doctor_findings(SimpleNamespace(booley_toml={"agent": {}}))
 
     chosen = [f.message for f in findings if "BOOLEY_AGENT_APP=auto" in f.message]
     assert len(chosen) == 1
     assert ("Claude Code" if app == "claude" else "Codex") in chosen[0]
-    assert ("Claude is preferred" in chosen[0]) == (kind == "both")
+    assert ("Claude is the default" in chosen[0]) == (kind == "both")
     configuration = _auto_spec_report(sandbox, monkeypatch, declared_provider=None)
     # An unpinned auto spec is accepted: no WARN or FAIL, only the note that it is
     # hand-written and so not compared with what `booley init` would write.
     assert [(f.severity.value, "hand-written" in f.message) for f in configuration.findings] == [
         ("note", True)
     ]
+
+
+def test_doctor_audits_every_auto_allowed_cli(sandbox, monkeypatch, capsys):
+    _give("both", sandbox.home, monkeypatch)
+    _start(capsys)
+
+    findings = _doctor_findings(SimpleNamespace(booley_toml={"agent": {}}))
+
+    messages = [f.message for f in findings]
+    chosen = [m for m in messages if "BOOLEY_AGENT_APP=auto" in m]
+    assert len(chosen) == 1
+    assert "Claude Code (default), Codex" in chosen[0]
+    # One credential line per allowed CLI, not only the default's.
+    assert any(m.startswith("Claude Code auth:") for m in messages)
+    assert any(m.startswith("Codex auth:") for m in messages)
 
 
 def _auto_spec_report(sandbox, monkeypatch, *, declared_provider):
