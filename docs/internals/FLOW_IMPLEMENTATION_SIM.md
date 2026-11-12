@@ -134,7 +134,7 @@ Flow, unknown `--test`) and Flow crashes exit 2, outside this vocabulary.
 
 ## Per-test Cycle Count Goals
 
-A [Cycle Count Criterion](../GLOSSARY.md#execution-and-evidence) binds one
+A Cycle Count Criterion binds one
 Target and Test Run to numeric thresholds
 ([ADR 0051](../adr/0051-per-test-cycle-count-criteria.md)). A Goal entry
 argument looks like:

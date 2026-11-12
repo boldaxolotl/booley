@@ -25,7 +25,7 @@ Choose a different Target when you need a different build configuration.
 
 ## Specialist
 Aliases: Specialists
-A Specialist is an optional AI helper, such as a code reviewer or mutation
+A Specialist is an optional helper, such as an AI code reviewer or the mutation
 tester, given fresh context for one task. It advises or checks work rather than
 running the deterministic build job itself.
 

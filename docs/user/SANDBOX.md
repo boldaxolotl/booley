@@ -462,6 +462,9 @@ itself an **Unproxied Sandbox**:
 | anything else | `booley` and `booley-mcp` refuse to start (exit 2). `booley doctor` still runs and FAILs. |
 
 Booley never guesses this from the platform (for example from `CODESPACES`).
+The declaration is not the isolation boundary: under host `egress = "proxy"`,
+an issued Sandbox keeps its default-deny network whatever `BOOLEY_EGRESS`
+says, and under `egress = "unproxied"` Booley issues it on a routed network.
 In an Unproxied Sandbox Doctor WARNs `sandbox.unproxied`; to accept that,
 [waive the check](DOCTOR.md#doctor-waivers-doctor-waiverstoml).
 

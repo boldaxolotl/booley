@@ -32,7 +32,11 @@ rules do change a finding automatically:
   `source_scope`);
 - outside Goal Mode, a finding in a firmware file becomes `out_of_scope`,
   because firmware is read-only context for every Reviewer (see
-  [Specialist Source Isolation](../GLOSSARY.md#flows-eda-tools-and-mcp-tools)).
+  [SPECIALISTS.md](../user/SPECIALISTS.md)).
+
+Source isolation is not configurable. A Reviewer sees only the sources of its
+own category; the Coverage Analyst has no category and reads both the RTL and
+the testbench, because its task is to cross-check them.
 
 Dispositions decide what a finding blocks. An in-scope `current` finding can
 leave a `_clean` Criterion unmet; `advisory`, `deferred`, and `out_of_scope`
