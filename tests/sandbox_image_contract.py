@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 import shlex
 import tomllib
@@ -310,7 +311,7 @@ def validate_sources(sources: ContractSources) -> tuple[str, ...]:
     errors.extend(_dockerfile_errors(sources))
     errors.extend(_stable_base_errors(sources.base_workflow))
     errors.extend(_test_graph_errors(sources.test_workflow))
-    errors.extend(_release_graph_errors(sources.release_workflow))
+    errors.extend(_release_graph_errors(sources.release_workflow, sources.base_workflow))
     errors.extend(_runtime_role_errors(sources))
     errors.extend(_inventory_dockerfile_errors(sources))
     errors.extend(_riscv_layer_contract_errors(sources.release_workflow))
@@ -483,12 +484,12 @@ def _condition(value: object) -> tuple[str, str, str] | None:
     return match.groups() if match else None
 
 
-def _release_graph_errors(workflow: dict[str, Any]) -> list[str]:
+def _release_graph_errors(workflow: dict[str, Any], base_workflow: dict[str, Any]) -> list[str]:
     try:
-        resolver = find_step(
+        published = find_step(
             "docker-publish.yml",
             workflow,
-            "build-and-push",
+            "runtime-base",
             name="Resolve compatible stable runtime base",
         )
         candidate = parse_build(
@@ -505,9 +506,157 @@ def _release_graph_errors(workflow: dict[str, Any]) -> list[str]:
         )
     except ValueError as error:
         return [f"release image graph: {error}"]
-    errors = _resolver_errors("release candidate", resolver, "${BASE_REF}")
+    errors = _resolver_errors("release candidate", published, "${BASE_REF}")
+    errors.extend(_release_base_selection_errors(workflow, base_workflow))
     errors.extend(_release_candidate_errors(workflow, standard_substrate, candidate))
     errors.extend(_release_riscv_errors(workflow, riscv_substrate, riscv))
+    errors.extend(_dispatch_shared_state_errors(workflow))
+    return errors
+
+
+_BASE_STEP_IDS = (
+    "decide",
+    "published",
+    "candidate-metadata",
+    "candidate-build",
+    "candidate-verify",
+    "selected",
+)
+_CANDIDATE_TAG = "${{ steps.candidate-metadata.outputs.tag }}"
+_CANDIDATE_BASE_TAG = f"${{{{ env.REGISTRY }}}}/${{{{ env.BASE_IMAGE_NAME }}}}:{_CANDIDATE_TAG}"
+_TRUSTED_BASE_CACHE = "type=gha,scope=sandbox-runtime-base"
+# The only tag a candidate base may take: never ``main`` or another shared tag.
+_CANDIDATE_TAG_LINE = 'echo "tag=candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"'
+# The report step reads the verified candidate digest, never the bare build digest.
+_SELECTED_ENV = {
+    "PUBLISHED_IMAGE": "${{ steps.published.outputs.image }}",
+    "CANDIDATE_IMAGE": "${{ steps.candidate-verify.outputs.image }}",
+    "CANDIDATE_TAG": _CANDIDATE_TAG,
+}
+
+
+def _release_base_selection_errors(
+    workflow: dict[str, Any], base_workflow: dict[str, Any]
+) -> list[str]:
+    """Job ``runtime-base`` picks the published base or builds a candidate base.
+
+    A release-tag push never builds a base (``decide`` runs only on dispatch),
+    so a contract mismatch stops it at the published resolver. A dispatch whose
+    tree differs from ``:main`` builds, pushes and verifies a candidate base.
+    """
+    role = "release base selection"
+    try:
+        steps = {
+            step_id: find_step("docker-publish.yml", workflow, "runtime-base", step_id=step_id)
+            for step_id in _BASE_STEP_IDS
+        }
+        candidate = parse_build(steps["candidate-build"])
+        publisher = parse_build(
+            find_step(
+                "docker-base-publish.yml",
+                base_workflow,
+                "build-publish-smoke",
+                step_id="build",
+            )
+        )
+    except ValueError as error:
+        return [f"{role}: {error}"]
+    errors: list[str] = []
+    expected_conditions = {
+        "decide": ("github.event_name", "==", "workflow_dispatch"),
+        "published": ("steps.decide.outputs.publish", "!=", "true"),
+        **dict.fromkeys(
+            ("candidate-metadata", "candidate-build", "candidate-verify"),
+            ("steps.decide.outputs.publish", "==", "true"),
+        ),
+    }
+    for name, expected in expected_conditions.items():
+        if _condition(steps[name].value.get("if")) != expected:
+            errors.append(f"{role}: step {name} must run only when {' '.join(expected)}")
+    order = ["decide", "candidate-metadata", "candidate-build", "candidate-verify", "selected"]
+    if not all(steps[a].path < steps[b].path for a, b in itertools.pairwise(order)):
+        errors.append(f"{role}: decide, candidate build, verify, and report are out of order")
+    if steps["decide"].path >= steps["published"].path:
+        errors.append(f"{role}: the dispatch decision must precede the published resolver")
+    errors.extend(_candidate_base_errors(role, steps, candidate, publisher))
+    errors.extend(_selected_base_output_errors(workflow, role))
+    return errors
+
+
+def _candidate_base_errors(
+    role: str, steps: dict[str, Any], candidate: Build, publisher: Build
+) -> list[str]:
+    """The candidate base build matches the publisher, writes no cache, and is verified by digest."""
+    errors: list[str] = []
+    errors.extend(
+        _build_shape_errors(
+            f"{role} candidate base",
+            candidate,
+            _BASE_DOCKERFILE,
+            {},
+            (_CANDIDATE_BASE_TAG,),
+            push=True,
+        )
+    )
+    inputs = steps["candidate-build"].value.get("with", {})
+    if inputs.get("cache-from") != _TRUSTED_BASE_CACHE:
+        errors.append(f"{role}: candidate base must read exactly {_TRUSTED_BASE_CACHE}")
+    if candidate.build_args.keys() != publisher.build_args.keys() or (
+        candidate.labels.keys() != publisher.labels.keys()
+    ):
+        errors.append(
+            f"{role}: candidate base build arguments and labels must match the publisher"
+        )
+    expected = "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.candidate-build.outputs.digest }}"
+    environment = steps["candidate-verify"].value.get("env", {})
+    if not isinstance(environment, dict) or environment.get("BASE_IMAGE") != expected:
+        errors.append(
+            f"{role}: verification must consume the candidate base build digest {expected}"
+        )
+    errors.extend(_resolver_errors(role, steps["candidate-verify"], "${BASE_IMAGE}"))
+    if _CANDIDATE_TAG_LINE not in str(steps["candidate-metadata"].value.get("run", "")):
+        errors.append(f"{role}: the candidate tag must be exactly {_CANDIDATE_TAG_LINE}")
+    if steps["selected"].value.get("env") != _SELECTED_ENV:
+        errors.append(f"{role}: the report step must read the verified candidate image")
+    return errors
+
+
+def _selected_base_output_errors(workflow: dict[str, Any], role: str) -> list[str]:
+    """The selection outputs reach both substrate jobs through fixed names."""
+    errors: list[str] = []
+    jobs = workflow["jobs"]
+    expected_base = {
+        name: f"${{{{ steps.selected.outputs.{name} }}}}"
+        for name in ("image", "source", "candidate-tag")
+    }
+    if jobs["runtime-base"].get("outputs") != expected_base:
+        errors.append(f"{role}: runtime-base must expose image, source, candidate-tag outputs")
+    outputs = jobs["build-and-push"].get("outputs", {})
+    for name, source in (
+        ("runtime-base", "image"),
+        ("base-source", "source"),
+        ("candidate-tag", "candidate-tag"),
+    ):
+        if outputs.get(name) != f"${{{{ needs.runtime-base.outputs.{source} }}}}":
+            errors.append(f"{role}: build-and-push {name} must pass through runtime-base {source}")
+    return errors
+
+
+def _dispatch_shared_state_errors(workflow: dict[str, Any]) -> list[str]:
+    """A dispatched run writes no shared cache and moves no shared tag."""
+    role = "release shared state"
+    errors: list[str] = []
+    for job_name in workflow["jobs"]:
+        for step in workflow_steps("docker-publish.yml", workflow, job_name):
+            inputs = step.value.get("with")
+            if isinstance(inputs, dict) and "cache-to" in inputs:
+                errors.append(f"{role}: {step.locator} must not write a cache scope")
+            if isinstance(inputs, dict) and any(
+                tag.endswith(":main") for tag in _lines(inputs.get("tags"))
+            ):
+                errors.append(f"{role}: {step.locator} must not tag :main")
+            if job_name != "promote" and "imagetools create" in str(step.value.get("run", "")):
+                errors.append(f"{role}: {step.locator} must not create tags outside promote")
     return errors
 
 
@@ -515,13 +664,21 @@ def _release_candidate_errors(
     workflow: dict[str, Any], substrate: Build, build: Build
 ) -> list[str]:
     role = "release candidate"
-    runtime_parent = "${{ steps.runtime-base.outputs.image }}"
+    runtime_parent = "${{ needs.runtime-base.outputs.image }}"
+    shared = (
+        "format('{0}/{1}:standard-{2}', env.REGISTRY, env.BASE_IMAGE_NAME, "
+        "steps.version.outputs.substrate_inputs)"
+    )
+    scoped = (
+        "format('{0}/{1}:{2}-standard', env.REGISTRY, env.BASE_IMAGE_NAME, "
+        "needs.runtime-base.outputs.candidate-tag)"
+    )
     errors = _build_shape_errors(
         "release standard substrate",
         substrate,
         _SUBSTRATE_DOCKERFILE,
         {"booley-runtime-base": f"docker-image://{runtime_parent}"},
-        (),
+        (f"${{{{ needs.runtime-base.outputs.source == 'published' && {shared} || {scoped} }}}}",),
         push=True,
         label=("io.booley.build.parent-artifact", runtime_parent),
     )
@@ -542,21 +699,21 @@ def _release_candidate_errors(
     job = workflow["jobs"]["build-and-push"]
     if job.get("outputs", {}).get("image-digest") != "${{ steps.build.outputs.digest }}":
         errors.append(f"{role}: image-digest must expose the build step's exact digest")
-    if (
-        build.step.path
-        <= find_step(
-            "docker-publish.yml",
-            workflow,
-            "build-and-push",
-            name="Resolve compatible stable runtime base",
-        ).path
-    ):
-        errors.append(f"{role}: resolved published base must precede the candidate build")
+    if job.get("needs") not in ("runtime-base", ["runtime-base"]):
+        errors.append(f"{role}: build-and-push must depend on the runtime-base job")
     return errors
 
 
 def _release_riscv_errors(workflow: dict[str, Any], substrate: Build, build: Build) -> list[str]:
     role = "release RISC-V image"
+    shared = (
+        "format('{0}/{1}:riscv-{2}', env.REGISTRY, env.BASE_IMAGE_NAME, "
+        "steps.version.outputs.substrate_recipe_fingerprint)"
+    )
+    scoped = (
+        "format('{0}/{1}:{2}-riscv', env.REGISTRY, env.BASE_IMAGE_NAME, "
+        "needs.build-and-push.outputs.candidate-tag)"
+    )
     standard_parent = (
         "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@"
         "${{ needs.build-and-push.outputs.substrate-digest }}"
@@ -566,7 +723,9 @@ def _release_riscv_errors(workflow: dict[str, Any], substrate: Build, build: Bui
         substrate,
         _RISCV_DOCKERFILE,
         {"booley-standard-substrate": f"docker-image://{standard_parent}"},
-        (),
+        (
+            f"${{{{ needs.build-and-push.outputs.base-source == 'published' && {shared} || {scoped} }}}}",
+        ),
         push=True,
         label=("io.booley.build.parent-artifact", standard_parent),
     )
