@@ -260,6 +260,19 @@ that produces no fresh, readable waveform is inconclusive rather than passing
 silently. The card names each Test Run's waveform; see
 [Reading results](#reading-results).
 
+A traced run also registers its waveforms as B-Wave sessions, so queries need
+no trace path. Each traced Target becomes session `@<target>`, so
+`bwave @<target> list` reads it. The session points at the waveform of the
+last Test Run that did not pass if any, else of the last Test Run. The last
+Target's waveform also becomes the default session, so `bwave list` alone reads
+the newest trace. The session store is one file per temporary directory (one
+per Sandbox), shared by every agent session in it: the latest traced run owns
+`@<target>` and the default session. A shell
+sees the sessions when it shares the temporary directory of the process that
+ran the simulation, which is the default. A failure to register never changes
+the run's result. A per-checkout store is tracked in
+[#3483](https://github.com/boldaxolotl/Booley/issues/3483).
+
 Booley stores every waveform as FST, a compact format that B-Wave and common
 viewers (GTKWave, VaporView) read. The simulator can write either format:
 
