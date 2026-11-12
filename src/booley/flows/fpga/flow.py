@@ -253,6 +253,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     announce_success_report: bool = True
     satisfies: ClassVar[list[str]] = ["fpga_impl_ok"]
     conventional_families: ClassVar[frozenset[str]] = frozenset({"fpga_impl_ok"})
+    _PAIR_CRITERION_PREFIX = "fpga_impl_ok_"
 
     # FPGA implementation is always admitted as a heavy Sandbox job.
     def _resolve_job_class(self) -> str:
