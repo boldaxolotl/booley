@@ -7,9 +7,10 @@
 //! - Store read + query (transition decode, grid build, virtual signals)
 
 use std::fs;
+use std::hint::black_box;
 use std::io::{BufReader, Cursor, Write};
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use bwave::cache::ColumnCache;
