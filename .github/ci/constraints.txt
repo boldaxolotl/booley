@@ -46,7 +46,7 @@ cryptography==50.0.2
     # via
     #   booley-rtl (pyproject.toml)
     #   pyjwt
-diff-cover==10.6.0
+diff-cover==11.0.1
     # via booley-rtl (pyproject.toml)
 edalize==0.6.8
     # via
