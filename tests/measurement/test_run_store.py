@@ -67,6 +67,7 @@ def make_run(
     run_id: str,
     *,
     minute: int = 0,
+    start_minute: int | None = None,
     status: str = "completed",
     verdict: str = "met",
     toolchain: ToolchainFingerprint | None = None,
@@ -87,11 +88,14 @@ def make_run(
     values = FlowMetricValues({}, per_clock or {})
     table = TableRun(IDENTITY, "syn", 1.5, values, results)
     finished = EPOCH + timedelta(minutes=minute)
+    started = finished - timedelta(seconds=30)
+    if start_minute is not None:
+        started = EPOCH + timedelta(minutes=start_minute)
     return MeasurementRun(
         run_id,
         keyed,
         RunStatus(status),
-        finished - timedelta(seconds=30),
+        started,
         finished,
         30.0,
         rules(),
@@ -176,6 +180,10 @@ def test_every_run_of_a_key_is_kept_and_measured_follows_the_latest(tmp_path: Pa
     assert [run.run_id for run in store.history(keyed.key)] == ["d", "c", "b", "a"]
     latest = store.measured(keyed.key)
     assert latest is not None and latest.run_id == "a"
+    # Overlapping runs: the one that started first but finished last is the latest.
+    store.write(make_run(keyed, "e", minute=4, start_minute=-10, verdict="unmet"), [])
+    assert [run.run_id for run in store.history(keyed.key)][-1] == "e"
+    assert store.measured(keyed.key) is None
 
 
 def test_stopped_and_cancelled_runs_are_stored_but_not_measured(tmp_path: Path) -> None:
@@ -218,6 +226,12 @@ def test_rule_change_in_versioned_booley_directory_changes_the_key_but_not_the_b
     base = store.base_run(after.key.project_tree)
     assert base is not None and base.run_id == "r1"
     assert base.document["booley_commit"] == before.booley_commit
+
+    # The base is the latest run of the project tree whatever its rules tree or status.
+    store.write(make_run(after, "r2", minute=1, status="stopped"), [])
+    base = store.base_run(after.key.project_tree)
+    assert base is not None and base.run_id == "r2"
+    assert base.document["booley_commit"] == after.booley_commit
 
 
 def test_stored_key_follows_the_exported_booley_commit(tmp_path: Path) -> None:
@@ -437,9 +451,10 @@ def test_clock_names_come_from_the_latest_run_that_has_them(tmp_path: Path) -> N
     store = MeasurementStore(repo / ".booley")
     keyed = key_of(repo, head)
     assert store.clock_names(IDENTITY, "syn") == ()
-    store.write(make_run(keyed, "r1", minute=1, per_clock={"fmax": {"old_clk": 1.0}}), [])
-    store.write(make_run(keyed, "r2", minute=2, per_clock={"fmax": {"clk_i": 2.0}}), [])
-    store.write(make_run(keyed, "r3", minute=3), [])
+    # Ids sort against finish order so only the finish time can pick the newest run.
+    store.write(make_run(keyed, "a", minute=1, per_clock={"fmax": {"old_clk": 1.0}}), [])
+    store.write(make_run(keyed, "b", minute=2, per_clock={"fmax": {"clk_i": 2.0}}), [])
+    store.write(make_run(keyed, "c", minute=3), [])
 
     assert store.clock_names(IDENTITY, "syn") == ("clk_i",)
     assert store.clock_names(IDENTITY, "sim") == ()
