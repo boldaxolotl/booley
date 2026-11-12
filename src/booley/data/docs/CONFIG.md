@@ -384,8 +384,8 @@ description](TARGETS.md#design-description-core)). Two extension points remain
 for what a `.core` can't express:
 
 - **A build step per test**, such as compiling the selected test's firmware or
-  staging vectors: [Pre-run
-  commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
+  staging vectors: [Pre-Sim
+  Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
 - **A new kind of check** with its own pass criteria: a custom MCP tool, below.
 
 The EDA tools Booley supports are listed in
