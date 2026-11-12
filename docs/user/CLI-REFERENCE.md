@@ -198,7 +198,7 @@ not copied, and the command names it.
 <details markdown>
 <summary>In stealth mode</summary>
 
-Your Booley Directory is its own Git repository, so the worktree gets a
+With [Stealth Mode](STEALTH.md), your Booley Directory is its own Git repository, so the worktree gets a
 **Paired Checkout** instead: a checkout of its last commit on branch
 `booley-worktree/<name>`. Uncommitted and untracked files are left out; one
 warning names them (the first 10, then a count). Commit them first if the
