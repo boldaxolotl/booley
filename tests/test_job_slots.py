@@ -1441,6 +1441,82 @@ def test_unverified_inherited_execution_owner_dies_and_waiter_proceeds(
     )
 
 
+def _scenario_dead_owner_recovery_fails(store, world, _root, _terminal):
+    token = store.submit(CLASS_HEAVY, pid=100, execution_id="a" * 32)
+    store.refresh(token)
+    del world.alive[100]
+
+
+def _scenario_terminal_execution(store, world, _root, terminal):
+    token = store.submit(CLASS_HEAVY, pid=100, execution_id="b" * 32)
+    store.refresh(token)
+    terminal["value"] = True
+
+
+def _scenario_execution_without_id(store, world, _root, _terminal):
+    token = store.submit(CLASS_HEAVY, pid=100)
+    store.refresh(token)
+    edit_entry(token, owner_kind="execution", execution_id=None)
+    del world.alive[100]
+
+
+def _scenario_future_schema(store, world, _root, _terminal):
+    token = store.submit(CLASS_HEAVY, pid=100)
+    store.refresh(token)
+    edit_entry(token, schema_version=job_slots.SLOT_SCHEMA_VERSION + 1)
+    del world.alive[100]
+
+
+def _corrupt_entry(root: Path, world: FakeWorld, age_s: float) -> None:
+    directory = root / CLASS_HEAVY
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / job_slots._entry_name("h", 0, 1, 100, 1)
+    path.write_bytes(b"{not json")
+    old = world.clock - age_s  # the store reads age against the simulated clock
+    os.utime(path, (old, old))
+
+
+def _scenario_corrupt_young(_store, world, root, _terminal):
+    _corrupt_entry(root, world, 0)
+
+
+def _scenario_corrupt_old(_store, world, root, _terminal):
+    _corrupt_entry(root, world, 3600)
+
+
+def _scenario_holder_past_lease_recovery_fails(store, world, _root, _terminal):
+    token = store.submit(CLASS_HEAVY, pid=100)
+    store.refresh(token)
+    world.clock += job_slots.LEASE_DURATION_SECONDS + 1
+
+
+def _scenario_live_holder(store, _world, _root, _terminal):
+    store.refresh(store.submit(CLASS_HEAVY, pid=100))
+
+
+def _scenario_dead_process_owner(store, world, _root, _terminal):
+    store.refresh(store.submit(CLASS_HEAVY, pid=100))
+    del world.alive[100]
+
+
+# Every staleness branch the verdict has: what each leaves for submit to count after its reap.
+OUTLOOK_SCENARIOS = {
+    "dead-owner-recovery-fails": _scenario_dead_owner_recovery_fails,
+    "terminal-execution": _scenario_terminal_execution,
+    "execution-without-id": _scenario_execution_without_id,
+    "future-schema": _scenario_future_schema,
+    "corrupt-young": _scenario_corrupt_young,
+    "corrupt-old": _scenario_corrupt_old,
+    "holder-past-lease-recovery-fails": _scenario_holder_past_lease_recovery_fails,
+    "live-holder": _scenario_live_holder,
+    "dead-process-owner": _scenario_dead_process_owner,
+}
+
+
+# Scenarios whose entry the reap keeps because its recovery fails, though its owner is gone.
+OWNER_GONE_RECOVERY_FAILS = {"dead-owner-recovery-fails"}
+
+
 class TestSnapshot:
     def test_snapshot_orders_holders_then_waiters(self, root, world):
         spawn(world, 100)
@@ -1456,6 +1532,133 @@ class TestSnapshot:
     def test_snapshot_of_empty_class(self, root, world):
         store = make_store(root, world)
         assert store.snapshot(CLASS_HEAVY) == ([], [])
+
+
+def edit_entry(token: job_slots.SlotToken, **changes: object) -> None:
+    """Rewrite fields of a slot entry's JSON in place, as a foreign or future writer might."""
+    payload = json.loads(token.path.read_text(encoding="utf-8"))
+    payload.update(changes)
+    token.path.write_bytes(json.dumps(payload).encode("utf-8"))
+
+
+class TestOutlook:
+    """``SlotStore.outlook`` predicts admission without touching the store."""
+
+    def test_outlook_counts_what_submit_counts(self, root, world):
+        caps = SlotCaps(max_heavy=1, queue_max=2)
+        for pid in (100, 200, 300, 400, 500):
+            spawn(world, pid)
+        store = make_store(root, world, caps)
+        outlook = store.outlook(CLASS_HEAVY)
+        assert (outlook.ahead, outlook.runs_now, outlook.position, outlook.full) == (
+            0,
+            True,
+            0,
+            False,
+        )
+
+        holder = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(holder).state == HOLDING
+        outlook = store.outlook(CLASS_HEAVY)
+        assert (outlook.ahead, outlook.runs_now, outlook.position) == (1, False, 1)
+        # A background waiter ranks behind an interactive claim, so it is not ahead of it.
+        store.submit(CLASS_HEAVY, pid=300, role="background")
+        assert store.outlook(CLASS_HEAVY).ahead == 1
+
+        waiter = store.submit(CLASS_HEAVY, pid=200)
+        outlook = store.outlook(CLASS_HEAVY)
+        assert (outlook.ahead, outlook.position, outlook.full) == (2, 2, False)
+        # Submit queues the claim exactly where the outlook said (position is 1-based).
+        queued = store.submit(CLASS_HEAVY, pid=400)
+        assert store.refresh(waiter).position == 0
+        assert store.refresh(queued).position == outlook.position - 1
+
+        outlook = store.outlook(CLASS_HEAVY)
+        assert (outlook.ahead, outlook.full) == (3, True)
+        with pytest.raises(QueueFullError) as refused:
+            store.submit(CLASS_HEAVY, pid=500)
+        assert str(refused.value) == outlook.refusal == "heavy queue is full (2 waiting)"
+
+    @pytest.mark.parametrize("scenario", sorted(OUTLOOK_SCENARIOS))
+    def test_outlook_and_reap_share_one_verdict(self, root, world, scenario):
+        """For every staleness branch, the preview counts what submit counts after its reap."""
+        spawn(world, 100)
+        spawn(world, 200)
+        terminal = {"value": False}
+        store = make_execution_store(
+            root,
+            world,
+            execution_terminal=lambda _execution_id: terminal["value"],
+            cancellations=[],
+        )
+        OUTLOOK_SCENARIOS[scenario](store, world, root, terminal)
+
+        predicted = store.outlook(CLASS_HEAVY).ahead
+        token = store.submit(CLASS_HEAVY, pid=200)
+        # The new claim ranks behind the entries submit left standing after its reap; the
+        # preview skips an entry whose owner is gone even where the reap's recovery fails.
+        assert predicted + (scenario in OWNER_GONE_RECOVERY_FAILS) == store._rank(token)
+
+    def test_outlook_skips_a_dead_owned_execution_no_waiter_reaps(self, root, world):
+        """An idle class holding only a dead-owner execution runs the next Job now, as submit does."""
+        spawn(world, 100)
+        spawn(world, 200)
+        store = make_execution_store(
+            root, world, execution_terminal=lambda _execution_id: False, cancellations=[]
+        )
+        holder = store.submit(CLASS_HEAVY, pid=100, execution_id="a" * 32)
+        assert store.refresh(holder).state == HOLDING
+        del world.alive[100]
+        outlook = store.outlook(CLASS_HEAVY)
+        assert (outlook.ahead, outlook.runs_now) == (0, True)
+
+    @pytest.mark.parametrize(
+        ("age_s", "owner_alive", "counted"),
+        [(0, False, 1), (3600, False, 0), (3600, True, 1)],
+        ids=["young-dead-owner", "old-dead-owner", "old-live-owner"],
+    )
+    def test_outlook_treats_an_unreadable_entry_as_reap_does(
+        self, root, world, monkeypatch, age_s, owner_alive, counted
+    ):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        old = world.clock - age_s
+        os.utime(token.path, (old, old))
+        if not owner_alive:
+            del world.alive[100]
+
+        def unreadable(_self, _path):
+            raise OSError("sharing violation")
+
+        monkeypatch.setattr(SlotStore, "_load_token", unreadable)
+        assert store.outlook(CLASS_HEAVY).ahead == counted
+        assert len(store.reap(CLASS_HEAVY)) == 1 - counted
+
+    def test_outlook_changes_nothing_in_the_store(self, root, world):
+        for pid in (100, 200):
+            spawn(world, pid)
+        store = make_store(root, world, SlotCaps(max_heavy=2))
+        dead_owner = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(dead_owner).state == HOLDING
+        expired = store.submit(CLASS_HEAVY, pid=200)
+        assert store.refresh(expired).state == HOLDING  # only a holder has a lease deadline
+        edit_entry(expired, lease_expires_at=None)
+        del world.alive[100]  # a holder whose owner is gone
+        world.clock += job_slots.LEASE_DURATION_SECONDS + 1  # and a lease that ran out
+
+        def fingerprint() -> dict[str, tuple[bytes, int]]:
+            return {
+                path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+                for path in sorted((root / CLASS_HEAVY).iterdir())
+            }
+
+        before = fingerprint()
+        assert store.outlook(CLASS_HEAVY).ahead == 1  # the dead holder is skipped
+        assert fingerprint() == before
+        assert not (root / CLASS_LIGHT).exists()
+        assert store.outlook(CLASS_LIGHT).ahead == 0
+        assert not (root / CLASS_LIGHT).exists()  # an absent class is an empty queue
 
 
 class TestSlotCaps:

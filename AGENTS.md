@@ -1,8 +1,8 @@
 # Booley
 
-Booley is an agentic development environment (ADE) for FPGA and ASIC
-development, written in Python: engineers direct sandboxed Developer Agents
-through simulation, synthesis, linting, and Goal workflows.
+Booley is an agentic development environment (ADE) for RTL design and verification,
+written in Python: engineers direct sandboxed Developer Agents through
+simulation, synthesis, linting, and Goal workflows.
 
 ## Repository Rules
 
