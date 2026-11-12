@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -163,23 +162,21 @@ def test_every_run_of_a_key_is_kept_and_measured_follows_the_latest(tmp_path: Pa
     assert latest is not None and latest.run_id == "r3"
 
 
-@pytest.mark.parametrize("status", ["stopped", "cancelled"])
-def test_stopped_and_cancelled_runs_are_stored_but_not_measured(
-    tmp_path: Path, status: str
-) -> None:
+def test_stopped_and_cancelled_runs_are_stored_but_not_measured(tmp_path: Path) -> None:
     from booley.measurement.run_store import MeasurementStore
 
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
-    store.write(make_run(keyed, "r1", minute=1), [])
-    assert store.measured(keyed.key) is not None
+    for status in ("stopped", "cancelled"):
+        repo, head = in_tree_repository(tmp_path / status)
+        store = MeasurementStore(repo / ".booley")
+        keyed = key_of(repo, head)
+        store.write(make_run(keyed, "r1", minute=1), [])
+        assert store.measured(keyed.key) is not None
 
-    stored = store.write(make_run(keyed, "r2", minute=2, status=status), [])
+        stored = store.write(make_run(keyed, "r2", minute=2, status=status), [])
 
-    assert stored.status.value == status and not stored.measured
-    assert [run.run_id for run in store.history(keyed.key)] == ["r1", "r2"]
-    assert store.measured(keyed.key) is None
+        assert stored.status.value == status and not stored.measured
+        assert [run.run_id for run in store.history(keyed.key)] == ["r1", "r2"]
+        assert store.measured(keyed.key) is None
 
 
 def test_rule_change_in_versioned_booley_directory_changes_the_key_but_not_the_base_run(
@@ -255,16 +252,17 @@ def _outside_booley_directory(tmp_path: Path) -> tuple[Path, str]:
     return repo, commit_all(repo)
 
 
-@pytest.mark.parametrize("layout", [_gitignored_booley_directory, _outside_booley_directory])
-def test_unversioned_rules_fail_with_rules_must_be_versioned(
-    tmp_path: Path, layout: Callable[[Path], tuple[Path, str]]
-) -> None:
+def test_unversioned_rules_fail_with_rules_must_be_versioned(tmp_path: Path) -> None:
     from booley.measurement.run_key import RulesNotVersionedError
 
-    repo, head = layout(tmp_path)
+    for name, layout in (
+        ("ignored", _gitignored_booley_directory),
+        ("outside", _outside_booley_directory),
+    ):
+        repo, head = layout(tmp_path / name)
 
-    with pytest.raises(RulesNotVersionedError, match="rules must be versioned"):
-        key_of(repo, head)
+        with pytest.raises(RulesNotVersionedError, match="rules must be versioned"):
+            key_of(repo, head)
 
 
 def test_booley_directory_place_is_read_from_the_commit(tmp_path: Path) -> None:
