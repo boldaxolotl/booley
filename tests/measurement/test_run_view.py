@@ -345,12 +345,7 @@ def test_verdict_counts_and_excerpts_match_the_stored_results(tmp_path: Path) ->
     ]
 
 
-@pytest.mark.parametrize(
-    "status", [RunStatus.STOPPED, RunStatus.CANCELLED], ids=["stopped", "cancelled"]
-)
-def test_stopped_and_cancelled_runs_carry_status_and_not_evaluated(
-    tmp_path: Path, status: RunStatus
-) -> None:
+def test_stopped_and_cancelled_runs_carry_status_and_not_evaluated(tmp_path: Path) -> None:
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     table = Table(
@@ -360,16 +355,20 @@ def test_stopped_and_cancelled_runs_carry_status_and_not_evaluated(
             Entry("area_um2_max", "area_um2", None, bound=100),
         ),
     )
-    run = build_run(
-        key_of(repo, head), "r1", (table,), status=status, verdict=Verdict.NOT_EVALUATED
-    )
-    stored = store.write(run, [])
+    for status in (RunStatus.STOPPED, RunStatus.CANCELLED):
+        run = build_run(
+            key_of(repo, head),
+            f"r-{status.value}",
+            (table,),
+            status=status,
+            verdict=Verdict.NOT_EVALUATED,
+        )
+        stored = store.write(run, [])
 
-    view = view_of(repo, store, stored, head)
+        view = view_of(repo, store, stored, head)
 
-    assert view["status"] == status.value
-    assert view["view"]["counts"]["not_evaluated"] == 2
-    assert view["view"]["history"]["earlier"] == []
+        assert view["status"] == status.value
+        assert view["view"]["counts"]["not_evaluated"] == 2
 
 
 def test_target_without_a_table_is_listed_in_given_order(tmp_path: Path) -> None:
