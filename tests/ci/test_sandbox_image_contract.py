@@ -919,6 +919,7 @@ def _mutate_substrate_tags(sources: ContractSources, mutation: str) -> tuple[str
         )
         return "release RISC-V substrate", "tags"
     if mutation == "source-output":
+        _runtime_base_step(sources, "selected")  # the job must exist before its outputs change
         jobs["runtime-base"]["outputs"]["origin"] = jobs["runtime-base"]["outputs"].pop("source")
         return "release base selection", "must expose image, source, candidate-tag"
     jobs["build-and-push"]["outputs"]["base-source"] = "published"
