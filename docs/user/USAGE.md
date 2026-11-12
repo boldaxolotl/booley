@@ -299,9 +299,16 @@ copied. Booley also fills the Git submodules and runs the Project's post-setup
 hook before the agent starts, which can take minutes on a large Project; if a
 step fails, it removes the worktree and starts no agent (see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-fails-in-the-post-setup-hook)).
-The worktree gets your current Booley configuration; in Stealth Mode, one
-warning names the uncommitted Booley Directory files left out (see
+The worktree gets your current Booley configuration.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+One warning names the uncommitted Booley Directory files left out of the new
+worktree (see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-lacks-my-uncommitted-booley-changes)).
+
+</details>
 
 - `booley chat --new-worktree` always starts in a new worktree.
 - `booley chat --here` always starts in the main checkout, for example to
