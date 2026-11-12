@@ -69,5 +69,5 @@ def test_packaged_docs_are_expected_resources():
 
     validator = _load_validator()
     expected = {f"booley/data/docs/{Path(source).name}" for source in reference_docs.SHIPPED_DOCS}
-    assert len(expected) == 13
+    assert len(expected) == 14
     assert expected <= validator.EXPECTED_RESOURCES
