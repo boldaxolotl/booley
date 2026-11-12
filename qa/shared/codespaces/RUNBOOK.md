@@ -261,7 +261,8 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
   past the new width (a line can read twice). Trust the screenshot then, or
   cut each row to the new column count.
 - **Snapshot timeouts:** `preview_snapshot` can time out several times in a
-  row while `preview_evaluate` still works. Wait a minute and retry.
+  row while `preview_evaluate` still works. Wait a minute and retry, for up
+  to five minutes; if it still fails, see step 9.
 - **Command palette:** F1 opens it even with a terminal focused, and its input
   accepts `type`.
 - **Files:** write them from a terminal (heredoc or Python), never through the
@@ -314,6 +315,12 @@ gap in `log.md` the first time you meet it.
   size and sharp. After step 6, read text from the DOM rather than from the
   image. Save the matching oracle output as
   `<area>-<nn>-<what>.txt` next to it.
+- **When screenshots fail.** On 2026-11-09 to 2026-11-10, `preview_snapshot`
+  failed or timed out for hours while the preview tab was hidden, and
+  `preview_evaluate` kept working. After the retries in step 7, the claim has
+  no screenshot: record the tool's error. `booley-gui-check` then marks the
+  step `blocked` (its step 4); the `gui` mission logs a finding and goes on.
+  No fix for the hidden tab is verified yet.
 - Recordings only to reproduce a finding.
 - Screenshots come only from the public demo Project. Before posting any image
   anywhere public, look at it yourself: the confidential-content guard reads
