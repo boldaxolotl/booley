@@ -1035,7 +1035,7 @@ class DashboardApp(App[None]):
 
     def _open_run_wizard(self) -> None:
         """Open the Run wizard over the current window, remembering where it started."""
-        if self.launcher is None:
+        if self.launcher is None or self.targets is None:
             self.notify("Run unavailable: no Project root", severity="warning")
             return
         self._remember()
@@ -1044,7 +1044,12 @@ class DashboardApp(App[None]):
         choices, message = self._wizard_worktrees()
         self.push_screen(
             RunWizard(
-                self.launcher, choices, message, self._default_worktree, self._worktree_occupants
+                self.launcher,
+                self.targets,
+                choices,
+                message,
+                self._default_worktree,
+                self._worktree_occupants,
             ),
             lambda key: self._after_run(origin, key),
         )
