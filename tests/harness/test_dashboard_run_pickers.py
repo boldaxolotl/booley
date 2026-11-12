@@ -8,6 +8,7 @@ goes stale says so instead of leaving the field blank.
 
 from __future__ import annotations
 
+import shlex
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -186,7 +187,7 @@ async def test_test_field_offers_the_targets_test_runs_and_toggles_several(proje
         expected = ("--target", "sim_fifo", "--test", "stress+soak", "--test", "reset")
         assert (
             shown(wizard, "#run-command")
-            == f"cd {project} && booley flow sim {' '.join(expected)}"
+            == f"cd {shlex.quote(str(project))} && booley flow sim {' '.join(expected)}"
         )
         await pilot.press("enter")
         await pilot.pause()
@@ -222,7 +223,10 @@ async def test_unreadable_tests_say_why_write_nothing_and_extra_arguments_still_
         assert pick_rows(wizard) == []
         await pilot.press("enter", "escape")  # Enter on no row does nothing
         await check_arguments(app, pilot, wizard, "--test x")
-        assert shown(wizard, "#run-command") == f"cd {project} && booley flow sim --test x"
+        assert (
+            shown(wizard, "#run-command")
+            == f"cd {shlex.quote(str(project))} && booley flow sim --test x"
+        )
     cases = {
         "a tests.toml the Target cannot apply": (
             {
@@ -278,7 +282,7 @@ async def check_unreadable(root: Path, expected: str) -> None:
         await check_arguments(app, pilot, wizard, "--test x")
         assert (
             shown(wizard, "#run-command")
-            == f"cd {root} && booley flow sim --target sim_top --test x"
+            == f"cd {shlex.quote(str(root))} && booley flow sim --target sim_top --test x"
         )
 
 
@@ -354,7 +358,10 @@ async def test_unlistable_or_crashed_targets_say_why_and_extra_arguments_still_t
         assert pick_rows(wizard) == ["automatic"]
         await pilot.press("escape")
         await check_arguments(app, pilot, wizard, "--target t")
-        assert shown(wizard, "#run-command") == f"cd {project} && booley flow lint --target t"
+        assert (
+            shown(wizard, "#run-command")
+            == f"cd {shlex.quote(str(project))} && booley flow lint --target t"
+        )
         monkeypatch.setattr(targets, "collect_surface", real)  # fixed meanwhile
         await pilot.press("escape", "escape", "enter")  # back to the Flow list, lint again
         await settle(app, pilot)
