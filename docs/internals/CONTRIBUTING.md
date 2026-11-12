@@ -44,7 +44,7 @@ Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
 
 The Sandbox agents read a fixed set of user docs from `/booley-docs/`. The
 authored files stay in `docs/user/` (plus `docs/internals/FLOW_REPORTS.md`); the
-set is `SHIPPED_DOCS` in `src/booley/dev_support/reference_docs.py`. After
+set is `SHIPPED_DOCS` in `src/booley/runtime/packaged_docs.py`. After
 editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
 with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
 without writing. The same command mirrors `CHANGELOG.md` byte for byte to
@@ -56,7 +56,14 @@ installing Booley. Never edit a copy or the mirror by hand. The sync turns
 links to other shipped docs into sibling links and links to unshipped docs
 (`PLAIN_TEXT_TARGETS`) into plain text marked `(host doc, not shipped)`. A new
 link to a doc in neither set fails the sync with the file, the link and the fix.
-The regenerated copy lives under `src/booley/**`, so such an edit also runs the
+Every stamped build renders the copies first, through `write_build_stamp` in
+`src/booley/runtime/build_stamp.py`. When a source was edited without the sync,
+the build rewrites the stale tracked copy and leaves it modified in the working
+tree. The render skips the `CHANGELOG.md` mirror, which only the sync updates. A
+bare `python -m build` runs no stamp and packs the copies on disk as they are, so
+run the sync before it. Run the sync before committing too: the readiness
+packaged-copies check and `tests/test_paths.py` fail on a stale copy. The
+regenerated copy lives under `src/booley/**`, so such an edit also runs the
 Python CI lane.
 
 ### Building a development wheel

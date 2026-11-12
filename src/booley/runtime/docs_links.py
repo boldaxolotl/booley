@@ -7,9 +7,9 @@ contributor docs from ``docs/internals/`` (:data:`CONTRIBUTOR_DOCS`).
 
 Agent-facing text (skills, the cheatsheet, generated config comments) cannot
 assume a repository checkout. It cites the docs the Sandbox ships at
-``/booley-docs/<FILE>`` (:func:`sandbox_doc_path`; the allowlist and sync live
-in ``booley.dev_support.reference_docs``) and names any other doc only with the
-``(host doc, not shipped)`` marker. ``tests/docs/test_sandbox_doc_citations.py``
+``/booley-docs/<FILE>`` (:func:`sandbox_doc_path`; the allowlist and renderer live
+in ``booley.runtime.packaged_docs``, the sync in ``booley.dev_support.reference_docs``)
+and names any other doc only with the ``(host doc, not shipped)`` marker. ``tests/docs/test_sandbox_doc_citations.py``
 enforces this.
 
 Standard library only: ``website/hooks/user_docs.py`` loads this file by path

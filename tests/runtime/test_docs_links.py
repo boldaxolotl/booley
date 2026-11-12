@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 from tests.docs.test_links import _markdown_anchors
 
-from booley.dev_support.reference_docs import SHIPPED_DOCS
 from booley.runtime.docs_links import CONTRIBUTOR_DOCS, SITE_DOCS, USER_DOCS, docs_url
+from booley.runtime.packaged_docs import SHIPPED_DOCS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "src/booley"
@@ -28,9 +28,8 @@ _REPO_PATH_ALLOWED = {
     "runtime/docs_links.py",
     # Locates the packaged TROUBLESHOOTING.md mirror on disk.
     "runtime/paths.py",
-    # Maintainer tooling: syncs the packaged mirror / renders Markdown embedded in
-    # docs/user/CLI-REFERENCE.md (a relative link there), not printed links.
-    "dev_support/reference_docs.py",
+    # Owns the shipped-doc allowlist and renders the packaged copies, not printed links.
+    "runtime/packaged_docs.py",
     "dev_support/flow_specialist_reference.py",
 }
 
