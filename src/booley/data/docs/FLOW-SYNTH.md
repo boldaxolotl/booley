@@ -93,7 +93,8 @@ sanitized file name with a hash suffix.
 | `FAIL` | The design cannot be synthesized, or the final netlist has latches beyond `expected_latches`, combinational loops, multiply-driven nets, or logic that never became cells; or timing is violated while `fail_on_timing_violation = true`. | `1` |
 | `ERROR` | No verdict: missing constraints, bad configuration, timeout, out of memory, or a crash. | `2` |
 
-Warnings known to be harmless are counted but don't cause `WARN`. A
+Warnings known to be harmless, and warnings the Yosys frontends report
+against your source lines, are counted but don't cause `WARN`. A
 `SYNTH:{target}` Goal is met when the run finishes with a clean netlist and
 every area or timing threshold set on the Goal passes; see
 Goal Mode (host doc, not shipped).

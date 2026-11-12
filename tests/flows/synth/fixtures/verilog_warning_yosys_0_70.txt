@@ -1,0 +1,5 @@
+1. Executing Verilog-2005 frontend: rv.v
+Parsing Verilog input from `rv.v' to AST representation.
+Generating RTLIL representation for module `\rv'.
+rv.v:2: Warning: Range select [5:4] out of bounds on signal `\a': Setting all 2 result bits to undef.
+Successfully finished Verilog frontend.

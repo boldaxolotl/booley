@@ -456,8 +456,11 @@ repair runs), and `reg2reg.rpt` (only when the design has registers).
 `[flows.synth].timing_report_paths` sets how many paths each lists. The next
 run overwrites the `live_dirs` work directories, so read the numbered copies.
 
-Actionable warnings set `implementation.status.grade` to `warn` but keep
-`passed: true`. Known-benign warnings are still counted, with a rationale.
+Actionable warnings (dispositions `advisory` and `structural`) set
+`implementation.status.grade` to `warn` but keep `passed: true`. Known-benign
+warnings are still counted, with a rationale. Located frontend warnings
+(category `frontend`, disposition `informational`) are counted too and never
+set `warn`.
 `artifacts.log` has every raw message.
 
 ## `fpga`
