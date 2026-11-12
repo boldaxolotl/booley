@@ -2,7 +2,7 @@
 
 The script runs as a Renovate post-upgrade command in a checkout of an update branch:
 it refreshes the agent CLI lockfile after a manifest bump and the CI constraints file
-after a ``pyproject.toml`` bump. Nothing here runs npm or uv: ``subprocess.run`` is
+after a Python manifest bump. Nothing here runs npm or uv: ``subprocess.run`` is
 replaced by a recorder that checks the argument list and the directory it was run in,
 and plays the tool's result.
 """
@@ -16,7 +16,7 @@ import shlex
 import subprocess
 import sys
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -97,15 +97,23 @@ def _repo(tmp_path: Path) -> Path:
     return root
 
 
+def _upgrade(package_file: str, dep_name: str = "dep", new_value: str = ">=1") -> dict[str, str]:
+    """One data file entry; the default ``newValue`` is a range, which asks uv for nothing."""
+    return {"depName": dep_name, "packageFile": package_file, "newValue": new_value}
+
+
 def _run(
     root: Path,
     task: str,
-    packages: list[str],
+    packages: Sequence[str | dict[str, str]],
     tool: _Tool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> int:
-    """Run ``task`` in ``root`` with a data file upgrading ``packages`` (their package files)."""
-    entries = [{"depName": "dep", "packageFile": file, "newValue": "1"} for file in packages]
+    """Run ``task`` in ``root`` with a data file upgrading ``packages``.
+
+    A plain string stands for an upgrade of that package file.
+    """
+    entries = [_upgrade(item) if isinstance(item, str) else item for item in packages]
     data_file = root.parent / "upgrades.json"
     data_file.write_text(json.dumps({"upgrades": entries}), encoding="utf-8")
     monkeypatch.setenv(_DATA_FILE_ENV, str(data_file))
@@ -274,15 +282,113 @@ def test_constraints_regenerate_with_the_checked_command_and_no_builds(
     assert not kwargs.get("shell")
 
 
-def test_constraints_skip_branches_without_a_pyproject_upgrade(
+def _constraints_argv(*requests: str) -> list[str]:
+    """The uv command the task runs, with ``requests`` between the safety flags and the header."""
+    command = _checked_command()
+    return [
+        *shlex.split(command),
+        "--no-build",
+        "--no-config",
+        "--no-sources",
+        *requests,
+        "--custom-compile-command",
+        command,
+    ]
+
+
+def test_constraints_request_each_proposed_exact_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A floored package bumped in a CI requirements file is pinned to the proposal (AC1)."""
     root = _repo(tmp_path)
     tool = _Tool()
+    upgrades = [
+        _upgrade(".github/ci/requirements-runners-release.txt", "hypothesis", "==6.170.15"),
+        # The same proposal from the manifest and a requirements file, spelled two ways.
+        _upgrade("pyproject.toml", "pytest-asyncio", "==1.4.1.post1"),
+        _upgrade(".github/ci/requirements-runners.txt", "pytest_asyncio", "==1.4.1.post1"),
+        _upgrade(".github/ci/requirements-lint.txt", "PyYAML", "==6.0.3"),
+        _upgrade("pyproject.toml", "pyyaml", "==6.0.3"),
+        # A range, even one that starts with ==, names no single version.
+        _upgrade("pyproject.toml", "mcp", ">=2.1.1,<4"),
+        _upgrade("pyproject.toml", "packaging", "==1.2,<3"),
+        # A manifest-only proposal; Renovate keeps the space before an environment marker.
+        _upgrade("pyproject.toml", "twine", "==7.1.0 "),
+        # Not a Python manifest of the constraints, so its name is never checked.
+        _upgrade(".github/workflows/test.yml", "actions/checkout", "==6.0"),
+    ]
 
-    assert _run(root, "constraints", [_MANIFEST, "Cargo.lock"], tool, monkeypatch) == 0
+    assert _run(root, "constraints", upgrades, tool, monkeypatch) == 0
+
+    [(argv, _)] = tool.calls
+    assert argv == _constraints_argv(
+        "--upgrade-package=hypothesis==6.170.15",
+        "--upgrade-package=pytest-asyncio==1.4.1.post1",
+        "--upgrade-package=pyyaml==6.0.3",
+        "--upgrade-package=twine==7.1.0",
+    )
+
+
+def test_constraints_run_for_ci_requirements_only_branches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ci-tooling branch touches no pyproject.toml but still regenerates the pins (AC2)."""
+    root = _repo(tmp_path)
+    tool = _Tool()
+    upgrades = [_upgrade(".github/ci/requirements-build.txt", "build", "==1.6.2")]
+
+    assert _run(root, "constraints", upgrades, tool, monkeypatch) == 0
+
+    [(argv, _)] = tool.calls
+    assert argv == _constraints_argv("--upgrade-package=build==1.6.2")
+
+
+def test_constraints_skip_branches_without_a_python_manifest_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only the manifest and the CI requirements files feed the constraints (AC3)."""
+    root = _repo(tmp_path)
+    tool = _Tool()
+    others = [
+        _MANIFEST,
+        "Cargo.lock",
+        "website/requirements.txt",
+        "src/booley/data/docker/base-python-requirements.txt",
+        _CONSTRAINTS,
+        ".github/ci/sub/requirements-x.txt",
+    ]
+
+    assert _run(root, "constraints", others, tool, monkeypatch) == 0
 
     assert tool.calls == []
+    assert "nothing to do" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("dep_name", "new_value", "message"),
+    [
+        ("hypothesis @ https://example.test/x.whl", "==6.0", "hypothesis @ https"),
+        ("hypothesis", "6.0", "'6.0'"),
+    ],
+    ids=["url-name", "unknown-form"],
+)
+def test_constraints_refuse_upgrades_uv_must_not_see(
+    dep_name: str,
+    new_value: str,
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The branch is data: a name or value outside Renovate's format never reaches uv's argv."""
+    root = _repo(tmp_path)
+    tool = _Tool()
+    upgrades = [_upgrade(".github/ci/requirements-lint.txt", dep_name, new_value)]
+
+    assert _run(root, "constraints", upgrades, tool, monkeypatch) == 1
+
+    assert tool.calls == []
+    assert message in capsys.readouterr().err
 
 
 _BAD_HEADERS = [
