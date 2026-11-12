@@ -451,10 +451,13 @@ def test_clock_names_come_from_the_latest_run_that_has_them(tmp_path: Path) -> N
     store = MeasurementStore(repo / ".booley")
     keyed = key_of(repo, head)
     assert store.clock_names(IDENTITY, "syn") == ()
-    # Ids sort against finish order so only the finish time can pick the newest run.
-    store.write(make_run(keyed, "a", minute=1, per_clock={"fmax": {"old_clk": 1.0}}), [])
-    store.write(make_run(keyed, "b", minute=2, per_clock={"fmax": {"clk_i": 2.0}}), [])
-    store.write(make_run(keyed, "c", minute=3), [])
+    # Neither ascending nor descending id order, nor start order, picks the newest run.
+    store.write(make_run(keyed, "a", minute=1, per_clock={"fmax": {"old_a": 1.0}}), [])
+    store.write(make_run(keyed, "c", minute=2, per_clock={"fmax": {"old_c": 1.0}}), [])
+    store.write(
+        make_run(keyed, "b", minute=3, start_minute=-10, per_clock={"fmax": {"clk_i": 2.0}}), []
+    )
+    store.write(make_run(keyed, "d", minute=4), [])
 
     assert store.clock_names(IDENTITY, "syn") == ("clk_i",)
     assert store.clock_names(IDENTITY, "sim") == ()
