@@ -199,7 +199,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   `design.sv:2: ERROR: expected ';'`, followed by the source line and a caret.
   The column is gone and the line is no longer prefixed `error:`. Booley's
   design-failure reports read the new form, so no Target change is needed.
-  ([PR #3631](https://github.com/boldaxolotl/booley/pull/3631))
+  ([PR #3632](https://github.com/boldaxolotl/booley/pull/3632))
 
 ## 0.4.0 - 04 NOV 2026
 
