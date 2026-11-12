@@ -1,7 +1,13 @@
 # Goal Mode elicitation spike (ADR 0067, Phase 0)
 
-Validated on 06 OCT 2026 for [ADR 0067](../../adr/0067-replace-ticket-mode-with-goal-mode.md).
-Decides how `goal_propose_change` asks the human for approval, per client.
+Dated evidence record of a spike run on 06 OCT 2026 for
+[ADR 0067](../../adr/0067-replace-ticket-mode-with-goal-mode.md). It decided
+how `goal_propose_change` asks the user to approve a Goal change in each agent
+client. Read it when you change that approval path and need to know what the
+clients actually did. The decision it fed is recorded in
+[ADR 0067's 2026-10-06 amendments](../../adr/0067-replace-ticket-mode-with-goal-mode.md#amendments-2026-10-06).
+Results hold for the client and SDK versions named below and are not updated
+afterward.
 
 ## Setup
 
@@ -14,9 +20,9 @@ Decides how `goal_propose_change` asks the human for approval, per client.
   minLength 1`) and `request_state="spike-proposal-1"`, then echoed the
   retry; `spike_elicit_form` called `ServerSession.elicit_form` mid-call.
 - Clients: Claude Code 2.1.285 and Codex 0.160.0, each started inside the
-  Sandbox (`booley session enter -- claude|codex`), driven by a human at the
+  Sandbox (`booley session enter -- claude|codex`), driven by a user at the
   keyboard. The server appended every call to a JSON-lines log in the
-  Booley Directory; the human reported what the screen showed.
+  Booley Directory; the user reported what the screen showed.
 
 ## Results
 
@@ -25,9 +31,9 @@ Decides how `goal_propose_change` asks the human for approval, per client.
 | Negotiated protocol | `2026-07-28` | `2026-07-28` |
 | `ClientCapabilities.elicitation` | `form: {}`, `url: {}` | `form: {}`, `url: {}` |
 | `input_required` form shown | yes: client renders title, enum selector, text field, Accept/Decline | no: nothing on screen |
-| Retry carries `input_responses` | yes: `action: accept`, `content: {decision, reason}` typed by the human | yes: `action: decline`, no content, within the same second |
+| Retry carries `input_responses` | yes: `action: accept`, `content: {decision, reason}` typed by the user | yes: `action: decline`, no content, within the same second |
 | Retry carries `request_state` | yes, verbatim | yes, verbatim |
-| Decline behaviour | Esc returns `action: cancel`, no content | auto-declines; the human is never asked |
+| Decline behavior | Esc returns `action: cancel`, no content | auto-declines; the user is never asked |
 | Agent sees the form | no: the client handles the round trip and retries; the agent only sees the final result | no |
 | `elicit_form` mid-call | `NoBackChannelError` | `NoBackChannelError` |
 
@@ -50,7 +56,7 @@ produced the same `NoBackChannelError`. The
 legacy stateful transport does have a back-channel, but neither client uses
 it against Booley, so it is not supported.
 
-## Decision for D1
+## Decision
 
 - A client that declares `elicitation.form` gets `InputRequiredResult` from
   `goal_propose_change`. The retry is an elicited decision only when its
@@ -72,7 +78,7 @@ it against Booley, so it is not supported.
   the agent-recorded path.
 - `request_state` is sealed with the SDK's `RequestStateBoundary` and bound
   to the proposal id; `input_responses` is read from the request params
-  only. Neither authenticates the human: the server cannot tell a form
+  only. Neither authenticates the user: the server cannot tell a form
   answered in the client from a retry forged by any process in the Sandbox
   (the curl probe in this spike supplied a request-level `inputResponses`
   itself). "Elicited" means "answered through the client's form as far as

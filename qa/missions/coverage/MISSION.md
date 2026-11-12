@@ -2,13 +2,19 @@
 
 Hunt native-coverage bugs end to end: collection, exact arithmetic, Goal
 policy, waivers, Campaign storage, retention, a coverage Goal, and the
-Coverage Analyst. The fixture's counts are known by construction, so every
-mismatch is a finding rather than a judgement call.
+Coverage Analyst. The areas don't use a real design: they run on a fixed
+fixture Project whose counts are known by construction, so every mismatch is a
+finding rather than a judgment call. The `booley-qa-run` skill runs this
+mission; fault-tool recipes live in `../../shared/coverage/RUNBOOK.md`, so skim
+it before area 1.
 
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here).
-- Fixture Project: `../../shared/coverage/project/` in this repository.
-- Tools/host needs: pinned Verilator (`VERILATOR_VERSION` in `src/booley/data/docker/Dockerfile.base`) in the issued Sandbox, Yosys with
+- Fixture Project: `../../shared/coverage/project/` in this repository, with its
+  expected values beside it in `expected.json`, `policies.json` and
+  `baselines.json`.
+- Tools/host needs: pinned Verilator (`VERILATOR_VERSION` and `VERILATOR_REF` in
+  `src/booley/data/docker/Dockerfile.base`) in the issued Sandbox, Yosys with
   SAT/induction, gcc, Python, Docker; ~8 GiB RAM and ~20 GiB free disk for the
   large `sim_scale` Campaign; a Codex or Claude client for the Analyst.
 - Budget: 8 h total: 405 area minutes plus 75 contingency. Areas run in
@@ -16,21 +22,14 @@ mismatch is a finding rather than a judgement call.
   Interactive children never overlap an active Goal in the same Project.
   Rerun with the other client or on Windows only when asked.
 
-These areas hunt native-coverage bugs: collection, exact arithmetic, Goal policy, waivers, Campaign
-storage, retention, a coverage Goal and the Coverage Analyst. They do **not** use the UART design: they run
-on the fixed fixture project `../../shared/coverage/project/`, whose counts are known by construction
-(`expected.json`, `policies.json`, `baselines.json` beside it), so any mismatch is a finding. Fault-tool
-recipes live in `../../shared/coverage/RUNBOOK.md`; skim it before area 1.
-
 ## Staging the coverage fixture
 - Create a fresh disposable Project (add it to `resources.md`): copy `../../shared/coverage/project/` as its
   source, initialize it through the documented public route, and install `project-data/tests.toml` into the
   resolved Booley Directory (never assume `.booley`). Keep the rest of
   initialization's config. Commit fixture and initialized Project files, including seeded Goalsets and
   managed `.gitignore`, before creating a Goal worktree.
-- Tools: pinned Verilator (`VERILATOR_VERSION` and `VERILATOR_REF` in `src/booley/data/docker/Dockerfile.base`) in the issued Sandbox, Yosys
-  with SAT/induction, gcc, Python. Native builds run only in the Sandbox. `sim_scale` (4,096 instances)
-  wants ~8 GiB RAM and ~20 GiB free disk; if absent, log it and skip only the large-Campaign items.
+- Native builds run only in the Sandbox. `sim_scale` (4,096 instances) wants ~8 GiB RAM and ~20 GiB
+  free disk; if absent, log it and skip only the large-Campaign items.
 - Build the syscall fault library into a run-owned dir and inject it only into the one command under test
   (never `/etc/ld.so.preload`, never a shared shell):
   `gcc -shared -fPIC -O2 -Wall -Wextra -o <owned>/boundary.so ../../shared/coverage/faults/boundary.c -ldl`
@@ -56,7 +55,6 @@ recipes live in `../../shared/coverage/RUNBOOK.md`; skim it before area 1.
   never count as a live-model result.
 - Analyst calls: ~3 min each. Provider pipe fixture is Linux-runtime only. Rerun with the other client
   (Codex vs Claude) for host coverage if time allows.
-
 - Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md)
   for every Goal area.
 
@@ -71,7 +69,7 @@ Try:
 - `--coverage` vs `--cov` on `sim_generated` (equivalent, fresh invocation numbers); MCP `sim` with
   `coverage: true`, then with string `"true"` (schema rejection before simulation); omit collection while a
   coverage Goal exists → plain sim, no Campaign, no coverage acceptance.
-- Harness kinds: `sim_generated` (two tests), `sim_custom` (C++ main), `sim_hdl` (tagged HDL TB),
+- Harness kinds: `sim_generated` (two selected tests), `sim_custom` (C++ main), `sim_hdl` (tagged HDL TB),
   `sim_cocotb` (one process/database per test, verdicts from XML). Reverse the Target/test order → stable
   order, no cross-Target merge.
 - Suite choice: no Goal/selection → full registered suite minus default-skipped; explicit skipped test
@@ -95,7 +93,7 @@ must never become points.
 Try:
 - For each `expected.json` case run its Target/tests with `--coverage`, then check the nested Campaign manifest
   (one `--native` per run, ids and paths per RUNBOOK.md "Campaign paths"):
-  `python3 ../../shared/coverage/evaluator/measurements.py <nested>/coverage.json --expected ../../shared/coverage/expected.json --case <case> --native run:001:<test>=<campaign-dir>/native/raw/001-<test>.dat`
+  `python3 ../../shared/coverage/evaluator/measurements.py <nested>/coverage.json --expected ../../shared/coverage/expected.json --case <case> --native run:001:<test>@1=<campaign-dir>/native/raw/001-<test>@1.dat`
   Cases: zero 0/8,
   quarter 2/8, half 4/8, rise (one direction) 4/8, full 8/8, repeat 4/8 with higher hit counts, union 4+4 →
   8/8, overlap → 4/8, properties4 half 2/4 and full 4/4, properties16 half 2/16 (12.5%), threshold 50 pass
@@ -296,7 +294,7 @@ fixture Project, Goal worktrees and branches in `resources.md`.
 - `sim_generated` has no HDL `tb` tag on purpose; check classification and resolved source closure, not the
   Target name.
 - A schema/setup error never proves a deeper validation; read the error code.
-- Compare response sizes as compact UTF-8 JSON, not pretty-printed files.
+- Compare response sizes as compact JSON with ASCII escaping (`ensure_ascii=True`), not pretty-printed files.
 - Publication retry = new invocation number; prune retry = same selection. Never delete a lock to get past
   an active producer.
 - Parallel sub-agents share the host Sandbox cap (`[sandbox] max_sessions`, default 4). New

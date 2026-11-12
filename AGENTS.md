@@ -59,7 +59,8 @@ simulation, synthesis, linting, and Goal workflows.
   configuration, follow `docs/internals/agents/confidential-content.md`.
 - **Issue tracker:** GitHub Issues stores issues and specs. See
   `docs/internals/agents/issue-tracker.md`.
-- **Triage labels:** Use the standard Matt Pocock labels. See
+- **Triage labels:** state labels (including `tracker`) and category labels
+  (`bug`, `enhancement`, `documentation`). See
   `docs/internals/agents/triage-labels.md`.
 - **Agent Briefs:** `ready-for-agent` issues need one. See
   `docs/internals/agents/agent-brief.md`.
