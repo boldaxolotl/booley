@@ -129,7 +129,15 @@ def test_pinned_codex_accepts_gateway_seeded_catalog(tmp_path):
         assert len(requests) == 1
         assert not requests[0].get("tools")
         # The seeded entry's instructions and the configured effort reach the request.
-        assert requests[0]["instructions"] == _GATEWAY_BASE_INSTRUCTIONS
+        # Codex 0.167 sends the catalog base instructions as the first input item, a
+        # developer message, not in the Responses `instructions` field (0.160 did).
+        assert "instructions" not in requests[0]
+        first_item = requests[0]["input"][0]
+        assert first_item["type"] == "message"
+        assert first_item["role"] == "developer"
+        assert first_item["content"] == [
+            {"type": "input_text", "text": _GATEWAY_BASE_INSTRUCTIONS}
+        ]
         assert requests[0]["reasoning"]["effort"] == "low"
         assert '"type":"turn.completed"' in result.stdout
     finally:
