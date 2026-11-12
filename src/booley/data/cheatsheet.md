@@ -240,7 +240,7 @@ Example: `{"family": "SYNTH", "target": "synth_core", "thresholds": {"clk_i.fmax
 
 ### Metrics
 
-Each block is `metrics.toml` text: give each bound you keep a number, delete the rest, and check the file with `booley measure --validate`.
+The listing from `booley cheat --metrics` is `metrics.toml` text: save the blocks you keep as `.booley/metrics.toml`, give each bound you keep a number, delete the rest, and check the file with `booley measure --validate`.
 
 <!-- BEGIN GENERATED: metrics -->
 Run `booley cheat --metrics` in a Project to list its Targets' metrics.

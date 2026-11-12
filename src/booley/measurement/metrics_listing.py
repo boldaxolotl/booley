@@ -25,7 +25,7 @@ from booley.measurement.flow_metrics import metric_declarations
 from booley.measurement.metrics_file import TABLE_FLOWS, table_header, toml_key
 from booley.measurement.run_store import MeasurementStore
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import FuseSocError, TargetHandle
+from booley.targets.domain import FuseSocError, StaleTargetCatalogError, TargetHandle
 
 NO_TARGET_FLOW = "# No Target runs a Flow that declares metrics."
 CLOCK_FALLBACK = (
@@ -80,6 +80,8 @@ def _table_selector(catalog: TargetCatalog, handle: TargetHandle) -> str:
     key = handle.identity if handle.selector == "defaults" else handle.selector
     try:
         reached = catalog.select(key).identity
+    except StaleTargetCatalogError:
+        raise
     except FuseSocError as exc:
         return _unreachable(handle, " ".join(str(exc).split()))
     if reached != handle.identity:
@@ -130,12 +132,20 @@ def _flow_block(
 ) -> str:
     """The header and metric lines of one ``[<target>.<flow>]`` table."""
     lines = [table_header(selector, flow)]
-    clocks = store.clock_names(handle.identity, flow)
-    for declaration in metric_declarations(flow):
+    declarations = metric_declarations(flow)
+    # Only a Flow with per-clock metrics needs the store; reading it parses every stored run.
+    clocks = (
+        store.clock_names(handle.identity, flow)
+        if any(d.kind is MetricKind.PER_CLOCK for d in declarations)
+        else ()
+    )
+    fallback_printed = False
+    for declaration in declarations:
         if declaration.kind is MetricKind.PER_TEST:
             lines.extend(_per_test_lines(declaration, tests))
         elif declaration.kind is MetricKind.PER_CLOCK:
-            lines.extend(_per_clock_lines(declaration, clocks, first=CLOCK_FALLBACK not in lines))
+            lines.extend(_per_clock_lines(declaration, clocks, first=not fallback_printed))
+            fallback_printed = fallback_printed or not clocks
         else:
             lines.append(_key_line(None, declaration))
     return "\n".join(lines)

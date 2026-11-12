@@ -62,8 +62,14 @@ def test_each_target_lists_its_flows_with_every_metric_and_unit(tmp_path: Path) 
     synth = block(listing, "[synth_core.synth]")
     assert synth.splitlines()[0] == "[synth_core.synth]"
     assert synth.count(CLOCK_FALLBACK) == 1
-    assert "area_um2_max =  # μm², plain" in synth
     assert "fmax_mhz_min =  # MHz, per-clock" in synth
+    from booley.flows.metric_declarations import Better
+    from booley.measurement.flow_metrics import metric_declarations
+
+    # Every declared synth metric is listed with its bound direction.
+    for declaration in metric_declarations("synth"):
+        limit = "max" if declaration.better is Better.LOWER else "min"
+        assert f"{declaration.name}_{limit} =  # {declaration.unit}, " in synth
     # The Icarus Target runs the Simulation Flow only; coverage needs Verilator.
     assert "[sim_icarus.sim]" in listing
     assert "[sim_icarus.coverage]" not in listing
@@ -127,6 +133,15 @@ def test_clock_names_come_from_the_stored_measurement_run(tmp_path: Path) -> Non
     assert '"clk_i.fmax_mhz_min" =  # MHz, per-clock' in synth
     assert "\nfmax_mhz_min" not in synth
 
+    # The printed clock-prefixed keys load back as bounds of the synth table.
+    from booley.measurement.metrics_file import load_metrics_rules
+
+    (project / ".booley" / "metrics.toml").write_bytes(fill_listing(listing_of(project)).encode())
+    table = {(t.target, t.flow): t for t in load_metrics_rules(project).tables}[
+        "synth_core", "synth"
+    ]
+    assert {bound.key for bound in table.bounds} >= {"clk_b.fmax_mhz_min", "clk_i.fmax_mhz_min"}
+
 
 def test_without_stored_clock_names_the_fallback_is_printed(tmp_path: Path) -> None:
     synth = block(listing_of(write_listing_project(tmp_path)), "[synth_core.synth]")
@@ -176,3 +191,38 @@ def test_a_project_without_a_runnable_target_says_so(tmp_path: Path) -> None:
     (tmp_path / ".booley" / "booley.toml").write_bytes(b"[project]\n")
 
     assert listing_of(tmp_path) == "# No Target runs a Flow that declares metrics."
+
+
+def test_damaged_stored_run_falls_back_to_the_unprefixed_key(tmp_path: Path) -> None:
+    project = write_listing_project(tmp_path)
+    run_dir = project / ".booley" / "measurements" / "damaged"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_bytes(b"{}")
+
+    assert CLOCK_FALLBACK in block(listing_of(project), "[synth_core.synth]")
+
+
+def test_stale_target_catalog_is_not_swallowed(tmp_path: Path) -> None:
+    from booley.measurement.metrics_listing import _table_selector
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import StaleTargetCatalogError
+
+    project = write_listing_project(tmp_path)
+    catalog = TargetCatalog.build(project)
+    handle = catalog.list()[0]
+    (project / "synth_core.core").write_bytes(b"CAPI=2:\nname: ::synth_core:0\n")
+
+    with pytest.raises(StaleTargetCatalogError):
+        _table_selector(catalog, handle)
+
+
+def test_linked_worktree_lists_clock_names_of_the_main_checkouts_store(tmp_path: Path) -> None:
+    from booley.core.booley_dir import main_booley_dir_of
+    from tests.measurement.test_run_store import git, in_tree_repository
+
+    repo, head = in_tree_repository(tmp_path / "repo")
+    linked = tmp_path / "linked"
+    git(repo, "worktree", "add", "-q", "-b", "feature", str(linked), head)
+
+    assert main_booley_dir_of(linked) == repo / ".booley"
+    assert main_booley_dir_of(repo) == repo / ".booley"

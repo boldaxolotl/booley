@@ -313,8 +313,9 @@ def resolve_common_booley_dir(start: Path | None = None) -> Path:
 def main_booley_dir_of(project_root: Path) -> Path:
     """Return the Main Booley Directory of the Project checked out at *project_root*.
 
-    Unlike :func:`resolve_common_booley_dir`, the checkout is explicit: neither
-    ``BOOLEY_DIR`` nor the process cache can name another Project.
+    Unlike :func:`resolve_common_booley_dir`, the checkout is explicit: the process
+    cache cannot name another Project, and ``BOOLEY_DIR`` is read only when the
+    checkout has no Booley Directory of its own.
     """
     selected = resolve_checkout_booley_dir(project_root)
     return _main_booley_dir(selected) or selected
