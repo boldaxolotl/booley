@@ -617,6 +617,28 @@ def test_trace_identity_reports_multiple_root_scopes(tmp_path, monkeypatch, caps
     assert "header-only" not in err
 
 
+def test_trace_identity_surfaces_store_load_cause(tmp_path, monkeypatch, capsys):
+    """#3648: a failed identity probe prints bwave's cause line, not only the guess."""
+    from booley.bwave import cli as bwave
+    from booley.bwave import sessions as bwave_sessions
+
+    cause = (
+        "ERROR: cannot load waveform store 'cut.fst': store is truncated; "
+        "re-run the simulation or rebuild it with `bwave build <trace.vcd> -o cut.fst`"
+    )
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-bin"])
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=f"noise\n{cause}\n"
+        ),
+    )
+
+    assert bwave_sessions._trace_identity(tmp_path / "cut.fst") == ""
+    assert f"[bwave] WARNING: {cause}" in capsys.readouterr().err
+
+
 def test_unknown_alias_error():
     _write_sessions({"baseline": _make_entry(str(BWAVE.resolve()))})
     r = _query("@nonexistent", "--wave", "-t", "1:5")

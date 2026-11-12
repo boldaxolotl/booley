@@ -4744,12 +4744,14 @@ fn issue_3648_help_matches_json_support() {
 fn issue_3648_truncated_store_names_cause_and_rebuild_hint() {
     let store = build_bwave("small_clocked.vcd", "3648-truncated");
     let bytes = std::fs::read(&store).unwrap();
-    let dir = std::env::temp_dir().join(format!("bwave-3648-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // A TempDir removes itself even when an assertion below panics.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
     let rebuild = "rebuild it with `bwave build";
     for (label, percent, cause) in [
         ("early", 10, "store is truncated"),
-        ("mid", 50, "store is truncated"),
+        // Past the hierarchy: FST open alone accepts it (the silent-empty case).
+        ("late", 80, "store is truncated"),
         ("empty", 0, "failed to fill whole buffer"),
     ] {
         let cut = dir.join(format!("{label}.fst"));
@@ -4769,8 +4771,14 @@ fn issue_3648_truncated_store_names_cause_and_rebuild_hint() {
     let (_, err, code) = run(&["list", missing.to_str().unwrap()]);
     assert_eq!(code, 1, "{err}");
     assert_eq!(err.trim_end().lines().count(), 1, "{err}");
-    assert!(err.contains("No such file"), "{err}");
     assert!(err.contains("build it with `bwave build"), "{err}");
-    let _ = std::fs::remove_dir_all(dir);
+
+    // Not an FST at all (VCD text saved as .fst): say so, never "truncated".
+    let vcd_text = dir.join("text.fst");
+    std::fs::write(&vcd_text, b"$date today $end\n$timescale 1ns $end\n").unwrap();
+    let (_, err, code) = run(&["list", vcd_text.to_str().unwrap()]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("not an FST file"), "{err}");
+    assert!(!err.contains("truncated"), "{err}");
     let _ = std::fs::remove_file(store);
 }

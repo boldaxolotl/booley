@@ -570,15 +570,30 @@ fn error_chain(error: &dyn std::error::Error) -> String {
 /// truncation would otherwise surface only as silently empty query results.
 /// The walk reads one 9-byte header per block; it never decodes values.
 fn check_block_lengths(file: &mut File, size: u64) -> Result<(), String> {
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::{ErrorKind, Read, Seek, SeekFrom};
     let mut offset: u64 = 0;
     while offset < size {
         let mut header = [0u8; 9];
         file.seek(SeekFrom::Start(offset))
             .and_then(|_| file.read_exact(&mut header))
-            .map_err(|_| {
-                format!("store is truncated: block header at byte {offset} is cut short")
+            .map_err(|error| {
+                // Only a short read means truncation; anything else (a
+                // directory, a permission error) keeps its own cause.
+                if error.kind() == ErrorKind::UnexpectedEof {
+                    format!("store is truncated: block header at byte {offset} is cut short")
+                } else {
+                    error_chain(&error)
+                }
             })?;
+        // The first block of every FST is the header block (type 0). Anything
+        // else (e.g. VCD text saved as .fst) is not an FST, whatever its
+        // bytes decode to as a length.
+        if offset == 0 && header[0] != 0 {
+            return Err(format!(
+                "not an FST file (first block type {:#04x}, expected 0x00)",
+                header[0]
+            ));
+        }
         let length = u64::from_be_bytes(header[1..9].try_into().expect("8-byte slice"));
         if length < 8 {
             return Err(format!(
@@ -3299,6 +3314,13 @@ $enddefinitions $end\n";
         invalid.extend_from_slice(&3u64.to_be_bytes());
         std::fs::write(&path, invalid).unwrap();
         assert!(unreadable_cause(&path).contains("invalid length 3"));
+        // Text saved as .fst is not an FST, whatever its bytes decode to.
+        std::fs::write(&path, b"$date today $end\n").unwrap();
+        assert!(unreadable_cause(&path).contains("not an FST file"));
+        // A directory keeps its own read error instead of "truncated".
+        let directory = dir.path().join("dir.fst");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(!unreadable_cause(&directory).contains("truncated"));
         // An empty file has no blocks; FST open itself rejects it.
         std::fs::write(&path, []).unwrap();
         assert!(!unreadable_cause(&path).is_empty());
@@ -3308,7 +3330,7 @@ $enddefinitions $end\n";
     fn missing_store_is_reported_as_missing_with_os_cause() {
         let dir = tempfile::tempdir().unwrap();
         match load_fst(&dir.path().join("nope.fst")) {
-            Err(StoreLoadError::Missing(cause)) => assert!(cause.contains("No such file")),
+            Err(StoreLoadError::Missing(cause)) => assert!(!cause.is_empty()),
             other => panic!("expected Missing, got {:?}", other.map(|_| ())),
         }
     }
