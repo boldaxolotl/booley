@@ -9,6 +9,16 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Stealth Mode keeps the product name out of branch names. `booley worktree new`
+  and `booley chat` create the worktree branch `wt/<name>` instead of
+  `booley/<name>`, and the pre-push hook blocks a push that creates or updates a
+  remote branch or tag whose name contains a banned word (push it under another
+  name, `git push <remote> <local>:<new-name>`; deleting such a ref is allowed).
+  Existing worktrees keep their branch and work either way, a branch occupying
+  `wt/<name>` is named in the error, and handle allocation skips a number taken
+  under either prefix. Run `booley init` in each existing Stealth Project so its
+  vendored pre-push hook gets the new check
+  ([#3608](https://github.com/boldaxolotl/Booley/issues/3608)).
 - The Sandbox start step now registers Booley's MCP server and skills for every
   allowed Agent CLI, not only the default: a Sandbox issued for `claude` and
   `codex` serves both. A CLI whose registration is refused is reported as
@@ -65,7 +75,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   paths for every Test Run (`null` when absent), so nobody searches the
   Campaign's work items for them.
 - A second `booley chat` while the main checkout is in use now starts in its
-  own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
+  own worktree `s<N>` on branch `booley/s<N>` (`wt/s<N>` in Stealth Mode), named
+  after the session handle,
   and prints a line saying where it works. The first session and a lone
   session run in the main checkout as before. `booley chat --new-worktree`
   always uses a worktree, `booley chat --here` always uses the main checkout,

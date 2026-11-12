@@ -295,9 +295,10 @@ The same error appears from `booley worktree new` and from `booley chat` when it
 creates the worktree. Under `booley chat`, the agent does not start and
 `booley chat` exits 1.
 
-Booley removed the worktree and its `booley/<name>` branch, so nothing is left
-to clean up, unless the error also says `outer rollback failed` or the hook
-committed on `booley/<name>`, which Booley keeps. Read the log the error names
+Booley removed the worktree and its branch (`booley/<name>`, or `wt/<name>` in
+Stealth Mode), so nothing is left to clean up, unless the error also says
+`outer rollback failed` or the hook committed on that branch, which Booley
+keeps. Read the log the error names
 for the hook's output. Fix `.booley/hooks/post-setup.*` and run the command
 again. The same cleanup follows a failed submodule fill.
 

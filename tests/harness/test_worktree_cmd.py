@@ -175,7 +175,7 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     )
     # The Snapshot steps still exist for failures; their commands must work.
     steps = worktree_cmd.worktree_removal_instructions(
-        project, worktree, "goal-entry", paired=False
+        project, worktree, "goal-entry", branch="booley/goal-entry", paired=False
     )
     command = shlex.join(["git", "-C", str(project), "worktree", "remove", str(worktree)])
     assert command in steps, "Snapshot removal instructions missing"
@@ -209,6 +209,73 @@ def test_new_refuses_an_existing_branch_and_leaves_it_untouched(project: Path, c
     assert "booley/taken" in capsys.readouterr().err
     assert not (project / ".booley" / "worktrees" / "taken").exists()
     assert _git(project, "rev-parse", "booley/taken").stdout == taken
+
+
+@_real_script
+def test_new_in_stealth_mode_creates_a_wt_branch(versioned_project: Path) -> None:
+    """Stealth Mode keeps the product name out of the worktree's branch (#3608)."""
+    assert _new("demo", versioned_project) == 0
+
+    worktree = worktree_cmd.worktree_path(versioned_project, "demo")
+    assert _git(worktree, "symbolic-ref", "--quiet", "HEAD").stdout.strip() == "refs/heads/wt/demo"
+    assert _git(versioned_project, "rev-parse", "--verify", "booley/demo").returncode != 0
+    # The Paired Checkout keeps its branch name.
+    paired = worktree / ".booley"
+    assert _git(paired, "symbolic-ref", "--short", "HEAD").stdout.strip() == (
+        "booley-worktree/demo"
+    )
+
+
+@_real_script
+@pytest.mark.parametrize(
+    ("stealth", "blocking", "name", "in_the_way"),
+    [
+        pytest.param(True, "wt", "blocked", "wt", id="stealth-wt"),
+        pytest.param(True, "wt/blocked/x", "blocked", "wt/blocked/x", id="stealth-below"),
+        pytest.param(False, "booley", "blocked", "booley", id="off-booley"),
+    ],
+)
+def test_new_names_the_branch_in_the_way(
+    project: Path, capsys, stealth: bool, blocking: str, name: str, in_the_way: str
+) -> None:
+    """A branch that occupies the new name makes creation fail naming that branch."""
+    if stealth:
+        _write(project / ".booley" / "booley.toml", "[stealth]\nenabled = true\n")
+    assert _git(project, "branch", blocking).returncode == 0
+    before = _git(project, "rev-parse", blocking).stdout
+
+    assert _new(name, project) == 1
+
+    prefix = "wt" if stealth else "booley"
+    errors = [line for line in capsys.readouterr().err.splitlines() if line.startswith("ERROR")]
+    assert errors == [
+        f"ERROR: branch '{in_the_way}' is in the way of new branch '{prefix}/{name}'; "
+        "rename or delete it, or choose another name"
+    ]
+    assert not (project / ".booley" / "worktrees" / name).exists()
+    assert _git(project, "rev-parse", blocking).stdout == before
+
+
+@_real_script
+def test_wt_worktree_survives_switching_stealth_off(versioned_project: Path, capsys) -> None:
+    """A worktree made under Stealth Mode is listed and removed after it is switched off."""
+    from booley.harness import booley as tlr
+
+    assert _new("demo", versioned_project) == 0
+    _write(versioned_project / ".booley" / "booley.toml", "[stealth]\nenabled = false\n")
+    capsys.readouterr()
+
+    listing = worktree_cmd.run(
+        tlr._build_parser().parse_args(["worktree", "list"]), versioned_project
+    )
+    assert listing == 0
+    assert "wt/demo" in capsys.readouterr().out
+
+    args = tlr._build_parser().parse_args(["worktree", "rm", "demo"])
+    assert worktree_cmd.run(args, versioned_project) == 0
+    assert "Branches kept:" in capsys.readouterr().out
+    assert not worktree_cmd.worktree_path(versioned_project, "demo").exists()
+    assert _git(versioned_project, "rev-parse", "--verify", "wt/demo").returncode == 0
 
 
 @_real_script
@@ -446,7 +513,7 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
         ["git", "-C", str(source), "worktree", "remove", str(paired)],
         ["git", "-C", str(root), "worktree", "remove", str(worktree)],
         ["git", "-C", str(source), "branch", "-D", "booley-worktree/real-paired"],
-        ["git", "-C", str(root), "branch", "-D", "booley/real-paired"],
+        ["git", "-C", str(root), "branch", "-D", "wt/real-paired"],
     ]
     assert commands == [shlex.join(command) for command in expected]
     assert "Optional" in error and "preserving its commits" in error
@@ -1021,9 +1088,7 @@ def test_failing_post_setup_hook_rolls_back_and_names_the_log(
     leftover = _git(source, "config", "--get-regexp", r"^branch\.booley-worktree/failing\.")
     assert leftover.returncode != 0 and not leftover.stdout
     # The outer branch is rolled back too, so the same name can be retried.
-    assert (
-        _git(root, "show-ref", "--verify", "--quiet", "refs/heads/booley/failing").returncode != 0
-    )
+    assert _git(root, "show-ref", "--verify", "--quiet", "refs/heads/wt/failing").returncode != 0
     _commit_hook(source, "print('fixed')\n")
     assert _new("failing", root) == 0
 
@@ -1634,7 +1699,7 @@ def test_removal_steps_keep_symlinked_paths_as_printed(tmp_path: Path) -> None:
     link.symlink_to(real, target_is_directory=True)
     worktree = link / ".booley" / "worktrees" / "zbb"
 
-    steps = worktree_cmd.worktree_removal_instructions(link, worktree, "zbb")
+    steps = worktree_cmd.worktree_removal_instructions(link, worktree, "zbb", branch="booley/zbb")
 
     assert shlex.join(["git", "-C", str(link), "worktree", "remove", str(worktree)]) in steps
     assert str(real) not in steps

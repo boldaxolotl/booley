@@ -5,8 +5,8 @@ The command wraps the packaged ``worktree_create.sh`` with its default
 holding someone's work) is never deleted. The worktree lands at
 ``<Booley Directory>/worktrees/<name>`` (``.booley`` unless ``[project].dir`` relocates
 it inside the checkout), on a new branch
-``booley/<name>`` at the workspace's current commit (an existing branch of that
-name is refused), unless the name uses the ``<branch>--<description>`` convention
+``booley/<name>`` (``wt/<name>`` in Stealth Mode) at the workspace's current commit
+(a branch occupying that name is refused), unless the name uses the ``<branch>--<description>`` convention
 to check out an existing branch instead. ``booley worktree list`` reports each
 worktree's state, ``booley worktree rm`` removes one, keeping its evidence, and
 ``booley worktree gc`` removes the idle ones the same way.
@@ -54,7 +54,7 @@ from booley.runtime.submodule_materialization import (
 )
 from booley.runtime.worktree_paths import BooleyDirMismatchError, worktree_booley_dir
 from booley.runtime.worktree_snapshot import SKIPPED_PREFIX
-from booley.runtime.worktree_usage import WORKTREE_NAME, stamp_worktree
+from booley.runtime.worktree_usage import WORKTREE_NAME, stamp_worktree, worktree_branch
 
 # Bounds the script so a wedged Git call cannot hang the CLI.
 _CREATE_TIMEOUT_S = 300
@@ -91,8 +91,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "Paired Checkout on booley-worktree/<name> for a Versioned Booley Directory, "
             "or a Snapshot for a non-versioned Booley Directory "
             "(live run and session state stays behind). The outer worktree starts on a "
-            "new branch booley/<name> at the current commit; an existing "
-            "booley/<name> branch is refused. A "
+            "new branch booley/<name> (wt/<name> in Stealth Mode) at the current "
+            "commit; a branch that occupies that name is refused. A "
             "<branch>--<description> name checks out that existing branch instead. "
             "The Paired Checkout comes from the Booley Directory repository's last "
             "commit: uncommitted and untracked files there are named in a warning and "
@@ -200,7 +200,7 @@ def _new_branch_start(project_root: Path, name: str) -> NewBranch | None:
     """
     if "--" in name:
         return None
-    branch = f"booley/{name}"
+    branch = worktree_branch(project_root, name)
     if run_git(project_root, "check-ref-format", "--branch", branch).returncode != 0:
         raise WorktreeCreationError(f"invalid branch name {branch!r}; choose another name")
     head = run_git(project_root, "rev-parse", "--verify", "HEAD^{commit}")
@@ -373,12 +373,21 @@ def _finish_setup(name: str, project_root: Path, created: _Created) -> int:
 
 
 def _report_failure(
-    project_root: Path, worktree: Path, name: str, failure: BaseException, source: Path | None
+    project_root: Path,
+    worktree: Path,
+    name: str,
+    failure: BaseException,
+    source: Path | None,
 ) -> int:
     """Print a rolled-back creation's error, plus removal steps if a rollback left the pair."""
     print(f"ERROR: {failure}", file=sys.stderr)
     if source is not None and _is_named_pair(worktree, name):
-        print(worktree_removal_instructions(project_root, worktree, name), file=sys.stderr)
+        # A <branch>--<description> name checks out an existing branch and creates none.
+        branch = None if "--" in name else worktree_branch(project_root, name)
+        print(
+            worktree_removal_instructions(project_root, worktree, name, branch=branch),
+            file=sys.stderr,
+        )
     return 1
 
 

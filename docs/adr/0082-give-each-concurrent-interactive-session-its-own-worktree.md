@@ -1,6 +1,6 @@
 # Give each concurrent Interactive session its own worktree
 
-Status: accepted (2026-11-11; proposed 2026-11-03; amended 2026-11-11: as built, see Amendments)
+Status: accepted (2026-11-11; proposed 2026-11-03; amended 2026-11-11: as built; amended 2026-11-12: Stealth Mode branch name, see Amendments)
 
 ## Context
 
@@ -477,3 +477,18 @@ as written.
   main-checkout lock file that cannot be opened or locked counts as held by
   someone else, so `auto` picks a worktree, after a `NOTE`. A `--last`/`--continue` resume
   while the main checkout is busy picks the newest free worktree.
+
+## Amendments (2026-11-12)
+
+- **Stealth Mode branch name** (Branch; Allocation; #3608). With Stealth Mode
+  on, the worktree is created on branch `wt/<name>` instead of `booley/<name>`,
+  because `booley` is a default banned term and the branch name reaches the
+  remote on push. With it off the branch stays `booley/<name>`. The Paired
+  Checkout branch `booley-worktree/<name>` is unchanged. Handle allocation
+  skips a number taken by `booley/s<N>`, `wt/s<N>` or `booley-worktree/s<N>`,
+  or a branch below any of them. Everything that finds, lists or removes a
+  worktree's branch reads the branch Git registered, so a worktree made under
+  one setting works after Stealth Mode is switched. A branch that occupies
+  `wt/<name>` (the name itself, a leading path such as `wt`, or a branch below
+  it) is named in the creation error. The numbering amendment of ADR 0068 is
+  extended, not changed.

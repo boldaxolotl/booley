@@ -27,6 +27,7 @@ from booley.runtime.foreground_child import exec_agent, run_foreground_child
 from booley.runtime.handles import reserve_session_handle
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
+from booley.runtime.worktree_usage import worktree_branch
 
 
 def _names_session(agent_args: list[str]) -> bool:
@@ -178,14 +179,15 @@ def _agent_command(
     return provider, [provider], None
 
 
-def _interrupted_notice(project_root: Path, name: str) -> str:
+def _interrupted_notice(project_root: Path, name: str, branch: str) -> str:
     """Say what an interrupted setup left: nothing, or the removal steps for what survived.
 
     A signal that lands while the creation script runs kills it before it can undo its
-    work, so the claim that nothing remains is checked, not assumed.
+    work, so the claim that nothing remains is checked, not assumed. *branch* is the
+    branch the interrupted creation was making.
     """
     worktree = worktree_cmd.worktree_path(project_root, name)
-    branch = subprocess.run(
+    show_ref = subprocess.run(
         [
             "git",
             "-C",
@@ -193,15 +195,15 @@ def _interrupted_notice(project_root: Path, name: str) -> str:
             "show-ref",
             "--verify",
             "--quiet",
-            f"refs/heads/booley/{name}",
+            f"refs/heads/{branch}",
         ],
         check=False,
     )
-    if not worktree.exists() and branch.returncode != 0:
+    if not worktree.exists() and show_ref.returncode != 0:
         return f"Worktree setup interrupted; {name} was rolled back."
     return (
         f"Worktree setup interrupted; {name} may be left behind.\n"
-        f"{worktree_cmd.worktree_removal_instructions(project_root, worktree, name)}"
+        f"{worktree_cmd.worktree_removal_instructions(project_root, worktree, name, branch=branch)}"
     )
 
 
@@ -213,19 +215,20 @@ def _enter_worktree(
     Returns an exit code when the agent must not start, ``None`` after the move.
     """
     name = handle.lower()
+    branch = worktree_branch(project_root, name)
     try:
         with _signals_interrupt_setup():
             worktree = worktree_cmd.create_worktree(project_root, name)
     except (KeyboardInterrupt, _SetupInterruptedError) as exc:
         signum = exc.signum if isinstance(exc, _SetupInterruptedError) else signal.SIGINT
-        print(_interrupted_notice(project_root, name), file=sys.stderr)
+        print(_interrupted_notice(project_root, name, branch), file=sys.stderr)
         return 128 + int(signum)
     if worktree is None:
         return 1
     if created is not None:
         created.record(name)  # the parent's exit step needs the name once the agent ends
     print(
-        f"Booley session {handle} works in worktree {worktree} on branch booley/{name} ({reason}).",
+        f"Booley session {handle} works in worktree {worktree} on branch {branch} ({reason}).",
         file=sys.stderr,
     )
     os.chdir(worktree)
