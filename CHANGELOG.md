@@ -9,6 +9,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The Sandbox start step now registers Booley's MCP server and skills for every
+  allowed Agent CLI, not only the default: a Sandbox issued for `claude` and
+  `codex` serves both. A CLI whose registration is refused is reported as
+  `<cli>:refused` (the error line names the CLI) and no longer stops the others.
+  With `BOOLEY_AGENT_APP=auto`, every CLI with a credential is allowed, Claude
+  the default when both have one; `booley doctor` audits each
+  ([#2756](https://github.com/boldaxolotl/Booley/issues/2756)).
 - A traced `sim` run now registers each traced Target's waveform as B-Wave
   session `@<target>` (its last Test Run that did not pass, else its last) and
   the last Target's as the default session, so `bwave @<target> list` and a path-less

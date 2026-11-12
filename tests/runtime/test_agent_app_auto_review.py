@@ -6,6 +6,7 @@ Reuses the isolated in-Sandbox fixture and helpers of ``test_agent_app_auto``.
 from __future__ import annotations
 
 import argparse
+import json
 
 import pytest
 from tests.runtime import test_agent_app_auto as base
@@ -100,7 +101,9 @@ def test_a_claude_credential_beats_the_gateway_policy_hand_off(sandbox, monkeypa
 
 
 def test_a_record_missing_a_field_is_refused_not_a_traceback(sandbox):
-    (sandbox.home / ".booley-agent-app.json").write_text('{"schema": 1, "app": "claude"}')
+    (sandbox.home / ".booley-agent-app.json").write_text(
+        '{"schema": 2, "app": "claude", "clis": ["claude"]}'
+    )
 
     assert "incontainer_register" in _refusal(get_agent_settings)
 
@@ -127,3 +130,62 @@ def test_shell_refuses_auto_on_the_host_instead_of_a_traceback(sandbox, monkeypa
     code = booley_cli._cmd_shell(argparse.Namespace(net=False, command=[]), sandbox.project)
 
     assert (code, "BOOLEY_AGENT_APP" in capsys.readouterr().err) == (2, True)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        '"schema": 1',  # written by an older Booley, without a set
+        '"clis": "claude"',
+        '"clis": 7',
+        '"clis": []',
+        '"clis": ["codex"]',  # the default must lead the set
+        '"clis": ["claude", "gemini"]',
+        '"clis": ["claude", {}]',  # an unhashable entry is refused, not a TypeError
+    ],
+    ids=[
+        "schema-1",
+        "text-set",
+        "number-set",
+        "empty-set",
+        "default-not-first",
+        "unknown-cli",
+        "unhashable-entry",
+    ],
+)
+def test_a_record_with_a_misshaped_cli_set_is_refused(sandbox, fields):
+    record = {"schema": 2, "app": "claude", "clis": ["claude"], "policy": None, "reason": "x"}
+    record.update(json.loads("{" + fields + "}"))
+    (sandbox.home / ".booley-agent-app.json").write_text(json.dumps(record))
+
+    assert "incontainer_register" in _refusal(get_agent_settings)
+
+
+@pytest.mark.parametrize(
+    "app,record,expected",
+    [
+        ("claude", "", ("claude",)),
+        (" codex ", "", ("codex",)),
+        ("claude", "codex=gateway,claude=auto", ("claude", "codex")),
+        ("codex", "claude=auto,codex=auto", ("codex", "claude")),
+        ("claude", "not a record", ("claude",)),  # an undecodable record is ignored
+        ("none", "claude=auto", ()),
+        ("", "", ()),
+        ("gemini", "", ()),
+    ],
+    ids=[
+        "explicit",
+        "stripped",
+        "record-default-first",
+        "record-codex-default",
+        "bad-record",
+        "none",
+        "empty",
+        "unknown",
+    ],
+)
+def test_sandbox_agent_clis_outside_auto(monkeypatch, app, record, expected):
+    monkeypatch.setenv("BOOLEY_AGENT_APP", app)
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", record)
+
+    assert config_agent.sandbox_agent_clis() == expected

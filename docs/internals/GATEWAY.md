@@ -114,8 +114,9 @@ entry), keeping unrelated keys:
   entries: when a start registers Codex on a non-gateway policy, it removes the
   `booley_gateway` table, plus `model_provider` and `model` when they still
   hold the gateway's values. `features.fast_mode` and the token exclusion stay.
-  Under `auto`, a start that resolves to Claude leaves the Codex config
-  untouched; an issued Claude-default Sandbox with `codex = "gateway"` still
+  A start whose allowed set excludes Codex leaves the Codex config untouched.
+  An issued Sandbox that lists
+  `codex = "gateway"` registers Codex, whichever CLI is the default, and so
   writes the provider.
 
 Because Booley does not spawn this Codex, the in-memory cache and the 401 retry
