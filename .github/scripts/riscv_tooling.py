@@ -287,7 +287,7 @@ def compat_fallback(path: Path, detail: str) -> dict[str, object]:
 def tooling_checks(contract: Path) -> str:
     """Return a bash script that checks a bare tooling image.
 
-    It reuses the session runtime contract instead of restating it: every
+    It reuses the Sandbox Image contract instead of restating it: every
     ``[riscv]`` probe, plus each required path the tooling stage ships. Each
     probe runs in its own ``bash -euo pipefail`` so ``set -e`` stays effective.
     """

@@ -24,6 +24,12 @@ client. It preserves Findings, a running log, owned-resource cleanup state, and
 local evidence under its run directory.
 _Avoid_: Scenario Run, Qualification, certification
 
+**Operator**:
+The agent that executes a QA Run from the host. It drives Booley, records
+Findings, and owns the run's cleanup; it starts Goal children but never does
+their design work.
+_Avoid_: tester, driver, QA agent
+
 **Release Smoke List**:
 The small must-pass list run before a release. Unlike a Mission, it has a binary
 verdict: every item must pass as documented without a workaround.

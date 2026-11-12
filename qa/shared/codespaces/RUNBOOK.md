@@ -1,13 +1,16 @@
 # Codespaces GUI QA runbook
 
-Shared by the `gui` mission and the `booley-gui-check` skill. It takes a QA
-agent from a Booley commit `<sha>` to a readable Booley GUI in a browser
-Codespace on the picorv32 demo, checks the GUI against the CLI, and cleans up.
+This runbook takes a QA agent from a Booley commit `<sha>` to a readable
+Booley GUI in a browser Codespace on the sponsored picorv32 demo, checks the
+GUI against the CLI, and cleans up. The `gui` mission
+([MISSION.md](../../missions/gui/MISSION.md)) and the `booley-gui-check` skill
+([SKILL.md](../../booley-gui-check/SKILL.md)) follow it and cite its step
+numbers; they say what to check, this file says how.
 
-Steps 1-6 say what to do and how to tell it worked; steps 7-9 are rules and
-references. Steps 1-5 are setup: if
-one fails, stop and report, because nothing after it is valid. From step 6 on,
-log a failure as a finding, work around it if you can, and keep going.
+Steps 1-6 say what to do and how to tell it worked, steps 7-9 are rules and
+references, and step 10 cleans up. Steps 1-5 are setup: if one fails, stop and
+report, because nothing after it is valid. From step 6 on, log a failure as a
+finding, work around it if you can, and keep going.
 
 | Name | Value |
 |---|---|
@@ -36,7 +39,7 @@ log a failure as a finding, work around it if you can, and keep going.
   default profile, which follows the maintainer into other github.dev
   sessions. QA settings go only into the Codespace's machine settings (step 6).
 - **Don't reload the page** unless the area is about reload. A reload loses the
-  Dashboard tab, and `booley dashboard` then refuses to reopen it (#2857).
+  Dashboard terminal and every terminal's contents.
 - **The Codespace carries the maintainer's identity.** `/etc/gitconfig` holds
   their name and email, and `booley doctor -v` prints them. Keep that output
   out of screenshots and evidence.
@@ -82,9 +85,9 @@ gh run watch <run-id> --repo boldaxolotl/booley --exit-status
 
 With warm caches the run takes about 15-20 minutes; cold, an hour or more. A
 candidate base build (see "Candidate base" in the cleanup section) adds about
-an hour. The candidate tags appear about 10 minutes after the base is chosen
-(about an hour in when the run builds its own base), before the contract and
-demo jobs finish: still wait for `success`.
+an hour. The candidate tags appear before the contract and demo jobs finish
+(the RISC-V tag about 13 minutes in on a warm run, about an hour later when
+the run builds its own base): still wait for `success`.
 
 The demo uses the RISC-V image. The tag under test is
 `candidate-<sha>-<databaseId>-<attempt>` from that run. Worked when: the run
@@ -137,9 +140,9 @@ the click: add its `resources.md` row as "name pending" before clicking, and
 fill in the name from the listing below.
 
 Wait with `gh codespace list --repo $DEMO --json name,state` until the state is
-`Available`, and note its name (cleanup needs it). On 2026-11-06 that took
-2.5-3 min, and the trust prompt ("Do you trust the authors of the files in
-this folder?") appeared 15-30 s later.
+`Available`, and note its name (cleanup needs it). Expect about 3-4 min, then
+the trust prompt ("Do you trust the authors of the files in this folder?")
+15-30 s later.
 
 ## 5. Trust, Dashboard, version
 
@@ -149,12 +152,12 @@ this folder?") appeared 15-30 s later.
    coordinates instead (see "Clicking" in step 7), which works first time.
 2. About 5-20 s later the Dashboard extension opens a "Booley Dashboard"
    terminal running `booley dashboard --on-attach`. It should come to the
-   front on its own (#2700). On 2026-11-06 the `postAttachCommand` terminal
-   ("Codespaces: python -m booley.runtime.incontainer_live_preview …") stayed
-   in front, and a "Booley Dashboard is ready" toast may appear; that's a
-   finding. The tab list then holds `bash`, the `Codespaces: python -m …`
-   terminal and `Booley Dashboard`, in either order. Click the "Booley
-   Dashboard" entry.
+   front on its own, ahead of the `postAttachCommand` terminal
+   ("Codespaces: python -m booley.runtime.incontainer_live_preview …"). If
+   another terminal stays in front, or the toast "Booley Dashboard is ready in
+   the terminal panel." appears, log a finding. The tab list holds `bash`, the
+   `Codespaces: python -m …` terminal and `Booley Dashboard`, in either order.
+   Click the "Booley Dashboard" entry.
 3. Open a command terminal: F1, type `Terminal: Create New Terminal`, Enter.
    Run `booley --version`. Before step 6 the terminal is a canvas: read the
    result from a screenshot.
@@ -164,8 +167,8 @@ example `booley 0.4.0 (10c8f9c, 2026-11-06)`. Any other
 commit means the Codespace runs the wrong image: stop and recheck steps 2-4.
 
 Note the Dashboard's `Doctor:` line now. The automatic Doctor run happens
-before the folder is trusted, so this first value can differ from a manual
-run (#2702).
+before the folder is trusted, yet it should match a manual `booley doctor`
+(step 8); a difference is a finding.
 
 ## 6. Reading mode
 
@@ -245,15 +248,16 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
   prompt line, and a reused marker matches the previous command's output
   before `clear` runs. This needs step 6; before it, poll with screenshots.
 - **Read only the terminal in front.** A terminal behind another one keeps
-  stale DOM text: on 2026-11-06 the hidden Dashboard still read `1 FAIL` after
-  the CLI had published `0 failed`, and showed the new value once brought to
-  the front.
+  stale DOM text: a hidden Dashboard can still read `1 FAIL` after the CLI
+  published `0 failed`, and shows the new value once brought to the front.
 - **Dashboard:** click inside it, then press keys. `ArrowRight`/`ArrowLeft`
-  switch between Sessions and Jobs, `Enter` opens a detail, `Escape` goes back
-  one level. `ArrowUp` on the first row moves into the top bar (filters,
-  Help); `ArrowDown` or `Escape` leaves it. The top bar reads
-  `Sessions Jobs │ Running Finished All Owner │ Help`: `ArrowLeft`/`ArrowRight`
-  choose, `Enter` applies. In Help, after leaving the top bar, `ArrowDown`
+  switch between the Sessions, Jobs and Targets windows, `Enter` opens a
+  detail, `Escape` goes back one level. `ArrowUp` on the first row moves into
+  the top bar; `ArrowDown` or `Escape` leaves it. The top bar lists
+  `Sessions Jobs Targets`, then the active window's own items (Jobs:
+  `Running Finished All Owner: <owner>`; Targets: `Worktree: <name>`), then
+  `Run` and `Help`, separated by `│`. In the top bar `ArrowLeft`/`ArrowRight`
+  choose and `Enter` applies. In Help, after leaving the top bar, `ArrowDown`
   scrolls; the mouse wheel and PageDown don't. `q` quits; `booley dashboard`
   in a terminal reopens it.
 - **Long output:** F1, `View: Toggle Maximized Panel` shows output that doesn't
@@ -286,14 +290,14 @@ mismatch.
 | Notices (upgrade review) | `booley upgrade status --json` |
 | Sessions overview, preview pane, session detail | No CLI. Check against what you started: which agent sessions, their branch and work dir (`git worktree list`), and the last Booley call you made in each. Each call shows as two rows (started, completed), and the detail stays on an ended session until `Escape`. Without a signed-in agent, make sessions with the scripted MCP client below. |
 | Goal rows and Goal detail | `booley goal status --long`, run in that Goal's worktree |
-| Jobs window, Job detail | No CLI (agents see Jobs through the `booley_status` MCP tool). Read the Job records: `for f in /workspaces/picorv32/.booley/{,goals/*/,logs/*/}.runtime/jobs/*.json; do jq -c '{run_id,endpoint,status,exit_code,owner,work_dir}' "$f"; done 2>/dev/null`, plus `ps -eo pid,etime,args` for running ones. A record says `running` until its server notices the end, so check the PID before calling a status mismatch. No output means no Job records: before #2298, shell Flows write none. For Flows you started yourself, their terminal output is the oracle. |
+| Jobs window, Job detail | No CLI (agents see Jobs through the `booley_status` MCP tool). Read the Job records: `for f in /workspaces/picorv32/.booley/{,goals/*/,logs/,logs/*/,.interactive_logs/*/,runtime/sessions/*/}.runtime/jobs/*.json; do jq -c '{run_id,endpoint,status,exit_code,owner,work_dir}' "$f"; done 2>/dev/null`, plus `ps -eo pid,etime,args` for running ones. A record says `running` until its server notices the end, so check the PID before calling a status mismatch. For Flows you started yourself, their terminal output is also an oracle. |
 | Proposal detail | No CLI; compare with the proposal text in the agent chat. |
 | VaporView scoped view (`bwave gui ... -s ... -g ...`) | The command's own report: it prints the signal and group tree VaporView reports back (`getViewerState`), the viewport and the marker times, and warns on stderr about signals the viewer didn't show. Compare the screenshot with that report, and the report with what you asked for. `--time`/`--cursor` without `-s` re-reports the rows, but it moves the markers. |
 
 **Scripted MCP client.** Sessions without an agent: in a command terminal,
 write a Python script (heredoc) that uses the image's `mcp` package against the
 Booley MCP server that `~/.codex/config.toml` names
-(`http://127.0.0.1:8814/mcp` on 2026-11-06). That `mcp` version's API is
+(by default `http://127.0.0.1:8814/mcp`). That `mcp` version's API is
 `mcp.client.streamable_http.streamable_http_client`, and results carry
 `is_error` (not `streamablehttp_client` and `isError`). Calling `booley_status`
 creates an Interactive session. `goal_enter` with `work_dir` set to a fresh
@@ -358,9 +362,9 @@ maintainer).
 
 One build pushes `candidate-<sha>-<databaseId>-<attempt>` to `booley-sandbox`
 and `booley-sandbox-riscv`. Each tag is an image index with an image manifest
-and an SBOM attestation manifest, and GHCR lists each of the three as its own
-package version. Delete exactly those three per package. Run this in a
-scratch directory; it writes one listing per package.
+and an attestation manifest (SBOM and provenance), and GHCR lists each of the
+three as its own package version. Delete exactly those three per package. Run
+this in a scratch directory; it writes one listing per package.
 
 ```sh
 TAG=candidate-<sha>-<databaseId>-<attempt>

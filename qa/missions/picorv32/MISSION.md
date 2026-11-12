@@ -5,12 +5,16 @@ Interactive B-Wave repair, Dhrystone and Zbb Goals, proposals, Finish, crash res
 Simulation Campaign, Vivado, and negative cases across primary and optional
 follow-up runs. The IP is small and well known, so failures point
 at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessions, cleanup.
+The operator runs it through [`booley-qa-run`](../../booley-qa-run/SKILL.md), which owns the run
+directory, findings format, and cleanup bookkeeping; this file says where to look.
 
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here).
-- Project: https://github.com/boldaxolotl/booley-prj-picorv32 @
-  `a3520837bce9416c1a7209d779148a9eb12482a9` (upstream RTL plus Stealth `.booley`).
-- Upstream: https://github.com/YosysHQ/picorv32 @ `a473fc8fca393771d83b0ffcf0b14db3393339d8`.
+- Upstream RTL (outer repo): https://github.com/YosysHQ/picorv32 @
+  `a473fc8fca393771d83b0ffcf0b14db3393339d8`.
+- Booley Directory: https://github.com/boldaxolotl/booley-prj-picorv32 @
+  `a3520837bce9416c1a7209d779148a9eb12482a9`, cloned as `.booley` inside the upstream checkout
+  (a Stealth, Versioned Booley Directory).
 - Tools/host: Docker (≥6 GB free); the `booley init` Sandbox image (xPack GCC 15.2, srec_cat, dtc,
   Spike, `/opt/riscv-docs`, Icarus, Verilator, sv2v/Yosys/OpenROAD); a logged-in Codex or Claude
   backend.
@@ -37,24 +41,25 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
 ### 1. setup — Install, split repos, init, Stealth, Doctor, baseline (~70 min)
 Intent: a first setup succeeds from the public docs alone, and the unchanged demo passes every Flow.
 Try:
-- Clone both pins and confirm they are clean. Make `.booley` a standalone Git repo, then run
-  `booley init` and follow the demo steps it prints (Sandbox, then
-  `bash .booley/hooks/post-setup.sh`). The demo ships preconfigured for sim, lint, and
-  synth. Configure it with the edits below, not with the `booley-setup` skill.
+- Clone upstream, then clone the Booley Directory pin into `.booley` as the demo README's Quick
+  start does, and confirm both are clean. Run `booley init` and follow the steps it prints (start
+  the Sandbox, run `bash .booley/hooks/post-setup.sh`, then `booley doctor --deep`). The demo
+  ships preconfigured for sim, lint, and synth. Configure it with the edits below, not with the
+  `booley-setup` skill.
 - Booley Directory edits: set `[specialists.coverage_analyst] enabled = false` in `booley.toml` (the
   demo's Verilator Targets use a custom C++ `main` without `custom_main_hooks`, so they write no
   coverage data). If Vivado is present, also set `[flows.fpga] enabled = true`, add `[eda.vivado]`
   with `provisioning = "host"`, and add `booley: {doctor: [fpga]}` under `fpga_core`'s
   `flow_options` (beside `tool: vivado`, as `lint_core` and `synth_core` do) in
   `cores/picorv32_impl.core`.
-- Enable Stealth with `ignore_native_cores = true`. Only the hidden authored cores are projected,
-  with no copied RTL and no symlinks. Dot-prefixed paths don't count as native.
-- Create run-owned destination branches (outer and standalone Booley Directory).
-  Area 1 makes the Project its own Git repo: require the paired checkout printed
-  by `booley worktree new` before using two-branch integration. Commit the setup changes
+- The demo ships Stealth on with `ignore_native_cores = true`. Only the hidden authored cores are
+  projected, with no copied RTL and no symlinks. Dot-prefixed paths don't count as native.
+- Create run-owned destination branches (outer and Booley Directory). Because the Booley
+  Directory is its own Git repo, require the Paired Checkout printed by `booley worktree new`
+  before using two-branch integration. Commit the setup changes
   (Flows, EDA, FPGA Doctor Target) to the Booley Directory one. Both repos must be clean before area 4.
-- Build `firmware/firmware.hex` before the first Doctor run, since Doctor resolves the sim Target
-  against it. `booley doctor` and `booley doctor --deep` should show no warnings. Repeat
+- `post-setup.sh` builds `firmware/firmware.hex`, which Doctor needs to resolve the sim Target, so
+  run it before the first Doctor run. `booley doctor` and `booley doctor --deep` should show no warnings. Repeat
   `booley init`: no drift; the auth policy matches the provider.
 - Baseline: `booley targets`, Verilator sims (`sim_core` tests `main` and `axi`, `sim_wb`,
   `sim_dhry`), Verilator lint, and physical synth all pass with fresh reports. The trees still
@@ -71,7 +76,7 @@ Try:
   identity, cleanliness, Doctor, and Targets, then run the traced Wishbone sim and edit nothing.
 - Follow `fixtures/virtual-signals.md`. `wave`/`find`/`sample`/`distance`/`value` with `--virtual
   qa_hsk` should match your own `mem_valid & mem_ready`, and each `d=` should equal end − start.
-  `list`/`signal`/`diff`/`stats`/`stuck` should reject `--virtual` with parser exit 2.
+  `list`/`signal`/`diff`/`stats`/`stuck`/`build` should reject `--virtual` with parser exit 2.
 - A traced sim should give a fresh, non-empty, queryable FST, and VCD-to-FST conversion from a file
   or FIFO should give the same values. In VS Code, the extension should attach and run status,
   Targets, a Flow, and a Specialist, and must keep the read-only tree unchanged.
@@ -98,7 +103,7 @@ tools.
 Intent: entry creates a bound Goal Branch with concrete mandatory Goals and clear refusals.
 Depends on: area 1's clean outer and Booley Directory destination branches.
 Try:
-- Install `goals/continuity.md` and `goals/evolution.md` in Project `goalsets/`
+- Install `goals/continuity.md` and `goals/evolution.md` in `.booley/goalsets/`
   and commit. Create a linked workspace from the primary checkout with
   `booley session enter -- booley worktree new <unique-name>`.
 - Start the Codex Goal child, send `$booley-goal` plus `goals/continuity.md`.
@@ -111,8 +116,8 @@ Try:
 - Probe a missing relative baseline Target and missing spec separately.
   A missing candidate Target only warns and remains unmet. Preserve each
   diagnostic and restore that probe's owned inputs.
-- Add and commit a disposable `default.md` in the primary checkout's Project
-  `goalsets/`. Entry without an include-or-skip decision refuses; explicit skip
+- Add and commit a disposable `default.md` in the primary checkout's
+  `.booley/goalsets/`. Entry without an include-or-skip decision refuses; explicit skip
   needs the operator's instruction and reason.
   Include it on a control entry. Abandon probes, then remove `default.md` and
   commit that removal so later entries do not inherit the probe.
@@ -226,7 +231,7 @@ without an explicit instruction. Resolve every interrupted Goal within this area
 ### 9. sim-protocol — Simulation grades, test protocol, guards (~30 min, optional follow-up)
 Intent: every sim outcome gets the right verdict, and the guards fire.
 Try (disposable Targets and TBs on a run-owned branch):
-- Pass, design fail, inconclusive, and infra get distinct classes. A pass+fail+pass multi-Target run
+- Pass, Fail, Inconclusive, and Error (infrastructure) get distinct verdicts. A pass+fail+pass multi-Target run
   tries all three and keeps the strongest grade. Good and bad standalone modules differ.
 - Elab-only results persist. A run-only argument to elab is rejected. A successful elab survives a
   later failing run.
@@ -234,7 +239,7 @@ Try (disposable Targets and TBs on a run-owned branch):
   parses exactly, but a malformed one never satisfies a Goal and never reads as zero.
 - A skipped-by-default test runs only when named. A plusarg or getopt token runs exactly that test.
 - Guards: going over the disk budget kills the run and names the largest files. A frozen clock gets
-  the documented watchdog class. A pre-run step stages fresh firmware with no TB edits. Restore,
+  the documented verdict (Timeout for these HDL testbenches). A pre-run step stages fresh firmware with no TB edits. Restore,
   rerun, and expect fresh passes with no leftover producer.
 Look for: inconclusive runs graded as pass, stale artifacts, orphaned simulators.
 
@@ -242,38 +247,43 @@ Look for: inconclusive runs graded as pass, stale artifacts, orphaned simulators
 Intent: lint and synth give distinct, correct outcomes and fail closed.
 Try:
 - Lint gives a distinct report for each of clean, warning, syntax error, and missing tool. A
-  nonfatal warning keeps the rc separate from the verdict. File scope holds. Restore and rerun
+  nonfatal warning keeps the rc separate from the verdict. `--scope` keeps only findings in the
+  named files while the whole Target is still linted. Restore and rerun
   clean.
 - Two Verilator Targets on `fixtures/lint/qa_lint_fixture.sv` (WIDTHTRUNC) should give one aggregate
   row listing both. Waivers: `fixtures/lint/verilator-waiver.vlt`, plus
   `fixtures/lint/verible-waiver.txt` on `fixtures/lint/render_verible.py` output. Only the intended
   warning goes away.
-- `booley flow synth --target synth_core` reports a missing `sv2v` as missing and an incompatible
-  one as incompatible. A latch is critical. A timing miss is advisory without a threshold and a
+- `booley flow synth --target synth_core` reports a missing `sv2v` as ERROR (exit 2), not as a
+  design failure. A latch is critical. A timing miss is advisory without a threshold and a
   failure with one. Metrics are fresh and name the tools.
 - A disposable linked-worktree baseline pair names both commits with a numeric delta. Absolute,
   relative, directed, and named-clock Goals evaluate. A missing or mismatched baseline fails
   closed.
-Look for: missing and incompatible tools confused, duplicate aggregate rows, waivers that hide other
-warnings.
+Look for: a missing tool graded as a design failure, duplicate aggregate rows, waivers that hide
+other warnings.
 
 ### 11. vivado-fpga — Provisioned Vivado, Grants, FPGA Flow, licenses (~40 min, Linux, optional follow-up)
 Intent: host EDA provisioning is exact, read-only, and revocable.
 Try:
-- Register host Vivado 2025.2 under a run-owned name, then list and show it. Compare canonical paths
-  (symlink spelling may differ). Inspect Grants first, and replace only run-owned ones.
-- After each Grant change: `booley init --seed`, `session validate`, `session up`.
+- Register host Vivado 2025.2 under a run-owned name (`booley eda installation register`), then
+  list and show it. Compare canonical paths (symlink spelling may differ). Inspect Grants first,
+  and replace (`booley eda grant revoke`, then `grant add`) only run-owned ones.
+- After each Grant change: `booley session down`, `booley init --seed`, `booley session validate`,
+  `booley session up`.
   `/opt/booley-eda/vivado` is read-only, and the release-layout binary (`bin/` or
   `Vivado/bin/vivado`) prints its version.
 - An uncached implementation gives a fresh PASS with a routed DCP plus timing and utilization
   reports. Revoke the Grant, then grade the FPGA Flow before recovering: expect exit 2, no Vivado
   run, and no mount. Re-grant, reissue the Session, and retry. Doctor must then be clean.
 - Dry-run lists the part, top, XDC, and sources. The same inputs hit the cache, and `--no-cache`
-  runs fresh. A bad design gives rc 1, and a baseline/candidate pair gives a delta. `forget` on a
-  granted root is refused. After revoking, `forget` removes exactly that root.
-- With a paid license only: create, read, update, and attach a License Profile to the Grant. A relay
-  fault should fail, and restoring the relay should recover. Unapproved destinations must be
-  blocked. Delete the profile afterwards.
+  runs fresh. A bad design gives rc 1, and a baseline/candidate pair gives a delta.
+  `booley projects forget` on a granted root is refused. After revoking, it removes exactly that
+  root.
+- With a paid license only: register, list, and show a License Profile (`booley eda license`),
+  then attach it with `booley eda grant add --license-profile`. A relay fault should fail, and
+  restoring the relay should recover. Unapproved destinations must be blocked. Remove the profile
+  afterwards.
 Look for: a stale Session spec after regrant, borrowed Grants or installations changed, cached
 results passed off as fresh.
 
@@ -334,16 +344,18 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 - Use unique worktree names and Goal slugs: an existing same-day Goal Branch refuses entry.
 - Integrate every printed branch before cutting the next worktree. When a paired
   checkout was printed, a clean outer tree alone does not prove its branch is current.
-- Entry reads `default.md` only from the primary checkout's Project `goalsets/`. With a copy
+- Entry reads `default.md` only from the primary checkout's `.booley/goalsets/`. With a copy
   committed only in a worktree's Paired Checkout, entry does not ask for an include-or-skip
   decision.
 - A regrant alone leaves the Session spec stale. Reissue it before any Doctor, FPGA, or mount check.
-- Exit 125 from `booley session enter --` means your argv is missing the executable. It's not a lint
-  verdict.
+- A failing `booley session enter -- <argv>` exit code is not a Flow verdict: 126 or 127 means the
+  first argv word is not a runnable command in the Sandbox (for example, `flow lint` without the
+  leading `booley`), and 125 means Booley's command supervisor failed.
 - B-Wave replays must use the child's defaults. Explicit sampling flags aren't equivalent.
 - The first `booley init` on the unchanged demo prints "the booley-setup skill does not apply".
-  That's expected: area 1 configures the demo by hand. Once area 1's edits are in, the repeat run
-  reports the Project as already configured instead; it's no longer the published checkout.
+  That's expected: area 1 configures the demo by hand. The message needs `.booley`'s `origin` to be
+  the published repo and no local commits, so once area 1's edits are committed, the repeat run
+  reports the Project as already configured instead.
 - Fixture testbenches must print a pass sentinel the Project configures (`ALL TESTS PASSED.` here).
   Configured sentinels replace the built-in `[SIM_RESULT]` markers, so a clean `$finish` alone
   grades INCONCLUSIVE.
@@ -359,7 +371,7 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
   file: /work/<file>`.
 - The pinned demo already ships `goalsets/zbb.md` and `specs/zbb.md` for its own Zbb Goal. Area 6
   uses this mission's Goalset and prompts; the child must not pick up the demo's `zbb` Goalset.
-- The demo has no `[agent]` pin, so Booley defaults to Claude Code. To drive the run with Codex, add
-  `[agent]` with `default = "codex"` to `booley.toml` before the first `booley init`.
+- The demo has no `[agent]` pin, so Booley defaults to Claude Code. To drive the run with Codex,
+  run the first init as `booley init --provider codex`.
 - The demo ships `doctor-waivers.toml`. Waived Doctor rows are expected and are not warnings; some
   waivers apply only in GitHub Codespaces.
