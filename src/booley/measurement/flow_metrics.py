@@ -7,12 +7,17 @@ from typing import Any
 
 from booley.flows.fpga.backends.vivado.metrics import FPGA_METRIC_DECLARATIONS
 from booley.flows.fpga.backends.vivado.metrics import report_metric_values as _fpga_values
+from booley.flows.lint.flow import LINT_METRIC_DECLARATIONS
 from booley.flows.metric_declarations import FlowMetricValues, MetricDeclaration
+from booley.flows.sim.metrics import COVERAGE_METRIC_DECLARATIONS, SIM_METRIC_DECLARATIONS
 from booley.flows.synth.flow import SYNTH_METRIC_DECLARATIONS
 from booley.flows.synth.flow import report_metric_values as _synth_values
 
-# Booley Flow name (``BuiltinFlow.name``) -> its declarations.
+# The Flow's ``metrics.toml`` table name -> its declarations. Elaboration Check has no table.
 _DECLARATIONS_BY_FLOW: dict[str, tuple[MetricDeclaration, ...]] = {
+    "lint": LINT_METRIC_DECLARATIONS,
+    "sim": SIM_METRIC_DECLARATIONS,
+    "coverage": COVERAGE_METRIC_DECLARATIONS,
     "synth": SYNTH_METRIC_DECLARATIONS,
     "fpga": FPGA_METRIC_DECLARATIONS,
 }
