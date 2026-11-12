@@ -76,9 +76,9 @@ from .build_session import (
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
 from .standalone import _StandaloneOutcome, _StandalonePlanRecipe
+from .test_selection import _get_test_envs
 
 logger = logging.getLogger(__name__)
-from .test_selection import _get_test_envs
 
 
 class MissingExecutableError(RuntimeError):

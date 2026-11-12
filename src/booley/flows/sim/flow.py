@@ -118,24 +118,6 @@ from .campaign.planning import (
     manifest_digest,
 )
 from .campaign.serial_execution import OrdinaryHdlSerialExecutor
-from .execution import (
-    SelectedTestRuns,
-    SimulationExecution,
-    SimulationOptions,
-    SimulationPreview,
-    SimulationSelection,
-)
-from .execution.engine import TRACE_CLEANUP_MARGIN_S
-from .mode import SimulationMode
-from .standalone import StandaloneMixin
-from .test_run_invocation import (
-    BaselineLink,
-    BaselineRuns,
-    TestRunInvocation,
-    decide_baseline_runs,
-)
-
-logger = logging.getLogger(__name__)
 from .campaign_presentation import (
     _append_missing_report_lines,
     _baseline_refusal_line,
@@ -165,8 +147,26 @@ from .campaign_presentation import (
 )
 from .campaign_scaffold import _CampaignRun, _CampaignSteps, _group_disclosures
 from .elab_only import ElabOnlyMixin
+from .execution import (
+    SelectedTestRuns,
+    SimulationExecution,
+    SimulationOptions,
+    SimulationPreview,
+    SimulationSelection,
+)
+from .execution.engine import TRACE_CLEANUP_MARGIN_S
 from .flow_resume import CampaignResumeMixin
+from .mode import SimulationMode
+from .standalone import StandaloneMixin
+from .test_run_invocation import (
+    BaselineLink,
+    BaselineRuns,
+    TestRunInvocation,
+    decide_baseline_runs,
+)
 from .test_selection import SimulationTestSelectionMixin, _get_test_names, _get_test_skips
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
