@@ -275,7 +275,7 @@ struct ListArgs {
           value_name = "PATTERN")]
     signals: Vec<String>,
 
-    /// List only scopes (modules), no leaf signals
+    /// List only scopes (modules), no leaf signals; text only (--tree --format json exits with code 2)
     #[arg(long)]
     tree: bool,
 
@@ -779,20 +779,23 @@ fn build_bwave_from_reader(
         process::exit(1);
     }
     let _ = std::fs::remove_file(&heartbeat);
-    if let Some(cache) = ColumnCache::load_from_file(out) {
-        let cfg = bwave::cache::clock_query_config(
-            &cache,
-            &ExtractConfig {
-                with_reset: true,
-                json_format: true,
-                ..Default::default()
-            },
-        );
-        if let Some(verdict) = cfg.clock_regularity {
-            eprintln!("{}", bwave::clock::verdict_text(&verdict));
+    match ColumnCache::load_from_file(out) {
+        Ok(cache) => {
+            let cfg = bwave::cache::clock_query_config(
+                &cache,
+                &ExtractConfig {
+                    with_reset: true,
+                    json_format: true,
+                    ..Default::default()
+                },
+            );
+            if let Some(verdict) = cfg.clock_regularity {
+                eprintln!("{}", bwave::clock::verdict_text(&verdict));
+            }
         }
-    } else {
-        eprintln!("# clock summary unavailable; store conversion succeeded");
+        Err(error) => {
+            eprintln!("# clock summary unavailable ({error}); store conversion succeeded");
+        }
     }
 }
 
@@ -938,15 +941,27 @@ fn run_build(args: BuildArgs) {
 //   query dispatch (store → results)
 // ===================================================================
 
+/// Load a waveform store, or print ONE stderr line naming the cause and how
+/// to get a loadable store, and exit 1. One line (not ERROR plus a hint line)
+/// so a caller that keeps only the last stderr line still sees both.
+fn load_store_or_exit(store_path: &str) -> ColumnCache {
+    ColumnCache::load_from_file(Path::new(store_path)).unwrap_or_else(|error| {
+        let hint = match error {
+            bwave::fst::StoreLoadError::Missing(_) => "build it with",
+            // A simulator-written FST has no VCD to rebuild from, so the
+            // first remedy is to re-run the simulation.
+            bwave::fst::StoreLoadError::Unreadable(_) => "re-run the simulation or rebuild it with",
+        };
+        eprintln!(
+            "ERROR: cannot load waveform store '{store_path}': {error}; {hint} `bwave build <trace.vcd> -o {store_path}`"
+        );
+        process::exit(1);
+    })
+}
+
 /// Run a query through ColumnCache (loads the store file directly).
 fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
-    let mut cache = match ColumnCache::load_from_file(Path::new(bwave_path)) {
-        Some(c) => c,
-        None => {
-            eprintln!("ERROR: cannot load waveform store '{}'", bwave_path);
-            process::exit(1);
-        }
-    };
+    let mut cache = load_store_or_exit(bwave_path);
     // A store that parses but declares zero signals answers *every* query
     // with silence — the classic producer is a Verilator sim traced via the
     // auto-generated --main, which opens the dump and writes only the
@@ -1018,10 +1033,7 @@ fn run_overview(args: OverviewArgs) {
     let g = args.global;
     reject_sample_mode("overview", &g);
     require_bwave(&args.bwave, "bwave overview");
-    let mut cache = ColumnCache::load_from_file(Path::new(&args.bwave)).unwrap_or_else(|| {
-        eprintln!("ERROR: cannot load waveform store '{}'", args.bwave);
-        process::exit(1);
-    });
+    let mut cache = load_store_or_exit(&args.bwave);
     if let Some(pattern) = g.clock {
         let (period, first, name) = cache
             .detect_clock_from_pattern(&pattern)
@@ -1068,13 +1080,7 @@ fn run_list(args: ListArgs) {
         process::exit(2);
     }
     require_bwave(&args.bwave, "bwave list");
-    let mut cache = match ColumnCache::load_from_file(Path::new(&args.bwave)) {
-        Some(c) => c,
-        None => {
-            eprintln!("ERROR: cannot load waveform store '{}'", args.bwave);
-            process::exit(1);
-        }
-    };
+    let mut cache = load_store_or_exit(&args.bwave);
     if let Some(ref clock) = g.clock {
         match cache.detect_clock_from_pattern(clock) {
             Ok((period, rise, name)) => {
@@ -1484,7 +1490,10 @@ fn run_skill() {
 
 fn main() {
     let mut command = Cli::command();
-    for name in ["signal", "wave", "sample", "diff", "distance", "stuck"] {
+    // Exactly the commands that call `text_format_only`; every other
+    // command with `--format` keeps the default help (json is supported).
+    const TEXT_ONLY_COMMANDS: [&str; 3] = ["sample", "diff", "stuck"];
+    for name in TEXT_ONLY_COMMANDS {
         command = command.mut_subcommand(name, |sub| {
             sub.mut_arg("format", |arg| {
                 arg.help("Output format: text (JSON requests exit 2)")
