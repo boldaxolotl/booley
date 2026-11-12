@@ -55,7 +55,6 @@ def test_specialist_module_names_are_portable(monkeypatch, path_type) -> None:
     assert "booley.specialists.reviewer" in modules
     assert modules == {
         "booley.specialists.reviewer",
-        "booley.specialists.mutation_tester",
         "booley.specialists.coverage_analyst",
     }
 

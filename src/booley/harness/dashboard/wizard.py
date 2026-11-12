@@ -69,6 +69,9 @@ TARGETS_GROUP = "run-targets"
 TESTS_GROUP = "run-tests"
 LOADING_TARGETS, LOADING_RUNS = "Loading Targets…", "Loading Test Runs…"
 NO_TARGET_YET = "Choose a Target first; or type Test Runs in the extra arguments."
+# A Flow that is not Target-aware but drives another Flow's Targets: the Mutation Flow runs one
+# Simulation Target, so its Target picker offers what the Simulation Flow can drive.
+TARGET_KIND_OF_FLOW = {"mutation": "sim"}
 TYPE_TARGETS = "Type Targets in the extra arguments."
 TYPE_RUNS = "Type Test Runs in the extra arguments."
 NO_FITTING_TARGET = (
@@ -495,7 +498,8 @@ class RunWizard(ModalScreen[str | None]):
             return LOADING_TARGETS, rows
         if listing.problem:
             return f"Targets unavailable: {listing.problem}. {TYPE_TARGETS}", rows
-        fitting = [row.selector for row in listing.rows if self._flow in row.flows]
+        drives = TARGET_KIND_OF_FLOW.get(self._flow, self._flow)
+        fitting = [row.selector for row in listing.rows if drives in row.flows]
         rows += [(selector, selector) for selector in fitting]
         return (field.hint if fitting else NO_FITTING_TARGET), rows
 

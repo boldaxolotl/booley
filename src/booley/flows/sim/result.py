@@ -39,7 +39,7 @@ class SimSummary(TypedDict):
 #: Marker a run-half prints when the *harness* failed rather than the design:
 #: no built binary in the build dir, a missing simulator, a broken cocotb
 #: install. Such a run produced **no observation at all**, so a caller that
-#: grades sim outcomes (mutation_tester's kill/survive decision) must treat it
+#: grades sim outcomes (the Mutation Flow's kill/survive decision) must treat it
 #: as "unknown", never as a verdict — a nonzero exit from a missing executable
 #: is not a detected mutation (SETUP-F-41b). Distinct from ``[SIM_RESULT]``,
 #: which always reports something the simulator actually observed.

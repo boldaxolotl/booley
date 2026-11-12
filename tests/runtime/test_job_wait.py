@@ -12,8 +12,8 @@ from booley.runtime import job_wait
 
 def _record() -> jobrec.JobRecord:
     return jobrec.JobRecord(
-        run_id="mutation_tester-x-1",
-        endpoint="mutation_tester",
+        run_id="mutation-x-1",
+        endpoint="mutation",
         started_at="2026-08-10T08:00:00Z",
         timeout_s=60,
         pid=1234,
@@ -31,14 +31,14 @@ async def test_waits_until_job_is_terminal(tmp_path: Path, monkeypatch):
         max_wait_seconds=1,
     )
 
-    assert [rec.run_id for rec in waited] == ["mutation_tester-x-1"]
+    assert [rec.run_id for rec in waited] == ["mutation-x-1"]
 
 
 @pytest.mark.asyncio
 async def test_timeout_names_jobs_that_are_still_active(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(job_wait, "active_jobs", lambda _root: [_record()])
 
-    with pytest.raises(job_wait.JobWaitTimeoutError, match="mutation_tester-x-1"):
+    with pytest.raises(job_wait.JobWaitTimeoutError, match="mutation-x-1"):
         await job_wait.wait_for_jobs(tmp_path, max_wait_seconds=0)
 
 

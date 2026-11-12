@@ -1,4 +1,4 @@
-"""Launch Codex with a process-owned tab handle while retaining its own launcher."""
+"""Launch Codex with a process-owned tab title while retaining its own launcher."""
 
 from __future__ import annotations
 
@@ -9,13 +9,15 @@ from pathlib import Path
 
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.chat_sessions import CODEX_NATIVE_NAMES, reserve_codex_chat
+from booley.runtime.handles import launched_session_title
 from booley.runtime.pid import capture_process_identity
+from booley.runtime.session_activity import process_session_key
 
 
 def _command(executable: Path) -> tuple[str, list[str], list[str]]:
     """Classify the installed Codex by file name only.
 
-    Returns the program, the argv before the handle and the argv after it.
+    Returns the program, the argv before the tab title and the argv after it.
     """
     if executable.name in CODEX_NATIVE_NAMES:
         return str(executable), [], ["--no-daemon"]
@@ -35,9 +37,12 @@ class NamingUnsupportedError(ValueError):
 
 
 def _named_command(
-    project_root: Path, wait_s: float | None, predecessors: tuple[str, ...]
+    project_root: Path, wait_s: float | None, predecessors: tuple[str, ...], name: str | None
 ) -> tuple[str, list[str], str]:
-    """Reserve the handle and build the named command; raise when naming is unavailable."""
+    """Reserve the handle and build the titled command; raise when naming is unavailable.
+
+    The tab shows ``<handle> · <name>`` (or the handle alone); the handle is returned.
+    """
     if not sys.platform.startswith("linux"):
         raise NamingUnsupportedError("Codex tab handles need Linux")
     installed = shutil.which("codex")
@@ -48,13 +53,12 @@ def _named_command(
     identity = capture_process_identity(os.getpid())
     if identity is None:
         raise ValueError("launch process identity is unavailable")
+    booley_dir = resolve_common_booley_dir(project_root)
     handle = reserve_codex_chat(
-        resolve_common_booley_dir(project_root),
-        identity,
-        wait_s=wait_s,
-        predecessors=predecessors,
+        booley_dir, identity, wait_s=wait_s, predecessors=predecessors, name=name
     )
-    return program, [*before, handle, *after], handle
+    title = launched_session_title(booley_dir, process_session_key(identity), handle, name)
+    return program, [*before, title, *after], handle
 
 
 def command(
@@ -63,8 +67,13 @@ def command(
     wait_s: float | None = None,
     strict: bool = False,
     predecessors: tuple[str, ...] = (),
+    name: str | None = None,
 ) -> tuple[str, list[str], str | None]:
     """Return the program, its argv and the reserved handle (``None`` when unnamed).
+
+    *name* labels the Session; the tab title is ``<handle> · <name>``, and a resumed tab
+    without *name* keeps its stored label. Where naming is unsupported, a given *name*
+    adds a NOTE that it is not shown.
 
     Naming is best effort: an unsupported launcher retains normal startup and an error
     adds a NOTE. With *strict*, every reason the handle cannot be reserved is raised
@@ -72,10 +81,12 @@ def command(
     the Session writer lock. A resumed tab keeps the handle of its *predecessors*.
     """
     try:
-        return _named_command(project_root, wait_s, predecessors)
-    except NamingUnsupportedError:
+        return _named_command(project_root, wait_s, predecessors, name)
+    except NamingUnsupportedError as exc:
         if strict:
             raise
+        if name is not None:
+            print(f"NOTE: Codex cannot show --name here: {exc}", file=sys.stderr)
     except (OSError, ValueError, RuntimeError) as exc:
         if strict:
             raise

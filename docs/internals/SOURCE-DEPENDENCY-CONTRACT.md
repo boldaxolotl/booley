@@ -151,7 +151,7 @@ D42.
 | D5 | Prefix `booley.runtime` | Prefixes `booley.mcp`, `booley.specialists` | Sandbox code stays usable without agent-facing code. |
 | D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Shared Sandbox code doesn't learn command code. |
 | D7 | Exact `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp` | Shared Target and Criteria policy is independent of presentation and agent exposure. |
-| D8 | Each of the prefixes `booley.flows.{sim,synth,fpga,lint}` | The other three | Each built-in Flow owns its EDA-tool-specific code and doesn't couple to a sibling. |
+| D8 | Each of the prefixes `booley.flows.{sim,synth,fpga,lint}` | The other three | Each built-in Flow owns its EDA-tool-specific code and doesn't couple to a sibling. The Mutation Flow composes `sim` by design, sits outside this set, and is governed by D42. |
 | D9 | Package-files `booley.flows` | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Flow-neutral policy and evidence modules never select a concrete Flow. |
 | D10 | Each adapter set S1-S5 (below) | The other sets of the same Flow | An EDA tool adapter fits its Flow's seam without knowing a sibling adapter. |
 | D11 | Prefixes `booley.flows.synth.backends.yosys`, `booley.flows.synth.backends.openroad` | Exact `booley.flows.synth.flow`; the sibling backend prefix | Leaf synthesis adapters don't drive their Flow or each other. |
@@ -182,6 +182,7 @@ D42.
 | D39 | Prefix `booley.flows` | Prefix `booley.harness` | Flows run under any composition; the command layer passes human CLI concerns in through the invocation. |
 | D40 | Prefix `booley.presentation` | Prefixes `booley.harness`, `booley.mcp`, `booley.runtime`, `booley.goals`, `booley.flows` | Shared presentation primitives sit beneath every composition and execution owner. |
 | D41 | Prefix `booley.runtime` | Prefix `booley.flows` | Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through `booley.core` and never imports a Flow. |
+| D42 | Prefixes `booley.flows.{sim,synth,fpga,lint}`, package-files `booley.flows` | Prefix `booley.flows.mutation` | The Mutation Flow composes the Simulation Flow's build and execution by design; the dependency runs one way, so no sibling Flow or Flow-neutral module imports it. |
 
 The D10 adapter sets are exhaustive. Each simulation set (S1-S3) may not
 import the other two; each synthesis set (S4-S5) may not import the other.

@@ -411,8 +411,11 @@ def test_agents_template_limits_doctor_during_task_work():
 def test_setup_agents_template_advertises_supported_specialists():
     agents = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
 
-    for specialist in ("`coverage_analyst`", "`reviewer`", "`mutation_tester`"):
+    for specialist in ("`coverage_analyst`", "`reviewer`"):
         assert specialist in agents
+    # Mutation testing is a Flow now, not a Specialist.
+    assert "`mutation`" in agents
+    assert "mutation_tester" not in agents
 
 
 def test_heal_preserves_scope_and_routes_exceptional_findings():

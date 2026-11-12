@@ -1,7 +1,7 @@
 # Built-in Flow reports
 
-This is the file reference for what the built-in `sim`, `lint`, `synth`, and
-`fpga` Flows write to disk: where reports go, which JSON fields they hold, and
+This is the file reference for what the built-in `sim`, `lint`, `synth`,
+`fpga`, and `mutation` Flows write to disk: where reports go, which JSON fields they hold, and
 how simulation Campaigns are laid out. Read it when you change what a Flow
 writes or write code that reads it. How the Flows produce these files, and
 their verdict and exit-code rules, are in the implementation docs below. User
@@ -9,7 +9,7 @@ docs show only the few files a user opens; keep them consistent with this page.
 
 | Document | Covers |
 |---|---|
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How to run each Flow and read its verdict |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md), [FLOW-MUTATION.md](../user/FLOW-MUTATION.md)) | How to run each Flow and read its verdict |
 | **This document** | Report files, JSON fields, and on-disk layout |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the Flows produce these files: planning, verdict rules, recovery |
 | [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | The same for `sim`: Campaigns, coverage collection, retention |
@@ -477,3 +477,42 @@ Actionable warnings set `implementation.status.grade` to `warn` but keep
 | `baseline_target`, `candidate_target` | Selectors of the compared Targets. |
 | `baseline_target_identity`, `candidate_target_identity` | Their full FuseSoC identities. |
 | `artifacts` | `report`, `log`, and `live_dirs` (the build, synthesis, and implementation directories). |
+
+## `mutation`
+
+Each run takes the next number `N` under `<report-root>/mutation/`. The
+invocation `report.json` carries the verdict, and `campaign/` holds the
+durable evidence of the one campaign:
+
+```text
+<report-root>/mutation/<N>/
+  report.json
+  campaign/
+    manifest.json            run identity, baseline and per-Mutant status
+    mutation-specs.md        every Mutant: operator, file:line, original, mutated
+    mutation-results.md      the outcome of each Mutant
+    baseline.log             pristine baseline simulator output
+    mutant-logs/             one simulator log per tested Mutant
+    variants/mutant_<i>/...  the mutated source of each Mutant
+```
+
+Job report `detail` fields:
+
+| Field | Type and contents |
+|---|---|
+| `target`, `tests`, `seed` | The Simulation Target, the display names of the tests of its suite, and the seed. |
+| `detected`, `not_detected`, `invalid` | Mutant counts. `detected_timeout` is the subset of `detected` that ran past the baseline-scaled limit. |
+| `min_detected`, `total_requested`, `total_valid` | The pass threshold, the requested count, and `detected + not_detected` (invalid Mutants excluded). |
+| `identity` | What reproduces the run: `scope_hashes` (file to digest), `generator_version`, `pyslang_version`, `seed`, `count`. |
+| `classified` | Per Mutant: `index`, `id`, `category`, `file`, `line`, `status` (`detected`, `not_detected`, `invalid`, `untested`), `timed_out`, `sim_output_snippet`, `log`, `first_killing_test`. |
+| `auto`, `formula_count`, `budget_capped`, `source_size_budget` | `--count auto` only: how the count was derived. |
+| `shortfall` | Present when the generator found fewer Mutants than requested. |
+| `coverage_gap`, `diagnosis` | Present when the scope is not exercised by the Target's tests. |
+| `variant_files`, `artifacts` | The mutated sources and the campaign file references. |
+
+`manifest.json` has `schema_version`, `run_id`, `target`, `eda_tool`,
+`source_fingerprint`, `scope_hashes`, `identity`, `baseline` (`status`, `log`),
+`mutants` (the `classified` rows, with `log` and `variant` relative to
+`campaign/`), and `artifacts`. A run without a report directory keeps the
+variants only under the Booley Directory's `.runtime/mutation/` scratch tree.
+The `mutation_score` Criterion is satisfied by `detected >= min_detected`.

@@ -180,7 +180,8 @@ slot cancels the run.
 The Developer Agent reaches two kinds of capability through one MCP surface,
 never by spawning EDA tools itself. **Booley Flows** deterministically turn a
 structured request into an EDA tool invocation and its result into evidence.
-**Specialists** are scoped LLM sub-agents for work such as review. The
+**Specialists** are scoped LLM sub-agents for work such as review. Mutation testing is a Flow
+(`booley flow mutation`), not a Specialist: it needs no model. The
 catalog is in
 [CLI-REFERENCE.md](../user/CLI-REFERENCE.md#booley-flows--specialists), the
 build and evidence contracts in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md)

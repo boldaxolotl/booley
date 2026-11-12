@@ -52,7 +52,7 @@ SKIP_MODULES = frozenset(
     }
 )
 
-BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "fpga")
+BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "fpga", "mutation")
 _FLOW_BASE_NAMES = frozenset({"BooleyFlow", "BuiltinFlow"})
 _ENDPOINT_BASE_NAMES = _FLOW_BASE_NAMES | {"McpTool", "Specialist"}
 

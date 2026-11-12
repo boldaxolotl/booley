@@ -8,13 +8,13 @@ from unittest.mock import Mock
 import pytest
 
 from booley.core.models import AgentResult
+from booley.flows.mutation.flow import MutationFlow
 from booley.harness import booley as cli
 from booley.mcp.application import McpApplication
 from booley.mcp.base import McpToolResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import McpToolInfo
 from booley.runtime import job_slots
-from booley.specialists.mutation_tester import MutationTesterSpecialist
 from booley.specialists.specialist import Specialist
 
 
@@ -106,13 +106,9 @@ def test_listing_filters_disabled_and_discovers_project_specialist(tmp_path, mon
     output = capsys.readouterr().out
     assert "project_review" in output
     assert "coverage_analyst" in output
-    assert "mutation_tester" in output
+    assert "mutation" not in output  # a built-in Flow, not a Specialist
     assert "reviewer" not in output
-    assert (
-        output.index("coverage_analyst")
-        < output.index("mutation_tester")
-        < output.index("project_review")
-    )
+    assert output.index("coverage_analyst") < output.index("project_review")
 
 
 @pytest.mark.parametrize(
@@ -275,10 +271,10 @@ def test_project_params_round_up_without_a_floor(tmp_path):
 
 @pytest.mark.parametrize("milliseconds,expected", [(450000, 3), (1500000, 10)])
 def test_mutation_auto_count_uses_converted_seconds(tmp_path, monkeypatch, milliseconds, expected):
-    endpoint = MutationTesterSpecialist()
-    endpoint._args = argparse.Namespace(count="auto", timeout_ms=milliseconds)
+    endpoint = MutationFlow()
+    endpoint._args = argparse.Namespace(count="auto", timeout_ms=milliseconds, work_dir=tmp_path)
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.compute_source_size_budget",
+        "booley.flows.mutation.flow.compute_source_size_budget",
         lambda *_args: {"formula_count": 100},
     )
     monkeypatch.setattr(endpoint, "emit_progress", Mock())
@@ -363,7 +359,10 @@ def test_specialists_have_no_model_flag_or_schema_field():
         for info in discover_mcp_inventory()
         if info.kind == "specialist"
     ]
-    assert {"reviewer", "mutation_tester", "coverage_analyst"} <= {s.name for s in specialists}
+    assert {"reviewer", "coverage_analyst"} == {
+        s.name for s in specialists if s.name != "project_review"
+    }
+    assert "mutation_tester" not in {s.name for s in specialists}
     for specialist in specialists:
         endpoint = specialist()
         assert "--model" not in endpoint._parser._option_string_actions, specialist.name
@@ -455,7 +454,6 @@ def test_builtin_specialist_defaults_stay_seconds_for_watchdogs():
 
     for cls, argv in [
         (ReviewerSpecialist, ["--category", "rtl", "--focus", "bugs", "--scope", "rtl"]),
-        (MutationTesterSpecialist, ["--target", "sim_demo", "--scope", "rtl"]),
         (CoverageAnalystSpecialist, ["--campaign", "coverage.json"]),
     ]:
         endpoint = cls()

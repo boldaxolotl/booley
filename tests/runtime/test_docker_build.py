@@ -905,9 +905,9 @@ def test_redirected_verbose_failure_streams_complete_output_once() -> None:
 
 
 _PARALLEL_PROGRESS_RECORDS = (
-    '#7 [yosys 1/1] RUN echo ">>> Building Yosys v0.69..." \\\n',
+    '#7 [yosys 1/1] RUN echo ">>> Building Yosys vX.Y..." \\\n',
     '#11 [runtime 1/1] RUN echo ">>> Installing runtime..." \\\n',
-    "#7 0.1 >>> Building Yosys v0.69...\n",
+    "#7 0.1 >>> Building Yosys vX.Y...\n",
     "#11 0.1 >>> Installing runtime...\n",
 )
 
@@ -932,7 +932,7 @@ def test_progress_state_deduplicates_parallel_stage_announcements(monkeypatch, t
         state.accept(record)
 
     assert output.text.splitlines() == [
-        ">>> Building Yosys v0.69...",
+        ">>> Building Yosys vX.Y...",
         ">>> Installing runtime...",
         ">>> third",
         ">>> fourth",
@@ -949,7 +949,7 @@ def test_progress_state_seen_announcements_are_isolated_per_build(monkeypatch, t
         for record in _PARALLEL_PROGRESS_RECORDS:
             state.accept(record)
         assert output.text.splitlines() == [
-            ">>> Building Yosys v0.69...",
+            ">>> Building Yosys vX.Y...",
             ">>> Installing runtime...",
         ]
 

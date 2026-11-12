@@ -11,7 +11,7 @@ Neighboring docs own the rest:
 | Document | Owns |
 |---|---|
 | [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages | Running built-in Booley Flows and reading their results |
-| [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the built-in `sim`, `lint`, `synth`, and `fpga` Flows build commands, run, and produce evidence |
+| [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the built-in `sim`, `lint`, `synth`, `fpga`, and `mutation` Flows build commands, run, and produce evidence |
 | [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | Simulation Flow internals: adapter seam, verdicts, Elaboration Check, coverage persistence and retention |
 | [JOB_RECORDS.md](JOB_RECORDS.md) | How Jobs are recorded, owned, and found again |
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations and JSON schemas of the built-in Flows |
@@ -39,8 +39,8 @@ Endpoints come in three families:
 
 | Family | Built-in examples | Use it for |
 |---|---|---|
-| Booley Flow | `sim`, `lint`, `synth`, `fpga` | Deterministic subprocess work whose output becomes evidence |
-| Specialist | `reviewer`, `coverage_analyst`, `mutation_tester` | A focused job given to a model with fresh context (`mutation_tester` uses the base without a model call) |
+| Booley Flow | `sim`, `lint`, `synth`, `fpga`, `mutation` | Deterministic subprocess work whose output becomes evidence |
+| Specialist | `reviewer`, `coverage_analyst` | A focused job given to a model with fresh context |
 | Direct `McpTool` subclass | none | Any other orchestration |
 
 Built-in and Project endpoints share the base classes, the registry, and the
@@ -156,8 +156,8 @@ Built-in MCP worktree routing:
 
 | Accepts `work_dir` | Does not accept `work_dir` |
 | --- | --- |
-| `sim`, `lint`, `synth`, `fpga` | `booley_status` |
-| `reviewer`, `mutation_tester`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
+| `sim`, `lint`, `synth`, `fpga`, `mutation` | `booley_status` |
+| `reviewer`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
 | `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
 | `booley_targets`, `booley_report` | `bwave` |
 
@@ -351,7 +351,7 @@ When the result is too large, Booley drops embedded recipe snapshots and
 diagnostic excerpts first, then per-clock detail, then whole Targets in a fixed
 order, and lists what it dropped; it never trades the QoR for links alone.
 
-`mutation_tester` follows the same convention: each run writes one
+The `mutation` Flow follows the same convention: each run writes one
 self-contained campaign directory whose manifest cites the baseline log, one
 log per mutant, the mutation specifications, results, and source variants. Its
 `mutant_logs` role points at that run's copy, not the shared runtime
@@ -677,7 +677,7 @@ setup is in [SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning).
 
 ## Built-in Flow calls
 
-The built-in `sim`, `lint`, `synth`, and `fpga` endpoints expose the same
+The built-in `sim`, `lint`, `synth`, `fpga`, and `mutation` endpoints expose the same
 controls as their CLI ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)), with
 these MCP-specific shapes.
 

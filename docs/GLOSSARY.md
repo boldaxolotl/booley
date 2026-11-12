@@ -206,20 +206,16 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional capability the **Developer Agent** invokes for one task, with fresh context and no history: the Reviewer, the [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md), and the model-free **Mutation Tester** ([list](user/CLI-REFERENCE.md#booley-flows--specialists)). Under **Specialist Source Isolation**, one that judges one side of the RTL/testbench divide cannot see the other side's sources, so it reads the spec independently of the code it judges.
+An optional capability the **Developer Agent** invokes for one task, with fresh context and no history: the Reviewer and the [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) ([list](user/CLI-REFERENCE.md#booley-flows--specialists)). Under **Specialist Source Isolation**, one that judges one side of the RTL/testbench divide cannot see the other side's sources, so it reads the spec independently of the code it judges.
 _Avoid_: agentic MCP tool, agent, worker; optional blindness, reviewer independence (for Specialist Source Isolation)
 
 **Custom Flow**:
 A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence for declared Goals. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
 _Avoid_: Custom Tool, plugin, user tool, project tool
 
-**Mutation Tester**:
-The **Specialist** (`mutation_tester`) that measures how well a Target's tests catch injected RTL bugs. It injects **Mutants** made by the fixed Mutation Operators into the Target's own RTL, or into a caller-chosen scope, runs the Target's tests against each, and reports how many are detected. It runs no model, so the same sources and settings always produce the same Mutants and scores are comparable across runs.
-_Avoid_: mutation agent, LLM mutation, fault injection
-
 **Mutation Flow**:
-The Booley Flow `booley flow mutation` that the **Mutation Tester** becomes under [ADR 0088](adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md), because mutation testing runs no model and so is deterministic orchestration. Not built yet ([#2936](https://github.com/boldaxolotl/booley/issues/2936)); until then mutation testing is the Mutation Tester Specialist.
-_Avoid_: fault injection
+The Booley Flow `booley flow mutation` that measures how well a Target's tests catch injected RTL bugs. It injects **Mutants** made by the fixed Mutation Operators into the Target's own RTL, or into a caller-chosen scope, runs the Target's tests against each, and reports how many are detected. It runs no model, so the same sources and settings always produce the same Mutants and comparable scores ([ADR 0088](adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md)). It replaced the Mutation Tester Specialist.
+_Avoid_: mutation agent, LLM mutation, fault injection
 
 **Mutant**:
 One seeded source change with a stable ID, made by a **Mutation Operator**, one rule of Booley's fixed table (such as swapping a relational operator) that Projects cannot change, and judged detected or not detected by the Target's tests. Its ID comes from the change and its place in the enclosing design unit, so it survives edits to other files and other design units. A Mutant that changes no observable behavior (an equivalent Mutant) can never be detected.
