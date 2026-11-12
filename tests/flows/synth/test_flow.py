@@ -73,6 +73,7 @@ from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.conftest import symlink_or_skip
+from tests.flows.synth.captured_yosys import load_capture
 from tests.fusesoc_test_support import relocated_project
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
@@ -308,6 +309,27 @@ def test_clockless_sdc_marker_is_classified_as_configuration_error(tmp_path: Pat
     assert metrics.returncode == 2
     assert metrics.termination == "infrastructure_error"
     assert "created no clocks" in metrics.infra_error
+
+
+def test_exit_zero_echoed_input_error_token_is_not_an_infra_error(tmp_path: Path) -> None:
+    """An RTL comment echoed into an exit-0 log must not read as an input error (#3673)."""
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    metrics = SynthMetrics(synth_mode=SynthMode.PHYSICAL)
+    outcome = SimpleNamespace(
+        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
+        forced_failure=None,
+        yosys_complete=True,
+    )
+    process = SubprocessResult(returncode=0, stdout="", stderr="", duration_s=0.1)
+
+    flow._apply_boundary_completion(
+        metrics, outcome, process, "    5 | // BOOLEY_INPUT_ERROR: echoed comment\n      | ^\n"
+    )
+
+    assert metrics.returncode == 0
+    assert metrics.termination == "completed"
+    assert metrics.infra_error == ""
 
 
 @pytest.fixture(autouse=True)
@@ -2193,16 +2215,21 @@ class TestBoundaryCommand:
 def _write_final_structural_failure(build_dir: Path, returncode: int) -> None:
     """Write completed structural evidence, optionally followed by a tool crash."""
     build_dir.mkdir(parents=True, exist_ok=True)
+    loop_warning = "Warning: found logic loop in module dut:\n    wire \\feedback\n"
     (build_dir / "yosys.log").write_text(
-        "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
+        loop_warning + "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
         encoding="utf-8",
     )
     (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+    # The loop survives optimisation, so the pre-mapping check owns it; the
+    # final check, run after mapping, sees only the multi-driven net.
+    (build_dir / "premap_check_dut.txt").write_text(
+        loop_warning + "Found and reported 1 problems.\n", encoding="utf-8"
+    )
     (build_dir / "check_dut.txt").write_text(
-        "Warning: found logic loop in module dut:\n    wire \\feedback\n"
         "Warning: multiple conflicting drivers for dut.sig:\n"
         "    port Q[0] of cell $procdff$1 ($dff)\n"
-        "Found and reported 2 problems.\n",
+        "Found and reported 1 problems.\n",
         encoding="utf-8",
     )
     (build_dir / "synth_dut.v").write_text("module dut; endmodule\n")
@@ -2237,6 +2264,9 @@ class TestFileBasedInterpretation:
             (build_dir / "stat_dut.txt").write_text(
                 "Number of cells: 12345\nChip area for top module dut: 52480.0\n", encoding="utf-8"
             )
+            (build_dir / "premap_check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
@@ -2270,6 +2300,9 @@ class TestFileBasedInterpretation:
             build_dir.mkdir(parents=True, exist_ok=True)
             (build_dir / "yosys.log").write_text(stat_output, encoding="utf-8")
             (build_dir / "stat_dut.txt").write_text(stat_output, encoding="utf-8")
+            (build_dir / "premap_check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
@@ -2354,6 +2387,9 @@ class TestFileBasedInterpretation:
             (build_dir / "stat_dut.txt").write_text(
                 "Number of cells: 100\nChip area for top module dut: 6400.0\n", encoding="utf-8"
             )
+            (build_dir / "premap_check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
@@ -2372,7 +2408,7 @@ class TestFileBasedInterpretation:
         for evidence in (
             "$add$rtl.sv:7$1",
             "\\feedback",
-            "completed final netlist check reports no combinational loops",
+            "completed post-optimisation check reports no combinational loops",
         ):
             assert evidence in result.report_text
         target = result.detail["lite"]
@@ -2404,6 +2440,9 @@ class TestFileBasedInterpretation:
             )
             (build_dir / "stat_dut.txt").write_text(
                 "Number of cells: 100\nChip area for top module dut: 6400.0\n", encoding="utf-8"
+            )
+            (build_dir / "premap_check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
             )
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
@@ -2532,6 +2571,9 @@ class TestFileBasedInterpretation:
                 encoding="utf-8",
             )
             (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+            (build_dir / "premap_check_dut.txt").write_text(
+                "Found and reported 0 problems.\n", encoding="utf-8"
+            )
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
@@ -4830,6 +4872,7 @@ class TestAggregateDetailIsSelfContained:
                     "[WARNING STA-0503] find_timing_paths -group_count is deprecated. "
                     "Use -group_path_count instead.\n"
                 ),
+                "premap_check": "Found and reported 0 problems.\n",
                 "final_check": "Found and reported 0 problems.\n",
             }
         ).warnings
@@ -4895,6 +4938,7 @@ class TestAggregateDetailIsSelfContained:
         baseline_summary = parse_synth_diagnostics(
             {
                 "yosys": "ABC: Warning: The network has multiple outputs.\n",
+                "premap_check": "Found and reported 0 problems.\n",
                 "final_check": "Found and reported 0 problems.\n",
             }
         ).warnings
@@ -5256,6 +5300,7 @@ def _write_latch_artifacts(build, stat, openroad_log, stale_openroad):
     for name, text in {
         "stat_dut.txt": stat,
         "yosys.log": stat,
+        "premap_check_dut.txt": "Found and reported 0 problems.\n",
         "check_dut.txt": "Found and reported 0 problems.\n",
         "synth_dut.v": "module dut; endmodule\n",
         "sv2v_converted.v": "module dut; endmodule\n",
@@ -5301,6 +5346,10 @@ def _run_latch_case(flow_and_state, tmp_path, case):
             (plan.build_dir / "check_dut.txt").unlink()
         if case.get("stale_check"):
             os.utime(plan.build_dir / "check_dut.txt", (0, 0))
+        if case.get("missing_premap"):
+            (plan.build_dir / "premap_check_dut.txt").unlink()
+        if case.get("stale_premap"):
+            os.utime(plan.build_dir / "premap_check_dut.txt", (0, 0))
         if case.get("missing_netlist"):
             (plan.build_dir / "synth_dut.v").unlink()
         return SubprocessResult(dispatched_unix=99, **case.get("process", {"returncode": 0}))
@@ -5616,7 +5665,7 @@ def _fake_latch_eda_bin(tmp_path):
     fake_bin.mkdir()
     scripts = {
         "sv2v": '#!/bin/sh\necho "module dut; endmodule" > sv2v_converted.v\n',
-        "yosys": "#!/bin/sh\ncat > stat_dut.txt <<'STAT'\n13. Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - $_DLATCH_P_\n  Area for cell type $_DLATCH_P_ is unknown!\nSTAT\ncat stat_dut.txt\necho 'Found and reported 0 problems.' > check_dut.txt\necho 'module dut; endmodule' > synth_dut.v\n",
+        "yosys": "#!/bin/sh\ncat > stat_dut.txt <<'STAT'\n13. Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - $_DLATCH_P_\n  Area for cell type $_DLATCH_P_ is unknown!\nSTAT\ncat stat_dut.txt\necho 'Found and reported 0 problems.' > premap_check_dut.txt\necho 'Found and reported 0 problems.' > check_dut.txt\necho 'module dut; endmodule' > synth_dut.v\n",
         "openroad": "#!/bin/sh\necho '[ERROR ORD-2013] instance latch LEF master $_DLATCH_P_ not found.'\nexit 1\n",
     }
     for name, script in scripts.items():
@@ -6055,9 +6104,19 @@ def test_synth_baseline_materializes_project_topologies(tmp_path, monkeypatch, t
 
 
 @pytest.mark.parametrize(
-    "final", ["Found and reported 0 problems.\n", "Checking module dut...\n", None, "stale"]
+    ("degraded", "final"),
+    [
+        ("final_check", "Found and reported 0 problems.\n"),
+        ("final_check", "Checking module dut...\n"),
+        ("final_check", None),
+        ("final_check", "stale"),
+        ("premap_check", "Checking module dut...\n"),
+        ("premap_check", None),
+        ("premap_check", "stale"),
+    ],
 )
-def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, final):
+def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degraded, final):
+    """Either structural check missing, stale, or unterminated gives the same outcome."""
     loop = (
         "Warning: found logic loop in module dut:\n    cell $add$rtl.sv:7$1\n    wire \\feedback\n"
     )
@@ -6068,10 +6127,12 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, final):
         "reports/timing/overall.rpt": "timing report\n",
         "reports/timing/overall.csv.rpt": "",
     }
+    artifact_name = "check_dut.txt" if degraded == "final_check" else "premap_check_dut.txt"
     if final is not None:
-        artifacts["check_dut.txt"] = (
+        artifacts[artifact_name] = (
             "Found and reported 0 problems.\n" if final == "stale" else final
         )
+    prefix = "check" if degraded == "final_check" else "premap"
     result, report = _run_latch_case(
         flow_and_state,
         tmp_path,
@@ -6079,8 +6140,8 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, final):
             "mode": "physical",
             "cell": "NAND2",
             "artifacts": artifacts,
-            "missing_check": final is None,
-            "stale_check": final == "stale",
+            f"missing_{prefix}": final is None,
+            f"stale_{prefix}": final == "stale",
             "openroad": "STA_WORST_SLACK_NS: 0.000000\nSTA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\nDesign area 63 u^2 50% utilization.\n",
         },
     )
@@ -6095,11 +6156,48 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, final):
         EXIT_SUCCESS if clean else EXIT_FAILURE if available else EXIT_ERROR
     )
     assert (
-        "completed final netlist check reports no combinational loops" in result.report_text
+        "completed post-optimisation check reports no combinational loops" in result.report_text
     ) is clean
     if clean:
         assert report["implementation"]["status"]["grade"] == "warn"
         assert "RESULT: WARN" in result.report_text
+
+
+@pytest.mark.parametrize(
+    ("fixture", "exit_code", "comb_loops"),
+    [
+        ("comb_loop_yosys_0_70.txt", EXIT_FAILURE, 1),
+        ("transient_loop_yosys_0_70.txt", EXIT_SUCCESS, 0),
+    ],
+    ids=["comb_loop", "transient_loop"],
+)
+def test_captured_comb_loop_cases_reach_verdict(
+    flow_and_state, tmp_path, fixture, exit_code, comb_loops
+):
+    # Real Yosys 0.70+ output for a loop that survives optimisation (the run
+    # fails) and for a loop that optimisation removes (#1417; the run warns).
+    captured = load_capture(fixture)
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {"cell": "NAND2", "artifacts": captured},
+    )
+
+    assert result.exit_code == exit_code
+    assert report["structural_checks_complete"] is True
+    conditions = report["implementation"]["conditions"]
+    assert conditions["comb_loops"] == comb_loops
+    assert conditions["has_critical"] is bool(comb_loops)
+    if comb_loops:
+        assert report["passed"] is False
+        assert "CRITICAL" in result.report_text
+        assert "1 comb loop" in result.report_text
+    else:
+        assert report["passed"] is True
+        assert report["implementation"]["status"]["grade"] == "warn"
+        assert "completed post-optimisation check reports no combinational loops" in (
+            result.report_text
+        )
 
 
 @pytest.mark.parametrize("mode", ["logical", "physical"])
@@ -6115,6 +6213,7 @@ def test_earlier_loop_report_survives_representative_saturation(
     diagnostics = parse_synth_diagnostics(
         {
             "yosys": loop + "".join(f"ABC: Warning: unrelated {n}\n" for n in range(12)),
+            "premap_check": "Found and reported 0 problems.\n",
             "final_check": "Found and reported 0 problems.\n",
         }
     )
@@ -6132,7 +6231,7 @@ def test_earlier_loop_report_survives_representative_saturation(
     assert "RESULT: WARN" in result.report_text
     assert "CRITICAL" not in result.report_text
     assert "$add$rtl.sv:7$1" in result.report_text
-    assert "completed final netlist check reports no combinational loops" in result.report_text
+    assert "completed post-optimisation check reports no combinational loops" in result.report_text
     assert str(raw) in result.report_text
     groups = result.detail["lite"]["warning_summary"]["representatives"]
     assert len(groups) == 8

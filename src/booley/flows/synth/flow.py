@@ -1198,6 +1198,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     request_type = SynthRequest
     argument_adapter = SynthArguments
+    _PAIR_CRITERION_PREFIX = "synthesis_ok_"
 
     def _resolve_job_class(self) -> str:
         """Synthesis is a heavy Sandbox workload."""
@@ -1698,7 +1699,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         metrics.returncode = result.returncode
         metrics.timed_out = result.timed_out
         metrics.termination = _termination_reason(result, output)
-        input_error = _INPUT_ERROR_RE.search(output)
+        # The producer is a Tcl ``error`` that makes OpenROAD exit non-zero, so an
+        # exit-0 log mentioning the token (echoed RTL comment) is not an input error.
+        input_error = _INPUT_ERROR_RE.search(output) if result.returncode != 0 else None
         if input_error is not None:
             metrics.returncode = 2
             metrics.infra_error = input_error.group(1).strip()
@@ -1838,7 +1841,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         outcome: Any,
         stdout: str,
     ) -> None:
-        """Apply authoritative final-check evidence or legacy inline evidence."""
+        """Apply authoritative pre-mapping and final check evidence or legacy inline evidence."""
         structural = outcome.diagnostics.structural
         legacy_inline = (
             not getattr(outcome, "attempt_token", "")

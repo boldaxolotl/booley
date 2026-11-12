@@ -301,7 +301,7 @@ whose uncommitted changes would block Finish.
 
 The worktree's `.booley` is a Paired Checkout, its own Git repository on its
 own branch, so the agent must commit changes there as well. Ask it to if the
-status names that repository.
+status names that repository. See [Stealth Mode](STEALTH.md).
 
 </details>
 

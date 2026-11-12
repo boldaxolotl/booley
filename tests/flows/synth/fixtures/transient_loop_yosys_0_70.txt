@@ -1,0 +1,82 @@
+--- yosys.log ---
+4.4. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Warning: found logic loop in module dut:
+    cell $9 ($buf)
+      A[4] --> Y[4]
+    wire \m [0] source: dut.sv:2.15
+    cell $5 ($bmux) source: dut.sv:8.19-8.25
+      A[0] --> Y[0]
+    cell $8 ($xor) source: dut.sv:8.12-8.25
+      B[0] --> Y[0]
+Warning: found logic loop in module dut:
+    cell $9 ($buf)
+      A[5] --> Y[5]
+    wire \m [1] source: dut.sv:2.15
+    cell $5 ($bmux) source: dut.sv:8.19-8.25
+      A[1] --> Y[1]
+    cell $8 ($xor) source: dut.sv:8.12-8.25
+      B[1] --> Y[1]
+Warning: found logic loop in module dut:
+    cell $9 ($buf)
+      A[6] --> Y[6]
+    wire \m [2] source: dut.sv:2.15
+    cell $5 ($bmux) source: dut.sv:8.19-8.25
+      A[2] --> Y[2]
+    cell $8 ($xor) source: dut.sv:8.12-8.25
+      B[2] --> Y[2]
+Warning: found logic loop in module dut:
+    cell $9 ($buf)
+      A[7] --> Y[7]
+    wire \m [3] source: dut.sv:2.15
+    cell $5 ($bmux) source: dut.sv:8.19-8.25
+      A[3] --> Y[3]
+    cell $8 ($xor) source: dut.sv:8.12-8.25
+      B[3] --> Y[3]
+Warning: found logic loop in module dut:
+    cell $9 ($buf)
+      A[8] --> Y[8]
+    wire \m [4] source: dut.sv:2.15
+    cell $5 ($bmux) source: dut.sv:8.19-8.25
+      A[4] --> Y[0]
+    cell $8 ($xor) source: dut.sv:8.12-8.25
+      B[0] --> Y[0]
+Warning: found logic loop in module dut:
+    cell $9 ($buf)
+      A[9] --> Y[9]
+    wire \m [5] source: dut.sv:2.15
+    cell $5 ($bmux) source: dut.sv:8.19-8.25
+      A[5] --> Y[1]
+    cell $8 ($xor) source: dut.sv:8.12-8.25
+      B[1] --> Y[1]
+Warning: found logic loop in module dut:
+    cell $9 ($buf)
+      A[10] --> Y[10]
+    wire \m [6] source: dut.sv:2.15
+    cell $5 ($bmux) source: dut.sv:8.19-8.25
+      A[6] --> Y[2]
+    cell $8 ($xor) source: dut.sv:8.12-8.25
+      B[2] --> Y[2]
+Warning: found logic loop in module dut:
+    cell $9 ($buf)
+      A[11] --> Y[11]
+    wire \m [7] source: dut.sv:2.15
+    cell $5 ($bmux) source: dut.sv:8.19-8.25
+      A[7] --> Y[3]
+    cell $8 ($xor) source: dut.sv:8.12-8.25
+      B[3] --> Y[3]
+Found and reported 8 problems.
+4.24. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Found and reported 0 problems.
+Warnings: 8 unique messages, 8 total
+--- premap_check_dut.txt ---
+
+5. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Found and reported 0 problems.
+--- check_dut.txt ---
+
+10. Executing CHECK pass (checking for obvious problems).
+Checking module dut...
+Found and reported 0 problems.

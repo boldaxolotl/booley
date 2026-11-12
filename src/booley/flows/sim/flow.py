@@ -32,6 +32,7 @@ from booley.flows.execution_persistence import (
     register_campaign_for,
     wants_campaigns,
 )
+from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.progress_lifecycle import (
     ProgressLifecycle,
@@ -505,6 +506,41 @@ class SimulateFlow(
         if isinstance(prepared, EndpointOutcome):
             return prepared
         return SimulationCampaignInvocation(self, prepared)
+
+    def memory_job_requests(self, handles: tuple[TargetHandle, ...]) -> tuple[JobRequest, ...]:
+        """An elaboration-only Job runs no simulator process: only its build is sized."""
+        flags = self._resource_flags()
+        return tuple(
+            JobRequest("sim", handle.selector, test_runs=(), flags=flags) for handle in handles
+        )
+
+    def campaign_job_requests(
+        self, prepared: PreparedSimulationEndpoint
+    ) -> tuple[JobRequest, ...] | None:
+        """What a prepared Simulation Campaign runs; ``None`` when that is not known yet.
+
+        A resume, and a Cycle Count baseline on another Target, have no Test
+        Runs resolved before admission. A baseline on a selected Target re-runs
+        that Target's keys at another revision, so it adds no request.
+        """
+        selected = set(prepared.selected_targets)
+        if prepared.resume is not None or any(
+            handle.selector not in selected
+            for handle in prepared.targets[len(prepared.selected_targets) :]
+        ):
+            return None
+        flags = self._resource_flags()
+        try:
+            return tuple(
+                sim_job_request(
+                    self._registered_test_plan(target, prepared.test_names_map),
+                    self._resolve_test_runs(target, prepared.test_names_map),
+                    flags=flags,
+                )
+                for target in prepared.selected_targets
+            )
+        except (fusesoc_registry.FuseSocError, OSError, ValueError):
+            return None
 
     def manifest_names_targets(self) -> bool:
         """An explicit resume reads its Targets from the manifest."""

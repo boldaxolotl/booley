@@ -190,10 +190,10 @@ Try:
   conflicting Project `tb_style_guide.md` in the Booley Directory takes precedence over the
   bundled TB guide, which stays present. Specialist workspaces and prompt manifests hold only
   the allowed RTL or TB side; source is restored after success and after a bounded failure.
-- Mutation: the default dry run proposes the documented 10 Mutants with 8 to detect, and
-  `count="auto"` picks 3–25. A small explicit campaign (`total`/`min_detected`) with detected
-  and surviving Mutants shows a pristine baseline, per-Mutant outcomes and first killing tests.
-  A rerun with the same count and `seed` produces identical Mutants; another `seed` changes them.
+- Mutation: a small explicit mutation criterion (`total`/`min_detected`) on the real UART, with
+  detected and surviving Mutants, shows a pristine baseline, per-Mutant outcomes and first
+  killing tests. Sizing, selection and seeds are the
+  [mutation mission](../mutation/MISSION.md)'s.
 - Disposable Goals from `goals/reviews.json` cover security, spec and
   TB-quality reviews; each Goal is bound and evaluated, and each report is type-specific.
   Before entry, combine that list with an ad-hoc mutation Goal on `sim_uart`

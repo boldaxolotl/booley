@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from dataclasses import replace
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,6 +52,7 @@ from booley.runtime.execution_records import (
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
     HOLDING,
+    INHERITED_SLOT_ENV,
     QUEUED,
     ROLE_INTERACTIVE,
     SlotStore,
@@ -764,3 +766,64 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
         thread.join()
     assert first.collision_key == alias.collision_key
     assert keys == [first.collision_key, first.collision_key]
+
+
+def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the memory admission switch a heavy cap of 3 still gives one lane (#3701)."""
+    from booley.flows import endpoint_admission
+    from booley.flows.endpoint_admission import AdmissionGate
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+    from booley.runtime.job_slots import CLASS_MEMORY
+
+    manifest = _three_item_manifest()
+    plan = create_simulation_campaign_plan(manifest)
+    project, state = _parallel_environment(tmp_path, "alpha", 0)
+    # One item at a time: nothing waits for a peer to overlap.
+    state.barrier = threading.Barrier(1)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
+    )
+    booley_dir = project / ".booley"
+    (booley_dir / "booley.toml").write_text(
+        '[jobs]\nmax_heavy = 3\nmemory_budget = "1000m"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "a" * 32)
+    monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
+    monkeypatch.delenv(INHERITED_SLOT_ENV, raising=False)
+    monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+
+    with AdmissionGate(AsicSynthesizeFlow()).enter() as admission:
+        assert admission.slot_store is not None
+        assert admission.slot_store.caps.max_heavy == 3
+        assert admission.max_heavy == 1
+        outcome = SimulationCampaign(executor).run(
+            NewCampaignRunRequest(
+                plan, project, invocation.parent, CampaignPolicy(), invocation, admission
+            )
+        )
+        (outer,) = admission.slot_store.snapshot(CLASS_MEMORY)[0]
+        assert outer.job_class == CLASS_MEMORY
+        assert admission.slot_store.snapshot(CLASS_HEAVY) == ([], [])
+
+    assert outcome.complete is True
+    # The items ran in series: each ended before the next began.
+    runs = sorted(state.intervals, key=lambda interval: interval[1])
+    assert [name for name, _start, _end in runs] == ["alpha", "beta", "gamma"]
+    assert all(left[2] <= right[1] for left, right in pairwise(runs))
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    attempts = [
+        json.loads(path.read_bytes())
+        for path in store.root.glob("work-items/*/attempts/*/attempt.json")
+    ]
+    assert len(attempts) == 3
+    assert [attempt["child_execution_id"] for attempt in attempts] == [None] * 3

@@ -415,6 +415,15 @@ def _build_yosys_script(
     if spec.flatten:
         synth += " -flatten"
 
+    # Step 3b: structural check on the generic netlist after ``synth`` and
+    # before mapping. This pass is the main source of the combinational-loop
+    # count (the larger of it and the final check wins): it sees
+    # generic cells after ``synth``'s optimization, whereas the final check
+    # below only sees black-box library cells and cannot trace a loop through
+    # them. ``check`` is read-only, so area and stat are unchanged.
+    premap_check_out = q(out_dir + "/premap_check_" + design_name + ".txt")
+    premap_check = f"tee -q -o {premap_check_out} check"
+
     # Step 4: DFF library mapping
     dfflibmap = f"dfflibmap -liberty {lib_path}"
 
@@ -438,8 +447,10 @@ def _build_yosys_script(
     # ``synth`` runs CHECK internally more than once, so its log can contain
     # repeated loop/driver warnings. Keeping this pass quiet and in its own
     # artifact gives result interpretation an exact final count without
-    # duplicating it in yosys.log. The completed final check supplies authoritative
-    # structural counts; earlier-only loops remain advisory.
+    # duplicating it in yosys.log. The final check supplies multi-driven nets
+    # and completeness after mapping; loops through mapped black-box cells are
+    # invisible to it, so the pre-mapping check supplies the loop count. Loops seen
+    # only by ``synth``'s first check (removed by optimization) remain advisory.
     check_out = q(out_dir + "/check_" + design_name + ".txt")
     final_check = (
         "select -assert-none =A:booley_check_library=1; "
@@ -462,7 +473,7 @@ def _build_yosys_script(
         f"tee -o {stat_out} stat -liberty {lib_path}"
     )
 
-    return f"{hls}; {parameter_guard}; {synth}; {dfflibmap}; {abc}; {final_check}; {wout}"
+    return f"{hls}; {parameter_guard}; {synth}; {premap_check}; {dfflibmap}; {abc}; {final_check}; {wout}"
 
 
 def _build_abc_command(
@@ -499,14 +510,18 @@ def _build_abc_command(
 
 # Yosys/ABC/sv2v error markers that can appear in a log even when the EDA tool
 # exits 0 (e.g. ABC fallback recipes that silently partial-fail). Keep this list
-# conservative — a false positive fails otherwise-valid synthesis.
-_SYNTH_ERROR_MARKERS = (
-    "ERROR:",  # standard yosys error
-    "ABC: Error",  # ABC-side errors surfaced in the yosys log
-    "Error: ABC",
-    "Unsupported",  # sv2v / yosys frontend unsupported construct
-    "Syntax error",
+# conservative -- a false positive fails otherwise-valid synthesis. The marker
+# must be the diagnostic's own prefix: at column 0, or right after a
+# ``file:line[:col]:`` location (the path may contain spaces). A bare substring
+# test also hit warnings that merely mention "Unsupported" and source text that
+# a frontend echoes into the log.
+_SYNTH_ERROR_RE = re.compile(
+    r"(?:[^:\n]+?:\d+(?::\d+)?:[ \t]*)?"
+    r"(?:ERROR:|ABC: Error|Error: ABC|Unsupported|Syntax error)"
 )
+
+# slang's caret / range-underline line under an echoed source line.
+_CARET_LINE_RE = re.compile(r"[ \t~^]*\^[ \t~^]*")
 
 # Yosys `stat` emits "   Area for cell type <type> is unknown!" (a plain log(),
 # so it reaches yosys.log via the `tee -o`) for any cell with no liberty area.
@@ -578,10 +593,36 @@ def scan_synth_logs(work_dir: Path) -> str | None:
     return None
 
 
+def _echoed_source_lines(lines: list[str]) -> set[int]:
+    """Return indexes of echoed source snippets: each caret line and the line above it.
+
+    Yosys 0.70+ (``read_slang``) prints a located diagnostic as
+    ``file:line: Warning: msg``, then the verbatim source line, then a ``^``
+    caret line. The source line may hold anything the RTL author wrote, such as
+    a comment or label ``ERROR: ...``, so it is never a diagnostic. Keying on
+    the caret line, not on a located header above it, survives stdout/stderr
+    interleaving that separates a snippet from its header; the source line and
+    its caret line always stay adjacent.
+    """
+    echoed: set[int] = set()
+    for index, line in enumerate(lines):
+        if index > 0 and _CARET_LINE_RE.fullmatch(line):
+            echoed.update((index - 1, index))
+    return echoed
+
+
 def scan_synth_text(text: str) -> str | None:
-    """Scan already authenticated fresh frontend text for false-pass evidence."""
-    for line in text.splitlines():
-        if any(marker in line for marker in _SYNTH_ERROR_MARKERS):
+    """Scan already authenticated fresh frontend text for false-pass evidence.
+
+    Only lines whose own prefix is an error marker count; echoed source
+    snippets (see :func:`_echoed_source_lines`) are skipped.
+    """
+    lines = text.splitlines()
+    echoed = _echoed_source_lines(lines)
+    for index, line in enumerate(lines):
+        if index in echoed:
+            continue
+        if _SYNTH_ERROR_RE.match(line):
             return line.strip()[:500]
         unknown = _UNKNOWN_AREA_RE.search(line)
         if unknown and unknown.group(1) not in _BENIGN_UNKNOWN_AREA_CELLS:

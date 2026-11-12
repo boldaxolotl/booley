@@ -46,6 +46,12 @@ _SHELL_MISSING_PROGRAM_RE = re.compile(
     r"^(?:\S*/)?(?:sh|bash|dash|loader|[\w.+-]+\.sh)(?::\s*(?:line\s+)?\d+)?:\s*"
     r"[\w.+-]+:\s*(?:command\s+)?not found"
 )
+# The spawn-failure phrases below must start a line, optionally behind plain
+# ``Label:`` wrappers (``setup failed:``, ``ERROR:root:``, ``FileNotFoundError:``).
+# Unanchored, they also matched source that Verilator echoes into an exit-0 lint
+# log (``    6 | $display("could not invoke ...")``). ``[ \t]``, not ``\s``, so a
+# prefix never spans lines.
+_LABEL_PREFIX = r"^(?:[\w.-]+(?: [\w.-]+)*:[ \t]*)*"
 _MISSING_EXE_PATTERNS = (
     re.compile(
         r"^(?:[\w./-]*(?:sh|bash|dash))(?::\s*(?:line\s+)?\d+)?:\s*"
@@ -58,8 +64,14 @@ _MISSING_EXE_PATTERNS = (
         re.MULTILINE | re.IGNORECASE,
     ),
     re.compile(r"^(?P<name>[\w.+-]+):\s*command not found", re.MULTILINE),
-    re.compile(r"could not invoke\s+(?P<name>[\w.+-]+)\b", re.IGNORECASE),
-    re.compile(r"No such file or directory:\s*'(?P<name>[\w.+-]+)'"),
+    re.compile(
+        _LABEL_PREFIX + r"could not invoke\s+(?P<name>[\w.+-]+)\b",
+        re.MULTILINE | re.IGNORECASE,
+    ),
+    re.compile(
+        _LABEL_PREFIX + r"(?:\[Errno \d+\]\s*)?No such file or directory:\s*'(?P<name>[\w.+-]+)'",
+        re.MULTILINE,
+    ),
 )
 _MISSING_REQUIRED_RE = re.compile(
     r"(?:fatal error|error):\s*(?P<name>[A-Za-z0-9_.+/-]+):\s*"
