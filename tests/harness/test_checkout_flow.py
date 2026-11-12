@@ -1502,3 +1502,122 @@ def test_checkout_flow_refuses_a_generated_core_naming_a_live_path(
 
     assert "made.core names " + str(world.live) in str(refused.value)
     assert_refused_before_any_run(world)
+
+
+@linux_only
+@pytest.mark.parametrize("target", ["probe", "pass"])
+def test_preflight_main_writes_the_paths_a_fusesoc_target_reads(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str
+) -> None:
+    from booley.harness.checkout_flow import preflight_main
+
+    # In process, so the changed lines are measured: the Flow's child runs it in a subprocess.
+    use_fusesoc(monkeypatch)
+    world = make_world(
+        files={"probe.core": PROBE_CORE.format(files="top.v"), "top.v": "module top; endmodule\n"}
+    )
+    monkeypatch.chdir(world.checkout)
+    result_file = tmp_path / "preflight.json"
+
+    assert preflight_main([target, str(tmp_path / "build"), str(result_file)]) == 0
+
+    document = json.loads(result_file.read_text(encoding="utf-8"))
+    if target == "pass":  # a Project Flow takes no FuseSoC Target
+        assert document == {"files": None, "cores": []}
+    else:
+        assert document["files"] == [str(world.checkout.resolve() / "top.v")]
+        assert document["cores"] == [str(world.checkout.resolve() / "probe.core")]
+
+
+@linux_only
+@pytest.mark.parametrize("failing", ["select", "resolve"])
+def test_preflight_main_exits_with_the_start_failure_code_on_a_fusesoc_error(
+    make_world: WorldBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    failing: str,
+) -> None:
+    from booley.fusesoc import fusesoc_registry
+    from booley.harness.checkout_flow import preflight_main
+    from booley.targets.catalog import TargetCatalog
+
+    use_fusesoc(monkeypatch)
+    world = make_world(
+        files={"probe.core": PROBE_CORE.format(files="top.v"), "top.v": "module top; endmodule\n"}
+    )
+    monkeypatch.chdir(world.checkout)
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise fusesoc_registry.FuseSocError("boom")
+
+    if failing == "select":
+        monkeypatch.setattr(TargetCatalog, "select", fail)
+    else:
+        monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", fail)
+
+    assert preflight_main(["probe", str(tmp_path / "build"), str(tmp_path / "r.json")]) == 2
+    assert "boom" in capsys.readouterr().err
+    assert not (tmp_path / "r.json").exists()
+
+
+@linux_only
+def test_prepare_scratch_removes_its_directory_when_it_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import checkout_flow
+
+    def fail(_directory: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(checkout_flow, "write_git_refusal", fail)
+    checkout = tmp_path / "scratch" / "checkout"
+    checkout.mkdir(parents=True)
+
+    with pytest.raises(OSError, match="disk full"):
+        checkout_flow._prepare_scratch(checkout)
+
+    assert not list(checkout.parent.glob(".*env-*"))
+
+
+@linux_only
+def test_a_callers_interrupt_ends_the_preflight_child(tmp_path: Path) -> None:
+    import threading
+
+    from booley.harness.checkout_flow import _run_preflight_child
+
+    pid_file = tmp_path / "pid"
+    command = ["sh", "-c", f"echo $$ > {pid_file}; sleep 60"]
+    threading.Timer(1.0, _thread.interrupt_main).start()
+
+    with pytest.raises(KeyboardInterrupt):
+        _run_preflight_child(command, tmp_path, dict(os.environ), 30.0, tmp_path / "log", "t")
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
+
+
+@linux_only
+def test_the_preflight_of_a_run_without_a_timeout_uses_the_standalone_bound(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from booley.harness import checkout_flow
+
+    world = make_world()
+    bounds: list[float] = []
+
+    def child(
+        command: list[str], _c: Path, _e: dict[str, str], bound_s: float, *_r: object
+    ) -> None:
+        bounds.append(bound_s)
+        Path(command[-1]).write_text('{"files": null, "cores": []}', encoding="utf-8")
+
+    monkeypatch.setattr(checkout_flow, "_run_preflight_child", child)
+    scratch = tmp_path / "scratch-dir"
+    (scratch / "tmp").mkdir(parents=True)
+
+    checkout_flow._preflight(
+        world.request("pass", timeout_s=None), world.checkout, [], scratch, {}
+    )
+
+    assert bounds == [checkout_flow.STANDALONE_TIMEOUT_S]
