@@ -8,8 +8,6 @@ from pathlib import Path
 import pytest
 
 from booley.dev_support import reference_docs
-from booley.runtime import packaged_docs
-from booley.runtime.packaged_docs import MissingShippedDocError
 
 SOURCE = "docs/user/CONFIG.md"
 MARKER = "(host doc, not shipped)"
@@ -248,6 +246,8 @@ def test_link_form_the_scanner_misses_fails() -> None:
 
 def test_renderer_alone_leaves_a_reference_style_link_unchanged() -> None:
     """The stdlib renderer has no cross-check; the sync CLI and the doc test own it."""
+    from booley.runtime import packaged_docs
+
     text = "[x][ref]\n\n[ref]: SETUP.md\n"
 
     assert _render(text) == text
@@ -255,6 +255,8 @@ def test_renderer_alone_leaves_a_reference_style_link_unchanged() -> None:
 
 
 def test_unclassified_link_leaves_the_packaged_directory_untouched(tmp_path: Path) -> None:
+    from booley.runtime import packaged_docs
+
     root = _fake_repo(tmp_path)
     packaged_docs.write_packaged_docs(root)
     before = {path.name: path.read_bytes() for path in _packaged(root).iterdir()}
@@ -268,16 +270,21 @@ def test_unclassified_link_leaves_the_packaged_directory_untouched(tmp_path: Pat
 
 
 def test_missing_shipped_source_names_the_repository_path(tmp_path: Path) -> None:
+    from booley.runtime import packaged_docs
+
     root = _fake_repo(tmp_path)
     (root / "docs/user/TESTS.md").unlink()
 
     with pytest.raises(
-        MissingShippedDocError, match=r"shipped doc source is missing: docs/user/TESTS.md"
+        packaged_docs.MissingShippedDocError,
+        match=r"shipped doc source is missing: docs/user/TESTS.md",
     ):
         packaged_docs.expected_copies(root)
 
 
 def test_orphan_directory_is_removed_not_fatal(tmp_path: Path) -> None:
+    from booley.runtime import packaged_docs
+
     root = _fake_repo(tmp_path)
     packaged_docs.write_packaged_docs(root)
     orphan = root / packaged_docs.PACKAGED_DOCS_RELATIVE_DIR / "stale_dir"
@@ -331,6 +338,8 @@ def test_check_passes_after_fresh_sync(tmp_path: Path, capsys: pytest.CaptureFix
 def test_atomic_write_failure_removes_temporary_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from booley.runtime import packaged_docs
+
     packaged = tmp_path / "packaged.md"
     packaged.write_text("original\n", encoding="utf-8")
 

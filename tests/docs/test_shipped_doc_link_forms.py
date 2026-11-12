@@ -11,11 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from booley.dev_support import reference_docs
-from booley.runtime.packaged_docs import SHIPPED_DOCS
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_shipped_doc_link_forms_are_classifiable() -> None:
-    for source in SHIPPED_DOCS:
+    for source in reference_docs.SHIPPED_DOCS:
         reference_docs.check_link_forms(source, (ROOT / source).read_bytes().decode("utf-8"))
