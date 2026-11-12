@@ -756,6 +756,7 @@ _CLI_VERSION_ALLOWED = (
     "docs/internals/GATEWAY.md",
     "CHANGELOG.md",
     "src/booley/data/refs/CHANGELOG.md",
+    "changelog.d/",  # entries become CHANGELOG.md text at release
     "docs/adr/",
     "docs/internals/validation/",
 )

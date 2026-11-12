@@ -188,8 +188,8 @@ def assemble(
             path.unlink()
     except OSError as exc:
         raise ChangelogError(
-            f"{exc}; {root} was already updated: restore it and the mirror "
-            "(git checkout -- <both files>) before running assemble again, "
+            f"{exc}; {root} was already updated: restore it, the mirror and "
+            "the fragments (git checkout -- <both files> changelog.d) before assembling again, "
             "or its bullets would be appended twice"
         ) from exc
     return [path for path, _ in pending]

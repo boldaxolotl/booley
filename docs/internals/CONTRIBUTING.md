@@ -49,7 +49,8 @@ editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
 with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
 without writing. The same command mirrors `CHANGELOG.md` byte for byte to
 `src/booley/data/refs/CHANGELOG.md`; only release preparation edits
-`CHANGELOG.md` (`release_changelog.py assemble` updates the mirror itself).
+`CHANGELOG.md`, so run it after such an edit (`release_changelog.py assemble`
+updates the mirror itself).
 `python3 .github/scripts/sync_packaged_copies.py [--check]` runs it without
 installing Booley. Never edit a copy or the mirror by hand. The sync turns
 links to other shipped docs into sibling links and links to unshipped docs
