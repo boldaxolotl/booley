@@ -577,6 +577,28 @@ def _isolate_directory_layout_metadata(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 @pytest.fixture(autouse=True)
+def _isolate_bwave_sessions(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A traced sim run registers bwave sessions; keep them out of the real temp store.
+
+    Without this a serial run would write the developer's own
+    ``<tmp>/bwave/bwave_sessions.json`` and leave ``@<target>`` behind for later
+    tests. Tests under ``tests/bwave`` exercise the default store on purpose
+    (their child processes read it) and clean it themselves.
+    """
+    if "tests/bwave/" in request.node.nodeid.replace("\\", "/"):
+        return
+    try:
+        from booley.bwave import cli as bwave_cli
+    except ModuleNotFoundError:  # minimal CI images lack optional dependencies
+        return
+    monkeypatch.setattr(
+        bwave_cli, "SESSION_FILE", tmp_path / "bwave-sessions" / "bwave_sessions.json"
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_booley_dir_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Linked-entry pins must not be written to the real host config."""
     from booley.core import booley_dir_pin

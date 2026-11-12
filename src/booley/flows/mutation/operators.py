@@ -19,6 +19,12 @@ class MutantGeneratorError(Exception):
     """The Mutant generator cannot produce Mutants from its inputs."""
 
 
+PYSLANG_MISSING_MESSAGE = (
+    "pyslang is not installed: the Mutant generator needs it. The Booley Sandbox "
+    "image installs it; elsewhere install the optional dependency group 'hdl-parser'"
+)
+
+
 class MissingPyslangError(MutantGeneratorError):
     """pyslang, the Verilog and SystemVerilog parser, is not installed."""
 
@@ -259,10 +265,7 @@ def find_sites(
     except ModuleNotFoundError as exc:
         if exc.name != "pyslang":
             raise
-        raise MissingPyslangError(
-            "the Mutant generator needs the 'pyslang' package, which the Booley Sandbox "
-            "image installs; elsewhere install the optional dependency group 'hdl-parser'"
-        ) from exc
+        raise MissingPyslangError(PYSLANG_MISSING_MESSAGE) from exc
     # One invalid byte becomes one '?': byte offsets in the parse stay the file's.
     text = _INVALID_BYTE.sub("?", source.decode("utf-8", "surrogateescape"))
     options = pyslang.parsing.PreprocessorOptions()
