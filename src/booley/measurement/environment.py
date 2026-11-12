@@ -10,7 +10,8 @@ starts with a directory holding a ``git`` that prints which command was refused
 and exits 128 (Git's own "not a repository" status). A Flow therefore cannot
 read the live working tree's history through a ``git`` found on ``PATH``. The
 refusal covers every such ``git``, also commands that need no repository
-(``git --version``, ``git config --file``): none is on a Flow's path here.
+(``git --version``, ``git config --file``): such a call fails with exit 128 like any
+other, which Booley's own non-Git handling treats as "not versioned".
 """
 
 from __future__ import annotations

@@ -13,9 +13,9 @@ uncommitted work. Two checks find the ways an input can still point there:
 The text match is deliberate: it needs no parser per file format, so a live path in a
 comment is refused too, and the finding names the file. A candidate path stops at
 whitespace and at the other token delimiters (``_STARTERS`` and ``_STOPS`` below), so a
-live root whose spelling contains one (a space, ``+``, ``=``, ``,``, ``#``, ``:``, a
-quote or a bracket, ...) is not matched; the Sandbox's ``/work`` and ``/booley-project``
-have none. A multi-letter option glued to its path (``-isystem/x``) is not a token start
+live root spelled with one (a space, ``+``, ``=``, ``,``, ``#``, a quote or a bracket, ...)
+is matched by its own literal spelling at a token start instead; only another spelling
+of such a root (a second mount) is missed. A multi-letter option glued to its path (``-isystem/x``) is not a token start
 and is not matched either.
 
 Relative escapes (``../../live/x``) are deliberate reads and out of scope for the static
@@ -67,11 +67,27 @@ def _inside(path: Path, roots: Iterable[LiveRoot]) -> tuple[LiveRoot, Path] | No
     return None
 
 
+def _candidates(text: str, roots: Sequence[LiveRoot]) -> list[str]:
+    """The absolute-path candidates of *text* in order: tokens, and each root's own spelling.
+
+    A root spelled with a delimiter (``/srv/my proj``, ``/a+b``) is cut by the token
+    rules, so each root's literal spelling is matched at a token start too.
+    """
+    found = {match.start(1): match.group(1) for match in _CANDIDATE.finditer(text)}
+    for root in roots:
+        literal = re.compile(
+            rf"(?:^|(?<=[{_STARTERS}])|(?<=\\[nrt]))(?:-[A-Za-z]?)?"
+            rf"({re.escape(str(root.path))}(?:/[^{_STOPS}]*)?)",
+            re.MULTILINE,
+        )
+        found.update({match.start(1): match.group(1) for match in literal.finditer(text)})
+    return [found[start] for start in sorted(found)]
+
+
 def _text_findings(name: str, text: str, roots: Sequence[LiveRoot]) -> list[str]:
     """One finding per absolute path in *text* that lies inside a live root."""
     findings: list[str] = []
-    for match in _CANDIDATE.finditer(text):
-        candidate = match.group(1)
+    for candidate in dict.fromkeys(_candidates(text, roots)):
         hit = _inside(Path(candidate), roots)
         if hit is not None:
             root, _ = hit
@@ -123,6 +139,9 @@ def resolved_findings(
     roots: Sequence[LiveRoot],
 ) -> list[str]:
     """Findings for the Target's resolved *files* and *cores* (absolute, lexical paths).
+
+    Only the EDAM's ``files`` (with their ``include_path``) and ``cores`` are judged; the
+    sources of other sections (``vpi``) are not.
 
     A path inside a live root is a finding. A core file outside the checkout was written
     by a generator or comes from a library, so its text is scanned like an authored one;

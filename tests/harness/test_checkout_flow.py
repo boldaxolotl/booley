@@ -1122,6 +1122,26 @@ def test_checkout_flow_finds_the_live_tree_without_a_work_mount(
 
 
 @linux_only
+def test_checkout_flow_derives_the_live_tree_from_the_working_directory(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+    from booley.runtime import sandbox_layout
+
+    # A Booley Directory outside every Git checkout: only the caller's directory shows the tree.
+    world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
+    detached_main = tmp_path / "detached-main"
+    detached_main.mkdir()
+    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
+    monkeypatch.chdir(world.live)
+
+    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
+        run_checkout_flow(replace(world.request("pass"), main_booley_dir=detached_main))
+
+
+@linux_only
 def test_checkout_flow_does_not_trust_an_empty_work_directory_outside_the_issued_sandbox(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1242,6 +1262,30 @@ def test_checkout_flow_refuses_a_resolved_file_in_the_live_booley_dir(
 
 
 @linux_only
+def test_checkout_flow_refuses_an_include_path_in_the_live_booley_dir(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    use_fusesoc(monkeypatch)
+    # A relative include directory: only the resolved EDAM shows where it points.
+    include = "{inc/defs.vh: {is_include_file: true, include_path: ../../live/.booley/inc}}"
+    world = make_world(
+        files={
+            "probe.core": PROBE_CORE.format(files=f"top.v, {include}"),
+            "top.v": "module top; endmodule\n",
+            "inc/defs.vh": "",
+        }
+    )
+
+    with pytest.raises(CheckoutFlowError) as refused:
+        run_checkout_flow(world.request("probe"))
+
+    assert str(world.main / "inc") in str(refused.value)
+    assert_refused_before_any_run(world)
+
+
+@linux_only
 def test_preflight_resolution_runs_in_the_measurement_environment(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1326,7 +1370,8 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
     world = make_world(
         files={
             "probe.core": GENERATOR_CORE,
-            "gen.py": GENERATOR.format(ctl="{ctl}", wait=45),
+            # Outlives the bound and the poll below: only a group kill ends it in time.
+            "gen.py": GENERATOR.format(ctl="{ctl}", wait=120),
             "top.v": "module top; endmodule\n",
         }
     )

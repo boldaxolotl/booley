@@ -80,3 +80,18 @@ def test_input_findings_stop_a_path_at_a_nul(tmp_path: Path) -> None:
     findings = input_findings(checkout, [LiveRoot("live working tree", live)])
 
     assert len(findings) == 1 and findings[0].startswith("ip.core names ")
+
+
+@pytest.mark.parametrize("root_name", ["my proj", "a+b", "a=b,c", "x#y", "p@q"])
+def test_input_findings_match_a_live_root_spelled_with_a_delimiter(
+    tmp_path: Path, root_name: str
+) -> None:
+    live = (tmp_path / root_name).resolve()
+    live.mkdir()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "booley.toml").write_text(f'cmd = "make -I{live}/inc"\n', encoding="utf-8")
+
+    findings = input_findings(checkout, [LiveRoot("live working tree", live)])
+
+    assert len(findings) == 1 and findings[0].startswith("booley.toml names ")

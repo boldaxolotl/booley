@@ -267,7 +267,9 @@ def _live_roots(main: Path) -> list[LiveRoot]:
     working trees are not mounted. A hand-written Sandbox's ``/work`` (the image's empty
     ``WORKDIR``) is not the live tree, which is the Git checkout around *main* or around
     the caller's working directory, outside the Booley Directory itself. The run is
-    refused there when no such checkout is found, since nothing could be scanned for.
+    refused there when no such checkout is found, since nothing could be scanned for. A
+    Booley Directory inside an unrelated repository, with the caller outside the live
+    tree, makes that repository the only tree found: a limit of the derivation.
     """
     roots = [LiveRoot("Main Booley Directory", main)]
     if os.environ.get("BOOLEY_DIR"):
@@ -383,7 +385,7 @@ def _run_preflight_child(
     except subprocess.TimeoutExpired as exc:
         _kill(process)
         raise CheckoutFlowError(
-            f"checkout run refused: the preflight did not finish within {bound_s:g} s"
+            f"checkout run refused: the preflight of Target {target} did not finish within {bound_s:g} s"
         ) from exc
     except BaseException:  # a caller's Ctrl-C: never leave the preflight running
         _kill(process)
@@ -480,8 +482,15 @@ def preflight_main(argv: list[str] | None = None) -> int:
             return _START_FAILURE_EXIT_CODE
         edam = as_dict(yaml.safe_load(resolved.edam_path.read_text(encoding="utf-8"))) or {}
         cores = as_dict(edam.get("cores")) or {}
+        entries = [as_dict(item) or {} for item in edam.get("files") or ()]
+        include_paths = [
+            str(entry["include_path"]) for entry in entries if entry.get("include_path")
+        ]
         result = {
-            "files": [os.path.normpath(resolved.build_root / f.name) for f in resolved.files],
+            "files": [
+                os.path.normpath(resolved.build_root / name)
+                for name in (*(f.name for f in resolved.files), *include_paths)
+            ],
             "cores": [
                 os.path.normpath(resolved.build_root / str(entry["core_file"]))
                 for entry in (as_dict(item) or {} for item in cores.values())
