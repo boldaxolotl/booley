@@ -50,6 +50,16 @@ class TestVerilatorParsers:
             "5",
         )
 
+    def test_warning_regex_ignores_echoed_source_gutter_line(self):
+        """A string literal echoed under a real warning is not a second warning (#3673)."""
+        log = (
+            "%Warning-UNUSEDSIGNAL: rtl/a.sv:42:5: Signal is not used: 'foo'\n"
+            '    6 |     $display("%Warning-UNUSEDSIGNAL: rtl/x.sv:1:1: fake");\n'
+            "      |     ^\n"
+        )
+        found = [m.group("file") for m in VERILATOR_WARNING_RE.finditer(log)]
+        assert found == ["rtl/a.sv"]
+
     def test_first_error_line_finds_the_first_error(self):
         # The FIRST %Error line — a located finding, not the exit epilogue.
         assert first_error_line(VERILATOR_OUTPUT) == (

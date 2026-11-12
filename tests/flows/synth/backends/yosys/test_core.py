@@ -16,6 +16,8 @@ from booley.flows.synth.timing import StaTimingConfig
 from tests.conftest import symlink_or_skip
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
+_SYNTH_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
+
 
 def _spec(
     *,
@@ -254,6 +256,67 @@ class TestScanSynthLogs:
 
         (tmp_path / "sv2v.log").write_text("Unsupported construct at line 7\n", encoding="utf-8")
         assert "Unsupported" in syn_core.scan_synth_logs(tmp_path)
+
+    def test_real_slang_log_echoed_markers_pass(self, tmp_path):
+        r"""Echoed source containing ERROR:/Unsupported is not a diagnostic (#3673).
+
+        Real, unedited yosys.log from Yosys 0.70+ (git sha1 28ba3cb92),
+        ``read_slang``, exit 0. The script was ``read_slang --top top top.sv;
+        hierarchy -check -top top; proc; chformal -remove; synth -top top; stat``.
+        ``top.sv`` holds, below the port list and one ``always_ff``::
+
+            initial $display("\q"); // ERROR: Unsupported widths here
+            ERROR: assert property (@(posedge clk) a != 4'hf) else $display("\q");
+            Unsupported: assert property (@(posedge clk) a != 4'h0) else $display("\q");
+
+        Slang echoes each of those lines (one indented, two at column 0) under
+        an unknown-escape-sequence warning.
+        """
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        log = (_SYNTH_FIXTURES / "slang_echoed_markers_yosys_0_70.txt").read_text(encoding="utf-8")
+        assert syn_core.scan_synth_text(log) is None
+        (tmp_path / "yosys.log").write_text(log, encoding="utf-8")
+        assert syn_core.scan_synth_logs(tmp_path) is None
+
+    @pytest.mark.parametrize(
+        "warning",
+        [
+            "Warning: Replacing memory \\mem with list of registers. Unsupported init.",
+            "top.sv:3: Warning: Unsupported construct ignored [-Wunsupported]",
+        ],
+        ids=["unlocated", "located"],
+    )
+    def test_warning_mentioning_unsupported_passes(self, warning):
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        assert syn_core.scan_synth_text(f"Running\n{warning}\nDone.\n") is None
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("top.v:3: ERROR: syntax error, unexpected TOK_ASSIGN\n", "top.v:3: ERROR: syntax"),
+            (
+                "/work/my proj/top.v:3:7: ERROR: bad token\n",
+                "/work/my proj/top.v:3:7: ERROR: bad token",
+            ),
+            ("top.sv:3: Warning: something odd\nERROR: real failure\n", "ERROR: real failure"),
+        ],
+        ids=["located", "located-spaced-path-with-column", "warning-without-snippet-then-error"],
+    )
+    def test_genuine_error_still_fails(self, text, expected):
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        failure = syn_core.scan_synth_text(text)
+        assert failure is not None
+        assert failure.startswith(expected)
+
+    def test_genuine_error_after_echoed_snippets_still_fails(self):
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        log = (_SYNTH_FIXTURES / "slang_echoed_markers_yosys_0_70.txt").read_text(encoding="utf-8")
+        failure = syn_core.scan_synth_text(log + "ERROR: genuine failure after the snippets\n")
+        assert failure == "ERROR: genuine failure after the snippets"
 
     def test_opensta_log_ignored(self, tmp_path):
         """sta.log is not scanned — timing violations are warnings, not failures."""
