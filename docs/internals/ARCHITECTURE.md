@@ -133,7 +133,7 @@ container shares one trust domain.
 
 ### Job admission
 
-Every Flow or Specialist run is a Job in a [Job Class](../GLOSSARY.md#execution):
+Every Flow or Specialist run is a Job in one of two classes:
 `heavy` for EDA work, `light` for model-bound Specialist work. Each class has
 its own cap under [`[jobs]`](../user/CONFIG.md#jobs--concurrency-jobs). Excess
 work queues, a full queue refuses new work, and a running Job is never
@@ -273,7 +273,9 @@ VS Code covers three needs in one program:
 Goal Mode runs in the existing agent session; there is no separate execution
 loop. Entry needs the root of a clean linked worktree and creates a Goal Branch
 from its HEAD. The worktree owns one Goal Record, and any session in that
-worktree may continue it.
+worktree may continue it. The worktree and Goal Branch live inside the
+Sandbox: the branch and its commits are durable, while the worktree is
+Sandbox-scoped scratch.
 
 While any Goal Record occupies the Project, Booley refuses a Booley Flow,
 Specialist, or custom-tool call, a report fetch, or a Goal tool call that names
@@ -395,16 +397,31 @@ or keeping alive, and any state can be read with `ls` and `cat`. The cost is
 that atomic renames and lock files are the concurrency primitives, and they
 take care to get right. That trade fits Booley's scale: one human per Project.
 
+## Common and Checkout Booley State
+
+A Project's Booley Directory splits into two kinds of state. Common Booley
+State, which every checkout shares (Session and Job coordination, Goal
+Records, Project-wide records and evidence, shared caches), lives only in the
+main checkout's Booley Directory, and a command run in any worktree reaches it
+there. Checkout Booley State belongs to one checkout: configuration versioned
+with its code (`booley.toml`, `cores/`, hooks, Goal history) and the build trees
+and Flow reports of its sources. `booley.core.booley_dir_parts` classifies each
+path; the path-by-path split is in
+[ADR 0082](../adr/0082-give-each-concurrent-interactive-session-its-own-worktree.md).
+
 ## Security & Trust Model
 
-Booley treats Developer Agent behavior as untrusted, whether it comes from
-error or adversarial input. Developer Agents, MCP tools, Flows, and EDA
-processes run inside the Sandbox with no host command channel. The container
-gets the Project Root, its Booley Directory, linked worktrees, and explicitly
-authorized resources; it has no host home directory, SSH keys, or Docker
-socket. It runs as a non-root user with all capabilities dropped,
-`no-new-privileges`, and a PID limit. A memory limit applies only when the
-Project sets `[sandbox].memory`.
+Booley treats Developer Agent behavior as untrusted, whether it comes from error
+or adversarial input. Developer Agents, MCP tools, Flows, and EDA processes run
+inside the Sandbox with no host command channel. The container gets the Project
+Root, its Booley Directory, linked worktrees, and explicitly authorized
+resources; it has no host home directory, SSH keys, Docker socket, or host EDA
+configuration. A real `.ssh` directory holding only a regular `authorized_keys`
+that is not mounted from the host grants inbound access to the Sandbox, not host
+authority; a mounted or symlinked one is host authority, and Doctor FAILs on it.
+It runs as a non-root user with all capabilities dropped, `no-new-privileges`,
+and a PID limit. A memory limit applies only when the Project sets
+`[sandbox].memory`.
 
 Network egress belongs to the whole Sandbox; there is no per-Flow network
 boundary. By default every process in the Sandbox, EDA tools included, reaches

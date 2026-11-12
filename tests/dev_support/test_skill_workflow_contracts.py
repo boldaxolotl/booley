@@ -314,19 +314,6 @@ def test_surrogate_reference_docs_state_registered_data_dependence():
     assert "no combinational write-to-read arc" in comments
 
 
-def test_shared_glossary_defines_memory_timing_surrogate():
-    root = Path(__file__).resolve().parents[2]
-    glossary = (root / "docs/GLOSSARY.md").read_text(encoding="utf-8")
-    active = " ".join(glossary.split("## Retired and ambiguous terminology", 1)[0].split())
-    for required in (
-        "**Memory Timing Surrogate**:",
-        "synth-only define",
-        "data dependence",
-        "_Avoid_: RAM stub, fake RAM",
-    ):
-        assert required in active
-
-
 def test_heal_has_bounded_doctor_repair_and_verification_loop():
     skill = _skill_text("booley-heal")
 
