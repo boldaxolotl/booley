@@ -217,8 +217,7 @@ Try:
   clean TB-quality evidence must bind to the intended Goal/Target.
 - Mutation on `src/eth/rtl/taxi_eth_mac_10g.sv` has explicit total 8/min 7. The
   report shows a pristine baseline, 8 Mutants each built and tested in isolation,
-  each detected Mutant's first killing test, and an unchanged source tree afterward;
-  the same seed gives the same Mutants.
+  each detected Mutant's first killing test, and an unchanged source tree afterward.
 - Finish with fresh evidence at a clean committed HEAD; inspect package and
   non-Stealth history commit, then the operator integrates the printed branches using the shared rules.
   The new Target stays selectable for the repair Goal.
