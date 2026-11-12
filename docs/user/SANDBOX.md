@@ -77,9 +77,17 @@ Git settings, guidance links, exclude entries and the
 Dashboard task). It never rewrites tracked files: CRLF files and pending
 `.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
 applies them. If that step fails, you keep the new Sandbox and the command
-exits non-zero. A Sandbox
+exits non-zero.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+A Sandbox
 using a [floating license](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy)
 can't be refreshed in place; see [Applying Sandbox changes](#applying-sandbox-changes).
+See also [Commercial EDA provisioning](#commercial-eda-provisioning).
+
+</details>
 
 ## Applying Sandbox changes
 
@@ -87,18 +95,28 @@ Booley fixes a Sandbox's settings, `[agent]` CLIs and logins, EDA requests and
 Grants, and image when it issues the Sandbox. A running Sandbox keeps its
 previous values until you apply the change. Use the first case that applies:
 
+- **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
+  then **Dev Containers: Rebuild Container**.
+- **An image you manage yourself:** rebuild or pull it, then run
+  `booley session down`, `booley init --seed`, and `booley session up`.
+- **Otherwise (headless Sandbox):** run `booley session refresh`.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Two more cases apply. Check **After an EDA Grant change** before every case
+above, and **Floating license** before the headless case. See
+[Commercial EDA provisioning](#commercial-eda-provisioning).
+
 - **After an EDA Grant change** (`booley eda grant add` or `revoke`): Booley
   withdraws the Sandbox's issuance, so the running Sandbox can't be refreshed. Stop
   any VS Code Sandbox through its owning app. If you manage the image yourself,
   rebuild or pull it. Then on the host run `booley session down`,
   `booley init --seed`, and `booley session up`.
-- **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
-  then **Dev Containers: Rebuild Container**.
-- **An image you manage yourself:** rebuild or pull it, then run
-  `booley session down`, `booley init --seed`, and `booley session up`.
 - **Floating license:** run `booley session down`, then
   `booley session refresh`.
-- **Otherwise (headless Sandbox):** run `booley session refresh`.
+
+</details>
 
 When `booley init` or Sandbox validation refuses a running Sandbox, its message
 names the case that applies.
@@ -305,9 +323,17 @@ image and print a warning naming each one:
 
 Every other pin wins over the base image, including `cocotb`. `booley init`
 (without `--check`) and `booley session refresh` print a notice for each pin
-that changes a version the base image ships. The base image checks its own
+that changes a version the base image ships.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+The base image checks its own
 cocotb at build time; that check doesn't cover yours, so the first
-`booley flow sim` after the rebuild is your test of the combination.
+`booley flow sim` after the rebuild is your test of the combination. See
+[Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+
+</details>
 
 **Where to keep the file.** If the upstream project keeps its test pins in
 `tox.ini`, `setup.py`, or a CI workflow, copy them into a plain requirements
@@ -329,9 +355,17 @@ See [what survives a fresh clone](STEALTH.md#what-survives-a-fresh-clone).
 </details>
 
 The file is read only when the image is built. After changing it, rebuild
-(see [Applying Sandbox changes](#applying-sandbox-changes)). For cocotb 1.x
+(see [Applying Sandbox changes](#applying-sandbox-changes)).
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+For cocotb 1.x
 and BFM packages, also read [Baking the cocotb stack into the
-image](#baking-the-cocotb-stack-into-the-image).
+image](#baking-the-cocotb-stack-into-the-image). See also
+[Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+
+</details>
 
 ## Custom sandbox image
 

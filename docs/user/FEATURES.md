@@ -80,7 +80,14 @@ A Developer Agent could spawn its own subagent, but then it writes the brief, de
 
 For debugging, Booley **observes actual simulation behavior** through a custom-built Rust waveform EDA tool (`bwave`) instead of just reasoning about the code. It can query signal values at specific time ranges, use one signal as a trigger for sampling another, and trace data through the design: systematic debugging instead of guesswork.
 
-**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. Otherwise Booley converts VCD to FST as the simulation runs; Cocotb Targets convert after the run ([details](FLOW-SIM.md#tracing-a-cocotb-target)). The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
+**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. Otherwise Booley converts VCD to FST as the simulation runs. The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+Cocotb Targets convert after the run ([details](FLOW-SIM.md#tracing-a-cocotb-target)). See [cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+
+</details>
 
 ## Multi-Category Code Review
 

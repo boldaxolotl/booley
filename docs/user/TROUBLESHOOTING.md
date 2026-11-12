@@ -15,8 +15,13 @@ If you suspect the agent planted Git configuration or hooks, read the
 [known Sandbox escape warning](https://booley.dev/docs/sandbox/#known-sandbox-escape-through-shared-git-metadata)
 before you run Doctor on the host: host-side Doctor can trigger it.
 
+<details markdown>
+<summary>On Windows</summary>
+
 Windows-only first-run problems are on the [Windows](https://booley.dev/docs/windows/)
 page.
+
+</details>
 
 ## Installation and editor integration
 
@@ -46,10 +51,18 @@ records which installation owns the host and refuses commands from any other:
 this Booley process does not match the canonical host installation (...)
 ```
 
-Run `type -a booley` (`where.exe booley` on Windows), then remove or upgrade
+Run `type -a booley`, then remove or upgrade
 every install listed before the one you want. Compare `booley --version` with
 `pipx list` or `uv tool list`. Then run `booley bootstrap --update` to record
 the right installation; do the same after an intentional upgrade.
+
+<details markdown>
+<summary>On Windows</summary>
+
+Run `where.exe booley` instead of `type -a booley`. See
+[Windows](https://booley.dev/docs/windows/).
+
+</details>
 
 After a distribution Python upgrade, run `pipx reinstall-all` first, then
 `booley bootstrap --update`.
@@ -394,13 +407,27 @@ the Sandbox spec on the host:
 booley init --seed --project <root>
 ```
 
+Doctor names one file per store, so rerun it until it passes. Removing a
+pending refresh file drops its rollback snapshot and its parked prior Sandbox.
+`init --seed` regenerates the spec.
+
+<details markdown>
+<summary>On Windows</summary>
+
 After upgrading on Windows, Booley names a Project Root without regard to case.
 Files written by earlier releases are not migrated, so each Project needs this
-once. Doctor names one file per store, so rerun it until it passes. Removing a
-pending refresh file drops its rollback snapshot and its parked prior Sandbox;
-removing a pending invalidation file skips its cleanup of the Project's FlexNet
-relay containers and networks, which then need removing by hand in Docker.
-`init --seed` regenerates the spec.
+once. See [Windows](https://booley.dev/docs/windows/).
+
+</details>
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Removing a pending invalidation file skips its cleanup of the Project's FlexNet
+relay containers and networks, which then need removing by hand in Docker. See
+[Commercial EDA provisioning](https://booley.dev/docs/sandbox/#commercial-eda-provisioning).
+
+</details>
 
 ### Doctor reports that devcontainer.json differs
 
@@ -424,8 +451,16 @@ Deleting a Project's folder leaves its Sandbox Images and agent state volumes in
 Docker. `booley projects forget <root>` drops the Project and its image tag,
 and lists what remains with sizes. `booley projects forget --purge <root>`,
 with the exact absolute root, also removes the unused images and state volumes,
-including the agent's saved login and history. Both refuse while the Project
-still has a Grant for a host EDA tool.
+including the agent's saved login and history.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Both commands refuse while the Project
+still has a Grant for a host EDA tool. See
+[Commercial EDA provisioning](https://booley.dev/docs/sandbox/#commercial-eda-provisioning).
+
+</details>
 
 For images left over from earlier forgets, run `booley projects prune-keepers`,
 then rerun it with the `--confirm <digest>` it prints. Images marked
@@ -512,16 +547,23 @@ nonzero exit code without a sentinel is a failure, not inconclusive.
 To check:
 
 - Run `booley doctor`. It warns `sim.pass-sentinel-missing` when none of a
-  sim Target's testbench files contains the pass sentinel literally. It
-  skips Cocotb Targets, which take their verdict from cocotb, and with your
-  own `pass_sentinels` it only adds a note, because the testbench may build
-  the message at run time. If the warning says the testbench fileset is
-  Python, the Target is missing `cocotb_module`; see
-  [Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+  sim Target's testbench files contains the pass sentinel literally. With
+  your own `pass_sentinels` it only adds a note, because the testbench may
+  build the message at run time.
 - Open the Test Run's log (`…/evidence/*-run.log`, see
   [Reading results](https://booley.dev/docs/flow-sim/#reading-results)) and
   search it for the sentinel. A testbench that ends on a bare `$finish`
   prints none.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+Doctor skips Cocotb Targets, which take their verdict from cocotb. If the
+warning says the testbench fileset is Python, the Target is missing
+`cocotb_module`; see
+[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+
+</details>
 
 To fix it, do one of these:
 
@@ -539,9 +581,15 @@ why no waveform was kept. Fix the cause, often `trace_args` or `trace_files`
 (see [Waveforms](https://booley.dev/docs/flow-sim/#waveforms)), or rerun
 without `--trace`. A failure or timeout keeps its verdict.
 
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
 A Cocotb Target uses no sentinels: its Test Run is inconclusive when cocotb's
 result file is missing or doesn't report that test as passed or failed, and
-its log contains `cocotb sim INCONCLUSIVE (<reason>)`.
+its log contains `cocotb sim INCONCLUSIVE (<reason>)`. See
+[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+
+</details>
 
 ### Simulation stalls at time zero without results
 

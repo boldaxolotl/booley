@@ -33,14 +33,20 @@ from one of two places:
 | `synth` | Yosys, plus OpenROAD for timing (`yosys`) | image | ASIC area and timing estimate on Nangate45 |
 | `fpga` | AMD Vivado 2025.2 | host | FPGA utilization and timing; Linux x86-64 hosts only |
 
-**Simulation.** The image ships cocotb 2.x. A testbench pinned to cocotb 1.x
-still runs once you
-[bake its own pins](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
-Waveform setup differs per simulator; see
+**Simulation.** Waveform setup differs per simulator; see
 [FLOW-SIM.md](FLOW-SIM.md#waveforms).
 Coverage needs Verilator; see [COVERAGE.md](COVERAGE.md#collecting-coverage).
 Other simulators, such as Xcelium, VCS, or Questa, are not supported yet; see
 the roadmap (host doc, not shipped).
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+The image ships cocotb 2.x. A testbench pinned to cocotb 1.x
+still runs once you [bake its own pins](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
+See [cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+
+</details>
 
 **Other programs your tests need.** A test that compiles firmware or stages
 vectors first runs that step through

@@ -307,6 +307,7 @@ The worktree gets your current Booley configuration.
 One warning names the uncommitted Booley Directory files left out of the new
 worktree (see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-lacks-my-uncommitted-booley-changes)).
+See [Stealth Mode](STEALTH.md).
 
 </details>
 

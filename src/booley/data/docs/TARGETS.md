@@ -413,6 +413,8 @@ git submodule update --init --recursive
 git -C .booley submodule update --init --recursive
 ```
 
+See Stealth Mode (host doc, not shipped).
+
 </details>
 
 Each submodule must be present, clean, and have its full history (not a
@@ -444,7 +446,7 @@ Submodules nested inside a listed one are always copied.
 <summary>In stealth mode</summary>
 
 The list applies to the RTL repository only: every submodule of the `.booley`
-repository is always copied.
+repository is always copied. See Stealth Mode (host doc, not shipped).
 
 </details>
 
