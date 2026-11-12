@@ -6,6 +6,8 @@ Goal for a seeded PFC fault the upstream tests miss. Also covers Setup with a de
 image, Targets, Doctor, lint, logical/physical synthesis, Interactive Mode, B-Wave, a submodule
 companion, Goal operations and Simulation Campaigns. Taxi's interfaces, recursive symlink, big
 Python stack and five clocks surface stale caches, skipped tests and dropped clocks.
+The operator runs it through [`booley-qa-run`](../../booley-qa-run/SKILL.md), which owns the run
+directory, findings format, and cleanup bookkeeping; this file says where to look.
 
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here).
@@ -38,8 +40,9 @@ Intent: reach a warning-free Project using only docs, packaged skills, cheat she
 Try:
 - Record `booley --version` and import origin; `booley bootstrap --check-only` reports ready.
 - Run `booley init`, then give one Setup agent `prompts/setup.md`; no second approval request
-  (`SETUP-PLAN.md` is a record, not a gate). Expect Targets `sim_mac_10g`, `lint_mac_10g`,
-  `lint_mac_10g_verible`, `synth_mac_10g`, `synth_mac_10g_physical`; a derived image from the
+  (`SETUP-PLAN.md` is a record, not a gate). Save `.booley/SETUP-PLAN.md` under `evidence/setup/`.
+  Expect Targets `sim_mac_10g`, `lint_mac_10g`, `lint_mac_10g_verible`, `synth_mac_10g`,
+  `synth_mac_10g_physical`; a derived image from the
   pinned `tox.ini` stack with cocotb at 2.1.0;
   explicit `[stealth] enabled = false`; `fixtures/taxi_mac_10g.sdc` as Project-owned config.
 - Copy the full text of `prompts/setup.md` into outer `docs/taxi-contract.md`
@@ -97,8 +100,8 @@ Try:
   `lint_mac_10g_verible` fails with the syntax error at `taxi_axis_xgmii_rx_64.sv:589`, reported
   as a syntax error naming Verible. On `lint_mac_10g`, clean, warning, syntax-error and
   missing-tool inputs give distinct outcomes. A cross-Target duplicate is one finding with provenance; a native waiver waives
-  only its finding; nonfatal warnings keep rc and report distinct; a file scope lints only those
-  files; restoring gives a fresh clean result.
+  only its finding; nonfatal warnings keep rc and report distinct; `--scope` keeps only findings
+  in the named files while the whole Target is still linted; restoring gives a fresh clean result.
 - `synth_mac_10g` is logical Yosys with slang; its top is a Project-owned flat wrapper around
   `taxi_eth_mac_10g`. It reports fresh metrics and the real tool provenance, and makes no STA
   claim. Every synthesis-only source copy has its diff against the Taxi file recorded.
@@ -143,8 +146,8 @@ Try:
   explicit clock/reset, cycle tokens and typed time. Cross-check one request-to-frame latency with
   Cocotb.
 - Oracle `fixtures/known-trace.vcd` (truth: `fixtures/known-trace-events.json`): `--format json` on
-  `list`, `find`, `value`, `stats` gives the documented envelope matching the oracle; `signal`,
-  `wave`, `sample`, `diff`, `distance`, `stuck` reject it with exit 2; markers resolve via
+  `list`, `signal`, `wave`, `value`, `find`, `distance`, `stats` gives the documented envelope
+  matching the oracle; `sample`, `diff`, `stuck` reject it with exit 2; markers resolve via
   `value --at`, `diff`, `wave`; alias replace and in-place trace regeneration are picked up.
 - Time model: physical, cycle and tick tokens hit the same event; reset include/skip work; literals
   and bit slices work; a bare async time, bad literal, unknown signal and width mismatch each give
@@ -155,9 +158,9 @@ Try:
 - `--virtual` exits 2 on build, diff, list, signal, stats, stuck (never silently ignored). On
   distance, find, sample, value, wave a malformed definition exits 2 with a diagnostic and a
   composite one matches the oracle.
-- Raw VCD, legacy, empty and truncated stores → actionable rejection; regenerate after. Also try
-  `version`, `schema`, `docs` list/search/show, `skill`, legacy translation, a pattern miss, an
-  ambiguous name, a bounded output limit.
+- Raw VCD, old `.bwave`, empty and truncated stores → actionable rejection; regenerate after. Also
+  try `--version`, `schema`, `docs topics`/`search`/`show`, `skill`, the old v0.1 flag form
+  (`--wave`, `--find`), a pattern miss, an ambiguous name, and a `--limit` output cap.
 - Viewer (VS Code only): open a scoped `bwave gui` with clock, PFC request, packet start, XGMII,
   statistics, start/end markers and cursor; check the printed readback and screenshot. Append keeps
   rows; a small max-signals cap holds; a dropped signal warns with the discrepancy; no clock → none
@@ -212,15 +215,15 @@ Try:
   underrun (XGMII error termination, counter 3); 16-bit completion tags and
   timestamp vs SFD; `tuser=0` counters vs `tuser=1` strings. Elab, full sim and
   clean TB-quality evidence must bind to the intended Goal/Target.
-- Mutation on `src/eth/rtl/taxi_eth_mac_10g.sv` has explicit total 8/min 7.
-  Proposals target PFC req/ack, RX error, statistics and TX tag/timestamp, and
-  are fixed before execution. Preserve
-  pristine baseline, 8 isolated variants, first killing tests and source restoration.
+- Mutation on `src/eth/rtl/taxi_eth_mac_10g.sv` has explicit total 8/min 7. The
+  report shows a pristine baseline, 8 Mutants each built and tested in isolation,
+  each detected Mutant's first killing test, and an unchanged source tree afterward;
+  the same seed gives the same Mutants.
 - Finish with fresh evidence at a clean committed HEAD; inspect package and
   non-Stealth history commit, then the operator integrates the printed branches using the shared rules.
   The new Target stays selectable for the repair Goal.
-Look for: weakened upstream tests, missing restoration,
-incorrect evidence binding or a Target lost during integration.
+Look for: weakened upstream tests, a source tree changed by mutation, incorrect
+evidence binding or a Target lost during integration.
 
 ### 10. goal-repair — Seeded PFC fault and bugfix Goal (~60 min)
 Intent: the new oracle catches what upstream misses; a blind Goal child restores upstream bytes.
@@ -249,10 +252,10 @@ Try:
   `qa/shared/GOAL-CHILD.md`) includes it, including independent calls against
   the primary checkout. Evidence and artifacts cannot
   cross records. Check the Sandbox admission cap and cancellation of waiting jobs.
-- Run `booley session enter -- booley dashboard` and Goal status short/long
-  views; sessions, Goals and Jobs agree with each child's durable record.
-- In disposable copies run `booley session enter -- booley doctor` (host Goal
-  checks are unavailable). Provoke `goals.worktree-missing` with an owned
+- Run `booley session enter -- booley dashboard` and `booley goal status --short`
+  and `--long`; sessions, Goals and Jobs agree with each child's durable record.
+- In disposable copies run `booley session enter -- booley doctor` (Doctor's Goal
+  checks don't run on the host). Provoke `goals.worktree-missing` with an owned
   workspace moved aside and restored; provoke quiet-session warnings by waiting
   the reported threshold or setting it before entry. Quiet never clears a record.
 - Finish or explicitly abandon both concurrent records. Only then enter a third

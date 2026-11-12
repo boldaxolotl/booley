@@ -1,81 +1,150 @@
-# Python CI policy
+# CI policy
 
-Pull requests use pairwise compatibility coverage so the required gate can run
-horizontally:
+How the `Tests` workflow (`.github/workflows/test.yml`) picks the jobs a change
+runs, how it splits the Python suite across runners, and why. Read it before
+you change a workflow, the change classifier (`.github/scripts/ci_changes.py`),
+a pytest marker, a shard setting, or a file in this directory. It is written
+for contributors and agents. Local checks and the path from branch to `main`
+are in [CONTRIBUTING.md](../../docs/internals/CONTRIBUTING.md), the merge queue
+in [merge-queue.md](../../docs/internals/agents/merge-queue.md), Renovate in
+[dependency-updates.md](../../docs/internals/agents/dependency-updates.md), and
+what the image checks require in
+[SANDBOX-IMAGE-CONTRACT.md](../../docs/internals/SANDBOX-IMAGE-CONTRACT.md).
 
-- Python 3.14 runs the suite on Windows in four duration-balanced shards,
+## Which Python and OS runs which tests
+
+A pull request covers each Python version and each OS at least once, not every
+combination. That keeps the required gate to many short parallel jobs instead
+of a full OS-by-Python matrix:
+
+- Python 3.14 on Windows runs the suite in four duration-balanced shards,
   skipping [Sandbox-only tests](#sandbox-only-tests).
-- Python 3.14 runs the complete suite on Ubuntu under branch coverage, in the
-  six `coverage-shards` jobs. They use coverage.py's `sysmon` core
+- Python 3.14 on Ubuntu runs the complete suite under branch coverage, in six
+  `coverage-shards` jobs. They use coverage.py's `sysmon` core
   (`COVERAGE_CORE=sysmon`, PEP 669), which keeps tracing cheap enough that one
-  instrumented run replaces a plain 3.14 run plus a separate coverage run.
-- Python 3.11 runs the complete suite on Ubuntu in two duration-balanced
-  shards.
-- Python 3.11 and 3.13 run focused installation, import, path, subprocess, and
-  API compatibility checks on Windows. The complete Python 3.13 suite runs only
-  in the weekly full matrix.
+  instrumented run replaces a plain run plus a separate coverage run.
+- Python 3.11 on Ubuntu runs the complete suite in two duration-balanced shards.
+- Python 3.11 and 3.13 on Windows run a fixed list of focused modules:
+  `tests/architecture`, `tests/config`, and four runtime and simulation modules
+  named in the `Run focused Windows compatibility suite` step.
 
-The scheduled and manually dispatchable `Full Python compatibility matrix`
-workflow remains the complete OS-by-Python backstop. This is deliberately a
-pairwise PR policy, not equivalent to running the complete suite on every
-combination before merge.
+The weekly `Full Python compatibility matrix` workflow
+(`full-python-matrix.yml`, Sundays 03:17 UTC, or dispatched by hand) runs the
+complete suite on Ubuntu and Windows for Python 3.11, 3.13, and 3.14. It is the
+only run of the complete suite on Python 3.13 and on Windows 3.11.
+
+Every complete-suite run uses `-m "not native_bwave"`; the `bwave-integration`
+job runs the `native_bwave` tests, which need the compiled B-Wave binary. No
+marker or classifier category selects any other subset. `pyproject.toml`
+registers only the `string_parameter_eda`, `native_bwave`, `slow`, and
+`sandbox_only` markers.
+
+## Which jobs a change selects
+
+The `changes` job runs `ci_changes.py`, which sorts each changed path into
+categories and maps the categories to jobs (`required_jobs`). `ci-required`
+then checks that every selected job passed. Draft pull requests skip every job
+until marked ready; Mergify's queue drafts run.
+
+- A path classified `workflow`, `packaging`, or `release`, or a path no rule
+  classifies, selects every job except `flake-stress` and `riscv-image`, which
+  [Flake stress](#flake-stress) and the [RISC-V image lane](#risc-v-image-lane)
+  select on their own. `.github/ci/constraints.txt` is a packaging file, so a
+  constraints-only change runs every job too.
+- A path classified `python_source` or `python_tests` selects `lint`, `test`,
+  `test-verify`, `coverage-shards`, and `coverage`; Python source also selects
+  `package-artifacts`.
+- `ci_tooling` is `.github/ci/requirements-*.txt`, the pins for CI-only tools
+  that workflows install instead of pinning them inline. It selects the jobs
+  that install those pins and the Python lane whose tests keep them in step
+  with `pyproject.toml`, but no docs, site, or Rust job.
+- README, website, and documentation-only changes run `docs-check`:
+  `git diff --check` plus the content tests that
+  `.github/scripts/ci_docs_tests.py` derives from the tests that read those
+  files. `README.md` and `docs/user/INSTALL.md` add `package-artifacts` (with
+  `build-dist`), which renders the README and runs the install guide's
+  commands. `website/` and `docs/user/` add `site-build` and `lint`.
+- Goal and review code (`src/booley/goals/`, `src/booley/review/`) select both
+  image jobs, `bwave-smoke` and `riscv-image`.
+
+### Goal Mode unit tests
+
+Temporary, until Goal Mode is removed
+([#3276](https://github.com/boldaxolotl/booley/issues/3276)). Collecting
+`tests/` skips `tests/goals/` (`collect_ignore` in `tests/conftest.py`); run
+them by naming the path, for example `pytest tests/goals`. Goal source
+(`src/booley/goals/`) is omitted from coverage, and `docs-check` and
+`flake-stress` never select those modules. A `tests/goals/` change selects only
+`lint`, unless a test outside `tests/goals/` imports that file; then it is an
+ordinary test change. The Goal Mode image smoke
+(`tests/smoke/test_goal_mode_image_smoke.py`) runs only when
+`BOOLEY_GOAL_MODE_SMOKE=1` is set.
 
 ## Main pushes and the nightly run
 
-A push to `main` runs a narrow tier: `changes`, `release-semantic`,
-`build-dist`, `bwave-smoke`, then `ci-required` and `ci-metrics`
-(`MAIN_PUSH_JOBS` in `.github/scripts/ci_changes.py`). Mergify merges a batch's
-PRs one by one; the merge of the batch's last PR reproduces the tree its queue
-candidate already passed, so the suite would only repeat that result. The
-commits before it are untested intermediate trees that no later run tests on
-their own (the nightly run below covers `main`'s tip). `bwave-smoke` stays because
-only a `main` push may write the shared `sandbox-substrate` build cache, and it
-installs the wheel `build-dist` builds. `package-artifacts` is absent because
-a queue candidate whose paths select it already ran its isolated host install,
-direct wheel and sdist checks on the same tree; drift in the unconstrained host
-install otherwise surfaces in the nightly run. The nightly run also refreshes
-the shared `pyproject.toml` and `constraints.txt` pip cache, so after a
-dependency merge, until that night's run, a PR's first run restores an older
-entry by prefix, purges it and reinstalls; a `main` push no longer refreshes it.
+A push to `main` runs only `changes`, `release-semantic`, `build-dist`, and
+`bwave-smoke`, then `ci-required` and `ci-metrics` (`MAIN_PUSH_JOBS` in
+`ci_changes.py`). Mergify merges a batch's pull requests one by one. The last
+merge reproduces the tree its queue candidate already passed, so the suite
+would only repeat that result; the commits before it are intermediate trees
+that no run tests on their own, and the nightly run covers `main`'s tip.
+`bwave-smoke` stays because only a `main` push may write the shared
+`sandbox-substrate` build cache, and it installs the wheel `build-dist` builds.
+`package-artifacts` is left out because a queue candidate whose paths select it
+already ran its isolated host install, wheel, and sdist checks on the same
+tree; drift in the unconstrained host install surfaces in the nightly run.
 
-`build-dist` builds the wheel and sdist once and uploads them as `pr-dist`;
-the classifier selects it whenever `package-artifacts`, `bwave-smoke` or
+The nightly run (01:47 UTC on `main`) selects every job except `riscv-image`,
+which stays path-gated on every event. It catches what the queue cannot: a
+classifier that skipped a needed job, a maintainer's manual incident merge, and
+drift in runners, toolchains, or unpinned dependencies. It also refreshes the
+`main`-scoped pip and Rust caches and produces the complete-run artifacts that
+the [timing models](#timing-models) are refreshed from. Because a `main` push
+does not refresh the shared pip cache (keyed on `pyproject.toml` and
+`constraints.txt`), a pull request's first run after a dependency merge, until
+that night's run, restores an older entry by prefix, purges it, and reinstalls
+(see [pip cache](#pip-cache)).
+
+Manual runs (except shard benchmarks) and the release tag's `publish.yml` call
+also select every job. The concurrency group includes the event, so a `main`
+push never cancels the nightly or a manual run.
+
+### Built distributions
+
+`build-dist` builds the wheel and sdist once and uploads them as `pr-dist`. The
+classifier selects it whenever `package-artifacts`, `bwave-smoke`, or
 `riscv-image` runs. The image jobs start from it directly instead of waiting
-for `package-artifacts`' install and sdist validations (issue #2867), so a
-wheel that later fails those validations still costs image-job minutes.
-
-A scheduled run on `main` every night at 01:47 UTC selects every job except
-`riscv-image`, which stays path-gated on every event (see RISC-V on-demand
-builds). It catches what the queue cannot: a classifier that skipped a needed job, a
-maintainer's manual incident merge, and drift in runners, toolchains, or
-unpinned dependencies. It also refreshes the `main`-scoped pip and Rust caches
-after a dependency change and produces the complete-run artifacts that timing
-models and cost profiles sample. Manual runs (except shard benchmarks) and the
-release tag's `publish.yml` call also select every job. The concurrency group includes the
-event, so a `main` push never cancels the nightly or a manual run.
+for the install and sdist checks in `package-artifacts`, so they finish
+sooner; the cost is that a wheel that later fails those checks still spends
+image-job minutes.
 
 ## Flake stress
 
 The `flake-stress` job repeats the test modules a pull request adds or
-modifies on Ubuntu and Windows with Python 3.14 (`pytest --count=N -n 4
---dist=load`, Windows keeping its timeout-headroom gate). Any failed repetition
-fails `ci-required`. Pushes, manual runs and Mergify queue drafts skip it.
+modifies, on Ubuntu and Windows with Python 3.14 (`pytest --count=N -n 4
+--dist=load`, with Windows keeping its timeout-headroom check). Any failed
+repetition fails `ci-required`, so a flaky test fails here instead of in the
+merge queue. Only ordinary pull requests run it: pushes, scheduled and manual
+runs, and Mergify queue drafts skip it.
+
 `.github/scripts/ci_flake_stress.py` picks the modules and sizes `N` (at most
-10) from this directory's Windows timing model. A broad change falls back to
-its added modules or skips the job, and a notice on the `changes` job names
-each module left out. Run `pytest <module> --count=10 -n 4 --dist=load`
-to reproduce a failure locally.
+10) from the Windows timing model, within a budget of Windows test time. A
+broad change falls back to stressing only its added modules, or skips the job;
+a notice on the `changes` job names each module left out. Reproduce a failure
+locally with `pytest <module> --count=10 -n 4 --dist=load`.
 
 ## Sandbox-only tests
 
 Windows runs Booley only as a host. Goal Mode, Booley Flows, Specialists, MCP
-tools, the Dashboard, chat, and worktree code run in the Sandbox, a Linux
-container, so their tests would only find Windows failures in code that never
-runs there. The `sandbox_only` marker, registered in `pyproject.toml`, names
-those tests. On Windows a marked test is skipped with the reason
-`sandbox_only: exercises Sandbox-only code, which never runs on a Windows host;
-runs on Linux CI`. On Linux nothing changes, and no workflow mark expression
-may mention `sandbox_only`.
+tools, the Dashboard, chat, and worktree code run in the
+[Sandbox](../../docs/GLOSSARY.md#using-booley), a Linux container, so their
+tests would only find Windows failures in code that never runs there. The
+`sandbox_only` marker, registered in `pyproject.toml`, names those tests. On
+Windows a marked test is skipped with the reason `sandbox_only: exercises
+Sandbox-only code, which never runs on a Windows host; runs on Linux CI`. On
+Linux nothing changes, and no workflow may mention `sandbox_only`
+(`test_ci_mark_expressions_never_deselect_sandbox_only_tests`), so no mark
+expression can drop these tests on Linux.
 
 Only `tests/sandbox_only.py` applies the marker, by directory or by test
 module, never per test; a guard test rejects any other use. Add a test module
@@ -91,223 +160,175 @@ and takes as host roots the console scripts other than `booley-mcp`, the host
 side of `booley` (everything `main` can reach except the `SESSION_RUNTIME`
 handlers in `COMMAND_LOCATIONS`), and the built-in Flow and Specialist modules,
 which endpoint help imports on the host. The test fails when a module reachable
-from a root is covered only by Sandbox-only tests; its message names the module,
-its tests, and the import path from the root. A test covers a module it imports
-or names in a string such as a `mock.patch` target. Tests under
-`tests/architecture` do not count. The few imports declared in
-`SANDBOX_ONLY_LAZY_IMPORTS` run only on the Sandbox MCP call path and are left
-out of the graph; each records the functions that hold it and the modules that
-reference them, plus the functions inside the source module that call them, so a
-new direct caller fails the test until someone re-reads it. The guard counts a
-test as Windows coverage even if a `skipif` or the `native_bwave` marker keeps
-it off Windows, and it works per module, not per function: a host-reachable
-function tested only by Sandbox-only tests passes if another test covers its
-module. Keep tests of help text, argument parsing, and config loaders on Windows.
+from a root is covered only by Sandbox-only tests; its message names the
+module, its tests, and the import path from the root. A test covers a module it
+imports or names in a string such as a `mock.patch` target. Tests under
+`tests/architecture` do not count.
 
-Shard balance skips the skipped. `ci_pytest_shard.py` passes nodes with an
-unconditional `skip` marker to `assign_shards`, which weighs them at zero and
-spreads them round-robin, so Windows shards balance the work that actually
-runs. `windows-test-timings.json` keeps the Sandbox-only entries because
-`ci_flake_stress.py` sizes one repeat count for both operating systems from it.
-The Windows 3.11 and 3.13 compatibility legs run a fixed path list, and a test
-keeps that list free of Sandbox-only paths so a leg cannot pass by skipping
-everything.
+The few imports declared in `SANDBOX_ONLY_LAZY_IMPORTS` run only on the Sandbox
+MCP call path and are left out of the graph. Each records the functions that
+hold it, the modules that reference them, and the functions inside the source
+module that call them, so a new direct caller fails the test until someone
+re-reads it. The guard has two blind spots: it counts a test as Windows
+coverage even if a `skipif` or the `native_bwave` marker keeps it off Windows,
+and it works per module, not per function, so a host-reachable function tested
+only by Sandbox-only tests passes if another test covers its module. Keep
+tests of help text, argument parsing, and config loaders on Windows.
+
+Shard balance weighs the skipped tests at zero. `ci_pytest_shard.py` passes
+nodes with an unconditional `skip` marker to `assign_shards`, which spreads
+them round-robin, so Windows shards balance the work that actually runs.
+`windows-test-timings.json` keeps the Sandbox-only entries because
+`ci_flake_stress.py` sizes one repeat count for both operating systems from
+it. A test keeps the Windows 3.11 and 3.13 compatibility list free of
+Sandbox-only paths, so a leg cannot pass by skipping everything.
 
 ## Shard safety
 
 `.github/scripts/ci_pytest_shard.py` collects the eligible tests on every
-runner. Historical timings influence balance only: a new or unknown test is
-always assigned to a shard. The `test` job owns compatibility execution, with
-`test-verify` checking the exact node-ID sets from its four Windows shards and
-from the sharded Ubuntu 3.11 group. The
-independent `coverage-shards` job owns coverage execution and the Ubuntu 3.14
-suite, balanced by `linux-test-timings.json`; `coverage` verifies
-its six exact shard selections before combining their raw data and enforcing
-the global and changed-line thresholds. `ci-required` waits for and validates
-both branches. Each verifier fails if a test is omitted, duplicated, or
-collected differently by two shards.
+runner. Timings influence balance only: a new or unknown test is always
+assigned to a shard, at the model's one-second default weight. The `test` job
+runs the Windows shards, the Ubuntu 3.11 shards, and the compatibility legs;
+`test-verify` checks the exact node-ID sets of the Windows and Ubuntu 3.11
+shard groups. The independent `coverage-shards` job runs the Ubuntu 3.14 suite
+balanced by `linux-test-timings.json`, and `coverage` verifies its six shard
+selections before combining their raw data and enforcing the global (80%) and,
+on pull requests, changed-line (90%) thresholds. `ci-required` waits for both
+branches. Each verifier fails if a test is omitted, duplicated, or collected
+differently by two shards.
 
-The checked-in Windows timing model contains the slow observations from a
-recent set of `main` runs. Each stored weight is the median of available
-observations for a currently eligible test whose median exceeds the
-conservative one-second default. Every shard, and each Ubuntu complete-suite
-leg of a manual one-shard run, emits fresh exact-node timing evidence for future model refreshes. Stale
-entries are harmless and missing or unobserved tests use the default weight.
+### Timing models
 
-The timing evidence also separates the slowest worker's collection time from
-controller and execution wall time. GitHub job-step timestamps supply runner
-setup and package-install time around those pytest phases.
+`windows-test-timings.json` and `linux-test-timings.json` hold call-time
+weights. Each stored weight is the median of the observed call times of a
+currently eligible test, kept only when it exceeds the one-second default;
+missing or unobserved tests use the default, and stale entries are harmless.
+Neither model may list a `tests/goals/` test (`tests/ci/test_ci_test_shards.py`).
 
-Each timing file also carries `test_phases`: node ID to the `setup`, `call`,
-and `teardown` seconds pytest reported for that test. Nothing is zero-filled, so
-a skipped test or one that errors in setup lists only the phases it reached and
-is absent from `tests`. `tests` stays call-only, and shard balance and the model
-refresh read only `tests`: setup is dominated by module and session fixtures
-charged to whichever test first triggers them on each xdist worker, so it is not
-a stable per-test weight and would move with scheduling. The Ubuntu
-complete-suite legs publish the file as `pytest-timing-<leg label>` on every
-outcome, including failed test runs. On a sharded run, the Ubuntu 3.11 timing
-files, `test_phases` included, are in the `shard-linux-3.11-<index>` artifacts
-instead. Ubuntu 3.14 timings are only in the `shard-coverage-<index>` artifacts
-and include coverage overhead, so refresh `linux-test-timings.json` from the
-3.11 files.
+Every shard writes `test-timings.json` with three parts:
 
-## Windows shard-count experiment
+- `phases`: the slowest worker's collection time, controller wall time, and
+  execution wall time. GitHub job-step timestamps add runner setup and package
+  install time around them.
+- `tests`: call seconds per node ID. Shard balance and model refreshes read
+  only this.
+- `test_phases`: the `setup`, `call`, and `teardown` seconds pytest reported
+  per node. Nothing is zero-filled, so a skipped test or one that errors in
+  setup lists only the phases it reached and is absent from `tests`.
 
-Manual `Tests` workflow runs accept four, six, eight, or ten Windows shards. The
-`windows_shard_benchmark` option selects the same required jobs as an ordinary
-Python source change, avoiding unrelated image work in required-gate timing. Pull
-requests, pushes, and reusable-workflow calls use the selected four-shard
-production policy. The generated matrix keeps the same Linux and Windows
-compatibility legs, marker selection, four-worker
-work-stealing scheduler, timing model, and exact-union verification for every
-candidate count.
+Weights stay call-only because setup is dominated by module and session
+fixtures charged to whichever test first triggers them on each xdist worker,
+so it moves with scheduling and is not a stable per-test weight.
 
-The current timing-model refresh uses ten complete four-shard artifact sets,
-from runs `35614218828` through `35850009708`, with run `35850009708` as the
-13,107-test reference set. Benchmark comparisons must record setup, collection,
-execution, job queueing, required-gate elapsed time, and total runner minutes.
+Shard timing files are in the `shard-<group>-<index>` artifacts: the Ubuntu
+3.11 files in `shard-linux-3.11-<index>`, the Windows ones in
+`shard-windows-<index>`, and the Ubuntu 3.14 ones in `shard-coverage-<index>`.
+The coverage files include tracing overhead, so refresh
+`linux-test-timings.json` from the 3.11 files. A manual run with one Ubuntu
+shard publishes its complete-suite file as `pytest-timing-<leg label>`, on
+every outcome including failed test runs.
 
-The September 23, 2026 experiment selected six shards as the production
-default; on October 8, 2026 the grown suite moved the default to eight, and on
-October 9, 2026 to ten. Skipping Sandbox-only tests on Windows brought it back to
-four on November 10, 2026. See [the experiment record](windows-shard-experiment.md)
-for the raw comparison, the changes, and the post-change validation
-requirement.
+## Shard counts and benchmarks
 
-## Test-cost profile
+Manual `Tests` runs accept dispatch inputs that change the shard layout, so a
+candidate layout can be measured without a code change. Pull requests, pushes,
+and reusable-workflow calls always use the defaults; `ci_changes.py` rejects a
+non-default Ubuntu count or scheduler, or a benchmark flag, outside
+`workflow_dispatch`.
 
-[The test-cost profile](test-cost-profile.md) ranks test families and fixture
-phases per platform from ten complete `main` runs (SHAs `0c4b5acbe..4fe5edfe7`,
-October 22-23, 2026). It lists setup, call, and teardown medians and ranges,
-keeps summed test time, job elapsed time, required-gate elapsed time, and runner
-minutes as separate quantities, states its sampling limitations, and proposes
-optimization candidates with the integration coverage each must keep.
+| Input | Values (default first) | Effect |
+| --- | --- | --- |
+| `windows_shard_count` | 4, 6, 8, 10 | Windows Python 3.14 shard count |
+| `linux_shard_count` | 2, 1, 3 | Ubuntu Python 3.11 shard count; 1 runs one complete-suite job |
+| `linux_scheduler` | `loadscope`, `worksteal` | `--dist` for the Ubuntu 3.11 legs; Windows always uses `worksteal` |
+| `windows_shard_benchmark`, `linux_shard_benchmark` | false, true | Select the ordinary Python source change's job set, skipping unrelated image work; may be combined with each other, not with a RISC-V measurement arm |
 
-## Ubuntu shard-count and scheduler experiment
+Every candidate keeps the same compatibility legs, marker selection,
+four-worker scheduler, timing model, and exact-union verification.
 
-Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
+The defaults come from measured runs:
 
-- `linux_shard_count` (1, 2, or 3; default 2). One keeps a complete-suite job
-  for Python 3.11. Two or three shard it into group `linux-3.11`, balanced by
-  `linux-test-timings.json`, a model of measured
-  call-time medians for tests above one second; any other test weighs its
-  `default_seconds`. The measurement behind the model and the shard and
-  scheduler comparison are in [linux-shard-experiment.md](linux-shard-experiment.md).
-- `linux_scheduler` (`loadscope` or `worksteal`; default `loadscope`). It sets
-  `--dist` for the Ubuntu legs only. Windows keeps its work-stealing scheduler.
-- `linux_shard_benchmark` selects the same required jobs as an ordinary Python
-  source change. It works only on `workflow_dispatch`, cannot be combined with a
-  RISC-V measurement arm, and may be combined with `windows_shard_benchmark`.
-
-A non-default count or scheduler is rejected outside `workflow_dispatch`, so
-pull requests, pushes, and reusable-workflow calls run two Ubuntu shards per
-Python 3.11 with `loadscope`. The maintainer adopted that default from the
-experiment's recommendation (arm C). Its sustained behavior over ordinary
-validations, kept apart from the controlled samples, is in the record's
-[Sustained cohort](linux-shard-experiment.md#sustained-cohort) section. When Ubuntu is
-sharded, `test-verify` also verifies the Linux group with the selected count,
-using the same exact-union check as the Windows shards.
-
-## Exhaustive recovery policy
-
-No pytest marker or change-classifier category selects recovery tests.
-`pyproject.toml` registers only the `string_parameter_eda`, `native_bwave`,
-`slow`, and `sandbox_only` markers, and every complete-suite run uses
-`-m "not native_bwave"`; no mark expression selects on `sandbox_only`.
-Whenever a pull request runs the `test` job, its complete-suite legs use the
-same mark expression and skip `tests/goals/` (see "Goal Mode unit tests"), so
-the Goal recovery and authority permutations that live there do not run in CI.
-The Windows 3.11 and 3.13 compatibility legs run a fixed focused subset. The change classifier
-(`required_jobs` in `.github/scripts/ci_changes.py`) selects the `test` job for any path classified
-`python_source`, `python_tests`, `workflow`, `packaging`, `release`, or
-`ci_tooling`, and for unclassified paths. `ci_tooling` is
-`.github/ci/requirements-*.txt`, where CI-only tool pins live instead of inline
-in workflows; it runs the jobs that install those pins and the Python lane that
-keeps them in step with `pyproject.toml`, but not `full`. README, website and
-documentation-only changes run `docs-check` instead: `git diff --check` plus the
-content tests that `.github/scripts/ci_docs_tests.py` derives from the files that read
-documentation. They add `package-artifacts` (with `build-dist`) when `README.md` changed, and
-`site-build` and `lint` for `website/` and `docs/user/`. The nightly run on
-`main` selects every job (a `main` push runs only its narrow tier), and the
-weekly `full-python-matrix.yml` workflow runs the same mark expression.
-
-Goal and review code select standard and RISC-V image validation. The RISC-V
-prefixes are `.github/actions/prepare-picorv32-demo/`, `demo/`,
-`src/booley/goals/`, `src/booley/review/`, `src/booley/evidence/`, and
-`tests/fixtures/goal_mode_smoke/`.
-
-### Goal Mode unit tests
-
-Temporary, until Goal Mode removal (#3276). `tests/` collection skips
-`tests/goals/` (`collect_ignore` in `tests/conftest.py`); run them by naming the
-path, for example `pytest tests/goals`. Goal source (`src/booley/goals/`) is
-omitted from coverage. `docs-check` and `flake-stress` never select those
-modules. A `tests/goals/` change selects only `lint`, unless a test outside
-`tests/goals/` imports that file; then it is an ordinary test change. The
-goal-mode image smoke no longer runs: `tests/smoke/test_goal_mode_image_smoke.py`
-is opt-in only, via `BOOLEY_GOAL_MODE_SMOKE=1`.
-
-## Expensive test inventory
-
-[The expensive test inventory](expensive-test-inventory.md) is a measured
-record of costly repository-wide scans, duplicate scenarios, and recovery
-permutation families, from 20 successful `main` push runs between
-`17a2f1800` and `4fe5edfe7` (October 21 to 23, 2026). Its dispositions are
-proposals; each approved one is implemented by its own issue with its own
-before/after measurement. The path-triggered recovery selection that the
-previous section once described was removed with the Ticket Board in
-`1460ad065`; the record describes that mechanism as it was and proposes how a
-tier would restore it.
+- **Four Windows shards.** Skipping Sandbox-only tests removed about 62% of the
+  summed Windows test time. Four shards keep every shard's pytest step at least
+  as far from its 12-minute step limit as the slowest ten-shard step was
+  ([#3338](https://github.com/boldaxolotl/booley/pull/3338)).
+- **Two Ubuntu 3.11 shards with `loadscope`.** In a controlled comparison on
+  one commit, two shards cut the median required gate by 127 s against one
+  complete-suite job, and `worksteal` showed no gain
+  ([#1792](https://github.com/boldaxolotl/booley/issues/1792)). Over 349
+  ordinary passing runs afterwards, the median gate fell by about 150 s for
+  about 9-12 more runner minutes per run
+  ([#1793](https://github.com/boldaxolotl/booley/issues/1793)).
+- **Six coverage shards.** They keep a shard plus the `coverage` combine step
+  off the merge queue's critical path, which `bwave-smoke` sets at about 14
+  minutes. The `coverage` job's verifier must use the same count.
 
 ## Performance telemetry
 
-The fixed `ci-metrics` job runs after `ci-required` and records workflow queue
-time, completed-job queue percentiles, consumed runner time at observation, a
-rounded job-minute estimate, and workflow elapsed time. The only job absent
-from that total is the metrics collector itself. It writes the measurements to
-the job summary and keeps the JSON artifact for 90 days. Performance evaluation
-uses at least 20 code-changing runs and includes queue time rather than
-considering job runtime alone.
+The `ci-metrics` job runs after `ci-required` and records workflow queue time,
+completed-job queue percentiles, consumed runner time at observation, a rounded
+job-minute estimate, and workflow elapsed time. Only jobs that completed in the
+current attempt and were not skipped count, so the collector itself, still
+running, never does. It writes the measurements to the job summary and keeps
+the JSON artifact for 90 days, even after a collection failure.
 
-### Smoke diagnostic evidence
+A performance claim about CI needs at least 20 ordinary code-changing runs and
+includes queue time, not job runtime alone, because hosted runners are shared
+and a single run's timing varies widely. A benchmark comparison records setup,
+collection, execution, job queueing, required-gate elapsed time, and total
+runner minutes.
+
+## Smoke diagnostic evidence
 
 `bwave-smoke` always attempts to publish `junit-coverage-release-*` (JUnit XML
-and incremental `test-timings.jsonl`) and `openroad-runtime-*` (logs, scripts, Yosys check reports, and placement
-run directories, including partial evidence from failed probes).
-Successful OpenROAD probes still fail if required evidence cannot be exported.
-These artifacts have 14-day retention. Missing evidence warns when a producer never started or was terminated before writing it.
+and incremental `test-timings.jsonl`) and `openroad-runtime-*` (logs, scripts,
+Yosys check reports, and placement run directories, including partial evidence
+from failed probes). A successful OpenROAD probe still fails if its required
+evidence cannot be exported. These artifacts are kept for 14 days. Missing
+evidence warns when a producer never started or was terminated before writing
+it.
 
-The incremental report closes each JSON line as a pytest setup, call, or
-teardown report arrives. Each line contains the node ID, phase, outcome,
-`duration_seconds`, and UTC `recorded_at`. Sum the phases for a test's total;
-an interrupted test may have only setup evidence. Completed-test timings survive
-process termination even when pytest cannot finish its JUnit XML. Runner loss
-or a hard job timeout can still prevent the upload steps from running.
+The incremental report writes one complete JSON line as each pytest setup,
+call, or teardown report arrives, so completed-test timings survive process
+termination even when pytest cannot finish its JUnit XML. Each line holds the
+node ID, phase, outcome, `duration_seconds`, and UTC `recorded_at`. Sum the
+phases for a test's total; an interrupted test may have only setup evidence.
+Runner loss or a hard job timeout can still prevent the upload steps from
+running.
 
-The upload contract tests cover explicit JUnit and diagnostic
-outputs in `test.yml`, including timeout diagnostics, shard manifests and timings,
+`tests/ci/test_evidence_uploads.py` checks that `test.yml` uploads the JUnit
+and diagnostic outputs: timeout diagnostics, shard manifests and timings,
 complete-suite phase timings, composite-action input gates, container mounts,
-and publication after producers.
-CI-metrics publication also runs after collection failures, retaining any
-completed telemetry file.
-Caches, temporary test projects, and build products are not diagnostic outputs.
+and publication after producers. Caches, temporary test projects, and build
+products are not diagnostic outputs.
 
-### RISC-V on-demand builds
+## RISC-V image lane
 
-The `Tests` workflow's `riscv_measurement` dispatch input accepts `cold` and `automatic`.
-`cold` forces the RISC-V lane and builds tooling locally: `gh workflow run test.yml --ref <branch> -f riscv_measurement=cold`.
-`automatic` retains path gating and registry reuse; nightly and manual runs otherwise select the lane only when the last commit changed its inputs, and a `main` push never selects it (its queue candidate already ran it).
-The input cannot be set on pull requests.
+The `riscv-image` job builds and checks the RISC-V
+[Sandbox Image](../../docs/GLOSSARY.md#using-booley). It is selected only by
+its own inputs on every event: `RISCV_IMAGE_PREFIXES` and `RISCV_IMAGE_FILES`
+in `.github/scripts/picorv32_ci_inputs.py` (the demo, Goal, review, and
+evidence code among them) and any Dockerfile or image data change. Nightly and
+manual runs select it only when the last commit changed those inputs, and a
+`main` push never does, because its queue candidate already ran it.
 
-### RISC-V tooling stage
+### Measurement arms
+
+The `Tests` workflow's `riscv_measurement` dispatch input accepts `automatic`
+(the default: path gating and registry reuse) and `cold`, which forces the
+lane and builds the tooling locally:
+`gh workflow run test.yml --ref <branch> -f riscv_measurement=cold`. Any arm
+other than `automatic` requires `workflow_dispatch`.
+
+### Tooling stage
 
 `Dockerfile.riscv` builds the xPack GCC toolchain, Spike, and the offline
 RISC-V specifications in a `riscv-tooling` stage that starts from the same
 digest-pinned Ubuntu image as `Dockerfile.base` and depends on no Booley image
-(ADR 0070). The final stage copies `/opt/riscv` and `/opt/riscv-docs` from it
-onto the exact standard substrate, so every candidate still runs the full
-RISC-V contract, size, and demo checks.
+([ADR 0070](../../docs/adr/0070-reuse-riscv-tooling-from-a-published-tooling-stage.md)).
+The final stage copies `/opt/riscv` and `/opt/riscv-docs` from it onto the
+exact standard substrate, so every candidate runs the full RISC-V contract,
+size, and demo checks.
 
 The tooling key is a hash of that stage's exact text, a schema version, and the
 platform: `python .github/scripts/riscv_tooling.py key`. Any edit inside the
@@ -316,27 +337,28 @@ stage gains a build-context `COPY`/`ADD`, a `RUN --mount`, an undigested
 `FROM`, or a global `ARG`, because any of those would change the tooling
 without changing its key.
 
-`riscv-tooling-publish.yml` runs on `main` when the stage or the key
-derivation changes. It builds `--target riscv-tooling` and pushes the
-candidate by digest only, so failed runs leave no tag behind. It verifies the
-candidate's labels, then runs the session runtime contract's `[riscv]` probes
-and tooling paths against it (`riscv_tooling.py checks`): toolchain,
-multilibs, hard links, Spike, and the shared-library closure of every host ELF
-under `/opt/riscv`. It records the builder's `libc6`, `libstdc++6`,
-`libgcc-s1`, and `g++` versions, and only then creates
-`ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-<key>` with those
-versions as an index annotation. `riscv_tooling.py promoted` then confirms the
-tag serves the verified image manifest. An existing key tag with matching
-labels ends the run; one with different labels fails it. Only buildx's exact
-missing-tag error counts as absence; any other registry error fails the run.
-Runs serialize per key. The publisher never overwrites a key tag, and no other
-workflow writes one. Check a key with
+`riscv-tooling-publish.yml` runs on `main` when `Dockerfile.riscv`, the key
+derivation, or the workflow itself changes, or by hand. It builds
+`--target riscv-tooling` and pushes the candidate by digest only, so failed
+runs leave no tag behind. It verifies the candidate's labels, then runs the
+`[riscv]` probes of the Sandbox Image contract
+(`.github/contracts/session-runtime.toml`) and the tooling paths against it
+(`riscv_tooling.py checks`): toolchain, multilibs, hard links, Spike, and the
+shared-library closure of every host ELF under `/opt/riscv`. It records the
+builder's `libc6`, `libstdc++6`, `libgcc-s1`, and `g++` versions, and only then
+creates `ghcr.io/boldaxolotl/booley-sandbox-base:riscv-tooling-<key>` with
+those versions as an index annotation. `riscv_tooling.py promoted` then
+confirms the tag serves the verified image manifest. An existing key tag with
+matching labels ends the run; one with different labels fails it. Only
+buildx's exact missing-tag error counts as absence; any other registry error
+fails the run. Runs serialize per key. The publisher never overwrites a key
+tag, and no other workflow writes one. Check a key with
 `python .github/scripts/riscv_tooling.py published`.
 
-The `riscv-image` job consumes the published image. When `riscv_image` is selected,
-`riscv_tooling.py resolve` computes the key, resolves the key's tag to a
-digest, checks its role and key labels, and writes the **tooling source
-record** `riscv-image-evidence/tooling-source.json`:
+The `riscv-image` job consumes the published image. `riscv_tooling.py resolve`
+computes the key, resolves the key's tag to a digest, checks its role and key
+labels, and writes the **tooling source record**
+`riscv-image-evidence/tooling-source.json`:
 
 | Source | When | Lane behavior |
 | --- | --- | --- |
@@ -346,63 +368,65 @@ record** `riscv-image-evidence/tooling-source.json`:
 
 A tag with the wrong labels fails the job: that is an integrity failure, not a
 miss. Only the label-verified digest reaches BuildKit. The compatibility check
-runs `riscv_tooling.py checks` (the contract's `[riscv]` probes, including the
-shared-library closure of every host ELF under `/opt/riscv`) in the composed
-RISC-V substrate before the wheel overlay. A fallback is a warning, not a
-failure, and the full contract, size, and demo checks still judge whichever
-image the lane finishes with. Repeated fallbacks for one key mean the
-published image has drifted from the runtime base; republish it by editing
-the stage, which mints a new key. Local and release builds always build the
-stage from source.
+runs `riscv_tooling.py checks` in the composed RISC-V substrate before the
+wheel overlay. A fallback is a warning, not a failure, and the full contract,
+size, and demo checks still judge whichever image the lane finishes with.
+Repeated fallbacks for one key mean the published image has drifted from the
+runtime base; republish it by editing the stage, which mints a new key. Local
+and release builds always build the stage from source.
+
+### Duration budgets
 
 The `bwave-smoke` duration budget times the test phase only: its clock starts
 after the standard candidate image and its wheel overlay are built, so runner
 and cache-network build speed cannot fail it. The RISC-V lane runs as its own
-`riscv-image` job, so it neither delays `bwave-smoke` nor competes with its
-validations for CPU. That job builds its own standard substrate from the
-trusted cache, then starts its clock. The RISC-V image build stays on the
-clock, and the budget follows the recorded source. Registry hits and local builds (including
-fallbacks) each get their own budget, derived from measured runs of that
-source, so a slow hit cannot hide behind the local-build ceiling. A lane that
-stopped before writing its record is judged against the local budget.
+job so it neither delays `bwave-smoke` nor competes with its validations for
+CPU. When the stable base is unchanged, `riscv-image` builds its standard
+substrate from the trusted cache and then starts its clock; when the base
+changed, it builds the runtime base locally and skips the budget. The RISC-V
+image build counts against the budget, which follows the recorded source:
+registry hits and local builds (fallbacks included) each get their own budget,
+derived from measured runs of that source, so a slow hit cannot hide behind
+the local-build ceiling. A lane that stopped before writing its record is
+judged against the local budget.
 
 ## Dependency constraints
 
 `.github/ci/constraints.txt` pins every package the project and its extras can
 install, for Linux and Windows on every CI Python version (one universal,
 unhashed `uv pip compile`; pip rejects hashed constraints with an editable
-install). Every CI install of the project passes `-c`, and each pip cache keys on
-it. Regenerate it from the repository root with the command in its header:
+install). Every CI install of the project passes `-c`, and the pip cache of
+each such job keys on it. Regenerate it from the repository root with the
+command in its header:
 
 ```bash
 uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o .github/ci/constraints.txt
 ```
 
-- `release-semantic` runs `ci_constraints.py` before its own project install, so a
-  stale file fails there with the regenerate command. The other jobs do not wait
-  for it and may also fail with pip's `ResolutionImpossible`.
-- The check catches an added, removed, or re-pinned direct dependency and a wrong
-  compile command. It does not notice a new extra or marker on an existing direct
-  requirement.
-- A constraints-only change is classified like `pyproject.toml`: every job runs,
-  Windows legs included.
-- Still unconstrained: the setuptools build backend in pip's isolated build
+- `release-semantic` runs `ci_constraints.py` without installing the project,
+  so a stale file fails there with the regenerate command. The other jobs do
+  not wait for it and may also fail with pip's `ResolutionImpossible`.
+- The check catches an added, removed, or re-pinned direct dependency and a
+  wrong compile command. It does not notice a new extra or marker on an
+  existing direct requirement.
+- Unconstrained: the setuptools build backend in pip's isolated build
   environment, pip, and uv. Built-wheel installs (`publish.yml`,
   `docker-publish.yml`, `isolated_host_install_smoke.py`) and image Dockerfile
   installs stay unconstrained on purpose: they verify what users get.
 
 ## pip cache
 
-Every `actions/setup-python` step with `cache: pip` has `id: setup-python` and is
-followed by a `Drop pip cache restored from an older dependency set` step. On an
-exact key hit (`cache-hit == 'true'`) the step is skipped and nothing is saved.
-On a miss, setup-python restores the newest entry for the same OS and Python
-patch version by key prefix and saves a new entry after the job. pip never
-prunes its cache, so without the purge each new entry carried every older
-wheel forward. Windows Python 3.11 is frozen at 3.11.9, the last 3.11 release
-with a Windows installer, so its prefix never reset: its entries reached 2 GB
-each, against about 180 MB for a fresh install, and pushed other caches out of
-the repository's 50 GB limit. After the purge, a new entry holds only the
-current dependency set. `test_pip_caches_start_empty_after_a_prefix_restore`
-in `tests/ci/test_ci_requirements.py` requires the step after every such cache.
+Every `actions/setup-python` step with `cache: pip` has `id: setup-python` and
+is followed by a `Drop pip cache restored from an older dependency set` step.
+On an exact key hit (`cache-hit == 'true'`) the step is skipped and nothing is
+saved. On a miss, setup-python restores the newest entry for the same OS and
+Python patch version by key prefix and saves a new entry after the job. pip
+never prunes its cache, so without the purge each new entry would carry every
+older wheel forward. Windows Python 3.11 is frozen at 3.11.9, the last 3.11
+release with a Windows installer, so its prefix never resets: unpurged, its
+entries reached 2 GB each, against about 180 MB for a fresh install, and pushed
+other caches out of the repository's 50 GB limit. With the purge, a new entry
+holds only the current dependency set.
+`test_pip_caches_start_empty_after_a_prefix_restore` in
+`tests/ci/test_ci_requirements.py` requires the step after every such cache.
 An existing bloated entry stays until its key changes or it is deleted.
