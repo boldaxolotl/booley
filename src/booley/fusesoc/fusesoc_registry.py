@@ -2683,11 +2683,12 @@ def _run_setup_command(
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> ResolvedTarget:
     logger.debug("resolving target via: %s", " ".join(cmd))
-    child_env = {**os.environ} if env is None else dict(env)
-    # Generators and core hooks read this checkout's inputs (ADR 0082); a failed
-    # lookup keeps the inherited value.
-    with contextlib.suppress(OSError, RuntimeError, ValueError):
-        child_env["BOOLEY_DIR"] = str(resolve_checkout_booley_dir(project_root))
+    child_env = dict(env) if env is not None else {**os.environ}
+    if env is None:
+        # Generators and core hooks read this checkout's inputs (ADR 0082); a failed
+        # lookup keeps the inherited value. A caller that passes its own *env* owns it.
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
+            child_env["BOOLEY_DIR"] = str(resolve_checkout_booley_dir(project_root))
     try:
         proc = runner(
             cmd,
