@@ -27,11 +27,22 @@ from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_in
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.flows.sim.unpublished_results import read_unpublished_results
+from booley.goals.campaign_accounting import REASON_UNACCOUNTED
+from booley.goals.status import build_status
+from booley.goals.store import GoalStore
+from booley.harness.dashboard.model import project_goal
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.campaign_test_support import _retained_invocation, coverage_invocation
 from tests.flows.sim.test_campaign_manifest_codec import _linked_campaign_stores, _manifest
 from tests.flows.sim.test_campaign_resume_diagnostics import _interrupted_campaign
 from tests.flows.sim.test_campaign_retention import _run_retention_cli
+from tests.goals.conftest import SIM_KEY, layout  # noqa: F401  (fixture)
+from tests.goals.test_campaign_accounting import (  # noqa: F401  (fixtures)
+    _Campaign,
+    campaign,
+    two,
+)
 
 _MANIFEST = "booley.simulation-campaign-manifest/"
 _RESULT_V2 = "booley.simulation-result/v2"
@@ -406,3 +417,36 @@ def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch)
         SimulateFlow().execute(
             SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
         )
+
+
+# --- Goal status and the Dashboard (the Goal fixtures live under tests/goals, which the
+# broad run does not collect, so this reader is tested here) ---
+
+
+def test_a_0_3_0_campaign_reads_as_refused_in_status_and_the_dashboard(
+    two: SimpleNamespace,  # noqa: F811 (fixture imported from tests/goals)
+    campaign: _Campaign,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """An older Booley's record is refused as too old, never "cannot be read"."""
+    invocation = tmp_path / "reports" / "sim" / "1"
+    shutil.copytree(_FIXTURES_0_3_0 / "complete" / "sim" / "1", invocation)
+    campaign.manifest = invocation / "targets" / "sim" / "campaign" / "manifest.json"
+    campaign.start("run-1")
+    two.campaign_reader = read_unpublished_results
+
+    store = GoalStore(two.control)
+    view = build_status(
+        store, two.record, work_dir=two.worktree, campaign_reader=read_unpublished_results
+    )
+    dashboard = project_goal(store, two.record)
+
+    assert dashboard.status is not None
+    for goals in (view.goals, dashboard.status.goals):
+        goal = next(goal for goal in goals if goal.key == SIM_KEY)
+        assert goal.status == "unmet"
+        assert goal.reason.startswith(REASON_UNACCOUNTED)
+        assert "is refused: " in goal.reason
+        assert "was written by an older Booley and is no longer supported" in goal.reason
+        assert f"delete the Simulation invocation directory {invocation} and start" in goal.reason
+        assert "cannot be read" not in goal.reason

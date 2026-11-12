@@ -8,7 +8,6 @@ Neither may let a matching failure be dodged, nor lose a seed that passed.
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -326,36 +325,6 @@ def test_a_campaign_that_cannot_be_read_keeps_its_goals_unmet_until_it_is_settle
     view = select_status(store, two.worktree, campaign_reader=campaign.read).views[0]
     goal = next(goal for goal in view.goals if goal.key == SIM_KEY)
     assert goal.reason.startswith("goal-test-run-failed")
-
-
-def test_a_0_3_0_campaign_reads_as_refused_in_status_and_the_dashboard(
-    two: SimpleNamespace, campaign: _Campaign, tmp_path: Path
-) -> None:
-    """An older Booley's record is refused as too old, never "cannot be read"."""
-    from booley.flows.sim.unpublished_results import read_unpublished_results
-    from booley.harness.dashboard.model import project_goal
-
-    invocation = tmp_path / "reports" / "sim" / "1"
-    shutil.copytree(FIXTURES_0_3_0 / "complete" / "sim" / "1", invocation)
-    campaign.manifest = invocation / "targets" / "sim" / "campaign" / "manifest.json"
-    campaign.start("run-1")
-    two.campaign_reader = read_unpublished_results
-
-    store = GoalStore(two.control)
-    view = build_status(
-        store, two.record, work_dir=two.worktree, campaign_reader=read_unpublished_results
-    )
-    dashboard = project_goal(store, two.record)
-
-    assert dashboard.status is not None
-    for goals in (view.goals, dashboard.status.goals):
-        goal = next(goal for goal in goals if goal.key == SIM_KEY)
-        assert goal.status == "unmet"
-        assert goal.reason.startswith(REASON_UNACCOUNTED)
-        assert "is refused: " in goal.reason
-        assert "was written by an older Booley and is no longer supported" in goal.reason
-        assert f"delete the Simulation invocation directory {invocation} and start" in goal.reason
-        assert "cannot be read" not in goal.reason
 
 
 def test_an_approved_retarget_is_what_drops_an_unaccounted_campaign(
