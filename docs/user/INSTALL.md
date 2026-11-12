@@ -20,7 +20,12 @@ supported. You need:
   [Claude Code](https://code.claude.com/docs/en/setup) (`claude`, the default)
   or [Codex](https://developers.openai.com/codex/cli) (`codex`)
 
-On Windows, also read [Windows](WINDOWS.md) for first-run traps.
+<details markdown>
+<summary>On Windows</summary>
+
+Also read [Windows](WINDOWS.md) for first-run traps.
+
+</details>
 
 ## Install Booley
 
@@ -71,9 +76,16 @@ during the build (47 GiB with RISC-V). The finished image takes about 4 GB
 too full; it never deletes images, caches, or your data. Set
 `BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT=1` on one command to skip the check.
 
-**Build time.** A local image build can take over an hour, longer on Windows.
+**Build time.** A local image build can take over an hour.
 Booley stops a build after 7200 seconds (2 hours); set
 `BOOLEY_IMAGE_BUILD_TIMEOUT` to a larger number of seconds to allow more.
+
+<details markdown>
+<summary>On Windows</summary>
+
+A local image build can take longer on Windows. See [Windows](WINDOWS.md).
+
+</details>
 
 **Host settings.** Machine-wide Sandbox settings, such as
 `egress = "unproxied"` (no egress proxy), live in
