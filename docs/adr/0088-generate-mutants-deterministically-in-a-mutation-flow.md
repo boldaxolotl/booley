@@ -152,7 +152,7 @@ generator version is 3. What each operator now includes:
 3. condition negation or forcing (unchanged);
 4. constant and reset-value change, plus an enum member replaced by the
    previous or next member of an enum declared in the same file, and numeric
-   literals in the initializers of module- and interface-level variables;
+   literals in the initializers of module-level variables (including those in generate blocks);
 5. bit-select or slice off by one, plus the swap of two neighbouring
    concatenation operands;
 6. deletion of an assignment or a `case` item (unchanged).
@@ -161,6 +161,6 @@ Two kinds of site become reachable by every mutation above and by the swaps,
 conditions, and constants: the arguments of `$signed` and `$unsigned`, and the
 expressions in the port connections of module and interface instances.
 Bit-select moves and deletions never apply in a connection. A connection that
-is a bare name, a parameter override, a gate primitive, a `bind` directive, and
-a checker instance yield no site. No new mutation applies inside a `while`,
+is a bare name, and a parameter override, a gate primitive, a `bind` directive,
+a checker instance, or a program instance, yield no site. No new mutation applies inside a `while`,
 `do`-`while`, `forever`, procedural `for`, or a `case` label.

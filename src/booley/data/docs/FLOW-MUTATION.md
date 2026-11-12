@@ -76,20 +76,33 @@ yields one candidate Mutant per change.
 |---|---|---|
 | `relational` | Swaps a comparison for its neighbour. | `a < b` -> `a <= b`, `a == b` -> `a != b` |
 | `arithmetic-logical` | Swaps an arithmetic, bitwise, logical, or shift operator. | `a + b` -> `a - b`, `a & b` -> `a \| b`, `a << 2` -> `a >> 2` |
-| `arithmetic-logical` | Removes a unary `~`, `-`, or `!`. `!x` becomes `x != 0`, so it stays one bit wide. A `!x` that is a whole `if` or `?:` condition is left to the `condition` operator. | `~a` -> `(a)`, `!b` -> `((b) != 0)` |
-| `arithmetic-logical` | Swaps a reduction operator: `&` and `\|` trade places, `^` becomes `\|`, and `~&`, `~\|`, `~^` lose their negation. | `&a` -> `(\|(a))`, `~^a` -> `(^(a))` |
-| `arithmetic-logical` | Drops one operand of `&&`, `\|\|`, `&`, or `\|` by putting that operator's neutral value there, so the other operand passes through and the width stays. An operand that calls a function or changes a variable is never dropped. | `p && q` -> `1'b1 && q`, `a & b` -> `((a) \| ~(a)) & b` |
-| `arithmetic-logical` | Turns `>>>` into `>>` and `>>` into `>>>`, only where the shifted operand is signed (elsewhere they are the same). | `s >>> 1` -> `s >> 1` |
-| `arithmetic-logical` | Turns a signed cast into the unsigned one, never the reverse. | `$signed(x)` -> `$unsigned(x)`, `signed'(x)` -> `unsigned'(x)` |
+| `arithmetic-logical` | Removes a unary `~`, `-`, or `!`; `!x` becomes `x != 0`, one bit wide. | `~a` -> `(a)`, `!b` -> `((b) != 0)` |
+| `arithmetic-logical` | Swaps a reduction operator or drops its negation. | `&a` -> `(\|(a))`, `~^a` -> `(^(a))` |
+| `arithmetic-logical` | Drops one operand of `&&`, `\|\|`, `&`, or `\|`, so the other passes through at the same width. | `p && q` -> `1'b1 && q`, `a & b` -> `((a) \| ~(a)) & b` |
+| `arithmetic-logical` | Exchanges `>>>` and `>>` where the shifted operand is signed. | `s >>> 1` -> `s >> 1` |
+| `arithmetic-logical` | Turns a signed cast into an unsigned one. | `$signed(x)` -> `$unsigned(x)`, `signed'(x)` -> `unsigned'(x)` |
 | `condition` | Replaces the condition of an `if` or `?:` with its negation, `1'b1`, or `1'b0`. A `while`, `do`-`while`, or `for` condition is only forced to `1'b0`. | `if (valid)` -> `if (!(valid))` |
 | `constant` | Changes a numeric literal's value: lowest bit flipped, plus one, or minus one. Size and base stay. | `4'd5` -> `4'd4`, `'0` -> `'1` |
-| `constant` | Does the same for a literal in the initializer of a variable declared at module or interface level. Widths and dimensions stay. | `reg [7:0] cnt = 8'd3;` -> `8'd2` |
-| `constant` | Replaces a reference to an enum member with the previous or next member of its enum, wrapping around; a two-member enum yields one Mutant. The enum must be declared in the same file. | `state == IDLE` -> `state == DONE` |
+| `constant` | Changes a literal in the initializer of a module-level variable. | `reg [7:0] cnt = 8'd3;` -> `8'd2` |
+| `constant` | Replaces an enum member with the previous or next member of its enum. | `state == IDLE` -> `state == DONE` |
 | `bit-select` | Moves a literal bit index or slice bound up or down by one, within the declared range. | `data[3]` -> `data[2]`, `data[7:4]` -> `data[6:3]` |
-| `bit-select` | Swaps two neighbouring operands of a concatenation, on either side of an assignment. Equal operands, replication counts, streaming concatenations, and assignment patterns yield none. | `{hi, lo}` -> `{lo, hi}` |
+| `bit-select` | Swaps two neighbouring operands of a concatenation. | `{hi, lo}` -> `{lo, hi}` |
 | `deletion` | Removes one assignment, net initializer, or `case` item. | `q <= d;` removed, `case` branch removed |
 
 `/`, `%`, and `**` are never swapped, so Mutants do not divide by zero.
+
+Mutations also reach the arguments of `$signed` and `$unsigned` and the
+expressions in the port connections of module and interface instances.
+
+Table details: a `!x` that is a whole `if` or `?:` condition is left to the
+`condition` operator. Dropping an operand puts the operator's identity there
+(`1'b1` for `&&`, all ones for `&`), and an operand that calls a function or
+changes a variable is never dropped. A reduction swap trades `&` and `\|`,
+turns `^` into `\|`, and removes the `~` of `~&`, `~\|`, and `~^`. A sign cast
+is never turned the other way. An enum member wraps around its enum, which
+must be declared in the same file; a two-member enum yields one Mutant. A
+concatenation swap skips equal neighbours, replication counts, streaming
+concatenations, and assignment patterns.
 
 Only design code is mutated. Booley skips:
 
@@ -98,11 +111,10 @@ Only design code is mutated. Booley skips:
   mutated assertion fires and would count as a detection;
 - parameter defaults and overrides, widths, delays, attributes, and the parts
   of a `for` loop that decide how long it runs;
-- the arguments of system calls such as `$display`; only the arguments of
-  `$signed` and `$unsigned` are mutated;
-- port connections of gate primitives and `bind` directives, connections that
-  are a bare name, and, in a connection, every bit-select move and deletion
-  (other expressions in an instance's connections are mutated);
+- the arguments of system calls other than `$signed` and `$unsigned`;
+- port connections of gate primitives, `bind` directives, and checker and
+  program instances, connections that are a bare name, and every bit-select
+  move and deletion in a connection;
 - code a macro or include supplies, and the inactive branch of an `ifdef`
   (Booley applies the build's defines);
 - spots that could make a loop run forever or drive a variable from two
@@ -116,7 +128,8 @@ Only design code is mutated. Booley skips:
    Mutant's ID. The ID comes from the operator, file, and position inside its
    module, so editing code elsewhere in the file does not change it.
 3. The six operators are then taken in turn, one candidate each, in the order
-   in which the table first lists them, until `--count` Mutants are chosen. A
+   relational, arithmetic-logical, condition, constant, bit-select, deletion,
+   until `--count` Mutants are chosen. A
    small `--count` therefore covers different kinds of bugs instead of many of
    one kind.
 
@@ -131,7 +144,7 @@ The report starts with what reproduces the run, then the tally and the
 verdict:
 
 ```text
-[mutation_test] 10 Mutants (seed 0, count 10, generator 2, pyslang 9.0.0)
+[mutation_test] 10 Mutants (seed 0, count 10, generator 3, pyslang 9.0.0)
 [mutation_test] sim sweep: 10/10 tested              4m
   8 detected (1 timeout), 0 invalid, 2 not detected
   detected: 8/10 (required: 8/10, default 80% of --count)

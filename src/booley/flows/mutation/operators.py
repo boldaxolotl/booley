@@ -1,7 +1,7 @@
 """Find Mutation Operator sites in synthesizable Verilog and SystemVerilog with pyslang.
 
-Beyond swapping, deleting and moving, the operators also cover (ADR 0088, amended for
-issue #3626): ``arithmetic-logical`` removes unary operators, swaps reductions, drops an
+Beyond swapping, deleting and moving, the operators also cover (ADR 0088, amended on
+2026-11-13): ``arithmetic-logical`` removes unary operators, swaps reductions, drops an
 operand and flips shift signedness and sign casts; ``constant`` changes enum members and
 module-level initializers; ``bit-select`` swaps neighbouring concatenation operands.
 
@@ -125,6 +125,7 @@ _INITIALIZER = "initializer"  # the initializer of a module-level variable
 _NO_REACH: frozenset[str] = frozenset()
 _REACH = frozenset({_CONNECTION, _SIGN_CALL})
 _CONSTANT_REACH = _REACH | {_INITIALIZER}
+_NON_DESIGN_UNITS = _names("CheckerDeclaration ProgramDeclaration")
 _PORT_CONNECTIONS = _names("NamedPortConnection OrderedPortConnection")
 # What wraps a connection's expression between the expression and the connection.
 _CONNECTION_WRAPPERS = _names("SimpleSequenceExpr SimplePropertyExpr")
@@ -162,6 +163,28 @@ _SHIFT_FLIPS = {"ArithmeticShiftRightExpression": ">>", "LogicalShiftRightExpres
 _SHIFT_OPERATORS = _names("ArithmeticShiftRight LogicalShiftRight")
 # Text that ends in an escaped identifier needs a space before the next token.
 _ESCAPED_TAIL = re.compile(r"\\\S*$")
+
+
+_SIMPLE_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+
+
+def _declared(name: str) -> str:
+    """``name`` as written in source: an escaped identifier gets its backslash and a space."""
+    return name if _SIMPLE_IDENTIFIER.fullmatch(name) else f"\\{name} "
+
+
+def _drop_to(template: str) -> Callable[[str], tuple[str, ...]]:
+    """A variants function that fills ``template`` with the operand's text."""
+
+    def variants(text: str) -> tuple[str, ...]:
+        return (template.format(_spaced(text)),)
+
+    return variants
+
+
+def _replace_by(*replacements: str) -> Callable[[str], tuple[str, ...]]:
+    """A variants function that ignores the original text."""
+    return lambda _text: replacements
 
 
 def _spaced(text: str) -> str:
@@ -424,13 +447,15 @@ class _SiteCollector:
             first = member.getFirstToken()
             # A unit that starts inside a macro has no file offset: use 0.
             self._units[id(member)] = (f"{kind}:{name}#{ordinal}", self._offset(first) or 0)
-        # An instance of a checker parses like a module instance but is assertion code.
+        # An instance of a checker or program parses like a module instance but is not design.
         self._checkers: set[str] = set()
         root.visit(self._note_checker)
 
     def _note_checker(self, node: Any) -> None:
-        if isinstance(node, self._node_type) and node.kind.name == "CheckerDeclaration":
-            self._checkers.add(str(node.name.rawText))
+        if isinstance(node, self._node_type) and node.kind.name in _NON_DESIGN_UNITS:
+            # A program declaration names itself in its header, a checker directly.
+            name = node.header.name if hasattr(node, "header") else node.name
+            self._checkers.add(str(name.rawText))
 
     @staticmethod
     def _unit_name(member: Any) -> str:
@@ -479,7 +504,7 @@ class _SiteCollector:
             self._add_operand_drops(node, kind)
             self._add_shift_signedness(node, kind)
 
-    def _add_new(
+    def _add_guarded(
         self,
         node: Any,
         operator: str,
@@ -487,7 +512,7 @@ class _SiteCollector:
         last: Any,
         variants: Callable[[str], tuple[str, ...]] | tuple[str, ...],
     ) -> None:
-        """Record a mutation of issue #3626: not in a ``case`` label (as for constants), not in a loop."""
+        """Record a mutation that, like a constant change, skips ``case`` labels and unbounded loops."""
         if not self._in_case_label(node):
             self._add(node, operator, first, last, variants, avoid_loops=True)
 
@@ -506,8 +531,13 @@ class _SiteCollector:
             return
         lead = len(self._text(start, operand_start))
         template = _UNARY_REPLACEMENTS[kind]
-        replace = lambda text: (template.format(_spaced(text[lead:])),)  # noqa: E731
-        self._add_new(node, ARITHMETIC_LOGICAL, node.operatorToken, node.getLastToken(), replace)
+
+        def replace(text: str) -> tuple[str, ...]:
+            return (template.format(_spaced(text[lead:])),)
+
+        self._add_guarded(
+            node, ARITHMETIC_LOGICAL, node.operatorToken, node.getLastToken(), replace
+        )
 
     def _add_operand_drops(self, node: Any, kind: str) -> None:
         """Operator 2: replace one operand of ``&&``, ``||``, ``&`` or ``|`` by its identity.
@@ -522,8 +552,7 @@ class _SiteCollector:
         for operand in (node.left, node.right):
             if self._is_pure(operand):
                 first, last = operand.getFirstToken(), operand.getLastToken()
-                replace = lambda text: (template.format(_spaced(text)),)  # noqa: E731
-                self._add_new(node, ARITHMETIC_LOGICAL, first, last, replace)
+                self._add_guarded(node, ARITHMETIC_LOGICAL, first, last, _drop_to(template))
 
     def _is_pure(self, operand: Any) -> bool:
         """True unless the operand calls a function or changes a variable."""
@@ -533,8 +562,14 @@ class _SiteCollector:
             if not isinstance(item, self._node_type):
                 return
             kind = item.kind.name
+            # A call, or a system function written without parentheses (`$random`).
+            parent = item.parent
+            is_call = kind == "InvocationExpression" and self._sign_call(item) is None
+            is_bare_system_name = kind == "SystemName" and not (
+                parent.kind.name == "InvocationExpression" and self._sign_call(parent) is not None
+            )
             if kind.endswith(("AssignmentExpression", "crementExpression")) or (
-                kind == "InvocationExpression" and self._sign_call(item) is None
+                is_call or is_bare_system_name
             ):
                 impure.append(kind)
 
@@ -553,7 +588,7 @@ class _SiteCollector:
         """Operator 2: ``>>>`` <-> ``>>`` where the shifted operand is signed."""
         token = node.operatorToken
         if kind in _SHIFT_FLIPS and self._offset(token) in self._facts.signed_shifts:
-            self._add_new(node, ARITHMETIC_LOGICAL, token, token, (_SHIFT_FLIPS[kind],))
+            self._add_guarded(node, ARITHMETIC_LOGICAL, token, token, (_SHIFT_FLIPS[kind],))
 
     def _add_sign_cast(self, node: Any, kind: str) -> None:
         """Operator 2: ``$signed(x)`` -> ``$unsigned(x)`` and ``signed'(x)`` -> ``unsigned'(x)``."""
@@ -564,12 +599,12 @@ class _SiteCollector:
             token, replacement = node.left.getFirstToken(), "$unsigned"
             is_signed = self._sign_call(node) == "$signed"
         if is_signed:
-            self._add_new(node, ARITHMETIC_LOGICAL, token, token, (replacement,))
+            self._add_guarded(node, ARITHMETIC_LOGICAL, token, token, (replacement,))
 
     def _add_concatenation_swaps(self, node: Any) -> None:
         """Operator 5: exchange each pair of neighbouring operands of a concatenation.
 
-        Operands with identical text yield no Mutant.  A replication count is not a
+        Operands with identical text (ignoring whitespace) yield no Mutant.  A replication count is not a
         concatenation operand, and streaming concatenations and assignment patterns are
         other syntax kinds.
         """
@@ -579,11 +614,11 @@ class _SiteCollector:
             if left_span is None or right_span is None:
                 continue
             left_text, right_text = self._text(*left_span), self._text(*right_span)
-            if left_text != right_text:
+            if "".join(left_text.split()) != "".join(right_text.split()):
                 between = self._text(left_span[1], right_span[0])
                 swapped = _spaced(right_text) + between + _spaced(left_text)
                 first, last = left.getFirstToken(), right.getLastToken()
-                self._add_new(node, BIT_SELECT, first, last, lambda _text, s=swapped: (s,))
+                self._add_guarded(node, BIT_SELECT, first, last, _replace_by(swapped))
 
     def _add_enum_member(self, node: Any) -> None:
         """Operator 4: a reference to an enum member becomes the previous or next member.
@@ -605,9 +640,11 @@ class _SiteCollector:
         # only, so its Mutant names the package.
         bare = node.kind.name == "IdentifierName" and reference.package
         prefix = f"{reference.package}::" if bare else ""
-        replacements = tuple(f"{prefix}{name}" for name in neighbours if name != members[index])
+        replacements = tuple(
+            f"{prefix}{_declared(name)}" for name in neighbours if name != members[index]
+        )
         last = node.getLastToken()  # of `pkg::NAME`, only the member's name changes
-        self._add_new(node, CONSTANT, last, last, lambda _text: replacements)
+        self._add_guarded(node, CONSTANT, last, last, _replace_by(*replacements))
 
     def _span(self, node: Any) -> tuple[int, int] | None:
         """The (start, end) file offsets of ``node``, or None if its text is not in this file."""
@@ -618,13 +655,15 @@ class _SiteCollector:
     def _text(self, start: int, end: int) -> str:
         return self._source[start:end].decode("utf-8", "replace")
 
-    @staticmethod
-    def _is_whole_condition(node: Any) -> bool:
+    def _is_whole_condition(self, node: Any) -> bool:
         """True if the expression, looking through parentheses, is a whole ``if``/``?:`` condition."""
         parent = node.parent
         while parent.kind.name == "ParenthesizedExpression":
             parent = parent.parent
-        return bool(parent.kind.name in _CONSTANT_EXCLUDED_PARENTS)
+        if parent.kind.name not in _CONSTANT_EXCLUDED_PARENTS:
+            return False
+        # Only a single plain condition has condition Mutants (see _add_condition).
+        return self._is_plain_predicate(parent.parent)
 
     @staticmethod
     def _is_bare_connection(node: Any) -> bool:
@@ -634,14 +673,17 @@ class _SiteCollector:
             parent = parent.parent
         return bool(parent.kind.name in _PORT_CONNECTIONS)
 
+    def _is_plain_predicate(self, predicate: Any) -> bool:
+        """False for a ``matches`` pattern or a ``&&&`` chain: not a plain Boolean condition."""
+        if predicate.kind.name != "ConditionalPredicate":
+            return True
+        parts = [c for c in predicate.conditions if isinstance(c, self._node_type)]
+        return len(parts) == 1 and parts[0].matchesClause is None
+
     def _add_condition(self, node: Any, predicate: Any, variants: tuple[str, ...]) -> None:
-        if predicate.kind.name == "ConditionalPredicate":
-            # ``matches`` patterns and ``&&&`` chains are not plain Boolean conditions.
-            parts = [c for c in predicate.conditions if isinstance(c, self._node_type)]
-            if len(parts) != 1 or parts[0].matchesClause is not None:
-                return
-        first, last = predicate.getFirstToken(), predicate.getLastToken()
-        self._add(node, CONDITION, first, last, variants)
+        if not self._is_plain_predicate(predicate):
+            return
+        self._add(node, CONDITION, predicate.getFirstToken(), predicate.getLastToken(), variants)
 
     def _add_constant(self, node: Any, kind: str) -> None:
         """Operator 4: change a numeric literal's value digits (size and base stay)."""
@@ -827,9 +869,8 @@ class _SiteCollector:
         """
         kind = ancestor.kind.name
         if kind in _PORT_CONNECTIONS:
-            instance = (
-                ancestor.parent.parent
-            )  # connection -> HierarchicalInstance -> instantiation
+            # connection -> HierarchicalInstance -> instantiation
+            instance = ancestor.parent.parent
             return (
                 _CONNECTION in reach
                 and instance.kind.name == "HierarchyInstantiation"

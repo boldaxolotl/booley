@@ -366,9 +366,9 @@ def test_bit_select_operator_sites(tmp_path: Path, name: str) -> None:
     """Literal read selects move by one inside the declared range; a slice keeps its width.
 
     Not moved: selects written by an assignment or a concatenation target, selects in
-    instance port connections (the swap of a concatenation there is not a move), a full-width slice, `+:` selects,
-    non-literal or nested indices, and selects of a parameterized, typedef'd or
-    inherited-parameterized range, a parameter, or a queue.
+    instance port connections (the swap of a concatenation there is not a move), a
+    full-width slice, `+:` selects, non-literal or nested indices, and selects of a
+    parameterized, typedef'd or inherited-parameterized range, a parameter, or a queue.
     """
     selection = _generate(tmp_path, name)
 
@@ -513,7 +513,7 @@ def _elaboration_error_count(text: str) -> int:
     return sum(1 for diagnostic in compilation.getAllDiagnostics() if diagnostic.isError())
 
 
-# Text that only a mutation added in issue #3626 can produce, per new fixture.
+# Text that only a mutation of generator version 3 can produce, per new fixture.
 _NEW_KIND_MARKERS = {
     "polarity.v": (
         "((b) != 0)",
@@ -549,6 +549,8 @@ def test_every_mutant_reparses(tmp_path: Path) -> None:
             )
             text = edited.decode("utf-8", "replace")
             assert _error_count(text) == 0, (name, mutant)
+            if name.endswith(".v"):  # pyslang parses SystemVerilog: check the text by hand
+                assert not re.search(r"'\(|::|\bunsigned'", mutant.mutated_code), (name, mutant)
             if baseline is not None:
                 assert _elaboration_error_count(text) <= baseline, (name, mutant)
         for marker in _NEW_KIND_MARKERS.get(name, ()):
@@ -584,7 +586,7 @@ def test_unary_after_binary_operator_reparses(tmp_path: Path) -> None:
         assert _error_count(text.decode()) == 0, mutant
 
 
-# Issue #3626: polarity, missing-term, enum, concatenation and signedness mutations.
+# Polarity, missing-term, enum, concatenation and signedness mutations (generator version 3).
 
 _POLARITY_ARITHMETIC = {
     "polarity.v": [
@@ -875,7 +877,11 @@ def test_signed_call_arguments_are_reachable(tmp_path: Path) -> None:
 
 
 def _assignment_widths(text: str) -> list[int]:
-    """The bit width of the right side of every assignment, in elaboration order."""
+    """The bit width of the right side of every assignment, before slang's implicit conversion.
+
+    slang converts each right side to the width of its left side; looking through that
+    conversion is the only way to see whether the Mutant changed the expression's width.
+    """
     import pyslang
 
     compilation = pyslang.ast.Compilation()
@@ -884,7 +890,10 @@ def _assignment_widths(text: str) -> list[int]:
 
     def record(expression: Any) -> None:
         if expression.kind.name == "Assignment":
-            widths.append(int(expression.right.type.bitWidth))
+            right = expression.right
+            while right.kind.name == "Conversion" and right.isImplicit:
+                right = right.operand
+            widths.append(int(right.type.bitWidth))
 
     compilation.getRoot().visit(record)
     return widths
@@ -909,6 +918,9 @@ def test_operand_drop_and_not_removal_keep_width(tmp_path: Path) -> None:
     mutants = [m for m in selection.mutants if m.operator == "arithmetic-logical"]
     assert len(mutants) == 7  # three on each `a & b` and `a | b`, one `!b` removal
     assert _assignment_widths(source) == [8, 1, 8]
+    # The measure sees a width change: a naive drop `{a}` or `{b}` would be caught.
+    assert _assignment_widths(source.replace("{a & b}", "{a}")) == [4, 1, 8]
+    assert _assignment_widths(source.replace("{!b}", "{b}")) == [8, 8, 8]
     for mutant in mutants:
         edited = source.encode()[: mutant.start] + mutant.mutated_code.encode()
         edited += source.encode()[mutant.end :]
@@ -1288,3 +1300,89 @@ def test_invalid_arguments_are_rejected(
 ) -> None:
     with pytest.raises(BoundaryError):
         generate_mutants(tmp_path, files, count, seed, include_dirs=include_dirs)  # type: ignore[arg-type]
+
+
+def test_operand_drop_skips_system_function_without_parentheses(tmp_path: Path) -> None:
+    """`$random` has no parentheses to give it away, but dropping its sibling would run it twice."""
+    name = _write(
+        tmp_path,
+        "rnd.v",
+        "module rnd(input [3:0] a, output [3:0] y, z);\n"
+        "  assign y = $random & a;\n"
+        "  assign z = a & $signed(a);\n"
+        "endmodule\n",
+    )
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    edited = [text for _, text in _edited_lines(tmp_path, name, selection, "arithmetic-logical")]
+    # `$random` is never copied; `a` is dropped, and `$signed(a)` is pure.
+    assert sorted(edited) == sorted(
+        [
+            "  assign y = $random & ((a) | ~(a));",
+            "  assign y = $random | a;",
+            "  assign z = a | $signed(a);",
+            "  assign z = a & $unsigned(a);",
+            "  assign z = ((a) | ~(a)) & $signed(a);",
+            "  assign z = a & (($signed(a)) | ~($signed(a)));",
+        ]
+    )
+
+
+def test_enum_member_mutant_keeps_escaped_name(tmp_path: Path) -> None:
+    """An escaped member name is written back with its backslash and a space."""
+    name = _write(
+        tmp_path,
+        "esc.sv",
+        "module esc(input logic [1:0] s, output logic y);\n"
+        "  typedef enum logic [1:0] {\\a+b , C, D} st_t;\n"
+        "  st_t t;\n"
+        "  assign y = (t == C);\n"
+        "endmodule\n",
+    )
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    assert [text for _, text in _edited_lines(tmp_path, name, selection, _CONSTANT)] == [
+        "  assign y = (t == D);",
+        "  assign y = (t == \\a+b );",
+    ]
+    for mutant in selection.mutants:
+        text = (tmp_path / name).read_bytes()
+        text = text[: mutant.start] + mutant.mutated_code.encode() + text[mutant.end :]
+        assert _elaboration_error_count(text.decode()) == _elaboration_error_count(
+            (tmp_path / name).read_text(encoding="utf-8")
+        )
+
+
+def test_concatenation_neighbours_equal_but_for_spacing_yield_none(tmp_path: Path) -> None:
+    name = _write(
+        tmp_path,
+        "sp.v",
+        "module sp(input [3:0] a, b, output [15:0] y);\n  assign y = {a + b, a+b, a, b};\nendmodule\n",
+    )
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    assert [text for _, text in _edited_lines(tmp_path, name, selection, _BIT_SELECT)] == [
+        "  assign y = {a + b, a+b, b, a};",
+        "  assign y = {a + b, a, a+b, b};",
+    ]
+
+
+def test_program_instance_and_ampersand_condition_edges(tmp_path: Path) -> None:
+    """A program's connections are testbench code; a `&&&` condition keeps its `!x` removal."""
+    name = _write(
+        tmp_path,
+        "pg.sv",
+        "program tb(input logic [3:0] x);\nendprogram\n"
+        "module pg(input logic [3:0] a, b, input logic c, output logic [3:0] y);\n"
+        "  tb t(.x(a & b));\n"
+        "  always_comb begin\n"
+        "    y = a;\n"
+        "    if (!c &&& c) y = b;\n"
+        "  end\n"
+        "endmodule\n",
+    )
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    lines = {line for line, _ in _edited_lines(tmp_path, name, selection, "arithmetic-logical")}
+    assert 4 not in lines
+    assert 7 in lines
