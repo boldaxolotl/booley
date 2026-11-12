@@ -10,6 +10,10 @@ and ``TMPDIR`` beside the checkout, and its reports go to a directory the caller
 names outside the checkout. Once the entry point returns, no Job record names a
 path inside the checkout.
 
+The caller owns the scratch location: a checkout under a directory named
+``.booley`` (other than Main or ``$BOOLEY_DIR``) is rejected by the child's
+discovery and ends as a failed run, not as an up-front refusal.
+
 Limit: the child selects the checkout with the outer ``booley --project``, which
 only endpoints on the shared CLI honour (built-in Flows and ``BooleyFlow`` Project
 Flows); a Project Flow that overrides ``main`` is refused by the CLI with exit 2.
@@ -66,7 +70,7 @@ _START_FAILURE_EXIT_CODE = 2
 _FLOW_NAME = re.compile(r"[A-Za-z0-9_-]+")
 # The slot claim records this process's argv, so the bootstrap stays one short line.
 _BOOTSTRAP = (
-    "import sys;sys.path.append(sys.argv.pop(1));"
+    "import sys;sys.path.insert(0,sys.argv.pop(1));"
     "from booley.harness.checkout_flow import child_main;raise SystemExit(child_main())"
 )
 # Where ``import booley`` resolves from: located by argv, so ``PYTHONPATH`` stays out.
@@ -288,7 +292,12 @@ def _result_from(
     elif final.status == job_records.STATUS_CANCELLED:
         status = CheckoutFlowStatus.CANCELLED
     else:
-        status = CheckoutFlowStatus.PASSED if final.exit_code == 0 else CheckoutFlowStatus.FAILED
+        # The record decides: a child that exited 0 but left no ``done`` record failed.
+        status = (
+            CheckoutFlowStatus.PASSED
+            if final.status == job_records.STATUS_DONE
+            else CheckoutFlowStatus.FAILED
+        )
     detail = as_dict(reports[-1][1].get("detail")) if reports else None
     return CheckoutFlowResult(
         run_id=run_id,

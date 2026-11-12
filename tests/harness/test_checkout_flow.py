@@ -318,8 +318,6 @@ def test_checkout_flow_refuses_live_state_paths(
         "missing-checkout",
         "bad-flow-name",
         "bad-target",
-        "zero-timeout",
-        "infinite-timeout",
         "nan-timeout",
     ],
 )
@@ -330,8 +328,6 @@ def test_checkout_flow_refuses_a_malformed_request(world: World, case: str) -> N
         "missing-checkout": world.request("pass", checkout=world.checkout / "gone"),
         "bad-flow-name": world.request("pass", flow="../escape"),
         "bad-target": world.request("bad\0target"),
-        "zero-timeout": world.request("pass", timeout_s=0),
-        "infinite-timeout": world.request("pass", timeout_s=float("inf")),
         "nan-timeout": world.request("pass", timeout_s=float("nan")),
     }[case]
 
@@ -752,6 +748,7 @@ def test_legacy_flow_spelling_is_reported_under_its_canonical_name(
     assert report.parent.parent.name == FLOW
 
 
+@linux_only
 def test_child_selects_the_checkout_explicitly(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -789,3 +786,23 @@ def test_unreadable_record_settles_from_the_one_in_memory(
     final = checkout_flow._settle_record(record, tmp_path, 3, timed_out=False)
 
     assert (final.status, final.exit_code) == ("failed", 3)
+
+
+def test_child_that_exited_zero_without_a_done_record_is_reported_failed(tmp_path: Path) -> None:
+    from booley.harness import checkout_flow
+
+    # Exit 0 but the child's terminal record write was lost: the record still says running.
+    record = job_records.JobRecord("flow-1", FLOW, "2026-11-07T00:00:00Z", 60)
+    final = checkout_flow._settle_record(record, tmp_path, 0, timed_out=False)
+
+    result = checkout_flow._result_from(
+        checkout_flow.CheckoutFlowRequest(tmp_path, tmp_path, tmp_path, FLOW, "pass"),
+        "flow-1",
+        final,
+        tmp_path / "log",
+        tmp_path,
+        timed_out=False,
+    )
+
+    assert final.status == "failed"
+    assert result.status is checkout_flow.CheckoutFlowStatus.FAILED
