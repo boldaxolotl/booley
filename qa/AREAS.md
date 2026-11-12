@@ -1,10 +1,16 @@
 # Capability map
 
-Which mission areas exercise each Booley capability. Use it to spot gaps when
-adding to QA; it is a breadth guide, not a pass/fail contract.
+Which mission areas exercise each Booley capability (the Capability Map in
+`GLOSSARY.md`). Read it when adding to QA, as the `booley-add-to-qa` skill
+does, to spot gaps and place new work. It is a breadth guide, not a pass/fail
+contract or execution evidence; each mission says how its areas run.
 
-Areas marked (optional) are follow-up work outside a mission's primary
-timebox. A row whose areas are all optional is not covered by a primary run.
+Each link names `mission/area` and points at that mission's file. An area is
+marked (optional) exactly when its mission heading calls it an optional
+follow-up, outside the mission's primary timebox, so a row whose areas are all
+optional is not covered by a primary run.
+`test_capability_map_links_resolve_to_mission_areas` in
+`tests/qa/test_missions.py` checks both rules.
 
 | Capability | Mission areas |
 |---|---|
@@ -49,12 +55,12 @@ timebox. A row whose areas are all optional is not covered by a primary run.
 | Metric-threshold Goals | [picorv32/goal-change](missions/picorv32/MISSION.md), [picorv32/goal-evidence](missions/picorv32/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [coverage/cov-policy](missions/coverage/MISSION.md) |
 | Goal entry and refusals | [picorv32/goal-enter](missions/picorv32/MISSION.md), [taxi/goal-operations](missions/taxi/MISSION.md) |
 | Goalsets and ad-hoc Goals | [picorv32/goal-enter](missions/picorv32/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [taxi/goal-observability](missions/taxi/MISSION.md) |
-| Protected Inputs and discarded evidence | [picorv32/goal-evidence](missions/picorv32/MISSION.md), [taxi/goal-operations](missions/taxi/MISSION.md) |
+| Protected Inputs and discarded evidence | [picorv32/goal-evidence](missions/picorv32/MISSION.md), [taxi/goal-operations](missions/taxi/MISSION.md), [uart/goal-repair](missions/uart/MISSION.md) |
 | Goal Change Proposals and approval | [picorv32/goal-change](missions/picorv32/MISSION.md), [coverage/cov-goal](missions/coverage/MISSION.md) |
 | Silence leaves proposals pending | [picorv32/goal-change](missions/picorv32/MISSION.md) |
 | Finish and Review Package | [gui/goal-finish](missions/gui/MISSION.md), [picorv32/goal-finish](missions/picorv32/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md) |
 | Base-relative Goal evidence | [picorv32/goal-change](missions/picorv32/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md) |
-| Explicit abandon | [picorv32/goal-resume-after-crash](missions/picorv32/MISSION.md), [taxi/goal-operations](missions/taxi/MISSION.md) |
+| Explicit abandon | [picorv32/goal-resume-after-crash](missions/picorv32/MISSION.md), [taxi/goal-operations](missions/taxi/MISSION.md), [uart/goal-repair](missions/uart/MISSION.md) |
 | Operator integration (paired when printed) | [picorv32/goal-finish](missions/picorv32/MISSION.md), [taxi/goal-observability](missions/taxi/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md) |
 | Crash resume and idempotence | [coverage/cov-retention](missions/coverage/MISSION.md), [gui/stop-resume](missions/gui/MISSION.md), [picorv32/goal-resume-after-crash](missions/picorv32/MISSION.md) |
 | Concurrent Goal children and Dashboard | [gui/dashboard-live](missions/gui/MISSION.md), [taxi/goal-operations](missions/taxi/MISSION.md) |

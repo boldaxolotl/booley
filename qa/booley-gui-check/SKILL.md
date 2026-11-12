@@ -1,12 +1,14 @@
 ---
 name: booley-gui-check
 description: Only when the user explicitly asks, check one Booley pull request's GUI change in a browser Codespace on the PR head's candidate image, post screenshot evidence on the PR, and return pass, fail, or blocked per check step.
+disable-model-invocation: true
 ---
 
 # Check a PR's GUI change in a Codespace
 
-Use this skill only when the user explicitly invokes it. This is behavioral
-guidance for clients without enforceable invocation metadata.
+Use this skill only when the user explicitly invokes it. Claude Code enforces
+this through `disable-model-invocation` and Codex through
+`agents/openai.yaml`; other clients get it as behavioral guidance only.
 
 Before acting, resolve the real path of this loaded `SKILL.md` (following the
 installed link). Its parent is the skill directory, its grandparent is `qa/`,

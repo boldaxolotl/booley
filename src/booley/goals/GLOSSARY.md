@@ -1,14 +1,17 @@
 # Goal Mode glossary
 
 This is the vocabulary for the inside of one Goal Mode: how its Goals are
-stored, changed, and bound to a worktree. **Goal Mode**, **Goal**,
-**Goalset**, **Goal Branch**, **Goal Record**, **Goal Change Proposal**,
-**Change Log**, **Protected Input**, **Review Package**, **Session**, and
-**Generated Build Artifact**, **Main Booley Directory**, **Worktree Booley Directory**,
-**Paired Checkout**, and **Snapshot** are
-defined in the [shared glossary](../../../docs/GLOSSARY.md); this glossary
-uses them with that meaning, as it does **Test**, **Test Variant**,
-**Test Run**, and **Default Seed**. **Waiver Candidate** and **Provisional Coverage
+stored, changed, and bound to a worktree and to the runs that produce their
+evidence. It is for contributors working on `booley.goals` and the evidence
+path. [ADR 0092](../../../docs/adr/0092-measure-commits-against-target-metrics.md)
+removes Goal Mode in 0.5.0, and this vocabulary retires with it.
+
+**Goal Mode**, **Goal**, **Goalset**, **Goal Branch**, **Goal Record**,
+**Goal Change Proposal**, **Change Log**, **Protected Input**,
+**Review Package**, **Session**, **Test**, **Test Variant**, **Test Run**,
+and **Default Seed** are defined in the
+[shared glossary](../../../docs/GLOSSARY.md); this glossary uses them with
+that meaning. **Waiver Candidate** and **Provisional Coverage
 Verdict** belong to the [Simulation Coverage glossary](../flows/sim/GLOSSARY.md);
 Goal Mode uses its proposal-and-approval workflow to promote a candidate.
 
@@ -72,6 +75,7 @@ _Avoid_: extra run, unofficial run
 **Discarded Evidence**:
 A run's evidence that was not published because its Run Binding no longer
 held when the run finished: the Goal Mode stopped being active, an affected
-Goal changed, or a Protected Input differed at the start or the end of the
-run. Nothing of it reaches the Goal state or the ledger.
+Goal changed, a Protected Input differed at the start or the end of the
+run, the worktree left the Goal Branch, or the bound Target's declaration
+changed during the run. Nothing of it reaches the Goal state or the ledger.
 _Avoid_: rejected run, failed evidence

@@ -74,6 +74,7 @@ PLAIN_TEXT_TARGETS: frozenset[str] = frozenset(
         "docs/internals/MCP-TOOLS.md",
         "docs/internals/ROADMAP.md",
         "docs/internals/FLOW_IMPLEMENTATION.md",
+        "docs/internals/FLOW_IMPLEMENTATION_SIM.md",
     }
 )
 

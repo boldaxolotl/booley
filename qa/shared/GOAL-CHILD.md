@@ -1,6 +1,9 @@
 # Goal-child operating rules
 
-Apply these rules to every mission area that uses a Goal child.
+The operator applies these rules in every mission area that uses a Goal
+child: a Developer Agent the operator starts in the Sandbox to do one Goal
+Mode's design work. Each mission links this file from its rules and adds its
+own Goal details per area.
 
 - The host operator starts a long-lived Codex Goal child in the Sandbox with
   `booley session enter -- codex ...`, then sends `$booley-goal` and the area's
@@ -18,24 +21,27 @@ Apply these rules to every mission area that uses a Goal child.
 - While any Goal is active, pass absolute `work_dir` on every built-in Booley
   MCP call that takes it: Flows, Specialists, Goal calls, `booley_targets` and
   `booley_report`. `booley_status`, `booley_poll`, `booley_cancel`, and
-  `bwave` have no `work_dir` argument. For any other MCP call, follow its advertised schema.
-  Independent non-Goal areas use the primary checkout root. Finish or
-  explicitly abandon every Goal before closing its area and starting the next
-  area.
-  Schedule Interactive children only when no Goal is active in the same Project.
-- Host-issued container commands use `booley session enter -- booley ...`;
-  bare Sandbox commands below are for the child/container terminal.
-- Before entry, copy the selected `goals/*.md` into the resolved Project's
-  `goalsets/`, and commit setup, seeded Goalsets and the managed `.gitignore`.
+  `bwave` have no `work_dir` argument. For any other MCP call, follow its
+  advertised schema. Independent non-Goal areas use the primary checkout root.
+  Finish or explicitly abandon every Goal before closing its area and starting
+  the next area. Schedule Interactive children only when no Goal is active in
+  the same Project.
+- From the host, run container commands as
+  `booley session enter -- booley ...`; a Sandbox command written without that
+  prefix is meant for the child's terminal inside the container.
+- Before entry, copy the selected `goals/*.md` into the Main Booley
+  Directory's `goalsets/` (`.booley/goalsets/` by default), and commit setup, seeded Goalsets and the managed `.gitignore`.
   `goals/*.json` are ad-hoc `goal_enter` argument lists. Every entered Goal is
   mandatory. Use unique slugs per run.
   Design implementations occur only in clean linked Goal worktrees.
 - Operator integration always merges the outer `goal/<slug>-<date>` Goal
-  Branch into its run-owned destination. If `booley worktree new` printed a
-  paired checkout (the Booley Directory is its own Git repository), also merge
-  its `booley-worktree/<name>` Booley Directory branch into its destination. Record
-  only the branches/checkouts actually printed in `resources.md`. A non-Stealth
-  scaffold such as UART has no paired branch. Preserve the package and use the
-  printed USAGE cleanup steps; remove a Paired Checkout first when present.
-  Leave every participating destination clean before the next
+  Branch into its run-owned destination. If `booley worktree new` created a
+  Paired Checkout (a Versioned Booley Directory), also merge its
+  `booley-worktree/<name>` branch into its destination. Record in
+  `resources.md` only the branches and checkouts actually created. A
+  non-Stealth scaffold such as UART gets a Snapshot and has no paired branch.
+  Preserve the Review Package, then remove the worktree with
+  `booley session enter -- booley worktree rm <name>`, which removes a Paired
+  Checkout first and keeps evidence and branches. Leave every participating
+  destination clean before the next
   `booley session enter -- booley worktree new <name>`.
