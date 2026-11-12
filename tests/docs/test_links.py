@@ -304,7 +304,11 @@ def test_tracked_files_name_the_site_by_its_current_domain() -> None:
         ["git", "grep", "-l", "--fixed-strings", _RETIRED_SITE_HOST], cwd=REPO_ROOT
     )
     assert result.returncode in (0, 1), result.stderr
-    stale = sorted(set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED)
+    stale = sorted(
+        path
+        for path in set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED
+        if not path.startswith("changelog.d/")  # entries become CHANGELOG.md text
+    )
     assert not stale, f"replace {_RETIRED_SITE_HOST} links with {SITE_URL} in: {stale}"
 
 
