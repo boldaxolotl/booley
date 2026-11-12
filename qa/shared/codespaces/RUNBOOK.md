@@ -83,9 +83,11 @@ gh run list --repo boldaxolotl/booley --workflow docker-publish.yml --limit 20 \
 gh run watch <run-id> --repo boldaxolotl/booley --exit-status
 ```
 
-With warm caches the run takes about 15-20 minutes; cold, an hour or more.
-The candidate tags appear before the contract and demo jobs finish (the
-RISC-V tag about 13 minutes in on a warm run): still wait for `success`.
+With warm caches the run takes about 15-20 minutes; cold, an hour or more. A
+candidate base build (see "Candidate base" in the cleanup section) adds about
+an hour. The candidate tags appear before the contract and demo jobs finish
+(the RISC-V tag about 13 minutes in on a warm run, about an hour later when
+the run builds its own base): still wait for `success`.
 
 The demo uses the RISC-V image. The tag under test is
 `candidate-<sha>-<databaseId>-<attempt>` from that run. Worked when: the run
@@ -360,10 +362,9 @@ maintainer).
 
 One build pushes `candidate-<sha>-<databaseId>-<attempt>` to `booley-sandbox`
 and `booley-sandbox-riscv`. Each tag is an image index with an image manifest
-and an attestation manifest (SBOM and provenance), and GHCR lists each of the three as its own
-package version. Delete exactly those three per package, and never anything in
-`booley-sandbox-base`: its tags are content-addressed and shared by every
-build. Run this in a scratch directory; it writes one listing per package.
+and an attestation manifest (SBOM and provenance), and GHCR lists each of the
+three as its own package version. Delete exactly those three per package. Run
+this in a scratch directory; it writes one listing per package.
 
 ```sh
 TAG=candidate-<sha>-<databaseId>-<attempt>
@@ -390,3 +391,28 @@ gh api -X DELETE "/user/packages/container/<pkg>/versions/<id>"
 
 Worked when `docker buildx imagetools inspect ghcr.io/boldaxolotl/<pkg>:$TAG`
 fails with "not found" for both packages.
+
+**Candidate base.** A dispatch whose tree has a different base image recipe
+or inputs than `:main` also builds its own runtime base and two layers on it
+(the standard and RISC-V substrates). The run summary says so with the line
+`Stable runtime base: candidate built from source, tag <base tag>, <digest>`;
+take `<base tag>` from that line (a re-run of one job keeps the first
+attempt's base, so do not derive it from `$TAG`). Only when that line is
+present, `booley-sandbox-base` holds three tags, `<base tag>`,
+`<base tag>-standard`, and `<base tag>-riscv`, each with the same three
+versions. Run the listing above with `PKG=booley-sandbox-base` and `TAG` set to
+each of the three tags in turn, apply the same check (exactly three rows per
+tag, the index row carrying exactly that tag and the other two no tag, any
+other tag means stop), and delete the printed ids. Worked when
+`docker buildx imagetools inspect ghcr.io/boldaxolotl/booley-sandbox-base:<tag>`
+fails with "not found" for all three tags.
+
+A run that failed or was cancelled after the base push has no summary line, and
+a whole-run re-run builds a new base under a new attempt number. For each
+attempt of the run, list `booley-sandbox-base` versions tagged
+`candidate-<sha>-<databaseId>-<attempt>` (and its `-standard` and `-riscv`
+forms) and delete them the same way. A summary line that says `published :main`
+means the base is not yours: anything the run pushed to `booley-sandbox-base`
+sits under shared content-addressed tags (`standard-<hex>`, `riscv-<hex>`), so
+delete nothing there. Never delete `main`, a commit-SHA tag, `standard-<hex>`,
+`riscv-<hex>`, or `riscv-tooling-<key>`: those are shared by every build.

@@ -174,10 +174,10 @@ Try:
   line/branch/expression/toggle. `sim_scale`: valid, compact sim response (pointer only); note
   bytes/time/RSS.
 - Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy>/coverage.json --owned <root>`
-  (Target reference; the script rebinds it), then run the Analyst CLI on that reference → rejected before
-  the model: v1, v2, v3, missing points, truncated gzip, trailing data, symlink, invalid final record,
+  (Target reference; manifest faults rebind it, point faults leave it unchanged), then run the Analyst CLI on that reference → rejected before
+  the model: v1, v2, v3, v4, missing points, truncated gzip, trailing data, symlink, invalid final record,
   duplicate point, wrong evaluation (forged pass), resource ceiling (over-ceiling decompression).
-- Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage.json`, `rename
+- Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage-campaign/coverage.json`, `rename
   …/simulation.json` and terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;
   fresh run gets a new number, no resume.
