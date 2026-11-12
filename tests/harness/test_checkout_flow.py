@@ -16,11 +16,11 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -80,6 +80,29 @@ class CheckoutStub(BooleyFlow):
             return EndpointOutcome(exit_code=1)
         if target == "metrics":
             return EndpointOutcome(detail={{"marker": 7}})
+        if target == "presim":
+            # Pre-Sim Commands of core Target ``probe``, then the run evidence's Git lookup.
+            from booley.flows.baseline_worktree import git_full_sha
+            from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+            from booley.targets.catalog import TargetCatalog
+
+            work = Path(self.args.work_dir)
+            handle = TargetCatalog.build(work).select("probe")
+            evidence = run_pre_sim_commands(
+                handle, test_names=("t",), build_root=work / "b", eda_tool="icarus", timeout_s=30
+            )
+            (CTL / "presim.json").write_text(
+                json.dumps(
+                    {{
+                        "status": evidence.status,
+                        "returncode": evidence.returncode,
+                        "stderr": evidence.stderr_tail,
+                        "revision": git_full_sha("HEAD", work),
+                    }}
+                ),
+                encoding="utf-8",
+            )
+            return EndpointOutcome()
         if target == "stubborn":
             signal.signal(signal.SIGINT, signal.SIG_IGN)  # only a kill ends this Flow
             (CTL / "ignoring").write_text("1", encoding="utf-8")
@@ -162,39 +185,77 @@ def git(cwd: Path, *args: str) -> str:
     return run_bounded_child(command, cwd=cwd, check=True).stdout.strip()
 
 
+WorldBuilder = Callable[..., World]
+
+
 @pytest.fixture
-def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
-    """A committed Project whose uncommitted settings differ from its checkout's."""
-    # PYTHONPATH stays: the suite sets it so that child interpreters import this checkout.
-    for name in ("BOOLEY_DIR", *CALLER_ENV.keys() - {"PYTHONPATH"}):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    live = tmp_path / "live"
-    ctl = tmp_path / "ctl"
-    ctl.mkdir()
-    tools = live / ".booley" / "mcp_tools"
-    tools.mkdir(parents=True)
-    (live / ".booley" / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 4\n")
-    (tools / f"{FLOW}.py").write_bytes(STUB_FLOW.format(ctl=str(ctl)).encode())
-    git(live, "init", "-q", "-b", "main")
-    git(live, "add", "-A", "-f")
-    git(live, "commit", "-q", "-m", "stub")
-    commit = git(live, "rev-parse", "HEAD")
-    # Main's settings now differ from the checkout's committed ones.
-    (live / ".booley" / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 1\n")
-    checkout = tmp_path / "scratch" / "checkout"
-    export_commit(live, commit, checkout)
-    booley_dir.reset_cache()
-    yield World(live, live / ".booley", checkout, tmp_path / "reports", ctl)
+def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[WorldBuilder]:
+    """Build a committed Project whose uncommitted settings differ from its checkout's.
+
+    ``files`` and ``symlinks`` (relative path to text or link target; ``{live}`` and
+    ``{ctl}`` name the live tree and the control directory) are committed too, and
+    ``config`` is appended to the committed and to Main's ``booley.toml``.
+    """
+    from booley.runtime import sandbox_layout
+
+    built: list[World] = []
+
+    def build(
+        files: Mapping[str, str] | None = None,
+        symlinks: Mapping[str, str] | None = None,
+        config: str = "",
+    ) -> World:
+        # PYTHONPATH stays: the suite sets it so that child interpreters import this checkout.
+        for name in ("BOOLEY_DIR", *CALLER_ENV.keys() - {"PYTHONPATH"}):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
+        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+        live = (tmp_path / "live").resolve()
+        # The Sandbox mounts the live working tree at ``/work``; the host has no such path.
+        monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(live))
+        ctl = tmp_path / "ctl"
+        ctl.mkdir()
+        tools = live / ".booley" / "mcp_tools"
+        tools.mkdir(parents=True)
+        settings = "[jobs]\nmax_heavy = HEAVY\n" + config.replace("{live}", str(live))
+        (live / ".booley" / "booley.toml").write_bytes(settings.replace("HEAVY", "4").encode())
+        (tools / f"{FLOW}.py").write_bytes(STUB_FLOW.format(ctl=str(ctl)).encode())
+        for relative, text in (files or {}).items():
+            path = live / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(text.replace("{live}", str(live)).replace("{ctl}", str(ctl)).encode())
+        for relative, target in (symlinks or {}).items():
+            (live / relative).parent.mkdir(parents=True, exist_ok=True)
+            (live / relative).symlink_to(target.replace("{live}", str(live)))
+        git(live, "init", "-q", "-b", "main")
+        git(live, "add", "-A", "-f")
+        git(live, "commit", "-q", "-m", "stub")
+        commit = git(live, "rev-parse", "HEAD")
+        # Main's settings now differ from the checkout's committed ones.
+        (live / ".booley" / "booley.toml").write_bytes(settings.replace("HEAVY", "1").encode())
+        checkout = tmp_path / "scratch" / "checkout"
+        export_commit(live, commit, checkout)
+        booley_dir.reset_cache()
+        world = World(live, live / ".booley", checkout, tmp_path / "reports", ctl)
+        built.append(world)
+        return world
+
+    yield build
     booley_dir.reset_cache()
     # A failed assertion must not leave a Flow running into other tests.
-    for record in job_records.list_records(
-        standalone_jobs_dir(live / ".booley"), skip_malformed=True
-    ):
-        if record.pid is not None and record.status == job_records.STATUS_RUNNING:
-            with contextlib.suppress(OSError):
-                os.kill(record.pid, signal.SIGKILL)
+    for world in built:
+        for record in job_records.list_records(
+            standalone_jobs_dir(world.main), skip_malformed=True
+        ):
+            if record.pid is not None and record.status == job_records.STATUS_RUNNING:
+                with contextlib.suppress(OSError):
+                    os.kill(record.pid, signal.SIGKILL)
+
+
+@pytest.fixture
+def world(make_world: WorldBuilder) -> World:
+    """The plain committed Project: the stub Flow and settings only."""
+    return make_world()
 
 
 def poll(condition: Callable[[], object], what: str) -> None:
@@ -270,11 +331,17 @@ def refusal_requests(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> dict[str, CheckoutFlowRequest]:
     """One request per refusal rule; each names the path it is refused for."""
+    from booley.runtime import sandbox_layout
+
     plain_main, env_dir = tmp_path / "main-bd", tmp_path / "env-bd"
     live_checkout = world.live / "exported"
     live_checkout.mkdir()
+    # The Sandbox's ``/work`` mount: a live tree whose ``.git`` marker the walk cannot see.
+    sandbox_work = tmp_path / "sandbox-work"
+    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(sandbox_work))
     monkeypatch.setenv("BOOLEY_DIR", str(env_dir))
     return {
+        "work-dir": world.request("pass", checkout=sandbox_work / "co"),
         "live-tree": world.request("pass", checkout=live_checkout),
         "main-booley-dir": world.request(
             "pass", checkout=plain_main / "co", main_booley_dir=plain_main
@@ -288,7 +355,14 @@ def refusal_requests(
 @linux_only
 @pytest.mark.parametrize(
     "case",
-    ["live-tree", "main-booley-dir", "booley-dir-env", "report-in-checkout", "main-in-checkout"],
+    [
+        "work-dir",
+        "live-tree",
+        "main-booley-dir",
+        "booley-dir-env",
+        "report-in-checkout",
+        "main-in-checkout",
+    ],
 )
 def test_checkout_flow_refuses_live_state_paths(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
@@ -383,6 +457,8 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
         "missing-checkout",
         "bad-flow-name",
         "bad-target",
+        "empty-target",
+        "several-targets",
         "nan-timeout",
     ],
 )
@@ -393,11 +469,14 @@ def test_checkout_flow_refuses_a_malformed_request(world: World, case: str) -> N
         "missing-checkout": world.request("pass", checkout=world.checkout / "gone"),
         "bad-flow-name": world.request("pass", flow="../escape"),
         "bad-target": world.request("bad\0target"),
+        "empty-target": world.request("  "),
+        "several-targets": world.request("a,b"),
         "nan-timeout": world.request("pass", timeout_s=float("nan")),
     }[case]
 
     with pytest.raises(
-        CheckoutFlowError, match=r"not a directory|invalid Flow name|invalid Target|positive"
+        CheckoutFlowError,
+        match=r"not a directory|invalid Flow name|invalid Target|exactly one Target|positive",
     ):
         run_checkout_flow(request)
 
@@ -460,10 +539,14 @@ def test_checkout_flow_start_failure_leaves_a_failed_record(
     from booley.harness import checkout_flow
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
-    def refuse(*_args: object, **_kwargs: object) -> None:
-        raise OSError(2, "no interpreter")
+    real_popen = subprocess.Popen
 
-    monkeypatch.setattr(checkout_flow.subprocess, "Popen", refuse)
+    def refuse_flow_child(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
+        if "child_main" in command[2]:  # the preflight child starts first and must run
+            raise OSError(2, "no interpreter")
+        return real_popen(command, **kwargs)
+
+    monkeypatch.setattr(checkout_flow.subprocess, "Popen", refuse_flow_child)
 
     with pytest.raises(CheckoutFlowError, match="no interpreter"):
         run_checkout_flow(world.request("pass"))
@@ -899,3 +982,271 @@ def test_checkout_flow_blames_the_runner_environment_for_a_bad_selection_variabl
 
     with pytest.raises(CheckoutFlowError, match="runner's environment is unusable"):
         run_checkout_flow(world.request("pass"))
+
+
+# ---- Preflight: no Flow input may come from the live tree or the Main Booley Directory.
+
+PROBE_CORE = """CAPI=2:
+name: acme:ip:probe:0.1
+filesets:
+  rtl:
+    files: [{files}]
+    file_type: verilogSource
+targets:
+  probe:
+    filesets: [rtl]
+    toplevel: top
+    default_tool: icarus
+"""
+
+# A generator that records what it saw and writes a minimal core, optionally waiting first.
+GENERATOR_CORE = """CAPI=2:
+name: acme:ip:gen:0.1
+generators:
+  record:
+    interpreter: python3
+    command: gen.py
+filesets:
+  rtl:
+    files: [top.v]
+    file_type: verilogSource
+generate:
+  made:
+    generator: record
+targets:
+  probe:
+    filesets: [rtl]
+    generate: [made]
+    toplevel: top
+    default_tool: icarus
+"""
+GENERATOR = """import json, os, subprocess, time
+from pathlib import Path
+
+ctl = Path("{ctl}")
+git = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+(ctl / "generator.json").write_text(
+    json.dumps({{"env": dict(os.environ), "rc": git.returncode, "stderr": git.stderr.strip()}})
+)
+(ctl / "generator.pid").write_text(str(os.getpid()))
+deadline = time.monotonic() + {wait}
+while {wait} and not (ctl / "release").exists() and time.monotonic() < deadline:
+    time.sleep(0.02)
+Path("made.core").write_text("CAPI=2:\\nname: acme:ip:made:0.1\\n")
+"""
+
+
+def use_fusesoc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put the tools environment first on ``PATH``: the allow-list keeps it for the child."""
+    tools = str(Path(sys.executable).parent)
+    monkeypatch.setenv("PATH", tools + os.pathsep + os.environ["PATH"])
+    # A declared dependency of Booley: absent means a broken environment, not an optional tool.
+    assert shutil.which("fusesoc"), "fusesoc is not installed next to the test interpreter"
+
+
+def assert_refused_before_any_run(world: World) -> None:
+    """A refusal leaves no Job record, no environment directory and no started Flow."""
+    assert not standalone_jobs_dir(world.main).exists()
+    assert not list(world.checkout.parent.glob(".*env-*"))
+    assert not (world.ctl / "started").exists()
+
+
+@linux_only
+@pytest.mark.parametrize("case", ["core", "booley-toml", "symlink"])
+def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, case: str) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    inputs: dict[str, tuple[dict[str, Any], str]] = {
+        "core": ({"files": {"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")}}, "ip.core"),
+        "booley-toml": (
+            {"config": '[flows.sim]\npre_run_commands = ["cat {live}/data.txt"]\n'},
+            ".booley/booley.toml",
+        ),
+        "symlink": (
+            {"files": {"rtl/other.v": ""}, "symlinks": {"rtl/shared.v": "{live}/data/shared.v"}},
+            "rtl/shared.v",
+        ),
+    }
+    build_arguments, offending = inputs[case]
+    world = make_world(**build_arguments)
+
+    with pytest.raises(CheckoutFlowError) as refused:
+        run_checkout_flow(world.request("pass"))
+
+    message = str(refused.value)
+    assert offending in message
+    assert str(world.live) in message and "live working tree" in message
+    assert_refused_before_any_run(world)
+
+
+@linux_only
+def test_checkout_flow_runs_with_a_relative_path_spelling_a_live_root(
+    make_world: WorldBuilder,
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
+
+    # ``sim`` + the live path is one relative token, not an absolute path into the live tree.
+    world = make_world(config='[flows.sim]\npre_run_commands = ["make -C sim{live}"]\n')
+
+    assert run_checkout_flow(world.request("pass")).status is CheckoutFlowStatus.PASSED
+
+
+@linux_only
+def test_checkout_flow_refuses_a_resolved_file_in_the_live_booley_dir(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    use_fusesoc(monkeypatch)
+    # Relative, so the static scan passes; FuseSoC resolves it into the live Booley Directory.
+    shared = "../../live/.booley/shared.v"
+    world = make_world(files={"probe.core": PROBE_CORE.format(files=shared)})
+    (world.main / "shared.v").write_bytes(b"module top; endmodule\n")
+
+    with pytest.raises(CheckoutFlowError) as refused:
+        run_checkout_flow(world.request("probe"))
+
+    message = str(refused.value)
+    assert "Target probe" in message
+    assert str(world.main / "shared.v") in message and "Main Booley Directory" in message
+    assert_refused_before_any_run(world)
+
+
+@linux_only
+def test_preflight_resolution_runs_in_the_measurement_environment(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
+
+    use_fusesoc(monkeypatch)
+    monkeypatch.setenv("CALLER_ONLY_VARIABLE", "x")
+    world = make_world(
+        files={
+            "probe.core": GENERATOR_CORE,
+            "gen.py": GENERATOR.format(ctl="{ctl}", wait=0),
+            "top.v": "module top; endmodule\n",
+        }
+    )
+
+    # The stub Flow resolves nothing, so the generator's record comes from the preflight.
+    result = run_checkout_flow(world.request("probe"))
+
+    assert result.status is CheckoutFlowStatus.PASSED
+    seen = json.loads((world.ctl / "generator.json").read_text(encoding="utf-8"))
+    assert "CALLER_ONLY_VARIABLE" not in seen["env"]
+    flow_env = world.seen()["env"]
+    assert isinstance(flow_env, dict)
+    scratch = Path(flow_env["HOME"]).parent
+    assert Path(seen["env"]["HOME"]).parent == scratch  # the run's own HOME, as the Flow saw
+    assert scratch.parent == world.checkout.parent and scratch.name.startswith(".checkout.env-")
+    assert seen["rc"] == 128
+    assert seen["stderr"] == (
+        "booley: git rev-parse HEAD: the measurement checkout is not a git repository"
+    )
+
+
+@linux_only
+def test_pre_sim_git_call_fails_with_the_checkout_message(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import run_checkout_flow
+
+    use_fusesoc(monkeypatch)
+    world = make_world(
+        files={"probe.core": PROBE_CORE.format(files="top.v"), "top.v": "module top; endmodule\n"},
+        config='[flows.sim]\npre_run_commands = ["git rev-parse HEAD"]\n',
+    )
+
+    run_checkout_flow(world.request("presim"))
+
+    presim = json.loads((world.ctl / "presim.json").read_text(encoding="utf-8"))
+    assert (presim["status"], presim["returncode"]) == ("failed", 128)
+    assert presim["stderr"].strip() == (
+        "booley: git rev-parse HEAD: the measurement checkout is not a git repository"
+    )
+    assert (
+        presim["revision"] is None
+    )  # run evidence reads "unversioned", as for any non-git Project
+
+
+@linux_only
+def test_checkout_flow_refuses_when_the_preflight_cannot_resolve(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    use_fusesoc(monkeypatch)
+    world = make_world(files={"probe.core": PROBE_CORE.format(files="missing.v")})
+
+    with pytest.raises(CheckoutFlowError, match=r"could not resolve Target probe"):
+        run_checkout_flow(world.request("probe"))
+
+    assert_refused_before_any_run(world)
+
+
+@linux_only
+def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    use_fusesoc(monkeypatch)
+    monkeypatch.setattr(checkout_flow, "_PREFLIGHT_MIN_S", 0)  # the request's 2 s bound applies
+    world = make_world(
+        files={
+            "probe.core": GENERATOR_CORE,
+            "gen.py": GENERATOR.format(ctl="{ctl}", wait=45),
+            "top.v": "module top; endmodule\n",
+        }
+    )
+
+    with pytest.raises(CheckoutFlowError, match=r"did not finish within 2 s"):
+        run_checkout_flow(world.request("probe", timeout_s=2))
+
+    assert_refused_before_any_run(world)
+    pid = int((world.ctl / "generator.pid").read_text(encoding="utf-8"))
+    poll(lambda: not Path(f"/proc/{pid}").exists(), "the generator to be gone")
+
+
+@linux_only
+def test_checkout_flow_refuses_when_the_preflight_cannot_start(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError(2, "no interpreter")
+
+    monkeypatch.setattr(checkout_flow.subprocess, "Popen", refuse)
+
+    with pytest.raises(CheckoutFlowError, match=r"preflight of Target pass could not start"):
+        run_checkout_flow(world.request("pass"))
+
+    assert_refused_before_any_run(world)
+
+
+@linux_only
+def test_checkout_flow_refuses_a_generated_core_naming_a_live_path(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    use_fusesoc(monkeypatch)
+    generator = GENERATOR.format(ctl="{ctl}", wait=0).replace(
+        'name: acme:ip:made:0.1\\n"', 'name: acme:ip:made:0.1\\n# {live}/data\\n"'
+    )
+    world = make_world(
+        files={
+            "probe.core": GENERATOR_CORE,
+            "gen.py": generator,
+            "top.v": "module top; endmodule\n",
+        }
+    )
+
+    with pytest.raises(CheckoutFlowError) as refused:
+        run_checkout_flow(world.request("probe"))
+
+    assert "made.core names " + str(world.live) in str(refused.value)
+    assert_refused_before_any_run(world)

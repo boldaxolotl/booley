@@ -12,6 +12,29 @@ and ``TMPDIR`` beside the checkout, and its reports go to a directory the caller
 names outside the checkout. Once the entry point returns, no Job record names a
 path inside the checkout.
 
+Before the Flow starts, two checks keep live inputs out of the run. A static scan
+of the checkout refuses committed symlinks and absolute paths in ``.core`` files,
+``fusesoc.conf`` and the Booley configuration that point into a live root (the
+Sandbox's ``/work`` mount of the working tree, the Main Booley Directory and
+``$BOOLEY_DIR``). A preflight child then resolves the Target the way the Flow will
+(FuseSoC's ``--no-export`` mode, so each file keeps its original place), in the
+measurement environment, and refuses a resolved file or core file inside a live
+root; generators run there and see the scrubbed environment. The preflight runs
+before the Job record and admission, so a refusal leaves no record, like the
+resolution of ``booley targets <t>``; it costs one extra FuseSoC setup (generators
+included) per run and is bounded by ``max(timeout, 60)`` seconds (the standalone
+timeout without one), so the caller's bound caps the call at ``max(t, 60) + t``.
+Outside ``ignore_native_cores`` Projects it prepares the Project's shared core view,
+which projects stealth cores into the checkout exactly as the Flow's own resolution
+does. It resolves the Target's own core: a Booley-generated overlay of a Flow is
+derived from the same base core and names the same files.
+
+The run's ``PATH`` also starts with a ``git`` that refuses every call (exit 128, one
+line naming the command): the checkout has no repository, so a generator or Pre-Sim
+Command that calls Git fails with a clear error instead of reading the live tree.
+Git commands that need no repository fail too. An absolute ``/usr/bin/git`` is a
+deliberate read and out of scope.
+
 The caller owns the scratch location: a checkout under a directory named
 ``.booley`` (other than Main or ``$BOOLEY_DIR``) is rejected by the child's
 discovery and ends as a failed run, not as an up-front refusal.
@@ -53,16 +76,17 @@ from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
 )
-from booley.measurement.environment import measurement_environment
+from booley.measurement.environment import measurement_environment, write_git_refusal
 from booley.measurement.flow_metrics import report_metric_values
-from booley.runtime import booley_dir, job_records, runtime_context
+from booley.measurement.live_paths import LiveRoot, input_findings, resolved_findings
+from booley.runtime import booley_dir, job_records, runtime_context, sandbox_layout
 from booley.runtime.handles import register_job
 from booley.runtime.process_group import (
     capture_process_group,
     force_group_termination,
     new_group_kwargs,
 )
-from booley.runtime.project_discovery import has_git_worktree_marker
+from booley.runtime.project_discovery import discover_project_root, has_git_worktree_marker
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 from booley.targets.flow_names import canonical
 
@@ -76,6 +100,14 @@ _BOOTSTRAP = (
     "import sys;sys.path.insert(0,sys.argv.pop(1));"
     "from booley.harness.checkout_flow import child_main;raise SystemExit(child_main())"
 )
+_PREFLIGHT_BOOTSTRAP = (
+    "import sys;sys.path.insert(0,sys.argv.pop(1));"
+    "from booley.harness.checkout_flow import preflight_main;raise SystemExit(preflight_main())"
+)
+# The preflight's own bound when the request has a timeout: a short Flow budget must
+# not be eaten by the interpreter start and a FuseSoC setup.
+_PREFLIGHT_MIN_S = 60
+_PREFLIGHT_LOG_LINES = 20
 # Where ``import booley`` resolves from: located by argv, so ``PYTHONPATH`` stays out.
 _BOOLEY_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -117,11 +149,8 @@ class CheckoutFlowResult:
     log: Path  # the Job's ``job.log`` in the Main Booley Directory
 
 
-def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path, Path]:
-    """Return the resolved checkout, Main Booley Directory and report directory.
-
-    Raises before anything is created when the request is unsafe.
-    """
+def _refuse_malformed_request(request: CheckoutFlowRequest) -> None:
+    """Raise when the Sandbox, timeout, Flow name or Target name is unusable."""
     if not runtime_context.inside_session_runtime():
         raise CheckoutFlowError("a checkout Flow runs only inside the Sandbox")
     if request.timeout_s is not None and not 0 < request.timeout_s < math.inf:
@@ -132,6 +161,18 @@ def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path, Path]:
         raise CheckoutFlowError(f"invalid Flow name: {request.flow!r}")
     if "\0" in request.target:
         raise CheckoutFlowError(f"invalid Target name: {request.target!r}")
+    # One Flow for one Target: the Flow child would split a list and auto-select an
+    # empty selector, resolving a Target the preflight never saw.
+    if not request.target.strip() or "," in request.target:
+        raise CheckoutFlowError(f"expected exactly one Target name: {request.target!r}")
+
+
+def _refuse_unsafe(request: CheckoutFlowRequest) -> tuple[Path, Path, Path]:
+    """Return the resolved checkout, Main Booley Directory and report directory.
+
+    Raises before anything is created when the request is unsafe.
+    """
+    _refuse_malformed_request(request)
     checkout = request.checkout.resolve()
     if not checkout.is_dir():
         raise CheckoutFlowError(f"checkout is not a directory: {checkout}")
@@ -205,49 +246,204 @@ def _require_own_booley_dir(checkout: Path, main: Path) -> None:
         )
 
 
+def _live_roots(main: Path) -> list[LiveRoot]:
+    """The directories that hold uncommitted work, most specific first.
+
+    The runner runs only in the Sandbox, where the live working tree is the ``/work``
+    mount and the Booley Directory a separate mount, so the live tree is not derivable
+    from *main*; other working trees are not mounted there.
+    """
+    roots = [LiveRoot("Main Booley Directory", main)]
+    if os.environ.get("BOOLEY_DIR"):
+        roots.append(LiveRoot("BOOLEY_DIR", Path(os.environ["BOOLEY_DIR"]).resolve()))
+    roots.append(LiveRoot("live working tree", Path(sandbox_layout.WORK_DIR)))
+    return roots
+
+
+def _refuse_live_inputs(checkout: Path, roots: list[LiveRoot]) -> None:
+    """Raise when the checkout sits in a live root or one of its inputs reads from one."""
+    for root in roots:
+        # ``_refuse_unsafe`` walks ``.git`` markers, which an empty mounted one escapes.
+        if booley_dir.contains(checkout, booley_dir=root.path) is not None:
+            raise CheckoutFlowError(f"checkout {checkout} is inside the {root.label} {root.path}")
+    findings = input_findings(checkout, roots)
+    if findings:
+        raise CheckoutFlowError("checkout run refused:\n" + "\n".join(findings))
+
+
+def _prepare_scratch(checkout: Path) -> Path:
+    """Create the run's directory beside the checkout: ``home/``, ``tmp/`` and ``bin/git``."""
+    scratch = Path(tempfile.mkdtemp(dir=checkout.parent, prefix=f".{checkout.name}.env-"))
+    try:
+        for name in ("home", "tmp", "bin"):
+            (scratch / name).mkdir()
+        write_git_refusal(scratch / "bin")
+    except BaseException:  # includes a Ctrl-C: the directory must not outlive the run
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
+    return scratch
+
+
 def _launch(
     request: CheckoutFlowRequest,
     checkout: Path,
-    main: Path,
     report_dir: Path,
+    main: Path,
     run_id: str,
     log_path: Path,
-) -> tuple[subprocess.Popen[Any], Path]:
-    """Start the child; return it with the directory holding its fresh ``HOME`` and ``TMPDIR``."""
-    scratch = Path(tempfile.mkdtemp(dir=checkout.parent, prefix=f".{checkout.name}.env-"))
+    environment: dict[str, str],
+) -> subprocess.Popen[Any]:
+    """Start the Flow child in the checkout with the run's *environment*."""
+    command = [
+        sys.executable,
+        "-c",
+        _BOOTSTRAP,
+        str(_BOOLEY_SOURCE_ROOT),
+        str(main),
+        run_id,
+        request.flow,
+        "--target",
+        request.target,
+        "--report-dir",
+        str(report_dir / "flow-reports"),
+    ]
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("ab") as log:
+        return subprocess.Popen(
+            command,
+            cwd=checkout,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            **new_group_kwargs(),
+        )
+
+
+def _preflight(
+    request: CheckoutFlowRequest,
+    checkout: Path,
+    roots: list[LiveRoot],
+    scratch: Path,
+    environment: dict[str, str],
+) -> None:
+    """Resolve the Target in the measurement environment; raise when it reads a live root."""
+    target = request.target.strip()
+    result_path, log_path = scratch / "preflight.json", scratch / "preflight.log"
+    command = [
+        sys.executable,
+        "-c",
+        _PREFLIGHT_BOOTSTRAP,
+        str(_BOOLEY_SOURCE_ROOT),
+        target,
+        str(scratch / "tmp" / "preflight-build"),
+        str(result_path),
+    ]
+    if request.timeout_s is None:
+        bound_s: float = STANDALONE_TIMEOUT_S
+    else:
+        bound_s = max(request.timeout_s, _PREFLIGHT_MIN_S)
     try:
-        home, tmp = scratch / "home", scratch / "tmp"
-        home.mkdir()
-        tmp.mkdir()
-        environment = measurement_environment(os.environ, main_booley_dir=main, home=home, tmp=tmp)
-        command = [
-            sys.executable,
-            "-c",
-            _BOOTSTRAP,
-            str(_BOOLEY_SOURCE_ROOT),
-            str(main),
-            run_id,
-            request.flow,
-            "--target",
-            request.target,
-            "--report-dir",
-            str(report_dir / "flow-reports"),
-        ]
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("ab") as log:
+        with log_path.open("wb") as log:
             process = subprocess.Popen(
                 command,
                 cwd=checkout,
                 env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
-                stderr=log,
+                stderr=subprocess.STDOUT,
                 **new_group_kwargs(),
             )
-    except BaseException:  # includes a Ctrl-C: the directory must not outlive the run
-        shutil.rmtree(scratch, ignore_errors=True)
+    except OSError as exc:
+        raise CheckoutFlowError(
+            f"the preflight of Target {target} could not start: {exc}"
+        ) from exc
+    try:
+        process.wait(timeout=bound_s)
+    except subprocess.TimeoutExpired as exc:
+        _kill(process)
+        raise CheckoutFlowError(
+            f"checkout run refused: the preflight did not finish within {bound_s:g} s"
+        ) from exc
+    except BaseException:  # a caller's Ctrl-C: never leave the preflight running
+        _kill(process)
         raise
-    return process, scratch
+    if process.returncode != 0:
+        tail = "\n".join(
+            log_path.read_text(encoding="utf-8", errors="replace").splitlines()[
+                -_PREFLIGHT_LOG_LINES:
+            ]
+        )
+        raise CheckoutFlowError(
+            f"checkout run refused: the preflight could not resolve Target {target}:\n{tail}"
+        )
+    document = as_dict(json.loads(result_path.read_bytes())) or {}
+    files = document.get("files")
+    if isinstance(files, list):
+        findings = resolved_findings(
+            target,
+            [str(entry) for entry in files],
+            [str(entry) for entry in document.get("cores") or ()],
+            checkout,
+            roots,
+        )
+        if findings:
+            raise CheckoutFlowError("checkout run refused:\n" + "\n".join(findings))
+
+
+def _kill(process: subprocess.Popen[Any]) -> None:
+    """End the child's whole process group and reap it."""
+    force_group_termination(process, capture_process_group(process))
+    process.wait()
+
+
+def preflight_main(argv: list[str] | None = None) -> int:
+    """The preflight child: resolve the Target in the cwd and write the paths it reads.
+
+    *argv* is ``<target> <build root> <result file>``. The result is JSON: ``files`` is
+    null when no FuseSoC Target has that name (a Project Flow takes none), else the
+    resolved file paths, and ``cores`` the core files that contributed, both lexical
+    and absolute.
+    """
+    import yaml
+
+    from booley.fusesoc import fusesoc_registry
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import UnknownTargetError
+
+    target, build_dir, result_file = sys.argv[1:] if argv is None else argv
+    root = discover_project_root(Path.cwd(), explicit_selection=True) or Path.cwd()
+    result: dict[str, object] = {"files": None, "cores": []}
+    try:
+        handle = TargetCatalog.build(root).select(target)
+    except UnknownTargetError:
+        pass
+    except fusesoc_registry.FuseSocError as exc:
+        print(exc, file=sys.stderr)
+        return _START_FAILURE_EXIT_CODE
+    else:
+        try:
+            resolved = fusesoc_registry.resolve_target_handle(
+                handle,
+                build_root=build_dir,
+                library_plan=fusesoc_registry.build_library_plan(root, build_dir),
+                export=False,
+            )
+        except fusesoc_registry.FuseSocError as exc:
+            print(exc, file=sys.stderr)
+            return _START_FAILURE_EXIT_CODE
+        edam = as_dict(yaml.safe_load(resolved.edam_path.read_text(encoding="utf-8"))) or {}
+        cores = as_dict(edam.get("cores")) or {}
+        result = {
+            "files": [os.path.normpath(resolved.build_root / f.name) for f in resolved.files],
+            "cores": [
+                os.path.normpath(resolved.build_root / str(entry["core_file"]))
+                for entry in (as_dict(item) or {} for item in cores.values())
+                if entry.get("core_file")
+            ],
+        }
+    Path(result_file).write_text(json.dumps(result), encoding="utf-8")
+    return 0
 
 
 def _stop(process: subprocess.Popen[Any]) -> None:
@@ -356,14 +552,23 @@ def _result_from(
     )
 
 
-def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
-    """Run the Flow in the checkout and return its outcome, reports and typed metrics.
-
-    Raises:
-        CheckoutFlowError: the request is refused or the child cannot be started.
-    """
-    checkout, main, report_dir = _refuse_unsafe(request)
-    request = replace(request, flow=canonical(request.flow))  # the CLI reports under this name
+def _execute(
+    request: CheckoutFlowRequest,
+    checkout: Path,
+    main: Path,
+    report_dir: Path,
+    roots: list[LiveRoot],
+    scratch: Path,
+) -> CheckoutFlowResult:
+    """Preflight, record, start and settle the Flow; *scratch* is the caller's to remove."""
+    environment = measurement_environment(
+        os.environ,
+        main_booley_dir=main,
+        home=scratch / "home",
+        tmp=scratch / "tmp",
+        git_refusal=scratch / "bin",
+    )
+    _preflight(request, checkout, roots, scratch, environment)
     run_id = job_records.make_run_id(request.flow, compact_utc_now(), 1)
     log_path = standalone_log_path(main, run_id)
     jobs_root = standalone_jobs_dir(main)
@@ -380,7 +585,7 @@ def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
     try:
         job_records.write_record_strict(record, jobs_root)
         register_job(main, run_id, request.flow, None)
-        process, scratch = _launch(request, checkout, main, report_dir, run_id, log_path)
+        process = _launch(request, checkout, report_dir, main, run_id, log_path, environment)
     except OSError as exc:
         # Best effort: an unwritable log must not stop the record turning failed.
         with contextlib.suppress(OSError), log_path.open("ab") as log:
@@ -394,9 +599,26 @@ def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
     try:
         timed_out = _wait(process, request.timeout_s)
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
         final = _settle_record(record, jobs_root, process.returncode, timed_out=timed_out)
     return _result_from(request, run_id, final, log_path, report_dir, timed_out=timed_out)
+
+
+def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
+    """Run the Flow in the checkout and return its outcome, reports and typed metrics.
+
+    Raises:
+        CheckoutFlowError: the request is refused, an input reads a live root, or the
+            child cannot be started. A refusal leaves no Job record.
+    """
+    checkout, main, report_dir = _refuse_unsafe(request)
+    request = replace(request, flow=canonical(request.flow))  # the CLI reports under this name
+    roots = _live_roots(main)
+    _refuse_live_inputs(checkout, roots)
+    scratch = _prepare_scratch(checkout)
+    try:
+        return _execute(request, checkout, main, report_dir, roots, scratch)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def _run_flow_cli(flow: str, flow_argv: list[str]) -> int:
