@@ -20,6 +20,7 @@ from booley.flows.sim.verilator_coverage import (
     VerilatorCollectorIdentity,
     collect,
 )
+from tests.conftest import symlink_or_skip
 
 _HEADER = "# SystemC::Coverage-3\n"
 _LINE_POINT = (
@@ -112,6 +113,29 @@ class _MissingRawExecution(_GeneratedMainExecution):
 
     def command(self, request) -> SimulationCommandResult:
         raise AssertionError("merge must not run without every raw database")
+
+
+class _UnsafeRawExecution(_MissingRawExecution):
+    """Leaves the raw database path as a symlink out of the root or as a directory."""
+
+    def __init__(self, mode: str, outside: Path) -> None:
+        self.mode = mode
+        self.outside = outside
+
+    def run(self, request) -> SimulationRunResult:
+        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+        _make_unsafe(self.mode, request.raw_path, self.outside)
+        return SimulationRunResult(verdict="pass")
+
+
+def _make_unsafe(mode: str, path: Path, outside: Path) -> None:
+    """Make *path* a symlink to a valid file outside the root, or a directory."""
+    if mode == "directory":
+        path.mkdir()
+        return
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
+    symlink_or_skip(path, outside)
 
 
 class _StaleRawExecution(_MissingRawExecution):
@@ -273,13 +297,17 @@ class _MergeFailureExecution(_GeneratedMainExecution):
 
 
 class _BadMergeExecution(_GeneratedMainExecution):
-    def __init__(self, mode: str) -> None:
+    def __init__(self, mode: str, outside: Path) -> None:
         self.mode = mode
+        self.outside = outside
 
     def command(self, request) -> SimulationCommandResult:
         if self.mode == "missing":
             return SimulationCommandResult(returncode=0)
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.mode in {"outside", "directory"}:
+            _make_unsafe(self.mode, request.output_path, self.outside)
+            return SimulationCommandResult(returncode=0)
         if self.mode == "malformed":
             payload = _HEADER + "garbage\n"
         elif self.mode == "mismatch":
@@ -525,6 +553,35 @@ def test_missing_raw_database_is_a_collector_error_without_losing_simulation_tru
     assert result.artifacts == ()
     assert result.merge.status == "not_run"
     assert [finding.code for finding in result.findings] == ["COV_RAW_FILE_MISSING"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "message_fragment"),
+    [("outside", "escapes"), ("directory", "not a regular file")],
+)
+def test_unsafe_raw_database_is_reported_as_unsafe(
+    tmp_path: Path, mode: str, message_fragment: str
+) -> None:
+    request = CoverageCollectionRequest(
+        target=CoverageTarget(
+            identity="acme:demo:counter:1.0#sim_counter",
+            selector="sim_counter",
+            toplevel="counter",
+            harness="generated_main",
+            sources=(),
+        ),
+        selected_tests=(SelectedCoverageRun("reset"),),
+        artifact_root=tmp_path / "campaign",
+    )
+
+    result = collect(request, _UnsafeRawExecution(mode, tmp_path / "outside" / "raw.dat"))
+
+    assert result.status == "collector_error"
+    assert [run.collection for run in result.runs] == ["collector_error"]
+    assert [finding.code for finding in result.findings] == ["COV_RAW_FILE_UNSAFE"]
+    assert message_fragment in result.findings[0].message
+    # Nothing outside the artifact root is hashed or recorded.
+    assert result.artifacts == ()
 
 
 def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: Path) -> None:
@@ -1092,6 +1149,8 @@ def test_native_merge_tool_failure_retains_normalized_per_run_evidence(tmp_path:
         ("stale", "COV_NATIVE_MERGE_STALE", "failed", "stale"),
         ("malformed", "COV_NATIVE_MERGE_NOT_QUERYABLE", "failed", "unqueryable"),
         ("mismatch", "COV_NATIVE_MERGE_MISMATCH", "mismatch", "fresh_queryable"),
+        ("outside", "COV_NATIVE_MERGE_UNSAFE", "failed", None),
+        ("directory", "COV_NATIVE_MERGE_UNSAFE", "failed", None),
     ],
 )
 def test_bad_native_merge_never_discards_per_run_evidence(
@@ -1118,7 +1177,7 @@ def test_bad_native_merge_never_discards_per_run_evidence(
         merged.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
         os.utime(merged, ns=(1, 1))
 
-    result = collect(request, _BadMergeExecution(mode))
+    result = collect(request, _BadMergeExecution(mode, tmp_path / "outside" / "merged.dat"))
 
     assert result.status == "collector_error"
     assert len(result.points) == 1
