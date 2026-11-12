@@ -15,8 +15,8 @@ from tests.conftest import reset_git_command_config
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
 
-from booley.dev_support.reference_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 from booley.runtime import build_stamp
+from booley.runtime.packaged_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL = "booley_rtl-0.2.15-py3-none-any.whl"
@@ -79,6 +79,8 @@ def checkout(tmp_path, monkeypatch):
         target.write_text("fixture\n")
     (root / "src/booley/payload.py").write_text("VALUE = 1\n")
     (root / "VERSION").write_text("0.2.15\n")
+    # The real ignore rules, so build output (the rendered docs) is ignored as in a checkout.
+    shutil.copyfile(ROOT / ".gitignore", root / ".gitignore")
     from booley.runtime import image_build_contracts
 
     monkeypatch.setattr(
@@ -112,6 +114,16 @@ def wire_frontend(monkeypatch, action):
     return module
 
 
+def untracked_and_modified(root):
+    """Return Git's porcelain status of *root*, listing every untracked file."""
+    return run_bounded_child(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=root,
+        check=True,
+        timeout=10,
+    ).stdout
+
+
 def assert_clean(root):
     assert not build_stamp.stamp_path(root).exists()
     assert not build_stamp.development_context_path(root).exists()
@@ -128,6 +140,7 @@ def test_explicit_profile_selects_only_new_wheel_and_prints_absolute_path(
     (dist / WHEEL).write_bytes(b"previous")
     (checkout / "build").mkdir()
     (checkout / "build/stale.py").write_text("stale")
+    status_before = untracked_and_modified(checkout)
 
     def build(root, staging):
         namespace = {}
@@ -153,6 +166,9 @@ def test_explicit_profile_selects_only_new_wheel_and_prints_absolute_path(
     assert (dist / WHEEL).read_bytes() == b"new"
     assert stale.read_bytes() == b"old"
     assert_clean(checkout)
+    # The rendered docs stay behind as Git-ignored output: the build adds no file to status.
+    assert (checkout / PACKAGED_DOCS_RELATIVE_DIR).is_dir()
+    assert untracked_and_modified(checkout) == status_before
 
 
 @pytest.mark.parametrize("failure", ["stamp", "build", "timeout", "publish", "cleanup"])

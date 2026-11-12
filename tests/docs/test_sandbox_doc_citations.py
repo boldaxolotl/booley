@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import ast
 import re
+from functools import cache
 from pathlib import Path
 
 import pytest
 from markdown_it import MarkdownIt
-from tests.docs.test_links import _markdown_anchors
+from tests.docs.test_links import _text_anchors
+from tests.shipped_docs_support import rendered_shipped_docs
 
 from booley.harness.init_cmd import BOOLEY_TOML_SKELETON, TESTS_TOML_SKELETON
 from booley.harness.setup.scaffold import ScaffoldChoices, _booley_toml
@@ -22,7 +24,6 @@ from booley.runtime import docs_links, packaged_docs
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "src/booley/data"
-PACKAGED = DATA / "docs"
 SKILLS = DATA / "skills"
 # Python modules whose string literals are agent-facing runtime messages.
 MESSAGE_MODULES = (
@@ -47,9 +48,20 @@ def _doc_file_names() -> set[str]:
     return names
 
 
+@cache
+def _rendered_doc(name: str) -> str:
+    """Return one shipped doc, by packaged file name, as the build renders it from its source.
+
+    The packaged directory is Git-ignored build output, so it is never read (#3658).
+    """
+    return next(
+        text for source, text in rendered_shipped_docs(ROOT).items() if Path(source).name == name
+    )
+
+
 def _headings(name: str) -> list[str]:
     """Return the lower-cased heading texts of one packaged doc (fenced ``#`` lines excluded)."""
-    tokens = MarkdownIt().parse((PACKAGED / name).read_text(encoding="utf-8"))
+    tokens = MarkdownIt().parse(_rendered_doc(name))
     return [
         "".join(child.content for child in tokens[index + 1].children or []).lower()
         for index, token in enumerate(tokens)
@@ -76,7 +88,7 @@ def _fixed_path_problems(text: str, label: str) -> list[str]:
         if name not in shipped:
             problems.append(f"{cite} is not a shipped doc")
             continue
-        if anchor and anchor not in _markdown_anchors(PACKAGED / name):
+        if anchor and anchor not in _text_anchors(_rendered_doc(name)):
             problems.append(f"{cite} has no such anchor")
         after = text[match.end() :]
         if section := _SECTION.match(after):

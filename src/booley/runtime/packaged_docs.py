@@ -2,16 +2,15 @@
 
 The authored docs live in ``docs/user/`` (plus ``docs/internals/FLOW_REPORTS.md``).
 Installed runtimes and the Sandbox cannot rely on a repository checkout, so the
-docs listed in :data:`SHIPPED_DOCS` are copied, flat, to ``src/booley/data/docs/``
-(``/booley-docs/`` inside the Sandbox image). The copies are generated; never edit
-them. Every wheel and image builder renders them through
-``booley.runtime.build_stamp.write_build_stamp`` before it packs anything, and
-``python -m booley.dev_support.reference_docs`` regenerates them in a checkout.
+docs listed in :data:`SHIPPED_DOCS` are rendered, flat, to ``src/booley/data/docs/``
+(``/booley-docs/`` inside the Sandbox image). That directory is Git-ignored build
+output: never commit or edit it. Every wheel and image builder renders it through
+``booley.runtime.build_stamp.write_build_stamp`` before it packs anything.
 
 This module is stdlib only (plus the stdlib-only ``booley.runtime.docs_links``) so
 ``build.sh`` can run the render step with nothing but ``PYTHONPATH=src``. The
 markdown-it cross-check that catches link forms the scanner cannot see lives in
-``booley.dev_support.reference_docs``.
+``tests/docs/test_shipped_doc_link_forms.py``.
 
 Links are rewritten so each copy is self-consistent in the flat directory:
 

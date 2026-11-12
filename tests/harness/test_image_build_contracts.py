@@ -6,16 +6,16 @@ import importlib.util
 import json
 import os
 import posixpath
-import shutil
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from booley.dev_support.reference_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
 from booley.runtime import image_build_contracts as contracts
 from booley.runtime.build_stamp import BuildProfile, write_build_stamp
+from booley.runtime.packaged_docs import SHIPPED_DOCS, render_packaged_doc
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
@@ -155,47 +155,68 @@ def test_publisher_and_build_stamp_share_standard_contract_calculator() -> None:
 
 
 @pytest.fixture(scope="module")
-def official_wheel(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
-    """Build one official wheel from a checkout copy whose packaged docs were deleted.
+def official_build(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path]:
+    """Build the official sdist and the wheel built from it, as ``publish.yml`` does.
 
-    Returns the checkout copy and the wheel, so tests share one full copy and
-    one ``python -m build`` as ``publish.yml`` runs it.
+    The checkout copy holds only Git-listed files, so the Git-ignored packaged docs
+    exist only if the build step renders them. Returns the checkout copy, the sdist
+    and the wheel, so tests share one full copy and one ``python -m build``.
     """
     base = tmp_path_factory.mktemp("official-wheel")
     checkout = base / "checkout"
     copy_source_checkout(SOURCE_ROOT, checkout)
-    shutil.rmtree(checkout / PACKAGED_DOCS_RELATIVE_DIR)
     write_build_stamp(checkout, profile=BuildProfile.OFFICIAL_RELEASE)
-    wheel_dir = base / "wheel"
+    dist = base / "dist"
     built = run_bounded_child(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(wheel_dir)],
+        [sys.executable, "-m", "build", "--outdir", str(dist)],
         cwd=checkout,
     )
     assert built.returncode == 0, built.stderr or built.stdout
-    return checkout, next(wheel_dir.glob("booley_rtl-*.whl"))
+    return checkout, next(dist.glob("booley_rtl-*.tar.gz")), next(dist.glob("booley_rtl-*.whl"))
 
 
 def test_official_wheel_renders_shipped_docs_from_sources(
-    official_wheel: tuple[Path, Path],
+    official_build: tuple[Path, Path, Path],
 ) -> None:
-    checkout, wheel = official_wheel
+    checkout, _sdist, wheel = official_build
     with zipfile.ZipFile(wheel) as archive:
         packed = {
             source: archive.read(f"booley/data/docs/{posixpath.basename(source)}")
             for source in SHIPPED_DOCS
         }
 
-    from booley.runtime.packaged_docs import render_packaged_doc
-
     for source, content in packed.items():
         expected = render_packaged_doc(source, (checkout / source).read_bytes().decode("utf-8"))
         assert content == expected.encode("utf-8"), source
 
 
-def test_validator_names_shipped_docs_missing_from_the_wheel(
-    official_wheel: tuple[Path, Path],
+def test_official_sdist_contains_every_shipped_doc(
+    official_build: tuple[Path, Path, Path],
 ) -> None:
-    _checkout, wheel = official_wheel
+    """The release sdist carries the rendered docs the wheel is built from (#3658)."""
+    checkout, sdist, _wheel = official_build
+    with tarfile.open(sdist) as archive:
+        # Members are ``booley_rtl-<version>/<path>``; drop the leading directory.
+        packed = {
+            member.name.split("/", 1)[1]: member
+            for member in archive.getmembers()
+            if member.isfile()
+        }
+        for source in SHIPPED_DOCS:
+            member = packed.get(f"src/booley/data/docs/{posixpath.basename(source)}")
+            assert member is not None, f"sdist lacks the rendered {source}"
+            extracted = archive.extractfile(member)
+            assert extracted is not None
+            expected = render_packaged_doc(
+                source, (checkout / source).read_bytes().decode("utf-8")
+            )
+            assert extracted.read() == expected.encode("utf-8"), source
+
+
+def test_validator_names_shipped_docs_missing_from_the_wheel(
+    official_build: tuple[Path, Path, Path],
+) -> None:
+    _checkout, _sdist, wheel = official_build
     spec = importlib.util.spec_from_file_location(
         "validate_installed_artifact_under_test",
         SOURCE_ROOT / ".github" / "scripts" / "validate_installed_artifact.py",
@@ -216,9 +237,9 @@ def test_validator_names_shipped_docs_missing_from_the_wheel(
 
 
 def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access(
-    tmp_path: Path, official_wheel: tuple[Path, Path]
+    tmp_path: Path, official_build: tuple[Path, Path, Path]
 ) -> None:
-    checkout, wheel = official_wheel
+    checkout, _sdist, wheel = official_build
     expected = contracts.source_image_build_contracts(checkout)
     build_python = sys.executable
     installed = tmp_path / "site-packages"

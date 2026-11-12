@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launcher that syncs or checks every packaged copy without installing Booley."""
+"""Launcher that syncs or checks the packaged CHANGELOG mirror without installing Booley."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def main() -> int:
-    """Run the reference-docs sync from this checkout's ``src/``, writing no bytecode."""
+    """Run the CHANGELOG-mirror sync from this checkout's ``src/``, writing no bytecode."""
     sys.dont_write_bytecode = True
     checkout = Path(__file__).resolve().parents[2]
     # First on the path, so this checkout is read even if another one is installed.
