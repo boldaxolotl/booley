@@ -42,6 +42,7 @@ def test_every_mission_is_present():
     assert {path.parent.name for path in MISSIONS} == {
         "coverage",
         "gui",
+        "mutation",
         "picorv32",
         "taxi",
         "uart",
@@ -242,3 +243,65 @@ def test_gui_check_skill_follows_the_runbook_and_posts_through_the_guard() -> No
     assert "qa/shared/codespaces/RUNBOOK.md" in skill
     # The PR comment goes through the confidential-content publisher, never raw `gh`.
     assert "confidential_content_guard.py --repo . publish-pr comment" in skill
+
+
+MUTATION_AREAS = [
+    "mut-determinism",
+    "mut-sites",
+    "mut-selection",
+    "mut-scoring",
+    "mut-timeouts",
+    "mut-scope",
+    "mut-failures",
+    "mut-removed",
+    "cleanup",
+]
+
+
+def _area_text(mission: Path, slug: str) -> str:
+    """Return one area's text, from its `###` heading to the next heading."""
+    text = mission.read_text(encoding="utf-8")
+    sections = re.split(r"^#{2,3} ", text, flags=re.MULTILINE)
+    (section,) = [part for part in sections if re.match(rf"\d+\. {slug} ", part)]
+    return section
+
+
+def test_mutation_mission_areas_follow_the_brief() -> None:
+    mission = QA_ROOT / "missions" / "mutation" / "MISSION.md"
+    assert mission.is_file(), "qa/missions/mutation/MISSION.md is missing"
+    areas = _areas(mission)
+    assert [slug for slug, _ in areas] == MUTATION_AREAS
+    assert sum(minutes for _, minutes in areas) <= 480  # the mission's 8-hour budget
+    assert "8 h total" in mission.read_text(encoding="utf-8")
+
+
+def test_mutation_mission_is_indexed() -> None:
+    mission = QA_ROOT / "missions" / "mutation" / "MISSION.md"
+    assert mission.is_file(), "qa/missions/mutation/MISSION.md is missing"
+    readme = (QA_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "](missions/mutation/MISSION.md)" in readme
+    assert "](shared/mutation/RUNBOOK.md)" in readme
+    row = next(
+        line
+        for line in (QA_ROOT / "AREAS.md").read_text(encoding="utf-8").splitlines()
+        if line.startswith("| Mutation testing |")
+    )
+    linked = set(re.findall(r"\[mutation/(mut-[\w-]+)\]", row))
+    assert linked == {slug for slug in MUTATION_AREAS if slug.startswith("mut-")}
+
+
+# Words of the removed model-driven mutation flow and of its old dry-run wording.
+RETIRED_MUTATION_WORDS = re.compile(r"\b(lock|regen\w*|steer\w*|LLM|proposes|same seed)\b")
+
+
+def test_uart_and_taxi_mutation_areas_describe_the_mutation_flow() -> None:
+    areas = {
+        "uart": _area_text(QA_ROOT / "missions" / "uart" / "MISSION.md", "reviews-mutation"),
+        "taxi": _area_text(QA_ROOT / "missions" / "taxi" / "MISSION.md", "goal-observability"),
+    }
+    stale = {
+        name: sorted(set(RETIRED_MUTATION_WORDS.findall(text))) for name, text in areas.items()
+    }
+    assert not {name: words for name, words in stale.items() if words}, (
+        "stale mutation wording (sizing, seeds and selection belong to the mutation mission)"
+    )
