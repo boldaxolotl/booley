@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from booley.measurement.rules_diff import RulesDiff
+
 if TYPE_CHECKING:
-    from booley.measurement.rules_diff import RulesDiff
     from booley.measurement.run_key import KeyedCommit
 
 from tests.runtime.test_commit_export import (
@@ -174,6 +175,36 @@ ROWS = {
         None,
         None,
     ),
+    "track-removed": (
+        SYNTH + AREA + 'track = ["cell_count"]\n',
+        SYNTH + AREA,
+        "track edited",
+        "neutral",
+        "cell_count",
+        None,
+        None,
+        None,
+    ),
+    "tracked-became-bound": (
+        SYNTH + AREA + 'track = ["cell_count"]\n',
+        SYNTH + "area_kge_max = 60\ncell_count_max = 9000\n",
+        "bound added",
+        "tightened",
+        "cell_count_max",
+        None,
+        9000,
+        None,
+    ),
+    "equal-numbers": (
+        SYNTH + AREA + "\n",
+        SYNTH + "area_kge_max = 60.0\n",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ),
     "notes-edit": (
         SYNTH + 'area_kge_max = 60\nnotes = { area_kge_max = "old" }\n',
         SYNTH + 'area_kge_max = 60\nnotes = { area_kge_max = "new" }\n',
@@ -191,6 +222,9 @@ def test_each_metrics_change_is_classified_with_its_note(tmp_path: Path) -> None
     for row, (base, head, kind, direction, key, old, new, note) in ROWS.items():
         diff = metrics_diff(tmp_path / row, base, head)
 
+        if kind is None:  # the same rules respelled as a different number type
+            assert diff.changes == (), row
+            continue
         (change,) = diff.changes
         assert (change.kind.value, change.direction.value, change.key) == (kind, direction, key), (
             row
@@ -273,6 +307,66 @@ def test_tests_toml_change_is_reported_with_diff_and_amber(tmp_path: Path) -> No
     assert header_amber(diff) == (AmberReason.TESTS_CHANGED,)
 
 
+def test_tests_toml_diff_without_final_newline_keeps_lines_apart(tmp_path: Path) -> None:
+    from booley.measurement.rules_diff import rules_diff
+
+    repo, keyed, base, _ = commit_pair(
+        tmp_path,
+        {".booley/tests.toml": 'tests = ["smoke"]'},
+        {".booley/tests.toml": 'tests = ["smoke", "other"]'},
+    )
+
+    diff = rules_diff(repo, keyed, base)
+
+    assert diff.tests_diff is not None
+    assert '-tests = ["smoke"]\n\\ No newline at end of file\n+tests' in diff.tests_diff
+
+
+def test_tests_toml_added_or_invalid_bytes_still_show_a_diff(tmp_path: Path) -> None:
+    from booley.measurement.rules_diff import AmberReason, header_amber, rules_diff
+    from booley.measurement.run_key import resolve_measurement_key
+
+    repo, keyed, base, _ = commit_pair(
+        tmp_path / "added", {}, {".booley/tests.toml": 'tests = ["smoke"]\n'}
+    )
+    added = rules_diff(repo, keyed, base)
+    repo, _, base, _ = commit_pair(tmp_path / "bytes", {".booley/tests.toml": "x"}, {})
+    tests = repo / ".booley" / "tests.toml"
+    git(repo, "checkout", "-q", "-b", "other-base", base)
+    tests.write_bytes(b"a = '\xff'")
+    other_base = commit_all(repo, "invalid bytes")
+    git(repo, "checkout", "-q", "feature")
+    tests.write_bytes(b"a = '\xfe'")
+    head = commit_all(repo, "other invalid bytes")
+    invalid = rules_diff(repo, resolve_measurement_key(repo, head), other_base)
+
+    assert added.tests_diff is not None and '+tests = ["smoke"]' in added.tests_diff
+    assert header_amber(added) == (AmberReason.TESTS_CHANGED,)
+    assert invalid.tests_diff is not None and "not valid UTF-8" in invalid.tests_diff
+
+
+def test_directory_named_like_a_rules_file_is_unreadable_not_a_crash(tmp_path: Path) -> None:
+    from booley.measurement.rules_diff import AmberReason, header_amber, rules_diff
+
+    repo, keyed, base, _ = commit_pair(
+        tmp_path, {".booley/metrics.toml/x": "x"}, {".booley/metrics.toml/x": "y"}
+    )
+
+    diff = rules_diff(repo, keyed, base)
+
+    assert diff.unreadable is not None and "not a file" in diff.unreadable
+    assert header_amber(diff) == (AmberReason.RULES_LOOSENED,)
+
+
+def test_unreadable_measured_metrics_is_reported_and_amber(tmp_path: Path) -> None:
+    from booley.measurement.rules_diff import AmberReason, header_amber
+
+    diff = metrics_diff(tmp_path, SYNTH + AREA, "[synth_core.synth\n")
+
+    assert diff.unreadable is not None and "measured metrics.toml" in diff.unreadable
+    assert header_amber(diff) == (AmberReason.RULES_LOOSENED,)
+
+
 def test_booley_and_reviews_toml_edits_leave_header_unchanged(tmp_path: Path) -> None:
     from booley.measurement.base import changed_files, protected_edits
     from booley.measurement.protected_set import protected_set
@@ -298,7 +392,7 @@ def test_booley_and_reviews_toml_edits_leave_header_unchanged(tmp_path: Path) ->
     assert header_amber(diff) == ()
     assert edits == (".booley/booley.toml", ".booley/reviews.toml")
     assert paired_protected_edits(repo, keyed, diff, protected) == ()
-    assert rules_diff(repo, keyed, None) == diff.__class__((), None, None, None)
+    assert rules_diff(repo, keyed, None) == RulesDiff((), None, None, None)
 
 
 def versioned_case(tmp_path: Path, layout: str) -> tuple[Path, Path]:

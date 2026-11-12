@@ -257,9 +257,11 @@ class _Side:
 def _blob(repository: Path, commit: str, path: str) -> bytes | None:
     """The content of *path* at *commit*, or None when the commit has no such file."""
     try:
-        raw_git(repository, "cat-file", "-e", f"{commit}:{path}")
+        kind = raw_git(repository, "cat-file", "-t", f"{commit}:{path}").strip()
     except FileCommitError:
         return None
+    if kind != b"blob":
+        raise FileCommitError(f"{path} is a {kind.decode()}, not a file")
     return raw_git(repository, "cat-file", "blob", f"{commit}:{path}")
 
 
@@ -275,13 +277,12 @@ def _read_side(
     except BooleyDirOutsideCheckoutError as exc:
         return _Side(label, None, None, TESTS_FILE, f"{label} commit: {exc}")
     tests_path = (place / TESTS_FILE).as_posix()
-    return _Side(
-        label,
-        _blob(repository, commit, (place / METRICS_FILE).as_posix()),
-        _blob(repository, commit, tests_path),
-        tests_path,
-        None,
-    )
+    try:
+        metrics = _blob(repository, commit, (place / METRICS_FILE).as_posix())
+        tests = _blob(repository, commit, tests_path)
+    except FileCommitError as exc:  # e.g. a directory named like the file
+        return _Side(label, None, None, tests_path, f"{label} commit: {exc}")
+    return _Side(label, metrics, tests, tests_path, None)
 
 
 def _parse(side: _Side) -> tuple[WrittenRules | None, str | None]:
@@ -299,9 +300,12 @@ def _tests_diff(before: _Side, after: _Side) -> str | None:
         return None
 
     def lines(content: bytes | None) -> list[str]:
-        return (content or b"").decode("utf-8", "replace").splitlines(keepends=True)
+        text = (content or b"").decode("utf-8", "replace").splitlines(keepends=True)
+        if text and not text[-1].endswith("\n"):  # keep the two sides' lines apart
+            text[-1] += "\n\\ No newline at end of file\n"
+        return text
 
-    return "".join(
+    diff = "".join(
         difflib.unified_diff(
             lines(before.tests),
             lines(after.tests),
@@ -309,6 +313,7 @@ def _tests_diff(before: _Side, after: _Side) -> str | None:
             tofile=f"b/{after.tests_path}",
         )
     )
+    return diff or "contents differ only in bytes that are not valid UTF-8\n"
 
 
 def _compare(

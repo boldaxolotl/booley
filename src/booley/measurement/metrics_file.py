@@ -87,7 +87,7 @@ class TableRules:
     """The effective rules of one ``[<target>.<flow>]`` table."""
 
     target: str  # the Target key as written
-    identity: str  # ``vlnv#name``
+    identity: str  # ``vlnv#name``; the Target key as written when read without a checkout
     flow: str
     bounds: tuple[Bound, ...]
     tracked: tuple[TrackedMetric, ...]
