@@ -419,3 +419,32 @@ def test_missing_file_declares_nothing(tmp_path: Path) -> None:
 
 def test_file_without_tables_declares_nothing(tmp_path: Path) -> None:
     assert _load(tmp_path, "# nothing yet\n").tables == ()
+
+
+def test_as_written_mode_needs_no_checkout() -> None:
+    from booley.measurement.metrics_file import MetricsFileError, parse_metrics_as_written
+
+    text = (
+        "[defaults.sim]\ntests_failed_max = 0\n"
+        '[nope.sim]\n"nosuchtest.cycle_count_max" = 10\n"smoke.cycle_count_max" = 5\n'
+        'notes = { "smoke@1.cycle_count_max" = "respelled" }\n'
+        '[other.sim]\noff = ["tests_failed_max"]\ntrack = ["tests_failed"]\n'
+    )
+
+    written = parse_metrics_as_written(text.encode())
+
+    nope = next(table for table in written.tables if table.target == "nope")
+    assert {bound.key for bound in nope.bounds} == {
+        "tests_failed_max",
+        "nosuchtest.cycle_count_max",
+        "smoke.cycle_count_max",
+    }
+    assert all(bound.note is None for bound in nope.bounds)  # the respelled note is dropped
+    assert written.switched_off[("other", "sim")] == {("tests_failed", "max", None)}
+    for bad, fragment in (
+        ('[nope.sim]\n"smoke@x3.cycle_count_max" = 1\n', "random seeds"),
+        ('[defaults.sim]\n"smoke.cycle_count_max" = 1\n', "per test"),
+    ):
+        with pytest.raises(MetricsFileError) as raised:
+            parse_metrics_as_written(bad.encode())
+        assert fragment in raised.value.errors[0].message
