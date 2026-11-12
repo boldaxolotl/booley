@@ -1,4 +1,3 @@
-# probe: issue 3678 candidate base build check (reverted right after)
 # Published Booley EDA/runtime base — invariant tools and Python dependencies.
 # Candidate application code, B-Wave, and repository patches belong in Dockerfile.
 #
