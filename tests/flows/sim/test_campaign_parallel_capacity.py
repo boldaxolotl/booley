@@ -52,6 +52,7 @@ from booley.runtime.execution_records import (
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
     HOLDING,
+    INHERITED_SLOT_ENV,
     QUEUED,
     ROLE_INTERACTIVE,
     SlotStore,
@@ -796,7 +797,7 @@ def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
     monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
     monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "a" * 32)
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
-    monkeypatch.delenv("BOOLEY_INHERITED_SLOT", raising=False)
+    monkeypatch.delenv(INHERITED_SLOT_ENV, raising=False)
     monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
