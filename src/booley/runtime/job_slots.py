@@ -15,8 +15,9 @@ except to reap a provably-stale one:
   ``w-`` waiters, then priority, sequence and PID, with the filename suffix breaking ties. Priority 0 is
   Interactive; other requester roles use priority 1. A later Interactive
   request overtakes queued lower-priority work, but *never* a holder: promotion renames only one's **own**
-  ``w-`` entry to ``h-``, and only when its rank is within the class cap, so
-  running work cannot be preempted (ADR 0028 Decision 6).
+  ``w-`` entry to ``h-``, and (for the heavy and light classes) only when its
+  rank is within the class cap, so running work cannot be preempted (ADR 0028
+  Decision 6).
 * Because the ordering is total and each process promotes only itself under a
   short per-class promotion gate, two processes cannot both promote into the
   last free slot.
@@ -128,6 +129,8 @@ NARRATE_INTERVAL_SECONDS = 30.0
 # permanent phantom-holder deadlocks.
 _ENTRY_IO_ATTEMPTS = 20
 _ENTRY_IO_RETRY_SECONDS = 0.01
+# Relists of the memory class a view makes when an entry vanished under its read.
+_MEMORY_VIEW_ATTEMPTS = 3
 # Bound on waiting for an in-flight renewal in ``release``: lease gate, read and
 # replace each spend up to ~1.1 s of shared sharing-error backoff.
 _RENEWAL_JOIN_SECONDS = 5.0
@@ -235,6 +238,8 @@ class MemoryClaim:
     run_alone: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.run_alone, bool):
+            raise ValueError(f"run_alone must be a bool, got {self.run_alone!r}")
         if require_finite_number(self.budget_mb, field="budget_mb") < 0:
             raise ValueError(f"budget_mb must be >= 0, got {self.budget_mb!r}")
         if self.run_alone:
@@ -269,7 +274,7 @@ class MemoryClaim:
                 reservation_mb=value.get("reservation_mb"),
                 run_alone=value.get("run_alone") is True,
             )
-        except (KeyError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
 
 
@@ -601,15 +606,7 @@ class SlotStore:
             raise QueueFullError(self._refusal(job_class))
 
         created = self._now()
-        if execution_id is not None:
-            linked_execution = ExecutionId(execution_id)
-        else:
-            inherited = os.environ.get(RUNTIME_EXECUTION_ENV) or None
-            linked_execution = (
-                self._inherited_execution_verifier(inherited, self.root, pid)
-                if inherited is not None
-                else None
-            )
+        linked_execution = self._linked_execution(execution_id, pid)
         token = self._create_entry(
             _WaiterRequest(
                 cls_dir=cls_dir,
@@ -631,6 +628,17 @@ class SlotStore:
             raise QueueFullError(self._refusal(job_class))
         return token
 
+    def _linked_execution(
+        self, execution_id: str | ExecutionId | None, pid: int
+    ) -> ExecutionId | None:
+        """The execution a new entry links to: the given one, else the verified inherited one."""
+        if execution_id is not None:
+            return ExecutionId(execution_id)
+        inherited = os.environ.get(RUNTIME_EXECUTION_ENV) or None
+        if inherited is None:
+            return None
+        return self._inherited_execution_verifier(inherited, self.root, pid)
+
     def _refusal(self, job_class: str) -> str:
         return f"{job_class} queue is full ({self.caps.queue_max} waiting)"
 
@@ -647,8 +655,12 @@ class SlotStore:
         *priority*; with it, the post-create backstop on the real entry.
         """
         if memory is not None:
-            ahead = self._names_before(entry) if entry else self._names_ahead_of(priority)
-            _starts, position, blocked = self._memory_view(memory, ahead)
+            list_ahead = (
+                (lambda: self._names_before(entry))
+                if entry
+                else (lambda: self._names_ahead_of(priority))
+            )
+            _starts, position, blocked = self._memory_view(memory, list_ahead)
             return blocked and position >= self.caps.queue_max
         if entry is not None:
             return self._rank(entry) >= self.caps.cap_for(job_class) + self.caps.queue_max
@@ -670,18 +682,29 @@ class SlotStore:
         own = token.path.name
         return [name for name in sorted(self._live_entry_names(CLASS_MEMORY)) if name < own]
 
-    def _memory_view(self, claim: MemoryClaim, ahead_names: list[str]) -> tuple[bool, int, bool]:
-        """``_memory_queue`` over the entries named *ahead_names*, read fresh from disk.
+    def _memory_view(
+        self, claim: MemoryClaim, list_ahead: Callable[[], list[str]]
+    ) -> tuple[bool, int, bool]:
+        """``_memory_queue`` over the entries *list_ahead* names, read fresh from disk.
 
         Reads each entry directly (not through ``snapshot``, which skips
         unreadable ones): an entry that cannot be read, or carries no claim,
-        is ``None`` and fails closed.
+        is ``None`` and fails closed. An entry that vanished between the
+        listing and the read was released or promoted meanwhile, so the
+        listing is stale: list again (a bounded number of times) instead of
+        counting it as blocking.
         """
-        holders: list[MemoryClaim | None] = []
-        waiters: list[MemoryClaim | None] = []
-        for name in ahead_names:
-            held = self._read_memory_claim(self.root / CLASS_MEMORY / name)
-            (holders if name.startswith(f"{_HOLDER}-") else waiters).append(held)
+        for _attempt in range(_MEMORY_VIEW_ATTEMPTS):
+            holders: list[MemoryClaim | None] = []
+            waiters: list[MemoryClaim | None] = []
+            vanished = False
+            for name in list_ahead():
+                path = self.root / CLASS_MEMORY / name
+                held = self._read_memory_claim(path)
+                vanished = vanished or (held is None and not path.exists())
+                (holders if name.startswith(f"{_HOLDER}-") else waiters).append(held)
+            if not vanished:
+                break
         return _memory_queue(holders, waiters, claim)
 
     def _read_memory_claim(self, path: Path) -> MemoryClaim | None:
@@ -695,7 +718,7 @@ class SlotStore:
         """0-based queue position of a waiter, or None when its turn has come."""
         if token.memory is not None:
             starts_now, position, _blocked = self._memory_view(
-                token.memory, self._names_before(token)
+                token.memory, lambda: self._names_before(token)
             )
             return None if starts_now else position
         cap = self.caps.cap_for(token.job_class)

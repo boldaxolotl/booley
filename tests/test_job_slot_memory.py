@@ -1,14 +1,13 @@
 """Memory Reservations in the shared slot store (#3700, ADR 0087).
 
-A memory claim holds while the reservations of all holders fit its budget. The
-store names the fields it needs through ``job_slots`` at call time, so a missing
-feature fails inside each test body rather than at import.
+A memory claim holds while the reservations of all holders fit its budget.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -216,6 +215,7 @@ def test_unreadable_holder_blocks_promotion(root, world, monkeypatch):
         pytest.param(lambda _store: claim(), id="neither-reservation-nor-run-alone"),
         pytest.param(lambda _store: claim(2000), id="reservation-above-budget"),
         pytest.param(lambda _store: claim(0), id="zero-reservation"),
+        pytest.param(lambda _store: claim(run_alone=cast(Any, 1)), id="non-bool-run-alone"),
         pytest.param(lambda _store: claim(1, budget_mb=float("nan")), id="non-finite-budget"),
     ],
 )
@@ -235,9 +235,10 @@ def test_zero_budget_admits_only_run_alone_claims(root, world):
     [
         {"budget_mb": "lots", "reservation_mb": 1, "run_alone": False},
         {"reservation_mb": 1},
+        {"budget_mb": 10**400, "reservation_mb": 1, "run_alone": False},
         "junk",
     ],
-    ids=["bad-budget", "missing-budget", "not-a-table"],
+    ids=["bad-budget", "missing-budget", "unconvertible-budget", "not-a-table"],
 )
 def test_malformed_memory_field_is_read_as_no_claim(root, world, malformed):
     store = make_store(root, world)
@@ -250,3 +251,65 @@ def test_malformed_memory_field_is_read_as_no_claim(root, world, malformed):
     assert reloaded is not None and reloaded.memory is None
     waiter = join(store, world, 102, claim(100))
     assert store.refresh(waiter).state == QUEUED  # a holder with no readable claim blocks
+
+
+def test_only_the_first_waiter_promotes(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(500))
+    assert store.refresh(holder).state == HOLDING
+    first = join(store, world, 102, claim(400))
+    second = join(store, world, 103, claim(100))
+    # Both fit, but the later one waits for the claim ranked ahead of it.
+    assert store.refresh(second).state == QUEUED
+    assert store.refresh(first).state == HOLDING
+    assert store.refresh(second).state == HOLDING
+
+
+def test_waiting_background_claims_do_not_fill_the_queue_for_interactive(root, world):
+    store = make_store(root, world, SlotCaps(queue_max=1))
+    holder = join(store, world, 101, claim(800))
+    assert store.refresh(holder).state == HOLDING
+    background = join(store, world, 102, claim(400), role=ROLE_BACKGROUND)
+    interactive = join(store, world, 103, claim(400))  # background waiters rank behind it
+    assert store.refresh(interactive).state == QUEUED
+    assert store.refresh(background).state == QUEUED
+
+
+def test_unreadable_waiter_blocks_the_claim_behind_it(root, world, monkeypatch):
+    store = make_store(root, world, SlotCaps(queue_max=1))
+    holder = join(store, world, 101, claim(100))
+    assert store.refresh(holder).state == HOLDING
+    unreadable = join(store, world, 102, claim(100))
+    behind = join(store, world, 103, claim(100))
+    real_load = store._load_token
+
+    def load(path):
+        if path == unreadable.path:
+            raise OSError("sharing violation")
+        return real_load(path)
+
+    monkeypatch.setattr(store, "_load_token", load)
+    assert store.refresh(behind) == TokenState(
+        QUEUED, position=1
+    )  # blocked: its waiter is unknown
+    with pytest.raises(QueueFullError):
+        join(store, world, 104, claim(100))
+
+
+def test_vanished_holder_does_not_refuse_a_claim_that_fits(root, world, monkeypatch):
+    store = make_store(root, world, SlotCaps(queue_max=0))
+    holder = join(store, world, 101, claim(1000))
+    assert store.refresh(holder).state == HOLDING
+    real_read = store._read_memory_claim
+    released = False
+
+    def read_after_release(path):
+        # The holder releases between the listing and the read of its entry.
+        nonlocal released
+        if path == holder.path and not released:
+            released = True
+            store.release(holder)
+        return real_read(path)
+
+    monkeypatch.setattr(store, "_read_memory_claim", read_after_release)
+    assert store.refresh(join(store, world, 102, claim(100))).state == HOLDING
