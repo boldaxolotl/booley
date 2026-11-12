@@ -193,6 +193,13 @@ Packaged release history starts at 0.2.7. For older changes, see
   `branch` points are still collected. A project that passes `--coverage-line`
   in its own `verilator_options` must add `--coverage-branch` to keep them.
   ([PR #3464](https://github.com/boldaxolotl/booley/pull/3464))
+- The Session Runtime now uses Yosys v0.70 at source commit
+  `28ba3cb926fe376fa05ebfc1b921747d011d4557`. Yosys 0.70 reports errors and
+  warnings from the `slang` frontend as Yosys log lines, for example
+  `design.sv:2: ERROR: expected ';'`, followed by the source line and a caret.
+  The column is gone and the line is no longer prefixed `error:`. Booley's
+  design-failure reports read the new form, so no Target change is needed.
+  ([PR #3631](https://github.com/boldaxolotl/booley/pull/3631))
 
 ## 0.4.0 - 04 NOV 2026
 

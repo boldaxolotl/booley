@@ -1045,3 +1045,48 @@ def test_structural_script_keeps_complete_frontend_assignment_commands(tmp_path,
     script = (build / "synth.ys").read_text()
     # The declared string travels byte-escaped, so the "; " split keeps the command whole.
     assert "-set NAME 32'h613b2062 -set WIDTH 8" in script
+
+
+# Real Yosys 0.70+ (28ba3cb92) ``yosys.log`` text from the bundled Sandbox
+# Image, captured through Booley's own generated script. In 0.70 the slang
+# frontend's diagnostics are Yosys log lines (``file:line: ERROR: ...``) and the
+# column is gone.
+_FIXTURES = Path(__file__).parents[1] / "fixtures"
+
+
+def _reorder_generic_banner_first(log: str) -> str:
+    """Move the generic elaboration banner above the located error line."""
+    lines = log.splitlines()
+    banner = next(line for line in lines if line.startswith("ERROR: Design elaboration failed"))
+    located = next(line for line in lines if line.startswith("bad.sv:2: ERROR:"))
+    lines.remove(banner)
+    lines.insert(lines.index(located), banner)
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize("banner_first", [False, True])
+def test_yosys_0_70_slang_error_is_a_design_diagnostic(banner_first: bool) -> None:
+    from booley.flows.eda_failures import first_tool_diagnostic
+
+    log = (_FIXTURES / "slang_error_yosys_0_70.txt").read_text()
+    if banner_first:
+        # A ``2>&1`` file does not fix stdout/stderr order.
+        log = _reorder_generic_banner_first(log)
+
+    # The design-failure path scans every line, so order cannot hide the located one.
+    assert syn_make._design_diagnostic("yosys", log) == "bad.sv:2: ERROR: expected ';'"
+    if not banner_first:
+        # The generic fallback reports the first error line: the located one in
+        # the real capture's order.
+        assert first_tool_diagnostic(log) == "bad.sv:2: ERROR: expected ';'"
+
+
+def test_yosys_0_70_verilog_error_is_a_design_diagnostic(tmp_path: Path) -> None:
+    log = (_FIXTURES / "verilog_error_yosys_0_70.txt").read_text()
+
+    diagnostic = syn_make._design_diagnostic("yosys", log)
+
+    assert diagnostic is not None
+    assert diagnostic.endswith("sv2v_converted.v:3: ERROR: syntax error, unexpected TOK_ASSIGN")
+    (tmp_path / "yosys.log").write_text(log)
+    assert syn_make._converted_lineref(tmp_path) == 3
