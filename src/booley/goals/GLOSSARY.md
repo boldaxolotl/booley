@@ -1,13 +1,13 @@
 # Goal Mode glossary
 
-This is the vocabulary for the inside of one Goal Mode: how its Goals are
-stored, changed, and bound to a worktree and to the runs that produce their
-evidence. It is for contributors working on `booley.goals` and the evidence
-path. [ADR 0092](../../../docs/adr/0092-measure-commits-against-target-metrics.md)
-removes Goal Mode in 0.5.0, and this vocabulary retires with it.
+This is the vocabulary for the inside of one Goal Mode: how its Goals are bound
+to a worktree and to the runs that produce their evidence. It is for
+contributors working on `booley.goals` and the evidence path. [ADR
+0092](../../../docs/adr/0092-measure-commits-against-target-metrics.md) removes
+Goal Mode in 0.5.0, and this vocabulary retires with it.
 
 **Goal Mode**, **Goal**, **Goalset**, **Goal Branch**, **Goal Record**,
-**Goal Change Proposal**, **Change Log**, **Protected Input**,
+**Goal Change**, **Goal Change Proposal**, **Change Log**, **Protected Input**,
 **Review Package**, **Session**, **Test**, **Test Variant**, **Test Run**,
 and **Default Seed** are defined in the
 [shared glossary](../../../docs/GLOSSARY.md); this glossary uses them with
@@ -17,38 +17,12 @@ Goal Mode uses its proposal-and-approval workflow to promote a candidate.
 
 ## Language
 
-**Goal State**:
-Where one Goal Mode is in its lifecycle: `entering`, `active`, `finishing`,
-`finished`, `abandoned`, or `failed`. Only `entering`, `active`, and
-`finishing` occupy the worktree; `finished`, `abandoned`, and `failed` are
-final, and a `failed` Goal Mode may be replaced by a new entry.
-_Avoid_: status, board state, phase
-
 **Worktree Identity**:
 The worktree a Goal Record belongs to, as Git knows it: the repository plus
 the checkout (`main` for the primary checkout, otherwise the linked
 worktree's administrative name). Every path spelling of one worktree has the
 same Worktree Identity. One worktree hosts at most one occupying Goal Mode.
 _Avoid_: worktree path, session, owner
-
-**Goal Origin**:
-Where a Goal came from at entry: the name of a Goalset, or `ad-hoc` when the
-human named it directly. A Goal merged from several requests keeps every
-origin.
-_Avoid_: source, template
-
-**Goal Change**:
-One approved Goal Change Proposal as the Change Log records it when it is
-applied: it adds, relaxes, or retargets one Goal, or waives coverage points
-(`add`, `relax`, `retarget`, `waiver`), together with the human's reason
-and how the approval was obtained. Rejected proposals are not Goal Changes.
-_Avoid_: amendment, criteria edit
-
-**Interrupted Apply**:
-A Goal Change whose intent is in the Change Log but whose application was
-never confirmed, because the process stopped in between. The next call that
-changes or finishes the Goal Mode completes it first.
-_Avoid_: pending change, partial write
 
 **Run Binding**:
 What one Flow or Specialist run was admitted under: its active Goal Record
@@ -64,18 +38,6 @@ first exists. It keeps its Test Variant, seed, and declared arguments and
 environment whatever `tests.toml` says afterwards. A Goal comes to require
 other Test Runs only through a Goal Change, or, when it covers every Test of
 its Target, when a Test is added to that Target. Its outcome is `passed`,
-`failed`, or `missing`.
-_Avoid_: pinned test, locked seed, required test
-
-**Diagnostic Test Run**:
-A Test Run that is no Goal's Frozen Test Run. It is reported, records no
-evidence, and its failure blocks no Goal.
-_Avoid_: extra run, unofficial run
-
-**Discarded Evidence**:
-A run's evidence that was not published because its Run Binding no longer
-held when the run finished: the Goal Mode stopped being active, an affected
-Goal changed, a Protected Input differed at the start or the end of the
-run, the worktree left the Goal Branch, or the bound Target's declaration
-changed during the run. Nothing of it reaches the Goal state or the ledger.
-_Avoid_: rejected run, failed evidence
+`failed`, or `missing`. Any other Test Run is a **Diagnostic Test Run**: it is
+reported, records no evidence, and its failure blocks no Goal.
+_Avoid_: pinned test, locked seed, required test; extra run, unofficial run (for a Diagnostic Test Run)
