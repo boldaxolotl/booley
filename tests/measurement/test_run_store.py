@@ -142,7 +142,11 @@ def test_linked_worktree_finds_the_main_checkouts_run_and_git_status_is_clean(
 
     main_store = MeasurementStore(resolve_common_booley_dir(repo))
     main_store.write(make_run(keyed, "r1"), [])
-    linked_store = MeasurementStore(resolve_common_booley_dir(linked))
+    # In real use the linked worktree is another process: it starts with a cold cache.
+    reset_cache()
+    linked_booley_dir = resolve_common_booley_dir(linked)
+    assert linked_booley_dir == repo / ".booley"
+    linked_store = MeasurementStore(linked_booley_dir)
 
     found = linked_store.measured(keyed.key)
     assert found is not None and found.run_id == "r1"
@@ -158,14 +162,20 @@ def test_every_run_of_a_key_is_kept_and_measured_follows_the_latest(tmp_path: Pa
     store = MeasurementStore(repo / ".booley")
     keyed = key_of(repo, head)
 
-    store.write(make_run(keyed, "r1", minute=1), [])
-    store.write(make_run(keyed, "r2", minute=2, verdict="unmet"), [])
+    # Run ids are random in real use: order must follow finish time, never the id.
+    store.write(make_run(keyed, "c", minute=1), [])
+    store.write(make_run(keyed, "b", minute=2, verdict="unmet"), [])
 
-    assert [run.run_id for run in store.history(keyed.key)] == ["r1", "r2"]
+    assert [run.run_id for run in store.history(keyed.key)] == ["c", "b"]
     assert store.measured(keyed.key) is None
-    store.write(make_run(keyed, "r3", minute=3), [])
+    store.write(make_run(keyed, "a", minute=3), [])
     latest = store.measured(keyed.key)
-    assert latest is not None and latest.run_id == "r3"
+    assert latest is not None and latest.run_id == "a"
+    # A run that finished earlier is history, not the latest, whatever order it was written in.
+    store.write(make_run(keyed, "d", minute=0, verdict="unmet"), [])
+    assert [run.run_id for run in store.history(keyed.key)] == ["d", "c", "b", "a"]
+    latest = store.measured(keyed.key)
+    assert latest is not None and latest.run_id == "a"
 
 
 def test_stopped_and_cancelled_runs_are_stored_but_not_measured(tmp_path: Path) -> None:
@@ -461,6 +471,10 @@ def test_tracked_metric_and_empty_results_decide_measured(tmp_path: Path) -> Non
     assert not store.write(
         replace(run, run_id="r2", rules=tracked_rules, tables=(errored,)), []
     ).measured
+    mismatched = replace(
+        table, results=(MetricResult("cell_count_max", 100, 90, Verdict.TRACKED, None),)
+    )
+    assert not store.write(replace(run, run_id="r4", tables=(mismatched,)), []).measured
     empty = replace(run, run_id="r3", rules=MetricsRules(Path("metrics.toml"), ()), tables=())
     assert not store.write(empty, []).measured
 
