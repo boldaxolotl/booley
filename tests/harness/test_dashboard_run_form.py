@@ -32,8 +32,12 @@ def parser_for(flow: str) -> argparse.ArgumentParser:
 # --- AC2: the drift tests -------------------------------------------------------
 
 
-@pytest.mark.parametrize("flow", FLOW_NAMES)
-def test_every_offered_option_is_placed(flow):
+def test_every_offered_option_is_placed():
+    for flow in FLOW_NAMES:
+        assert_every_offered_option_is_placed(flow)
+
+
+def assert_every_offered_option_is_placed(flow):
     from booley.flows.cli_help import option_groups
     from booley.harness.dashboard import run_form
 

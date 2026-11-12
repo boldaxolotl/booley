@@ -315,8 +315,14 @@ FORM_SCRIPTS: dict[str, FormScript] = {
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("flow", FLOW_NAMES)
-async def test_every_builtin_flow_launches_through_the_form(checkout, spawned, tmp_path, flow):
+async def test_every_builtin_flow_launches_through_the_form(checkout, spawned, tmp_path):
+    for flow in FLOW_NAMES:
+        spawned.clear()
+        await launch_flow_through_the_form(checkout, spawned, tmp_path / flow, flow)
+
+
+async def launch_flow_through_the_form(checkout, spawned, tmp_path, flow):
+    """Fill the form for one Flow, submit it, and compare shown and submitted commands."""
     if flow not in FORM_SCRIPTS:
         pytest.fail(f"add a form script for the new built-in Flow {flow!r}")
     script = FORM_SCRIPTS[flow]
