@@ -1,6 +1,7 @@
 # Position Booley as an agentic development environment
 
-Status: accepted
+Status: accepted (amended 2026-11-12: the positioning names RTL design and
+verification instead of FPGA and ASIC development, see Amendments)
 
 Amended by [ADR 0092](0092-measure-commits-against-target-metrics.md): once
 Goal Mode is removed, read "Goal status" and "Review Package" below as the
@@ -22,9 +23,10 @@ running parallel coding agents in separate worktrees.
 
 ## Decision
 
-Booley is an **agentic development environment (ADE) for FPGA and ASIC
-development**. The tagline is "The open-source Agentic Development
-Environment (ADE) for FPGA and ASIC development". The term is new and unknown in
+Booley is an **agentic development environment (ADE) for RTL design and
+verification** (amended 2026-11-12, see Amendments). The tagline is "The
+open-source Agentic Development Environment (ADE) for RTL design and
+verification". The term is new and unknown in
 hardware, so taglines and first mentions spell it out; bare "ADE" is used
 only after that. The product name, the `booley-rtl` package, and the CLI stay as
 they are.
@@ -56,3 +58,30 @@ break the package, CLI, repository, and published links for no gain.
 - The CHANGELOG keeps its historical "IDE" wording.
 - Internal names such as the site's `ide-figure.html` are left alone: that
   illustration shows a VS Code window.
+
+## Amendments (2026-11-12)
+
+The positioning was "an agentic development environment (ADE) for FPGA and
+ASIC development", with the tagline "The open-source Agentic Development
+Environment (ADE) for FPGA and ASIC development". Both now end in "for RTL
+design and verification". The ADE category and everything else in this ADR
+stand.
+
+- "ASIC development" reads as covering the back end: place and route, and
+  sign-off. Booley covers the front end, and the product of the front end is
+  RTL. Its Flows simulate and lint the RTL, and their synthesis and FPGA
+  implementation numbers guide RTL changes; they do not sign off a chip.
+- "RTL design and verification" is the usual name for that front-end work.
+  Verification here means what Booley does today: simulation, coverage, and
+  mutation testing of the RTL under design. The roadmap's Verification
+  Engineering section covers workflows for dedicated verification engineers,
+  which are planned.
+- "For FPGA and ASIC RTL development" was rejected: with "(ADE)" in front, it
+  puts four abbreviations in one line.
+- "For HDL code" was rejected: the project says RTL everywhere, including the
+  `booley-rtl` package name, and "code" undersells measuring area, timing, and
+  coverage.
+- FPGA and ASIC stay named where a doc says what a Flow supports, such as the
+  Flow tables and SUPPORTED-EDA-TOOLS.
+- The blog post published before this amendment and the CHANGELOG keep their
+  wording.

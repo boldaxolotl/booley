@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # PyPI distribution name ("booley" was taken); the import package stays `booley`.
 name = "booley-rtl"
 dynamic = ["version"]
-description = "The open-source Agentic Development Environment (ADE) for FPGA and ASIC development"
+description = "The open-source Agentic Development Environment (ADE) for RTL design and verification"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
