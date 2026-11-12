@@ -230,3 +230,57 @@ def test_jobs_option_lookalikes_do_not_disable_parallel_policy(
 
 def test_non_verilator_receives_no_backend_arguments() -> None:
     assert verilator_backend_arguments(_inspection(eda_tool="icarus")) == ()
+
+
+def test_checkout_build_budget_uses_the_main_job_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkout's own ``[jobs]`` never resizes the machine budget Main sets."""
+    from booley.runtime import booley_dir
+
+    main = tmp_path / "main-booley"
+    main.mkdir()
+    (main / "booley.toml").write_bytes(b'[jobs]\nmax_heavy = 1\nheavy_memory = "8g"\n')
+    checkout = tmp_path / "checkout"
+    (checkout / ".booley").mkdir(parents=True)
+    (checkout / ".booley" / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 4\n")
+    monkeypatch.setenv("BOOLEY_DIR", str(main))
+    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
+    monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
+    booley_dir.reset_cache()
+    try:
+        arguments = verilator_backend_arguments(_inspection(), project_root=checkout)
+    finally:
+        booley_dir.reset_cache()
+
+    assert arguments == ("-j8", "VM_PARALLEL_BUILDS=1")
+
+
+def test_build_budget_defaults_outside_any_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare invocation with no resolvable Project gets the default budget, not a crash."""
+    from booley.runtime import booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    booley_dir.reset_cache()
+    try:
+        assert build_parallelism._load_common_job_budget(None) == {}
+    finally:
+        booley_dir.reset_cache()
+
+
+def test_build_budget_defaults_when_the_main_directory_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unusable selection that admission tolerates leaves the build on the defaults, loudly."""
+
+    def unusable(_start: Path | None) -> Path:
+        raise RuntimeError("selection is unusable")
+
+    monkeypatch.setattr(build_parallelism, "resolve_common_booley_dir", unusable)
+
+    with caplog.at_level("WARNING"):
+        assert build_parallelism._load_common_job_budget(None) == {}
+    assert "selection is unusable" in caplog.text

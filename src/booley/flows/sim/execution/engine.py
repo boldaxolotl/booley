@@ -96,7 +96,7 @@ from booley.flows.target_test_plan_loading import (
 from booley.flows.terminal_progress import announce_unit
 from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -381,7 +381,7 @@ class PreparedOrdinaryGroup:
         if not selftest_overlay.bad_selftest_requested(os.environ):
             yield run_cwd
             return
-        booley_dir = resolve_booley_dir(self._handle.project_root)
+        booley_dir = resolve_checkout_booley_dir(self._handle.project_root)
         with selftest_overlay.managed_runtime_view(
             self._handle.project_root,
             booley_dir,
