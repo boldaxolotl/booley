@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Git pre-push hook: block pushes whose outgoing commits leak or misattribute.
+"""Git pre-push hook: block pushes whose outgoing commits or ref names leak or misattribute.
 
 The commit-msg check covers ``git commit`` and ``git merge`` — but git
 runs no message hook at all for ``git revert``/``git cherry-pick``, and
@@ -18,6 +18,10 @@ the push on any of these offenses:
    arriving via rebase, cherry-pick, or ``--no-verify``.
 3. **A repository-visible path into the Booley Directory**, including
    a symlink whose committed target resolves there.
+4. **A remote ref name with a banned phrase**, for a branch, a tag or any other
+   ref the push creates or updates. Only the name on the remote is checked, so
+   ``git push <remote> <local>:<new-name>`` is the way out; deleting such a
+   remote ref is always allowed.
 
 Packaged into the Project's ``.booley/.managed/project-git-hooks.pyz``
 bundle by ``booley init``. Its flat imports resolve from the zip root, so Git
@@ -81,6 +85,7 @@ class InspectionError(ValueError):
 class _Update:
     local: str
     old: str
+    remote_ref: str
 
 
 def _run_git(args, *, cwd=None, env=None, data=None, timeout=60):
@@ -402,8 +407,32 @@ def _updates(text, inspection):
             raise InspectionError("invalid pre-push ref name")
         # Git preserves typed revision labels; only validated protocol OIDs reach queries.
         if set(local) != {"0"}:
-            updates.append(_Update(local.lower(), old.lower()))
+            updates.append(_Update(local.lower(), old.lower(), remote_ref))
     return updates
+
+
+def _ref_name_leaks(updates, policy):
+    """Return ``(remote ref, banned terms)`` for each pushed ref whose name leaks.
+
+    Only the name on the remote is scanned. Git's own ``refs/heads/`` and
+    ``refs/tags/`` namespace words are not user content, so they are stripped
+    (they could otherwise trip a user term such as ``heads``); any other
+    namespace is scanned whole. Deletions never reach *updates*.
+    """
+    leaks = []
+    for ref in dict.fromkeys(update.remote_ref for update in updates):
+        name = next(
+            (
+                ref[len(prefix) :]
+                for prefix in ("refs/heads/", "refs/tags/")
+                if ref.startswith(prefix)
+            ),
+            ref,
+        )
+        terms = policy.find_banned(name)
+        if terms:
+            leaks.append((ref, terms))
+    return leaks
 
 
 def _location(location, root):
@@ -894,15 +923,14 @@ def main() -> int:
         return 0
 
     try:
-        offenders, unavailable = _inspect_push(repository_root)
+        ref_leaks, offenders, unavailable = _inspect_push(repository_root)
     except (InspectionError, OSError, UnicodeError, ValueError) as exc:
         print(f"ERROR: push blocked: {exc}", file=sys.stderr)
         return 1
 
-    if not offenders:
-        return 0
-
-    return _report_offenders(offenders, unavailable)
+    if ref_leaks:
+        return _report_ref_leaks(ref_leaks)
+    return _report_offenders(offenders, unavailable) if offenders else 0
 
 
 def _inspect_push(repository_root):
@@ -910,13 +938,18 @@ def _inspect_push(repository_root):
     protocol = sys.stdin.read()
     updates = _updates(protocol, _Protocol(repository_root))
     if not updates:
-        return [], False
+        return [], [], False
+    policy = stealth_policy(repository_root)
+    ref_leaks = _ref_name_leaks(updates, policy)
+    if ref_leaks:
+        # Refuse on the name alone: no destination discovery, no network. The
+        # commit checks run when the corrected push arrives.
+        return ref_leaks, [], False
     upstream = validate_push_configuration(repository_root)
     if len(sys.argv) != 3 or not sys.argv[1] or not sys.argv[2]:
         raise InspectionError("active push requires destination name and location")
     inspection = _Inspection(repository_root)
     commits, unavailable = _outgoing_range(inspection, updates, sys.argv[2], upstream)
-    policy = stealth_policy(repository_root)
     offenders = _inspect_commits(
         inspection,
         commits,
@@ -924,7 +957,20 @@ def _inspect_push(repository_root):
         _guard_booley_dir(repository_root),
         policy,
     )
-    return offenders, unavailable
+    return [], offenders, unavailable
+
+
+def _report_ref_leaks(ref_leaks):
+    print("ERROR: push blocked by leak-guard pre-push hook.", file=sys.stderr)
+    print("Remote ref name(s) contain banned terms:", file=sys.stderr)
+    for ref, terms in ref_leaks:
+        print(f"  - {ref}: {', '.join(terms)}", file=sys.stderr)
+    print(
+        "Push under another name (git push <remote> <local>:<new-name>) or rename the "
+        "branch or tag, then push again.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def _report_offenders(offenders, unavailable):

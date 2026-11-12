@@ -20,6 +20,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from booley.commit_policy import stealth_enabled
 from booley.core.booley_dir import owning_checkout
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.safe_storage import refuse_symlinks
@@ -31,13 +32,27 @@ logger = logging.getLogger(__name__)
 WORKTREE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 _STAMP_DIR = ".last-used"
-# Branch namespaces of an interactive worktree: the RTL repository holds
-# ``booley/<name>``, the Versioned Booley Directory ``booley-worktree/<name>``.
-_BRANCH_PREFIXES = ("booley/", "booley-worktree/")
+# Branch namespaces of an interactive worktree in the RTL repository:
+# ``booley/<name>``, or ``wt/<name>`` under Stealth Mode so that no default banned
+# term reaches a branch name. The Versioned Booley Directory holds
+# ``booley-worktree/<name>`` whatever the setting.
+_WORKTREE_BRANCH_PREFIXES = ("booley/", "wt/")
+_BRANCH_PREFIXES = (*_WORKTREE_BRANCH_PREFIXES, "booley-worktree/")
 # Allocation runs under the Session writer lock that every tool call's registry
 # upsert waits on, so Git gets far less than the usual 30 s.
 _GIT_TIMEOUT_SECONDS = 5
 _SESSION_LABEL = re.compile(r"S([0-9]+)")
+
+
+def worktree_branch(project_root: Path, name: str) -> str:
+    """Return the branch a new interactive worktree *name* gets in the RTL repository.
+
+    ``wt/<name>`` while Stealth Mode is on (it fails closed on an unreadable
+    ``booley.toml``), ``booley/<name>`` otherwise. This is the one place the
+    prefix is chosen; code that looks up an existing branch accepts both.
+    """
+    prefix = "wt/" if stealth_enabled(project_root) else "booley/"
+    return f"{prefix}{name}"
 
 
 def interactive_worktree_name(path: Path, common: Path) -> str | None:
@@ -122,7 +137,7 @@ def _branch_names(repository: Path) -> set[str]:
 
 
 def _taken_by_branch(names: set[str], number: int) -> bool:
-    """Whether a branch is, or lies below, ``booley/s<N>`` or ``booley-worktree/s<N>``.
+    """Whether a branch is, or lies below, ``booley/s<N>``, ``wt/s<N>`` or ``booley-worktree/s<N>``.
 
     Git refuses ``worktree add -b booley/s1`` while ``booley/s1/x`` exists, so a
     nested branch occupies the name as well.
@@ -135,10 +150,10 @@ def session_number_taken(common: Path) -> Callable[[int], bool]:
     """Return a predicate: whether handle number *N* is occupied by worktree ``s<N>``.
 
     Occupied means ``<common>/worktrees/s<N>`` exists in any form (a half-created
-    or dangling entry still holds the name), or a ``booley/s<N>`` or
-    ``booley-worktree/s<N>`` branch exists (or one below either name) in the RTL
-    checkout owning *common* or in *common* itself when it is a Versioned
-    Booley Directory. Branches are read on first use and cached, so one
+    or dangling entry still holds the name), or a ``booley/s<N>``,
+    ``wt/s<N>`` or ``booley-worktree/s<N>`` branch exists (or one below any of
+    those names) in the RTL checkout owning *common* or in *common* itself when
+    it is a Versioned Booley Directory. Branches are read on first use and cached, so one
     allocation costs at most two Git calls.
     """
     branches: set[str] | None = None
