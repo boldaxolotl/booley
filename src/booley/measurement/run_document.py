@@ -81,9 +81,12 @@ def tables_in_rules_order(run: MeasurementRun) -> list[tuple[TableRun, list[Metr
     Serialization walks the rules, so an omitted bound cannot make a run look Measured.
 
     Raises:
-        ValueError: a rules table, a rules entry or a result has no counterpart (a writer bug).
+        ValueError: a rules table, a rules entry or a result has no counterpart, a table
+            ran twice, or a result contradicts its rules (a writer bug).
     """
     runs = {(table.identity, table.flow): table for table in run.tables}
+    if len(runs) != len(run.tables):
+        raise ValueError("a rules table has more than one run")  # the last would hide the first
     ordered: list[tuple[TableRun, list[MetricResult]]] = []
     for rules in run.rules.tables:
         table = runs.pop((rules.identity, rules.flow), None)
@@ -98,6 +101,13 @@ def tables_in_rules_order(run: MeasurementRun) -> list[tuple[TableRun, list[Metr
             results[tracked.key].bound is not None for tracked in rules.tracked
         ):
             raise ValueError(f"bounds of {rules.identity} {rules.flow} do not match its rules")
+        if any(
+            result.value is None and result.verdict in (Verdict.MET, Verdict.TRACKED)
+            for result in results.values()
+        ):
+            raise ValueError(
+                f"{rules.identity} {rules.flow} has a met or tracked result with no value"
+            )
         ordered.append((table, [results[key] for key in keys]))
     if runs:
         raise ValueError(f"runs without rules: {sorted(runs)}")
@@ -109,6 +119,8 @@ def run_document(
 ) -> dict[str, Any]:
     """Build the schema 1 document; *kept* and *dropped* describe the text reports."""
     keyed = run.keyed
+    if run.started_at.tzinfo is None or run.finished_at.tzinfo is None:
+        raise ValueError("run times must be timezone-aware: ordering by finish time depends on it")
     return {
         "schema": SCHEMA,
         "run_id": run.run_id,

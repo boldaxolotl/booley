@@ -345,30 +345,53 @@ def test_duplicate_report_and_repeated_run_id_are_refused(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize(
     "flaw",
-    ["missing-result", "unknown-table", "stray-table", "bound-as-tracked", "tracked-as-bound"],
+    [
+        "missing-result",
+        "unknown-table",
+        "stray-table",
+        "bound-as-tracked",
+        "bound-drift",
+        "tracked-with-bound",
+        "duplicate-table",
+        "met-without-value",
+        "naive-time",
+    ],
 )
 def test_write_rejects_a_run_whose_results_do_not_cover_its_rules(
     tmp_path: Path, flaw: str
 ) -> None:
     from dataclasses import replace
 
-    from booley.measurement.run_document import Verdict
+    from booley.measurement.run_document import MetricResult, Verdict
     from booley.measurement.run_store import MeasurementStore
 
     repo, head = in_tree_repository(tmp_path / "repo")
     store = MeasurementStore(repo / ".booley")
     run = make_run(key_of(repo, head), "r1", omit_results=flaw == "missing-result")
+    table = run.tables[0]
     if flaw == "unknown-table":
         run = replace(run, tables=())
     if flaw == "stray-table":
-        run = replace(run, tables=(*run.tables, replace(run.tables[0], flow="sim")))
-    if flaw in ("bound-as-tracked", "tracked-as-bound"):
-        # An enforced result written as tracked (or the reverse) must never reach the store.
-        bound = None if flaw == "bound-as-tracked" else 5
-        verdict = Verdict.TRACKED if bound is None else Verdict.MET
-        table = run.tables[0]
-        results = (replace(table.results[0], bound=bound, verdict=verdict),)
-        run = replace(run, tables=(replace(table, results=results),))
+        run = replace(run, tables=(*run.tables, replace(table, flow="sim")))
+    if flaw == "duplicate-table":
+        # The first, unmet copy must not be hidden by a met second one.
+        unmet = replace(table, results=(replace(table.results[0], verdict=Verdict.UNMET),))
+        run = replace(run, tables=(unmet, table))
+    if flaw in ("bound-as-tracked", "bound-drift", "met-without-value"):
+        change = {
+            "bound-as-tracked": {"bound": None, "verdict": Verdict.TRACKED},
+            "bound-drift": {"bound": 5},
+            "met-without-value": {"value": None},
+        }[flaw]
+        run = replace(
+            run, tables=(replace(table, results=(replace(table.results[0], **change),)),)
+        )
+    if flaw == "tracked-with-bound":
+        run = replace(run, rules=rules(with_tracked=True))
+        tracked = MetricResult("area", 5, 7, Verdict.TRACKED, None)
+        run = replace(run, tables=(replace(table, results=(*table.results, tracked)),))
+    if flaw == "naive-time":
+        run = replace(run, finished_at=run.finished_at.replace(tzinfo=None))
 
     with pytest.raises(ValueError):
         store.write(run, [])
