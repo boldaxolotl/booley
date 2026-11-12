@@ -42,6 +42,8 @@ through simulation, synthesis, linting, and Goal workflows.
   Mergify reports an authorized merge, delete its local branch and worktree
   and its GitHub branch.
 - Read `docs/internals/CODING_PRINCIPLES.md` before writing Python code.
+- Read `docs/internals/DOCS_PRINCIPLES.md` before writing, editing, or
+  reviewing docs; Part 2 adds the rules for user-facing docs.
 - Ruff findings are repository work: during Python work, fix every finding
   reported for `src/` or `tests/`, including pre-existing or unrelated
   findings. Before committing, run the complete Ruff command reported by
