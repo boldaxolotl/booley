@@ -25,6 +25,9 @@ corpus) → `bwave schema` (JSON Schema for `--format json`).
   store. Convert a VCD with `bwave build trace.vcd -o trace.fst` first;
   passing the VCD to a query exits 2 with a build hint. See
   `bwave docs show commands/overview` for the shared file-input rule.
+- **Sessions**: after `booley flow sim` with tracing, `@<target>` and the
+  default session point at that run's waveform, so queries need no trace path.
+  The latest traced run in the Sandbox owns them.
 - **Sync mode (default)**: every emitted row is indexed by *clock cycle*. Cycle
   1 is the first rising edge after reset deasserts. The clock is auto-detected
   (`*clk*` heuristic, shallowest scope wins) — override with `--clock PATTERN`.
