@@ -74,30 +74,6 @@ ALLOWLIST += tuple(
     for path in ("docs/user/TROUBLESHOOTING.md",)
 )
 
-# The rendered FLOW_REPORTS.md (its source is under docs/internals, which is not
-# scanned, so it is scanned as rendered by ``document_texts``) documents how Booley
-# reads reports written by older versions.
-ALLOWLIST += (
-    ExceptionRule(
-        "docs/internals/FLOW_REPORTS.md",
-        "the old Campaign can no longer be resumed",
-        "Current resume behavior after the suite or sources changed.",
-        2,
-    ),
-    ExceptionRule(
-        "docs/internals/FLOW_REPORTS.md",
-        "legacy reports keep their old artifact hints",
-        "Current reading of reports written by older versions.",
-        2,
-    ),
-    ExceptionRule(
-        "docs/internals/FLOW_REPORTS.md",
-        "distinct from the legacy",
-        "Current report field that older reports carry.",
-        1,
-    ),
-)
-
 
 def document_paths(root: Path) -> list[Path]:
     """Discover current user text, with explicit history/implementation exclusions.

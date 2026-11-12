@@ -242,8 +242,8 @@ def _target(
     public = _read_object(public_path)
     if _is_standalone_coverage(public):
         raise _refuse_standalone_coverage(root, target)
-    resolved = resolve_coverage_campaign_reference(public_path)
     try:
+        resolved = resolve_coverage_campaign_reference(public_path)
         authenticate_coverage_campaign_owner(resolved)
     except UnsupportedSimulationCampaignFormatError as exc:
         raise CampaignRetentionError(str(exc)) from exc

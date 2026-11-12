@@ -246,14 +246,10 @@ _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 _CONTAINER_CLI = "doc" + "ker"
 # B-Wave is unconditionally required; enabled deterministic Flows are added below.
 _BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
-# Specialist MCP tools worth a heads-up when expected-but-absent from
-# the MCP surface. An explicit ``[specialists.<name>].enabled = false`` opts out.
-_ADVISORY_INTERACTIVE_MCP_TOOLS = frozenset(
-    {
-        "mutation_tester",
-        "reviewer",
-    }
-)
+# MCP tools worth a heads-up when expected-but-absent from the MCP surface. An explicit
+# ``[specialists.<name>].enabled = false`` (or ``[flows.<name>].enabled = false``) opts out.
+_ADVISORY_SPECIALIST_TOOLS = frozenset({"reviewer"})
+_ADVISORY_FLOW_TOOLS = frozenset({"mutation"})
 _MCP_PROBE_TIMEOUT_S = 60
 # Budget for the one Sandbox container that resolves every selected Target.
 _CORE_RESOLVE_TIMEOUT_S = 600
@@ -3663,11 +3659,13 @@ def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
     specialists_cfg = project.booley_toml.get("specialists", {})
     if not isinstance(specialists_cfg, dict):
         specialists_cfg = {}
-    return {
+    tools = {
         name
-        for name in _ADVISORY_INTERACTIVE_MCP_TOOLS
+        for name in _ADVISORY_SPECIALIST_TOOLS
         if config_section(specialists_cfg, name).get("enabled") is not False
     }
+    tools.update(name for name in _ADVISORY_FLOW_TOOLS if _flow_enabled(project, name))
+    return tools
 
 
 def _run_project_checks(
@@ -3690,6 +3688,7 @@ def _run_project_checks(
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
     _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
+    _check_disabled_endpoints(project, reporter.note_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
             project.project_root,
@@ -4075,6 +4074,34 @@ def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail
         )
         return
     _pass("custom endpoints and Criteria validated")
+
+
+def _check_disabled_endpoints(project: ProjectAudit, _note: Check) -> None:
+    """NOTE the Specialists and custom Flows that ``booley.toml`` turns off.
+
+    Built-in Flows are left out: the Flow audit already prints a line for each.
+    Invalid endpoint configuration is reported by the custom-endpoint check instead.
+    """
+    from booley.mcp.endpoint_config import EndpointConfigError, parse_endpoint_config
+    from booley.mcp.registry import BUILTIN_FLOW_PACKAGES, discover_mcp_inventory, filter_mcp_tools
+
+    try:
+        specialists, flows = parse_endpoint_config(project.booley_toml)
+        inventory = discover_mcp_inventory(project_mcp_tools_dir=project.booley_dir / "mcp_tools")
+        enabled = filter_mcp_tools(inventory, specialist_config=specialists, flow_config=flows)
+    except EndpointConfigError:
+        return
+    enabled_names = {info.name for info in enabled}
+    disabled = sorted(
+        {
+            info.name
+            for info in inventory
+            if info.name not in enabled_names
+            and not (info.kind == "flow" and info.name in BUILTIN_FLOW_PACKAGES)
+        }
+    )
+    if disabled:
+        _note(f"MCP endpoints disabled in booley.toml: {', '.join(disabled)}")
 
 
 def _check_agent_backend_health(
@@ -5017,7 +5044,7 @@ def _check_sim_target_tb_staging(
     the design:
 
     - files staged but none tagged ``tags:[tb]`` (ADR 0022 dec 13): Source
-      Isolation would mis-classify the TB as RTL (mutation_tester would
+      Isolation would mis-classify the TB as RTL (the Mutation Flow would
       mutate it).
     - ZERO files staged at all: the untagged-TB predicate needs RTL files to
       fire, so a sim Target whose filesets list stages nothing (e.g. the tb

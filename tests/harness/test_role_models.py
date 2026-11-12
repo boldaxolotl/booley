@@ -27,7 +27,7 @@ _BUILTIN = {
 
 # Literal (not bc.SPECIALISTS) so collection works on any version; the drift guard
 # below keeps the Specialist vocabulary itself honest.
-_SPECIALIST_NAMES = ("coverage_analyst", "mutation_tester", "reviewer")
+_SPECIALIST_NAMES = ("coverage_analyst", "reviewer")
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +103,30 @@ def test_invalid_config_fails_loading_naming_key(tmp_path):
         assert fails == [message]
 
 
+def test_model_roles_are_reviewer_and_coverage_analyst():
+    """Mutation testing runs no model, so only the two model-backed Specialists are roles."""
+    assert {"reviewer", "coverage_analyst"} == bc.SPECIALISTS
+
+
+def test_stale_mutation_tester_key_fails_with_delete_hint(tmp_path):
+    """A ``[models] mutation_tester`` left from an older release is reported with its fix."""
+    from booley.audit.agent_schema import audit_models_table
+
+    body = '[models]\nmutation_tester = "claude-opus-5-5"\n'
+    _write_toml(tmp_path, body)
+
+    with pytest.raises(BackendConfigError, match=r"unknown key 'mutation_tester'") as excinfo:
+        load_agent_settings(tmp_path)
+    assert str(excinfo.value).endswith(
+        "delete [models] mutation_tester or rename it to a valid key."
+    )
+
+    (finding,) = audit_models_table(tomllib.loads(body)).findings
+    assert finding.severity is ConfigFindingSeverity.FAIL
+    assert "delete [models] mutation_tester" in finding.fix
+    assert "coverage_analyst, reviewer" in finding.fix
+
+
 _RETIRED_MODEL_KEYS_FAIL_WITH_MIGRATION_ENTRIES_CASES = [
     (
         '[models]\nstandard = "claude-sonnet-5-5"\n',
@@ -113,7 +137,7 @@ _RETIRED_MODEL_KEYS_FAIL_WITH_MIGRATION_ENTRIES_CASES = [
         [
             "[models]",
             'reviewer = "gpt-6-luna"',
-            'mutation_tester = "claude-opus-5-5"',
+            'coverage_analyst = "claude-opus-5-5"',
             "[agent]",
             'clis = ["claude", "codex"]',
         ],
@@ -168,7 +192,7 @@ def test_eager_and_lazy_resolve_the_same_default_cli(tmp_path, monkeypatch):
         pytest.param(
             None,
             {
-                "claude-opus-5-5": ("[models] coverage_analyst", "[models] mutation_tester"),
+                "claude-opus-5-5": ("[models] coverage_analyst",),
                 "gpt-6-luna": ("[models] reviewer",),
             },
             id="pins",
@@ -176,7 +200,7 @@ def test_eager_and_lazy_resolve_the_same_default_cli(tmp_path, monkeypatch):
         pytest.param(
             "gw-model",
             {
-                "claude-opus-5-5": ("[models] coverage_analyst", "[models] mutation_tester"),
+                "claude-opus-5-5": ("[models] coverage_analyst",),
                 "gw-model": ("BOOLEY_GATEWAY_MODEL",),
             },
             id="gateway-pin-codex-only",
@@ -387,7 +411,7 @@ def test_model_list_entry_outside_clis_loads(tmp_path):
     assert settings.model_candidates("reviewer") == ("claude-opus-5-5", "gpt-6-luna")
     assert settings.model_for_specialist("reviewer") == "claude-opus-5-5"
     assert settings.cli_for_specialist("reviewer") == "claude"
-    assert settings.model_candidates("mutation_tester") is None
+    assert settings.model_candidates("coverage_analyst") is None
     assert settings.model_settings()["gpt-6-luna"] == ("[models] reviewer",)
 
     _write_toml(tmp_path, '[agent]\ndefault = "claude"\n\n[models]\nreviewer = "gpt-6-luna"\n')

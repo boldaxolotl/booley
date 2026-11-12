@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import tomllib
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_dir_pin import require_pinned_entry
@@ -309,6 +310,17 @@ def resolve_common_booley_dir(start: Path | None = None) -> Path:
     return selected if main is None else main
 
 
+def main_booley_dir_of(project_root: Path) -> Path:
+    """Return the Main Booley Directory of the Project checked out at *project_root*.
+
+    Unlike :func:`resolve_common_booley_dir`, the checkout is explicit: the process
+    cache cannot name another Project, and ``BOOLEY_DIR`` is read only when the
+    checkout has no Booley Directory of its own.
+    """
+    selected = resolve_checkout_booley_dir(project_root)
+    return _main_booley_dir(selected) or selected
+
+
 def resolve_main_checkout_root(project_root: Path) -> Path:
     """Return the main checkout of *project_root*'s repository.
 
@@ -397,6 +409,28 @@ def own_booley_dir_relative(checkout_root: Path) -> PurePosixPath:
     if absolute or directory == root or not directory.is_relative_to(root):
         raise BooleyDirOutsideCheckoutError(directory, root)
     return PurePosixPath(*directory.relative_to(root).parts)
+
+
+def booley_dir_relative(configured: str) -> PurePosixPath:
+    """Return the in-checkout place a ``[project].dir`` value selects, as a relative path.
+
+    Pure (no filesystem): the same placement rule as :func:`own_booley_dir_relative`,
+    for callers that read ``booley.toml`` from a Git commit instead of a checkout.
+    An empty value selects the default ``.booley``.
+
+    Raises:
+        BooleyDirOutsideCheckoutError: the value is absolute, names the root, or escapes it.
+    """
+    value = configured or BOOLEY_DIR_NAME
+    normal = PurePosixPath(posixpath.normpath(value.replace("\\", "/")))
+    if (
+        PureWindowsPath(value).anchor
+        or normal.is_absolute()
+        or normal.parts in ((), (".",))
+        or normal.parts[0] == ".."
+    ):
+        raise BooleyDirOutsideCheckoutError(value, "root")
+    return normal
 
 
 def own_booley_dir_repo_path(checkout_root: Path) -> PurePosixPath:

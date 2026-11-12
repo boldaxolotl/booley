@@ -1,4 +1,4 @@
-"""Tests for the Mutation Tester's scratch paths and scope hashes."""
+"""Tests for the Mutation Flow's scratch paths and scope hashes."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.dev_support import mutation_workspace as ws
+from booley.flows.mutation import workspace as ws
 
 
 class TestScopeHashing:
@@ -34,19 +34,19 @@ class TestDirectoryResolution:
         runtime = tmp_path / "runtime"
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-        assert ws.mutation_tester_dir() == runtime / "mutation_tester"
-        assert ws.workspace_dir() == runtime / "mutation_tester" / "campaign"
+        assert ws.mutation_dir() == runtime / "mutation"
+        assert ws.workspace_dir() == runtime / "mutation" / "campaign"
 
     def test_logs_dir_env_uses_dot_runtime(self, tmp_path: Path, monkeypatch):
         monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
-        assert ws.workspace_dir() == (tmp_path / ".runtime" / "mutation_tester" / "campaign")
+        assert ws.workspace_dir() == (tmp_path / ".runtime" / "mutation" / "campaign")
 
     def test_explicit_logs_dir_wins_over_env(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
         explicit = tmp_path / "explicit"
-        assert ws.workspace_dir(explicit) == (explicit / "mutation_tester" / "campaign")
+        assert ws.workspace_dir(explicit) == (explicit / "mutation" / "campaign")
 
     def test_helpers_live_under_workspace(self, tmp_path: Path):
         root = ws.workspace_dir(tmp_path)
@@ -56,8 +56,8 @@ class TestDirectoryResolution:
         assert ws.mutant_logs_dir(tmp_path) == root / "mutant_logs"
         assert ws.baseline_log_path(tmp_path) == root / "baseline.log"
 
-    def test_legacy_lock_dir(self, tmp_path: Path):
-        assert ws.legacy_lock_dir(tmp_path) == (tmp_path / "mutation_tester" / "lock")
+    def test_legacy_runtime_dir(self, tmp_path: Path):
+        assert ws.legacy_runtime_dir(tmp_path) == tmp_path / "mutation_tester"
 
     def test_variant_build_dir_rejects_zero_index(self, tmp_path: Path):
         with pytest.raises(ValueError):

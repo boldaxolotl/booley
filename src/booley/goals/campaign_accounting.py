@@ -93,6 +93,7 @@ from booley.flows.campaign_results import (
     CampaignBusyError,
     CampaignResultsReader,
     DurableCampaignResults,
+    OlderBooleyRecordError,
     StartedCampaign,
 )
 from booley.flows.execution_persistence import EvidenceDiscarded
@@ -457,6 +458,8 @@ def _results(
         return reader(Path(registration.manifest_path), registration.manifest_sha256), ""
     except CampaignBusyError:
         return None, "is still running"
+    except OlderBooleyRecordError as exc:  # intact, only too old: it cannot be resumed
+        return None, f"is refused: {exc}"
     except ValueError as exc:  # the campaign's integrity error
         return None, f"cannot be read ({exc})"
 

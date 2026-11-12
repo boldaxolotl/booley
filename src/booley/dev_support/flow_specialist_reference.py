@@ -43,7 +43,9 @@ _PURPOSE_SUMMARY_MAX = 120
 
 # Present built-in Booley Flows in the order a reader encounters them in a normal
 # hardware flow. Project-defined Booley Flows follow these, sorted by name.
-_FLOW_DISPLAY_RANK = {name: rank for rank, name in enumerate(("sim", "lint", "synth", "fpga"))}
+_FLOW_DISPLAY_RANK = {
+    name: rank for rank, name in enumerate(("sim", "lint", "synth", "fpga", "mutation"))
+}
 
 _BASELINE_CONTROL = "`--baseline <ref>` compares metrics against a git revision"
 
@@ -54,7 +56,8 @@ _FLOW_REFERENCE_POINTER = (
     "Shared Flow options and results are in "
     "[FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in "
     "[FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), "
-    "[FLOW-SYNTH.md](FLOW-SYNTH.md), and [FLOW-FPGA.md](FLOW-FPGA.md), including the "
+    "[FLOW-SYNTH.md](FLOW-SYNTH.md), [FLOW-FPGA.md](FLOW-FPGA.md), and "
+    "[FLOW-MUTATION.md](FLOW-MUTATION.md), including the "
     "report files each one writes; `booley flow <name> --help` prints the options too."
 )
 
@@ -62,6 +65,18 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
     "fpga": f"{_BASELINE_CONTROL}; `--ppa-profile compact|balanced|max_frequency` "
     "selects portable optimization intent; `--no-cache` forces a fresh implementation",
     "lint": "`--scope <file,...>` filters reported findings to selected files",
+    "mutation": (
+        "`--target` names exactly one Simulation Target whose complete suite judges each "
+        "Mutant; `--scope <rtl-file,...>` chooses mutation sites (default: the Target's own "
+        "RTL, minus testbench, vendored, and generated files); `--count N|auto` sets the "
+        "Mutant count (default 10; `auto` scales 3-25 from source size and the time budget) "
+        "and `--min-detected K` the pass threshold (default ceil(0.8 x count)); `--seed <N>` "
+        "(default 0) picks another reproducible Mutant set; `--dry-run` previews the count "
+        "without running a simulator. A Mutant that fails to elaborate is `invalid` and not "
+        "scored; a timed-out Mutant counts as `detected (timeout)`. A `MUTATION:{target}` Goal "
+        "sets the same campaign with `total: N`, `min_detected: K`, or `auto: true` "
+        "(default: 10 Mutants, 8 detected)"
+    ),
     "sim": (
         "`--mode elab-only` compiles, elaborates, and links without running tests; "
         "`--mode elab-only-standalone` adds the stronger module sweep. "
@@ -290,50 +305,6 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
     return lines
 
 
-def _render_mutation_tester_reference() -> list[str]:
-    """Render mutation goals and controls from the Specialist's MCP contract."""
-    return [
-        "#### `mutation_tester`",
-        "",
-        "Deterministic mutation testing; it runs no LLM. Booley generates Mutants "
-        "from the RTL, runs a pristine baseline, then compiles and tests each Mutant "
-        "in isolation. The same RTL, `count`, and `seed` give identical Mutants, so "
-        "results are reproducible.",
-        "",
-        "**Mutation campaign modes:**",
-        "",
-        "| Campaign | Goal arguments | Interactive Mode arguments |",
-        "|----------|-----------------------------------------|------------------------|",
-        "| Default fixed | Target campaign with `target` — generate 10 Mutants and require 8 detected (80 %) | _(no goal arguments)_ — the same 10-Mutant, 8-detected campaign |",
-        '| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires 80 % of N, rounded up; add `min_detected=K` to require K |',
-        '| Size-scaled | add `auto: true` — choose 3-25 Mutants from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |',
-        "",
-        "The default threshold is ceil(0.8 x count) detected Mutants, also for a Goal "
-        "without `min_detected`; an explicit `min_detected` overrides it. Survivors are "
-        "reported as `not detected`, with one note that some survivors may be "
-        "equivalent Mutants, which the threshold allows for. An invalid (non-elaborating) "
-        "Mutant is reported `invalid` and not scored.",
-        "",
-        "`dry_run=true` validates Target metadata and prints the source-size breakdown "
-        "and proposed auto count without running a simulator.",
-        "",
-        'Call the `mutation_tester` Specialist from your Developer Agent session: `target="<sim-target>"` '
-        "chooses exactly one complete runnable Target suite; "
-        '`scope="<rtl-file,...>"` optionally chooses mutation sites (default: the '
-        "Target's own RTL, meaning the Project's Verilog/SystemVerilog sources in the "
-        "Target closure, minus testbench, vendored, and generated files and include "
-        "headers); `seed=<int>` (default 0) picks a different reproducible Mutant set. "
-        "The Target supplies the testbench top and complete RTL closure; they are not "
-        "separate caller inputs.",
-        "",
-        "Each Mutant's per-test timeout is max(10 x that test's baseline duration, "
-        "30 s), capped at 300 s. A timed-out Mutant counts as detected and is "
-        "reported separately as `detected (timeout)`. Results and criterion detail "
-        "record the reproducibility identity: scope file hashes, generator version, "
-        "pyslang version, seed, and count.",
-    ]
-
-
 def _render_coverage_analyst_reference() -> list[str]:
     """Render the unified coverage campaign input contract."""
     return [
@@ -361,7 +332,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         key=lambda t: t.name,
     )
     lines = [
-        "Specialists (the Mutation Tester runs no LLM) running in scoped, isolated workspaces:",
+        "Specialists running in scoped, isolated workspaces:",
         "",
         "Ask your Developer Agent session to invoke a Specialist by name with the arguments below. "
         "Or run `booley specialist <name> [args...]` inside the Sandbox. "
@@ -390,14 +361,11 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
             f"| {_format_satisfies(t.satisfies)} | {modifies} |"
         )
     reviewer = next((t for t in specialists if t.name == "reviewer"), None)
-    mutation_tester = next((t for t in specialists if t.name == "mutation_tester"), None)
     coverage_analyst = next((t for t in specialists if t.name == "coverage_analyst"), None)
     if coverage_analyst is not None:
         lines.extend(["", *_render_coverage_analyst_reference()])
     if reviewer is not None:
         lines.extend(["", *_render_reviewer_reference(reviewer.satisfies_args)])
-    if mutation_tester is not None:
-        lines.extend(["", *_render_mutation_tester_reference()])
     return "\n".join(lines)
 
 

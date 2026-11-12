@@ -1,12 +1,14 @@
 ---
 name: booley-gui-check
 description: Only when the user explicitly asks, check one Booley pull request's GUI change in a browser Codespace on the PR head's candidate image, post screenshot evidence on the PR, and return pass, fail, or blocked per check step.
+disable-model-invocation: true
 ---
 
 # Check a PR's GUI change in a Codespace
 
-Use this skill only when the user explicitly invokes it. This is behavioral
-guidance for clients without enforceable invocation metadata.
+Use this skill only when the user explicitly invokes it. Claude Code enforces
+this through `disable-model-invocation` and Codex through
+`agents/openai.yaml`; other clients get it as behavioral guidance only.
 
 Before acting, resolve the real path of this loaded `SKILL.md` (following the
 installed link). Its parent is the skill directory, its grandparent is `qa/`,
@@ -67,11 +69,10 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    comment): fix `<sha>` once with `gh api repos/boldaxolotl/booley/commits/main
    --jq .sha` before the runbook's run lookup, and keep it even if `main` moves
    during the check. With no candidate run for `<sha>`, dispatch on the PR's
-   head branch, or on `main` for a merged PR. Candidate builds reuse the base image published from
-   `main`, so a PR head whose base image differs from `main`'s fails within a
-   minute at "Resolve compatible stable runtime base" (`label mismatch`). Then
-   stop and return `blocked: rebase the PR onto main`. Record in `log.md`
-   whether this run dispatched the build: only then does it own the image.
+   head branch, or on `main` for a merged PR. When the PR changes the base
+   image, the run first builds its own candidate base (about an hour more); see
+   the runbook's "Candidate base" for the summary line and its cleanup. Record
+   in `log.md` whether this run dispatched the build: only then does it own the image.
 3. **Codespace.** Runbook steps 3-6. Record the timings from step 4 and
    step 5. Apply reading mode (step 6) right away, unless a check step is about
    default settings; then run that step first.

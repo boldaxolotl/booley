@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import fnmatch
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 from typing import Any
 
-from booley.config.protected_inputs import validate_declaration, validate_input_path
+from booley.config.protected_inputs import (
+    declaration_matches,
+    validate_declaration,
+    validate_input_path,
+)
 from booley.core.boundary import (
     require_bool_value,
     require_dict,
@@ -116,26 +118,6 @@ def _parse_files(raw: object, rules: Sequence[str]) -> tuple[DeclaredFile, ...]:
     if any(not any(declaration_matches(rule, path) for path in paths) for rule in rules):
         raise ValueError("every saved declaration must match captured files")
     return files
-
-
-def declaration_matches(declaration: str, path: str) -> bool:
-    """Segment-local wildcards; ** matches zero or more complete path components."""
-    pattern = declaration + "**" if declaration.endswith("/") else declaration
-    parts, candidate = pattern.split("/"), path.split("/")
-
-    @cache
-    def match(i: int, j: int) -> bool:
-        if i == len(parts):
-            return j == len(candidate)
-        if parts[i] == "**":
-            return match(i + 1, j) or (j < len(candidate) and match(i, j + 1))
-        return (
-            j < len(candidate)
-            and fnmatch.fnmatchcase(candidate[j], parts[i])
-            and match(i + 1, j + 1)
-        )
-
-    return match(0, 0)
 
 
 def declarations_for(path: str, declarations: Sequence[str]) -> tuple[str, ...]:

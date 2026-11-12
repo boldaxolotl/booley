@@ -67,3 +67,40 @@ def write_metrics_project(root: Path, metrics: str | None = None) -> Path:
     if metrics is not None:
         (data / "metrics.toml").write_bytes(metrics.encode())
     return root
+
+
+_YOSYS_CORE = (
+    "CAPI=2:\nname: ::synth_core:0\ntargets:\n  synth_core:\n"
+    "    flow_options: {tool: yosys}\n    toplevel: top\n"
+)
+_ICARUS_CORE = (
+    "CAPI=2:\nname: ::sim_icarus:0\ntargets:\n  sim_icarus:\n    flow: sim\n"
+    "    flow_options: {tool: icarus}\n    toplevel: top\n"
+)
+
+# `sim_core` registers `smoke`, `stress` (Variants `short`, the default, and `soak`) and
+# `nightly`, which the default suite skips.
+_LISTING_TESTS = (
+    '[sim_core]\ntests = ["smoke", "stress", "nightly"]\nskip = ["nightly"]\n'
+    '[sim_core.variants.stress]\ndefault = "short"\n'
+    'short = ["+iters=10"]\nsoak = ["+iters=1000"]\n'
+    '[sim_two]\ntests = ["a", "b"]\n'
+)
+
+
+def write_listing_project(root: Path) -> Path:
+    """Write the metrics Project with a Yosys ``synth_core`` and an Icarus ``sim_icarus``.
+
+    ``sim_icarus`` has no coverage Flow. ``sim_core`` registers Tests with Variants
+    for the metrics listing. Returns the Project root.
+    """
+    write_metrics_project(root)
+    (root / "synth_core.core").write_bytes(_YOSYS_CORE.encode())
+    (root / "sim_icarus.core").write_bytes(_ICARUS_CORE.encode())
+    (root / ".booley" / "tests.toml").write_bytes(_LISTING_TESTS.encode())
+    return root
+
+
+def fill_listing(listing: str, value: int = 1) -> str:
+    """The listing as a ``metrics.toml``: *value* typed after every empty ``key =``."""
+    return listing.replace(" =  #", f" = {value}  #") + "\n"

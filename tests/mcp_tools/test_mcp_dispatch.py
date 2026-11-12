@@ -2189,7 +2189,7 @@ class TestAsyncJobToolMembership:
         # loop, so an interactive call came back as a bare client-side timeout
         # (no run_id, no poll) — recoverable only via booley_report.
         assert "reviewer" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "mutation_tester" in mcp_server._ASYNC_JOB_MCP_TOOLS
+        assert "mutation" in mcp_server._ASYNC_JOB_MCP_TOOLS
         assert "coverage_analyst" in mcp_server._ASYNC_JOB_MCP_TOOLS
 
     def test_poll_endpoint_advertises_the_async_tools(self):

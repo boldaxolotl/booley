@@ -9,6 +9,7 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Mutation testing now generates Mutants deterministically and runs no LLM:
 - Stealth Mode now rejects a commit message that contains a banned term
   instead of rewriting it with `redacted`. The commit-msg hook never changes the
   message file: it lists each match, says where your message is kept, and gives
@@ -45,6 +46,13 @@ Packaged release history starts at 0.2.7. For older changes, see
   as detected and is reported as `detected (timeout)`. Results record scope
   file hashes, generator and pyslang versions, seed, and count. `--steer` and
   `--regen-lock` are removed, and the mutation lock is no longer used.
+  Mutation testing is now the Booley Flow `booley flow mutation` (same flags,
+  MCP tool `mutation`, plus the shared Flow options). `booley specialist
+  mutation_tester`, its MCP tool, and the `[models] mutation_tester` key are
+  removed: delete the key, and replace a `[specialists.mutation_tester]` table
+  with `[flows.mutation]` (`enabled`, `timeout_ms`). Reports move from
+  `mcp-tool-reports/` to `flow-reports/mutation/<N>/`. The `mutation_score`
+  criterion and `MUTATION:` Goals are unchanged.
 
 - The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
   as a Standalone Job: choose the worktree, the Flow, and its arguments, check
@@ -56,8 +64,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   timeout of synth and FPGA runs.
   as a Standalone Job: choose the worktree and the Flow, fill in a form generated
   from the Flow's options, check the equivalent shell command, then submit or
-  copy it. The Jobs window opens with the new Job selected. The Dashboard is no
-  longer read-only.
+  copy it. The Target and test fields pick from the worktree's compatible
+  Targets and the chosen Target's Test Runs. The Jobs window opens with the new
+  Job selected. The Dashboard is no longer read-only.
 - Job resource history keeps the newest 20 runs per Target, Job phase, flags,
   and Test Run with no overall cap, and deletes a group that has had no run in
   90 days. Peak memory now includes processes forked by any thread of a Job

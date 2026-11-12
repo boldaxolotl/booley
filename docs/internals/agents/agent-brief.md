@@ -1,56 +1,64 @@
 # Agent Briefs
 
 An Agent Brief is the contract an unattended agent, such as the issue
-pipeline, works from. The issue body is context: what happened, the repro,
-the build identity, the verified cause with `file:line` evidence, and the
-discussion. The brief says what the finished change must do.
+pipeline, works from: it says what the finished change must do. The issue
+body stays the context: what happened, the repro, the build identity, the
+verified cause with `file:line` evidence, and the discussion. Read this
+before writing a brief (in `triage`, `booley-qa-triage`, `to-tickets`, or a
+pipeline split) and when the pipeline refuses one. It extends the triage
+skill's brief format with Booley's fields, placement, and authority rule.
+Labels are in [triage-labels.md](triage-labels.md); `gh` commands are in
+[issue-tracker.md](issue-tracker.md).
 
-These rules extend the triage skill's Agent Brief format. Booley adds the
-`**Audit:**`, `**Review:**`, and `**GUI:**` fields, a fixed placement, and an
-authority rule.
+## Readiness
+
+Write a brief only for an issue with no open scope, behavior, or contract
+question. Label an issue that still has one `needs-info` or `needs-triage`
+and post no brief.
 
 ## Write it durable
 
-The issue may wait for weeks while the code moves. Keep the brief behavioral:
+The issue may wait for weeks while the code moves, so keep the brief
+behavioral:
 
 - Describe behavior, interfaces, commands, types, and config shapes.
-- Name no file paths and no line numbers. Those belong in the issue body.
 - Say what the system must do, not how to implement it.
+- Leave out file paths and line numbers; they belong in the issue body. The
+  pipeline refuses a split brief that names one.
 
 ## Fields
 
-Write each field as a bold label, in this order.
+Write each field as a bold label at the start of a line, in this order. The
+pipeline reads a field from its label to the next label or heading, and a
+`#` or `##` heading ends the brief, so put no headings inside it.
 
 Required:
 
-- `**Category:**` `bug`, `enhancement`, or `documentation`. Must match the
-  issue's category label. `documentation` means a documentation-only change:
-  no source or test edits. Text generated from code, text that a guard test
-  must keep in sync with code, or a requested guard test makes it `bug` or
-  `enhancement`. A code change that also needs doc updates is `bug` or
-  `enhancement`; the issue may additionally carry the `documentation` label.
+- `**Category:**` `bug`, `enhancement`, or `documentation`. It must equal the
+  issue's category label; see
+  [Category labels](triage-labels.md#category-labels) for which one applies.
 - `**Summary:**` one line: what must happen.
 - `**Current behavior:**` what happens now. For a bug, the broken behavior.
 - `**Desired behavior:**` what happens after the change, including edge cases
   and error conditions.
-- `**Acceptance criteria:**` a checkbox list. Each item is independently
-  verifiable.
+- `**Acceptance criteria:**` a checkbox list (`- [ ]`). Each item is
+  independently verifiable. Indent a continuation line under its item.
 - `**Out of scope:**` what the agent must not change.
 
 Optional:
 
 - `**Key interfaces:**` commands, types, functions, or config keys the change
   touches, named without paths.
-- `**Audit:**` see below.
-- `**Review:**` see below.
-- `**GUI:**` see below.
+- `**Audit:**`, `**Review:**`, `**GUI:**`: see below.
+- `Blocked by: #<n>` lines, which count as much as the issue body's.
 
 ## Audit
 
-Add `**Audit:**` when the defect or gap may exist elsewhere: the triage blast
-radius is yes or likely. Name the pattern to search for and the suspected
-places by concept, such as the other Booley Flows or sibling commands. Add an
-acceptance criterion that every place the audit finds is fixed.
+Add `**Audit:**` when the defect or gap may exist elsewhere, that is, when
+triage rates the blast radius yes or likely. Name the pattern to search for
+and the suspected places by concept, such as the other Booley Flows or sibling
+commands. Add an acceptance criterion that every place the audit finds is
+fixed.
 
 ## Review
 
@@ -61,90 +69,74 @@ review: for example, a cache whose hits count as Goal evidence, where a wrong
 hit looks like a pass.
 
 The value is one line of `key=value` pairs, split with shell quoting rules:
-quote any value that contains spaces. Follow it with another field or the end
-of the brief:
+quote any value that contains spaces.
 
 ```markdown
 **Review:** model=claude-fable-5-1 effort=high rounds=uncapped park-after=5 focus="no wrong cache hit"
 ```
 
-- `model` (required): a reviewer model the pipeline accepts, today
-  `claude-fable-5-1` or `claude-opus-5-5`. It replaces the reviewer of the plan
-  and the Spec and adversarial reviewers of the code. The Standards reviewer,
-  the planner, and the implementer keep their usual models.
-- `effort` (required): the reviewer's effort, `low`, `medium`, `high`, or
-  `xhigh`.
+- `model` (required): `claude-fable-5-1` or `claude-opus-5-5`. It replaces
+  the plan reviewer and the Spec and adversarial code reviewers. The
+  Standards reviewer, the planner, and the implementer keep their models.
+- `effort` (required): `low`, `medium`, `high`, or `xhigh`.
 - `rounds`: `1` (default) or `uncapped`. With `uncapped`, every fix starts
-  another review of the whole change, until one round has no open finding
-  rated `medium` or higher on the pipeline's shared severity scale. `low` and
-  `nit` findings are fixed or declined without another round. A `medium`
-  or higher finding closes only through a fix, or through a written rebuttal
-  that the next round's reviewer accepts. A proposed split still gets one review round and
-  is filed without asking.
-- `park-after`: an integer of at least 2, allowed only with `rounds=uncapped`.
-  It is how many rounds may run without one that has no open `medium` or higher
-  finding before the pipeline stops and asks the maintainer. The maintainer's
-  answer can accept the parked head with its findings still open. Default 5. The count covers rounds under the current
-  brief; a new brief starts it again.
+  another review of the whole change, until a round has no open finding rated
+  `medium` or higher on the pipeline's shared severity scale. A `low` or
+  `nit` finding is fixed or declined without another round. A `medium` or
+  higher finding closes only through a fix, or through a written rebuttal the
+  next round's reviewer accepts. A proposed split still gets one round.
+- `park-after`: an integer of at least 2, only with `rounds=uncapped`;
+  default 5. After that many rounds under the current brief without a clean
+  one, the pipeline parks the ticket on a maintainer question. The
+  maintainer's answer may accept the parked head with its findings open.
 - `focus`: one quoted line that tells the reviewer what to look for first.
 
-A malformed field keeps the issue out of the pipeline rather than falling back
-to the default review. Malformed means an unknown key or model, a repeated key,
-a missing `model` or `effort`, an unsupported `rounds` value, `park-after`
-without `rounds=uncapped`, a value spread over several lines, or unbalanced
-quotes. With `rounds=uncapped`, the pipeline queues the pull request only after
-a round with no open `medium` or higher finding on its current head, or after
+With `rounds=uncapped`, the pipeline queues the pull request only after a
+round with no open `medium` or higher finding on its current head, or after
 the maintainer's answer to a park accepts that exact head.
+
+A malformed field keeps the issue out of the pipeline instead of falling back
+to the default review, because a silent fallback would weaken exactly the
+review the brief asked for. Malformed means an unknown key or model, a
+repeated key, a missing `model` or `effort`, an unsupported `rounds` value,
+`park-after` without `rounds=uncapped`, a value over several lines, or
+unbalanced quotes.
 
 ## GUI
 
 The pipeline checks a pull request that touches the GUI in a browser
 Codespace with the `booley-gui-check` skill, and queues it only after a
-passing check on its current head. Without this field, the pipeline's GUI
-path rules decide: changes to the VS Code extension data, the Dashboard,
+passing check on its current head. Without this field, the pipeline's path
+rules decide: changes to the VS Code extension data, the Dashboard,
 `bwave gui` and VaporView, the in-container runtime, or the published image
 and devcontainer recipes need a check. The Spec reviewer can flag a change
 the rules missed.
 
 Add `**GUI:**` only when the rules would get the ticket wrong:
 
-```markdown
-**GUI:** yes
-```
+- `**GUI:** yes`: the change needs a check though it touches no GUI path, for
+  example a CLI change that alters what the Dashboard shows.
+- `**GUI:** no`: the change touches a GUI path but changes nothing a user
+  sees, for example a refactor of an in-container module.
 
-- `yes`: the change needs a GUI check even though it touches no GUI path,
-  for example a CLI change that alters what the Dashboard shows.
-- `no`: the change touches a GUI path but changes nothing a user sees, for
-  example a refactor of an in-container module.
-
-The value is exactly `yes` or `no`. Anything else keeps the issue out of the
-pipeline. `documentation` tickets never run the check.
+Any value other than `yes` or `no` keeps the issue out of the pipeline.
+`documentation` tickets never run the check.
 
 ## Placement and authority
 
-Post the brief as an issue comment written by the issue author. Per the
-triage rules, the comment starts with the AI-disclaimer line, then a
-`## Agent Brief` heading:
-
-```markdown
-> *This was generated by AI during triage.*
-
-## Agent Brief
-```
+Post the brief as an issue comment by the issue author. The pipeline admits
+only issues the maintainer's login opened, so post under that login. The
+comment starts with the triage skill's AI-disclaimer line, then a
+`## Agent Brief` heading, as in the [example](#example).
 
 - The newest brief comment by the issue author, by creation time, is
   authoritative.
 - A `## Agent Brief` section in the issue body counts only when no brief
   comment exists.
-- Third-party comments never count.
-- To change the contract, post a new brief comment. Do not edit an old one.
-  The pipeline compares the brief's text, so any edit after work started
-  sends the ticket back to planning.
-
-## Readiness
-
-An issue with an open scope, behavior, or contract question is not
-`ready-for-agent`. Label it `needs-info` or `needs-triage` and post no brief.
+- Comments by anyone else never count.
+- To change the contract, post a new brief comment instead of editing the
+  current one. The pipeline records a hash of the brief's text, so any edit
+  after work started sends the ticket back to planning.
 
 ## One PR per issue
 
@@ -153,30 +145,19 @@ merge on its own, be reviewed in one pass, and stay within the size caps of
 [coding principle 18](../CODING_PRINCIPLES.md#18-pull-requests-stay-small).
 When the work does not fit, split it before it becomes `ready-for-agent`:
 
-- Create one GitHub sub-issue per piece, each with its own brief. Order them
-  with `Blocked by: #<n>` lines.
-- The parent issue tracks the sub-issues. It carries the `tracker` label,
-  gets no brief, and is never `ready-for-agent`.
+- Create one sub-issue per piece, each with its own brief, and order them with
+  `Blocked by: #<n>` lines ([Sub-issues and
+  blocking](issue-tracker.md#sub-issues-and-blocking)).
 - Draw each sub-issue's acceptance criteria from the parent's. Together, the
   sub-issues cover all of them.
+- Label the parent [`tracker`](triage-labels.md#state-labels). It gets no
+  brief.
 
 The pipeline skips an issue that has open sub-issues. When its planner finds
-the work too large for one PR, the pipeline splits the issue itself, with no
-maintainer approval:
-
-- It files one native GitHub sub-issue per piece. The body holds the AI
-  disclaimer, `Part of #<parent>.`, the audit context, and `Blocked by: #<n>`
-  lines. The Agent Brief goes in an author comment on each sub-issue. Labels:
-  the category plus `ready-for-agent`.
-- It posts a split table on the parent, relabels it from `ready-for-agent` to
-  `tracker`, and releases it.
-- It admits the sub-issues to its own queue.
-
-## Legacy format
-
-Issues that carry a `## Fix` or `## Fix direction` body section instead of a
-brief are legacy. The pipeline accepts them only until
-2026-10-17T14:00+04:00. Do not file new issues in that format.
+a `ready-for-agent` issue too large for one PR, the pipeline splits it without
+asking: it files a sub-issue per piece with its brief in an author comment
+and the `ready-for-agent` label, posts a split table on the parent, relabels
+the parent `tracker`, and works the sub-issues in order.
 
 ## Example
 

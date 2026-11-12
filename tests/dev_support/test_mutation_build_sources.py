@@ -15,18 +15,18 @@ from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.subprocess_budget import run_bounded_child
 
-from booley.dev_support.mutation_build_sources import (
+from booley.flows.mutation.build_sources import (
     materialize_build_mutation,
     validate_mutation_closure,
 )
-from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
-from booley.specialists.mutation_tester import (
+from booley.flows.mutation.flow import (
     _RUNTIME_INPUTS_MARKER,
+    MutationFlow,
     MutationSpec,
-    MutationTesterSpecialist,
     UnsupportedSimTargetError,
     _record_build_markers,
 )
+from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
 
 
 def _fixture(tmp_path, header=False, copyto=None, eda_tool=None, name=None, defect=None):
@@ -240,7 +240,7 @@ def _ignore_native_layout(tmp_path: Path, monkeypatch, layout: str) -> tuple[Pat
 @pytest.mark.parametrize("layout", ["main", "symlinked-booley-dir", "linked-worktree"])
 def test_ignore_native_cores_mutation_writes_only_private_export(tmp_path, monkeypatch, layout):
     root, build_path = _ignore_native_layout(tmp_path, monkeypatch, layout)
-    resolve = MutationTesterSpecialist._resolve_elab_target
+    resolve = MutationFlow._resolve_elab_target
     # First use projects the shared registry; that is not a mutation side effect.
     resolve("sim", root, tmp_path / "pristine-build")
     # The pristine baseline builds from the same kind of private mirror, so it
@@ -279,9 +279,7 @@ def test_isolated_mutant_marker_skips_uncopied_user_files(tmp_path, monkeypatch)
     core.write_text("CAPI=2:\n" + yaml.safe_dump(body), encoding="utf-8")
     spec = MutationSpec(1, "literal", "rtl/inc/message.svh", 1, "BASELINE", "MUTANT")
     variants = MutationVariantPlan.resolve([spec], root, ["rtl/inc/message.svh"])
-    _handle, prepared = MutationTesterSpecialist._resolve_elab_target(
-        "sim", root, build_path, (variants, 1)
-    )
+    _handle, prepared = MutationFlow._resolve_elab_target("sim", root, build_path, (variants, 1))
     _record_build_markers(build_path, prepared, root)
     marker = build_path / _RUNTIME_INPUTS_MARKER
     assert json.loads(marker.read_text(encoding="utf-8")) == ["copied.hex"]
@@ -295,7 +293,7 @@ def test_pinned_build_fallback_refuses_in_isolated_project(tmp_path, monkeypatch
     image = build_path / "compiled" / "image"
     image.parent.mkdir()
     image.write_text("built\n", encoding="utf-8")
-    specialist = MutationTesterSpecialist.__new__(MutationTesterSpecialist)
+    specialist = MutationFlow.__new__(MutationFlow)
     with pytest.raises(UnsupportedSimTargetError, match="baseline build marker missing"):
         specialist._pinned_build("sim", root, build_path)
     assert image.read_text(encoding="utf-8") == "built\n"
@@ -313,5 +311,5 @@ def test_ignore_native_cores_guard_refuses_out_of_checkout_source(tmp_path, monk
     spec = MutationSpec(1, "literal", "rtl/ext.sv", 1, "$finish", "$stop")
     variants = MutationVariantPlan.resolve([spec], root, ["rtl/ext.sv"])
     with pytest.raises(MutationVariantError, match="absolute mutation export"):
-        MutationTesterSpecialist._resolve_elab_target("sim", root, build_path, (variants, 1))
+        MutationFlow._resolve_elab_target("sim", root, build_path, (variants, 1))
     assert outside.read_text(encoding="utf-8") == _DUT

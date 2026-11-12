@@ -253,7 +253,7 @@ filler, a commit handed to the next agent session arrives with an empty
 cache, and the first session to run there pays full price.
 
 The filler is the planned `booley ci` command
-([roadmap](../internals/ROADMAP.md#continuous-integration-booley-ci)), not a
+([roadmap](../internals/ROADMAP.md#continuous-integration)), not a
 separate cache command. Filling the cache and CI are the same operation: take
 a commit and evaluate a named set of Criteria on it. One engine does both.
 Any other clean-commit run still stores as well (§1).

@@ -52,7 +52,7 @@ def _eda_warning_reasons(metrics: SynthMetrics) -> tuple[str, ...]:
         return ()
     return (
         f"{summary.actionable_warnings} actionable EDA warning occurrence(s) "
-        f"across {summary.unique_warnings} unique diagnostic(s)",
+        f"across {summary.actionable_unique_warnings} unique diagnostic(s)",
     )
 
 

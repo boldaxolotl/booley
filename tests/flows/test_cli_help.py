@@ -165,6 +165,10 @@ def test_resume_and_required_target_guidance() -> None:
                 assert "resume restores the manifest" in actions[flag].help
                 assert "rejects this flag" in actions[flag].help
             assert "omission is required" in actions["--mode"].help
+        elif cls.name == "mutation":
+            # Mutation judges one simulation Target and never auto-selects it.
+            assert "Required: omission is a parse error" in actions["--target"].help
+            assert actions["--target"].required
         else:
             assert "exactly one eligible Target" in actions["--target"].help
             assert "zero or multiple" in actions["--target"].help
@@ -173,6 +177,8 @@ def test_resume_and_required_target_guidance() -> None:
 
 
 TARGET_OMISSION = "When omitted, exactly one eligible Target is selected and announced"
+# Mutation requires its one Target instead of auto-selecting.
+MUTATION_TARGET_RULE = "Required: omission is a parse error."
 DEFAULT_MARKERS = ("When omitted", "Default:", "(default ")
 
 
@@ -183,13 +189,18 @@ def test_target_help_states_each_rule_once() -> None:
         parsers = (build_parser(flow, human=True), build_cli_parser(flow, CliInvocation()))
         for parser in parsers:
             help_text = parser._option_string_actions["--target"].help
+            if flow.name == "mutation":
+                assert help_text.count(MUTATION_TARGET_RULE) == 1, (flow.name, help_text)
+                assert TARGET_OMISSION not in help_text, help_text
+                continue
             assert help_text.count(TARGET_OMISSION) == 1, (flow.name, help_text)
             if flow.name == "sim":
                 assert help_text.count("manifest owns") == 1, help_text
                 assert help_text.count("conflicts with --resume-from") == 1, help_text
         # Check the rendered text too; whitespace-normalize since argparse wraps lines.
         rendered = " ".join(parsers[0].format_help().split())
-        assert rendered.count(TARGET_OMISSION) == 1, flow.name
+        rule = MUTATION_TARGET_RULE if flow.name == "mutation" else TARGET_OMISSION
+        assert rendered.count(rule) == 1, flow.name
 
 
 def test_human_help_states_each_default_once() -> None:

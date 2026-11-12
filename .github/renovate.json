@@ -465,7 +465,7 @@
       "schedule": ["* * 1 * *"]
     },
     {
-      "description": "riscv: the copies of the xPack and Spike pins in the supported-tools table and the session runtime contract (same branch as Dockerfile.riscv).",
+      "description": "riscv: the copies of the xPack and Spike pins in the supported-tools table and the Sandbox Image contract (same branch as Dockerfile.riscv).",
       "matchFileNames": [
         "docs/user/SUPPORTED-EDA-TOOLS.md",
         ".github/contracts/session-runtime.toml"
@@ -491,7 +491,7 @@
       "schedule": ["* * * * 1"]
     },
     {
-      "description": "sandbox-base: copies of the Python pins in the supported-tools table and the session runtime contract (same branch as the base requirements).",
+      "description": "sandbox-base: copies of the Python pins in the supported-tools table and the Sandbox Image contract (same branch as the base requirements).",
       "matchFileNames": [
         "docs/user/SUPPORTED-EDA-TOOLS.md",
         ".github/contracts/session-runtime.toml"

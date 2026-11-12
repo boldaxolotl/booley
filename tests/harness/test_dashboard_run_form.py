@@ -117,8 +117,7 @@ def test_the_form_follows_the_placement_rule():
 
     synth = run_form.describe(parser_for("synth"))
     labels = {field.label: field for field in synth.fields}
-    assert labels["--target"].kind == "text"
-    assert labels["--target"].empty == "automatic"
+    assert labels["--target"].kind == "target"
     assert labels["--dry-run"].kind == "toggle"
     assert labels["--flatten/--no-flatten"].kind == "three-way"
     assert labels["--frontend"].choices == ("sv2v", "slang")
@@ -154,19 +153,38 @@ def test_every_offered_choice_is_accepted_by_the_parser(flow):
             assert parser.parse_args([field.flag, value]) is not None
 
 
-def test_target_and_test_fields_say_how_their_text_is_read():
+def test_target_and_test_fields_are_pickers():
     from booley.harness.dashboard import run_form
 
     fields = {field.label: field for field in run_form.describe(parser_for("sim")).fields}
-    assert "comma list" in fields["--target"].hint
-    assert "more of them" in fields["--test"].hint
+    assert fields["--target"].kind == "target"
+    assert fields["--test"].kind == "tests"
+    assert not fields["--target"].required  # every built-in Flow can pick the Target itself
+    assert "One Target" in fields["--target"].hint
+    assert "toggles a Test Run" in fields["--test"].hint
     assert fields["--seed"].hint.startswith("Seed for every selected Test Run")
     assert fields["--target"].shown("") == "automatic"
-    assert fields["--test"].shown("") == ""
+    assert fields["--target"].shown("sim_fifo") == "sim_fifo"
+    assert fields["--test"].shown("") == "default suite"
+    assert fields["--test"].shown(()) == "default suite"
+    assert fields["--test"].shown(("reset", "stress+soak")) == "reset, stress+soak"
+    assert fields["--seed"].kind == "text"
+    assert fields["--seed"].shown("") == ""
     assert fields["--coverage"].shown("") == "off"
     assert fields["--coverage"].shown("on") == "on"
     assert fields["--mode"].shown("") == "default"
     assert fields["--mode"].shown("elab-only") == "elab-only"
+
+
+def test_a_required_target_field_has_no_automatic():
+    from booley.harness.dashboard import run_form
+
+    parser = parser_for("sim")
+    next(a for a in parser._actions if a.dest == "target").required = True
+    target = {field.label: field for field in run_form.describe(parser).fields}["--target"]
+    assert target.required
+    assert target.shown("") == ""
+    assert target.shown("sim_fifo") == "sim_fifo"
 
 
 # --- command_argv ---------------------------------------------------------------
@@ -200,6 +218,24 @@ def test_command_argv_writes_fields_in_group_order_then_extra_words():
     )
     assert run_form.command_argv(form, {"flatten": "on", "diagnostic": ""}, "") == ("--flatten",)
     assert run_form.command_argv(form, {}, "") == ()
+
+
+def test_command_writes_one_test_option_per_chosen_test_run():
+    from booley.harness.dashboard import run_form
+
+    form = run_form.describe(parser_for("sim"))
+    values = {"target": "sim_fifo", "test": ("a", "b+v")}
+    assert run_form.command_argv(form, values, "") == (
+        "--target",
+        "sim_fifo",
+        "--test",
+        "a",
+        "--test",
+        "b+v",
+    )
+    assert run_form.command_argv(form, {"test": ()}, "") == ()
+    assert run_form.command_argv(form, {"test": ""}, "") == ()
+    assert run_form.command_argv(form, {"target": "-x"}, "") == ("--target=-x",)
 
 
 def test_a_text_value_starting_with_a_dash_is_written_with_an_equals_sign():

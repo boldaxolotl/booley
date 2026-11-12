@@ -70,7 +70,7 @@ Target as `flow_options.frontend`, or override it for one run with
 - **`sv2v`** (default): converts SystemVerilog to plain Verilog first, then
   Yosys reads that.
 - **`slang`**: Yosys reads SystemVerilog directly. It needs Yosys 0.67 or
-  newer; the standard image has 0.69.
+  newer; the standard image has 0.70.
 
 Stay on `sv2v` unless it fails. Use `slang` when the design puts
 parameterized interfaces on module ports, or reads an interface's parameters
@@ -146,12 +146,12 @@ can replace the Python packages.
 | Python | 3.14 |
 | Verilator | v5.054 (commit `bbb60a403932a9f695cb6ff001ceb73de6ad9234`) |
 | Icarus Verilog | v13_0 |
-| Yosys | v0.69, with its built-in `slang` frontend |
+| Yosys | v0.70, with its built-in `slang` frontend |
 | sv2v | v0.0.13 |
 | OpenROAD | 26Q4 (commit `c4d317e4fa2398b9880920a1411c20258a2175a9`; reports itself as `26Q3-2927-gc4d317e4fa`) |
 | Verible | v0.0-4298-g085eef05 |
 | FuseSoC / Edalize | 2.4.7 / 0.6.8 |
-| cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.3 |
+| cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.4 |
 | Cell library | Nangate45 typical corner, downloaded by `booley bootstrap` |
 
 The RISC-V image (`booley-sandbox-riscv`) adds the xPack RISC-V GCC

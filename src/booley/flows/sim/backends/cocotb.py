@@ -827,7 +827,7 @@ def _prepare_invocation(
     Every failure here is *infrastructure*, not the design: the sim never
     started, so the run observed nothing. Each path emits the shared
     ``[SIM_INFRA_ERROR]`` marker alongside its message so a grading caller
-    (mutation_tester) records "no observation" rather than a verdict.
+    (the Mutation Flow) records "no observation" rather than a verdict.
     """
     try:
         env = _build_cocotb_env(build_dir, cocotb_module, tests, results_file, seed)
