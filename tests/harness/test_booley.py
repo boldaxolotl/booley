@@ -1965,3 +1965,17 @@ def test_auth_nested_checkout_ignores_ancestor_config_override(tmp_path, monkeyp
     monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda args, root: roots.append(root) or 0)
     assert tlr._dispatch_main() == 0
     assert roots == [None]
+
+
+def test_chat_name_option_is_validated_and_booleys_only_when_leading(monkeypatch, capsys):
+    # Bugs caught: `--name` forwarded to the agent, or a name with `/` (which the terminal
+    # tab cuts at) accepted.
+    args = _parse_argv(monkeypatch, "chat", "--name", " uart-fix ", "--resume", "x")
+    assert (args.session_name, args.agent_args) == ("uart-fix", ["--resume", "x"])
+    assert _parse_argv(monkeypatch, "chat", "--name=fifo 2").session_name == "fifo 2"
+    args = _parse_argv(monkeypatch, "chat", "--resume", "x", "--name", "y")
+    assert (args.session_name, args.agent_args) == (None, ["--resume", "x", "--name", "y"])
+    with pytest.raises(SystemExit) as raised:
+        _parse_argv(monkeypatch, "chat", "--name", "a/b")
+    assert raised.value.code == 2
+    assert "argument --name" in capsys.readouterr().err

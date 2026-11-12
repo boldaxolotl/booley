@@ -525,3 +525,22 @@ def test_session_key_label(key, label):
     from booley.harness.dashboard import sessions
 
     assert sessions.session_key_label(key) == label
+
+
+def test_named_session_shows_its_title_and_keeps_its_handle_order():
+    # Bugs caught: the `--name` never reached the session row, or a titled handle
+    # (`S10 · uart`) lost its number and sorted after every plain handle.
+    from booley.harness.dashboard import sessions
+
+    snapshot = replace(world({}, count=1), session_titles={"codex:00": "S1 · uart fix"})
+    app = DashboardApp(lambda: snapshot)
+    app.snapshot = snapshot
+    assert app._session_facts(snapshot.sessions[0]).handle == "S1 · uart fix"
+
+    overview = sessions.build(
+        [facts(10, ago=100, handle="S10 · uart"), facts(20, ago=100), facts(2, ago=100)],
+        [],
+        NOW,
+        120,
+    )
+    assert overview.keys[1:] == ["codex:02", "codex:10", "codex:20"]

@@ -123,7 +123,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
     the Sandbox, Booley currently sets up (sign-in, Booley tools, skills) only
     the default CLI, so another one may ask you to sign in and lack Booley's tools.
 
-    Arguments after `booley chat` and its own options (`--cli`, `-C`,
+    Arguments after `booley chat` and its own options (`--cli`, `--name`, `-C`,
     `--new-worktree`, `--here`) go to the
     CLI unchanged. To resume an earlier conversation, run
     `booley chat --resume <id>` (Claude) or `booley chat resume <id>` /
@@ -275,6 +275,12 @@ footer shows the keys you can use.
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
 `J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
 handle, except a conversation resumed in its worktree, which keeps its handle.
+
+To tell sessions apart, name one at launch: `booley chat --name uart-fix`.
+Its terminal tab and the Dashboard then show `S3 · uart-fix`, for Claude and
+Codex alike. The name is a label only: the worktree and branch keep the handle
+(`s3`, `booley/s3`). A resumed session keeps its name unless you give it a new
+one. Names use up to 32 letters, digits, spaces, `.`, `_` or `-`.
 
 ### Several agents at once
 
