@@ -367,9 +367,17 @@ def test_release_parent_provenance_must_declare_a_registry_digest(job: str) -> N
         (
             "release_workflow",
             "docker-publish.yml",
-            "build-and-push",
+            "runtime-base",
             "Resolve compatible stable runtime base",
             "release candidate",
+        ),
+        pytest.param(
+            "release_workflow",
+            "docker-publish.yml",
+            "runtime-base",
+            "Verify candidate stable runtime base",
+            "release base selection",
+            id="candidate-verify",
         ),
         (
             "base_workflow",
@@ -396,7 +404,7 @@ def test_resolver_contract_ignores_dead_comment_text() -> None:
         sources,
         "release_workflow",
         "docker-publish.yml",
-        "build-and-push",
+        "runtime-base",
         "Resolve compatible stable runtime base",
     )
     step["run"] = str(step["run"]).replace("--resolver remote", "--resolver shadow")
@@ -768,3 +776,262 @@ def test_riscv_candidate_must_stay_in_the_local_image_store(output: str, problem
     )
 
     assert problem in _errors(sources, "local RISC-V candidate")
+
+
+def _runtime_base_step(sources: ContractSources, step_id: str) -> dict[str, Any]:
+    return _step(
+        sources, "release_workflow", "docker-publish.yml", "runtime-base", step_id=step_id
+    )
+
+
+def _flip_condition(step: dict[str, Any]) -> None:
+    condition = str(step["if"])
+    step["if"] = condition.replace("==", "!!").replace("!=", "==").replace("!!", "!=")
+
+
+def _swap_steps(sources: ContractSources, first: str, second: str) -> None:
+    steps = sources.release_workflow["jobs"]["runtime-base"]["steps"]
+    ids = [step.get("id") for step in steps]
+    steps[ids.index(first)], steps[ids.index(second)] = (
+        steps[ids.index(second)],
+        steps[ids.index(first)],
+    )
+
+
+# Mutation id -> (candidate-build input, replacement) for single-input edits.
+_BASE_BUILD_EDITS: dict[str, tuple[str, object]] = {
+    "base-dockerfile": ("file", "src/booley/data/docker/Dockerfile.substrate"),
+    "base-push": ("push", False),
+    "base-tag": ("tags", "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main"),
+}
+
+
+def _mutate_candidate_wiring(sources: ContractSources, mutation: str) -> bool:
+    """Break the candidate tag or the report step's inputs; False for another mutation."""
+    if mutation == "metadata-tag":
+        step = _runtime_base_step(sources, "candidate-metadata")
+        step["run"] = str(step["run"]).replace("tag=candidate-${GITHUB_SHA}", "tag=main")
+    elif mutation == "selected-env":
+        _runtime_base_step(sources, "selected")["env"]["CANDIDATE_IMAGE"] = (
+            "${{ steps.candidate-build.outputs.digest }}"
+        )
+    else:
+        return False
+    return True
+
+
+def _mutate_base_selection(sources: ContractSources, mutation: str) -> None:
+    if _mutate_candidate_wiring(sources, mutation):
+        return
+    jobs = sources.release_workflow["jobs"]
+    build = _runtime_base_step(sources, "candidate-build")["with"]
+    if mutation == "decide-if":
+        _runtime_base_step(sources, "decide")["if"] = "github.event_name == 'push'"
+    elif mutation == "published-if":
+        _flip_condition(_runtime_base_step(sources, "published"))
+    elif mutation.startswith("candidate-if-"):
+        _flip_condition(_runtime_base_step(sources, mutation.removeprefix("candidate-if-")))
+    elif mutation == "order":
+        _swap_steps(sources, "candidate-build", "candidate-verify")
+    elif mutation == "needs":
+        del jobs["build-and-push"]["needs"]
+    elif mutation in _BASE_BUILD_EDITS:
+        key, value = _BASE_BUILD_EDITS[mutation]
+        build[key] = value
+    elif mutation in {"base-cache-from", "base-cache-from-missing"}:
+        del build["cache-from"]
+        if mutation == "base-cache-from":
+            build["cache-from"] = "type=gha,scope=sandbox-substrate"
+    elif mutation == "base-args-parity":
+        build["build-args"] = str(build["build-args"]).replace("BOOLEY_BASE_BUILT_AT=", "OTHER=")
+    else:
+        raise AssertionError(mutation)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        pytest.param("decide-if", "step decide must run only when", id="decide-if"),
+        pytest.param("published-if", "step published must run only when", id="published-if"),
+        pytest.param(
+            "candidate-if-candidate-metadata",
+            "step candidate-metadata must run only when",
+            id="candidate-if-metadata",
+        ),
+        pytest.param(
+            "candidate-if-candidate-build",
+            "step candidate-build must run only when",
+            id="candidate-if-build",
+        ),
+        pytest.param(
+            "candidate-if-candidate-verify",
+            "step candidate-verify must run only when",
+            id="candidate-if-verify",
+        ),
+        pytest.param("order", "out of order", id="order"),
+        pytest.param("needs", "must depend on the runtime-base job", id="needs"),
+        pytest.param("base-dockerfile", "builds", id="base-dockerfile"),
+        pytest.param("base-push", "must push its image", id="base-push"),
+        pytest.param("base-tag", "disagree with", id="base-tag"),
+        pytest.param("base-cache-from", "candidate base must read exactly", id="base-cache-from"),
+        pytest.param(
+            "base-cache-from-missing",
+            "candidate base must read exactly",
+            id="base-cache-from-missing",
+        ),
+        pytest.param("base-args-parity", "must match the publisher", id="base-args-parity"),
+        pytest.param("metadata-tag", "candidate tag must be exactly", id="metadata-tag"),
+        pytest.param("selected-env", "must read the verified candidate", id="selected-env"),
+    ],
+)
+def test_release_base_selection_rules(mutation: str, expected: str) -> None:
+    sources = _sources()
+    _mutate_base_selection(sources, mutation)
+
+    assert expected in _errors(sources, "release")
+
+
+def test_candidate_base_verification_requires_the_build_digest() -> None:
+    sources = _sources()
+    _runtime_base_step(sources, "candidate-verify")["env"]["BASE_IMAGE"] = (
+        "ghcr.io/acme/base:candidate"
+    )
+
+    assert "build digest" in _errors(sources, "release base selection")
+
+
+def test_release_substrate_parent_is_the_selected_base() -> None:
+    sources = _sources()
+    step = _step(
+        sources, "release_workflow", "docker-publish.yml", "build-and-push", step_id="substrate"
+    )
+    step["with"]["build-contexts"] = (
+        "booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}"
+    )
+
+    assert "named contexts" in _errors(sources, "release standard substrate")
+
+
+def _mutate_substrate_tags(sources: ContractSources, mutation: str) -> tuple[str, str]:
+    """Break one link of the candidate-scoped tag rule; return the failing role and message."""
+    jobs = sources.release_workflow["jobs"]
+    if mutation == "standard-tag":
+        step = _step(
+            sources,
+            "release_workflow",
+            "docker-publish.yml",
+            "build-and-push",
+            step_id="substrate",
+        )
+        step["with"]["tags"] = (
+            "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:standard-"
+            "${{ steps.version.outputs.substrate_inputs }}"
+        )
+        return "release standard substrate", "tags"
+    if mutation == "riscv-tag":
+        step = _step(
+            sources,
+            "release_workflow",
+            "docker-publish.yml",
+            "build-and-push-riscv",
+            step_id="substrate",
+        )
+        step["with"]["tags"] = (
+            "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:riscv-"
+            "${{ steps.version.outputs.substrate_recipe_fingerprint }}"
+        )
+        return "release RISC-V substrate", "tags"
+    if mutation == "source-output":
+        jobs["runtime-base"]["outputs"]["origin"] = jobs["runtime-base"]["outputs"].pop("source")
+        return "release base selection", "must expose image, source, candidate-tag"
+    jobs["build-and-push"]["outputs"]["base-source"] = "published"
+    return "release base selection", "base-source must pass through"
+
+
+@pytest.mark.parametrize("mutation", ["standard-tag", "riscv-tag", "source-output", "passthrough"])
+def test_candidate_base_substrates_take_candidate_scoped_tags(mutation: str) -> None:
+    sources = _sources()
+    role, expected = _mutate_substrate_tags(sources, mutation)
+
+    assert expected in _errors(sources, role)
+
+
+@pytest.mark.parametrize("mutation", ["cache-to", "main-tag", "imagetools"])
+def test_dispatched_run_never_writes_shared_state(mutation: str) -> None:
+    sources = _sources()
+    build = _runtime_base_step(sources, "candidate-build")["with"]
+    if mutation == "cache-to":
+        build["cache-to"] = "type=gha,scope=sandbox-runtime-base,mode=max"
+        expected = "must not write a cache scope"
+    elif mutation == "main-tag":
+        build["tags"] = "${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main"
+        expected = "must not tag :main"
+    else:
+        sources.release_workflow["jobs"]["runtime-base"]["steps"].append(
+            {
+                "name": "Move main",
+                "run": "docker buildx imagetools create --tag ghcr.io/acme/base:main src",
+            }
+        )
+        expected = "must not create tags outside promote"
+
+    assert expected in _errors(sources, "release shared state")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="workflow steps run under Linux bash")
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        pytest.param(
+            {"PUBLISHED_IMAGE": "ghcr.io/acme/base@sha256:aaa", "CANDIDATE_IMAGE": ""},
+            (
+                "image=ghcr.io/acme/base@sha256:aaa",
+                "source=published",
+                "candidate-tag=",
+                "Stable runtime base: published :main ghcr.io/acme/base@sha256:aaa",
+            ),
+            id="published",
+        ),
+        pytest.param(
+            {
+                "PUBLISHED_IMAGE": "",
+                "CANDIDATE_IMAGE": "ghcr.io/acme/base@sha256:bbb",
+                "CANDIDATE_TAG": "candidate-abc-1-1",
+            },
+            (
+                "image=ghcr.io/acme/base@sha256:bbb",
+                "source=candidate",
+                "candidate-tag=candidate-abc-1-1",
+                "Stable runtime base: candidate built from source, tag candidate-abc-1-1, "
+                "ghcr.io/acme/base@sha256:bbb",
+            ),
+            id="candidate",
+        ),
+    ],
+)
+def test_selected_base_report(
+    tmp_path: Path, env: dict[str, str], expected: tuple[str, ...]
+) -> None:
+    """The report step names the base it selected, with its digest, in outputs and summary."""
+    step = _runtime_base_step(_sources(), "selected")
+    script = tmp_path / "step.sh"
+    script.write_text(step["run"], newline="\n")
+    output = tmp_path / "output"
+    summary = tmp_path / "summary"
+    result = run_bounded_child(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "CANDIDATE_TAG": "",
+            **env,
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(summary),
+        },
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert output.read_text(encoding="utf-8").splitlines() == list(expected[:3])
+    assert result.stdout.strip() == expected[3]
+    assert summary.read_text(encoding="utf-8").strip() == expected[3]

@@ -22,7 +22,135 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Selects the runtime base every image of this run builds on. A release-tag
+  # push must find the published `:main` base compatible with this tree and
+  # fails here otherwise. A dispatch builds, pushes and verifies its own
+  # candidate-scoped base when `:main` lacks this tree's contract, so a branch
+  # that changes the base can still produce candidate images. The candidate
+  # build only reads the shared runtime-base cache scope: `docker-base-publish.yml`
+  # is its only writer, and nothing here moves `:main`.
+  runtime-base:
+    name: Stable runtime base
+    runs-on: ubuntu-latest
+    # A cold base build compiles the EDA stack from source (~57 min measured).
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.selected.outputs.image }}
+      source: ${{ steps.selected.outputs.source }}
+      candidate-tag: ${{ steps.selected.outputs.candidate-tag }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Dispatch only: a release-tag push never builds a base, so it always
+      # reaches the resolver below and a mismatch stops the run before any image.
+      # A registry error counts as "lacks this contract" (fail toward rebuild).
+      - name: Decide whether the published base carries this contract
+        id: decide
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          BASE_REF: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main
+        run: >-
+          python .github/scripts/docker_base_contract.py --repo .
+          --publish-decision "${BASE_REF}"
+          --github-output "${GITHUB_OUTPUT}"
+
+      - name: Resolve compatible stable runtime base
+        id: published
+        if: steps.decide.outputs.publish != 'true'
+        shell: bash
+        env:
+          BASE_REF: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main
+        run: >-
+          python .github/scripts/docker_base_contract.py --repo .
+          --resolver remote --resolve-image "${BASE_REF}"
+          --github-output "${GITHUB_OUTPUT}"
+
+      - name: Compute candidate stable-base metadata
+        id: candidate-metadata
+        if: steps.decide.outputs.publish == 'true'
+        run: |
+          {
+            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.base"),)))')"
+            echo "tag=candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "${GITHUB_OUTPUT}"
+
+      # Same recipe, build arguments and labels as docker-base-publish.yml, but
+      # pushed only under a candidate-scoped tag and without a cache write.
+      - name: Build and push candidate stable runtime base
+        id: candidate-build
+        if: steps.decide.outputs.publish == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.base
+          push: true
+          sbom: true
+          tags: >-
+            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ steps.candidate-metadata.outputs.tag }}
+          build-args: |
+            BOOLEY_BASE_SOURCE_REVISION=${{ github.sha }}
+            BOOLEY_BASE_CONTRACT=${{ steps.decide.outputs.contract }}
+            BOOLEY_BASE_BUILT_AT=${{ steps.candidate-metadata.outputs.built_at }}
+          labels: |
+            io.booley.provenance.schema=3
+            io.booley.artifact.role=runtime-base
+            io.booley.artifact.effective-inputs=${{ steps.decide.outputs.contract }}
+            io.booley.build.recipe-fingerprint=${{ steps.candidate-metadata.outputs.recipe_fingerprint }}
+            io.booley.build.origin=registry
+          cache-from: type=gha,scope=sandbox-runtime-base
+
+      - name: Verify candidate stable runtime base
+        id: candidate-verify
+        if: steps.decide.outputs.publish == 'true'
+        shell: bash
+        env:
+          BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.candidate-build.outputs.digest }}
+        run: >-
+          python .github/scripts/docker_base_contract.py --repo .
+          --resolver remote --resolve-image "${BASE_IMAGE}"
+          --github-output "${GITHUB_OUTPUT}"
+
+      - name: Report selected stable runtime base
+        id: selected
+        shell: bash
+        env:
+          PUBLISHED_IMAGE: ${{ steps.published.outputs.image }}
+          CANDIDATE_IMAGE: ${{ steps.candidate-verify.outputs.image }}
+          CANDIDATE_TAG: ${{ steps.candidate-metadata.outputs.tag }}
+        run: |
+          if [ -n "${CANDIDATE_IMAGE}" ]; then
+            source=candidate
+            image="${CANDIDATE_IMAGE}"
+            line="Stable runtime base: candidate built from source, tag ${CANDIDATE_TAG}, ${image}"
+          else
+            source=published
+            image="${PUBLISHED_IMAGE}"
+            line="Stable runtime base: published :main ${image}"
+          fi
+          {
+            echo "image=${image}"
+            echo "source=${source}"
+            echo "candidate-tag=${CANDIDATE_TAG}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "${line}"
+          echo "${line}" >> "${GITHUB_STEP_SUMMARY}"
+
   build-and-push:
+    needs: runtime-base
     runs-on: ubuntu-latest
     # Cold-cache build compiles the EDA stack from source (~57 min measured)
     # plus a multi-GB push to GHCR; 90 minutes was too tight.
@@ -32,7 +160,9 @@ jobs:
       packages: write
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
-      runtime-base: ${{ steps.runtime-base.outputs.image }}
+      runtime-base: ${{ needs.runtime-base.outputs.image }}
+      base-source: ${{ needs.runtime-base.outputs.source }}
+      candidate-tag: ${{ needs.runtime-base.outputs.candidate-tag }}
       substrate-digest: ${{ steps.substrate.outputs.digest }}
       wheel-sha256: ${{ steps.wheel.outputs.wheel_sha256 }}
       version: ${{ steps.version.outputs.version }}
@@ -93,16 +223,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve compatible stable runtime base
-        id: runtime-base
-        shell: bash
-        env:
-          BASE_REF: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main
-        run: >-
-          python .github/scripts/docker_base_contract.py --repo .
-          --resolver remote --resolve-image "${BASE_REF}"
-          --github-output "${GITHUB_OUTPUT}"
-
       - name: Build and publish standard substrate
         id: substrate
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -110,18 +230,21 @@ jobs:
           context: .
           file: src/booley/data/docker/Dockerfile.substrate
           build-contexts: |
-            booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}
+            booley-runtime-base=docker-image://${{ needs.runtime-base.outputs.image }}
           push: true
           sbom: true
+          # Only an explicit `published` base uses the shared content-addressed
+          # tag; a candidate base gets a candidate-scoped tag, and an unknown
+          # source falls to an invalid tag instead of overwriting a shared one.
           tags: >-
-            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:standard-${{ steps.version.outputs.substrate_inputs }}
+            ${{ needs.runtime-base.outputs.source == 'published' && format('{0}/{1}:standard-{2}', env.REGISTRY, env.BASE_IMAGE_NAME, steps.version.outputs.substrate_inputs) || format('{0}/{1}:{2}-standard', env.REGISTRY, env.BASE_IMAGE_NAME, needs.runtime-base.outputs.candidate-tag) }}
           labels: |
             io.booley.provenance.schema=3
             io.booley.artifact.role=standard-substrate
             io.booley.artifact.effective-inputs=${{ steps.version.outputs.substrate_inputs }}
             io.booley.build.recipe-fingerprint=${{ steps.version.outputs.substrate_recipe_fingerprint }}
             io.booley.build.parent-artifact-kind=registry-digest
-            io.booley.build.parent-artifact=${{ steps.runtime-base.outputs.image }}
+            io.booley.build.parent-artifact=${{ needs.runtime-base.outputs.image }}
             io.booley.build.origin=registry
           cache-from: type=gha,scope=sandbox-substrate
 
@@ -221,8 +344,9 @@ jobs:
           sbom: true
           build-contexts: |
             booley-standard-substrate=docker-image://${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ needs.build-and-push.outputs.substrate-digest }}
+          # Same fail-closed rule as the standard substrate.
           tags: >-
-            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:riscv-${{ steps.version.outputs.substrate_recipe_fingerprint }}
+            ${{ needs.build-and-push.outputs.base-source == 'published' && format('{0}/{1}:riscv-{2}', env.REGISTRY, env.BASE_IMAGE_NAME, steps.version.outputs.substrate_recipe_fingerprint) || format('{0}/{1}:{2}-riscv', env.REGISTRY, env.BASE_IMAGE_NAME, needs.build-and-push.outputs.candidate-tag) }}
           labels: |
             io.booley.provenance.schema=3
             io.booley.artifact.role=riscv-substrate
