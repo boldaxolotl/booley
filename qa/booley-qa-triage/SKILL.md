@@ -1,12 +1,14 @@
 ---
 name: booley-qa-triage
 description: Only when the user explicitly asks, triage finished Booley QA runs with the maintainer one finding at a time — verify each against current main, decide together, and file or fix as each decision lands.
+disable-model-invocation: true
 ---
 
 # Triage Booley QA findings
 
-Use this skill only when the user explicitly invokes it. This is behavioral
-guidance for clients without enforceable invocation metadata. Resolve the real
+Use this skill only when the user explicitly invokes it. Claude Code enforces
+this through `disable-model-invocation` and Codex through
+`agents/openai.yaml`; other clients get it as behavioral guidance only. Resolve the real
 path of this loaded `SKILL.md`; derive `qa/` and the source root from its parent
 directories. Before acting, require that source to be a clean primary checkout
 on `main`, with `.git` as a directory. Stop with restore/re-enable guidance if

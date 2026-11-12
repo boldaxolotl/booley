@@ -62,9 +62,10 @@ booley bootstrap --with-qa-skills
   links.
 - **Host only:** QA skills drive the maintainer's host and repository, so they
   stay out of release wheels and out of the Sandbox's host-skill mounts.
-- **Explicit only:** each skill's `agents/openai.yaml` disables implicit
-  invocation in Codex. Other clients get the same rule only as an instruction
-  in `SKILL.md`, which is guidance, not a security boundary.
+- **Explicit only:** `disable-model-invocation: true` in each `SKILL.md`
+  stops Claude Code from starting it on its own, and each skill's
+  `agents/openai.yaml` does the same in Codex. Other clients get the rule only
+  as an instruction in `SKILL.md`, which is guidance, not a security boundary.
 
 | Skill | Use |
 |---|---|
