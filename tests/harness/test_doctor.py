@@ -867,7 +867,7 @@ def _history_repo(tmp_path: Path, monkeypatch) -> Path:
     (tmp_path / "README").write_text("x\n", encoding="utf-8")
     _history_git(tmp_path, "add", "README")
     _history_git(tmp_path, "commit", "-q", "-m", "init")
-    # The default Stealth policy bans "ticket"; this repository opts out.
+    # This repository opts out of Stealth Mode so its history is not banned-term checked.
     (tmp_path / ".booley").mkdir()
     (tmp_path / ".booley" / "booley.toml").write_text(
         "[stealth]\nenabled = false\n", encoding="utf-8"

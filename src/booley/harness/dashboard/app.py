@@ -34,6 +34,7 @@ from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
+from booley.harness.dashboard.review import Occupants
 from booley.harness.dashboard.targets import (
     TargetDetail,
     TargetListing,
@@ -108,7 +109,9 @@ HELP = (
     "Activity is what the agent client last reported: working, waiting for tool call,\n"
     "or waiting for user input. Unknown means no fresh report, never a guess.\n"
     "Run in the top bar starts a built-in Booley Flow as a Standalone Job: pick the worktree,\n"
-    "the Flow, then fill in its form; check the equivalent shell command and submit or copy it\n"
+    "the Flow, then fill in its form; check the equivalent shell command and submit or copy it;\n"
+    "the review also says if the Job runs now or queues (a full queue refuses Submit) and warns\n"
+    "about sessions, running Jobs and uncommitted changes in the worktree\n"
     "After Run the Jobs window opens on All sessions with the new Job selected; a Finished\n"
     "filter switches to Running, which keeps the selected Job listed after it finishes\n"
     "Approvals remain in chat."
@@ -1043,7 +1046,9 @@ class DashboardApp(App[None]):
         self._load_worktrees()
         choices, message = self._wizard_worktrees()
         self.push_screen(
-            RunWizard(self.launcher, choices, message, self._default_worktree),
+            RunWizard(
+                self.launcher, choices, message, self._default_worktree, self._worktree_occupants
+            ),
             lambda key: self._after_run(origin, key),
         )
 
@@ -2027,6 +2032,23 @@ class DashboardApp(App[None]):
                 label = f"{self._session_handle(facts.key)} {self._session_facts(row).mode}"
                 pairs.append((Path(checkout), label))
         return pairs
+
+    def _worktree_occupants(self, worktree: Path) -> Occupants:
+        """The connected sessions and unfinished Jobs in *worktree*, as the last read showed them."""
+        if self.snapshot.observed_at == 0:
+            return Occupants(problem="the Dashboard has not read them yet")
+        here = worktree.resolve()
+        sessions = tuple(
+            label for path, label in self._session_checkouts() if path.resolve() == here
+        )
+        running = tuple(
+            job.handle or job.record.run_id
+            for job in self.snapshot.jobs.jobs
+            if not _finished(job)
+            and job.record.work_dir
+            and Path(job.record.work_dir).resolve() == here
+        )
+        return Occupants(sessions, running)
 
     def _worktree_choices(self) -> tuple[WorktreeChoice, ...]:
         """The worktrees to pick from; sessions' first, the main checkout last."""

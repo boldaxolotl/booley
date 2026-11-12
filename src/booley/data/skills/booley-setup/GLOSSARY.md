@@ -59,8 +59,8 @@ correctly.
 
 ## Stealth Mode
 Aliases: stealth, stealth mode
-Stealth mode keeps Booley out of the RTL repo's history by scrubbing protected
-names from commit messages and, when Booley authors hidden cores, projecting
+Stealth mode keeps Booley out of the RTL repo's history by rejecting commit
+messages that name protected terms and, when Booley authors hidden cores, projecting
 ignored copies where FuseSoC can find them. Interactive setup enables it when
 you choose to keep Booley out of your git history.
 
@@ -70,9 +70,10 @@ makes an ignored copy at the Project Root for FuseSoC to discover. The hidden
 copy remains authoritative, so you do not edit the projected copy.
 
 ## Commit-message scrub
-The commit-message scrub removes configured protected words, such as AI and
-Booley names, from commit messages through the repo's commit-msg hook. It
-changes new commit messages, not the RTL or existing commits.
+The commit-message scrub keeps configured protected words, such as AI and
+Booley names, out of commit messages: the repo's commit-msg hook rejects a
+message that contains one and leaves the message unchanged for the author to
+reword. It checks new commit messages, not the RTL or existing commits.
 
 ## Parity Check
 Aliases: parity check

@@ -34,6 +34,7 @@ REQUIRED_CONTENT_TESTS = (
     "tests/test_site_contract.py",
     "tests/docs/test_links.py",
     "tests/docs/test_current_version_docs.py",
+    "tests/docs/test_changelog_fragments.py",
     # Found only through documentation paths they name; pinned so that a
     # tighter reader rule cannot silently drop the docs/user guards.
     "tests/runtime/test_docs_links.py",

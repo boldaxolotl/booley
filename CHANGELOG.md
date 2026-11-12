@@ -10,6 +10,18 @@ Packaged release history starts at 0.2.7. For older changes, see
 ## Unreleased
 
 - Mutation testing now generates Mutants deterministically and runs no LLM:
+- Stealth Mode now rejects a commit message that contains a banned term
+  instead of rewriting it with `redacted`. The commit-msg hook never changes the
+  message file: it lists each match, says where your message is kept, and gives
+  the `git commit -v -e -F "<path>"` retry (a rejected merge commit says how to
+  finish it). Comment lines and everything below the scissors line aren't
+  checked. `BOOLEY_SKIP_COMMIT_VALIDATION=1` no longer skips banned terms, only
+  the convention and body-length checks. A Specialist whose commit message has a
+  banned term now fails with the validation error instead of committing under
+  its default message. `cursor` and `ticket` left the default banned list; add
+  them to `banned_words` to keep them. Rerun `booley init` in each Stealth
+  Project to install the new hook
+  ([#3597](https://github.com/boldaxolotl/Booley/issues/3597)).
 - The Sandbox start step now registers Booley's MCP server and skills for every
   allowed Agent CLI, not only the default: a Sandbox issued for `claude` and
   `codex` serves both. A CLI whose registration is refused is reported as
@@ -43,6 +55,13 @@ Packaged release history starts at 0.2.7. For older changes, see
   criterion and `MUTATION:` Goals are unchanged.
 
 - The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
+  as a Standalone Job: choose the worktree, the Flow, and its arguments, check
+  the equivalent shell command, then submit or copy it. The Jobs window opens
+  with the new Job selected. The Dashboard is no longer read-only. The review
+  screen says whether the Job runs now or queues (with its position), refuses
+  Submit when the Job queue is full, warns about a connected session, running
+  Jobs, or uncommitted changes in the worktree, and shows the per-work-unit
+  timeout of synth and FPGA runs.
   as a Standalone Job: choose the worktree and the Flow, fill in a form generated
   from the Flow's options, check the equivalent shell command, then submit or
   copy it. The Jobs window opens with the new Job selected. The Dashboard is no
@@ -114,7 +133,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   no longer hides `.booley/` or gives it its own repository before setup
   records your choice; the booley-setup skill's hidden answer does both. A
   Project set up earlier whose `booley.toml` has no `enabled` key has left
-  Stealth: commit messages are no longer cleaned and pushes are no longer
+  Stealth: commit messages are no longer checked and pushes are no longer
   checked. `booley init` and Doctor warn `stealth.enabled-unset` while
   `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
   `enabled = false` to confirm it is off. A `booley.toml` that can't be read
@@ -214,6 +233,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   `booley-flexnet-relay:1` image is kept: remove it with
   `docker image rm booley-flexnet-relay:1` and the next licensed session builds
   it again.
+
+- The RISC-V Sandbox Image moves Spike to upstream master `4094d290`, which adds
+  configurable LR/SC reservation-set size, a Zvt tile fix, and a batch of
+  CSR and PMP fixes (`stopei`, `mstateen0`, `scountovf`, mcontrol6 triggers).
+  ([PR #3633](https://github.com/boldaxolotl/booley/pull/3633))
 
 ## 0.4.0 - 04 NOV 2026
 

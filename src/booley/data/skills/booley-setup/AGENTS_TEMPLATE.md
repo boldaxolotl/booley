@@ -30,7 +30,7 @@ keep that copy and the canonical guide identical and stage their changes.
 ## Booley-Specific Instructions
 
 - Project-specific Booley data lives in `.booley/`. Keep handoffs and plans there too (`.booley/plans/`, `.booley/handoffs/`), never in the RTL repo: they are working notes, not project source.
-- Stealth mode: `.booley/` is a separate Git repository. Commit its contents there; none of them may be visible in the main repo.
+- Stealth mode: `.booley/` is a separate Git repository. Commit its contents there; none of them may be visible in the main repo. If the commit-msg hook rejects a message for a banned term or an attribution footer, reword it and commit again.
 - Inside the Sandbox, use the registered Booley MCP tools for EDA work. Flows this Project disables are not registered (the usual set is `sim`, `lint`, `synth`, `fpga`, and `mutation`; `sim --mode elab-only` is an Elaboration Check); call `booley_status` or `booley targets` for exact wiring. Find the tools in your MCP tool list, not through `$PATH` or `--help`; if code mode hides them, search `ALL_TOOLS` for `mcp__booley__booley_status`.
 - If `booley_status` is absent from the MCP tool list, you are on the host and nothing is broken. Point the user to "Reopen in Container" (or `booley session up && booley session enter`); do not substitute raw EDA commands.
 - Interactive Mode: at the start of a tab, call `booley_status` and display its status block. The user shares a VS Code window attached to the Sandbox, so show files with `code --goto <path>[:<line>]` and diffs with `code --diff <left> <right>` when useful.

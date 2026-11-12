@@ -261,8 +261,14 @@ a Target name or a comma list, empty means automatic; the test field takes one
 Test Run). Output and Expert options go in the **Extra arguments** field, typed
 as on the command line. `Esc` in a list or editor drops the change, `Enter`
 keeps it. **Review the command** checks it and shows the equivalent
-`cd … && booley flow …` command. **Submit**
-starts the Job, **Copy command** asks your terminal to copy the command instead.
+`cd … && booley flow …` command. The
+review screen also says whether the Job runs now or queues behind other Jobs
+(with its position), and warns when the worktree has a connected session,
+running Jobs, or uncommitted changes. A check it cannot make is reported as
+such. Synth and FPGA runs show their per-work-unit timeout. **Submit** starts
+the Job, unless the Job queue is full: then the screen says why and Submit does
+nothing until queued work drains. **Copy command** asks your terminal to copy the
+command instead and always works.
 The Jobs window then opens on All sessions with the new Job selected; a
 Finished filter switches to Running, which keeps the Job listed after it
 finishes. `Esc` returns to where you started.
@@ -425,9 +431,9 @@ doesn't replace your own review.
 <details markdown>
 <summary>In stealth mode</summary>
 
-A Git hook removes AI and Booley names from commit messages and rejects
-`Co-Authored-By` lines. If a commit is rejected, the agent just retries without
-that line. See [STEALTH.md](STEALTH.md#commit-messages).
+A Git hook rejects commit messages that name AI tools or Booley, and
+`Co-Authored-By` lines. If a commit is rejected, the agent rewords the message
+and commits again. See [STEALTH.md](STEALTH.md#commit-messages).
 
 </details>
 

@@ -14,8 +14,9 @@ Python code, and review checks it the same way: cite the principle number.
 **Scope:**
 
 - **Part 1, every doc:** any `*.md` file and anything under `docs/`, except
-  `CHANGELOG.md`. ADRs record a decision as it stood when it was made, so
-  principle 14 does not apply to them. Agent skills also follow
+  `CHANGELOG.md` and the fragments under `changelog.d/` that become its text
+  (`changelog.d/README.md` stays in scope). ADRs record a decision as it stood
+  when it was made, so principle 14 does not apply to them. Agent skills also follow
   `writing-for-agents` conventions where those are stricter.
 - **Part 2, user docs:** `README.md`, `docs/user/`, `website/`, the bwave docs
   under `crates/bwave/docs/public/`, and the packaged copies under

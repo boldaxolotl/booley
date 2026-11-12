@@ -764,6 +764,7 @@ _CLI_VERSION_ALLOWED = (
     "docs/internals/GATEWAY.md",
     "CHANGELOG.md",
     "src/booley/data/refs/CHANGELOG.md",
+    "changelog.d/",  # entries become CHANGELOG.md text at release
     "docs/adr/",
     "docs/internals/validation/",
 )
@@ -928,12 +929,28 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     # The user-facing tool list names the exact pin, so it must move with it.
     supported_tools = Path("docs/user/SUPPORTED-EDA-TOOLS.md").read_text(encoding="utf-8")
     assert f"`{spike_ref.group(1)}`" in supported_tools
+    # ADR 0069: each refresh is announced in the Unreleased changelog section.
+    changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = changelog.split("## Unreleased", 1)[1].split("\n## ", 1)[0]
+    assert spike_ref.group(1)[:8] in unreleased
     assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
     assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
 
     spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
     assert "make check" in spike_build
     assert "test -x /opt/riscv/bin/spike" in spike_build
+
+
+def test_spike_build_fetches_its_softfloat_submodule() -> None:
+    """Spike master builds softfloat from a git submodule the shallow fetch omits."""
+    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+    spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
+
+    step = "git -c protocol.version=0 submodule update --init --recursive"
+    # Full-depth like the Yosys build, so a non-tip gitlink stays fetchable.
+    assert step in spike_build
+    sha_assertion = spike_build.index('test "$(git rev-parse HEAD)" = "${SPIKE_REF}"')
+    assert sha_assertion < spike_build.index(step) < spike_build.index("../configure")
 
 
 def test_riscv_tooling_builds_on_the_runtime_base_ubuntu_digest() -> None:

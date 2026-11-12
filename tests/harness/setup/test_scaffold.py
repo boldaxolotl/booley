@@ -142,8 +142,8 @@ def test_default_combo_files_and_shapes() -> None:
     cfg = tomllib.loads(files[".booley/booley.toml"])
     assert cfg["project"]["name"] == "my_ip"
     # Stealth is OFF in a scaffolded repo: it exists to exercise Booley, so
-    # the commit sanitizer would redact its own MCP tool name from subjects and
-    # drop multi-line bodies for no privacy gain.
+    # the commit-msg hook would reject its own MCP tool name in subjects for no
+    # privacy gain.
     assert cfg["stealth"] == {"enabled": False}
     # Target selection lives beside each Target in the .core file.
     assert cfg["flows"]["sim"] == {"trace_files": ["dump.vcd"]}

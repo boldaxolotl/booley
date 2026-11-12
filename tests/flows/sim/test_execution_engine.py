@@ -1383,7 +1383,9 @@ def test_default_verilator_make_recipe_is_resource_bounded(
     monkeypatch.setattr(
         build_parallelism,
         "load_job_budget_config",
-        lambda _project_root=None: {"jobs": {"max_heavy": 2, "heavy_memory": "8g"}},
+        lambda _project_root=None, booley_dir=None: {
+            "jobs": {"max_heavy": 2, "heavy_memory": "8g"}
+        },
     )
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     real_resolve = fusesoc_registry.resolve_target_handle
@@ -1472,7 +1474,9 @@ def test_real_verilator_setup_merges_authored_make_options_once(
     monkeypatch.setattr(
         build_parallelism,
         "load_job_budget_config",
-        lambda _project_root=None: {"jobs": {"max_heavy": 2, "heavy_memory": "8g"}},
+        lambda _project_root=None, booley_dir=None: {
+            "jobs": {"max_heavy": 2, "heavy_memory": "8g"}
+        },
     )
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     real_resolve = fusesoc_registry.resolve_target_handle
