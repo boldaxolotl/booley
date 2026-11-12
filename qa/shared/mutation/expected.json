@@ -1,5 +1,5 @@
 {
-  "derivation": "Written by hand from the fixture text and docs/user/FLOW-MUTATION.md before any Mutation Flow or generator run. Every `rule` quotes or paraphrases that doc. Two things come from the code instead of the doc and are marked `code`: the report's presentation of a site (see RUNBOOK.md, Site granularity) and the size half of `--count auto`.",
+  "derivation": "Written by hand from the fixture text and docs/user/FLOW-MUTATION.md before any Mutation Flow or generator run. Every `rule` quotes or paraphrases that doc. Three things come from the code instead of the doc and are marked `code`: the report's presentation of a site (see RUNBOOK.md, Site granularity), the size half of `--count auto`, and the shortfall message.",
   "fixture": "qa/shared/mutation/project",
   "default_scope": [
     "rtl/mutation_top.sv",
@@ -176,7 +176,7 @@
       "run": 41,
       "message": "only 41 candidate Mutants exist; returning all of them (50 requested)",
       "message_source": "code",
-      "threshold_by_doc": "ceil(0.8 x 50) = 40, which 33 detected cannot reach: record the verdict the report gives and compare it with the doc"
+      "threshold_by_doc": "ceil(0.8 x 50) = 40, which 33 detected cannot reach: the doc implies FAIL, exit 1; a PASS is a finding to record"
     }
   }
 }

@@ -19,7 +19,7 @@ Native builds run only in the Sandbox.
 | `rtl/status.sv` | Logic no test checks: every Mutant survives |
 | `rtl/handshake.sv` | `assign ack = req;`: its Mutant hangs both testbenches |
 | `rtl/self_check.sv` | Constant function checked by an elaboration `$error`: its Mutants do not build |
-| `rtl/decoys.sv` | Text and constructs that must never be mutated, plus three bit-select and deletion sites |
+| `rtl/decoys.sv` | Text and constructs that must never be mutated, plus two bit-select and three deletion candidates |
 | `rtl/vendor/sync2.sv`, `rtl/gen/version.sv` | Tagged `vendored` and `generated`: outside the default scope |
 | `tb/mutation_tb.sv`, `tb/test_mutation.py` | Icarus and cocotb testbenches (`full`, `smoke`, `fail`): outside the default scope |
 | `mutation.core` | Targets `sim_icarus` (Icarus) and `sim_cocotb` (Verilator, `-Werror-USERERROR`) |

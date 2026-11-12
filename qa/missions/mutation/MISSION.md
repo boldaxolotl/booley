@@ -116,10 +116,12 @@ Intent: the default scope is the Target's own RTL and `--scope` only narrows it.
 Try:
 - The default scope equals `default_scope`: no testbench, vendored or generated
   file; `--scope` narrows it.
-- Reject before any build: `tb/mutation_tb.sv`, `rtl/vendor/sync2.sv`, a
-  missing path, a `../` path, a non-HDL file (`tb/test_mutation.py`). Check
-  each exit code against the doc's verdict table: an unusable `--scope` entry
-  is `ERROR`, exit 2.
+- Reject before any build: `tb/mutation_tb.sv`, a missing path, a `../` path, a
+  non-HDL file (`tb/test_mutation.py`). Check each exit code against the doc's
+  verdict table: an unusable `--scope` entry is `ERROR`, exit 2.
+- An explicit `rtl/vendor/sync2.sv` is part of the Target's RTL: the doc says
+  only the default scope skips vendored files, so it is accepted. Record what
+  happens as a doc question, not a bug.
 Look for: a rejected entry that still builds, a wrong exit code, a vendored or
 generated file in the default scope.
 
@@ -130,15 +132,15 @@ Try:
 - `faults/unelaborated.sv`: baseline does not elaborate, `ERROR`, exit 2.
 - `faults/syntax_error.sv`: the run names the file and the parser diagnostic,
   exit 2.
-- The `self_check.sv` Mutants (`scope rtl/self_check.sv --count 3`) are
+- The `self_check.sv` Mutants (`--scope rtl/self_check.sv --count 3`) are
   `invalid`, unscored, and still counted in `--count`. Do this on both Targets.
 - A run with no agent CLI credentials in the Sandbox works.
 Look for: one inconclusive Mutant (a cocotb run with no result line, a compile
 failure outside the build step) turning a whole run into `ERROR`, a Mutant
 that fails to build counted as detected.
 
-### 8. mut-removed — The old Specialist surface is gone (~25 min)
-Intent: removed names fail clearly and leave nothing behind.
+### 8. mut-removed — Retired names fail with a fix hint (~25 min)
+Intent: retired names fail clearly and leave nothing behind.
 Try:
 - `booley flow mutation --steer x` and `--regen-lock` are rejected by the
   argument parser.
@@ -146,9 +148,10 @@ Try:
 - `[models] mutation_tester` and `[specialists.mutation_tester]` in the
   Project config are each reported with their fix hint.
 - A leftover lock file and a `mutation_tester` scratch directory in the
-  Booley Directory are ignored, and the scratch directory is removed.
-Look for: a removed flag that is silently accepted, a hint that names a surface
-that no longer exists.
+  Booley Directory are ignored, and a real (non-dry) run removes the scratch
+  directory.
+Look for: a retired flag that is silently accepted, a hint that names a surface
+that does not exist.
 
 ### 9. cleanup — Mutation cleanup (~15 min)
 Reap simulators, restore fault files and the registry, and release the fixture
