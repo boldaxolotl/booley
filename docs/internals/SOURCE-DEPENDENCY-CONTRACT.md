@@ -121,7 +121,7 @@ Each package owns one concept from the [glossary map](../../GLOSSARY-MAP.md):
 | MCP | `booley.mcp` | Expose Flows and Specialists to the Developer Agent. |
 | B-Wave | `booley.bwave` | Inspect, convert, find, and query waveform stores; drive human viewing. |
 | Metric-Driven Development | `booley.measurement` | What each Flow measures and how it is read. |
-| Result Cache | `booley.result_cache` | Result Key parts and the clean-commit check. |
+| Result Cache | `booley.result_cache` | Result Key part helpers (unfinished; removed with Goal Mode, ADR 0092). |
 
 `booley.harness` holds the CLI, Doctor, and setup code; the old "Harness"
 orchestration term is retired. Supporting packages own their named

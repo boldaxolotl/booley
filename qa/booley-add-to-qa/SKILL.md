@@ -26,11 +26,14 @@ run.
    intent, what to try (including one fault or edge case), what to look for,
    and its timebox; the `AREAS.md` line if a capability is new. Wait for
    approval.
-3. **Apply.** Edit the mission and `AREAS.md`. Keep the mission's areas in
-   priority order and its total timebox within its budget (8 hours; `gui`:
-   4 hours); if the addition pushes it over, say which area should shrink. Add any new fixture, prompt, or Goalset
-   file next to the mission and reference it by relative path. Ad-hoc Goal lists
-   use `goals/*.json`; shared coverage fixtures belong in
+3. **Apply.** Edit the mission and `AREAS.md` in one worktree and branch per
+   `AGENTS.md`. Keep the mission's areas in priority order and its primary
+   areas within its budget (8 hours; `gui`: 4 hours); if the addition pushes
+   it over, say which area should shrink. Add any new fixture, prompt, or
+   Goalset file next to the mission and reference it by relative path. Ad-hoc
+   Goal lists use `goals/*.json`; shared coverage fixtures belong in
    `qa/shared/coverage/goals/`.
-4. **Check.** Every path the edited mission references exists
-   (`python -m pytest tests/qa/test_missions.py`).
+4. **Check.** Run `python -m pytest tests/qa/test_missions.py`. It checks
+   that every path a mission references exists, that every `AREAS.md` link
+   names a real area with the right `(optional)` mark, and that Goalsets and
+   ad-hoc Goal lists parse. Done when it passes.
