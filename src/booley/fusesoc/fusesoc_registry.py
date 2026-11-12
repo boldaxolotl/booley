@@ -2532,11 +2532,13 @@ def setup_command_for_handle(
     fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
     backend_arguments: Sequence[str] = (),
     library_plan: CoreLibraryPlan | None = None,
+    export: bool = True,
 ) -> list[str]:
     """Build FuseSoC setup argv from catalog-authorized Target facts.
 
     *library_plan* replaces the Project's own prepared library view, e.g. with
-    a per-build private mirror.
+    a per-build private mirror. ``export=False`` adds ``--no-export``: the EDAM then
+    names each file at its original place instead of a copy under the work root.
     """
     root = require_current_target_handle(handle)
     try:
@@ -2554,6 +2556,7 @@ def setup_command_for_handle(
         build_root=Path(build_root),
         fusesoc_cmd=fusesoc_cmd,
         backend_arguments=backend_arguments,
+        export=export,
     )
 
 
@@ -2586,6 +2589,7 @@ def _setup_argv(
     build_root: Path,
     fusesoc_cmd: Sequence[str],
     backend_arguments: Sequence[str] = (),
+    export: bool = True,
 ) -> list[str]:
     flag_args = ["--flag", f"tool_{eda_tool}"] if flow and eda_tool else []
     library_args = [
@@ -2601,6 +2605,7 @@ def _setup_argv(
         "--build-root",
         str(build_root),
         "--setup",
+        *([] if export else ["--no-export"]),
         *flag_args,
         "--target",
         target_name,
@@ -2725,8 +2730,12 @@ def resolve_target_handle(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     backend_arguments: Sequence[str] = (),
     library_plan: CoreLibraryPlan | None = None,
+    export: bool = True,
 ) -> ResolvedTarget:
-    """Resolve a catalog-authorized handle without selecting its token again."""
+    """Resolve a catalog-authorized handle without selecting its token again.
+
+    ``export=False`` resolves without FuseSoC's copy of the sources (``--no-export``).
+    """
     root = require_current_target_handle(handle)
     build = Path(build_root)
     vlnv = resolution_vlnv or handle.vlnv
@@ -2737,6 +2746,7 @@ def resolve_target_handle(
         fusesoc_cmd=fusesoc_cmd,
         backend_arguments=backend_arguments,
         library_plan=library_plan,
+        export=export,
     )
     source_ref = TargetRef(
         name=handle.name,
