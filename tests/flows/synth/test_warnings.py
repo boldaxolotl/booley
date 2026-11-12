@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from booley.flows.synth.warnings import parse_synth_diagnostics
@@ -292,3 +294,70 @@ def test_loop_in_final_check_alone_still_counts() -> None:
 
     assert diagnostics.structural.complete is True
     assert diagnostics.structural.comb_loops == 1
+
+
+def _fixture_text(name: str) -> str:
+    return (Path(__file__).parent / "fixtures" / name).read_text()
+
+
+@pytest.mark.parametrize("version", ["0_69", "0_70"])
+def test_real_slang_frontend_warnings_group_under_frontend(version: str) -> None:
+    # Captured through `yosys -s` with `read_slang --top w w.sv`: Yosys 0.69+
+    # (9f75ca1f9) prints `w.sv:1:9: warning:`; Yosys 0.70+ (28ba3cb92) prints
+    # `w.sv:1: Warning:`. Both echo the source line and a caret line.
+    log = _fixture_text(f"slang_warning_yosys_{version}.txt")
+
+    summary = parse_synth_diagnostics({"yosys": log}).warnings
+
+    assert summary.total_warnings == 2
+    assert summary.unique_warnings == 1
+    assert summary.by_tool == {"yosys": 2}
+    assert summary.by_category == {"frontend": 2}
+    assert summary.by_disposition == {"informational": 2}
+    assert summary.actionable_warnings == 0
+    (group,) = summary.representatives
+    assert group.count == 2
+    assert group.code == "-Wunknown-pragma"
+    assert group.message == "Warning: unknown pragma 'foobar' [-Wunknown-pragma]"
+
+
+def test_real_read_verilog_located_warning_is_frontend() -> None:
+    # Captured from Yosys 0.70+ (28ba3cb92); 0.69+ prints the same line.
+    log = _fixture_text("verilog_warning_yosys_0_70.txt")
+
+    summary = parse_synth_diagnostics({"yosys": log}).warnings
+
+    assert summary.by_category == {"frontend": 1}
+    assert summary.by_disposition == {"informational": 1}
+    (group,) = summary.representatives
+    assert group.code is None
+    assert group.message.startswith("Warning: Range select [5:4]")
+
+
+@pytest.mark.parametrize(
+    ("body", "category"),
+    [
+        ("found logic loop in module top", "combinational_loop"),
+        ("multiple conflicting drivers for top.sig", "multi_driver"),
+    ],
+)
+def test_located_structural_warning_keeps_structural_classification(
+    body: str, category: str
+) -> None:
+    summary = parse_synth_diagnostics({"yosys": f"top.v:7: Warning: {body}\n"}).warnings
+
+    assert summary.by_category == {category: 1}
+    assert summary.structural_warnings == 1
+
+
+def test_frontend_groups_sort_after_actionable_representatives() -> None:
+    frontend = "".join(f"a.v:{n}: Warning: distinct frontend {n}\n" for n in range(9))
+
+    summary = parse_synth_diagnostics(
+        {"yosys": frontend + "Warning: something advisory\n"}
+    ).warnings
+
+    assert summary.total_warnings == 10
+    assert summary.actionable_unique_warnings == 1
+    assert len(summary.representatives) == 8
+    assert summary.representatives[0].disposition == "advisory"

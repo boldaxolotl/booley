@@ -20,12 +20,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-WarningDisposition = Literal["benign", "advisory", "structural"]
+WarningDisposition = Literal["benign", "advisory", "structural", "informational"]
 
 _SOURCE_ORDER = ("sv2v", "yosys", "openroad", "final_check")
 _REPRESENTATIVE_LIMIT = 8
 _REPRESENTATIVE_MESSAGE_BYTES = 2 * 1024
 _YOSYS_WARNING_RE = re.compile(r"^(?:Warning:|ABC:\s+Warning:)", re.IGNORECASE)
+# A located diagnostic from a Yosys frontend: `path:line[:col]: Warning: body`
+# (read_verilog, slang on Yosys 0.70) or `path:line:col: warning: body`
+# (slang on Yosys 0.69).
+_LOCATED_WARNING_RE = re.compile(
+    r"^([^\s:][^:]*):(\d+)(?::\d+)?:\s+warning:\s*(.*)$",
+    re.IGNORECASE,
+)
+_SLANG_CODE_RE = re.compile(r"\[(-W[\w-]+)\]$")
 _OPENROAD_WARNING_RE = re.compile(
     r"^\[WARNING(?:\s+([A-Z][A-Z0-9_]*-\d+))?\]\s*(.*)$",
     re.IGNORECASE,
@@ -93,6 +101,9 @@ class WarningSummary:
     by_category: Mapping[str, int] = field(default_factory=dict)
     by_disposition: Mapping[str, int] = field(default_factory=dict)
     representatives: tuple[WarningGroup, ...] = ()
+    # In-memory only (not in to_detail): groups with an actionable disposition,
+    # counted over every group rather than the capped representatives.
+    actionable_unique_warnings: int = 0
 
     @property
     def advisory_warnings(self) -> int:
@@ -104,6 +115,7 @@ class WarningSummary:
 
     @property
     def actionable_warnings(self) -> int:
+        """Advisory plus structural occurrences; benign and informational are excluded."""
         return self.advisory_warnings + self.structural_warnings
 
     def to_detail(self, *, include_representatives: bool = True) -> dict[str, Any]:
@@ -228,6 +240,29 @@ def _yosys_records(text: str) -> list[_WarningRecord]:
         category = _category(message, None)
         disposition, rationale = _disposition(message, category)
         result.append(_warning_record(tool, None, category, disposition, message, rationale))
+    return [*result, *_located_records(text)]
+
+
+def _located_records(text: str) -> list[_WarningRecord]:
+    """Parse single-line located frontend warnings.
+
+    The echoed source line and caret line that follow are never attached, and
+    the location prefix is dropped so one warning groups across lines and files.
+    """
+    result: list[_WarningRecord] = []
+    for line in text.splitlines():
+        match = _LOCATED_WARNING_RE.match(line)
+        if match is None:
+            continue
+        message = _normalize_message(["Warning: " + match.group(3)])
+        code_match = _SLANG_CODE_RE.search(message)
+        code = code_match.group(1) if code_match else None
+        category = _category(message, code)
+        if category == "other":
+            result.append(_warning_record("yosys", code, "frontend", "informational", message))
+            continue
+        disposition, rationale = _disposition(message, category)
+        result.append(_warning_record("yosys", code, category, disposition, message, rationale))
     return result
 
 
@@ -313,6 +348,7 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
     groups.sort(
         key=lambda item: (
             not (item.category == "combinational_loop" and item.disposition == "advisory"),
+            item.disposition == "informational",
             item.tool,
             item.code or "",
             item.category,
@@ -326,6 +362,9 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
         by_category=dict(sorted(Counter(item.category for item in records).items())),
         by_disposition=dict(sorted(Counter(item.disposition for item in records).items())),
         representatives=tuple(groups[:_REPRESENTATIVE_LIMIT]),
+        actionable_unique_warnings=sum(
+            item.disposition in {"advisory", "structural"} for item in groups
+        ),
     )
 
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from booley.core.booley_dir import BooleyDirOutsideCheckoutError, booley_dir_relative
 from booley.core.boundary import as_dict, as_str
@@ -70,10 +70,20 @@ def _configured_dir_at(repository: Path, commit: str) -> str:
     return as_str((as_dict(config.get("project")) or {}).get("dir")) or ""
 
 
+def booley_dir_at(repository: Path, commit: str) -> PurePosixPath:
+    """Where *commit* places the in-tree Booley Directory, relative to the checkout root.
+
+    Raises:
+        BooleyDirOutsideCheckoutError: the commit's ``[project].dir`` is absolute or
+            escapes the checkout.
+    """
+    return booley_dir_relative(_configured_dir_at(repository, commit))
+
+
 def _require_rules_in_commit(repository: Path, commit: str) -> None:
     """Fail unless the commit's own tree holds the Project's ``booley.toml``."""
     try:
-        place = booley_dir_relative(_configured_dir_at(repository, commit))
+        place = booley_dir_at(repository, commit)
     except BooleyDirOutsideCheckoutError as exc:
         raise RulesNotVersionedError(
             "rules must be versioned: the Booley Directory is neither in the commit's "
