@@ -63,6 +63,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         # Checkout: versioned with the RTL.
         "booley.toml": _VERSIONED,
         "tests.toml": _VERSIONED,
+        "metrics.toml": _VERSIONED,
         "criteria.toml": _VERSIONED,
         "doctor-waivers.toml": _VERSIONED,
         "configs.toml": _VERSIONED,
