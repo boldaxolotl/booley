@@ -1,0 +1,182 @@
+{
+  "derivation": "Written by hand from the fixture text and docs/user/FLOW-MUTATION.md before any Mutation Flow or generator run. Every `rule` quotes or paraphrases that doc. Two things come from the code instead of the doc and are marked `code`: the report's presentation of a site (see RUNBOOK.md, Site granularity) and the size half of `--count auto`.",
+  "fixture": "qa/shared/mutation/project",
+  "default_scope": [
+    "rtl/mutation_top.sv",
+    "rtl/alu.sv",
+    "rtl/counter.sv",
+    "rtl/status.sv",
+    "rtl/handshake.sv",
+    "rtl/self_check.sv",
+    "rtl/decoys.sv"
+  ],
+  "unmutated": [
+    {"path": "tb/mutation_tb.sv", "tag": "tb", "rule": "default scope skips testbench files"},
+    {"path": "tb/test_mutation.py", "tag": "tb", "rule": "default scope skips testbench files; it is not HDL either"},
+    {"path": "rtl/vendor/sync2.sv", "tag": "vendored", "rule": "default scope skips vendored files"},
+    {"path": "rtl/gen/version.sv", "tag": "generated", "rule": "default scope skips generated files"}
+  ],
+  "operators": {
+    "relational": {
+      "count": 3,
+      "candidates": [
+        {"file": "rtl/alu.sv", "line": 12, "site": "<", "replacement": "<=", "rule": "relational: `a < b` -> `a <= b`"},
+        {"file": "rtl/alu.sv", "line": 13, "site": "==", "replacement": "!=", "rule": "relational: `a == b` -> `a != b`"},
+        {"file": "rtl/status.sv", "line": 7, "site": "==", "replacement": "!=", "rule": "relational: `a == b` -> `a != b`"}
+      ]
+    },
+    "arithmetic-logical": {
+      "count": 5,
+      "candidates": [
+        {"file": "rtl/alu.sv", "line": 11, "site": "+", "replacement": "-", "rule": "arithmetic-logical: `a + b` -> `a - b`"},
+        {"file": "rtl/alu.sv", "line": 14, "site": "&", "replacement": "|", "rule": "arithmetic-logical: `a & b` -> `a | b`"},
+        {"file": "rtl/alu.sv", "line": 23, "site": "<<", "replacement": ">>", "rule": "arithmetic-logical: `a << 2` -> `a >> 2`"},
+        {"file": "rtl/counter.sv", "line": 12, "site": "+", "replacement": "-", "rule": "arithmetic-logical: `a + b` -> `a - b`"},
+        {"file": "rtl/self_check.sv", "line": 5, "site": "+", "replacement": "-", "rule": "arithmetic-logical: `a + b` -> `a - b`; a function body is design code"}
+      ]
+    },
+    "condition": {
+      "count": 9,
+      "candidates": [
+        {"file": "rtl/alu.sv", "line": 14, "site": "op[0]", "replacement": "!(op[0])", "rule": "condition of a `?:` -> its negation"},
+        {"file": "rtl/alu.sv", "line": 14, "site": "op[0]", "replacement": "1'b1", "rule": "condition of a `?:` -> `1'b1`"},
+        {"file": "rtl/alu.sv", "line": 14, "site": "op[0]", "replacement": "1'b0", "rule": "condition of a `?:` -> `1'b0`"},
+        {"file": "rtl/counter.sv", "line": 9, "site": "rst", "replacement": "!(rst)", "rule": "condition of an `if` -> its negation: `if (valid)` -> `if (!(valid))`"},
+        {"file": "rtl/counter.sv", "line": 9, "site": "rst", "replacement": "1'b1", "rule": "condition of an `if` -> `1'b1`"},
+        {"file": "rtl/counter.sv", "line": 9, "site": "rst", "replacement": "1'b0", "rule": "condition of an `if` -> `1'b0`"},
+        {"file": "rtl/counter.sv", "line": 12, "site": "en", "replacement": "!(en)", "rule": "condition of an `if` -> its negation"},
+        {"file": "rtl/counter.sv", "line": 12, "site": "en", "replacement": "1'b1", "rule": "condition of an `if` -> `1'b1`"},
+        {"file": "rtl/counter.sv", "line": 12, "site": "en", "replacement": "1'b0", "rule": "condition of an `if` -> `1'b0`"}
+      ]
+    },
+    "constant": {
+      "count": 8,
+      "candidates": [
+        {"file": "rtl/counter.sv", "line": 9, "site": "2", "replacement": "3", "rule": "constant: lowest bit flipped (`4'd2` -> `4'd3`; plus one gives the same value, so it is one Mutant)"},
+        {"file": "rtl/counter.sv", "line": 9, "site": "2", "replacement": "1", "rule": "constant: minus one (`4'd2` -> `4'd1`)"},
+        {"file": "rtl/counter.sv", "line": 12, "site": "1", "replacement": "0", "rule": "constant: lowest bit flipped (`4'd1` -> `4'd0`; minus one gives the same value)"},
+        {"file": "rtl/counter.sv", "line": 12, "site": "1", "replacement": "2", "rule": "constant: plus one (`4'd1` -> `4'd2`)"},
+        {"file": "rtl/status.sv", "line": 7, "site": "9", "replacement": "8", "rule": "constant: lowest bit flipped (`4'd9` -> `4'd8`; minus one gives the same value)"},
+        {"file": "rtl/status.sv", "line": 7, "site": "9", "replacement": "10", "rule": "constant: plus one (`4'd9` -> `4'd10`)"},
+        {"file": "rtl/self_check.sv", "line": 5, "site": "1", "replacement": "0", "rule": "constant: lowest bit flipped (`4'd1` -> `4'd0`; minus one gives the same value)"},
+        {"file": "rtl/self_check.sv", "line": 5, "site": "1", "replacement": "2", "rule": "constant: plus one (`4'd1` -> `4'd2`)"}
+      ]
+    },
+    "bit-select": {
+      "count": 3,
+      "candidates": [
+        {"file": "rtl/alu.sv", "line": 14, "site": "0", "replacement": "1", "rule": "bit-select: `op[0]` on `[1:0]` moves up only (down leaves the declared range)"},
+        {"file": "rtl/decoys.sv", "line": 14, "site": "7", "replacement": "6", "rule": "bit-select: `wide[7]` on `[7:0]` moves down only (up leaves the declared range)"},
+        {"file": "rtl/decoys.sv", "line": 15, "site": "3:0", "replacement": "4:1", "rule": "bit-select: `wide[3:0]` moves as a slice, up only (down leaves the declared range)"}
+      ]
+    },
+    "deletion": {
+      "count": 13,
+      "candidates": [
+        {"file": "rtl/alu.sv", "line": 11, "site": "assign sum = a + b;", "replacement": "/* deleted */", "rule": "deletion: removes one assignment"},
+        {"file": "rtl/alu.sv", "line": 12, "site": "assign lt = a < b;", "replacement": "/* deleted */", "rule": "deletion: removes one assignment"},
+        {"file": "rtl/alu.sv", "line": 13, "site": "assign eq = a == b;", "replacement": "/* deleted */", "rule": "deletion: removes one assignment"},
+        {"file": "rtl/alu.sv", "line": 14, "site": "assign y = op[0] ? (a & b) : sum;", "replacement": "/* deleted */", "rule": "deletion: removes one assignment"},
+        {"file": "rtl/alu.sv", "line": 23, "site": "assign y = d << n;", "replacement": "/* deleted */", "rule": "deletion: removes one assignment"},
+        {"file": "rtl/counter.sv", "line": 9, "site": "q <= 4'd2;", "replacement": "begin end", "rule": "deletion: `q <= d;` removed"},
+        {"file": "rtl/counter.sv", "line": 11, "site": "q <= q;", "replacement": "begin end", "rule": "deletion: `q <= d;` removed; equivalent, because the register holds anyway"},
+        {"file": "rtl/counter.sv", "line": 12, "site": "q <= q + 4'd1;", "replacement": "begin end", "rule": "deletion: `q <= d;` removed"},
+        {"file": "rtl/status.sv", "line": 7, "site": "assign busy = v == 4'd9;", "replacement": "/* deleted */", "rule": "deletion: removes one assignment"},
+        {"file": "rtl/decoys.sv", "line": 14, "site": "assign hi = wide[7];", "replacement": "/* deleted */", "rule": "deletion: removes one assignment"},
+        {"file": "rtl/decoys.sv", "line": 15, "site": "assign low = wide[3:0];", "replacement": "/* deleted */", "rule": "deletion: removes one assignment"},
+        {"file": "rtl/decoys.sv", "line": 16, "site": "r <= hi;", "replacement": "begin end", "rule": "deletion: `q <= d;` removed; the nonblocking assignment itself is not a comparison"},
+        {"file": "rtl/handshake.sv", "line": 6, "site": "assign ack = req;", "replacement": "/* deleted */", "rule": "deletion: removes one assignment; `ack` is left undriven"}
+      ]
+    }
+  },
+  "decoys": [
+    {"file": "rtl/decoys.sv", "line": 2, "text": "a < b", "never": "<=", "reason": "a comment holds no code"},
+    {"file": "rtl/decoys.sv", "line": 10, "text": "a + b", "never": "-", "reason": "a string literal in a parameter default: parameter defaults are skipped"},
+    {"file": "rtl/decoys.sv", "line": 11, "text": "4'd5", "never": "*", "reason": "parameter default"},
+    {"file": "rtl/decoys.sv", "line": 12, "text": "4", "never": "*", "reason": "parameter default"},
+    {"file": "rtl/decoys.sv", "line": 13, "text": "keep = 1", "never": "*", "reason": "attribute"},
+    {"file": "rtl/decoys.sv", "line": 13, "text": "-", "never": "+", "reason": "width: `[W-1:0]`"},
+    {"file": "rtl/decoys.sv", "line": 14, "text": "7", "never": "8", "reason": "a bit-select moves within the declared range `[7:0]`"},
+    {"file": "rtl/decoys.sv", "line": 15, "text": "3:0", "never": "2:-1", "reason": "a bit-select moves within the declared range `[7:0]`"},
+    {"file": "rtl/decoys.sv", "line": 16, "text": "<=", "never": "<", "reason": "a nonblocking assignment is not a comparison"},
+    {"file": "rtl/decoys.sv", "line": 18, "text": "wide[7:4] + 4'd1", "never": "*", "reason": "inactive `ifdef` branch: the macro is never defined"},
+    {"file": "rtl/counter.sv", "line": 9, "text": "<=", "never": "<", "reason": "a nonblocking assignment is not a comparison"},
+    {"file": "rtl/self_check.sv", "line": 8, "text": "==", "never": "!=", "reason": "parameter default"},
+    {"file": "rtl/self_check.sv", "line": 10, "text": "!OK", "never": "*", "reason": "elaboration-time generate check, not design behavior (`Only design code is mutated`); the doc does not name generate conditions, so a Mutant here is a finding to judge, not a certain bug"}
+  ],
+  "outcomes": {
+    "note": "Same on sim_icarus and sim_cocotb. Keys are `file:line:site->replacement`.",
+    "survivors": [
+      "rtl/status.sv:7:==->!=",
+      "rtl/status.sv:7:9->8",
+      "rtl/status.sv:7:9->10",
+      "rtl/status.sv:7:assign busy = v == 4'd9;->/* deleted */",
+      "rtl/counter.sv:11:q <= q;->begin end"
+    ],
+    "equivalent": ["rtl/counter.sv:11:q <= q;->begin end"],
+    "hanging": ["rtl/handshake.sv:6:assign ack = req;->/* deleted */"],
+    "invalid": [
+      "rtl/self_check.sv:5:+->-",
+      "rtl/self_check.sv:5:1->0",
+      "rtl/self_check.sv:5:1->2"
+    ]
+  },
+  "per_file": {
+    "rtl/mutation_top.sv": {"candidates": 0, "survivors": 0, "invalid": 0, "hanging": 0},
+    "rtl/alu.sv": {"candidates": 14, "survivors": 0, "invalid": 0, "hanging": 0},
+    "rtl/counter.sv": {"candidates": 14, "survivors": 1, "invalid": 0, "hanging": 0},
+    "rtl/status.sv": {"candidates": 4, "survivors": 4, "invalid": 0, "hanging": 0},
+    "rtl/handshake.sv": {"candidates": 1, "survivors": 0, "invalid": 0, "hanging": 1},
+    "rtl/self_check.sv": {"candidates": 3, "survivors": 0, "invalid": 3, "hanging": 0},
+    "rtl/decoys.sv": {"candidates": 5, "survivors": 0, "invalid": 0, "hanging": 0}
+  },
+  "totals": {
+    "candidates": 41,
+    "exhaustive": {
+      "command_count": 41,
+      "detected": 33,
+      "detected_by_timeout": 1,
+      "not_detected": 5,
+      "invalid": 3,
+      "threshold": 33,
+      "verdict": "PASS",
+      "exit": 0,
+      "tally_line": "33 detected (1 timeout), 3 invalid, 5 not detected"
+    },
+    "boundary": {"min_detected": 34, "verdict": "FAIL", "exit": 1},
+    "default_threshold_by_count": {"3": 3, "4": 4, "6": 5, "7": 6, "10": 8, "11": 9, "41": 33},
+    "mutant_time_limit_s": "min(300, max(30, ceil(10 x baseline_s))): 30 for the hanging Mutant while each baseline test takes 3 s or less"
+  },
+  "auto": {
+    "scope_lines": 125,
+    "size_formula_count": 11,
+    "size_formula_source": "code: round(sqrt(lines)) clamped to 3..25; the doc only says the count derives from the size of the scope",
+    "time_cap_rule": "doc: about one Mutant per 150 seconds, at least 3",
+    "cases": [
+      {"timeout": "default (1,800 s)", "time_cap": 12, "count": 11, "progress_line": "auto-scaled: 11 Mutants (source-size formula 11, budget cap 12)"},
+      {"timeout": "--timeout 10m", "time_cap": 4, "count": 4, "progress_line": "auto-scaled: 4 Mutants (source-size formula 11, budget cap 4)"},
+      {"timeout": "--timeout 1m", "time_cap": 3, "count": 3, "progress_line": "auto-scaled: 3 Mutants (source-size formula 11, budget cap 3)"},
+      {"timeout": "--timeout 1h", "time_cap": 24, "count": 11, "progress_line": "auto-scaled: 11 Mutants (source-size formula 11, budget cap 24)"}
+    ]
+  },
+  "selection": {
+    "operator_order": ["relational", "arithmetic-logical", "condition", "constant", "bit-select", "deletion"],
+    "operator_counts": {"relational": 3, "arithmetic-logical": 5, "condition": 9, "constant": 8, "bit-select": 3, "deletion": 13},
+    "round_robin": {
+      "6": ["relational", "arithmetic-logical", "condition", "constant", "bit-select", "deletion"],
+      "7": ["relational", "arithmetic-logical", "condition", "constant", "bit-select", "deletion", "relational"]
+    },
+    "picks_per_operator": {
+      "18": {"relational": 3, "arithmetic-logical": 3, "condition": 3, "constant": 3, "bit-select": 3, "deletion": 3},
+      "22": {"relational": 3, "arithmetic-logical": 4, "condition": 4, "constant": 4, "bit-select": 3, "deletion": 4}
+    },
+    "which_candidate": "Seed-dependent: ranked by a hash of the seed and the Mutant ID, so the oracle fixes only the operator sequence and the per-operator counts.",
+    "shortfall": {
+      "count": 50,
+      "run": 41,
+      "message": "only 41 candidate Mutants exist; returning all of them (50 requested)",
+      "message_source": "code",
+      "threshold_by_doc": "ceil(0.8 x 50) = 40, which 33 detected cannot reach: record the verdict the report gives and compare it with the doc"
+    }
+  }
+}
