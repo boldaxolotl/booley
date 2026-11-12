@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from booley.core.booley_dir import resolve_common_booley_dir
+from booley.core.booley_dir import reset_cache, resolve_common_booley_dir
 from booley.flows.metric_declarations import FlowMetricValues
 from booley.measurement.metrics_file import Bound, MetricsRules, TableRules, TrackedMetric
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from booley.measurement.run_document import MeasurementRun
     from booley.measurement.run_key import KeyedCommit
     from booley.measurement.toolchain import ToolchainFingerprint
@@ -30,8 +32,12 @@ EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 @pytest.fixture(autouse=True)
-def no_ambient_booley_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+def no_ambient_booley_dir(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Drop the env override and the process-wide Booley Directory cache another test warmed."""
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    yield
+    reset_cache()
 
 
 def in_tree_repository(root: Path) -> tuple[Path, str]:
