@@ -9,6 +9,20 @@ from pathlib import Path
 REFERENCE_SCHEMA = "booley.coverage-campaign-reference/v1"
 #: Booley's uncompressed point-store ceiling (coverage_campaign_store.MAX_UNCOMPRESSED_BYTES).
 POINT_CEILING_BYTES = 512 * 1024 * 1024
+#: Faults that damage only the point store; the manifest and reference stay as published.
+POINT_FAULTS = frozenset(
+    {
+        "missing-points",
+        "truncated-gzip",
+        "trailing-data",
+        "duplicate-point",
+        "invalid-final-record",
+        "resource-ceiling",
+        "symlink",
+    }
+)
+#: Campaign schema versions Booley no longer reads; each has an unsupported-schema mode.
+RETIRED_SCHEMAS = frozenset({"v1", "v2", "v3", "v4"})
 
 
 def canonical(value: object) -> bytes:
@@ -21,9 +35,30 @@ def canonical(value: object) -> bytes:
     )
 
 
-def corrupt_points(mode: str, path: Path) -> None:
-    """Booley trusts the recorded point-store identity, so the manifest stays as published."""
-    if mode == "missing-points":
+def manifest_json(value: object) -> bytes:
+    """Encode a Campaign manifest in Booley's layout (coverage_json.MANIFEST_JSON)."""
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+            separators=(",", ": "),
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def corrupt_points(mode: str, path: Path, owned: Path) -> None:
+    """Damage the point store only; Booley trusts its recorded identity."""
+    if mode == "symlink":
+        outside = owned / "outside.gz"
+        with outside.open("xb") as stream:
+            stream.write(path.read_bytes())
+        path.unlink()
+        path.symlink_to(outside)
+    elif mode == "missing-points":
         path.unlink()
     elif mode == "truncated-gzip":
         path.write_bytes(path.read_bytes()[:-8])
@@ -90,33 +125,21 @@ def mutate(reference: Path, owned: Path, mode: str) -> None:
     regular_owned(path.parent / "coverage-points.jsonl.gz", owned)
     document = json.loads(path.read_text())
     points = path.parent / "coverage-points.jsonl.gz"
-    if mode in {
-        "missing-points",
-        "truncated-gzip",
-        "trailing-data",
-        "duplicate-point",
-        "invalid-final-record",
-        "resource-ceiling",
-    }:
-        corrupt_points(mode, points)
-    elif mode in {"v1", "v2", "v3"}:
+    if mode in POINT_FAULTS:
+        # Only the point store changes; Booley trusts its recorded identity.
+        corrupt_points(mode, points, owned)
+        return
+    if mode in RETIRED_SCHEMAS:
         # The schema gate rejects an unsupported version before any decode.
         document["$schema"] = "booley.coverage-campaign/" + mode
     else:
-        corrupt_manifest(mode, path, document, owned)
-    path.write_bytes(canonical(document))
+        corrupt_manifest(mode, document)
+    path.write_bytes(manifest_json(document))
     rebind_reference(reference, reference_document, path)
 
 
-def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None:
-    if mode == "symlink":
-        points = path.parent / "coverage-points.jsonl.gz"
-        outside = owned / "outside.gz"
-        with outside.open("xb") as stream:
-            stream.write(points.read_bytes())
-        points.unlink()
-        points.symlink_to(outside)
-    elif mode == "wrong-evaluation":
+def corrupt_manifest(mode: str, document: dict) -> None:
+    if mode == "wrong-evaluation":
         # Booley rescores a stored pass/fail, so only a forged pass on an evaluation
         # that was never scored (blocked, not requested) is still refused on load.
         if document["evaluation"]["status"] in {"pass", "fail"}:

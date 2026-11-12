@@ -38,7 +38,7 @@ recipes live in `../../shared/coverage/RUNBOOK.md`; skim it before area 1.
   for `positive`, `hit-count`, `source-grouping`, `digest`, `rational-verdict` (positive accepts, each
   negative rejects). A broken oracle is a `qa-bug`; judge numbers by hand from `expected.json`.
 - Campaign paths: the Flow's `targets/<t>/coverage.json` is a reference, not the Campaign. The Analyst takes
-  it as-is; `measurements.py` and `approvals.py` take the nested V4 manifest it points to, and run ids are
+  it as-is; `measurements.py` and `approvals.py` take the nested Campaign manifest it points to, and run ids are
   `run:NNN:<test>`. Resolve both with RUNBOOK.md "Campaign paths".
 - Coverage Analyst CLI:
   `booley specialist coverage_analyst --campaign <t>/coverage.json [--instruction <q>] [--report-dir <owned>]`.
@@ -93,9 +93,9 @@ cocotb batch verdicts reused as coverage truth.
 Intent: numbers must match `expected.json` exactly; windows and hooks must be enforced; broken native input
 must never become points.
 Try:
-- For each `expected.json` case run its Target/tests with `--coverage`, then check the nested V4 manifest
+- For each `expected.json` case run its Target/tests with `--coverage`, then check the nested Campaign manifest
   (one `--native` per run, ids and paths per RUNBOOK.md "Campaign paths"):
-  `python3 ../../shared/coverage/evaluator/measurements.py <nested-v4>/coverage.json --expected ../../shared/coverage/expected.json --case <case> --native run:001:<test>=<campaign-dir>/native/raw/001-<test>.dat`
+  `python3 ../../shared/coverage/evaluator/measurements.py <nested>/coverage.json --expected ../../shared/coverage/expected.json --case <case> --native run:001:<test>=<campaign-dir>/native/raw/001-<test>.dat`
   Cases: zero 0/8,
   quarter 2/8, half 4/8, rise (one direction) 4/8, full 8/8, repeat 4/8 with higher hit counts, union 4+4 →
   8/8, overlap → 4/8, properties4 half 2/4 and full 4/4, properties16 half 2/16 (12.5%), threshold 50 pass
@@ -154,7 +154,7 @@ Try:
 - Run `yosys -s ../../shared/coverage/proof/parity.ys` from the Project Root (must prove induction), copy
   the log to `<approved-dir>/proof/parity.log`, then bind (repeat with `excluded` on the `sim_properties4`
   half Campaign):
-  `python3 ../../shared/coverage/faults/approvals.py unreachable <nested-v4>/coverage.json --project <p> --directory <approved-dir> --inputs ../../shared/coverage/approval-inputs.json`
+  `python3 ../../shared/coverage/faults/approvals.py unreachable <nested>/coverage.json --project <p> --directory <approved-dir> --inputs ../../shared/coverage/approval-inputs.json`
   Gated `sim_waiver` `[run]` toggle @1 → two bit-zero points waived with provenance.
 - Anchors `rtl_repository` and `project_data_repository` (use a separately initialized Booley Directory repo);
   approval digest change → new set digest, old Campaign unchanged; approval for one Target never leaks to
@@ -176,10 +176,10 @@ Try:
   line/branch/expression/toggle. `sim_scale`: valid, compact sim response (pointer only); note
   bytes/time/RSS.
 - Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy>/coverage.json --owned <root>`
-  (Target reference; the script rebinds it), then run the Analyst CLI on that reference → rejected before
-  the model: v1, v2, v3, missing points, truncated gzip, trailing data, symlink, invalid final record,
+  (Target reference; the script rebinds it only after a manifest fault, point faults leave the manifest and reference unchanged), then run the Analyst CLI on that reference → rejected before
+  the model: v1, v2, v3, v4, missing points, truncated gzip, trailing data, symlink, invalid final record,
   duplicate point, wrong evaluation (forged pass), resource ceiling (over-ceiling decompression).
-- Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage.json`, `rename
+- Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage-campaign/coverage.json`, `rename
   …/simulation.json` and terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;
   fresh run gets a new number, no resume.

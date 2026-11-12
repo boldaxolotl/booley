@@ -278,7 +278,7 @@ def _recover_transaction(
 def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> RecoveryEvidence:
     campaign_id = "c3fa3451-3a73-4a43-936c-9a2c40f88d30"
     manifest_value = {
-        "$schema": "booley.simulation-campaign-manifest/v1",
+        "$schema": "booley.simulation-campaign-manifest/v4",
         "campaign_id": campaign_id,
     }
     manifest = _write(tmp_path / "manifest.json", manifest_value)

@@ -81,7 +81,7 @@ skip the large-Campaign cases; never shrink the workload.
 The Flow reports `<reports>/sim/<N>/targets/<target>/coverage.json`. That file is
 a `booley.coverage-campaign-reference/v1` pointer, not the Campaign. Pass it
 unchanged to the Coverage Analyst. The fixture scripts `evaluator/measurements.py`
-and `faults/approvals.py` need the nested V4 manifest it points to:
+and `faults/approvals.py` need the nested Campaign manifest it points to:
 
 ```bash
 python3 -c 'import json,sys,pathlib; r=pathlib.Path(sys.argv[1]); print(r.parent / json.loads(r.read_text())["coverage_campaign"]["path"])' <target>/coverage.json
@@ -158,7 +158,7 @@ full stdout/stderr, exit status and tool identity. The command proves
 `value[0] == 0` by temporal induction from zero initialization under the
 parity-preserving +2 transition. It must exit zero and prove induction. Copy its
 log to the owned approved directory's `proof/parity.log` **before** invoking
-`faults/approvals.py unreachable <nested-v4>/coverage.json --project <project> --directory
+`faults/approvals.py unreachable <nested>/coverage.json --project <project> --directory
 <approval-dir> --inputs <asset>/approval-inputs.json`. The binder only fills the
 exact retained point IDs and byte digests, and refuses to replace existing output
 files. Keep the proof log next to its resulting TOML.
@@ -186,7 +186,7 @@ exclusive `consumed` marker permits exactly one EIO across descendants.
 
 | Fault | Operation / destination / controller gate |
 |---|---|
-| Campaign publication | link to exact Target `/coverage.json`; fail before link. Point store publication has already completed. |
+| Campaign publication | link to the nested Campaign manifest (destination suffix `/coverage-campaign/coverage.json`); fail before link. Point store publication has already completed. The Target `coverage.json` reference is created afterward by an exclusive open, not a link. |
 | Simulation publication | rename to exact Target `/simulation.json`; fail before replacement. |
 | Acceptance state | rename to the captured Goal Record `goals/<record-id>/booley_state.json`; fail only when temporary JSON adds an acceptance transaction absent from the baseline state. |
 | Terminal progress | rename to exact invocation `/progress.json`; fail only when temporary JSON has `complete: true`. Earlier observational writes pass through. |
@@ -241,14 +241,14 @@ or `coverage.core` after planning; capture the before bytes and restore them.
 Use a declared included `rtl/constants.svh` with a comment-only change for the
 include-source analysis case; it must be in the recorded closure before collection.
 
-Campaign faults use fresh V4 evidence. Use `baseline.native` for point mutations
+Campaign faults use a fresh nested Campaign. Use `baseline.native` for point mutations
 (the Campaign must contain points). Copy an entire completed numbered invocation into a new
 owned reports root, preserving `sim/N/targets/<target>/coverage.json` layout.
 Create `.qa-coverage-fault-copy` at that new owned root and invoke
 `faults/campaign.py <mode> <copied-target>/coverage.json --owned <copy-root>`, passing
 the copied Target reference. The script follows the reference to the nested
-Campaign, mutates it, and rewrites only the damaged file; point faults leave the
-manifest as published. The original
+Campaign and mutates it. Point faults change only the point store; manifest faults
+rewrite the manifest in Booley's layout and rebind the Target reference. The original
 Campaign is never mutated. Note the
 particular error code, field, and message proving that boundary; an unrelated earlier parse
 error does not show the deeper validation works. Restore by discarding only that

@@ -96,11 +96,31 @@ _PRODUCT_FAULTS = {
     "trailing-data": {"COV_POINT_FORMAT"},
     "symlink": {"COV_PATH_UNSAFE"},
     "wrong-evaluation": {"COV_EVALUATION_MISMATCH"},
-    "v1": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
-    "v2": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
-    "v3": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
     "resource-ceiling": {"COV_POINT_LIMIT"},
 }
+
+#: Modes that damage only the point store, so the manifest and reference stay as published.
+_POINT_FAULTS = {
+    "missing-points",
+    "truncated-gzip",
+    "trailing-data",
+    "duplicate-point",
+    "invalid-final-record",
+    "resource-ceiling",
+    "symlink",
+}
+
+
+def _product_faults() -> dict[str, set[str]]:
+    """Every retired schema version gets a mode; resource-ceiling stays last (it patches)."""
+    from booley.flows.sim import coverage_campaign_store as store
+
+    current = int(store.CAMPAIGN_SCHEMA_V5.rsplit("/v", 1)[1])
+    faults_by_mode = dict(_PRODUCT_FAULTS)
+    ceiling = faults_by_mode.pop("resource-ceiling")
+    faults_by_mode.update({f"v{n}": {"COV_SCHEMA_VERSION_UNSUPPORTED"} for n in range(1, current)})
+    faults_by_mode["resource-ceiling"] = ceiling
+    return faults_by_mode
 
 
 def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -> None:
@@ -109,10 +129,11 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
     from booley.flows.sim import coverage_campaign_store as store
     from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
     from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
+    from booley.flows.sim.coverage_json import MANIFEST_JSON
     from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
 
     # One node, every mode; resource-ceiling is last because it patches the ceiling.
-    for mode, expected_codes in _PRODUCT_FAULTS.items():
+    for mode, expected_codes in _product_faults().items():
         if mode == "symlink":
             try:
                 require_symlinks(tmp_path)
@@ -126,7 +147,19 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
             monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", 4096)
             monkeypatch.setattr(faults, "POINT_CEILING_BYTES", 4096)
 
+        manifest_before = faults.nested_campaign(reference, owned)[0].read_bytes()
+        reference_before = reference.read_bytes()
+
         faults.mutate(reference, owned, mode)
+
+        manifest_after = faults.nested_campaign(reference, owned)[0].read_bytes()
+        if mode in _POINT_FAULTS:
+            # A point fault damages only the point store.
+            assert manifest_after == manifest_before
+            assert reference.read_bytes() == reference_before
+        else:
+            # A manifest fault keeps the product's manifest layout.
+            assert manifest_after == MANIFEST_JSON.encode(json.loads(manifest_after))
 
         with pytest.raises(
             (CoverageCampaignValidationError, CoverageCampaignStoreError)

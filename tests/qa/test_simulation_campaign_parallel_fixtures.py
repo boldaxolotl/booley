@@ -76,7 +76,7 @@ def _write_campaign(campaign: Path) -> None:
     _write_json(
         campaign / "manifest.json",
         {
-            "$schema": "booley.simulation-campaign-manifest/v3",
+            "$schema": "booley.simulation-campaign-manifest/v4",
             "campaign_id": CAMPAIGN_ID,
             "fingerprints": {"workload_sha256": WORKLOAD},
             "origin": {"execution_id": OUTER, "invocation_id": 12},

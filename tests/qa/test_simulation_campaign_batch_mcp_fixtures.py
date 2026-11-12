@@ -53,7 +53,7 @@ ATTEMPT_IDS = ("7852faf4-7c93-4f9f-8e21-8bb0952b34f8", "0142c525-7188-45a2-9aee-
 
 def _manifest(names_per_item: list[list[str]], kind: str) -> dict[str, object]:
     return {
-        "$schema": "booley.simulation-campaign-manifest/v3",
+        "$schema": "booley.simulation-campaign-manifest/v4",
         "campaign_id": CAMPAIGN_ID,
         "fingerprints": {"workload_sha256": WORKLOAD},
         "work_items": [

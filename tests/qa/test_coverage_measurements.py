@@ -3,6 +3,8 @@
 import copy
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -240,3 +242,37 @@ def test_native_record_omitted_from_normalized_inventory_is_rejected(tmp_path, h
     )
     with pytest.raises(ValueError, match="point inventory"):
         oracle.verify_native(points, {"r1": raw})
+
+
+def test_oracle_reads_campaign_the_product_publishes(tmp_path):
+    """The oracle's accepted schema must be the one the product writes."""
+    from tests.flows.sim.test_coverage_campaign_reference import _nested_campaign
+
+    published = _nested_campaign(tmp_path / "target")
+    manifest, points = oracle.read_campaign(published)
+    document = json.loads(published.read_text())
+    assert manifest["campaign_id"] == document["campaign_id"]
+    assert len(points) >= 1
+
+
+@pytest.mark.parametrize(
+    "mode", ["positive", "hit-count", "source-grouping", "digest", "rational-verdict"]
+)
+def test_oracle_controls_accept_positive_and_detect_negatives(tmp_path, mode):
+    """Run the controls as a subprocess so the module name `controls` never enters sys.modules."""
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    completed = subprocess.run(
+        [sys.executable, "controls.py", mode],
+        cwd=ROOT / "evaluator",
+        env={"TMPDIR": str(scratch), "TEMP": str(scratch), "TMP": str(scratch)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["control"] == mode
+    assert ("exact_fraction" in result) == (mode == "positive")
+    assert ("detected" in result) == (mode != "positive")
