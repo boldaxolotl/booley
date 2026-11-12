@@ -936,14 +936,14 @@ def test_privacy_note_tracks_audited_default_vocabulary(tmp_path) -> None:
         "chatgpt",
         "gemini",
         "booley",
-        "ticket",
-        "cursor",
         "gpt",
         "llm",
         "co-authored-by",
     ):
         assert term in note
     for term in (
+        "ticket",
+        "cursor",
         "generated",
         "docker",
         "agent",

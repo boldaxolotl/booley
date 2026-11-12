@@ -386,7 +386,7 @@ editor opens on the kept message. If a merge commit was rejected, finish it with
 
 `BOOLEY_SKIP_COMMIT_VALIDATION=1` doesn't bypass this check. If the hook still
 rewrites messages after an upgrade, run `booley init` to install the current
-hook. `cursor` and `ticket` are no longer banned by default.
+hook.
 
 ### Doctor reports a Sandbox whose egress mode differs from the host
 
