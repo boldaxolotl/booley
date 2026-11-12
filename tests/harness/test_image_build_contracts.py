@@ -15,7 +15,7 @@ import pytest
 
 from booley.runtime import image_build_contracts as contracts
 from booley.runtime.build_stamp import BuildProfile, write_build_stamp
-from booley.runtime.packaged_docs import SHIPPED_DOCS
+from booley.runtime.packaged_docs import SHIPPED_DOCS, render_packaged_doc
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
@@ -185,8 +185,6 @@ def test_official_wheel_renders_shipped_docs_from_sources(
             for source in SHIPPED_DOCS
         }
 
-    from booley.runtime.packaged_docs import render_packaged_doc
-
     for source, content in packed.items():
         expected = render_packaged_doc(source, (checkout / source).read_bytes().decode("utf-8"))
         assert content == expected.encode("utf-8"), source
@@ -197,8 +195,6 @@ def test_official_sdist_contains_every_shipped_doc(
 ) -> None:
     """The release sdist carries the rendered docs the wheel is built from (#3658)."""
     checkout, sdist, _wheel = official_build
-    from booley.runtime.packaged_docs import render_packaged_doc
-
     with tarfile.open(sdist) as archive:
         # Members are ``booley_rtl-<version>/<path>``; drop the leading directory.
         packed = {

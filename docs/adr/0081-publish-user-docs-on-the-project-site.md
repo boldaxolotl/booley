@@ -104,7 +104,7 @@ against a stale committed copy.
 Rejected alternatives:
 
 - **A setuptools build hook or custom build backend.** Build-backend code runs
-  in every isolated build, which is out of scope. The explicit build step
-  already renders before every wheel and sdist build.
+  in every isolated build, which is out of scope. Every build script and
+  CI build step already renders before building the wheel and sdist.
 - **Committed copies regenerated only at release.** The copies would drift from
   their sources between releases, and tests would read stale text.

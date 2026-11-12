@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from tests.shipped_docs_support import is_rendered_docs_output, rendered_docs_outside_user_docs
+from tests.shipped_docs_support import rendered_docs_outside_user_docs
+from tests.source_checkout_support import source_checkout_files
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -10,9 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_user_docs_use_cli_flag_spelling():
     for path in sorted((REPO_ROOT / "docs" / "user").glob("*.md")):
         assert "auth --app" not in path.read_text(encoding="utf-8"), path.name
-    packaged = REPO_ROOT / "src" / "booley" / "data"
-    for path in sorted(packaged.rglob("*.md")):
-        if not is_rendered_docs_output(REPO_ROOT, path):  # build output; sources checked below
+    for path in source_checkout_files(REPO_ROOT, "src/booley/data"):
+        if path.suffix == ".md":  # Git-ignored rendered docs are checked via their sources below
             assert "auth --app" not in path.read_text(encoding="utf-8"), path.name
     for source, text in rendered_docs_outside_user_docs(REPO_ROOT).items():
         assert "auth --app" not in text, source

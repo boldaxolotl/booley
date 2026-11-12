@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from booley.runtime.packaged_docs import (
-    PACKAGED_DOCS_RELATIVE_DIR,
     SHIPPED_DOCS,
     read_shipped_source,
     render_packaged_doc,
@@ -38,8 +37,3 @@ def rendered_docs_outside_user_docs(root: Path) -> dict[str, str]:
         for source, text in rendered_shipped_docs(root).items()
         if not source.startswith(_USER_DOCS_PREFIX)
     }
-
-
-def is_rendered_docs_output(root: Path, path: Path) -> bool:
-    """Return whether *path* is inside the rendered-docs build output directory of *root*."""
-    return path.resolve().is_relative_to((root / PACKAGED_DOCS_RELATIVE_DIR).resolve())

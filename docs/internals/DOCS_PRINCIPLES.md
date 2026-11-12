@@ -89,7 +89,8 @@ Goals doesn't sit under a heading about one kind of Goal.
 
 ### 9. Each fact has one home
 
-Link instead of repeating. When a fact changes, search every doc and skill for it and fix each one.
+Link instead of repeating. When a fact changes, search every doc and skill for
+it and fix each one.
 
 ## Language
 
@@ -147,7 +148,7 @@ covered under Notes below") and no sentence that carries nothing.
 
 ## Mechanics
 
-### 18. Edit the source, then regenerate copies
+### 18. Edit the source, never a rendered copy
 
 The build renders shipped docs into `src/booley/data/docs/`. Never edit a
 rendered copy. Rerun the generator of any generated block you touched

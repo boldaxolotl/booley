@@ -777,8 +777,9 @@ def _verification_commands(
             "handoff",
         ),
         # Fails in seconds when the packaged CHANGELOG mirror is stale (the user-doc
-        # copies are Git-ignored build output, not checked). The launcher imports this checkout's src/, which the
-        # shared environment never installs; -B keeps bytecode out of the checkout.
+        # copies are Git-ignored build output, not checked). The launcher imports this
+        # checkout's src/, which the shared environment never installs; -B keeps
+        # bytecode out of the checkout.
         Command(
             "packaged-copies.check",
             (str(python), "-B", str(root / ".github/scripts/sync_packaged_copies.py"), "--check"),

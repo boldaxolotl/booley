@@ -51,10 +51,11 @@ Never edit a rendered copy. The render turns links to other shipped docs into
 sibling links and links to unshipped docs (`PLAIN_TEXT_TARGETS`) into plain text
 marked `(host doc, not shipped)`. A link to a doc in neither set fails the build
 and `tests/docs` with the file, the link and the fix. A bare `python -m build`
-runs no stamp step and packs no docs, so build through `build.sh`, `booley init`,
-or `dev_support/build_development_wheel.py`.
+runs no stamp step: it packs no docs on a clean checkout and any stale copies an
+earlier build left behind, so build through `build.sh`, `booley init`, or
+`.github/scripts/build_development_wheel.py`.
 
-`python -m booley.dev_support.reference_docs [--check]` now covers only the
+`python -m booley.dev_support.reference_docs [--check]` covers only the
 `CHANGELOG.md` mirror at `src/booley/data/refs/CHANGELOG.md`, byte for byte;
 `python3 .github/scripts/sync_packaged_copies.py [--check]` runs it without
 installing Booley. Only release preparation edits `CHANGELOG.md`, so run it
@@ -101,9 +102,9 @@ check .`, `ruff format --check .`, and `pyright` (the strict boundary check,
 configured by `[tool.pyright]` in `pyproject.toml`, resolving third-party
 imports in the shared environment). Its `packaged-copies.check` command
 (before commit) fails when the packaged `CHANGELOG.md` mirror is stale. Its
-`coverage.changed-lines` handoff command repeats CI's 90% changed-line coverage gate against the newest merge
-base with `main`, reading the coverage report that a passing `pytest.broad`
-run wrote for the same tree outside the checkout; it refuses a missing or
+`coverage.changed-lines` handoff command repeats CI's 90% changed-line coverage
+gate against the newest merge base with `main`, reading the coverage report that
+a passing `pytest.broad` run wrote for the same tree outside the checkout; it refuses a missing or
 stale report. Develop readiness defaults to the `python` test profile: its
 broad command runs `tests/ --test-profile python`, excluding every
 `native_bwave` test. `tests/` collection skips `tests/goals/` (temporary, until

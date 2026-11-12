@@ -1,7 +1,7 @@
-"""The packaged-copy tooling: link rewriting, the CHANGELOG mirror sync, and ``--check`` (#2495, #3658).
+"""The packaged-copy tooling: link rewriting, the CHANGELOG mirror sync, and ``--check``.
 
 The user-doc copies are build output (``booley.runtime.build_stamp``); only the CHANGELOG
-mirror is still synchronized here."""
+mirror is still synchronized here (#2495, #3658)."""
 
 from __future__ import annotations
 

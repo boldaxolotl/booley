@@ -6,7 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tests.shipped_docs_support import is_rendered_docs_output, rendered_docs_outside_user_docs
+from tests.shipped_docs_support import rendered_docs_outside_user_docs
+from tests.source_checkout_support import source_checkout_files
 
 from booley.goals.rules import goal_mode_rules as rules
 from booley.mcp import catalog
@@ -88,9 +89,8 @@ def test_documented_work_dir_inventory_matches_registered_schemas(monkeypatch):
 def test_current_instructions_never_require_work_dir_on_every_call():
     paths = [
         p
-        for d in ("docs/user", "src/booley/data")
-        for p in (REPO_ROOT / d).rglob("*.md")
-        if not is_rendered_docs_output(REPO_ROOT, p)
+        for p in source_checkout_files(REPO_ROOT, "docs/user", "src/booley/data")
+        if p.suffix == ".md"  # Git-ignored rendered docs come from their sources below
     ]
     paths += [REPO_ROOT / f"docs/internals/{name}.md" for name in ("MCP-TOOLS", "ARCHITECTURE")]
     texts = {str(path): path.read_text(encoding="utf-8") for path in paths}

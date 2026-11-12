@@ -55,7 +55,6 @@ class TestPackagedDocs:
         assert result.name == "TROUBLESHOOTING.md"
         assert result.parent == paths.user_docs_dir()
         assert paths.user_docs_dir() == paths.package_data_dir() / "docs"
-        # The packaged directory is Git-ignored build output, so only the path is checked.
 
 
 class TestChangelogPath:

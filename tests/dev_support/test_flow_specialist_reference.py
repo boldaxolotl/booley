@@ -11,7 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from tests.shipped_docs_support import is_rendered_docs_output, rendered_docs_outside_user_docs
+from tests.shipped_docs_support import rendered_docs_outside_user_docs
+from tests.source_checkout_support import source_checkout_files
 
 from booley.dev_support.flow_specialist_reference import (
     _FLOW_KEY_CONTROLS,
@@ -194,9 +195,8 @@ def test_shipped_documentation_never_dispatches_a_specialist_as_a_flow() -> None
     }
     texts = {
         str(document): document.read_text(encoding="utf-8")
-        for root in (REPO_ROOT / "docs" / "user", REPO_ROOT / "src" / "booley" / "data")
-        for document in root.rglob("*.md")
-        if not is_rendered_docs_output(REPO_ROOT, document)  # build output; see sources
+        for document in source_checkout_files(REPO_ROOT, "docs/user", "src/booley/data")
+        if document.suffix == ".md"  # Git-ignored rendered docs come from their sources below
     }
     texts.update(rendered_docs_outside_user_docs(REPO_ROOT))
     for document, text in texts.items():
