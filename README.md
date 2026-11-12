@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
-Booley is an agentic development environment (ADE) for hardware: you direct Claude Code or Codex agents while they do the RTL work. Booley runs each Developer Agent in a sandbox, hands it real EDA tools, and checks its work against your acceptance criteria: passing tests, area and timing budgets, cycle counts, coverage, and more.
+Booley is an agentic development environment (ADE) for RTL design and verification: you direct Claude Code or Codex agents while they do the work. Each Developer Agent gets one short command per EDA job and works in a sandbox on its own branch, so you can leave several running unattended. Booley, not the agent, reads the numbers out of the EDA tool reports and measures every finished commit against the limits you set: passing tests, area and timing budgets, cycle counts, coverage, and more.
 
 **Website:** [booley.dev](https://booley.dev/) for the full feature tour, videos, and blog.
 
@@ -18,14 +18,46 @@ Booley is an agentic development environment (ADE) for hardware: you direct Clau
 
 ## What it does
 
-- **Typed EDA Flows:** `sim`, `lint`, `synth`, and `fpga` replace per-repo glue Tcl scripts. Each Flow runs an EDA job end to end and returns a structured result: pass/fail plus metrics such as area, timing, or cycle counts, not just raw logs. Flows are built on FuseSoC, and the interface stays the same across tools and projects: `sim` stays `sim` whether it runs Verilator today or Xcelium tomorrow.
-- **Reproducible team environment:** Configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to everyone on the project ([why Docker](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker)).
-- **One window for all your agents:** RTL work is usually scattered across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley puts your Developer Agent sessions, RTL, terminals, EDA runs, waveforms, and the Booley Dashboard side by side in one VS Code window, so you can direct several agents at once and see what each one is doing.
-- **Sandboxed Developer Agent:** Booley treats the agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access. So the agent and every command it runs stay inside a Docker container with restricted mounts and network access, and its work goes through explicit specifications, automated checks, and human review. That lets it work unattended.
-- **Goal Mode:** You set mandatory Goals up front, such as `SYNTH:synth_fifo (area increase ≤ 10%)` or `COVERAGE:sim_fifo (line ≥ 90%, tests all)`. Goals cover passing tests, lint, area, timing, cycle counts, coverage, mutation testing, and code review. Booley checks each one in deterministic code against fresh recorded Flow results, not against the agent's claim of success ([details](https://booley.dev/docs/goal-mode/#goal-mode)).
-- **Waveform queries:** `bwave` lets the agent find, sample, snapshot, and measure real simulation traces. Ask "When did `data_o` equal `0xDEADBEEF`?" and it answers from simulation data instead of guessing from RTL.
-
 The [Features page](https://booley.dev/docs/features/) is the complete feature reference.
+
+### Agents equipped for hardware work
+
+A general-purpose coding agent knows little about EDA tools, so Booley gives it one short command per job: simulate, synthesize, lint, build for FPGA.
+
+It also gets tools for checking its own work. Waveform queries let it ask questions about real simulation traces ("when did `data_o` equal `0xDEADBEEF`?") instead of guessing from the RTL. Mutation testing plants small bugs in the RTL and counts how many the testbench catches, which shows whether the tests would notice a real bug.
+
+For a second opinion, the agent can call an independent reviewer that didn't write the code. Reviewers follow guides written by hardware engineers, covering common RTL bugs, style rules and typical optimization opportunities. Each review looks for one kind of problem, so nothing gets skimmed.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://booley.dev/docs/assets/feature-tools-dark.svg">
+  <img alt="The agent presses buttons on a Booley panel: Run and Check buttons drive the EDA tools, Review buttons go only to a separate Reviewer agent" src="https://booley.dev/docs/assets/feature-tools-light.svg">
+</picture>
+
+### Run many agents, stay in control
+
+Agents work best when they don't stop to ask permission, and Booley makes that safe. Each agent runs in a container that sees only your project, with internet access limited to the LLM provider. You can leave it running unattended; it can't touch the rest of your machine. The same container gives everyone on the team identical tool versions.
+
+Run several agents at once. Booley creates and manages a separate git worktree and branch for each one, so they work independently and never overwrite each other. A built-in scheduler learns how much memory each simulation or synthesis run needs and starts as many together as your machine can hold, so small runs don't wait behind big ones and nothing runs out of memory.
+
+Everything sits in one VS Code window: agent chats, RTL, terminals, waveforms, and a dashboard showing what every agent is doing.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://booley.dev/docs/assets/feature-parallel-dark.svg">
+  <img alt="Inside the container each agent works in its own worktree and branch; only the LLM provider is reachable, and you review and merge finished work into main" src="https://booley.dev/docs/assets/feature-parallel-light.svg">
+</picture>
+
+### Results you can trust
+
+Normally the result of a task reaches you second-hand: a project-specific script runs the EDA tool, then the agent reads the log and tells you what it found. Each hand-off can go wrong.
+
+Booley comes with built-in, tested recipes for each supported EDA tool, built on the open-source FuseSoC. They launch the run and read the numbers out of the tool's reports, the same way on every project. Nobody writes a script for your repo, and no agent interprets a log.
+
+You and the agent work from the same numbers. That makes metric-driven development possible: set limits for your design, such as area, timing, coverage or mutation score, and the agent iterates until it meets them. Booley then measures the finished commit and marks it Measured only when every limit is met.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://booley.dev/docs/assets/feature-results-dark.svg">
+  <img alt="Without Booley, results pass through glue scripts and an agent reading logs, and either can go wrong; with Booley, Booley runs the tool and extracts the numbers, and the commit carries them marked Measured" src="https://booley.dev/docs/assets/feature-results-light.svg">
+</picture>
 
 ## Quick Start
 

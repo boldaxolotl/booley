@@ -1,0 +1,58 @@
+/* ==================================================================
+   Home page Features: the three card diagrams (website/illustration/
+   feature-*.svg), drawn as schematic line art like Figure 2.
+   Colours are datasheet.css tokens only. website/illustration/build.py
+   also embeds this file, with one theme's token values, in the README
+   copies of the diagrams, so every rule is scoped to the svg's .fd class.
+   Green (--mask) marks the EDA path and what Booley vouches for, blue
+   (--review) the Reviewer path, red (--fault) risk and blocked exits.
+   ================================================================== */
+.fd { display: block; width: 100%; height: auto; }
+.fd text { font-family: var(--sans); font-stretch: 85%; font-size: 11px; fill: var(--ink); }
+.fd .t { font-size: 12px; font-weight: 650; }                       /* box title */
+.fd .s { font-size: 10.5px; fill: var(--ink-2); }                   /* sub-label */
+.fd .e { font-size: 10.5px; font-weight: 600; }                     /* exit label */
+.fd .em { font-size: 10.5px; font-weight: 650; }                    /* verdict under a box */
+.fd .cap { font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em; fill: var(--ink-2); }  /* lane caption */
+.fd .mark { font-size: 11.5px; font-weight: 780; letter-spacing: 0.1em; fill: var(--mask); }  /* chip marking */
+.fd .who { font-weight: 650; }
+.fd .state { font-size: 10px; fill: var(--ink-2); }
+.fd .br, .fd .sha, .fd .num, .fd .key text { font-family: var(--mono); font-stretch: 100%; font-size: 9.5px; }
+.fd .br, .fd .sha { fill: var(--ink-2); }
+.fd .key text { text-anchor: middle; }
+.fd .row { font-size: 10.5px; }
+
+/* boxes and lanes */
+.fd .bx { fill: var(--paper); stroke: var(--ink); stroke-width: 1.2; }
+.fd .lane { fill: var(--fill); }
+.fd .chip { fill: var(--paper); stroke: var(--mask); stroke-width: 2; }
+.fd .sand { fill: var(--fill-2); stroke: var(--ink-2); stroke-width: 1.2; stroke-dasharray: 5 3; }
+.fd .tree { fill: var(--paper); stroke: var(--ink); stroke-width: 1.2; }
+.fd .key rect { fill: var(--paper); stroke: var(--ink); stroke-width: 1; }
+.fd .key path { fill: none; stroke-width: 2.6; stroke-linecap: round; }   /* a key's thick bottom edge */
+.fd .badge { fill: none; stroke: var(--mask); stroke-width: 1.2; }
+.fd .badge-t { font-size: 8.5px; font-weight: 750; letter-spacing: 0.06em; fill: var(--mask); }
+
+/* wires, commits, icons */
+.fd .ln { fill: none; stroke: var(--ink); stroke-width: 1.3; }
+.fd .ah, .fd .dot { fill: var(--ink); }
+.fd .mrg { fill: var(--mask); }
+.fd .tick { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.fd .bot * { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.fd .bot .eye { fill: var(--ink); stroke: none; }
+
+/* green: the EDA path and what Booley vouches for */
+.fd .ln.ok, .fd .tick.ok, .fd .key.run path, .fd .tree.done, .fd .bx.ok { stroke: var(--mask); }
+.fd .bx.ok { stroke-width: 2; }
+.fd .ln.merge { stroke-width: 1.6; }
+.fd .ah.ok, .fd :is(.e, .em, .state).ok, .fd .state.done { fill: var(--mask); }
+.fd .state.done { font-weight: 650; }
+/* blue: the Reviewer path */
+.fd .lane.rev { fill: none; stroke: var(--review); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.fd .bx.rev, .fd .ln.rev { stroke: var(--review); stroke-dasharray: 4 3; }
+.fd .key.rev path, .fd .bot.rev :not(.eye) { stroke: var(--review); }
+.fd .ah.rev, .fd .cap.rev, .fd .bot.rev .eye { fill: var(--review); }
+/* red: risk and blocked exits */
+.fd .bx.fault { stroke: var(--fault); stroke-dasharray: 4 3; }
+.fd .ln.fault { stroke: var(--fault); stroke-width: 1.5; }
+.fd :is(.e, .em).fault { fill: var(--fault); }
