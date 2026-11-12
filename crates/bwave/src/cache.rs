@@ -119,9 +119,9 @@ struct SignalSelection {
 }
 
 impl ColumnCache {
-    /// Load a waveform store. Delegates to the FST loader; returns `None`
-    /// if the file is missing or not a readable FST.
-    pub fn load_from_file(store_path: &Path) -> Option<ColumnCache> {
+    /// Load a waveform store. Delegates to the FST loader; returns the cause
+    /// if the file is missing, truncated or not a readable FST.
+    pub fn load_from_file(store_path: &Path) -> Result<ColumnCache, crate::fst::StoreLoadError> {
         crate::fst::load_fst(store_path)
     }
 

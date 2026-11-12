@@ -2846,22 +2846,6 @@ fn issue_1108_case(case: &str) {
             );
             assert!(err.contains("truncated"), "{err}");
         }
-        "help" => {
-            for command in ["signal", "wave", "sample", "diff", "distance", "stuck"] {
-                for help in ["-h", "--help"] {
-                    let (out, _, code) = run(&[command, help]);
-                    assert_eq!(code, 0);
-                    assert!(
-                        out.contains("Output format: text (JSON requests exit 2)"),
-                        "{out}"
-                    );
-                    assert!(
-                        !live_usage(&out).contains("possible values: text, json"),
-                        "{out}"
-                    );
-                }
-            }
-        }
         _ => panic!("unknown case {case}"),
     }
     std::fs::remove_dir_all(dir).unwrap();
@@ -2877,7 +2861,7 @@ issue_1108_cases! {
     issue_1108_invalid_glob_find => "invalid_glob_find", issue_1108_invalid_glob_distance => "invalid_glob_distance",
     issue_1108_value_out => "value_out", issue_1108_diff_out => "diff_out", issue_1108_zero_limit => "zero_limit",
     issue_1108_find_limit => "find_limit", issue_1108_find_boundary => "find_boundary", issue_1108_signal_boundary => "signal_boundary",
-    issue_1108_sample_boundary => "sample_boundary", issue_1108_diff_limit => "diff_limit", issue_1108_help => "help",
+    issue_1108_sample_boundary => "sample_boundary", issue_1108_diff_limit => "diff_limit",
 }
 
 #[test]
@@ -4688,4 +4672,113 @@ fn issue_1421_same_tick_samples_zero_window_and_reset_round_trip() {
             );
         }
     }
+}
+
+/// Minimal valid arguments (after the store path) for every command that
+/// takes `--format`, against `small_clocked.vcd`.
+const FORMAT_COMMANDS: [(&str, &[&str]); 11] = [
+    ("list", &[]),
+    ("signal", &[]),
+    ("wave", &[]),
+    ("value", &["--at", "10"]),
+    ("find", &["tb.dut.flag", "rising"]),
+    ("sample", &["tb.dut.flag", "rising"]),
+    ("diff", &["1c", "3c"]),
+    ("distance", &["tb.dut.flag", "rising"]),
+    ("stats", &[]),
+    ("overview", &[]),
+    ("stuck", &[]),
+];
+
+/// #3648: a command's `--format` help carries "JSON requests exit 2" exactly
+/// when `--format json` really is rejected, and every other command really
+/// returns a JSON envelope.
+#[test]
+fn issue_3648_help_matches_json_support() {
+    let store = build_bwave("small_clocked.vcd", "3648-help");
+    let p = store.to_str().unwrap();
+    for (command, extra) in FORMAT_COMMANDS {
+        let mut args = vec![command, p];
+        args.extend(extra);
+        args.extend(["--format", "json"]);
+        let (out, err, code) = run(&args);
+        let rejects_json =
+            code == 2 && err.contains(&format!("JSON output is not implemented for {command}"));
+        if !rejects_json {
+            // An unrelated failure must fail the test, not pass it.
+            assert_eq!(code, 0, "{command}: {err}");
+            let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(json["command"], command, "{out}");
+        }
+        for flag in ["-h", "--help"] {
+            let (help, _, help_code) = run(&[command, flag]);
+            assert_eq!(help_code, 0, "{command} {flag}");
+            assert_eq!(
+                help.contains("JSON requests exit 2"),
+                rejects_json,
+                "{command} {flag} help disagrees with JSON behavior: {help}"
+            );
+            assert!(
+                !live_usage(&help).contains("possible values: text, json"),
+                "{help}"
+            );
+        }
+    }
+
+    // `list --tree` is the one JSON rejection inside a JSON-capable command.
+    let (help, _, _) = run(&["list", "--help"]);
+    assert!(
+        help.contains("--tree --format json exits with code 2"),
+        "{help}"
+    );
+    let (_, err, code) = run(&["list", p, "--tree", "--format", "json"]);
+    assert_eq!(code, 2, "{err}");
+    let _ = std::fs::remove_file(store);
+}
+
+/// #3648: a store that cannot be loaded names the cause and how to rebuild it,
+/// in one stderr line, with the existing exit code 1 (cut points: a cut
+/// inside the header, a cut after the hierarchy that FST open alone accepts,
+/// and an empty file that only FST open rejects).
+#[test]
+fn issue_3648_truncated_store_names_cause_and_rebuild_hint() {
+    let store = build_bwave("small_clocked.vcd", "3648-truncated");
+    let bytes = std::fs::read(&store).unwrap();
+    // A TempDir removes itself even when an assertion below panics.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let rebuild = "rebuild it with `bwave build";
+    for (label, percent, cause) in [
+        ("early", 10, "store is truncated"),
+        // Past the hierarchy: FST open alone accepts it (the silent-empty case).
+        ("late", 80, "store is truncated"),
+        ("empty", 0, "failed to fill whole buffer"),
+    ] {
+        let cut = dir.join(format!("{label}.fst"));
+        std::fs::write(&cut, &bytes[..bytes.len() * percent / 100]).unwrap();
+        let p = cut.to_str().unwrap();
+        for args in [vec!["list", p], vec!["overview", p], vec!["signal", p]] {
+            let (_, err, code) = run(&args);
+            assert_eq!(code, 1, "{label} {args:?}: {err}");
+            assert_eq!(err.trim_end().lines().count(), 1, "{label}: {err}");
+            for needle in ["cannot load waveform store", cause, rebuild] {
+                assert!(err.contains(needle), "{label} {args:?}: {err}");
+            }
+        }
+    }
+
+    let missing = dir.join("missing.fst");
+    let (_, err, code) = run(&["list", missing.to_str().unwrap()]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(err.trim_end().lines().count(), 1, "{err}");
+    assert!(err.contains("build it with `bwave build"), "{err}");
+
+    // Not an FST at all (VCD text saved as .fst): say so, never "truncated".
+    let vcd_text = dir.join("text.fst");
+    std::fs::write(&vcd_text, b"$date today $end\n$timescale 1ns $end\n").unwrap();
+    let (_, err, code) = run(&["list", vcd_text.to_str().unwrap()]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("not an FST file"), "{err}");
+    assert!(!err.contains("truncated"), "{err}");
+    let _ = std::fs::remove_file(store);
 }
