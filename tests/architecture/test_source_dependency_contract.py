@@ -582,3 +582,52 @@ def test_health_consumers_reach_shared_health_without_the_doctor_worker(
         assert imported & shared, consumer
         assert worker not in imported, consumer
     assert (_SOURCE_ROOT / "harness" / "auto_doctor.py").is_file()
+
+
+@pytest.mark.parametrize(
+    "importer",
+    [("flows", "sim", "rogue"), ("flows", "lint", "rogue"), ("flows", "rogue")],
+    ids=["sim", "lint", "flow-neutral"],
+)
+def test_d40_forbids_imports_of_the_mutation_flow(tmp_path, importer):
+    """Sibling Flows and Flow-neutral modules never import the Mutation Flow.
+
+    The rule is numbered D42 in the contract: D40 and D41 were taken before this one landed,
+    and the test keeps the name the issue plan gave it.
+    """
+    root = tmp_path / "booley"
+    packages = (root, root / "flows", root / "flows" / "mutation", root / "flows" / "sim")
+    packages += (root / "flows" / "lint",)
+    for package in packages:
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "flows" / "mutation" / "flow.py").write_text("class MutationFlow: ...\n")
+    (root.joinpath(*importer[:-1]) / f"{importer[-1]}.py").write_text(
+        "from booley.flows.mutation.flow import MutationFlow\n"
+    )
+
+    report = format_problems(
+        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+
+    assert "D42" in report
+    assert "booley.flows.mutation.flow" in report
+
+
+def test_mutation_flow_may_compose_the_simulation_flow(tmp_path):
+    """The one-way dependency the Mutation Flow is built on stays allowed."""
+    root = tmp_path / "booley"
+    for package in (root, root / "flows", root / "flows" / "mutation", root / "flows" / "sim"):
+        package.mkdir(exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "flows" / "sim" / "build.py").write_text("def prepare(): ...\n")
+    (root / "flows" / "mutation" / "flow.py").write_text(
+        "from booley.flows.sim.build import prepare\n"
+    )
+
+    report = format_problems(
+        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+
+    assert "D42" not in report
+    assert "D8" not in report

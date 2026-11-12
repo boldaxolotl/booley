@@ -19,7 +19,7 @@ import pytest
 
 import booley
 from booley.core.boundary import BoundaryError
-from booley.dev_support.mutation_variants import MutationVariantPlan
+from booley.flows.mutation.variants import MutationVariantPlan
 from tests.subprocess_budget import run_bounded_child
 
 if TYPE_CHECKING:

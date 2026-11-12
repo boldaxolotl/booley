@@ -1525,7 +1525,7 @@ class TestTargetSourceFilesDependencyClosure:
 
     Ibex's sim Target's root fileset owns the C++/firmware harness while
     `ibex_top_tracing.sv` is contributed transitively, so a root-core-only
-    read returned no RTL at all and mutation_tester failed before injection.
+    read returned no RTL at all and the Mutation Flow failed before injection.
     """
 
     def _layered_repo(self, tmp_path: Path) -> None:
@@ -2257,7 +2257,7 @@ class TestFilesetsAppend:
         """A CAPI2 fileset path is relative to its .core's directory. For a
         state-zone core (ADR 0036 stealth cores) that is NOT the Project Root,
         so returned paths must be re-based project-relative — consumers join
-        them onto the root (doctor's sentinel scan, mutation_tester's DUT list)
+        them onto the root (doctor's sentinel scan, the Mutation Flow's DUT list)
         and used to silently read the wrong file, or none at all."""
         from booley.fusesoc.fusesoc_registry import _target_source_files
 

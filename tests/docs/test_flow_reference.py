@@ -18,6 +18,7 @@ from booley.flows.builtin_cli import build_parser
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
+from booley.flows.mutation.flow import MutationFlow
 from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.coverage_campaign import CoverageRollup
 from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow, _campaign_report_lines
@@ -32,6 +33,7 @@ FLOW_PAGES = {
     "lint": ("FLOW-LINT.md",),
     "synth": ("FLOW-SYNTH.md",),
     "fpga": ("FLOW-FPGA.md",),
+    "mutation": ("FLOW-MUTATION.md",),
 }
 REPORTS = REPO_ROOT / "docs" / "internals" / "FLOW_REPORTS.md"
 MCP_TOOLS = REPO_ROOT / "docs" / "internals" / "MCP-TOOLS.md"
@@ -40,6 +42,7 @@ FLOW_TYPES = (
     LintFlow,
     AsicSynthesizeFlow,
     FpgaImplFlow,
+    MutationFlow,
 )
 FlowT = TypeVar("FlowT", bound=BooleyFlow)
 

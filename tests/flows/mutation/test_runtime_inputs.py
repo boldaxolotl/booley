@@ -1,4 +1,4 @@
-"""Mutation tester exposes Target-declared ``copyto`` runtime inputs (issue #2061).
+"""The Mutation Flow exposes Target-declared ``copyto`` runtime inputs (issue #2061).
 
 A testbench that opens a data file reads it from the configured ``run_cwd``.
 FuseSoC ``copyto`` only places the file in the build root, so the mutation
@@ -17,10 +17,10 @@ from types import SimpleNamespace
 import pytest
 
 import booley
+from booley.flows.mutation.flow import MutationFlow
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.fusesoc.fusesoc_registry import ResolvedFile
-from booley.specialists.mutation_tester import MutationTesterSpecialist
-from tests.mcp_tools.test_mutation_tester import (
+from tests.flows.mutation.test_flow import (
     _fake_proc,
     _make_endpoint,
     _patch_cocotb_target,
@@ -51,7 +51,7 @@ _ADAPTERS = ("verilator", "icarus", "cocotb")
 class _Project:
     """A mutation checkout whose Target declares ``vectors.hex`` as a copyto input."""
 
-    def __init__(self, root: Path, endpoint: MutationTesterSpecialist, eda_tool: str) -> None:
+    def __init__(self, root: Path, endpoint: MutationFlow, eda_tool: str) -> None:
         self.root = root
         self.endpoint = endpoint
         self.eda_tool = eda_tool
@@ -122,7 +122,7 @@ def _make_project(tmp_path: Path, monkeypatch, adapter: str = "verilator") -> _P
     endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
     project = _Project(tmp_path, endpoint, "icarus" if adapter == "icarus" else "verilator")
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.prepare_simulation_build",
+        "booley.flows.mutation.flow.prepare_simulation_build",
         _prepare_with_copyto([project]),
     )
     return project
@@ -175,7 +175,7 @@ def test_pinned_runs_stage_inputs_for_every_adapter(
         )
         return _fake_proc(rc=1, stdout="failed")
 
-    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _launch)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _launch)
 
     project.endpoint._run_sim_pinned("default", tmp_path, project.build, "tb")
 
@@ -196,7 +196,7 @@ def test_staged_input_is_removed_after_timeout(tmp_path: Path, monkeypatch) -> N
         visible.append(project.staged.is_file())
         raise subprocess.TimeoutExpired(cmd, 1)
 
-    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _hang)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _hang)
 
     runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
 
@@ -224,7 +224,7 @@ def test_conflicting_destination_is_inconclusive_setup_failure(
     project.elab()
     launches: list[object] = []
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.subprocess.run",
+        "booley.flows.mutation.flow.subprocess.run",
         lambda cmd, *a, **k: launches.append(cmd) or _fake_proc(),
     )
 

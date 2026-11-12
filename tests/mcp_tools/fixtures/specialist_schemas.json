@@ -17,56 +17,12 @@
         "type": "string"
       },
       "work_dir": {
-        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace.",
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo — create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace.",
         "type": "string"
       }
     },
     "required": [
       "campaign"
-    ],
-    "type": "object"
-  },
-  "mutation_tester": {
-    "additionalProperties": false,
-    "properties": {
-      "count": {
-        "description": "Number of Mutants: integer or 'auto' (default: 10)",
-        "type": "string"
-      },
-      "diagnostic": {
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
-        "type": "boolean"
-      },
-      "dry_run": {
-        "default": false,
-        "description": "Validate inputs and preview planned work without invoking Specialists or EDA tools",
-        "type": "boolean"
-      },
-      "min_detected": {
-        "description": "Pass threshold: minimum Mutants that must be detected (default: ceil(0.8 x --count); some survivors may be equivalent Mutants). Raise it to demand more, lower it to accept less.",
-        "type": "integer"
-      },
-      "scope": {
-        "description": "Comma-separated RTL files eligible for mutation (default: the Target's own RTL, without testbench, vendored and generated files)",
-        "type": "string"
-      },
-      "seed": {
-        "default": 0,
-        "description": "Non-negative integer that selects the Mutants (default: 0). The same RTL, --count and --seed give the same Mutants.",
-        "type": "integer"
-      },
-      "target": {
-        "description": "Exactly one Simulation Target. The CLI accepts one --target value; MCP accepts one Target selector string.",
-        "type": "string"
-      },
-      "work_dir": {
-        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace.",
-        "type": "string"
-      }
-    },
-    "required": [
-      "target"
     ],
     "type": "object"
   },
@@ -146,7 +102,7 @@
         "type": "array"
       },
       "work_dir": {
-        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace.",
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo — create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace.",
         "type": "string"
       }
     },

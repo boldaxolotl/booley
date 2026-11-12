@@ -252,15 +252,15 @@ def test_specialist_launch_runs_on_its_models_cli(tmp_path: Path, per_cli_backen
     )
 
     assert _launch(_named("reviewer"), tmp_path).exit_code == EXIT_SUCCESS
-    assert _launch(_named("mutation_tester"), tmp_path).exit_code == EXIT_SUCCESS
+    assert _launch(_named("coverage_analyst"), tmp_path).exit_code == EXIT_SUCCESS
 
-    (reviewer_cli, reviewer), (mutation_cli, mutation) = calls
+    (reviewer_cli, reviewer), (coverage_cli, coverage) = calls
     assert (reviewer_cli, reviewer.model, reviewer.reasoning_effort) == (
         "codex",
         "gpt-6-luna",
         "high",
     )
-    assert (mutation_cli, mutation.model, mutation.reasoning_effort) == (
+    assert (coverage_cli, coverage.model, coverage.reasoning_effort) == (
         "claude",
         "claude-opus-5-5",
         None,

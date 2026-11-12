@@ -201,9 +201,15 @@ async def test_flow_step_lists_every_builtin_flow_with_its_blurb(checkout):
         await pilot.press("enter")
         options = wizard.query_one("#run-flows", OptionList)
         lines = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
-        assert [line.split(" — ")[0] for line in lines] == ["fpga", "lint", "sim", "synth"]
+        assert [line.split(" — ")[0] for line in lines] == [
+            "fpga",
+            "lint",
+            "mutation",
+            "sim",
+            "synth",
+        ]
         assert all(len(line.split(" — ", 1)[1]) > 10 for line in lines)
-        assert lines[2].startswith("sim — Run RTL simulation")
+        assert lines[3].startswith("sim — Run RTL simulation")
 
 
 # --- AC2 ---------------------------------------------------------------------

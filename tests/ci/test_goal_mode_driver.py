@@ -556,7 +556,7 @@ def test_stop_baseline_jobs_kills_a_job_that_ignores_termination(tmp_path, monke
 
 
 # ---------------------------------------------------------------------------
-# Mutation smoke (#2851): one small mutation_tester call in the Goal worktree
+# Mutation smoke (#2851): one small mutation call in the Goal worktree
 # ---------------------------------------------------------------------------
 
 _MUTATION = next(
@@ -604,7 +604,7 @@ class SmokeSession(FakeSession):
 
     async def call_tool(self, name, arguments):
         reply = await super().call_tool(name, arguments)
-        if name == "mutation_tester" and self.build_mirror:
+        if name == "mutation" and self.build_mirror:
             _mirror_dir(self.booley_dir).mkdir(parents=True)
         return reply
 
@@ -625,7 +625,7 @@ def test_mutation_smoke_runs_one_generated_mutant_and_requires_exit_zero(tmp_pat
 
     assert result["status"] == "pass"
     ((name, arguments),) = calls
-    assert name == "mutation_tester"
+    assert name == "mutation"
     assert arguments["target"] == "sim_core" and arguments["scope"] == "rtl/dut.sv"
     # `count` is a string argument in the MCP schema (an integer count or "auto").
     assert (arguments["count"], arguments["min_detected"], arguments["diagnostic"]) == (
@@ -636,11 +636,11 @@ def test_mutation_smoke_runs_one_generated_mutant_and_requires_exit_zero(tmp_pat
     assert "seed" not in arguments
     # No proposal lock is seeded: the generator needs no agent.
     runtime = driver.record_paths(booley_dir, _ID).runtime_dir
-    assert not (runtime / "mutation_tester/lock").exists()
+    assert not (runtime / "mutation/lock").exists()
 
 
 def test_mutation_smoke_fails_when_variant_does_not_elaborate(tmp_path) -> None:
-    with pytest.raises(driver.GoalDriverError, match="mutation_tester failed"):
+    with pytest.raises(driver.GoalDriverError, match="mutation failed"):
         _run_smoke(tmp_path, [_reply("EXIT_CODE: 2")])
 
 
@@ -689,6 +689,6 @@ def test_readiness_runs_the_mutation_smoke_only_when_asked(tmp_path) -> None:
         driver.readiness(session, worktree, goals, mutation_smoke_booley_dir=booley_dir)
     )
 
-    assert [call[0] for call in session.calls] == ["goal_enter", "goal_status", "mutation_tester"]
-    assert result["steps"]["mutation_tester"]["status"] == "pass"
+    assert [call[0] for call in session.calls] == ["goal_enter", "goal_status", "mutation"]
+    assert result["steps"]["mutation"]["status"] == "pass"
     assert result["state"] == "active"

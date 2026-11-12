@@ -1,4 +1,4 @@
-"""Tests for MutationTesterSpecialist — deterministic Mutants + sim sweep.
+"""Tests for the Mutation Flow — deterministic Mutants + sim sweep.
 
 Covers argparse, the default scope and threshold, the baseline-scaled timeout,
 the reproducibility identity and the sweep, with the real Mutant generator and
@@ -26,20 +26,25 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_event
+from booley.flows.mutation.flow import (
+    MutationFlow,
+    MutationResult,
+    MutationSpec,
+    MutationSummary,
+    UnsupportedSimTargetError,
+    generate_results_markdown,
+    generate_specs_markdown,
+)
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.specialists.mutation_tester import (
-    MutationResult,
-    MutationSpec,
-    MutationSummary,
-    MutationTesterSpecialist,
-    UnsupportedSimTargetError,
-    generate_results_markdown,
-    generate_specs_markdown,
+from booley.runtime.endpoint_execution import (
+    EXIT_ERROR,
+    EXIT_FAILURE,
+    EXIT_SUCCESS,
+    EndpointOutcome,
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
@@ -58,7 +63,7 @@ _TARGET_PARAMETERS: dict[str, Any] = {}
 
 @pytest.mark.parametrize("removed", ["--tb-top", "--dut-top", "--dut-files"])
 def test_removed_topology_options_are_rejected(removed: str) -> None:
-    endpoint = MutationTesterSpecialist()
+    endpoint = MutationFlow()
     with pytest.raises(SystemExit):
         endpoint.parse_args(["--target", "sim", "--scope", "rtl/design.sv", removed, "legacy"])
 
@@ -119,7 +124,7 @@ def _make_endpoint(
     dut_top_module: str = "design_top",
     dut_files: tuple[str, ...] = ("rtl/design_top.sv",),
     extra_args: list[str] | None = None,
-) -> MutationTesterSpecialist:
+) -> MutationFlow:
     """Build a endpoint with parsed args and loaded state.
 
     When *monkeypatch* is supplied, the BOOLEY_LOGS_DIR env var is set for
@@ -151,7 +156,7 @@ def _make_endpoint(
     if monkeypatch is not None:
         for k, v in env.items():
             monkeypatch.setenv(k, v)
-    endpoint = MutationTesterSpecialist()
+    endpoint = MutationFlow()
     with patch.dict(os.environ, env):
         endpoint.parse_args(argv)
     # Most focused unit tests do not author a FuseSoC catalog. Preserve their
@@ -159,7 +164,7 @@ def _make_endpoint(
     endpoint._dut_files = lambda: list(dut_files)  # type: ignore[method-assign]
     if monkeypatch is not None:
         monkeypatch.setattr(
-            "booley.specialists.mutation_tester.tb_top_for_target",
+            "booley.flows.mutation.flow.tb_top_for_target",
             lambda *_args, **_kwargs: tb_top,
         )
     del dut_top_module
@@ -190,7 +195,7 @@ def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch)
         patch.object(endpoint, "_validate_target_runner"),
         patch.object(endpoint, "cocotb_target", return_value=None),
         patch(
-            "booley.specialists.mutation_tester.require_runnable_target_test_suite",
+            "booley.flows.mutation.flow.require_runnable_target_test_suite",
             side_effect=NoRunnableTestsError("sim", ("smoke", "corner")),
         ),
     ):
@@ -227,7 +232,7 @@ def _two_core_endpoint(
     target: str = _CORE_A_FIRST,
     scope: str = "x.v",
     strict: bool = False,
-) -> MutationTesterSpecialist:
+) -> MutationFlow:
     """Endpoint on a two-core Project (both declare ``first``) holding *criteria*."""
     write_two_core_sim_project(tmp_path, _TWO_CORE_TESTS, target="first")
     endpoint = _make_endpoint(tmp_path, monkeypatch, target=target, scope=scope, count=None)
@@ -386,7 +391,7 @@ def test_dry_run_does_not_generate_or_build_anything(
         patch.object(endpoint, "_validate_target_runner"),
         patch.object(endpoint, "cocotb_target"),
         patch.object(endpoint, "_target_test_suite"),
-        patch("booley.specialists.mutation_tester.subprocess.run") as build_or_run,
+        patch("booley.flows.mutation.flow.subprocess.run") as build_or_run,
     ):
         result = endpoint._run()
 
@@ -403,7 +408,7 @@ def _run_count_preview(endpoint, monkeypatch, *, params=None):
         execution_units=lambda: (),
     )
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.resolve_target_campaign", lambda *a, **kw: campaign
+        "booley.flows.mutation.flow.resolve_target_campaign", lambda *a, **kw: campaign
     )
     with (
         patch.object(endpoint, "_registered_tests", return_value={}),
@@ -412,7 +417,7 @@ def _run_count_preview(endpoint, monkeypatch, *, params=None):
         patch.object(endpoint, "cocotb_target"),
         patch.object(endpoint, "_target_test_suite"),
         patch.object(endpoint, "emit_progress") as progress,
-        patch("booley.specialists.mutation_tester.subprocess.run") as build_or_run,
+        patch("booley.flows.mutation.flow.subprocess.run") as build_or_run,
     ):
         before = set(endpoint.args.work_dir.rglob("*"))
         result = endpoint._run()
@@ -428,7 +433,7 @@ def _assert_preview_lines(result, count):
     assert result.report_text == "\n".join(result.display_lines)
     assert len(result.display_lines) > 1
     assert all("\n" not in line for line in result.display_lines)
-    assert result.display_lines[-1].startswith("mutation_tester dry-run:")
+    assert result.display_lines[-1].startswith("mutation dry-run:")
     assert result.display_lines[-1].endswith(
         f"count={count}; min_detected={_eighty_percent(count)}; seed=0"
     )
@@ -479,9 +484,7 @@ def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
         tmp_path, monkeypatch, count="auto", scope=",".join(paths), extra_args=["--dry-run"]
     )
     result, _ = _run_count_preview(endpoint, monkeypatch)
-    event = _display_safe_event(
-        _endpoint_end_event("mutation_tester", "lite", result, 0.0, dry_run=True)
-    )
+    event = _display_safe_event(_endpoint_end_event("mutation", "lite", result, 0.0, dry_run=True))
     assert event["display_lines_truncated"] > 0
     assert event["summary"] == result.display_lines[-1]
 
@@ -493,10 +496,10 @@ def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
 
 class TestToolMetadata:
     def test_name(self):
-        assert MutationTesterSpecialist().name == "mutation_tester"
+        assert MutationFlow().name == "mutation"
 
     def test_satisfies(self):
-        assert "mutation_score" in MutationTesterSpecialist().satisfies
+        assert "mutation_score" in MutationFlow().satisfies
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +556,7 @@ class TestArtifacts:
 
 
 # ---------------------------------------------------------------------------
-# Cold-start development with mocked agent + sim
+# Cold-start development with mocked sim
 # ---------------------------------------------------------------------------
 
 
@@ -671,7 +674,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
         ),
     )
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.prepare_simulation_build",
+        "booley.flows.mutation.flow.prepare_simulation_build",
         _fake_prepare,
     )
 
@@ -683,7 +686,6 @@ class FakeSimulation:
     builds: list[int | None] = field(default_factory=list)  # Mutant index; None: baseline
     runs: list[int | None] = field(default_factory=list)
     run_timeouts: list[float] = field(default_factory=list)
-    agent_calls: list[str] = field(default_factory=list)  # entry points a run must not reach
 
 
 def _mutant_index(text: str) -> int | None:
@@ -698,26 +700,14 @@ def _patch_fake_simulation(
     run: Callable[[int | None], subprocess.CompletedProcess] | None = None,
     build: Callable[[int | None], subprocess.CompletedProcess] | None = None,
 ) -> FakeSimulation:
-    """Fake every build and simulator run of a mutation campaign; no agent may be called.
+    """Fake every build and simulator run of a mutation campaign.
 
     ``run(index)`` and ``build(index)`` return the process for the baseline
     (``index`` is ``None``) or Mutant ``index``; by default everything passes.
     A ``run`` may raise ``subprocess.TimeoutExpired``.
     """
     _patch_resolve_target(monkeypatch)
-    from booley.specialists.specialist import Specialist
-
     fake = FakeSimulation()
-
-    def _no_agent_named(name: str):
-        def refuse(*_args, **_kwargs):
-            fake.agent_calls.append(name)
-            raise RuntimeError("a mutation run must not call an agent")
-
-        return refuse
-
-    for entry_point in ("_invoke_agent", "_invoke_agent_with_resume"):
-        monkeypatch.setattr(Specialist, entry_point, _no_agent_named(entry_point))
     original = subprocess.run
 
     def _fake(cmd, *args, **kwargs):
@@ -732,7 +722,7 @@ def _patch_fake_simulation(
             return run(index) if run else _fake_proc(rc=0, stdout="[sim] ok")
         return original(cmd, *args, **kwargs)
 
-    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake)
     return fake
 
 
@@ -746,7 +736,7 @@ def test_elab_and_sim_run_verilator_binary(tmp_path: Path, monkeypatch):
 
     _patch_resolve_target(monkeypatch)
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.subprocess.run",
+        "booley.flows.mutation.flow.subprocess.run",
         _fake_run,
     )
 
@@ -788,10 +778,10 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
     catalog = SimpleNamespace(select=lambda *args, **kwargs: handle)
     monkeypatch.setattr(TargetCatalog, "build", classmethod(lambda _cls, _root: catalog))
     prepare = MagicMock(return_value=prepared)
-    monkeypatch.setattr("booley.specialists.mutation_tester.prepare_simulation_build", prepare)
+    monkeypatch.setattr("booley.flows.mutation.flow.prepare_simulation_build", prepare)
     captured: list[list[str]] = []
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.subprocess.run",
+        "booley.flows.mutation.flow.subprocess.run",
         lambda command, **kwargs: (
             captured.append(command),
             _fake_proc(rc=0),
@@ -822,11 +812,11 @@ def test_elab_surfaces_shared_preparation_failures(
 ) -> None:
     _patch_resolve_target(monkeypatch)
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.prepare_simulation_build",
+        "booley.flows.mutation.flow.prepare_simulation_build",
         lambda *args, **kwargs: (_ for _ in ()).throw(SimulationBuildPreparationError(message)),
     )
     run = MagicMock()
-    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", run)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", run)
     endpoint = _make_endpoint(tmp_path, monkeypatch)
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -848,7 +838,7 @@ def test_build_and_adapter_parent_relocate_python_artifacts(tmp_path: Path, monk
         return _fake_proc(rc=0, stdout="[ok]", stderr="")
 
     _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
     endpoint = _make_endpoint(tmp_path, monkeypatch)
     build_dir = tmp_path / "build"
     build_dir.mkdir()
@@ -890,10 +880,8 @@ def test_mutant_build_uses_managed_compiler_cache(tmp_path: Path, monkeypatch):
         return _fake_proc(rc=0, stdout="[ok]", stderr="")
 
     _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.prepare_simulation_build", _fake_prepare
-    )
-    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    monkeypatch.setattr("booley.flows.mutation.flow.prepare_simulation_build", _fake_prepare)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
     monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: "/ccache")
     (tmp_path / "data").mkdir()
     endpoint = _make_endpoint(tmp_path, monkeypatch)
@@ -917,7 +905,7 @@ def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
 
     _patch_resolve_target(monkeypatch)
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.subprocess.run",
+        "booley.flows.mutation.flow.subprocess.run",
         _fake_run,
     )
     _write_tests_toml(
@@ -946,7 +934,7 @@ def _mutation_sim_runs(tmp_path: Path, monkeypatch, tests_toml: str, eda_tool: s
         return _fake_proc(rc=0, stdout="[ok]", stderr="")
 
     _patch_resolve_target(monkeypatch)
-    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
     _write_tests_toml(tmp_path, tests_toml)
     endpoint = _make_endpoint(tmp_path, monkeypatch)
     if eda_tool is not None:
@@ -1012,7 +1000,7 @@ def test_mutant_builds_and_runs_under_the_target_environment(tmp_path: Path, mon
     """
     monkeypatch.delenv("FLAVOR", raising=False)
     monkeypatch.delenv("STRESS_MODE", raising=False)
-    import booley.specialists.mutation_tester as mutation_tester_module
+    import booley.flows.mutation.flow as mutation_flow_module
 
     prepared_with: list[dict[str, str]] = []
 
@@ -1020,20 +1008,20 @@ def test_mutant_builds_and_runs_under_the_target_environment(tmp_path: Path, mon
         "default_seed = 7", 'default_seed = 7\nenv = { FLAVOR = "wide" }'
     )
     _patch_resolve_target(monkeypatch)
-    patched = mutation_tester_module.prepare_simulation_build
+    patched = mutation_flow_module.prepare_simulation_build
 
     def recording_prepare(handle, **kwargs):
         prepared_with.append(dict(kwargs.get("environment") or {}))
         return patched(handle, **kwargs)
 
-    monkeypatch.setattr(mutation_tester_module, "prepare_simulation_build", recording_prepare)
+    monkeypatch.setattr(mutation_flow_module, "prepare_simulation_build", recording_prepare)
     captured: list[dict[str, str]] = []
 
     def _fake_run(cmd, *args, **kwargs):
         captured.append(dict(kwargs.get("env") or {}))
         return _fake_proc(rc=0, stdout="[ok]", stderr="")
 
-    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
     _write_tests_toml(tmp_path, tests_toml)
     endpoint = _make_endpoint(tmp_path, monkeypatch)
     build_dir = tmp_path / "build"
@@ -1071,7 +1059,7 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
 
     _patch_resolve_target(monkeypatch)
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.subprocess.run",
+        "booley.flows.mutation.flow.subprocess.run",
         _fake_run,
     )
     _write_tests_toml(
@@ -1109,7 +1097,7 @@ def test_sim_forwards_project_verdict_sentinels(tmp_path: Path, monkeypatch):
 
     _patch_resolve_target(monkeypatch)
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.subprocess.run",
+        "booley.flows.mutation.flow.subprocess.run",
         _fake_run,
     )
     monkeypatch.setattr(
@@ -1174,7 +1162,7 @@ def _grade_mutant_launch(tmp_path: Path, monkeypatch, capsys, adapter: str, outc
 
     _patch_resolve_target(monkeypatch)
     _patch_cocotb_target(monkeypatch, module="tb.test_x" if cocotb else None)
-    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
     _write_tests_toml(tmp_path, '[default]\ntests = ["test_a"]\n')
     endpoint = _make_endpoint(tmp_path, monkeypatch)
     build_dir = tmp_path / "build"
@@ -1182,7 +1170,7 @@ def _grade_mutant_launch(tmp_path: Path, monkeypatch, capsys, adapter: str, outc
     endpoint._run_elab("default", tmp_path, build_dir)
 
     runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
-    verdict = MutationTesterSpecialist._classify_variant_suite(runs)
+    verdict = MutationFlow._classify_variant_suite(runs)
 
     [work] = launched
     assert work.adapter == ("cocotb" if cocotb else "verilator")
@@ -1206,7 +1194,7 @@ def _prepare_scope_files(tmp_path: Path, scope: list[str]) -> None:
             )
 
 
-def _assert_durable_campaign(tmp_path: Path, result: McpToolResult) -> None:
+def _assert_durable_campaign(tmp_path: Path, result: EndpointOutcome) -> None:
     """Assert that a successful campaign is self-contained and fully published."""
     results_path = tmp_path / result.detail["artifacts"]["results"]
     assert results_path.is_file()
@@ -1247,7 +1235,7 @@ def _campaign(
     run: Callable[[int | None], subprocess.CompletedProcess] | None = None,
     build: Callable[[int | None], subprocess.CompletedProcess] | None = None,
     **endpoint_args: Any,
-) -> tuple[MutationTesterSpecialist, McpToolResult, FakeSimulation]:
+) -> tuple[MutationFlow, EndpointOutcome, FakeSimulation]:
     """Run one whole campaign of the scope file ``rtl/mod_a.sv`` (30 sites) on fake results."""
     _prepare_scope_files(tmp_path, [scope])
     fake = _patch_fake_simulation(monkeypatch, run=run, build=build)
@@ -1260,11 +1248,11 @@ def _detects_every_mutant(index: int | None) -> subprocess.CompletedProcess:
     return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
 
 
-def _results_markdown(tmp_path: Path, result: McpToolResult) -> str:
+def _results_markdown(tmp_path: Path, result: EndpointOutcome) -> str:
     return (tmp_path / result.detail["artifacts"]["results"]).read_text(encoding="utf-8")
 
 
-def _mutant_keys(result: McpToolResult) -> list[tuple[Any, ...]]:
+def _mutant_keys(result: EndpointOutcome) -> list[tuple[Any, ...]]:
     return [
         (row["id"], row["category"], row["file"], row["line"], row["status"])
         for row in result.detail["classified"]
@@ -1277,13 +1265,12 @@ def test_removed_llm_options_are_rejected(removed: str) -> None:
     if removed == "--steer":
         argv.append("guidance")
     with pytest.raises(SystemExit):
-        MutationTesterSpecialist().parse_args(argv)
+        MutationFlow().parse_args(argv)
 
 
-def test_campaign_never_calls_an_agent(tmp_path: Path, monkeypatch) -> None:
+def test_campaign_runs_the_baseline_then_each_mutant(tmp_path: Path, monkeypatch) -> None:
     _, result, fake = _campaign(tmp_path, monkeypatch, count=2, min_detected=0)
 
-    assert fake.agent_calls == [], "the mutation run called an agent"
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     assert fake.runs == [None, 1, 2]  # the baseline, then each Mutant
 
@@ -1323,13 +1310,13 @@ def test_leftover_lock_file_is_ignored(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     assert {row["category"] for row in result.detail["classified"]} <= _GENERATOR_OPERATORS
-    assert not lock_dir.exists()  # its old builds do not stay on disk
+    assert not lock_dir.parent.exists()  # the retired Specialist's scratch tree is deleted
 
 
 def test_a_smaller_count_drops_the_builds_of_an_earlier_larger_run(
     tmp_path: Path, monkeypatch
 ) -> None:
-    stale = tmp_path / "logs" / ".runtime" / "mutation_tester" / "campaign" / "builds" / "mutant_9"
+    stale = tmp_path / "logs" / ".runtime" / "mutation" / "campaign" / "builds" / "mutant_9"
     stale.mkdir(parents=True)
     (stale / "image").write_bytes(b"stale")
 
@@ -1582,7 +1569,7 @@ def test_mutant_timeout_scales_with_the_tests_baseline_duration(
     def clock() -> float:
         return readings.pop(0) if readings else float(next(later))
 
-    monkeypatch.setattr("booley.specialists.mutation_tester._monotonic", clock, raising=False)
+    monkeypatch.setattr("booley.flows.mutation.flow._monotonic", clock, raising=False)
 
     _, result, fake = _campaign(tmp_path, monkeypatch, count=1, min_detected=0)
 
@@ -1661,13 +1648,13 @@ def test_happy_path_publishes_campaign_artifacts(tmp_path: Path, monkeypatch) ->
     assert variants == [
         {
             "index": index,
-            "path": f"reports/mutation_tester/1/campaign/variants/mutant_{index}/rtl/mod_a.sv",
+            "path": f"reports/mutation/1/campaign/variants/mutant_{index}/rtl/mod_a.sv",
         }
         for index in (1, 2)
     ]
     assert all((tmp_path / row["path"]).is_file() for row in variants)
     _assert_durable_campaign(tmp_path, result)
-    assert "mutation variant: reports/mutation_tester/1/campaign/variants/" in result.report_text
+    assert "mutation variant: reports/mutation/1/campaign/variants/" in result.report_text
     assert result.criterion_key == "mutation_score_lite"
 
 
@@ -1675,7 +1662,7 @@ def test_mutant_logs_of_an_earlier_run_do_not_survive_a_smaller_run(
     tmp_path: Path, monkeypatch
 ) -> None:
     _, _, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
-    logs = tmp_path / "logs" / ".runtime" / "mutation_tester" / "campaign" / "mutant_logs"
+    logs = tmp_path / "logs" / ".runtime" / "mutation" / "campaign" / "mutant_logs"
     assert sorted(path.name for path in logs.iterdir()) == [f"mutant_{i}.log" for i in (1, 2, 3)]
 
     _campaign(tmp_path, monkeypatch, count=1, min_detected=0)
@@ -1750,15 +1737,15 @@ class TestResidueWarning:
         )
 
     def test_scope_residue_detects_deleted_scope_file(self, tmp_path: Path):
-        from booley.dev_support import mutation_workspace
+        from booley.flows.mutation import workspace as mutation_workspace
 
         _prepare_scope_files(tmp_path, [_SCOPE])
         baseline = mutation_workspace.compute_scope_hashes([_SCOPE], tmp_path)
-        assert MutationTesterSpecialist._scope_residue(baseline, tmp_path) == []
+        assert MutationFlow._scope_residue(baseline, tmp_path) == []
 
         (tmp_path / _SCOPE).unlink()
 
-        assert MutationTesterSpecialist._scope_residue(baseline, tmp_path) == [_SCOPE]
+        assert MutationFlow._scope_residue(baseline, tmp_path) == [_SCOPE]
 
 
 # ---------------------------------------------------------------------------
@@ -1880,7 +1867,7 @@ class TestCocotbSimDispatch:
     ) -> None:
         _patch_resolve_target(monkeypatch, eda_tool="icarus")
         monkeypatch.setattr(
-            "booley.specialists.mutation_tester.prepare_simulation_build",
+            "booley.flows.mutation.flow.prepare_simulation_build",
             lambda *args, **kwargs: (_ for _ in ()).throw(
                 SimulationBuildPreparationError(
                     "Target 'default' declared 'icarus' but setup configured 'verilator'"
@@ -1931,7 +1918,7 @@ class TestCocotbSimDispatch:
         """A Cocotb Target must run with Cocotb's module/filter environment."""
         captured: list[list[str]] = []
         monkeypatch.setattr(
-            "booley.specialists.mutation_tester.subprocess.run",
+            "booley.flows.mutation.flow.subprocess.run",
             lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
         )
         _patch_resolve_target(monkeypatch)
@@ -1959,7 +1946,7 @@ class TestCocotbSimDispatch:
     def test_cocotb_run_batches_whole_target_suite(self, tmp_path: Path, monkeypatch):
         captured: list[list[str]] = []
         monkeypatch.setattr(
-            "booley.specialists.mutation_tester.subprocess.run",
+            "booley.flows.mutation.flow.subprocess.run",
             lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
         )
         _patch_resolve_target(monkeypatch)
@@ -1986,7 +1973,7 @@ class TestCocotbSimDispatch:
         monkeypatch.delenv("MODE", raising=False)
         captured: list[tuple[list[str], dict[str, str]]] = []
         monkeypatch.setattr(
-            "booley.specialists.mutation_tester.subprocess.run",
+            "booley.flows.mutation.flow.subprocess.run",
             lambda cmd, *a, **k: (
                 captured.append((list(cmd), dict(k.get("env") or {}))),
                 _fake_proc(rc=0),
@@ -2027,7 +2014,7 @@ class TestCocotbSimDispatch:
     def test_classic_target_still_uses_verilator_run(self, tmp_path: Path, monkeypatch):
         captured: list[list[str]] = []
         monkeypatch.setattr(
-            "booley.specialists.mutation_tester.subprocess.run",
+            "booley.flows.mutation.flow.subprocess.run",
             lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
         )
         _patch_resolve_target(monkeypatch)
@@ -2050,7 +2037,7 @@ class TestCocotbSimDispatch:
         """F-6: a classic Icarus build must be executed as a vvp image."""
         captured: list[list[str]] = []
         monkeypatch.setattr(
-            sys.modules[MutationTesterSpecialist.__module__].subprocess,
+            sys.modules[MutationFlow.__module__].subprocess,
             "run",
             lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
         )
@@ -2120,7 +2107,7 @@ def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
     state.mkdir()
     (state / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
     plan = SimpleNamespace(target="sim", work_dir=tmp_path, tb_top="tb")
-    endpoint = MutationTesterSpecialist()
+    endpoint = MutationFlow()
 
     with patch.object(endpoint, "_run_elab", side_effect=AssertionError("built")) as elab:
         result = endpoint._run_pristine_baseline(plan)  # type: ignore[arg-type]
@@ -2230,7 +2217,7 @@ def test_cpp_scope_refuses_before_generation_and_build(tmp_path):
     source.write_text("int main() {}\n")
     endpoint = _make_endpoint(tmp_path, target="sim", scope="tb/sim_main.cpp")
     with (
-        patch("booley.specialists.mutation_tester.generate_mutants") as generate,
+        patch("booley.flows.mutation.flow.generate_mutants") as generate,
         patch.object(endpoint, "_run_elab") as build,
     ):
         result = endpoint._run()
@@ -2273,12 +2260,8 @@ def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocot
             "_pinned_sim_command",
             lambda *_args, **_kwargs: ([tool], SimpleNamespace(environment={})),
         )
-        monkeypatch.setattr(
-            "booley.specialists.mutation_tester._target_environment", lambda *_args: {}
-        )
-        monkeypatch.setattr(
-            "booley.specialists.mutation_tester.launch_environment", lambda *_args: {}
-        )
+        monkeypatch.setattr("booley.flows.mutation.flow._target_environment", lambda *_args: {})
+        monkeypatch.setattr("booley.flows.mutation.flow.launch_environment", lambda *_args: {})
     else:
         prepared = SimpleNamespace(
             eda_tool=tool,
@@ -2288,17 +2271,17 @@ def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocot
         )
         monkeypatch.setattr(endpoint, "_resolve_elab_target", lambda *_args: (object(), prepared))
         monkeypatch.setattr(
-            "booley.specialists.mutation_tester.simulation_build_environment", lambda *_args: {}
+            "booley.flows.mutation.flow.simulation_build_environment", lambda *_args: {}
         )
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.subprocess.run",
+        "booley.flows.mutation.flow.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
     )
     if cached:
         endpoint._run_sim_pinned("default", tmp_path, build, "tb")
     else:
         endpoint._run_elab("default", tmp_path, build)
-    path = endpoint.write_report(McpToolResult(report_text="mutation result"))
+    path = endpoint.write_report(EndpointOutcome(report_text="mutation result"))
     assert json.loads(path.read_bytes()).get("eda_tool") == tool
 
 
@@ -2309,6 +2292,6 @@ def test_mutation_preflight_alone_does_not_report_eda_tool(tmp_path, monkeypatch
     endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
     endpoint.cocotb_target("default", tmp_path)
     endpoint._validate_target_runner("default", tmp_path)
-    report = json.loads(endpoint.write_report(McpToolResult()).read_bytes())
+    report = json.loads(endpoint.write_report(EndpointOutcome()).read_bytes())
     assert "eda_tool" not in report
     assert "eda_tools" not in report

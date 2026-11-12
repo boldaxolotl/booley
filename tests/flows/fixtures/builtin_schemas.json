@@ -289,5 +289,54 @@
       }
     },
     "additionalProperties": false
+  },
+  "mutation": {
+    "type": "object",
+    "properties": {
+      "work_dir": {
+        "type": "string",
+        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace."
+      },
+      "target": {
+        "type": "string",
+        "description": "Exactly one Simulation Target. The CLI accepts one --target value; MCP accepts one Target selector string."
+      },
+      "diagnostic": {
+        "type": "boolean",
+        "default": false,
+        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "default": false,
+        "description": "Resolve and validate the requested work without executing EDA tools"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms."
+      },
+      "scope": {
+        "type": "string",
+        "description": "Comma-separated RTL files eligible for mutation (default: the Target's own RTL, without testbench, vendored and generated files)"
+      },
+      "count": {
+        "type": "string",
+        "description": "Number of Mutants: integer or 'auto' (default: 10)"
+      },
+      "min_detected": {
+        "type": "integer",
+        "description": "Pass threshold: minimum Mutants that must be detected (default: ceil(0.8 x --count); some survivors may be equivalent Mutants). Raise it to demand more, lower it to accept less."
+      },
+      "seed": {
+        "type": "integer",
+        "description": "Non-negative integer that selects the Mutants (default: 0). The same RTL, --count and --seed give the same Mutants.",
+        "default": 0
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "additionalProperties": false
   }
 }

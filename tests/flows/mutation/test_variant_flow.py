@@ -9,25 +9,25 @@ from pathlib import Path
 import pytest
 import yaml
 
-from booley.dev_support.mutation_build_sources import materialize_build_mutation
-from booley.dev_support.mutation_variants import MutationVariantPlan
-from booley.flows.sim.backends.cocotb_results import COCOTB_RESULTS_PREFIX
-from booley.specialists.mutation_tester import (
+from booley.flows.mutation.build_sources import materialize_build_mutation
+from booley.flows.mutation.flow import (
+    MutationFlow,
     MutationRunPlan,
     MutationSpec,
-    MutationTesterSpecialist,
     MutationTestRun,
     UnsupportedSimTargetError,
     compute_source_size_budget,
 )
+from booley.flows.mutation.variants import MutationVariantPlan
+from booley.flows.sim.backends.cocotb_results import COCOTB_RESULTS_PREFIX
 
 
 def _process(returncode: int, output: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess([], returncode, stdout=output, stderr="")
 
 
-def _endpoint(tmp_path: Path) -> MutationTesterSpecialist:
-    endpoint = MutationTesterSpecialist()
+def _endpoint(tmp_path: Path) -> MutationFlow:
+    endpoint = MutationFlow()
     endpoint._args = types.SimpleNamespace(work_dir=tmp_path, tb_top="tb")
     endpoint.emit_progress = lambda _line: None
     return endpoint
@@ -325,11 +325,9 @@ def test_generated_direct_source_rejected_before_fusesoc_setup(tmp_path, monkeyp
         select=lambda *_args, **_kwargs: object(),
         core_closure=lambda _handles: frozenset([core]),
     )
+    monkeypatch.setattr("booley.flows.mutation.flow.TargetCatalog.build", lambda _root: catalog)
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester.TargetCatalog.build", lambda _root: catalog
-    )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.prepare_simulation_build",
+        "booley.flows.mutation.flow.prepare_simulation_build",
         lambda *_args, **_kwargs: pytest.fail("generated pristine derivative"),
     )
     endpoint = _endpoint(tmp_path)
