@@ -14,6 +14,9 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
+from tests.shipped_docs_support import rendered_shipped_docs
 from tests.source_checkout_support import source_checkout_files
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -109,6 +112,15 @@ def _python_hits() -> list[str]:
     return hits
 
 
+def _line_hits(label: str, text: str) -> list[str]:
+    """Return one ``label:line 'text'`` hit per line that names the retired word."""
+    return [
+        f"{label}:{number} {line.strip()!r}"
+        for number, line in enumerate(text.splitlines(), 1)
+        if _RETIRED_WORD.search(line)
+    ]
+
+
 def _text_file_hits() -> list[str]:
     hits: list[str] = []
     for path in source_checkout_files(_ROOT, "src/booley"):
@@ -116,17 +128,27 @@ def _text_file_hits() -> list[str]:
         if path.suffix == ".py" or relative in _ALLOWED_TEXT_FILES:
             continue
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        hits.extend(
-            f"{relative}:{number} {line.strip()!r}"
-            for number, line in enumerate(lines, 1)
-            if _RETIRED_WORD.search(line)
-        )
+        hits.extend(_line_hits(relative, text))
+    # The packaged doc copies are Git-ignored build output, so scan each shipped doc as
+    # the build renders it, labelled by its source path.
+    for source, text in rendered_shipped_docs(_ROOT).items():
+        hits.extend(_line_hits(source, text))
     return hits
 
 
 def test_production_strings_use_current_vocabulary() -> None:
     hits = _python_hits() + _text_file_hits()
     assert not hits, "retired Ticket wording in production strings:\n" + "\n".join(hits)
+
+
+def test_rendered_shipped_docs_are_scanned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A retired word in a shipped doc is reported although no packaged copy is tracked (#3658)."""
+    planted = {"docs/user/CONFIG.md": "fine\nopen a Ticket here\n"}
+    monkeypatch.setattr(
+        "tests.test_retired_ticket_wording.rendered_shipped_docs", lambda _root: planted
+    )
+
+    assert "docs/user/CONFIG.md:2 'open a Ticket here'" in _text_file_hits()
