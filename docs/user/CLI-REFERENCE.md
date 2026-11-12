@@ -128,12 +128,20 @@ marks each one `present`, `missing`, or `uninitialized`.
 It stops at each Project it finds, so it doesn't crawl that Project's RTL and
 build trees; to import a Project nested inside another, name its path directly.
 
-`forget` refuses while the Project still has a live Grant (see below). It
-lists what the Project still holds in Docker, with sizes: images, agent state
-volumes (a copy of the agent's login and history), containers, and networks.
-It removes none of them unless you add `--purge`, which removes the unused
-ones, even for a Project already forgotten or deleted. To use a forgotten
-Project again, run `booley init` in it.
+`forget` lists what the Project still holds in Docker, with sizes: images,
+agent state volumes (a copy of the agent's login and history), containers, and
+networks. It removes none of them unless you add `--purge`, which removes the
+unused ones, even for a Project already forgotten or deleted. To use a
+forgotten Project again, run `booley init` in it.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+`forget` refuses while the Project still has a live Grant (see
+[Commercial EDA](#commercial-eda--host) and
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning)).
+
+</details>
 
 ### Commercial EDA · host
 
@@ -304,6 +312,7 @@ worktree, and also keeps the `booley-worktree/<name>` branch. Uncommitted
 changes in the Paired Checkout count toward the refusal too. To reuse the name,
 also delete that branch with
 `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+See [Stealth Mode](STEALTH.md).
 
 </details>
 

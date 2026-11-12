@@ -24,9 +24,7 @@ passes one argument per run that names the Test. By default it is
 `+test_id=<n>`, where `<n>` is the Test's 0-based position in the Target's
 list, and the testbench reads it with `$value$plusargs`. A testbench that
 expects something else, such as a Test name or a firmware image on the
-command line, gets its own `select` template. For a
-[Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) the Tests are
-the names of its cocotb test functions, and Booley selects them itself.
+command line, gets its own `select` template.
 
 ```toml
 [sim_soc]
@@ -37,6 +35,14 @@ select = "+test={name}"               # pass the name instead of the position
 tests  = ["hello.elf", "coremark.elf"]
 select = "--meminit=ram,{name}"
 ```
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+For a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) the Tests
+are the names of its cocotb test functions, and Booley selects them itself.
+
+</details>
 
 ## Skipping known-bad Tests (`skip`)
 
@@ -79,9 +85,16 @@ fault = { args = ["+err_rate=5"], env = { FAULT_MODE = "1" } }
 A Variant cannot override what the Target or Booley already decides: the
 Test-selecting argument, the seed arguments, a plusarg the `.core` Target
 declares as a parameter, or a variable the Target's own
-[`env`](#per-target-environment-env) sets. On a Cocotb Target a Variant
-carries environment variables only. `booley doctor` names the Target, Test
-and Variant of any such conflict.
+[`env`](#per-target-environment-env) sets. `booley doctor` names the Target,
+Test and Variant of any such conflict.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+On a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) a Variant
+carries environment variables only.
+
+</details>
 
 ## Seeds (`seed`, `default_seed`)
 
@@ -109,13 +122,21 @@ default_seed = 7             # this Target's Default Seed; 1 when not set
 ```
 
 - **`seed`** is for a testbench that reads its seed from an argument of its
-  own. A Cocotb Target cannot declare it.
+  own.
 - **`default_seed`** is the seed of a run that names none: a number from 1
   to 2147483647. Set it when your existing regression uses a fixed seed
   other than 1.
 - An **unseeded** Target cannot apply a seed, so Booley refuses any request
   for one, including a `default_seed` key, and its results carry no seed. To seed an Icarus Target, give its
   testbench a seed argument and declare the `seed` template.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+A [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) cannot declare
+`seed`.
+
+</details>
 
 `booley doctor` prints one line per sim Target saying how its Test Runs are
 seeded and with which Default Seed, or that they are unseeded and why.
