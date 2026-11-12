@@ -159,7 +159,7 @@ and Doctor prints a NOTE.
 
 - The effort list is `CODEX_EFFORT_LEVELS` in `src/booley/config/gateway.py`,
   copied from Codex's `ReasoningEffort` enum
-  (`codex-rs/protocol/src/openai_models.rs` at tag `rust-v0.160.0`, the
+  (`codex-rs/protocol/src/openai_models.rs` at tag `rust-v0.167.1`, the
   release pinned in `src/booley/data/docker/agent-clis-package.json`). Codex
   also accepts free-form efforts; Booley does not, because the value goes
   into a `-c model_reasoning_effort="..."` override.
