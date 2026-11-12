@@ -106,7 +106,7 @@ Try:
 - Runtime hook faults (collection invalid): missing/duplicate start, missing/duplicate write, write before
   start, unwritable output file (run as the non-root runtime user, mode 0400).
 - Native faults via `sim_custom` tests `native-missing`, `native-malformed`, `native-incompatible`
-  (rc2, sim truth kept; `COV_RAW_FILE_STALE` is not exercised here); merged-file tamper via a
+  (rc2, sim truth kept; `COV_RAW_FILE_STALE` and `COV_RAW_FILE_UNSAFE` are not exercised here); merged-file tamper via a
   `verilator_coverage` PATH wrapper;
   first Target fails collection → second still runs, rc2; pre-sim edit of `rtl/coverage_dut.sv` or
   `coverage.core` after planning → drift rejected.

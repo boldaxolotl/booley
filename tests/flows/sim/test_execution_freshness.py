@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim.execution.freshness import (
+    ArtifactFailure,
+    ArtifactFreshnessError,
     ArtifactValidationError,
     snapshot_artifact,
     validate_fresh_artifact,
@@ -27,8 +29,10 @@ def test_unchanged_artifact_is_rejected_as_stale(tmp_path: Path) -> None:
     artifact.write_bytes(b"old")
     before = snapshot_artifact(artifact)
 
-    with pytest.raises(ArtifactValidationError, match="stale"):
+    with pytest.raises(ArtifactValidationError, match="stale") as excinfo:
         validate_fresh_artifact(artifact, roots=(tmp_path,), before=before)
+    assert isinstance(excinfo.value, ArtifactFreshnessError)
+    assert excinfo.value.cause is ArtifactFailure.STALE
 
 
 def test_symlink_escape_is_rejected(tmp_path: Path) -> None:
@@ -39,8 +43,10 @@ def test_symlink_escape_is_rejected(tmp_path: Path) -> None:
     link = root / "wave.fst"
     link.symlink_to(outside)
 
-    with pytest.raises(ArtifactValidationError, match="escapes"):
+    with pytest.raises(ArtifactValidationError, match="escapes") as excinfo:
         validate_fresh_artifact(link, roots=(root,), before=None)
+    assert isinstance(excinfo.value, ArtifactFreshnessError)
+    assert excinfo.value.cause is ArtifactFailure.OUTSIDE_ROOTS
 
 
 def test_configured_absolute_artifact_may_be_explicitly_allowed(tmp_path: Path) -> None:
