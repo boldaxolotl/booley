@@ -239,7 +239,7 @@ filling; its display events carry `dry_run=true`. It writes only
 `synth` and `fpga` may need FuseSoC setup or generators to produce an EDAM;
 they confine that to an invocation-owned temporary directory in the checkout
 (`.booley-synth-plan-*`, `.booley-fpga-plan-*`), remove it on exit, and
-disclose it in the plan. EDA tools and Pre-Run Commands never run.
+disclose it in the plan. EDA tools and Pre-Sim Commands never run.
 
 ### Progress lifecycle
 
