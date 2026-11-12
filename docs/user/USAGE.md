@@ -257,10 +257,14 @@ Job. Pick the worktree and the Flow, then fill in the form the Dashboard
 builds from that Flow's options (the Project comes from the worktree, so `-C`,
 `--project`, and `--work-dir` are never offered). Each Common and Flow option is
 a field: `Enter` flips an on/off flag, opens a short list for an option with
-choices or a default/on/off pair, or opens a text editor (the Target field takes
-a Target name or a comma list, empty means automatic; the test field takes one
-Test Run). Output and Expert options go in the **Extra arguments** field, typed
-as on the command line. `Esc` in a list or editor drops the change, `Enter`
+choices or a default/on/off pair, or opens a text editor. The Target field picks
+one Target of the worktree that the Flow can drive, or `automatic`; put more
+Targets in **Extra arguments**. The test field of the Simulation Flow lists the
+chosen Target's Test Runs (`test` and `test+variant`), and `Enter` toggles each
+one; choosing another Target clears them. When a list cannot be read, the field
+says why, and **Extra arguments** still takes the Targets and Test Runs you type.
+Output and Expert options go in the **Extra arguments** field, typed as on the
+command line. `Esc` in a list or editor drops the change, `Enter`
 keeps it. **Review the command** checks it and shows the equivalent
 `cd … && booley flow …` command. **Submit**
 starts the Job, **Copy command** asks your terminal to copy the command instead.

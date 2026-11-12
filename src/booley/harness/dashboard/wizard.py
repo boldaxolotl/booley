@@ -9,7 +9,8 @@ stage.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -32,10 +33,28 @@ from booley.harness.dashboard.run_form import (
     RunForm,
     command_argv,
 )
-from booley.harness.dashboard.targets import WorktreeChoice
+from booley.harness.dashboard.targets import (
+    RunChoices,
+    TargetListing,
+    TargetsReader,
+    WorktreeChoice,
+    first_line,
+)
+
+logger = logging.getLogger(__name__)
 
 CHECK_GROUP = "run-check"
-FORM_GROUP = "run-form"  # not "targets-": the app's own worker handler reacts to those
+# Not "targets-": the app's own worker handler reacts to those.
+FORM_GROUP = "run-form"
+TARGETS_GROUP = "run-targets"
+TESTS_GROUP = "run-tests"
+LOADING_TARGETS, LOADING_RUNS = "Loading Targets…", "Loading Test Runs…"
+NO_TARGET_YET = "Choose a Target first; or type Test Runs in the extra arguments."
+TYPE_TARGETS = "Type Targets in the extra arguments."
+TYPE_RUNS = "Type Test Runs in the extra arguments."
+NO_FITTING_TARGET = (
+    "No Target here can be driven by this Flow; type Targets in the extra arguments."
+)
 BUILDING = "Building the form…"
 EXTRA_LABEL, REVIEW = "Extra arguments", "Review the command"
 LOADING = "Loading worktrees…"
@@ -48,6 +67,8 @@ _STAGES: dict[str, str] = {
     "flow": "↑↓ move · ⏎ choose · esc back",
     "form": "↑↓ move · ⏎ change · esc back",
     "choice": "↑↓ move · ⏎ keep · esc cancel",
+    "target": "↑↓ move · ⏎ choose · esc back",
+    "tests": "↑↓ move · ⏎ toggle · esc back",
     "edit": "type the value · ⏎ keep · esc cancel",
     "review": "↑↓ choose · ⏎ apply · esc back",
 }
@@ -56,6 +77,8 @@ _PARENT = {
     "flow": "worktree",
     "form": "flow",
     "choice": "form",
+    "target": "form",
+    "tests": "form",
     "edit": "form",
     "review": "form",
 }
@@ -65,6 +88,8 @@ _SHOWN: dict[str, tuple[str, ...]] = {
     "flow": ("#run-flows",),
     "form": ("#run-note", "#run-form"),
     "choice": ("#run-hint", "#run-choices"),
+    "target": ("#run-hint", "#run-picks"),
+    "tests": ("#run-hint", "#run-picks"),
     "edit": ("#run-hint", "#run-edit"),
     "review": ("#run-command", "#run-actions"),
 }
@@ -103,12 +128,14 @@ class RunWizard(ModalScreen[str | None]):
     def __init__(
         self,
         launcher: Launcher,
+        targets: TargetsReader,
         choices: tuple[WorktreeChoice, ...],
         message: str,
         preselect: Callable[[tuple[WorktreeChoice, ...]], Path | None],
     ) -> None:
         super().__init__()
         self._launcher = launcher
+        self._targets = targets  # the app's reader: its lock serializes every catalog read
         self._flows = launcher.flows()
         self._choices = choices
         self._message = message
@@ -125,6 +152,11 @@ class RunWizard(ModalScreen[str | None]):
         self._building = False
         self._form_error = ""
         self._values: dict[str, str] = {}
+        self._picked: dict[str, tuple[str, ...]] = {}  # the Test Runs chosen, in pick order
+        # The worktree's Targets and the chosen Target's Test Runs; None while being read.
+        self._listing: TargetListing | None = None
+        self._runs: RunChoices | None = None
+        self._pick_values: list[str] = []  # what each row of the open picker stands for
         self._extra = ""
         self._changing = 0  # the form row a choice list or editor is changing
 
@@ -141,6 +173,7 @@ class RunWizard(ModalScreen[str | None]):
             yield OptionList(id="run-form", markup=False)
             yield Static(id="run-hint", markup=False)
             yield OptionList(id="run-choices", markup=False)
+            yield OptionList(id="run-picks", markup=False)
             yield Input(id="run-edit", select_on_focus=False)
             yield Static(id="run-command", markup=False)
             yield OptionList(SUBMIT, COPY, id="run-actions", markup=False)
@@ -181,6 +214,8 @@ class RunWizard(ModalScreen[str | None]):
             "form": f"booley flow {self._flow} in {self._worktree.name if self._worktree else ''}",
             "choice": f"booley flow {self._flow}: {self._row_label(self._changing)}",
             "edit": f"booley flow {self._flow}: {self._row_label(self._changing)}",
+            "target": f"booley flow {self._flow}: {self._row_label(self._changing)}",
+            "tests": f"booley flow {self._flow}: {self._row_label(self._changing)}",
             "review": "Run a Booley Flow: review the command",
         }
         return titles[self._stage]
@@ -193,6 +228,8 @@ class RunWizard(ModalScreen[str | None]):
             self.query_one(widget_id, Widget).display = widget_id in _SHOWN[stage]
         if stage == "form":
             self._show_form()
+        elif stage in ("target", "tests"):
+            self._fill_picks(None)
         self.query_one("#run-title", Static).update(self._title())
         self.query_one("#run-error", Static).update("")
         self.query_one("#run-footer", Static).update(_STAGES[stage])
@@ -224,7 +261,9 @@ class RunWizard(ModalScreen[str | None]):
             self._form_row_selected(index)
         elif event.option_list.id == "run-choices":
             self._keep_choice(index)
-        else:
+        elif event.option_list.id == "run-picks":
+            self._pick_selected(index)
+        elif event.option_list.id == "run-actions":
             self._apply_action(SUBMIT if index == 0 else COPY)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -252,7 +291,8 @@ class RunWizard(ModalScreen[str | None]):
         assert self._worktree is not None
         self._flow = flow
         pair = (self._worktree, flow)
-        if pair != self._form_for or self._form_error:
+        listing_failed = self._listing is not None and bool(self._listing.problem)
+        if pair != self._form_for or self._form_error or listing_failed:
             self._start_form(pair)
         self._show_stage("form")
 
@@ -264,10 +304,20 @@ class RunWizard(ModalScreen[str | None]):
         self._form_error = ""
         self._building = True
         self._values = {}
+        self._picked = {}
+        self._listing = self._runs = None
         self._extra = ""
         self._changing = 0
         # The old Flow's rows must not stay selectable while the new form builds.
         self.query_one("#run-form", OptionList).clear_options()
+        worktree = pair[0]
+        self.run_worker(
+            lambda: self._read_listing(worktree),
+            thread=True,
+            exclusive=True,
+            group=TARGETS_GROUP,
+            exit_on_error=False,
+        )
         self._form_worker = self.run_worker(
             lambda: self._launcher.form(flow),
             thread=True,
@@ -292,15 +342,35 @@ class RunWizard(ModalScreen[str | None]):
         """One row per field, then the extra arguments and Review; the highlight is the last row used."""
         fields = self._fields()
         width = max([len(field.label) for field in fields] + [len(EXTRA_LABEL)])
-        prompts = [
-            f"{field.label:<{width}}  {field.shown(self._values.get(field.dest, ''))}"
-            for field in fields
-        ]
+        prompts = [f"{field.label:<{width}}  {self._shown(field)}" for field in fields]
         prompts += [f"{EXTRA_LABEL:<{width}}  {self._extra}", REVIEW]
         rows = self.query_one("#run-form", OptionList)
         rows.clear_options()
         rows.add_options([Option(prompt) for prompt in prompts])
         rows.highlighted = min(self._changing, len(prompts) - 1)
+
+    def _shown(self, field: Field) -> str:
+        """How the form row of *field* spells what is chosen for it."""
+        if field.kind == "tests":
+            return field.shown(self._picked.get(field.dest, ()))
+        return field.shown(self._values.get(field.dest, ""))
+
+    def _read_listing(self, worktree: Path) -> TargetListing:
+        """The worktree's Targets; whatever the reader raises becomes the listing's problem."""
+        try:
+            return self._targets.listing(worktree)
+        except Exception as exc:
+            logger.exception("Run wizard Targets read failed")
+            return TargetListing(worktree, (), f"{type(exc).__name__}: {first_line(exc)}")
+
+    def _read_runs(self, worktree: Path, selector: str) -> RunChoices:
+        """The Target's Test Runs; whatever the reader raises becomes the problem."""
+        try:
+            return self._targets.test_runs(worktree, selector)
+        except Exception as exc:
+            logger.exception("Run wizard Test Runs read failed")
+            why = f"Tests unavailable: {type(exc).__name__}: {first_line(exc)}"
+            return RunChoices(worktree, selector, (), why)
 
     def _form_row_selected(self, row: int) -> None:
         if self._building:  # no row exists until the build lands
@@ -322,6 +392,10 @@ class RunWizard(ModalScreen[str | None]):
                 self._fill_rows()
             elif field.kind == "text":
                 self._edit(value, field.hint)
+            elif field.kind == "target":
+                self._show_stage("target")
+            elif field.kind == "tests":
+                self._open_tests()
             else:
                 self._choose(field, value)
 
@@ -342,6 +416,94 @@ class RunWizard(ModalScreen[str | None]):
         self.query_one("#run-hint", Static).update(field.hint)
         self._show_stage("choice")
 
+    # --- the Target and test pickers -----------------------------------------
+
+    def _target_value(self) -> str:
+        """The Target chosen on the form (``""`` is automatic)."""
+        return next(
+            (self._values.get(f.dest, "") for f in self._fields() if f.kind == "target"), ""
+        )
+
+    def _open_tests(self) -> None:
+        """Open the Test Run picker, reading the chosen Target's Test Runs unless they are at hand."""
+        assert self._form_for is not None
+        worktree, target = self._form_for[0], self._target_value()
+        known = self._runs is not None and (self._runs.worktree, self._runs.selector) == (
+            worktree,
+            target,
+        )
+        if target and not known:
+            self._runs = None
+            self.run_worker(
+                lambda: self._read_runs(worktree, target),
+                thread=True,
+                exclusive=True,
+                group=TESTS_GROUP,
+                exit_on_error=False,
+            )
+        self._show_stage("tests")
+
+    def _picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
+        """The hint and the (row text, value) rows of the open picker for *field*."""
+        return self._target_picker(field) if field.kind == "target" else self._tests_picker(field)
+
+    def _target_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
+        rows = [] if field.required else [("automatic", "")]
+        listing = self._listing
+        if listing is None:
+            return LOADING_TARGETS, rows
+        if listing.problem:
+            return f"Targets unavailable: {listing.problem}. {TYPE_TARGETS}", rows
+        fitting = [row.selector for row in listing.rows if self._flow in row.flows]
+        rows += [(selector, selector) for selector in fitting]
+        return (field.hint if fitting else NO_FITTING_TARGET), rows
+
+    def _tests_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
+        runs = self._runs
+        if not self._target_value():
+            return NO_TARGET_YET, []
+        if runs is None:
+            return LOADING_RUNS, []
+        if runs.problem:
+            return f"{runs.problem}. {TYPE_RUNS}", []
+        chosen = self._picked.get(field.dest, ())
+        rows = [(f"[{'x' if run in chosen else ' '}] {run}", run) for run in runs.runs]
+        return field.hint, rows
+
+    def _fill_picks(self, highlight: int | None) -> None:
+        """Fill the open picker; *highlight* is the row to keep, else the current Target's."""
+        field = self._fields()[self._changing]
+        hint, rows = self._picker(field)
+        self._pick_values = [value for _, value in rows]
+        picks = self.query_one("#run-picks", OptionList)
+        picks.clear_options()
+        picks.add_options([Option(text) for text, _ in rows])
+        if highlight is None:
+            current = self._values.get(field.dest, "")
+            highlight = self._pick_values.index(current) if current in self._pick_values else 0
+        if rows:
+            picks.highlighted = min(highlight, len(rows) - 1)
+        self.query_one("#run-hint", Static).update(hint)
+
+    def _pick_selected(self, index: int) -> None:
+        """Enter in a picker: a Target is chosen and closes it; a Test Run toggles in place."""
+        field = self._fields()[self._changing]
+        value = self._pick_values[index]
+        if field.kind == "tests":
+            chosen = self._picked.get(field.dest, ())
+            self._picked[field.dest] = (
+                tuple(run for run in chosen if run != value)
+                if value in chosen
+                else (*chosen, value)
+            )
+            self._fill_picks(index)
+            return
+        if value != self._values.get(field.dest, ""):
+            self._values[field.dest] = value
+            self._picked = {}  # the Test Runs belong to the Target they were listed for
+            self._runs = None
+        self._show_stage("form")
+
     def _keep_choice(self, index: int) -> None:
         field = self._fields()[self._changing]
         self._values[field.dest] = field.values()[index - 1] if index else ""
@@ -351,7 +513,7 @@ class RunWizard(ModalScreen[str | None]):
         """Build the command from the form and have the Flow's own parser check it."""
         assert self._worktree is not None
         try:
-            argv = command_argv(self._form or NO_FORM, self._values, self._extra)
+            argv = command_argv(self._form or NO_FORM, self._all_values(), self._extra)
         except ArgumentsError as exc:
             self._show_error(str(exc))
             return
@@ -367,6 +529,32 @@ class RunWizard(ModalScreen[str | None]):
             group=CHECK_GROUP,
             exit_on_error=False,
         )
+
+    def _all_values(self) -> Mapping[str, str | tuple[str, ...]]:
+        """Every field's chosen value: text for most, a tuple of Test Runs for the test field."""
+        return {**self._values, **self._picked}
+
+    def _read_applies(self, result: TargetListing | RunChoices) -> bool:
+        """Whether *result* answers the request the form wants now (a replaced one is dropped)."""
+        if self._form_for is None or result.worktree != self._form_for[0]:
+            return False
+        return isinstance(result, TargetListing) or result.selector == self._target_value()
+
+    def _read_finished(self, event: Worker.StateChanged) -> None:
+        """Keep a finished listing or Test Run read the form still wants; refill its open picker."""
+        if event.state is not WorkerState.SUCCESS:
+            return  # the reads guard themselves, so only success carries a result
+        event.stop()
+        result = event.worker.result
+        assert isinstance(result, (TargetListing, RunChoices))
+        if not self._read_applies(result):
+            return
+        if isinstance(result, TargetListing):
+            self._listing = result
+        else:
+            self._runs = result
+        if self._stage == ("target" if isinstance(result, TargetListing) else "tests"):
+            self._fill_picks(self.query_one("#run-picks", OptionList).highlighted)
 
     def _form_built(self, event: Worker.StateChanged) -> None:
         """Apply a finished build for the form now wanted; a crash shows as the note."""
@@ -391,8 +579,9 @@ class RunWizard(ModalScreen[str | None]):
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Apply a finished check unless the human moved on or changed the form meanwhile."""
-        if event.worker.group == FORM_GROUP:
-            self._form_built(event)
+        group = event.worker.group
+        if group in (FORM_GROUP, TARGETS_GROUP, TESTS_GROUP):
+            (self._form_built if group == FORM_GROUP else self._read_finished)(event)
             return
         if event.worker.group != CHECK_GROUP:
             return
