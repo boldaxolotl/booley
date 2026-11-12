@@ -85,6 +85,7 @@ The Dashboard opens by itself when you attach to the container; see
 booley cheat                      # list the cheatsheet sections
 booley cheat --all                # the whole cheatsheet
 booley cheat --goals              # Goal Mode, the Goal catalog, and thresholds
+booley cheat --metrics            # each Target's metrics as metrics.toml text (needs a Project)
 booley coverage uncovered <coverage.json>   # uncovered points of a coverage run
 booley coverage uncovered <coverage.json> --metric branch --source rtl/fifo.sv
 booley doctor                     # check setup and environment health
