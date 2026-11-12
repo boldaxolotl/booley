@@ -20,5 +20,6 @@ yosys: sv2v
 	@test -r /opt/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_required_file stage=yosys subject=NangateOpenCellLibrary_typical_ccs.lib'; exit 2; }
 	yosys -s synth.ys > yosys.log 2>&1 || { rc=$$?; tail -n 40 yosys.log; exit $$rc; }
 	@test -s stat_dut.txt || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_output stage=yosys subject=stat_dut.txt'; exit 2; }
+	@test -s premap_check_dut.txt || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_output stage=yosys subject=premap_check_dut.txt'; exit 2; }
 	@test -s check_dut.txt || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_output stage=yosys subject=check_dut.txt'; exit 2; }
 	@test -s synth_dut.v || { echo 'BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef kind=missing_output stage=yosys subject=synth_dut.v'; exit 2; }
