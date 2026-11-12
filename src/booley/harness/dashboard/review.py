@@ -28,10 +28,14 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def queue_line(facts: RunFacts, outlook: AdmissionOutlook | str) -> str:
-    """Whether the Job runs now or queues; a string *outlook* is why the queue cannot be read."""
+def queue_line(facts: RunFacts, outlook: AdmissionOutlook | str | None) -> str:
+    """Whether the Job runs now or queues; a string *outlook* is why the queue cannot be read.
+
+    ``None`` (no slot taken) is only valid when *facts* take no slot.
+    """
     if not facts.takes_slot:
         return "Runs now (takes no Job slot)"
+    assert outlook is not None  # a run that takes a slot always has a reading or a reason
     if isinstance(outlook, str):
         return f"Cannot check the queue: {outlook}"
     if outlook.runs_now:
