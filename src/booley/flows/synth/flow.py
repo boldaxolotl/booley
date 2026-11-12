@@ -1838,7 +1838,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         outcome: Any,
         stdout: str,
     ) -> None:
-        """Apply authoritative final-check evidence or legacy inline evidence."""
+        """Apply authoritative pre-mapping and final check evidence or legacy inline evidence."""
         structural = outcome.diagnostics.structural
         legacy_inline = (
             not getattr(outcome, "attempt_token", "")
