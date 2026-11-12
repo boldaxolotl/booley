@@ -426,9 +426,9 @@ doesn't replace your own review.
 <details markdown>
 <summary>In stealth mode</summary>
 
-A Git hook removes AI and Booley names from commit messages and rejects
-`Co-Authored-By` lines. If a commit is rejected, the agent just retries without
-that line. See [STEALTH.md](STEALTH.md#commit-messages).
+A Git hook rejects commit messages that name AI tools or Booley, and
+`Co-Authored-By` lines. If a commit is rejected, the agent rewords the message
+and commits again. See [STEALTH.md](STEALTH.md#commit-messages).
 
 </details>
 

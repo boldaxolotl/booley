@@ -214,8 +214,8 @@ class TestValidateMessage:
         assert not any("chars" in e for e in errors)
 
     def test_body_is_allowed(self):
-        """F-11: a body is legitimate. The sanitizer redacts it, so the old
-        "single line only" rule bought no safety and cost authored rationale."""
+        """F-11: a body is legitimate. The hook rejects banned terms in it, so the
+        old "single line only" rule bought no safety and cost authored rationale."""
         msg = "fix(a): do thing\n\nBody text here.\nWith a second line."
         assert validate_message(msg) == []
 
@@ -262,7 +262,7 @@ class TestValidateMessage:
 class TestConventionOptIn:
     """[stealth] enforce_convention — the type(scope): summary check is off by
     default (SETUP-10) and only rejects non-conforming subjects when a project
-    opts in. Sanitization/banned-word checks are independent and always run."""
+    opts in. Banned-word checks are independent and always run."""
 
     def test_bad_subject_accepted_by_default(self):
         """Default (knob absent) → a non-conforming subject raises no format
@@ -287,7 +287,7 @@ class TestConventionOptIn:
 
     def test_banned_word_still_rejected_when_convention_off(self):
         """Turning the convention off must not open a leak path: the banned-word
-        scrub is independent and always runs."""
+        check is independent and always runs."""
         with _convention(False), _stealth():
             errors = validate_message("literally anything with claude in it\n")
             assert any("Banned phrase" in e for e in errors)

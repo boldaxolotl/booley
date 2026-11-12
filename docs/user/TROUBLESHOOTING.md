@@ -363,6 +363,31 @@ git -C .booley checkout -- booley.toml
 If `git -C .booley rev-parse --git-dir` fails, those files aren't under version
 control at all: copy a file aside before you edit it.
 
+### A commit is rejected for a banned term
+
+```text
+commit-msg: commit message rejected by Stealth Mode
+  'booley' in the subject
+  'booley' on line 3
+Your message is kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
+```
+
+[Stealth Mode](https://booley.dev/docs/stealth/) rejects a commit message that
+contains a banned word instead of rewriting it, and an attribution footer
+(`Co-Authored-By:`, `Generated with <tool>`) is rejected first. Reword the
+message, or remove the term from `[stealth] banned_words` / `banned_substrings`
+in `.booley/booley.toml` if it is an ordinary name in your design. Your text
+stays in the file the error names.
+
+To retry, rerun the same `git commit` command with its options (`-a`,
+`--amend`, paths), replacing `-m` or `-F` with `-v -e -F "<that path>"`. The
+editor opens on the kept message. If a merge commit was rejected, finish it with
+`git commit -m "<message>"`, or pass `-m` to `git merge`.
+
+`BOOLEY_SKIP_COMMIT_VALIDATION=1` doesn't bypass this check. If the hook still
+rewrites messages after an upgrade, run `booley init` to install the current
+hook. `cursor` and `ticket` are no longer banned by default.
+
 ### Doctor reports a Sandbox whose egress mode differs from the host
 
 You changed

@@ -759,12 +759,11 @@ class TestInvokeAgentWithResume:
                 endpoint._invoke_agent_with_resume(params)
 
 
-class TestCommitMsgBannedPhraseSalvage:
-    """_prepare_commit_message falls back to default on banned-phrase rejection.
+class TestCommitMsgBannedPhrase:
+    """_prepare_commit_message rejects a banned phrase instead of rewriting the message.
 
-    Without this salvage, a multi-minute agent run that produces a stylistically
-    forbidden commit subject (e.g. mentioning 'copilot') burns to exit-2 instead
-    of recovering with a generic message. See Pattern A4 field report.
+    The prompt warns the agent of the banned list up front; a message that
+    still carries one fails with the validation error, never a substitute.
     """
 
     def _make_endpoint(self, tmp_path: Path, default_msg: str = "feat(rtl): apply changes"):
@@ -783,19 +782,19 @@ class TestCommitMsgBannedPhraseSalvage:
         endpoint.modifies_category = "rtl"
         return endpoint
 
-    def test_salvage_replaces_banned_phrase_subject(self, tmp_path: Path):
+    def test_banned_phrase_subject_raises(self, tmp_path: Path):
         endpoint = self._make_endpoint(tmp_path)
         # 'copilot' is on the default banned-phrase list.
-        salvaged = endpoint._prepare_commit_message("feat(rtl): copilot wrote this")
-        assert "copilot" not in salvaged.lower()
-        assert salvaged.startswith("feat(")
+        with pytest.raises(Specialist.GitStatusError) as exc:
+            endpoint._prepare_commit_message("feat(rtl): copilot wrote this")
+        assert "validation failed" in str(exc.value)
+        assert "copilot" in str(exc.value)
 
     def test_non_banned_failure_still_raises(self, tmp_path: Path):
         endpoint = self._make_endpoint(tmp_path)
         # Mock validate_message: auto-format produces a syntactically valid
         # subject for any input, so the only way to stage a non-banned
-        # failure is to inject one. The salvage path must NOT kick in here —
-        # the error must surface.
+        # failure is to inject one. The error must surface.
         from booley.specialists import specialist as specialist_module
 
         with (
@@ -813,7 +812,7 @@ class TestCommitMsgBannedPhraseSalvage:
 
     def test_clean_message_passes_through(self, tmp_path: Path):
         endpoint = self._make_endpoint(tmp_path)
-        # No banned phrases, valid conventional commit — must not be rewritten.
+        # No banned phrases, valid conventional commit: kept as written.
         ok = endpoint._prepare_commit_message("feat(rtl): add pipeline stage")
         assert ok == "feat(rtl): add pipeline stage"
 

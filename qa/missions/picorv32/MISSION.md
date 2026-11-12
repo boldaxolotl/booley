@@ -292,14 +292,15 @@ Look for: catalog order overriding request order, completed items rerun, subset-
 Intent: the guards block unsafe history and escapes, and the Sandbox stays fenced.
 Try:
 - Stealth (`fixtures/stealth.md`, three cases on disposable empty commits): a `Co-Authored-By`
-  footer is rejected with the raw message unchanged. Without it, `booley` is redacted and both
-  rationale sentences are kept. A final `Generated with booley` is rejected, and `Generated with
-  care by the whole team` is accepted (see the fixture for how its words are redacted). No Project state reaches outer history. A fresh outer
+  footer is rejected with the raw message unchanged. Without it, `booley` in the message is still
+  rejected with the file unchanged and the match listed. A final `Generated with booley` is
+  rejected, and a message without banned terms ending in `Generated with care by the whole team`
+  is accepted verbatim. No Project state reaches outer history. A fresh outer
   clone shows the documented hidden-state limit.
 - An invalid native core is ignored while authored Targets resolve. Refreshing after an
   authored-core edit updates the projection.
 - Git policy (disposable bare remote): a bad subject or body is refused, not truncated. The escape
-  skips the convention but still sanitizes. Identities, banned paths, symlinks, and the guard escape
+  skips the convention but still rejects banned terms. Identities, banned paths, symlinks, and the guard escape
   behave as documented. Restore, then commit and push cleanly.
 - Isolation: non-root, with no host home, SSH, or Docker socket. Undeclared routes are blocked while
   provider calls work. The PDK mount refuses writes, and an interrupt leaves no descendants.

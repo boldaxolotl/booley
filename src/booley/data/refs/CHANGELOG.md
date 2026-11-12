@@ -9,6 +9,18 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Stealth Mode now rejects a commit message that contains a banned term
+  instead of rewriting it with `redacted`. The commit-msg hook never changes the
+  message file: it lists each match, says where your message is kept, and gives
+  the `git commit -v -e -F "<path>"` retry (a rejected merge commit says how to
+  finish it). Comment lines and everything below the scissors line aren't
+  checked. `BOOLEY_SKIP_COMMIT_VALIDATION=1` no longer skips banned terms, only
+  the convention and body-length checks. A Specialist whose commit message has a
+  banned term now fails with the validation error instead of committing under
+  its default message. `cursor` and `ticket` left the default banned list; add
+  them to `banned_words` to keep them. Rerun `booley init` in each Stealth
+  Project to install the new hook
+  ([#3597](https://github.com/boldaxolotl/Booley/issues/3597)).
 - The Sandbox start step now registers Booley's MCP server and skills for every
   allowed Agent CLI, not only the default: a Sandbox issued for `claude` and
   `codex` serves both. A CLI whose registration is refused is reported as
@@ -106,7 +118,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   no longer hides `.booley/` or gives it its own repository before setup
   records your choice; the booley-setup skill's hidden answer does both. A
   Project set up earlier whose `booley.toml` has no `enabled` key has left
-  Stealth: commit messages are no longer cleaned and pushes are no longer
+  Stealth: commit messages are no longer checked and pushes are no longer
   checked. `booley init` and Doctor warn `stealth.enabled-unset` while
   `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
   `enabled = false` to confirm it is off. A `booley.toml` that can't be read

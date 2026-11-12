@@ -2,8 +2,8 @@
 
 Stealth Mode keeps Booley out of your RTL repository and its history. Booley's
 configuration, and any FuseSoC cores it writes for your design, stay in a
-`.booley/` folder that Git ignores. Git hooks clean AI attribution and words you
-ban out of commit messages and block pushes that would still leak them. Use it
+`.booley/` folder that Git ignores. Git hooks reject commit messages that carry
+AI attribution or words you ban, and block pushes that would still leak them. Use it
 on a design repo you share with people who don't use Booley, or whose history
 must not show AI tools. Leave it off when you want to share the Booley setup
 through Git: with Stealth on, a colleague who clones the repo gets no Booley at
@@ -35,7 +35,7 @@ already has commits.
 
 Before this release a missing key meant on, so an older Project may have a
 hidden `.booley/` and no `enabled` key. That Project is now out of Stealth:
-commit messages aren't cleaned and pushes aren't checked. `booley init` and
+commit messages and pushes aren't checked. `booley init` and
 Doctor warn `stealth.enabled-unset`; add `enabled = true` to keep Stealth, or
 `enabled = false` to confirm it's off.
 
@@ -49,7 +49,7 @@ Doctor warn `stealth.enabled-unset`; add `enabled = true` to keep Stealth, or
   untouched. Booley places ignored copies named `.booley-projected-*.core` at
   the repository root so FuseSoC can find them, and refreshes them before each
   Flow. Edit the file under `.booley/cores/`, not the copy.
-- **Commit messages are cleaned**, see [Commit messages](#commit-messages).
+- **Commit messages are checked**, see [Commit messages](#commit-messages).
 - **Pushes are checked**, see [Push checks](#push-checks).
 - **Goal Mode summaries stay local** instead of being committed on the Goal
   Branch ([GOAL-MODE.md](GOAL-MODE.md)).
@@ -71,17 +71,35 @@ When you or the agent commit, the commit-msg hook:
 - **Rejects attribution footers**: `Co-Authored-By:` lines, lines starting with
   🤖, and a last line `Generated with <name>` where the name is a banned word,
   such as "Generated with Codex". The message is left as written; remove the
-  line and commit again. The agent does this on its own.
-- **Replaces banned words with `redacted`** in the subject and body, and keeps
-  everything else. It prints what it rewrote:
+  line and commit again. The agent does this on its own. This check runs first,
+  and the error doesn't echo the line.
+- **Rejects banned words** in the subject or body. The hook never rewrites the
+  message file. It lists each match on stderr, such as `'booley' in the subject`
+  or `'booley' on line 3`, and says where the message is kept:
 
     ```text
-    commit-msg: stealth-mode redaction rewrote the subject -> fix(redacted): drop stale flag
+    commit-msg: commit message rejected by Stealth Mode
+      'booley' in the subject
+    Reword the message or remove the term from [stealth] banned_words /
+    banned_substrings in the project config TOML.
+    Your message is kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
     ```
 
+  To retry, rerun the same `git commit` command with its options (`-a`,
+  `--amend`, paths) and replace `-m` or `-F` with
+  `-v -e -F "<that path>"`. That opens the kept message in your editor so you
+  can reword it. A rejected merge commit also tells you to finish it with
+  `git commit -m "<message>"`, or to pass `-m` to `git merge`.
+
+Lines that start with the comment prefix (`#`, or your `core.commentChar`) and
+everything below the scissors line (the diff that `git commit -v` appends) aren't
+checked. A `#` line that `git commit -m` keeps in the message isn't caught
+here; the pre-push hook checks it.
+
 The default banned words are `claude`, `anthropic`, `copilot`, `codex`,
-`openai`, `chatgpt`, `gemini`, `booley`, `cursor`, `ticket`, `gpt`, `llm`, and
-`co-authored-by`.
+`openai`, `chatgpt`, `gemini`, `booley`, `gpt`, `llm`, and `co-authored-by`.
+`cursor` and `ticket` used to be on the list; add them to `banned_words` to keep
+checking them.
 
 ```toml
 [stealth]
@@ -91,21 +109,21 @@ enabled = true
 ```
 
 - **`banned_words` replaces the default list**, it doesn't add to it. Copy the
-  defaults you want to keep. `banned_words = []` turns word cleaning off;
+  defaults you want to keep. `banned_words = []` turns the word check off;
   attribution lines are still rejected.
 - **Words match whole identifier parts**, ignoring case. `_`, `-`, `.`, `/`, and
-  case or letter-digit changes split a name into parts, so `ticket` matches
+  case or letter-digit changes split a name into parts, so a listed `ticket` matches
   `ticket_fifo` but not `Tickets` or `ticketing`, and `gpt` matches `GPT4`.
 - **AI vendor and product names match anywhere**: `claude`, `anthropic`,
   `codex`, `openai`, `chatgpt`, `copilot`, `gemini`, and `booley` match inside
   `myClaudeHelper` too.
 - **`banned_substrings` match anywhere**: `quokka` also matches `myquokkafile`.
-  An entry that is part of a Booley placeholder, such as `redacted` or `<email>`,
-  is an error: commits and pushes fail until you remove it.
+  An entry that is part of a Booley feedback placeholder, such as `<redacted>`
+  or `<email>`, is an error until you remove it.
 
-If your design uses `cursor`, `ticket`, `gpt`, or `llm` as ordinary names, set
-`banned_words` without them. Otherwise a commit about `ticket_fifo` reads
-`redacted_fifo`, and a push that adds `rtl/ticket_fifo.sv` is blocked.
+If your design uses `gpt` or `llm` as ordinary names, set `banned_words` without
+them. Otherwise a commit message about `gpt_core` is rejected, and a push that
+adds `rtl/gpt_core.sv` is blocked.
 
 ### Enforcing the subject convention (`enforce_convention`)
 
@@ -129,7 +147,7 @@ max_body_lines = 5
 ```
 
 To skip both checks for one commit, set `BOOLEY_SKIP_COMMIT_VALIDATION=1`.
-Attribution rejection and word cleaning still apply.
+Banned terms and attribution footers are still rejected; it never skips them.
 
 ## Push checks
 
