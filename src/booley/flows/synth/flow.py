@@ -1698,7 +1698,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         metrics.returncode = result.returncode
         metrics.timed_out = result.timed_out
         metrics.termination = _termination_reason(result, output)
-        input_error = _INPUT_ERROR_RE.search(output)
+        # The producer is a Tcl ``error`` that makes OpenROAD exit non-zero, so an
+        # exit-0 log mentioning the token (echoed RTL comment) is not an input error.
+        input_error = _INPUT_ERROR_RE.search(output) if result.returncode != 0 else None
         if input_error is not None:
             metrics.returncode = 2
             metrics.infra_error = input_error.group(1).strip()
