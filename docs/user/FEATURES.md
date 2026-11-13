@@ -103,7 +103,7 @@ Each review covers one focus, so the Reviewer looks hard at one kind of problem 
 | | `rtl_code_style` | Comments, naming, readability, assertion coverage |
 | Testbench | `tb_quality` | False passes, coverage gaps, testbench code quality |
 
-The early reviews are the equivalent of an engineer's quick look at freshly written code: they catch bugs before they cost time and tokens in simulate-and-fix loops. Findings are graded CRITICAL, MAJOR, or MINOR. A Goal can require a `clean` review, where every finding is fixed (and confirmed by a recheck) or waived with a visible reason, or a `done` review, which only reports. Reviews follow expert-written RTL and testbench guides shipped with Booley; for the `rtl_code_style` and `tb_quality` reviews, add your project's own style rules in `.booley/rtl_style_guide.md` and `.booley/tb_style_guide.md`, and they take precedence. See [CLI-REFERENCE.md: reviewer](CLI-REFERENCE.md#reviewer).
+The early reviews are the equivalent of an engineer's quick look at freshly written code: they catch bugs before they cost time and tokens in simulate-and-fix loops. Findings are graded CRITICAL, MAJOR, or MINOR. A Goal can require a `clean` review, where every finding is fixed (and confirmed by a recheck) or waived with a visible reason, or a `done` review, which only reports. Reviews follow expert-written RTL and testbench guides shipped with Booley, and you can add your project's own style rules. See [Reviewer](REVIEWER.md).
 
 ## Mutation Testing
 
