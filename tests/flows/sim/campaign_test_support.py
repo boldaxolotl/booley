@@ -690,7 +690,7 @@ def _completed(tmp_path: Path) -> _Completed:
 
 def _run_identity() -> dict[str, str]:
     return {
-        "campaign_id": str(uuid.uuid4()),
+        "simulation_record_id": str(uuid.uuid4()),
         "work_item_id": "item:0000:" + "a" * 16,
         "attempt_id": str(uuid.uuid4()),
     }
@@ -1508,7 +1508,7 @@ class _NoEdaExecutor:
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         run_cwd = cast(Mapping[str, object], workload["run_cwd"])
         document = {
-            "$schema": "booley.simulation-attempt/v1",
+            "$schema": "booley.simulation-attempt/v2",
             **common,
             "attempt_id": request.attempt_id,
             "attempt_ordinal": request.attempt_ordinal,
@@ -1537,8 +1537,11 @@ class _NoEdaExecutor:
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         eda = cast(Mapping[str, object], workload["eda"])
         document = {
-            "$schema": "booley.bundle-build-attempt/v1",
-            **{key: common[key] for key in ("campaign_id", "manifest_sha256", "workload_sha256")},
+            "$schema": "booley.bundle-build-attempt/v2",
+            **{
+                key: common[key]
+                for key in ("simulation_record_id", "manifest_sha256", "workload_sha256")
+            },
             "build_variant_id": request.work_item["build_variant_id"],
             "build_attempt_id": request.attempt_id,
             "build_attempt_ordinal": 1,
@@ -1562,8 +1565,11 @@ class _NoEdaExecutor:
     def _build_result(request, common, attempt_path, attempt, *, validate):
         raw = attempt.canonical_bytes()
         document = {
-            "$schema": "booley.bundle-build-result/v1",
-            **{key: common[key] for key in ("campaign_id", "manifest_sha256", "workload_sha256")},
+            "$schema": "booley.bundle-build-result/v2",
+            **{
+                key: common[key]
+                for key in ("simulation_record_id", "manifest_sha256", "workload_sha256")
+            },
             "build_variant_id": request.work_item["build_variant_id"],
             "build_attempt": _reference(
                 attempt_path.name, raw, "bundle_build_attempt", request.attempt_id
@@ -1633,7 +1639,7 @@ class _NoEdaExecutor:
 def _common(request: WorkExecutionRequest) -> dict[str, object]:
     fingerprints = cast(Mapping[str, object], request.manifest.document["fingerprints"])
     return {
-        "campaign_id": request.manifest.document["campaign_id"],
+        "simulation_record_id": request.manifest.document["simulation_record_id"],
         "manifest_sha256": manifest_digest(request.manifest),
         "workload_sha256": fingerprints["workload_sha256"],
         "work_item_id": request.work_item["work_item_id"],
@@ -1708,7 +1714,7 @@ def _own_attempt_run_directory(
     run = expand_run_directory(
         "work/{campaign}/{test}/{attempt}",
         project_root=project_root,
-        campaign_id=document["campaign_id"],
+        campaign_id=document["simulation_record_id"],
         target_key="sim",
         work_item_key=store.work_item_directory(work_item_id).name,
         attempt_key=attempt_path.parent.name,
@@ -1728,7 +1734,7 @@ def _own_attempt_run_directory(
     (run.path / ".booley-simulation-attempt.json").write_bytes(
         canonical_json_bytes(
             {
-                "campaign_id": document["campaign_id"],
+                "simulation_record_id": document["simulation_record_id"],
                 "work_item_id": work_item_id,
                 "attempt_id": document["attempt_id"],
             }

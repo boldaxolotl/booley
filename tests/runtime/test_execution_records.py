@@ -328,10 +328,10 @@ def _child_context(tmp_path: Path):
     """A valid child context sidecar."""
     paths = _protocol_paths(tmp_path)
     context = {
-        "$schema": "booley.supervised-child-context/v1",
+        "$schema": "booley.supervised-child-context/v2",
         "child_execution_id": _EXEC_ID,
         "parent_execution_id": "sim-20260925T153819Z-1",
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "simulation_record_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
         "manifest_sha256": "sha256:" + "1" * 64,
         "work_item_id": "item:0000:0123456789abcdef",
         "attempt_id": "550e8400-e29b-41d4-a716-446655440001",

@@ -33,7 +33,7 @@ def validate(
     _need(isinstance(work_item, dict), "coverage work item is invalid")
     _need(work_item.get("kind") == "coverage_aggregate", "work item is not coverage aggregate")
     _need(
-        interrupted.get("$schema") == "booley.simulation-attempt/v1",
+        interrupted.get("$schema") == "booley.simulation-attempt/v2",
         "interrupted attempt schema differs",
     )
     _need(

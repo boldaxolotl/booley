@@ -201,6 +201,24 @@ def verify_inherited_execution_id(
     return execution_id
 
 
+_CONTEXT_SCHEMA = "booley.supervised-child-context/v2"
+_CONTEXT_FIELDS = frozenset(
+    {
+        "$schema",
+        "child_execution_id",
+        "parent_execution_id",
+        "simulation_record_id",
+        "manifest_sha256",
+        "work_item_id",
+        "attempt_id",
+        "attempt_ordinal",
+    }
+)
+# What Booley 0.4.0 wrote: the same fields, with ``campaign_id`` for the identity.
+_OLDER_CONTEXT_SCHEMA = "booley.supervised-child-context/v1"
+_OLDER_CONTEXT_FIELDS = (_CONTEXT_FIELDS - {"simulation_record_id"}) | {"campaign_id"}
+
+
 def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
     """Authenticate an optional immutable campaign-child context sidecar.
 
@@ -211,20 +229,25 @@ def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> b
     if not paths.context.exists():
         return True
     payload = read_json(paths.context)
-    expected = {
-        "$schema",
-        "child_execution_id",
-        "parent_execution_id",
-        "campaign_id",
-        "manifest_sha256",
-        "work_item_id",
-        "attempt_id",
-        "attempt_ordinal",
-    }
     return bool(
         payload is not None
-        and set(payload) == expected
-        and payload.get("$schema") == "booley.supervised-child-context/v1"
+        and set(payload) == _CONTEXT_FIELDS
+        and payload.get("$schema") == _CONTEXT_SCHEMA
+        and payload.get("child_execution_id") == execution_id
+    )
+
+
+def is_older_child_context(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
+    """Whether the sidecar is exactly the one Booley 0.4.0 wrote for this execution.
+
+    Only recovery uses it, to release what a killed Booley 0.4.0 left behind; starting
+    or supervising a child never accepts it.
+    """
+    payload = read_json(paths.context) if paths.context.exists() else None
+    return bool(
+        payload is not None
+        and set(payload) == _OLDER_CONTEXT_FIELDS
+        and payload.get("$schema") == _OLDER_CONTEXT_SCHEMA
         and payload.get("child_execution_id") == execution_id
     )
 

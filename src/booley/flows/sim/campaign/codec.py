@@ -118,14 +118,22 @@ def canonical_json_bytes(value: object) -> bytes:
 # environment) the item executes (ADR 0072), an optional ``no_waivers`` and
 # explicit declared source identities in disclosures. It is the only version
 # written and read.
-MANIFEST_SCHEMA = "booley.simulation-campaign-manifest/v4"
+MANIFEST_SCHEMA = "booley.simulation-record-manifest/v1"
 
 # v3 = the required ``test_run`` of every observation: the resolved name of the
 # Test Run it observed (ADR 0072). Observations are unique by Test Run.
-RESULT_SCHEMA = "booley.simulation-result/v3"
+RESULT_SCHEMA = "booley.simulation-result/v4"
 
-# Formats an older Booley (0.3.0) wrote. They are recognised only to be refused.
+# Formats Booley 0.4.0 and earlier wrote. They are recognised only to be refused.
 _RETIRED_SCHEMAS = {
+    "booley.simulation-campaign-manifest/v4": "Simulation Campaign manifest",
+    "booley.simulation-result/v3": "Simulation Result",
+    "booley.simulation-campaign-dependency/v1": "Simulation Campaign dependency",
+    "booley.simulation-attempt/v1": "Simulation Attempt",
+    "booley.bundle-build-attempt/v1": "Bundle build attempt",
+    "booley.bundle-build-result/v1": "Bundle build result",
+    "booley.simulator-bundle/v1": "Simulator bundle",
+    "booley.executable-snapshot/v1": "Executable snapshot",
     "booley.simulation-campaign-manifest/v1": "Simulation Campaign manifest",
     "booley.simulation-campaign-manifest/v2": "Simulation Campaign manifest",
     "booley.simulation-result/v2": "Simulation Result",
@@ -136,7 +144,7 @@ _RETIRED_SCHEMAS = {
 _MANIFEST_FIELDS = frozenset(
     {
         "$schema",
-        "campaign_id",
+        "simulation_record_id",
         "created_at",
         "origin",
         "target",
@@ -152,7 +160,7 @@ _MANIFEST_FIELDS = frozenset(
 _ATTEMPT_FIELDS = frozenset(
     {
         "$schema",
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "workload_sha256",
         "work_item_id",
@@ -171,7 +179,7 @@ _ATTEMPT_FIELDS = frozenset(
 _BUILD_ATTEMPT_FIELDS = frozenset(
     {
         "$schema",
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "workload_sha256",
         "build_variant_id",
@@ -187,7 +195,7 @@ _BUILD_ATTEMPT_FIELDS = frozenset(
 _BUILD_RESULT_FIELDS = frozenset(
     {
         "$schema",
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "workload_sha256",
         "build_variant_id",
@@ -204,7 +212,7 @@ _BUILD_RESULT_FIELDS = frozenset(
 _RESULT_FIELDS = frozenset(
     {
         "$schema",
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "workload_sha256",
         "work_item_id",
@@ -227,7 +235,7 @@ _RESULT_FIELDS = frozenset(
 _BUNDLE_FIELDS = frozenset(
     {
         "$schema",
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "workload_sha256",
         "build_variant_id",
@@ -245,7 +253,7 @@ _BUNDLE_FIELDS = frozenset(
 _SNAPSHOT_FIELDS = frozenset(
     {
         "$schema",
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "workload_sha256",
         "work_item_id",
@@ -411,9 +419,9 @@ def _bounded_string_list(
 
 
 def _validate_common(value: Mapping[str, object]) -> None:
-    campaign_id = value.get("campaign_id")
+    campaign_id = value.get("simulation_record_id")
     if campaign_id is not None:
-        _require_uuid(campaign_id, "campaign_id")
+        _require_uuid(campaign_id, "simulation_record_id")
     for key in ("manifest_sha256", "workload_sha256"):
         digest = value.get(key)
         if digest is not None:
@@ -466,7 +474,7 @@ def _read_strings(value: object, field: str, keys: tuple[str, ...]) -> dict[str,
 
 def _read_prerequisite(value: object, field: str) -> None:
     """Read the prerequisite members resume, the Pre-Sim walk and acceptance use."""
-    entry = _read_strings(value, field, ("campaign_id", "work_item_id"))
+    entry = _read_strings(value, field, ("simulation_record_id", "work_item_id"))
     require_dict(entry.get("target"), field=f"{field}.target")
     reference = _read_strings(entry.get("manifest"), f"{field}.manifest", ("path", "sha256"))
     require_int(reference.get("bytes"), field=f"{field}.manifest.bytes")
@@ -535,19 +543,19 @@ _DOCUMENT_SPECS: dict[
         _read_manifest,
     ),
     SimulationAttempt: (
-        "booley.simulation-attempt/v1",
+        "booley.simulation-attempt/v2",
         _ATTEMPT_FIELDS,
         RECORD_MAX_BYTES,
         None,
     ),
     BundleBuildAttempt: (
-        "booley.bundle-build-attempt/v1",
+        "booley.bundle-build-attempt/v2",
         _BUILD_ATTEMPT_FIELDS,
         RECORD_MAX_BYTES,
         None,
     ),
     BundleBuildResult: (
-        "booley.bundle-build-result/v1",
+        "booley.bundle-build-result/v2",
         _BUILD_RESULT_FIELDS,
         RECORD_MAX_BYTES,
         None,
@@ -559,13 +567,13 @@ _DOCUMENT_SPECS: dict[
         None,
     ),
     SimulatorBundle: (
-        "booley.simulator-bundle/v1",
+        "booley.simulator-bundle/v2",
         _BUNDLE_FIELDS,
         MANIFEST_MAX_BYTES,
         None,
     ),
     ExecutableSnapshot: (
-        "booley.executable-snapshot/v1",
+        "booley.executable-snapshot/v2",
         _SNAPSHOT_FIELDS,
         MANIFEST_MAX_BYTES,
         None,

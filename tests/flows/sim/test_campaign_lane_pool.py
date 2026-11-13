@@ -146,7 +146,7 @@ def _delete_own_token(slots: SlotStore, child_id: str) -> None:
         # The lane held its slot, so its release-time tree recovery records the cause.
         pytest.param("work_failed", "orphan_recovered", id="work_failed"),
         # The lane never reached a slot: nothing was recovered, so the error is recorded.
-        pytest.param("publish_failed", "campaign_error", id="publish_failed"),
+        pytest.param("publish_failed", "record_error", id="publish_failed"),
     ],
 )
 def test_child_lane_terminal_cause(tmp_path: Path, failure: str, cause: str) -> None:
@@ -452,7 +452,7 @@ def _campaign_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
 @pytest.mark.parametrize(
     ("when", "error", "match", "cause"),
     [
-        ("before_slot", ClaimAbortedError, "shutdown requested", "campaign_error"),
+        ("before_slot", ClaimAbortedError, "shutdown requested", "record_error"),
         ("in_work", HeavyCapacityError, "plain capacity failure", "orphan_recovered"),
         ("after_work", ClaimAbortedError, "cancellation requested", "completed"),
     ],

@@ -51,7 +51,7 @@ def validate(
     manifest, _ = _load(manifest_path)
     build, build_raw = _load(build_result_path)
     _need(
-        build.get("$schema") == "booley.bundle-build-result/v1",
+        build.get("$schema") == "booley.bundle-build-result/v2",
         "unexpected build-result schema",
     )
     _need(build.get("state") == "ready", "shared build is not ready")

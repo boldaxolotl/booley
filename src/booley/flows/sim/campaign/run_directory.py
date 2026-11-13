@@ -23,7 +23,7 @@ from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
 _MARKER = ".booley-simulation-attempt.json"
 _PARENT_MARKER = ".booley-simulation-parent.json"
 _PARENT_LOCK = "parents.lock"
-_FIELDS = frozenset({"campaign_id", "work_item_id", "attempt_id"})
+_FIELDS = frozenset({"simulation_record_id", "work_item_id", "attempt_id"})
 _LOCK_TIMEOUT_S = 60.0
 _CREATE_ATTEMPTS = 3
 

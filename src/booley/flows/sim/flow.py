@@ -1853,14 +1853,14 @@ class SimulateFlow(
             "bytes": len(raw),
             "sha256": manifest_digest(plan.manifest),
             "kind": "simulation_campaign_manifest",
-            "owner": plan.manifest.document["campaign_id"],
+            "owner": plan.manifest.document["simulation_record_id"],
         }
         baseline_target = dict(cast(Mapping[str, object], plan.manifest.document["target"]))
         return [
             {
                 "role": "cycle_count_baseline",
                 "manifest": manifest_ref,
-                "campaign_id": plan.manifest.document["campaign_id"],
+                "simulation_record_id": plan.manifest.document["simulation_record_id"],
                 "target": baseline_target,
                 "required_observation": "cycle_count",
                 "work_item_id": item["work_item_id"],

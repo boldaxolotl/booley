@@ -670,7 +670,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     flow._current_published_pre_sim_keys = set()
 
     def baseline_role(document):
-        document["campaign_id"] = "01234567-89ab-4def-8123-456789abcdef"
+        document["simulation_record_id"] = "01234567-89ab-4def-8123-456789abcdef"
         document["target"].update(role="cycle_count_baseline", revision="baseline")
 
     _, baseline = _successful_pre_sim_campaign(

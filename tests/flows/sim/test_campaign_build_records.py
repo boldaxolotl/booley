@@ -36,15 +36,15 @@ from tests.flows.sim.campaign_test_support import (
 _PINNED_RECORDS = {
     "shared": (
         "shared_variant",
-        "sha256:9e2d46a84b0b683e5b33d3b75ee92839199eb3c010dd6a77631a5ff6feacf415",
-        "sha256:03c518c2b7415509471f092f86d0b1c5e40407ef907ac3df5945958a756dd847",
-        "sha256:526e80c53df7d80c28b74a0a45a6385f23cecf9846c931b982e8057aa314f24e",
+        "sha256:c330e3f9de597bfd4d4a08059cc4def12f7dc11041ce94928996f3f4cae51320",
+        "sha256:82abb5be30e22ffccb7e0f4936665d1cc1fbeec11a24d27ecd1b38e6d92f3893",
+        "sha256:6b47e379a0912c30c3204feaa7d75c8fdc4d62769ad0763b1df40c8908dfeac8",
     ),
     "legacy-per-test": (
         "private_work_item",
-        "sha256:846aa8a5ee8d4b5e7bac4edfd0d40168bc2a5f071f84534e092ca4375db1429c",
-        "sha256:a671f0734ac243bdea65a085a6649266128ffd56b1de21ec130d99508801eebe",
-        "sha256:9970bfad180465db492b57043990f9d0b53b1bbb830859346b748ceb4707d5e1",
+        "sha256:27dfcbe924ba12c50bc34cb5f58fe44b20e0147132b9476f282c3de34844cd03",
+        "sha256:5f946b788f5850eefd5c507948e3d8dc1fb2075dc5cd552925caf1f8e422e647",
+        "sha256:4b207ff28237dc23c5ff21170ea39d033e7a7835c02a65ab130afc1d8f092f5a",
     ),
 }
 
