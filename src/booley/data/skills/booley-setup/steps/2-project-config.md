@@ -422,7 +422,8 @@ Step 4's final gate:
 Implement only the approved Project-wide mapping from Step 0. The Target owns
 its filesets, defines, parameters, and top; the synthesis Flow owns its current
 reference Liberty/LEF selection; and `booley.toml` owns the existing
-`expected_latches` execution policy. Neither gains Tech Cell Replacement
+structural allowances (`expected_latches` and `expected_comb_loops` under
+`[flows.synth]` and `[flows.fpga]`). Neither gains Tech Cell Replacement
 configuration.
 
 - Preserve a semantically valid direct library-cell instantiation or existing
@@ -709,6 +710,12 @@ run. Full rules: `/booley-docs/TESTS.md`.
 
 What goes here:
 
+- **Structural allowances — only evidenced counts.** `[flows.synth]` and
+  `[flows.fpga]` each accept `expected_latches` and `expected_comb_loops`. Write
+  a value only from the intentional counts the plan recorded from RTL evidence;
+  leave a key unset when the plan records none, and never raise an allowance to
+  make a run pass: the count is a claim about the design, and one more than
+  declared still fails.
 - **Additional Protected Inputs — write only what the human agreed to.**
   `[project].protected_inputs` lists the tracked recipe file a hook or generator
   invokes and the stimulus sources that recipe consumes. Goal Mode freezes their
