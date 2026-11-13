@@ -177,11 +177,18 @@ class HeavyCapacity:
         except BaseException:
             self._lanes.mark_terminal(prepared, "record_error")
             raise
+        try:
+            threads = None if memory is None else self._item_thread_count(store)
+        except BaseException:
+            # The lane never started: prove it terminal first, so retiring releases the claim.
+            self._lanes.mark_terminal(prepared, "record_error")
+            self._retire(store, child_id, token)
+            raise
         with self._held_lane(store, work_item_id, prepared, token) as permit:
-            if memory is None:
+            if threads is None:
                 yield permit
             else:
-                with fixed_job_threads(self._item_thread_count(store)):
+                with fixed_job_threads(threads):
                     yield permit
         if not store.token_absent(token):
             raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
