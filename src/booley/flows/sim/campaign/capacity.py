@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
@@ -84,7 +85,16 @@ class HeavyCapacity:
         self._cause: str | None = None
 
     @property
+    def items_admitted(self) -> bool:
+        """True when each work item takes its own Memory Reservation (memory admission)."""
+        return self._item_claim is not None
+
+    @property
     def max_lanes(self) -> int:
+        """Lanes the campaign may start: the container's cores when each item is admitted
+        by memory (admission decides how many run at once), else the heavy cap."""
+        if self.items_admitted:
+            return available_cpu_count()
         return self._admission.max_heavy
 
     @property

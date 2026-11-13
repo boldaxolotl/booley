@@ -32,6 +32,12 @@ class FlowClaim:
 
     A build is *expected* once its Campaign is published or about to run, and
     *settled* when an item of it has returned (built, reused, recovered or failed).
+
+    It takes no lock. ``item_claim`` runs only under the scheduler's start turn,
+    and before the drop only the turn holder runs an item, so only it calls
+    ``settle`` and ``release``. After the drop ``release`` returns at the one-way
+    ``_dropped`` flag, and concurrent ``settle`` calls only add to sets: the worst
+    case is an item that reserves its build, the safe side.
     """
 
     def __init__(
