@@ -16,8 +16,7 @@ import pytest
 
 from booley.config.tests_toml_rules import TestRunNameError
 from booley.flows.sim.campaign.projection import _validate_test_runs
-from booley.flows.sim.campaign.serial_execution import _work_item_test_runs
-from booley.flows.sim.campaign.test_run_binding import observation_test_runs
+from booley.flows.sim.campaign.test_run_binding import observation_test_runs, work_item_test_runs
 from booley.flows.sim.campaign.test_run_report import _manifest_test_runs
 from booley.flows.sim.execution.engine import _export_line
 from booley.flows.sim.flow_resume import _manifest_run_groups
@@ -63,7 +62,7 @@ def test_every_decoder_of_a_persisted_test_run_refuses_the_name(name: str):
     with pytest.raises(ValueError, match="Test Run environment"):
         _validate_test_runs([{**record, "grade": "pass"}])
     with pytest.raises(ValueError, match="Test Run environment"):
-        _work_item_test_runs(item)
+        work_item_test_runs(item)
     with pytest.raises(ValueError, match="Test Run environment"):
         _manifest_test_runs(manifest)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Test Run environment"):

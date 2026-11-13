@@ -747,6 +747,26 @@ def test_unwarned_job_result_is_unchanged(harness: _Harness, memory_runtime: Pat
     assert "ran alone" not in result.outcome.report_text
 
 
+def test_only_a_memory_admitted_job_lends_work_item_sizing(
+    memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sizing a Campaign needs for its work items' own claims comes with the Job's claim (#3772)."""
+    with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
+        assert context.memory_sizing is not None
+        assert context.memory_sizing.booley_dir == memory_runtime
+        assert context.memory_sizing.warnings == []
+    # A Job under its parent's claim takes none of its own, so it has nothing to lend.
+    monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "memory/entry")
+    with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
+        assert context.memory_sizing is None
+    # Switch unset: a heavy slot.
+    monkeypatch.delenv(job_slots.INHERITED_SLOT_ENV)
+    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
+    with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
+        assert context.memory_sizing is None
+        assert len(_held(memory_runtime, job_slots.CLASS_HEAVY)) == 1
+
+
 def test_specialist_keeps_its_light_slot_under_memory_admission(
     memory_runtime: Path,
 ) -> None:
