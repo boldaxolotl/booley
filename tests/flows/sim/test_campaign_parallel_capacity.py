@@ -51,11 +51,11 @@ from booley.runtime.execution_records import (
 )
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
-    ClaimAbortedError,
     HOLDING,
     INHERITED_SLOT_ENV,
     QUEUED,
     ROLE_INTERACTIVE,
+    ClaimAbortedError,
     SlotStore,
 )
 from booley.runtime.supervised_execution import (
@@ -264,9 +264,12 @@ def test_child_permit_never_yields_a_claim_admitted_after_cancellation(
     monkeypatch.setattr(capacity, "_acquire_child", acquire_then_cancel)
     started: list[bool] = []
     try:
-        with capacity.outer_permit():
-            with pytest.raises(ClaimAbortedError, match="cancellation"), _child_permit(capacity):
-                started.append(True)
+        with (
+            capacity.outer_permit(),
+            pytest.raises(ClaimAbortedError, match="cancellation"),
+            _child_permit(capacity),
+        ):
+            started.append(True)
     finally:
         store.release(outer)
     assert started == []
