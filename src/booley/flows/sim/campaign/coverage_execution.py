@@ -570,7 +570,7 @@ def _coverage_evidence(
                 path,
                 request.attempt_directory,
                 raw,
-                "coverage_campaign_manifest"
+                "coverage_record_manifest"
                 if path.name == "coverage.json"
                 else "coverage_point_store",
                 request.attempt_id,

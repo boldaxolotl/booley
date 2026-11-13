@@ -1,4 +1,4 @@
-"""Durable V5 Coverage Campaign persistence behind one filesystem seam."""
+"""Durable Coverage Record persistence behind one filesystem seam."""
 
 from __future__ import annotations
 
@@ -44,10 +44,13 @@ from .coverage_json import (
 from .coverage_policy import score_thresholds
 from .coverage_provisional import ProvisionalCoverageError, criterion_from_evaluation
 
-#: v5: every run names its Test Run and declared-inputs fingerprint (ADR 0072),
-#: and one selected Test may have several runs. Booley reads and writes only v5.
-CAMPAIGN_SCHEMA_V5 = "booley.coverage-campaign/v5"
-POINT_STORE_SCHEMA_V1 = "booley.coverage-points/v1"
+#: The stored Coverage Record: every run names its Test Run and declared-inputs
+#: fingerprint (ADR 0072), and one selected Test may have several runs. Booley reads
+#: and writes only this schema; Booley 0.4.0's ``booley.coverage-campaign/v5`` is refused.
+CAMPAIGN_SCHEMA = "booley.coverage-record/v1"
+#: The point store header and the manifest's ``point_store`` document; v2 names the
+#: Coverage Record identity ``coverage_record_id``.
+POINT_STORE_SCHEMA = "booley.coverage-points/v2"
 POINT_STORE_NAME = "coverage-points.jsonl.gz"
 #: The one resource ceiling on a point store: its decompressed size, on write and read.
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
@@ -55,7 +58,7 @@ MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 _MANIFEST_FIELDS = frozenset(
     {
         "$schema",
-        "campaign_id",
+        "coverage_record_id",
         "invocation",
         "target",
         "collector",
@@ -143,8 +146,8 @@ def _point_store_bytes(
     uncompressed_bytes = 0
     with gzip.GzipFile(fileobj=buffer, mode="wb", filename="", mtime=0) as compressed:
         header = {
-            "$schema": POINT_STORE_SCHEMA_V1,
-            "campaign_id": campaign.campaign_id,
+            "$schema": POINT_STORE_SCHEMA,
+            "coverage_record_id": campaign.campaign_id,
             "target_identity": campaign.target.identity,
         }
         uncompressed_bytes = _write_line(compressed, header, uncompressed_bytes)
@@ -164,7 +167,7 @@ def _point_store_bytes(
 
 def _point_store_document(reference: CoveragePointStoreReference) -> dict[str, object]:
     return {
-        "$schema": POINT_STORE_SCHEMA_V1,
+        "$schema": POINT_STORE_SCHEMA,
         "path": reference.path,
         "encoding": "jsonl+gzip",
         "sha256": reference.sha256,
@@ -178,7 +181,7 @@ def _manifest(
     campaign: CoverageCampaign, reference: CoveragePointStoreReference
 ) -> dict[str, object]:
     document = encode_coverage_campaign(campaign)
-    document["$schema"] = CAMPAIGN_SCHEMA_V5
+    document["$schema"] = CAMPAIGN_SCHEMA
     del document["points"]
     document["point_store"] = _point_store_document(reference)
     scoring = _expected_scoring(campaign.collection)
@@ -208,7 +211,7 @@ def _rollup_document(rollup: CoverageRollup) -> dict[str, object]:
 
 
 def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> CampaignPaths:
-    """Publish a complete V5 Campaign without replacing existing final files."""
+    """Publish a complete Coverage Record without replacing existing final files."""
     if _contains_link(target_dir):
         raise CoverageCampaignStoreError("Coverage Campaign path contains a link")
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -236,6 +239,11 @@ def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> C
 def _decode_reference(value: object) -> CoveragePointStoreReference:
     """Decode the recorded identity; readers trust the published pair (ADR 0062)."""
     record = require_dict(value, field="point_store")
+    # No alias: a point store document of an earlier schema is not this Record's.
+    if record.get("$schema") != POINT_STORE_SCHEMA:
+        raise CoverageCampaignStoreError(
+            "COV_MANIFEST_FORMAT", f"Coverage Record point store is not {POINT_STORE_SCHEMA}"
+        )
     return CoveragePointStoreReference(
         POINT_STORE_NAME,
         require_str(record, "sha256"),
@@ -279,8 +287,11 @@ def _canonical_campaign_path(path: Path) -> Path:
         raise CoverageCampaignStoreError("COV_PATH_UNSAFE", str(exc)) from exc
 
 
-def _point_documents(path: Path) -> list[dict[str, object]]:
-    """Gunzip the point store once under the ceiling; return its rows after the header."""
+def _point_documents(path: Path, coverage_record_id: object) -> list[dict[str, object]]:
+    """Gunzip the point store once under the ceiling; return its rows after the header.
+
+    The header must be exactly this Record's: its schema, identity and Target identity.
+    """
     try:
         with (
             os.fdopen(_open_regular(path), "rb") as source,
@@ -304,9 +315,13 @@ def _point_documents(path: Path) -> list[dict[str, object]]:
         raise CoverageCampaignStoreError(
             "COV_POINT_FORMAT", "Malformed Coverage Point JSON line"
         ) from exc
-    if header.get("$schema") != POINT_STORE_SCHEMA_V1:
+    if (
+        set(header) != {"$schema", "coverage_record_id", "target_identity"}
+        or header["$schema"] != POINT_STORE_SCHEMA
+        or header["coverage_record_id"] != coverage_record_id
+    ):
         raise CoverageCampaignStoreError(
-            "COV_POINT_FORMAT", "Coverage Point storage header is not point-store v1"
+            "COV_POINT_FORMAT", f"Coverage Point storage header is not {POINT_STORE_SCHEMA}"
         )
     return rows
 
@@ -318,7 +333,7 @@ def decode_coverage_campaign(
 ) -> CoverageCampaign:
     """Decode a manifest and its point rows into a Campaign: the one decode.
 
-    *manifest* has already passed the store's v5 schema gate, exact field set
+    *manifest* has already passed the store's schema gate, exact field set
     and size ceilings; ``load_coverage_campaign*`` are the entry points for
     persisted bytes. Consumes *points*. Stored rollups are discarded and
     derived from the points; a stored pass/fail evaluation is re-scored from
@@ -338,10 +353,31 @@ def decode_coverage_campaign(
     return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
 
 
+def _invocation_of(path: Path) -> Path | None:
+    """The Simulation invocation directory holding a Coverage Record file, or ``None``.
+
+    Two layouts: the Target-level ``<invocation>/targets/<Target>/coverage.json`` and the
+    nested ``<invocation>/targets/<Target>/<record>/work-items/<item>/attempts/<attempt>/
+    <coverage record>/coverage.json``, whose directory names differ between Booley 0.4.0
+    and now, so only the depth is matched.
+    """
+    parents = path.parents
+    for depth in (1, 7):
+        if len(parents) > depth + 1 and parents[depth].name == "targets":
+            return parents[depth + 1]
+    return None
+
+
 def _load_manifest(
     path: Path, raw: bytes, expected_target: DurableTargetIdentity | None
 ) -> LoadedCoverageCampaign:
-    """Deep-load one V5 Campaign; the codec validates manifest and points once."""
+    """Deep-load one Coverage Record; the codec validates manifest and points once."""
+    # Imported here: ``booley.flows.sim.campaign`` imports the store through its coordinator.
+    from booley.flows.sim.campaign.codec import (
+        UnsupportedSimulationCampaignFormatError,
+        raise_if_retired_schema,
+    )
+
     try:
         if len(raw) > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(
@@ -355,7 +391,13 @@ def _load_manifest(
             ) from exc
         document = dict(require_dict(parsed))
         schema = document.get("$schema")
-        if schema != CAMPAIGN_SCHEMA_V5:
+        # An older Booley's schema is refused as old, naming the invocation to delete.
+        try:
+            raise_if_retired_schema(schema)
+        except UnsupportedSimulationCampaignFormatError as exc:
+            invocation = _invocation_of(path)
+            raise (exc if invocation is None else exc.located(invocation)) from None
+        if schema != CAMPAIGN_SCHEMA:
             raise CoverageCampaignStoreError(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
                 "Unsupported Coverage Campaign schema; delete the Coverage Campaign "
@@ -370,7 +412,9 @@ def _load_manifest(
             target = require_dict(document.get("target"), field="target")
             expected_target = DurableTargetIdentity(require_str(target, "identity"))
         campaign = decode_coverage_campaign(
-            document, _point_documents(path.parent / POINT_STORE_NAME), expected_target
+            document,
+            _point_documents(path.parent / POINT_STORE_NAME, document["coverage_record_id"]),
+            expected_target,
         )
     except (CoverageCampaignValidationError, CoverageCampaignStoreError):
         raise
@@ -398,7 +442,7 @@ def _load_manifest(
 def load_coverage_campaign(
     path: Path, expected_target: DurableTargetIdentity | None = None
 ) -> LoadedCoverageCampaign:
-    """Deep-load one V5 Campaign; the codec validates it once, after the points are read."""
+    """Deep-load one Coverage Record; the codec validates it once, after the points are read."""
     path = _canonical_campaign_path(path)
     try:
         return _load_manifest(path, _read_manifest_bytes(path), expected_target)
@@ -413,5 +457,5 @@ def load_coverage_campaign_bytes(
     raw: bytes,
     expected_target: DurableTargetIdentity | None = None,
 ) -> LoadedCoverageCampaign:
-    """Deep-load a V5 Campaign from exact manifest bytes already authenticated."""
+    """Deep-load a Coverage Record from exact manifest bytes already authenticated."""
     return _load_manifest(_canonical_campaign_path(path), raw, expected_target)

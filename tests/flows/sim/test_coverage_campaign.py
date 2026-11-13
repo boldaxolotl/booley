@@ -174,8 +174,8 @@ def _valid_outcomes() -> dict[str, object]:
 
 def _valid_document() -> dict[str, object]:
     return {
-        "$schema": "booley.coverage-campaign/v1",
-        "campaign_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
+        "$schema": "booley.coverage-record-document/v1",
+        "coverage_record_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
         **_valid_provenance(),
         "tests": _valid_tests(),
         "artifacts": _valid_artifacts(),
@@ -512,7 +512,7 @@ def test_decoded_campaign_is_deeply_immutable() -> None:
 
 def test_decoder_aggregates_structural_findings_before_model_construction() -> None:
     document = _valid_document()
-    del document["campaign_id"]
+    del document["coverage_record_id"]
     document["invocation"] = []
     document["collector"]["capabilities"][0]["status"] = 7
     document["tests"]["runs"][0]["test"] = False
@@ -526,7 +526,7 @@ def test_decoder_aggregates_structural_findings_before_model_construction() -> N
         )
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_FIELD_REQUIRED", "/campaign_id"),
+        ("COV_FIELD_REQUIRED", "/coverage_record_id"),
         ("COV_FIELD_TYPE", "/invocation"),
         ("COV_FIELD_TYPE", "/collector/capabilities/0/status"),
         ("COV_FIELD_TYPE", "/tests/runs/0/test"),
@@ -537,7 +537,7 @@ def test_decoder_aggregates_structural_findings_before_model_construction() -> N
 
 def test_decoder_aggregates_safe_semantic_findings_with_structural_findings() -> None:
     document = _valid_document()
-    del document["campaign_id"]
+    del document["coverage_record_id"]
     document["target"]["identity"] = "acme:demo:other:1.0#sim_other"
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
@@ -547,7 +547,7 @@ def test_decoder_aggregates_safe_semantic_findings_with_structural_findings() ->
         )
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_FIELD_REQUIRED", "/campaign_id"),
+        ("COV_FIELD_REQUIRED", "/coverage_record_id"),
         ("COV_TARGET_MISMATCH", "/target/identity"),
     ]
 
