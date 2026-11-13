@@ -162,6 +162,30 @@ def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, 
     assert not any(knob in m and ("ignores it" in m or "is retired" in m) for m in warns)
 
 
+def test_structural_allowance_knobs_accepted_only_under_their_flows():
+    """Each structural allowance is silent under synth and fpga, flagged under the rest."""
+    for knob in ("expected_latches", "expected_comb_loops"):
+        for flow in ("synth", "fpga"):
+            warns: list[str] = []
+            _record_audit(
+                flow_schema.audit_flow_table(flow, {knob: 1}),
+                warned=lambda msg, fix="", sink=warns: sink.append(msg),
+                failed=lambda msg, fix="": None,
+            )
+            assert not any(knob in m for m in warns), (knob, flow)
+        for flow in ("lint", "sim"):
+            warns = []
+            _record_audit(
+                flow_schema.audit_flow_table(flow, {knob: 1}),
+                warned=lambda msg, fix="", sink=warns: sink.append(msg),
+                failed=lambda msg, fix="": None,
+            )
+            assert any(f"[flows.{flow}].{knob}" in m and "ignores it" in m for m in warns), (
+                knob,
+                flow,
+            )
+
+
 def test_sim_output_dir_is_retired_without_failing_doctor():
     """``[flows.sim].output_dir`` never changed a run: Doctor warns once, never fails."""
     fails: list[str] = []
