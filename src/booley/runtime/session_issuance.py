@@ -387,11 +387,9 @@ def stamp_is_absent(project_root: Path) -> bool:
 def load_issued_snapshot(project_root: Path) -> Issuance:
     """Load structurally valid prior issuance without consulting current authority.
 
-    Session refresh reads the replacement issuance through this view after
-    reissuing, and remedy selection reads the prior one.  The current grant
-    may legitimately have changed — healing that drift is the point of
-    refresh — while the sealed licence decision and Project identity still
-    have to be trusted before Docker mutation.
+    Remedy selection reads the prior issuance through this view.  The current
+    grant may legitimately have changed, while the sealed licence decision and
+    Project identity still have to be trusted before Docker mutation.
     """
     project = project_root.resolve(strict=True)
     issuance = _load_stamp(_stamp_read_path(project))

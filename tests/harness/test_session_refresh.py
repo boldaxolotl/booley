@@ -471,9 +471,20 @@ def test_missing_gateway_export_fails_before_removal(host: _Host) -> None:
     assert "session refresh failed while removing the previous Sandbox" in message
     assert "export BOOLEY_GATEWAY_KEY" in message
     assert "The Sandbox spec was reissued" in message
-    assert f"container {host.canonical!r} was left in place" in message
+    assert f"the previous Sandbox {host.canonical!r} is still running" in message
     assert "remove_predecessor" not in host.events and "remove_relay" not in host.events
     assert host.running is not None and host.running.container_id == "old-id"
+
+
+def test_removal_failure_with_stopped_container_reports_it_left_in_place(host: _Host) -> None:
+    host.canonical_exists = True
+    host.check_error = sr.SessionError("docker stop failed")
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    assert f"container {host.canonical!r} was left in place" in str(caught.value)
+    assert RERUN in str(caught.value)
 
 
 def test_missing_or_withdrawn_stamp_refreshes(

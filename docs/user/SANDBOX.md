@@ -71,10 +71,10 @@ records, it says the check was skipped and still stops the Sandbox.
 
 `session refresh` rebuilds only what changed and keeps the current Sandbox if
 nothing did. It replaces the Sandbox without a rollback: the current Sandbox keeps
-running until the new one is ready to start; after that no Sandbox runs until a
-rerun finishes. A failure names the step that failed and
-what is still running; fix the cause and run `booley session refresh` again,
-which continues from that state. Afterwards it re-applies Project
+running until the new one is ready to start, so the Sandbox is unavailable while
+the new container starts. If a step fails, the message names it and says what is
+still running (the previous Sandbox or none); fix the cause and run
+`booley session refresh` again, which continues from that state. Afterwards it re-applies Project
 Initialization (Git hooks, Git settings, guidance links, exclude entries and the
 Dashboard task). It never rewrites tracked files: CRLF files and pending
 `.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
@@ -100,8 +100,10 @@ names the case that applies.
 <summary>With host-installed licensed tools</summary>
 
 After an EDA Grant change (`booley eda grant add` or `revoke`), Booley withdraws
-the Sandbox's issuance. A headless Sandbox refreshes directly; a VS Code-owned
-or self-managed one needs the reseed workflow above. See
+the Sandbox's issuance. A headless Sandbox refreshes directly. For a VS Code-owned
+or self-managed one, stop a VS Code Sandbox in VS Code and rebuild or pull a
+self-managed image, then run `booley session down`, `booley init --seed`, and
+`booley session up`. See
 [Commercial EDA provisioning](#commercial-eda-provisioning).
 
 </details>

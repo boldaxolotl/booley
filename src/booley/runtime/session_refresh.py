@@ -128,6 +128,8 @@ def _replacement_state(project: Path) -> str:
         prefix = "The Sandbox spec was reissued; "
         if running is not None and (running.vscode or running.name != canonical):
             return f"{prefix}Sandbox {running.name!r} is running and was not touched."
+        if running is not None:
+            return f"{prefix}the previous Sandbox {canonical!r} is still running."
         if idk.container_exists(canonical):
             return f"{prefix}container {canonical!r} was left in place."
         return f"{prefix}no Sandbox is running."

@@ -1014,8 +1014,8 @@ def _parked_predecessor_summary(parked: tuple[_ActiveSession, ...]) -> str:
         rename = _shell_command(["docker", "rename", sandbox.name, original])
         descriptions.append(
             f"{sandbox.name} (Project {sandbox.project_root}; parked by an interrupted "
-            f"`booley session up --rebuild` or an older refresh: rename it back with `{rename}` when that name is "
-            "free, or remove it after inspection)"
+            "`booley session up --rebuild` or an older refresh: rename it back with "
+            f"`{rename}` when that name is free, or remove it after inspection)"
         )
     return ", ".join(descriptions)
 
