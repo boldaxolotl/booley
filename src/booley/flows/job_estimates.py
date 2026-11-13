@@ -165,6 +165,22 @@ class JobEstimate:
         known = [p.memory_mb.value for p in self.phases if p.memory_mb.value is not None]
         return max(known, default=None)
 
+    @property
+    def own_wall_s(self) -> float | None:
+        """The Job's wall-clock: the sum over its phases, only when each has its own history.
+
+        ``None`` for no phases, or when any phase's wall-clock is borrowed or
+        unknown: such a Job must not jump ahead of the queue.
+        """
+        if not self.phases:
+            return None
+        total = 0.0
+        for phase in self.phases:
+            if phase.wall_s.source is not Source.OWN or phase.wall_s.value is None:
+                return None
+            total += phase.wall_s.value
+        return total
+
     def fit(self, budget_mb: float) -> Fit:
         """Compare the reservation with *budget_mb*; over-budget wins so a caller can warn."""
         reservation = self.reservation_mb
