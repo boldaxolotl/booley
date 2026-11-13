@@ -22,6 +22,7 @@ import pytest
 
 from booley.core.build_paths import work_root_for
 from booley.flows.base import SubprocessResult
+from booley.flows.memory_admission import JOB_THREADS_ENV
 from booley.flows.sim import build_parallelism
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -1380,13 +1381,8 @@ def test_default_verilator_make_recipe_is_resource_bounded(
     _write_runtime_input_project(project, tool_declaration=tool_declaration)
     monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
     monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
-    monkeypatch.setattr(
-        build_parallelism,
-        "load_job_budget_config",
-        lambda _project_root=None, booley_dir=None: {
-            "jobs": {"max_heavy": 2, "heavy_memory": "8g"}
-        },
-    )
+    # The Job's share of the cores, fixed at its admission.
+    monkeypatch.setenv(JOB_THREADS_ENV, "4")
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     real_resolve = fusesoc_registry.resolve_target_handle
     fusesoc_cmd = (
@@ -1471,13 +1467,8 @@ def test_real_verilator_setup_merges_authored_make_options_once(
     _write_runtime_input_project(project, tool_declaration=declaration)
     monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
     monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
-    monkeypatch.setattr(
-        build_parallelism,
-        "load_job_budget_config",
-        lambda _project_root=None, booley_dir=None: {
-            "jobs": {"max_heavy": 2, "heavy_memory": "8g"}
-        },
-    )
+    # The Job's share of the cores, fixed at its admission.
+    monkeypatch.setenv(JOB_THREADS_ENV, "4")
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     real_resolve = fusesoc_registry.resolve_target_handle
     fusesoc_cmd = (

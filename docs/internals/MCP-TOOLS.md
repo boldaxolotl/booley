@@ -57,7 +57,7 @@ owned, and found again is in [JOB_RECORDS.md](JOB_RECORDS.md).
 2. The Developer Agent calls it by name; the server validates the arguments.
 3. The shared coordinator in `booley.runtime.endpoint_execution` checks Target
    binding and admits the call as a [Job](../GLOSSARY.md#execution), holding
-   its Job Class slot until the call completes.
+   its Memory Reservation (or light slot) until the call completes.
 4. The endpoint runs: a Flow runs its subprocess, a Specialist runs its model
    call, a direct endpoint runs its own code.
 5. The endpoint turns the raw output into an outcome (`McpToolResult`).

@@ -275,7 +275,7 @@ def test_gc_keeps_slot_referenced_and_nonterminal_execution_records(tmp_path: Pa
         encoding="utf-8",
     )
     os.utime(running_paths.record, (1, 1))
-    slot = tmp_path / "runtime" / "jobs" / "slots" / "heavy" / "holder.json"
+    slot = tmp_path / "runtime" / "jobs" / "slots" / "light" / "holder.json"
     slot.parent.mkdir(parents=True)
     slot.write_text(json.dumps({"execution_id": referenced}), encoding="utf-8")
 
@@ -289,7 +289,7 @@ def test_gc_keeps_slot_referenced_and_nonterminal_execution_records(tmp_path: Pa
 
 def _unreadable_slot(tmp_path: Path, monkeypatch, execution_id: str) -> Path:
     """A slot entry that exists but cannot be opened (Windows scanner, sharing error)."""
-    slot = tmp_path / "runtime" / "jobs" / "slots" / "heavy" / "holder.json"
+    slot = tmp_path / "runtime" / "jobs" / "slots" / "light" / "holder.json"
     slot.parent.mkdir(parents=True)
     slot.write_text(json.dumps({"execution_id": execution_id}), encoding="utf-8")
     original_open = Path.open

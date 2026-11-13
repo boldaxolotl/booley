@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.flows import endpoint_admission
-from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign import coordinator
-from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
+from booley.flows.sim.campaign.capacity import CampaignCapacityError
 from booley.flows.sim.campaign.coordinator import (
     SimulationCampaign,
     SimulationCampaignCancellationError,
@@ -24,51 +22,53 @@ from booley.flows.sim.campaign.scheduler import (
     BoundedCampaignScheduler,
 )
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.runtime.execution_records import (
-    ExecutionId,
-)
 from booley.runtime.job_slots import (
-    CLASS_HEAVY,
     SlotStore,
 )
-from tests.flows.sim.campaign_test_support import _scheduled_attempt, _two_item_manifest
+from tests.flows.sim.campaign_test_support import (
+    _holder_claim,
+    _managed,
+    _outer_claim,
+    _pinned_lanes,
+    _scheduled_attempt,
+    _two_item_manifest,
+)
 
 
 class _Campaign:
     """A scheduler over a real SlotStore whose outer lane records its cancellation message."""
 
-    def __init__(self, tmp_path: Path, *, max_heavy: int) -> None:
+    def __init__(self, tmp_path: Path, *, lanes: int) -> None:
         self.manifest = _two_item_manifest()
         self.store = CampaignStore(tmp_path / "record")
         self.store.publish_manifest(self.manifest)
         project = tmp_path / "project"
         (project / ".booley").mkdir(parents=True)
-        self.slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=max_heavy))
-        self.outer = self.slots.acquire(
-            CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
-        )
+        self.slots = SlotStore(tmp_path / "slots")
+        self.outer = _outer_claim(self.slots)
         cause = endpoint_admission._admission_cancellation_cause(self.slots, self.outer)
-        admission = AdmissionContext(
-            "managed",
-            self.slots,
-            self.outer,
-            max_heavy,
-            "interactive",
-            "a" * 32,
-            5.0,
-            lambda: cause() is not None,
-            cause,
+        admission = replace(
+            _managed(self.slots, self.outer, holders=lanes),
+            cancellation=lambda: cause() is not None,
+            cancellation_cause=cause,
         )
-        self.capacity = HeavyCapacity(admission, self.manifest, project / ".booley")
+        claim = _holder_claim(lanes)
+        # The outer lane's item runs under the Flow's claim; every other lane's takes its own.
+        self.capacity = _pinned_lanes(
+            admission,
+            self.manifest,
+            project / ".booley",
+            lambda _item: None if threading.current_thread().name.endswith("outer") else claim,
+            lanes=lanes,
+        )
         self.outer_message: str | None = None
+        self.scheduler: BoundedCampaignScheduler | None = None
 
-    def run(self, items: int, trigger: Callable[[], None], child_failure: bool = False) -> None:
+    def run(self, items: int, trigger: Callable[[], None]) -> None:
         """Run *items* work items; the outer lane fires *trigger* and records its message."""
 
         def execute(_attempt, child_id) -> None:
             if child_id is not None:
-                if child_failure:
-                    raise RuntimeError("child boom")
                 deadline = time.monotonic() + 5.0  # idle child lane until cancelled
                 while not self.capacity._shutdown.is_set() and time.monotonic() < deadline:
                     time.sleep(0.01)
@@ -81,16 +81,16 @@ class _Campaign:
                 time.sleep(0.01)
             try:
                 coordinator.raise_if_cancelled_before_publication()
-            except HeavyCapacityError as exc:
+            except CampaignCapacityError as exc:
                 self.outer_message = str(exc)
 
-        scheduler = BoundedCampaignScheduler(
+        self.scheduler = BoundedCampaignScheduler(
             self.capacity,
             allocate=lambda item: _scheduled_attempt(self.store, item),
             execute=execute,
         )
         try:
-            scheduler.run(self.manifest.document["work_items"][:items])
+            self.scheduler.run(self.manifest.document["work_items"][:items])
         except Exception:  # noqa: BLE001 -- the cancelled campaign may fail; the message is the subject
             pass
         finally:
@@ -98,8 +98,13 @@ class _Campaign:
 
 
 def test_outer_lane_stop_requested_names_cause(tmp_path: Path) -> None:
-    campaign = _Campaign(tmp_path, max_heavy=2)
-    campaign.run(2, trigger=lambda: time.sleep(0.2), child_failure=True)
+    campaign = _Campaign(tmp_path, lanes=1)
+
+    def fail_an_item() -> None:
+        assert campaign.scheduler is not None
+        campaign.scheduler._fail_campaign(RuntimeError("an item failed"))
+
+    campaign.run(1, trigger=fail_an_item)
 
     assert campaign.outer_message is not None
     assert "execution cancelled before result publication" in campaign.outer_message
@@ -109,7 +114,7 @@ def test_outer_lane_stop_requested_names_cause(tmp_path: Path) -> None:
 
 
 def test_outer_lane_lease_lost_names_slot(tmp_path: Path) -> None:
-    campaign = _Campaign(tmp_path, max_heavy=1)
+    campaign = _Campaign(tmp_path, lanes=1)
     campaign.run(1, trigger=campaign.outer.lease_health.lost.set)
 
     assert campaign.outer_message is not None
@@ -119,7 +124,7 @@ def test_outer_lane_lease_lost_names_slot(tmp_path: Path) -> None:
 
 
 def test_outer_lane_missing_token_names_slot(tmp_path: Path, monkeypatch) -> None:
-    campaign = _Campaign(tmp_path, max_heavy=1)
+    campaign = _Campaign(tmp_path, lanes=1)
     path = campaign.outer.path
     real_absent = campaign.slots.token_absent
     withdrawn = threading.Event()
@@ -138,29 +143,29 @@ def test_outer_lane_missing_token_names_slot(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_outer_worker_failure_names_its_cause(tmp_path: Path) -> None:
-    campaign = _Campaign(tmp_path, max_heavy=2)
+    campaign = _Campaign(tmp_path, lanes=1)
 
     def boom() -> None:
         raise RuntimeError("outer boom")
 
-    campaign.run(2, trigger=boom)
+    campaign.run(1, trigger=boom)
 
     cause = campaign.capacity.cancellation_cause()
     assert cause == "campaign stop requested after a work item failed (RuntimeError)"
 
 
 def test_child_cancellation_cause_names_a_lost_lease(tmp_path: Path) -> None:
-    campaign = _Campaign(tmp_path, max_heavy=1)
+    campaign = _Campaign(tmp_path, lanes=1)
     lost = threading.Event()
     permit = SimpleNamespace(
         lease_health=SimpleNamespace(lost=lost),
-        token=SimpleNamespace(job_class="heavy", path=Path("child.json")),
+        token=SimpleNamespace(job_class="memory", path=Path("child.json")),
     )
     try:
         assert campaign.capacity._child_cancellation_cause(permit) is None
         lost.set()
         cause = campaign.capacity._child_cancellation_cause(permit)
-        assert cause == "Job Slot lease lost: heavy/child.json"
+        assert cause == "Job Slot lease lost: memory/child.json"
     finally:
         campaign.slots.release(campaign.outer)
 
@@ -169,7 +174,7 @@ def test_cancelled_campaign_stops_before_publication() -> None:
     request = SimpleNamespace(
         admission=SimpleNamespace(
             cancellation=lambda: True,
-            cancellation_cause=lambda: "Job Slot token missing: heavy/entry.json",
+            cancellation_cause=lambda: "Job Slot token missing: memory/entry.json",
         )
     )
     with pytest.raises(

@@ -108,32 +108,45 @@ To choose a Specialist's model, see [`[models]`](#model-selection-models).
 
 ## Jobs & concurrency (`[jobs]`)
 
-Every Flow or Specialist run is a **Job**. Simulation, synthesis, and FPGA
-implementation are heavy Jobs; Specialists are light Jobs, limited by the AI
-provider rather than memory. Each kind has a cap so parallel agents don't run the
-Sandbox out of memory. Work beyond the cap waits in a queue instead of failing,
-and running Jobs are never interrupted. The defaults:
+Every Flow or Specialist run is a **Job**. Simulation, synthesis, FPGA
+implementation, and lint are admitted against a **Memory Budget**: a Job starts
+when its estimated memory fits in what the budget has left, and otherwise waits
+in a queue instead of failing. Specialists are light Jobs, limited by the AI
+provider rather than memory, so a count (`max_light`) caps them. Running Jobs
+are never interrupted. The defaults:
 
 ```toml
 [jobs]
-max_heavy = 1         # heavy Jobs running at once
-heavy_memory = "4g"   # memory set aside per heavy Job
-max_light = 3         # Specialist Jobs running at once
-queue_max = 8         # Jobs that may wait per kind; beyond this a request is refused
+# memory_budget = "24g"  # memory all running Jobs may reserve together
+max_light = 3            # Specialist Jobs running at once
+queue_max = 8            # Jobs that may wait per kind; beyond this a request is refused
+
+[jobs.seats]
+# vivado = 1             # licensed seats Booley may use at once; required for Vivado
 ```
 
-Raise `max_heavy` only when the Sandbox has the memory for it. `booley doctor
---deep` measures how much memory synthesis really needs; plain `booley doctor`
-then warns when `[sandbox].memory` can't hold `max_heavy` heavy Jobs plus the
-agents. With `max_heavy` above 1, a simulation campaign also runs independent
-tests in parallel.
+Unset, the Memory Budget is the Sandbox's container memory limit, or the
+installed memory when there is no limit, minus a reserve for the agents. Set
+`[sandbox].memory` so the limit is the one you chose. `booley doctor` warns
+while it is unset. Booley sizes each Job's reservation from its recorded peak
+memory ([resource history](#job-resource-history)); a Job with no history
+runs alone. A simulation campaign runs independent tests
+in parallel while their reservations fit.
 
-Caps apply to one Project.
+If the kernel kills a Job for running out of memory, Booley runs it again once,
+alone. A second kill fails the Job. See
+[Job killed out of memory](TROUBLESHOOTING.md#job-killed-out-of-memory).
+
+Limits apply to one Project.
+
+`[jobs.seats]` caps the licensed seats of a commercial tool, such as `vivado`.
+Every licensed tool a Project uses needs one: without it Doctor fails and the
+Flow is refused. See [Missing Seat Cap](TROUBLESHOOTING.md#missing-seat-cap).
 
 <details markdown>
 <summary>With host-installed licensed tools</summary>
 
-Caps don't share commercial license seats between Projects. See
+Seat Caps don't share commercial license seats between Projects. See
 [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
 
 </details>
@@ -146,8 +159,8 @@ with no run in the last 90 days is deleted the next time any Job records. Peak
 memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
 recorded before that rule keep their earlier peak. `booley resources` prints the
 run count and the minimum, median, and maximum peak memory and wall-clock time
-for each (`--json` for scripts). Use it to choose `heavy_memory` and
-`[sandbox].memory`. Each Test Variant of a simulation has its own entry
+for each (`--json` for scripts). Use it to choose `[sandbox].memory` and
+`[jobs].memory_budget`. Each Test Variant of a simulation has its own entry
 (`tests=first+slow`; the default Variant keeps the bare Test name), and the
 seeds of one Variant share it. Flow runs that `booley doctor` starts are not
 recorded.

@@ -3,8 +3,7 @@
 How Booley persists a [Job](../GLOSSARY.md#execution) (one run of a Booley
 Flow or Specialist) on disk, how a later call finds it again, and who it
 belongs to. It is for contributors changing Job submission, polling,
-cancellation, or the record format. How Jobs are queued against slots and
-memory is in [ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md)
+cancellation, or the record format. How Jobs are admitted against the Memory Budget is in [ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md)
 and [CONFIG.md](../user/CONFIG.md#jobs--concurrency-jobs); the MCP call
 lifecycle around a Job is in [MCP-TOOLS.md](MCP-TOOLS.md#the-common-lifecycle).
 
@@ -21,7 +20,7 @@ server can tell a running Job from a crashed one without in-memory state.
 |---|---|
 | `run_id`, `endpoint`, `argv`, `timeout_s` | What ran. |
 | `pid`, `process_identity` | The child process, for liveness checks. |
-| `started_at`, `run_started_at`, `ended_at` | Submit time, the time the child was first seen holding its slot, and the end time. Deadlines use `run_started_at` because a queued Job can wait a long time between the two. |
+| `started_at`, `run_started_at`, `ended_at` | Submit time, the time the child was first seen holding its claim, and the end time. Deadlines use `run_started_at` because a queued Job can wait a long time between the two. |
 | `status`, `exit_code` | `running`, `done` (exit 0 without timeout), `failed`, or `cancelled` (withdrawn by `booley_cancel`). |
 | `display_scope` | Which presentation the Job belongs to, so a Specialist's nested Job does not replace the Developer Agent's status line. |
 | `schema` | Envelope version, currently `2`; a record without it reads as `1`. |
@@ -87,7 +86,7 @@ worktree.
 
 ## Reading Jobs for display
 
-`booley.runtime.job_observation.JobObserver` reads Job records, slots,
+`booley.runtime.job_observation.JobObserver` reads Job records, claims,
 processes, and report artifacts from the roots its caller passes, and never
 polls, repairs, or writes a Job. The Booley Dashboard's
 `harness.dashboard.jobs.JobReader` chooses those roots: the current

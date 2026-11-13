@@ -3,6 +3,8 @@
 Status: accepted (2026-10-28; the `mutation_tester` Specialist, its scope
 entry and form, is superseded by [ADR 0088](0088-generate-mutants-deterministically-in-a-mutation-flow.md))
 
+Job slot wording below is superseded by [ADR 0087](0087-admit-jobs-against-a-measured-memory-budget.md): EDA Jobs are admitted by memory reservation.
+
 Supersedes the **Read-only** decision of ADR 0068 (Booley Dashboard) for
 human-started Booley Flows and Specialists only. Everything else that bullet
 keeps out of the Dashboard stays out: Goal-change approvals stay with chat,

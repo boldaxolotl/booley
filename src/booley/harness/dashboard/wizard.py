@@ -62,7 +62,7 @@ from booley.harness.dashboard.targets import (
     first_line,
 )
 from booley.harness.worktree_list import WorktreeListError
-from booley.runtime.job_slots import AdmissionOutlook
+from booley.runtime.job_slots import CLASS_MEMORY, AdmissionOutlook
 
 logger = logging.getLogger(__name__)
 
@@ -742,8 +742,11 @@ class RunWizard(ModalScreen[str | None]):
         return _Checked(request, "", result.facts, self._read_outlook(result.facts), uncommitted)
 
     def _read_outlook(self, facts: RunFacts) -> AdmissionOutlook | str | None:
-        """The queue a run would meet; ``None`` when it takes no slot, a reason when unreadable."""
-        if not facts.takes_slot or facts.job_class is None:
+        """The queue a run would meet; ``None`` when it takes no counted slot, a reason when unreadable.
+
+        A memory-admitted Job has no count-based outlook: its fit depends on its estimate.
+        """
+        if not facts.takes_slot or facts.job_class in (None, CLASS_MEMORY):
             return None
         try:
             return self._launcher.outlook(facts.job_class)

@@ -57,10 +57,13 @@ def write_targets(root: Path, flow: str, count: int = 1, *, core: str = "demo") 
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
+    from booley.flows import endpoint_admission
     from booley.runtime import runtime_context
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    # Seat Caps are covered by the admission tests; these tests are about Target omission.
+    monkeypatch.setattr(endpoint_admission, "required_seats", lambda _tools, _config: ())
     for name in ("BOOLEY_STATE_FILE", "BOOLEY_TICKET_FILE", "BOOLEY_LOGS_DIR", "BOOLEY_DIR"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))

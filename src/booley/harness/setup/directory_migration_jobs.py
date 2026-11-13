@@ -8,7 +8,7 @@ from pathlib import Path
 from booley.core.booley_layout import BooleyLayoutError
 from booley.core.process_identity import ProcessIdentity
 from booley.runtime.job_records import STATUS_RUNNING, JobRecordError, strict_records
-from booley.runtime.job_slots import JOB_CLASSES, SlotStore
+from booley.runtime.job_slots import JOB_CLASSES, RETIRED_JOB_CLASSES, SlotStore
 from booley.runtime.pid import DEAD, REUSED, ZOMBIE, is_pid_alive, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.session_paths import project_job_roots
@@ -27,7 +27,7 @@ def _slots(directory: Path) -> None:
     root = directory / "runtime/jobs/slots"
     refuse_symlinks(root)
     store = SlotStore(root)
-    for name in JOB_CLASSES:
+    for name in (*JOB_CLASSES, *RETIRED_JOB_CLASSES):
         refuse_symlinks(root / name)
         entries = list((root / name).glob("[hw]-*"))
         holders, waiters = store.observe(name)

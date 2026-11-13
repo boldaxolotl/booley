@@ -514,7 +514,7 @@ def test_all_campaigns_survive_terminal_progress_failure(
     )
 
     result = flow._execute_campaign(
-        AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
+        AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
         flow._coverage_campaign_run(),
     )
 
@@ -1293,7 +1293,7 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
 
     monkeypatch.setattr(flow, "_publish_and_run_campaign_requests", run)
     result = flow._execute_campaign(
-        AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
+        AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
         flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {})),
     )
     assert result.exit_code != 0
@@ -1782,7 +1782,7 @@ def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
     monkeypatch.setattr(flow, "_write_campaign_progress", checkpoint)
 
     result = flow._execute_campaign(
-        AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
+        AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
         flow._resume_campaign_run(validated, recovery),
     )
 
@@ -1908,7 +1908,7 @@ def test_campaign_kind_failure_cards_name_published_manifests(
     campaign, manifest = _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault)
 
     result = flow._execute_campaign(
-        AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False),
+        AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
         campaign,
     )
 

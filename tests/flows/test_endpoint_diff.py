@@ -31,8 +31,8 @@ def _detached_data_config(tmp_path, monkeypatch, text):
 def test_existing_data_budget_does_not_require_checkout(tmp_path, monkeypatch):
     from booley.runtime import shared_infra
 
-    _detached_data_config(tmp_path, monkeypatch, "[jobs]\nmax_heavy = 3\n")
-    assert shared_infra.load_job_budget_config() == {"jobs": {"max_heavy": 3}}
+    _detached_data_config(tmp_path, monkeypatch, "[jobs]\nmax_light = 3\n")
+    assert shared_infra.load_job_budget_config() == {"jobs": {"max_light": 3}}
 
 
 def test_empty_sdc_does_not_require_checkout(tmp_path, monkeypatch):

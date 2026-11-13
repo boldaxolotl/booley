@@ -27,7 +27,7 @@ from booley.runtime.endpoint_execution import work_item_attempt_requeues
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
-from .capacity import HeavyCapacity, HeavyCapacityError
+from .capacity import CampaignCapacity, CampaignCapacityError
 from .child_protocol import recover_interrupted_attempts
 from .codec import (
     SimulationCampaignIntegrityError,
@@ -632,7 +632,7 @@ class SimulationCampaign:
         self._raise_if_cancelled(request)
         self._expect_builds(request.admission, store, manifest, pending)
         flow_claim = self._flow_claim
-        capacity = HeavyCapacity(
+        capacity = CampaignCapacity(
             request.admission,
             manifest,
             project_data,
@@ -728,7 +728,7 @@ class SimulationCampaign:
                 )
             )
         except PreSimScopeStoppedError as signal:
-            raise HeavyCapacityError(str(signal)) from signal
+            raise CampaignCapacityError(str(signal)) from signal
         if work_item_attempt_requeues(passed=result.document["grade"] == "pass"):
             raise_if_cancelled_before_publication()  # a cancelled attempt is never requeued
             return True
@@ -800,7 +800,7 @@ def raise_if_cancelled_before_publication() -> None:
     """Refuse to publish a result produced under a cancelled supervised scope."""
     scope = current_supervised_execution()
     if scope is not None and scope.cancelled():
-        raise HeavyCapacityError(
+        raise CampaignCapacityError(
             f"execution cancelled before result publication: {scope.describe_cancellation()}"
         )
 

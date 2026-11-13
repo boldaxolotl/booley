@@ -112,7 +112,9 @@ def test_oom_build_names_oom_evidence_and_remedy(
 ) -> None:
     del case
     outcome = classify_build_outcome(
-        SubprocessResult(returncode=137, stdout=stdout, oom_kill_delta=1, peak_rss_mb=peak),
+        SubprocessResult(
+            returncode=137, stdout=stdout, oom_kill_delta=1, oom_killed=True, peak_rss_mb=peak
+        ),
         "abc123",
         timeout_s=600,
     )
@@ -129,7 +131,6 @@ def test_oom_build_names_oom_evidence_and_remedy(
 
 
 def test_ordinary_build_failure_during_another_jobs_oom_kill_is_not_oom(monkeypatch) -> None:
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
     diagnostic = "%Error: rtl/top.sv:4:3: syntax error"
     outcome = classify_build_outcome(
         SubprocessResult(
@@ -458,7 +459,9 @@ def test_build_report_fits_codec_detail_ceiling() -> None:
         + "BOOLEY_BUILD_STAGE token=abc123 rc=137\n"
     )
     outcome = classify_build_outcome(
-        SubprocessResult(returncode=137, stdout=hostile, oom_kill_delta=1, peak_rss_mb=31744.4),
+        SubprocessResult(
+            returncode=137, stdout=hostile, oom_kill_delta=1, oom_killed=True, peak_rss_mb=31744.4
+        ),
         "abc123",
         timeout_s=600,
     )
@@ -494,7 +497,11 @@ def test_hostile_oom_build_output_publishes_and_decodes(
         handle,
         _prepared(handle, cocotb=False),
         lambda _command, timeout: SubprocessResult(
-            returncode=137, stdout=hostile, oom_kill_delta=1, peak_rss_mb=31744.4
+            returncode=137,
+            stdout=hostile,
+            oom_kill_delta=1,
+            oom_killed=True,
+            peak_rss_mb=31744.4,
         ),
         ("smoke",),
         cocotb=False,

@@ -793,7 +793,7 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
         outer_permit=nullcontext,
         outer_scope=lambda stopped: SupervisedExecutionScope(None, tmp_path, stopped),
         cancellation_cause=lambda: None,
-        work_item_claim=lambda _item: None,
+        work_item_claim=lambda _item, alone=False: None,
     )
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])

@@ -218,9 +218,10 @@ was wrong or what evidence you want next.
 
 Every Flow or Specialist run is a **Job**. The agent starts it and waits for the
 result, which can take seconds for lint and much longer for big simulations or
-synthesis. By default only one simulation or synthesis runs at a time; others
-wait in a queue, so a run that seems stuck may just be waiting its turn. To
-allow more, see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
+synthesis. A simulation, synthesis or other EDA run starts while its estimated
+memory fits the Memory Budget; others wait in a queue, so a run that seems
+stuck may just be waiting its turn. To size the budget, see
+[Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
 
 The agent tells you the verdict and the paths to the report and logs. Reports
 from normal runs are kept under `.booley/flow-reports/`, never in your RTL. `booley resources`
@@ -274,11 +275,13 @@ the Targets and Test Runs you type. Output and Expert options go in the
 `Enter` keeps it. **Review the command** checks it and shows the equivalent
 `cd … && booley flow …` command. The
 review screen also says whether the Job runs now or queues behind other Jobs
-(with its position), and warns when the worktree has a connected session,
+(with its position). A Simulation, synthesis, FPGA, or lint Job is admitted by
+memory: the screen says it waits while its estimate does not fit the Memory
+Budget, without a position. The screen also warns when the worktree has a connected session,
 running Jobs, or uncommitted changes. A check it cannot make is reported as
 such. Synth and FPGA runs show their per-work-unit timeout. **Submit** starts
-the Job, unless the Job queue is full: then the screen says why and Submit does
-nothing until queued work drains. **Copy command** asks your terminal to copy the
+the Job, unless the Job queue is full: then Submit says why and does nothing until
+queued work drains. **Copy command** asks your terminal to copy the
 command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a
 Finished filter switches to Running, which keeps the Job listed after it
 finishes. `Esc` returns to where you started.

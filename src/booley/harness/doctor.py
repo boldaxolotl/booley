@@ -64,7 +64,7 @@ from booley.config.gateway import (
     gateway_model_pin_from_env,
     gateway_settings_from_env,
 )
-from booley.config.jobs import SeatCapError, parse_caps, parse_seat_caps, seat_cap_fix
+from booley.config.jobs import SeatCapError, parse_seat_caps, seat_cap_fix
 from booley.config.project_config import (
     lookup_target_section,
     normalize_tests_toml,
@@ -79,7 +79,6 @@ from booley.core.boundary import (
 )
 from booley.flows import execution, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
-from booley.flows.memory_admission import memory_admission_enabled
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -1318,7 +1317,7 @@ def _run_runtime_phase(
         reporter.skip_,
         reporter.fail_,
     )
-    _check_memory_invariant(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_sandbox_memory(project, reporter.pass_, reporter.warn_, reporter.skip_)
     _check_seat_caps(project, reporter.pass_, reporter.fail_)
     _run_container_checks(
         project,
@@ -1650,7 +1649,7 @@ def _worktree_core_directory(booley_dir: Path, project_root: Path | None) -> Pat
 
 
 # ---------------------------------------------------------------------------
-# ADR 0028 Decision 12: container memory invariant + runtime detection health
+# ADR 0087 Sandbox memory + ADR 0028 runtime detection health
 # ---------------------------------------------------------------------------
 
 # Actionable fix shared by both runtime-marker failures: the marker is baked by
@@ -1660,42 +1659,6 @@ _RUNTIME_MARKER_FIX = (
     "rebuild the base AND derived sandbox images (booley init --force) — "
     "the image predates the ADR 0028 runtime marker"
 )
-
-
-def _developer_mem_bytes(booley_dir: Path) -> tuple[int, bool]:
-    """(agent memory term, measured?) for the invariant arithmetic.
-
-    Uses the peak RSS ``doctor --deep`` recorded into runtime state when
-    present, else the ADR 0028 1 GiB fallback.
-    """
-    from booley.harness import developer_probe
-
-    measured = developer_probe.load_measurement(booley_dir)
-    if measured is not None:
-        return (measured, True)
-    return (developer_probe.FALLBACK_BYTES, False)
-
-
-def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMemoryReservation:
-    """Load project evidence and apply the extracted HEAVY-memory policy."""
-    jobs = project.booley_toml.get("jobs", {})
-    raw = jobs.get("heavy_memory") if isinstance(jobs, dict) else None
-    from booley.harness import synth_probe
-
-    measurement = synth_probe.load_measurement(project.common_booley_dir)
-    calibration = (
-        resource_policy.SynthesisMemoryCalibration(
-            target=str(measurement["target"]),
-            peak_rss_bytes=int(measurement["peak_rss_bytes"]),
-        )
-        if measurement is not None
-        else None
-    )
-    return resource_policy.heavy_memory_reservation(
-        raw,
-        calibration,
-        target_matrix.doctor_targets(project.project_root, "synth"),
-    )
 
 
 def _licensed_tools_in_use(project: ProjectAudit) -> tuple[str, ...]:
@@ -1712,14 +1675,13 @@ def _licensed_tools_in_use(project: ProjectAudit) -> tuple[str, ...]:
 
 
 def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) -> None:
-    """ADR 0087: memory admission needs a Seat Cap for every licensed EDA tool in use.
+    """ADR 0087: every licensed EDA tool in use needs a Seat Cap.
 
     Only the user knows how many licence seats they own, so this never writes a
-    value: a missing Seat Cap FAILs with the entry to add. Silent unless the
-    development switch is set; a malformed ``[jobs.seats]`` is the schema
-    audit's finding, not a second one here.
+    value: a missing Seat Cap FAILs with the entry to add. A malformed
+    ``[jobs.seats]`` is the schema audit's finding, not a second one here.
     """
-    if project is None or not memory_admission_enabled():
+    if project is None:
         return
     try:
         caps = parse_seat_caps(project.booley_toml)
@@ -1730,88 +1692,44 @@ def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) ->
             _pass(f"Seat Cap: {tool} = {caps[tool]}")
         else:
             _fail(
-                f"{tool} has no Seat Cap: memory admission needs one for every "
-                "licensed EDA tool the Project uses",
+                f"{tool} has no Seat Cap: every licensed EDA tool the Project uses needs one",
                 f"add {seat_cap_fix(tool)} to booley.toml; only you know how many seats you own",
             )
 
 
-def _check_memory_invariant(
+def _check_sandbox_memory(
     project: ProjectAudit | None,
     _pass: Check,
     _warn: Check,
     _skip: Check,
 ) -> None:
-    """ADR 0028 Decision 12 (advisory): the one container fits its caps.
+    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
 
-    Agent calls and every HEAVY EDA job
-    share one cgroup — a limit sized below what the ``[jobs]`` caps admit is
-    an OOM waiting to take the whole session down. WARN, never FAIL: the
-    budget terms are estimates, and an over-committed container still works
-    until the jobs actually coincide.
+    Unset, the budget falls back to the installed memory, which an agent and the
+    Jobs then share, so Doctor WARNs. Reads configuration only, so it runs
+    inside and outside the Sandbox.
     """
-    _warn = _warning_sink(_warn, "sandbox.memory-overcommit")
-
+    _warn = _warning_sink(_warn, "sandbox.memory-unset")
     if project is None:
-        _skip("memory invariant skipped - no valid project config")
+        _skip("sandbox memory skipped - no valid project config")
         return
-
-    if runtime_context.inside_session_runtime():
-        limit = resource_policy.cgroup_memory_limit_bytes()
-        if limit is None:
-            _pass(
-                "memory invariant: container memory is unlimited "
-                "(no cgroup limit) — nothing to enforce"
-            )
-            return
-        source = "container memory"
-    else:
-        mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
-        if not mem_str:
-            _skip("memory invariant: no [sandbox] memory limit configured — nothing to check")
-            return
-        limit = resource_policy.parse_memory_limit(mem_str)
-        if limit is None:
-            _warn(
-                f"[sandbox] memory = {mem_str!r} is unparseable — "
-                "cannot check the memory invariant"
-            )
-            return
-        source = "[sandbox] memory"
-
-    caps = parse_caps(project.booley_toml)
-    reservation = _heavy_memory_reservation(project)
-    if reservation.error:
-        _warn(reservation.error)
-        return
-    orch, measured = _developer_mem_bytes(project.common_booley_dir)
-    requirement = resource_policy.memory_requirement(
-        max_heavy=caps.max_heavy,
-        heavy_job_bytes=reservation.bytes,
-        agent_count=1,
-        agent_bytes=orch,
-    )
-    fmt = resource_policy.format_memory
-    arithmetic = (
-        f"{caps.max_heavy}x{fmt(reservation.bytes)} + 1x{fmt(orch)} "
-        f"+ 2g = {fmt(requirement.required_bytes)}"
-    )
-    orch_note = (
-        "measured agent RSS per Sandbox session"
-        if measured
-        else "1g agent fallback per Sandbox session — doctor --deep measures it"
-    )
-    if limit >= requirement.required_bytes:
-        _pass(
-            f"memory invariant holds: {source} {fmt(limit)} ≥ {arithmetic} "
-            f"({reservation.evidence}; {orch_note})"
-        )
-    else:
+    mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
+    if not mem_str:
         _warn(
-            f"{source} {fmt(limit)} < {arithmetic} — raise the "
-            "devcontainer memory or lower [jobs] caps; set [jobs].heavy_memory "
-            f"to record the calibrated reservation ({reservation.evidence}; {orch_note})"
+            "[sandbox].memory is unset: the Memory Budget falls back to installed memory "
+            "unless [jobs].memory_budget is set",
+            'set [sandbox] memory = "<size>" (booley resources shows Job peaks)',
         )
+        return
+    limit = resource_policy.parse_memory_limit(mem_str)
+    if limit is None:
+        _warn(
+            f"[sandbox] memory = {mem_str!r} is unparseable: the Memory Budget "
+            "falls back to installed memory",
+            'set [sandbox] memory to a size such as "16g"',
+        )
+        return
+    _pass(f"[sandbox].memory = {resource_policy.format_memory(limit)}: the Memory Budget limit")
 
 
 def _check_runtime_location(
@@ -1973,12 +1891,11 @@ def _run_developer_probe(
     *,
     completeness: doctor_deep.DeepCheckTracker | None = None,
 ) -> _AgentCallRecord | None:
-    """ADR 0028 Decision 12: measure the invariant's developer term.
+    """ADR 0028 Decision 12: measure the provider CLI's peak RSS.
 
     ``--deep``-only and in-container-only: the number that matters is the
     agent CLI's footprint *inside* the Sandbox. Fail-soft for probe LIMITATIONS (no process accounting, no RSS
-    reading, hit usage cap) — those degrade to a SKIP and the invariant keeps
-    its 1 GiB fallback. But a failure of the agent CALL itself (auth, dead
+    reading, hit usage cap) — those degrade to a SKIP. But a failure of the agent CALL itself (auth, dead
     backend) is a real project defect — other agent calls would fail
     for the same reason — and is reported as a FAIL, not hidden in a SKIP
     (the 2026-07-23 expired-creds incident sailed through a green doctor
@@ -2022,25 +1939,13 @@ def _run_developer_probe(
                     "container recreate); see the harness log for the provider's error",
                 )
             return record
-        _skip(
-            f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
-        )
+        _skip(f"Specialist provider memory probe skipped - {exc}")
         return record
     record = _AgentCallRecord("agent probe", measurement.usage)
-    try:
-        path = developer_probe.record_measurement(
-            project.common_booley_dir, measurement.peak_rss_bytes
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft by contract; the paid call is still accounted
-        _skip(
-            f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
-        )
-        return record
     bound = "" if measurement.exact else " (upper bound)"
     _pass(
         "provider CLI peak RSS measured: "
-        f"{resource_policy.format_memory(measurement.peak_rss_bytes)}{bound} — "
-        f"recorded to {path}"
+        f"{resource_policy.format_memory(measurement.peak_rss_bytes)}{bound}"
     )
     _pass("Specialist provider live authorization check completed successfully")
     if completeness is not None:
@@ -5587,10 +5492,6 @@ def _run_deep_checks(
                 timeout_s=timeout_s,
             )
             _diagnostics(outcome.report)
-            if flow_name == "synth" and outcome.process is not None:
-                _record_synth_memory_calibration(
-                    project, target, _flow_report_dir(project), _pass, _warn
-                )
             tracker.completed(identifier, outcome.completed)
     _run_fpga_impl_deep_notice(project, _skip)
     _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail, completeness=tracker)
@@ -6401,50 +6302,6 @@ def _run_flow_check(
         result,
         completed=not _is_simulate_tb_top_skip(project, flow_name, dry_run, result),
     )
-
-
-def _record_synth_memory_calibration(
-    project: ProjectAudit,
-    target: str,
-    report_dir: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Record boundary-process peak RSS from a completed Doctor synthesis."""
-    from booley.flows.implementation_publication import target_report_path
-
-    path = target_report_path("synth", target, report_dir)
-    try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return  # the Flow failure above owns the missing-report diagnostic
-    if not isinstance(report, dict) or not report.get("ppa_complete"):
-        return
-    peak = report.get("peak_rss_mb")
-    if isinstance(peak, bool) or not isinstance(peak, (int, float)) or peak <= 0:
-        _warning_sink(_warn, "synth.memory-calibration-unavailable", subject=target)(
-            f"synthesis Target {target} completed, but its process-tree "
-            "peak RSS could not be measured; [jobs].heavy_memory remains uncalibrated"
-        )
-        return
-    from booley.harness import synth_probe
-
-    synth_probe.record_measurement(
-        project.common_booley_dir,
-        target,
-        float(peak),
-        selected_targets=_doctor_targets(project, "synth"),
-    )
-    reservation = _heavy_memory_reservation(project)
-    _pass(
-        f"synth memory calibrated: {target} peaked at {float(peak) / 1024:.1f}g; "
-        f"HEAVY reservation {resource_policy.format_memory(reservation.bytes)} "
-        f"({reservation.evidence})"
-    )
-    # The runtime-phase invariant ran before the deep synthesis created this
-    # measurement. Re-evaluate now so the same Doctor invocation cannot finish
-    # green on the stale 4 GiB fallback.
-    _check_memory_invariant(project, _pass, _warn, lambda _message: None)
 
 
 def _is_simulate_tb_top_skip(
