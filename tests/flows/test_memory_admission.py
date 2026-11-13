@@ -32,12 +32,19 @@ def _admission() -> ModuleType:
     return importlib.import_module("booley.flows.memory_admission")
 
 
-def _record(target: str, phase: str, peak_mib: float, *, test_run: str = "") -> dict[str, Any]:
+def _record(
+    target: str,
+    phase: str,
+    peak_mib: float,
+    *,
+    test_run: str = "",
+    wall_s: float | None = 1.0,
+) -> dict[str, Any]:
     """A history record with only the fields the estimator reads."""
     return {
         "key": {"target": target, "phase": phase, "flags": [], "test_run": test_run},
         "peak_memory_mb": peak_mib,
-        "wall_s": 1.0,
+        "wall_s": wall_s,
     }
 
 
@@ -99,6 +106,29 @@ def test_unknown_job_waits_for_an_empty_budget_runs_alone_and_blocks(tmp_path: P
     assert store.refresh(small) == TokenState(QUEUED, position=0)
     store.release(waiting)
     assert store.refresh(small).state == HOLDING
+
+
+def test_only_a_job_with_its_own_wall_clock_history_jumps_ahead(tmp_path: Path) -> None:
+    # (wall-clock in the jumper's history record, claim wall_s, state)
+    cases = {"own": (48.0, 60.0, HOLDING), "borrowed": (None, None, QUEUED)}
+    for name, (jumper_wall_s, expected_wall_s, state) in cases.items():
+        world = FakeWorld()
+        store = make_store(tmp_path / name, world)
+        # Estimates: holder 1,000 MiB for 600 s, front 500 MiB (blocked), jumper 100 MiB.
+        records = [
+            _record("holder", "synth", 800, wall_s=480.0),
+            _record("front", "synth", 400, wall_s=480.0),
+            _record("jumper", "synth", 80, wall_s=jumper_wall_s),
+        ]
+        plans = [_plan(_synth(target), records) for target in ("holder", "front", "jumper")]
+        assert plans[2].claim.wall_s == expected_wall_s, name
+        holder, front, jumper = (
+            _join(store, world, 101 + index, plan) for index, plan in enumerate(plans)
+        )
+
+        assert store.refresh(holder).state == HOLDING, name
+        assert store.refresh(front).state == QUEUED, name
+        assert store.refresh(jumper).state == state, name
 
 
 def test_job_larger_than_the_budget_runs_alone_with_a_warning(tmp_path: Path) -> None:
