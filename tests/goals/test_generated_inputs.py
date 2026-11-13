@@ -520,26 +520,6 @@ def test_finish_refuses_a_0_3_0_producer_manifest_naming_its_invocation(layout):
     assert "/flow-reports/sim/7 and start a fresh run" in message.replace("\\", "/")
 
 
-def test_finish_refuses_an_older_layout_producer_manifest(layout):
-    """A 0.4.0 producer decodes as current: only its ``campaign/`` directory marks it old."""
-    fixture = (
-        Path(__file__).parents[1]
-        / "flows"
-        / "fixtures"
-        / "booley_0_4_0"
-        / "complete"
-        / "sim"
-        / "1"
-    )
-    classified(layout, copyto="dhrystone/dhry.hex", older_layout_invocation=fixture)
-    with pytest.raises(LifecycleError) as excinfo:
-        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
-    message = str(excinfo.value).replace("\\", "/")
-    assert "was written by an older Booley and is no longer supported" in message
-    assert "targets/sim/campaign" in message
-    assert "/flow-reports/sim/7 and start a fresh run" in message
-
-
 def _prepare_target_less_generated_record(
     layout,
     monkeypatch,

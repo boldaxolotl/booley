@@ -36,6 +36,10 @@ from booley.flows.sim.coverage_reference import (
 )
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.goals.entry import EntryEnvironment
+from booley.goals.finish import finish_goal
+from booley.goals.lifecycle import LifecycleError
+from booley.mcp.goal_completion import completion_environment
 from tests.flows.sim.campaign_test_support import coverage_invocation
 from tests.flows.sim.test_campaign_resume_diagnostics import _interrupted_campaign
 from tests.flows.sim.test_campaign_retention import _run_retention_cli
@@ -47,9 +51,14 @@ from tests.flows.sim.test_campaign_unsupported_formats import (
 from tests.flows.sim.test_campaign_unsupported_formats import (
     reports as _reports_fixture,
 )
+from tests.goals.conftest import layout as _layout_fixture
+from tests.goals.test_finish import request
+from tests.goals.test_generated_inputs import classified
 
 # The report-root fixture of the Part 1 tests, collected here under the same name.
 reports = _reports_fixture
+# The Goal worktree fixture of tests/goals, which the broad suite does not collect.
+layout = _layout_fixture
 
 # The Target of each captured run: ``complete`` ran ``sim``, the others ``sim_0``.
 _TARGET = {"complete": "sim", "interrupted": "sim_0", "coverage": "sim_0"}
@@ -280,3 +289,16 @@ def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) 
         validate_resume_manifest(mutation, project_root=tmp_path)
     assert "must name one exact record/manifest.json" in str(foreign.value)
     assert "older Booley" not in str(foreign.value)
+
+
+@pytest.mark.timeout(120)
+def test_finish_refuses_an_older_layout_producer_manifest(layout) -> None:
+    """A Goal's 0.4.0 producer decodes as current: only its ``campaign/`` directory marks it old."""
+    fixture = Path(__file__).parents[1] / "fixtures" / "booley_0_4_0" / "complete" / "sim" / "1"
+    classified(layout, copyto="dhrystone/dhry.hex", older_layout_invocation=fixture)
+    with pytest.raises(LifecycleError) as excinfo:
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+    message = str(excinfo.value).replace("\\", "/")
+    assert "was written by an older Booley and is no longer supported" in message
+    assert "targets/sim/campaign" in message
+    assert "/flow-reports/sim/7 and start a fresh run" in message
