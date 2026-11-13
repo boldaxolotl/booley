@@ -21,7 +21,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, OptionList, Static
+from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
 from booley.core.boundary import as_float
@@ -54,7 +55,7 @@ from booley.harness.dashboard.topbar import (
     TopBar,
 )
 from booley.harness.dashboard.view_probe import ViewState
-from booley.harness.dashboard.wizard import LOADING, RunWizard
+from booley.harness.dashboard.wizard import LOADING, RunPreset, RunWizard
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.presentation.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.presentation.report_results import (
@@ -102,8 +103,10 @@ HELP = (
     "The Jobs tab counts unfinished Jobs; the Jobs window always opens on All sessions\n"
     "and keeps the Running / Finished / All choice\n"
     "The Targets window lists the selected worktree's Targets with their core and Flows;\n"
-    "Enter shows filesets, tests, Test Variants and constraints. Its top bar Worktree item\n"
-    "picks the worktree: those with sessions first, the main checkout last\n"
+    "Enter shows filesets, tests, Test Variants and constraints, then the Flows that can\n"
+    "drive the Target: ↓ past the end reaches them, Enter opens Run's form with the worktree\n"
+    "and Target filled in, and Esc on the form returns to the detail. The Targets window's\n"
+    "top bar Worktree item picks the worktree: those with sessions first, the main checkout last\n"
     "Job details appear beside the list on wide terminals; Enter opens them on narrow terminals\n"
     "Booley call rows are informational; Enter does not open them\n"
     "The footer shows the keys that apply where the cursor is\n"
@@ -728,6 +731,29 @@ class SessionList(DataTable):
         return next((row for row in range(self.row_count) if row not in self.header_rows), 0)
 
 
+class FlowList(OptionList):
+    """The Flows that can drive the open Target; Up on the first one returns to the detail."""
+
+    def action_cursor_up(self) -> None:
+        if self.highlighted in (None, 0):
+            self.app.query_one("#aside").focus(scroll_visible=False)
+        else:
+            super().action_cursor_up()
+
+
+class DetailScroll(VerticalScroll):
+    """The detail panel: Down scrolls a line, and past the end reaches the Flow list, if shown."""
+
+    BINDINGS: ClassVar = [Binding("down", "scroll_or_flows", show=False)]
+
+    def action_scroll_or_flows(self) -> None:
+        flows = self.query_one("#target-flows", FlowList)
+        if flows.display and self.scroll_y >= self.max_scroll_y:
+            flows.focus()
+        else:
+            super().action_scroll_down()
+
+
 class DashboardApp(App[None]):
     """One observational Sandbox view, responsive and keyboard accessible."""
 
@@ -750,6 +776,7 @@ class DashboardApp(App[None]):
     #body { height: 1fr; }
     #list { width: 1fr; }
     #aside { width: 1fr; display: none; padding: 0 1; }
+    #target-flows { height: auto; max-height: 100%; display: none; }
     #empty { height: auto; }
     #footer { dock: bottom; height: 1; color: $text-muted; }
     """
@@ -807,6 +834,8 @@ class DashboardApp(App[None]):
         # Scroll offsets by (window, view, session, filter, detail selection).
         self._scrolls: dict[tuple[str, str, str | Owner | None, str, str], float] = {}
         self._detail_shown: tuple[str, str, str | Owner | None, str, str] | None = None
+        # The (Target, Flows) the Target detail's Flow list was filled for.
+        self._flows_shown: tuple[str, tuple[str, ...]] | None = None
 
     def compose(self) -> ComposeResult:
         yield TopBar(id="topbar")
@@ -818,8 +847,9 @@ class DashboardApp(App[None]):
         yield Static(id="empty", markup=False)
         with Horizontal(id="body"):
             yield SessionList(id="list", cursor_type="row")
-            with VerticalScroll(id="aside"):
+            with DetailScroll(id="aside"):
                 yield Static(id="detail", markup=False)
+                yield FlowList(id="target-flows", markup=False)
         yield Static(id="footer", markup=False)
 
     async def on_mount(self) -> None:
@@ -1044,8 +1074,11 @@ class DashboardApp(App[None]):
         self._pending_job = ""
         self._run_origin = None
 
-    def _open_run_wizard(self) -> None:
-        """Open the Run wizard over the current window, remembering where it started."""
+    def _open_run_wizard(self, preset: RunPreset | None = None) -> None:
+        """Open the Run wizard over the current window, remembering where it started.
+
+        A *preset* (from a Target detail) starts it at the form, its worktree and Target chosen.
+        """
         if self.launcher is None or self.targets is None:
             self.notify("Run unavailable: no Project root", severity="warning")
             return
@@ -1061,6 +1094,7 @@ class DashboardApp(App[None]):
                 message,
                 self._default_worktree,
                 self._worktree_occupants,
+                preset,
             ),
             lambda key: self._after_run(origin, key),
         )
@@ -1820,6 +1854,7 @@ class DashboardApp(App[None]):
         self.query_one(DataTable).display = not dedicated
         aside.styles.width = "100%" if dedicated else "50%"
         self.query_one("#detail", Static).update(linked_text(detail, paths))
+        self._fill_flow_list()
         # Entering a view (or returning to it from the other window) restores its offset;
         # later refreshes of the same view leave the user's scrolling alone.
         shown = self._scroll_key(nav)
@@ -1861,6 +1896,40 @@ class DashboardApp(App[None]):
             detail.append(row.value, style=SEMANTIC_STYLE.get(row.semantic, ""))
         return detail
 
+    def _target_flows(self) -> tuple[str, ...]:
+        """The Flows that can drive the open Target; none until its detail is read, or without Run."""
+        detail = self._detail
+        if (
+            self.navigation.view != "target"
+            or self.launcher is None
+            or detail is None
+            or detail.row is None
+            or detail.selector != self.navigation.selected
+        ):
+            return ()
+        return detail.row.flows
+
+    def _fill_flow_list(self) -> None:
+        """List the open Target's Flows; a refresh of the same list keeps the highlight."""
+        flows = self._target_flows()
+        options = self.query_one("#target-flows", FlowList)
+        shown = (self.navigation.selected, flows)
+        if shown != self._flows_shown:
+            self._flows_shown = shown
+            options.clear_options()
+            options.add_options([Option(flow, id=flow) for flow in flows])
+            options.highlighted = 0 if flows else None
+        options.display = bool(flows)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Enter on a Flow of the Target detail opens Run's form for that Target."""
+        if event.option_list.id != "target-flows":
+            return
+        event.stop()
+        detail, flow = self._detail, event.option.id
+        assert detail is not None and flow is not None  # the list is filled from the detail
+        self._open_run_wizard(RunPreset(detail.worktree, flow, detail.selector))
+
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
         # A highlight queued before shutdown can arrive after the table is gone.
         if not self.query(DataTable):
@@ -1887,6 +1956,8 @@ class DashboardApp(App[None]):
                     nested=len(self.windows[self.window]) > 1
                     or (self.window == "jobs" and self._run_origin is not None),
                     scrolling=self.focused is self.query_one("#aside"),
+                    flows_below=self.query_one("#target-flows").display,
+                    run_list=isinstance(self.focused, FlowList),
                     back_to=_back_target(self.navigation.view),
                     on_run=self.query_one(TopBar).current_kind() == RUN_ITEM,
                 )
@@ -2033,6 +2104,8 @@ class DashboardApp(App[None]):
                 text.append("\n  " + line)
         for problem in detail.problems:
             text.append(("\n" if text else "") + problem, style=SEMANTIC_STYLE["attention"])
+        if self._target_flows():  # the Flow list follows this last line
+            add("Run a Booley Flow", "")
         return text
 
     def _session_checkouts(self) -> list[tuple[Path, str]]:
