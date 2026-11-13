@@ -83,10 +83,12 @@ def spec_prefill(booley_dir: Path, worktree: Path) -> str:
 class ReviewerForm:
     """The reviewer's form: its rows follow the values, and the values become the command's words.
 
-    ``spec_prefill`` is the spec the worktree's active spec-review Goal names (else empty).
+    ``spec_prefill`` is the spec the worktree's active spec-review Goal names (else empty);
+    ``note`` says which model and Agent CLI the run uses (or why that cannot be read).
     """
 
     spec_prefill: str
+    note: str = ""
 
     def initial(self) -> dict[str, str]:
         """The values a fresh form starts with."""
