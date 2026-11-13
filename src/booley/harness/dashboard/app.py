@@ -659,7 +659,7 @@ def _job_resources(job: JobView) -> list[ResultLine]:
 
 
 def job_paths(job: JobView) -> tuple[str, ...]:
-    """Visible deduplicated side artifacts first, then ``job.log``, the transcript directory, exact report last."""
+    """Visible deduplicated side artifacts first, then ``job.log``, transcripts, exact report last."""
     report = str(job.report_path) if job.report_path is not None else None
     artifacts = tuple(path for path in dict.fromkeys(job.artifacts) if path != report)[:3]
     return (*artifacts, *(path for path in (job.log_path, job.transcript_dir, report) if path))

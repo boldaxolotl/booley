@@ -213,7 +213,10 @@ def _job_view(
 
 
 def _linkable(path: Path | None, *, directory: bool) -> str:
-    """Absolute *path* when it is a regular file (or a directory) outside any symlink, else ``""``."""
+    """Absolute *path* when a regular file (or a directory) that is no symlink, else ``""``.
+
+    Neither *path* nor its parent may be a symlink.
+    """
     if path is None:
         return ""
     try:
