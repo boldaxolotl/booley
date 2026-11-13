@@ -83,7 +83,7 @@ exits non-zero.
 <summary>With host-installed licensed tools</summary>
 
 A Sandbox using a
-[floating license](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy)
+[floating license](#commercial-eda-provisioning)
 can't be refreshed in place; see
 [Applying Sandbox changes](#applying-sandbox-changes) and
 [Commercial EDA provisioning](#commercial-eda-provisioning).
@@ -108,8 +108,7 @@ previous values until you apply the change. Use the first case that applies
 
 Two more cases apply. Check **After an EDA Grant change** before every case
 above, and **Floating license** before the headless case. See
-[Commercial EDA provisioning](#commercial-eda-provisioning) and the
-[Vivado host-provisioning policy](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
+[Commercial EDA provisioning](#commercial-eda-provisioning).
 
 - **After an EDA Grant change** (`booley eda grant add` or `revoke`): Booley
   withdraws the Sandbox's issuance, so the running Sandbox can't be refreshed. Stop
@@ -464,20 +463,52 @@ Verilator: the imports succeed but simulation hangs. See
 ## Commercial EDA provisioning
 
 A licensed EDA tool can't ship in the Sandbox image, so Booley can mount one
-installed on the host instead. Today this covers Vivado 2025.2 on Linux
-x86-64. The Project asks for it:
+installed on the host instead: read-only, at `/opt/booley-eda/vivado`, and the
+tool runs inside the Sandbox. Today this covers only **Vivado 2025.2 on a
+Linux x86-64 host**: not on Windows, macOS, or Arm.
 
-```toml
-[eda.vivado]
-provisioning = "host"   # default "image"
-```
+The Project's request alone grants nothing. The host administrator registers
+the installation and grants it to this exact Project folder with
+`booley eda`, so a Project can't pick a host path or license server itself.
+License server addresses, license file paths, and license environment
+variables don't belong in `booley.toml`.
 
-The request alone grants nothing. The host administrator registers the
-installation and grants it to this exact Project folder with `booley eda`, so
-a Project can't pick a host path or license server itself. License server
-addresses, license file paths, and license environment variables don't belong
-in `booley.toml`. The full procedure is in [Vivado host-provisioning
-policy](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
+Run these commands on the host, outside the Sandbox:
+
+1. Install Vivado 2025.2.
+2. Register the installation, pointing at its release root (the directory
+    that holds `Vivado/bin/vivado`):
+
+    ```bash
+    booley eda installation register vivado-2025.2 --kind vivado --source /tools/Xilinx/2025.2
+    ```
+
+3. Grant it to the Project. A Grant is tied to the Project's exact path: a
+    moved or copied Project needs a new one.
+
+    ```bash
+    booley eda grant add /path/to/project --kind vivado --installation vivado-2025.2
+    ```
+
+4. Ask for it in the Project's `booley.toml`:
+
+    ```toml
+    [eda.vivado]
+    provisioning = "host"   # default "image"
+    ```
+
+5. Apply the change as [Applying Sandbox changes](#applying-sandbox-changes)
+   describes after a Grant change, so the Sandbox gets the mount.
+
+`booley projects` lists every Project on this machine with its Grants. If
+Vivado will not start, see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#host-provisioned-vivado-will-not-start).
+Flow options and optimization profiles are in [FLOW-FPGA.md](FLOW-FPGA.md).
+
+**Floating licenses are experimental.** `booley eda license register` records a
+FlexNet license server, and `booley eda grant add --license-profile` gives the
+Project access to it. This path has not been tested against real paid-seat
+checkouts, so don't rely on it yet.
 
 ## Hand-written devcontainer specs (Codespaces)
 

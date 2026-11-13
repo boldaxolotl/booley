@@ -517,7 +517,7 @@ later; a preflight (`yosys -p 'help read_slang'`) fails fast on an older image.
 `slang` is required when the design puts parameterized interfaces on module
 ports or reads interface parameters hierarchically, which sv2v cannot
 transpile. Both feed the same mapping and timing steps. See
-[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
+[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#rtl-frontend-sv2v-vs-slang).
 
 ### Verdict semantics
 
@@ -652,8 +652,7 @@ host-issued specification fixes the image, wrapper, mount, environment, and
 license relay before the container starts, and a provisioning failure stops
 startup rather than running anything on the host. The Project cannot choose a
 host path, mount, execution location, or license environment. See
-[SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning) and
-[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
+[SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning).
 
 ### Normalized metrics
 
