@@ -16,6 +16,7 @@ from booley.harness import worktree_cmd
 from booley.harness.setup import readiness
 from tests.goals.conftest import git
 from tests.harness.test_worktree_rm import _add, _commit, _pin_namespace, _session, _versioned
+from tests.shipped_docs_support import rendered_shipped_docs
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -357,8 +358,8 @@ def test_parse_age_grammar() -> None:
 def test_cli_reference_and_config_document_gc() -> None:
     cli = (REPO_ROOT / "docs/user/CLI-REFERENCE.md").read_text(encoding="utf-8")
     config = (REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8")
-    packaged = (REPO_ROOT / "src/booley/data/docs/CONFIG.md").read_text(encoding="utf-8")
 
     assert "booley worktree gc [--older-than AGE]" in cli
     assert "gc_older_than" in config
-    assert "gc_older_than" in packaged
+    # The packaged copy is build output; the shipped doc is the rendered config source.
+    assert "gc_older_than" in rendered_shipped_docs(REPO_ROOT)["docs/user/CONFIG.md"]

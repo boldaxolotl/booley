@@ -38,7 +38,10 @@ REQUIRED_CONTENT_TESTS = (
     # Found only through documentation paths they name; pinned so that a
     # tighter reader rule cannot silently drop the docs/user guards.
     "tests/runtime/test_docs_links.py",
-    "tests/test_paths.py",
+    # The shipped-doc link-form cross-check and the retired-wording scan of rendered
+    # shipped docs: a documentation-only change must still run both.
+    "tests/docs/test_shipped_doc_link_forms.py",
+    "tests/test_retired_ticket_wording.py",
 )
 # Conftests that write documentation into temporary projects instead of
 # reading this repository's documentation, with the reason each is exempt.

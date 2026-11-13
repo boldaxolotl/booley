@@ -178,6 +178,27 @@ class MeasurementStore:
         """Every stored run of exactly this key, oldest first."""
         return [run for run in self._runs_in(key.project_tree) if run.key == key]
 
+    def readable_history(self, key: MeasurementKey) -> tuple[list[StoredRun], tuple[str, ...]]:
+        """Every readable run of exactly this key, oldest first, and the unreadable documents.
+
+        Unlike :meth:`history` this never fails closed: it is for a view, which reports a
+        document it cannot read instead of refusing. An unreadable document's key is
+        unknown, so the message of every unreadable document of the key's project tree is
+        returned, whichever key it might belong to.
+        """
+        directory = self._root / key.project_tree
+        runs: list[StoredRun] = []
+        problems: list[str] = []
+        for path in sorted(directory.glob("*.json")):
+            try:
+                run = _load(path)
+            except MeasurementStoreError as error:
+                problems.append(str(error))
+                continue
+            if run.key == key:
+                runs.append(run)
+        return sorted(runs, key=_order), tuple(problems)
+
     def measured(self, key: MeasurementKey) -> StoredRun | None:
         """The latest run of the key when it is Measured; a later bad run un-measures the key."""
         latest = self.history(key)[-1:]

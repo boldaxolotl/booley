@@ -54,8 +54,6 @@ _VENDORED_MANIFEST = "crates/bwave/vendor/fst-writer/Cargo.toml"
 _EDA_DOC = "docs/user/SUPPORTED-EDA-TOOLS.md"
 _SESSION_CONTRACT = ".github/contracts/session-runtime.toml"
 _TROUBLESHOOTING = "docs/user/TROUBLESHOOTING.md"
-_TROUBLESHOOTING_PACKAGED = "src/booley/data/docs/TROUBLESHOOTING.md"
-_EDA_DOC_PACKAGED = "src/booley/data/docs/SUPPORTED-EDA-TOOLS.md"
 _VERILATOR_IDENTITY = "src/booley/flows/sim/verilator_identity.py"
 _DEVCONTAINER = "src/booley/runtime/devcontainer.py"
 _VAPORVIEW_MODULE = "src/booley/runtime/vaporview.py"
@@ -79,7 +77,7 @@ _ACTIONLINT = "rhysd/actionlint"
 # Every literal copy of a canonical pin that Renovate must rewrite with it: (file,
 # dependency, number of places). A reworded line or a new copy fails the extraction test
 # below until this table and renovate.json agree.
-_AUTHORED_COPIES: tuple[tuple[str, str, int], ...] = (
+_COPIES: tuple[tuple[str, str, int], ...] = (
     (_SESSION_CONTRACT, _VERILATOR, 1),
     (_EDA_DOC, _VERILATOR, 1),
     (_VERILATOR_IDENTITY, _VERILATOR, 1),
@@ -99,25 +97,17 @@ _AUTHORED_COPIES: tuple[tuple[str, str, int], ...] = (
     (_EDA_DOC, _SPIKE, 1),
     (_VAPORVIEW_MODULE, _VAPORVIEW, 1),
     (_TROUBLESHOOTING, _VAPORVIEW, 3),
-    (_TROUBLESHOOTING_PACKAGED, _VAPORVIEW, 3),
     (_DEVCONTAINER, _HDL, 1),
     (_SESSION_CONTRACT, _HDL, 1),
     (_TROUBLESHOOTING, _HDL, 1),
-    (_TROUBLESHOOTING_PACKAGED, _HDL, 1),
     (_DEVCONTAINER, _LIVE_SERVER, 1),
     (_SESSION_CONTRACT, _LIVE_SERVER, 1),
     (_TROUBLESHOOTING, _LIVE_SERVER, 1),
-    (_TROUBLESHOOTING_PACKAGED, _LIVE_SERVER, 1),
     (_EDA_DOC, _UBUNTU, 1),
     (_DOCKERFILE_BASE, _UBUNTU, 1),
     (_DOCKERFILE_BASE, _OPENROAD_BUILDER, 1),
     (_DOCKERFILE_BASE, _OPENROAD_EDA_BUILDER, 1),
 )
-# The generated packaged copy of the supported-tools doc carries every pin its source does.
-_COPIES: tuple[tuple[str, str, int], ...] = _AUTHORED_COPIES + tuple(
-    (_EDA_DOC_PACKAGED, dep, count) for file, dep, count in _AUTHORED_COPIES if file == _EDA_DOC
-)
-
 # Directories that hold the pins Renovate tracks outside Python and Rust manifests.
 _PIN_ROOTS = (
     ".github/actions",
@@ -1262,6 +1252,21 @@ def test_every_listed_copy_is_extracted_with_its_canonical_value() -> None:
     patterns = [p for m in _config()["customManagers"] for p in m["managerFilePatterns"]]
     for path in _historical_paths():
         assert not _file_pattern_matches(patterns, path), f"{path} is a dated record"
+
+
+def test_no_manager_names_rendered_doc_copies() -> None:
+    """The packaged doc copies are Git-ignored build output; no rule may track them (#3658)."""
+    config = _config()
+    rendered = "src/booley/data/docs/CONFIG.md"
+    patterns = [
+        pattern
+        for manager in config["customManagers"]
+        for pattern in manager["managerFilePatterns"]
+    ]
+    names = [name for rule in config["packageRules"] for name in rule.get("matchFileNames", [])]
+    assert not [pattern for pattern in patterns if "data/docs" in pattern]
+    assert not [name for name in names if name.startswith("src/booley/data/docs")]
+    assert not _file_pattern_matches(patterns, rendered)
 
 
 def test_copy_match_strings_use_only_re2_syntax() -> None:
