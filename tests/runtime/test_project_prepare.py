@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
+from tests.pipe_holding_tree import (
+    PARENT_SCRIPT,
+    heartbeat_tree,
+    wait_until_heartbeat_stops,
+)
 from tests.subprocess_budget import run_bounded_child
 
 import booley
@@ -143,6 +149,60 @@ def _hook_checkout(tmp_path: Path, body: str) -> Path:
     hooks.mkdir(parents=True)
     (hooks / "post-setup.py").write_text(body, encoding="utf-8")
     return root
+
+
+def _heartbeat_hook_checkout(tmp_path: Path, paths: dict[str, Path]) -> Path:
+    """A checkout whose hook is ``PARENT_SCRIPT``: it spawns a heartbeat grandchild and waits."""
+    argv = [str(paths["heartbeat"]), str(paths["stop"]), str(paths["done"]), "live-until-stop"]
+    return _hook_checkout(tmp_path, f"import sys\nsys.argv[1:] = {argv!r}\n{PARENT_SCRIPT}")
+
+
+def test_captured_hook_timeout_stops_the_hook_tree(tmp_path: Path) -> None:
+    with heartbeat_tree(tmp_path) as paths:
+        root = _heartbeat_hook_checkout(tmp_path, paths)
+        started = time.monotonic()
+
+        result = prepare_project(root, root, slug="s", sim_flow_enabled=False, timeout_s=2)
+
+        # 2 s + the helper's 32 s Windows margin, below the grandchild's 40 s self-exit
+        assert time.monotonic() - started < 38
+        assert not result.ok and result.error == "post-setup hook timed out (2s)"
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
+
+
+def test_captured_hook_start_failure_is_reported(tmp_path: Path, monkeypatch) -> None:
+    root = _hook_checkout(tmp_path, "pass\n")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "absent-python"))
+
+    result = prepare_project(root, root, slug="s", sim_flow_enabled=False)
+
+    assert not result.ok
+    assert "OS error" in result.error
+
+
+def test_captured_hook_is_stopped_with_its_descendants_when_interrupted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    real_communicate = subprocess.Popen.communicate
+
+    def interrupt_once_started(self, *args, **kwargs):
+        # Only the hook's own process: Windows tree-kill runs taskkill through Popen too.
+        if any("post-setup" in str(arg) for arg in self.args):
+            deadline = time.monotonic() + 15
+            while not paths["heartbeat"].exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            raise KeyboardInterrupt("injected interrupt")
+        return real_communicate(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", interrupt_once_started)
+    with heartbeat_tree(tmp_path) as paths:
+        root = _heartbeat_hook_checkout(tmp_path, paths)
+
+        with pytest.raises(KeyboardInterrupt, match="injected interrupt"):
+            prepare_project(root, root, slug="s", sim_flow_enabled=False)
+
+        assert paths["heartbeat"].exists()
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
 
 
 def test_logged_hook_output_reaches_log_and_stderr(tmp_path: Path, capsys) -> None:
