@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; Read-only superseded for human launches by ADR 0086, 2026-10-28; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration; amended 2026-11-08: readable process keys; amended 2026-11-08: unseen Dashboards and the open command, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; Read-only superseded for human launches by ADR 0086, 2026-10-28; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration; amended 2026-11-08: readable process keys; amended 2026-11-08: unseen Dashboards and the open command, see Amendments; superseded except Jobs and Sandbox resources by [ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md) once T3 Code replaces VS Code)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
