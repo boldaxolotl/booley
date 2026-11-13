@@ -2567,6 +2567,14 @@ def _summary_report(observations=(), actions=(), status=LineEndingStatus.UNSAFE)
     )
 
 
+def test_completed_normalization_of_no_files_renders_nothing(capsys):
+    done = ActionResult(ActionKind.NORMALIZE_FILES, ActionState.COMPLETED, count=0)
+
+    git_hooks._render_line_ending_action(done)
+
+    assert capsys.readouterr().out == ""
+
+
 def test_dirty_tree_summary_comes_from_refusal_reason():
     from booley.harness.setup import line_endings
 
