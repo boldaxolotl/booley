@@ -99,26 +99,39 @@ HOST_DOCKER_MODULES = (
 
 
 def _routed_bounded_capture(
-    argv: list[str], *, timeout: float, cwd=None, env=None, errors: str = "replace"
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd=None,
+    env=None,
+    errors: str = "replace",
+    input: bytes | None = None,  # noqa: A002 - mirrors run_captured_bounded
+    stdin=None,
+    stdout=None,
+    text: bool = True,
 ):
     """Stand in for ``platform_paths.run_captured_bounded`` using ``subprocess.run``.
 
     Production starts the child with ``Popen`` so it can kill the whole process tree on
     timeout; tests that fake ``subprocess.run`` cannot see that.  This looks
-    ``subprocess.run`` up at call time and takes the same ``timeout``, ``cwd``, ``env``
-    and ``errors`` (decoding mode).
+    ``subprocess.run`` up at call time and takes the same ``timeout``, ``cwd``, ``env``,
+    ``errors`` (decoding mode), ``input``, ``stdin``, ``stdout`` (a redirect leaves
+    ``result.stdout`` ``None``) and ``text`` (``False`` returns bytes).
     """
+    codec = {"encoding": "utf-8", "errors": errors} if text else {}
     # Unbounded child on purpose: the tests' subprocess.run fakes must intercept this call.
     return subprocess.run(
         argv,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors=errors,
+        input=input,
+        stdin=stdin,
+        stdout=subprocess.PIPE if stdout is None else stdout,
+        stderr=subprocess.PIPE,
+        text=text,
         timeout=timeout,
         cwd=cwd,
         env=env,
         check=False,
+        **codec,
     )
 
 
