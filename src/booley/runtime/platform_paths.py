@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import IO, Any, Literal, cast, overload
@@ -187,6 +188,11 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
 #: stdin feeder thread to finish, after it killed the process tree.
 _KILL_DRAIN_TIMEOUT_S = 5
 
+#: Longest single blocking wait inside ``run_captured_bounded``. CPython before
+#: 3.14 cannot deliver Ctrl-C to a Windows ``communicate`` blocked in one long
+#: thread join, so the wait is sliced to let an interrupt through promptly.
+_INTERRUPT_POLL_S = 0.5
+
 #: A stdin/stdout stream for ``run_captured_bounded``: an open file, a file
 #: descriptor, or ``subprocess.DEVNULL``.
 _Stream = int | IO[Any] | None
@@ -268,6 +274,23 @@ def _spawn(
     return proc, feeder
 
 
+def _communicate_sliced(
+    proc: subprocess.Popen[bytes], timeout: float
+) -> tuple[bytes | None, bytes | None]:
+    """``proc.communicate(timeout=...)`` in short slices so an interrupt is prompt.
+
+    Raises ``subprocess.TimeoutExpired`` once *timeout* seconds have passed.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        try:
+            return proc.communicate(timeout=max(0.0, min(remaining, _INTERRUPT_POLL_S)))
+        except subprocess.TimeoutExpired:
+            if deadline - time.monotonic() <= 0:
+                raise
+
+
 def _close_pipes_on_posix(proc: subprocess.Popen[bytes]) -> None:
     """Close *proc*'s output pipes after an abandoned or interrupted ``communicate``.
 
@@ -296,7 +319,7 @@ def _run_bounded(
     proc, feeder = _spawn(argv, cwd=cwd, env=env, input=input, stdin=stdin, stdout=stdout)
     try:
         try:
-            out, err = proc.communicate(timeout=timeout)
+            out, err = _communicate_sliced(proc, timeout)
         except subprocess.TimeoutExpired:
             kill_process_tree(proc)
             try:
