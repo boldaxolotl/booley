@@ -172,6 +172,10 @@ RESULT: PASS (8/10 detected)
 Survivors are listed with file, line, and the original and mutated code: each
 is a spot your tests do not check.
 
+On a `--count auto` run the header reads `count auto -> N (formula F, budget cap C)`,
+and `mutation-results.md` shows the same under Count, so you can see whether the
+timeout budget limited the count.
+
 | Verdict | Meaning | Exit |
 |---|---|---:|
 | `PASS` | Detected Mutants reach the threshold. | `0` |
@@ -186,7 +190,7 @@ the Booley Directory or `--report-dir`
 |---|---|
 | `mutation/<N>/campaign/mutation-results.md` | The Mutants and the outcome of each. |
 | `mutation/<N>/campaign/mutation-specs.md` | Every Mutant: operator, file and line, original and mutated code. |
-| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, scope hashes) and each Mutant's status. |
+| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, scope hashes) and each Mutant's status. On a `--count auto` run, also `auto`, `formula_count` and `budget_capped` beside the identity, which stays that of `--count N`. |
 | `mutation/<N>/campaign/variants/` | The mutated source of each Mutant. |
 | `mutation/<N>/campaign/baseline.log`, `mutant-logs/` | The simulator output of the baseline and of each Mutant. |
 

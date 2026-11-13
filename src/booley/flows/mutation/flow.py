@@ -459,13 +459,16 @@ def _invalid_mutants_line(invalid_count: int) -> str:
     )
 
 
-def _identity_lines(identity: Mapping[str, Any]) -> list[str]:
-    """Markdown lines naming everything that reproduces this run's Mutants."""
+def _identity_lines(identity: Mapping[str, Any], count_label: str | None = None) -> list[str]:
+    """Markdown lines naming everything that reproduces this run's Mutants.
+
+    ``count_label`` replaces the bare count when it was derived (``--count auto``).
+    """
     lines = [
         "## Identity",
         "",
         f"- Seed: {identity['seed']}",
-        f"- Count: {identity['count']}",
+        f"- Count: {count_label or identity['count']}",
         f"- Generator version: {identity['generator_version']}",
         f"- pyslang version: {identity['pyslang_version']}",
     ]
@@ -482,6 +485,7 @@ def generate_results_markdown(
     *,
     variant_paths: dict[int, str] | None = None,
     identity: Mapping[str, Any] | None = None,
+    count_label: str | None = None,
 ) -> str:
     variant_paths = variant_paths or {}
     classified = summary.classify()
@@ -535,7 +539,7 @@ def generate_results_markdown(
         )
     lines.append("")
     if identity is not None:
-        lines += _identity_lines(identity)
+        lines += _identity_lines(identity, count_label)
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
@@ -592,6 +596,27 @@ class MutationRunPlan:
     #: ``min_detected`` came from the caller or the criterion, so a generator
     #: shortfall does not recompute it.
     explicit_min_detected: bool = True
+
+    def auto_count_fields(self, scored: int) -> dict[str, Any]:
+        """The ``--count auto`` fields shared by the report detail and the manifest.
+
+        Empty for an explicit count. ``scored`` is the number of Mutants actually
+        scored, so a generator or equivalence shortfall alone can set ``budget_capped``.
+        """
+        if not self.auto_mode:
+            return {}
+        return {
+            "auto": True,
+            "formula_count": self.formula_count,
+            "budget_capped": scored < self.formula_count,
+        }
+
+    def count_label(self) -> str:
+        """The count as the report shows it, naming the formula and cap for ``auto``."""
+        if not self.auto_mode or self.source_size_budget is None:
+            return str(self.count)
+        cap = self.source_size_budget["budget_cap"]
+        return f"auto -> {self.count} (formula {self.formula_count}, budget cap {cap})"
 
 
 @dataclass
@@ -2152,11 +2177,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     ) -> EndpointOutcome:
         # Unpack the plan config + run outcome the assembly below reads.
         min_detected, target = plan.min_detected, plan.target
-        auto_mode, formula_count, source_size_budget = (
-            plan.auto_mode,
-            plan.formula_count,
-            plan.source_size_budget,
-        )
+        auto_mode, source_size_budget = plan.auto_mode, plan.source_size_budget
         summary, count = inputs.summary, inputs.count
 
         valid_count = summary.detected_count + summary.not_detected_count
@@ -2175,10 +2196,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if inputs.shortfall:
             detail["shortfall"] = inputs.shortfall
         detail["equivalent_dropped"] = inputs.equivalent_dropped
+        detail.update(plan.auto_count_fields(count))
         if auto_mode:
-            detail["auto"] = True
-            detail["formula_count"] = formula_count
-            detail["budget_capped"] = count < formula_count
             detail["source_size_budget"] = source_size_budget
         if inputs.evidence:
             detail["evidence"] = inputs.evidence
@@ -2288,6 +2307,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 plan.min_detected,
                 variant_paths=links,
                 identity=inputs.identity,
+                count_label=plan.count_label(),
             ),
             encoding="utf-8",
         )
@@ -2360,6 +2380,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             "source_fingerprint": inputs.variants.source_fingerprint(),
             "scope_hashes": plan.scope_hashes,
             "identity": inputs.identity,
+            **plan.auto_count_fields(inputs.count),
             "baseline": {
                 "status": "passed",
                 "log": baseline_log.name if baseline_log is not None else None,
@@ -2432,13 +2453,13 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         return base + suffix
 
     @staticmethod
-    def _identity_header(inputs: RunResultInputs) -> str:
+    def _identity_header(plan: MutationRunPlan, inputs: RunResultInputs) -> str:
         """The first report line: how many Mutants ran and what reproduces them."""
         identity = inputs.identity
         verilator = f", {identity['verilator_version']}" if "verilator_version" in identity else ""
         return (
             f"[mutation_test] {len(inputs.summary.specs)} Mutants "
-            f"(seed {identity['seed']}, count {identity['count']}, "
+            f"(seed {identity['seed']}, count {plan.count_label()}, "
             f"generator {identity['generator_version']}, pyslang {identity['pyslang_version']}"
             f"{verilator})"
         )
@@ -2454,7 +2475,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         passed = summary.detected_count >= min_detected
         gate = "PASS" if passed else "FAIL"
         source = "explicit" if plan.explicit_min_detected else "default 80% of --count"
-        lines: list[str] = [self._identity_header(inputs)]
+        lines: list[str] = [self._identity_header(plan, inputs)]
         if inputs.shortfall:
             lines.append(f"[mutation_test] {inputs.shortfall}")
         lines.append(

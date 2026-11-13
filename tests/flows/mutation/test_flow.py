@@ -1689,10 +1689,60 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
         f"`{_SCOPE}`: {digest}",
     ):
         assert line in markdown
+    # An explicit count is shown as the bare number and adds no auto fields.
+    assert "- Count: 2\n" in markdown
+    assert not {"auto", "formula_count", "budget_capped"} & manifest.keys()
     assert (
         f"seed 5, count 2, generator {GENERATOR_VERSION}, "
         f"pyslang {expected['pyslang_version']}, {_VERILATOR_VERSION})"
     ) in result.report_text
+
+
+_AUTO_COUNT_LABEL = "auto -> 3 (formula 6, budget cap 3)"
+
+
+def test_auto_count_report_names_formula_and_cap(tmp_path: Path, monkeypatch) -> None:
+    """32 source lines give formula 6; a 450 s timeout caps the count at 3."""
+    _, result, _ = _campaign(
+        tmp_path,
+        monkeypatch,
+        count="auto",
+        min_detected=0,
+        extra_args=["--timeout-ms", "450000"],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert f"count {_AUTO_COUNT_LABEL}, generator" in result.report_text.splitlines()[0]
+    assert f"- Count: {_AUTO_COUNT_LABEL}\n" in _results_markdown(tmp_path, result)
+
+
+def test_auto_count_manifest_keeps_identity_of_the_resolved_count(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, auto, _ = _campaign(
+        tmp_path,
+        monkeypatch,
+        count="auto",
+        min_detected=0,
+        extra_args=["--timeout-ms", "450000"],
+    )
+    _, explicit, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
+
+    assert auto.exit_code == explicit.exit_code == EXIT_SUCCESS, auto.report_text
+    auto_manifest = json.loads(
+        (tmp_path / auto.detail["artifacts"]["manifest"]).read_text("utf-8")
+    )
+    explicit_manifest = json.loads(
+        (tmp_path / explicit.detail["artifacts"]["manifest"]).read_text("utf-8")
+    )
+    fields = ("auto", "formula_count", "budget_capped")
+    assert (auto_manifest["auto"], auto_manifest["formula_count"]) == (True, 6)
+    assert auto_manifest["budget_capped"] is True
+    # The manifest mirrors the report detail and keeps the fields out of the identity.
+    assert {key: auto_manifest[key] for key in fields} == {key: auto.detail[key] for key in fields}
+    assert not set(fields) & auto_manifest["identity"].keys()
+    assert auto_manifest["identity"] == explicit_manifest["identity"]
+    assert not set(fields) & explicit_manifest.keys()
 
 
 def test_happy_path_publishes_campaign_artifacts(tmp_path: Path, monkeypatch) -> None:

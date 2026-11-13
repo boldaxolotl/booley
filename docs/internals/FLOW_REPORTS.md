@@ -516,7 +516,9 @@ Job report `detail` fields:
 | `variant_files`, `artifacts` | The mutated sources and the campaign file references. |
 
 `manifest.json` has `schema_version`, `run_id`, `target`, `eda_tool`,
-`source_fingerprint`, `scope_hashes`, `identity`, `baseline` (`status`, `log`),
+`source_fingerprint`, `scope_hashes`, `identity`, on a `--count auto` run `auto`,
+`formula_count` and `budget_capped` as in the detail (outside `identity`),
+`baseline` (`status`, `log`),
 `mutants` (the `classified` rows, with `log` and `variant` relative to
 `campaign/`), and `artifacts`. A run without a report directory keeps the
 variants only under the Booley Directory's `.runtime/mutation/` scratch tree.
