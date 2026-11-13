@@ -305,7 +305,8 @@ async def _relay_bidirectional(
                 raise RelayIdleTimeoutError
             if activity_waiter not in done:
                 activity_waiter.cancel()
-            for task in [task for task in tasks if task in done]:
+            finished = [pending for pending in tasks if pending in done]
+            for task in finished:
                 counts[tasks.pop(task)] = task.result()
         return counts[0], counts[1]
     finally:
