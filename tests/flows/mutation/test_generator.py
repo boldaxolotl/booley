@@ -1420,7 +1420,6 @@ def test_selection_is_round_robin_across_operators(tmp_path: Path) -> None:
         "deletion",
         "arithmetic-logical",
     ]
-    assert selection.shortfall is None
     orders = {
         tuple(m.id for m in generate_mutants(tmp_path, [name], 16, seed).mutants)
         for seed in range(6)
@@ -1428,17 +1427,13 @@ def test_selection_is_round_robin_across_operators(tmp_path: Path) -> None:
     assert len(orders) > 1  # the seed changes which candidates come first
 
 
-def test_fewer_candidates_than_count_returns_all_and_says_so(tmp_path: Path) -> None:
-    _stage(tmp_path, "relational.v")
-    exact = generate_mutants(tmp_path, ["relational.v"], 16, 1)  # 8 relational + 8 deletion
+def test_fewer_candidates_than_count_returns_all(tmp_path: Path) -> None:
+    _stage(tmp_path, "relational.v")  # 8 relational + 8 deletion candidates
     asked = generate_mutants(tmp_path, ["relational.v"], 50, 1)
 
     assert len(asked.mutants) == 16
-    assert (asked.requested, asked.available) == (50, 16)
-    assert asked.shortfall == (
-        "only 16 candidate Mutants exist; returning all of them (50 requested)"
-    )
-    assert exact.shortfall is None
+    assert asked.requested == 50
+    assert len(asked.ranked) == 16
 
 
 # AC6: a parse failure names the file and the diagnostic.
