@@ -31,7 +31,6 @@ def _declared_host_members(module: ModuleType, class_name: str) -> set[str]:
 def test_mixin_host_declarations_are_provided_by_simulate_flow() -> None:
     """Pyright cannot see a declared member the host dropped; this does."""
     flow = SimulateFlow()
-    flow.begin_invocation()
     for module, class_name in (
         (elab_only, "ElabOnlyMixin"),
         (standalone, "StandaloneMixin"),

@@ -2,16 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
-
-    from booley.criteria.state import DevelopmentState
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.mode import SimulationMode
-    from booley.flows.sim.request import SimRequest
-
 import json
 import logging
 import os
@@ -19,7 +9,7 @@ import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.config.project_config import (
     lookup_target_section,
@@ -87,6 +77,14 @@ from .build_session import (
 from .execution.artifacts import artifact_path_component as _artifact_path_component
 from .standalone import _StandaloneOutcome, _StandalonePlanRecipe
 from .test_selection import _get_test_envs
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.mode import SimulationMode
+    from booley.flows.sim.request import SimRequest
 
 logger = logging.getLogger(__name__)
 

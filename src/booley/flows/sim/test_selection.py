@@ -2,18 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from booley.flows.execution_persistence import FlowExecutionAdapter
-    from booley.flows.sim.request import SimRequest
-    from booley.flows.sim.test_run_invocation import TestRunInvocation
-    from booley.targets.domain import TargetHandle
-
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from booley.config.project_config import (
     load_test_configuration_field,
@@ -55,6 +47,12 @@ from .execution import (
 )
 from .execution.engine import simulation_adapter_kind, target_test_plan
 
+if TYPE_CHECKING:
+    from booley.flows.execution_persistence import FlowExecutionAdapter
+    from booley.flows.sim.request import SimRequest
+    from booley.flows.sim.test_run_invocation import TestRunInvocation
+    from booley.targets.domain import TargetHandle
+
 
 def _get_test_names(work_dir: Path | str) -> dict[str, list[str]]:
     """Load the per-target test names (tests.toml ``tests``)."""
@@ -93,6 +91,7 @@ class SimulationTestSelectionMixin:
     """Test-selection validation and resolution for `SimulateFlow`."""
 
     if TYPE_CHECKING:
+        # Host members SimulateFlow provides; Pyright checks them against the host.
         execution_adapter: FlowExecutionAdapter
         _test_runs: TestRunInvocation
 

@@ -2,14 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from booley.criteria.state import DevelopmentState
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.request import SimRequest
-    from booley.targets.domain import TargetHandle
-
 import logging
 import math
 import os
@@ -20,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from booley.core.build_paths import work_root_for
 from booley.core.hdl import declared_module_names, strip_comments
@@ -33,6 +25,12 @@ from booley.targets.domain import TargetInspection
 
 from .. import output_budget
 from .mode import SimulationMode
+
+if TYPE_CHECKING:
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.request import SimRequest
+    from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +310,8 @@ class StandaloneMixin:
     _standalone_plan_recipe: _StandalonePlanRecipe | None
 
     if TYPE_CHECKING:
+        # Host members SimulateFlow provides; Pyright checks them against the host.
+        _eda_tool: str | None
 
         @property
         def args(self) -> SimRequest: ...
