@@ -51,3 +51,57 @@ def test_snippets_are_capped_and_empty_output_is_safe() -> None:
     assert (
         detection_snippet("t", "", timed_out=True) == "t: ran past its time limit and was stopped"
     )
+
+
+def test_header_and_banner_lines_are_never_anchors() -> None:
+    output = "\n".join(
+        [
+            "[Verilator simulation: assertions on verilator]",
+            "CMD: vvp sim +define+ASSERT_ON",
+            "FILTER: mismatch",
+            "FATAL: real failure",
+        ]
+    )
+
+    assert detection_snippet("full", output, timed_out=False) == "FATAL: real failure"
+
+
+def test_names_file_names_and_zero_counts_are_not_failures() -> None:
+    output = "\n".join(
+        [
+            "[verilator simulation: assertion_tb]",
+            "running assertions.test_x (1/2)",
+            "writing error.log",
+            "[SIM] failed=0",
+            "Error: tb.sv:9: real failure.",
+        ]
+    )
+
+    assert detection_snippet("full", output, timed_out=False).startswith("Error: tb.sv:9")
+
+
+def test_killing_test_line_outranks_an_earlier_failure_word() -> None:
+    output = "\n".join(
+        [
+            "    10.00ns INFO  test_a: error flag cleared",
+            "    60.00ns WARNING  cocotb.regression  mixed.test_bad failed",
+            "    AssertionError: boom",
+        ]
+    )
+
+    snippet = detection_snippet("<cocotb-suite>", output, timed_out=False, killing_test="test_bad")
+
+    assert snippet.startswith("60.00ns WARNING cocotb.regression mixed.test_bad failed")
+    # An unnamed killer, or one that printed no line, falls back to the first failure word.
+    assert detection_snippet("t", output, timed_out=False).startswith("10.00ns INFO test_a: error")
+    assert detection_snippet("t", output, timed_out=False, killing_test="nope").startswith(
+        "10.00ns INFO test_a: error"
+    )
+
+
+def test_timeout_line_outranks_an_earlier_failure_line() -> None:
+    output = "FATAL: tb: mismatch\nERROR: iverilog simulation timed out (25s)\n"
+
+    snippet = detection_snippet("full", output, timed_out=True)
+
+    assert snippet.startswith("ERROR: iverilog simulation timed out (25s)")

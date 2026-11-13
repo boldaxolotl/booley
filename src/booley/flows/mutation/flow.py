@@ -264,8 +264,9 @@ class MutationResult:
     index: int
     detected: bool = False
     invalid: bool = False
-    #: At most 200 chars: the failure or timeout line of the run that detected
-    #: the Mutant, else the tail of its output.
+    #: The failure or timeout line of the run that detected the Mutant, else the
+    #: tail of a survivor's output (both capped at 200 chars), or the reason a
+    #: Mutant was inconclusive or invalid.
     sim_output_snippet: str = ""
     #: Project-relative path of this mutant's full simulator output. The
     #: snippet above is short; for a mutant the testbench failed to kill
@@ -2102,7 +2103,12 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return f"sim outcome inconclusive: {verdict.inconclusive_reason}"
         if verdict.detecting_run is not None:
             run = verdict.detecting_run
-            return detection_snippet(run.test_name, run.output, timed_out=verdict.timed_out)
+            return detection_snippet(
+                run.test_name,
+                run.output,
+                timed_out=verdict.timed_out,
+                killing_test=verdict.first_killing_test,
+            )
         return tail_snippet(combined)
 
     def _invalid_build(self, spec: MutationSpec, elab_output: str) -> MutationResult:

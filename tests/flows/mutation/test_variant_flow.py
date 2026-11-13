@@ -480,3 +480,43 @@ def test_timeout_detection_snippet_shows_the_timeout_message(tmp_path: Path) -> 
     assert by_printed.sim_output_snippet.startswith("ERROR: iverilog simulation timed out (25s)")
     assert by_kill.sim_output_snippet.startswith("full: ran past its time limit and was stopped")
     assert "[sim] running full" in by_kill.sim_output_snippet
+
+
+def test_failing_run_outranks_a_timed_out_run_in_the_snippet(tmp_path: Path) -> None:
+    timed_out = MutationTestRun("full", timed_out=True, output="[sim] running full\n")
+    failed = MutationTestRun(
+        "smoke", process=_process(1), output="FATAL: tb/smoke_tb.sv:7: mismatch\n"
+    )
+
+    sweep, _markdown = _sweep_suites(tmp_path, [[timed_out, failed]])
+
+    (result,) = sweep.results
+    assert result.detected and not result.timed_out
+    assert result.sim_output_snippet.startswith("FATAL: tb/smoke_tb.sv:7: mismatch")
+    assert "ran past its time limit" not in result.sim_output_snippet
+
+
+def test_cocotb_snippet_anchors_on_the_killing_test_not_an_earlier_test(tmp_path: Path) -> None:
+    output = (
+        (
+            "    10.00ns INFO  cocotb.regression  test_done: error flag cleared\n"
+            "    60.00ns WARNING  cocotb.regression  mixed_cases.test_bad failed\n"
+        )
+        + COCOTB_RESULTS_PREFIX
+        + (
+            '{"state":"ok","detail":"","tests":['
+            '{"name":"test_done","module":"mixed_cases","status":"pass","failure":"","elapsed_s":0.1},'
+            '{"name":"test_bad","module":"mixed_cases","status":"fail","failure":"x","elapsed_s":0.1}]}'
+        )
+    )
+    batch = MutationTestRun(
+        "<cocotb-suite>", process=_process(1), output=output, requires_cocotb_results=True
+    )
+
+    sweep, _markdown = _sweep_suites(tmp_path, [[batch]])
+
+    (result,) = sweep.results
+    assert result.first_killing_test == "test_bad"
+    assert result.sim_output_snippet.startswith(
+        "60.00ns WARNING cocotb.regression mixed_cases.test_bad"
+    )
