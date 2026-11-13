@@ -194,9 +194,9 @@ the Booley Directory or `--report-dir`
 
 | File | What it holds |
 |---|---|
-| `mutation/<N>/campaign/mutation-results.md` | The Mutants and the outcome of each. |
+| `mutation/<N>/campaign/mutation-results.md` | The Mutants and the outcome of each, and each test run's baseline duration and time limit. |
 | `mutation/<N>/campaign/mutation-specs.md` | Every Mutant: operator, file and line, original and mutated code. |
-| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, scope hashes) and each Mutant's status. |
+| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, scope hashes), each Mutant's status, and each test run's baseline duration and time limit. |
 | `mutation/<N>/campaign/variants/` | The mutated source of each Mutant. |
 | `mutation/<N>/campaign/baseline.log`, `mutant-logs/` | The simulator output of the baseline and of each Mutant. |
 
