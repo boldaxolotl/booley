@@ -2132,6 +2132,42 @@ class TestJobPhase:
         )
         assert _job_phase("simulate-p-1") == "QUEUED (position 1)"
 
+    def test_memory_waiter_phase_reports_need_free_memory_and_holders(self, _report_env):
+        import os
+
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="simulate-p-4",
+                endpoint="sim",
+                started_at=_utc_stamp(-5),
+                timeout_s=600,
+                pid=os.getpid(),
+                status=jobrec.STATUS_RUNNING,
+            ),
+            root=session_jobs_dir(),
+        )
+        root = job_slots.slots_dir()
+        assert root is not None
+        store = job_slots.SlotStore(root)
+        for run_id, mib in (("run-1", 200.0), ("run-2", 500.0)):
+            holder = store.submit(
+                job_slots.CLASS_MEMORY,
+                pid=os.getppid(),  # another live process: this one is the queued Job
+                memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=mib),
+                job=job_slots.JobLabel(run_id, "synth", "a"),
+            )
+            assert store.refresh(holder).state == job_slots.HOLDING
+        store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=400.0),
+        )
+
+        assert _job_phase("simulate-p-4") == (
+            "QUEUED (position 1): needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
+            "largest holders: run-2 (synth, a) 500 MiB, run-1 (synth, a) 200 MiB"
+        )
+
     def test_no_slot_entry_reads_running(self, _report_env):
         import os
 

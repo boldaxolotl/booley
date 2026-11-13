@@ -139,18 +139,10 @@ def test_job_larger_than_the_budget_runs_alone_with_a_warning(tmp_path: Path) ->
     assert plan.warning == (
         "Memory estimate 2500 MiB exceeds the Memory Budget of 1000 MiB; this Job ran alone."
     )
-    assert plan.describe() == "runs alone"
     world = FakeWorld()
     store = make_store(tmp_path / "slots", world)
     token = _join(store, world, 101, plan)
     assert store.refresh(token).state == HOLDING
-
-
-def test_fitting_job_describes_its_share_of_the_budget() -> None:
-    plan = _plan(_synth("a"), _history(("a", 400)))
-
-    assert plan.warning is None
-    assert plan.describe() == "needs 500 MiB of the 1,200 MiB Memory Budget"
 
 
 def test_job_with_a_zero_peak_runs_alone() -> None:

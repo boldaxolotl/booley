@@ -92,6 +92,17 @@ def test_baseline_holds_a_background_memory_reservation_under_the_switch(memory_
     assert _memory_entries(scene) == ([], [])
 
 
+def test_baseline_memory_claim_names_its_job_flow_and_target(memory_scene):
+    scene = memory_scene
+    seen = []
+    scene.on_popen = lambda: seen.append(_memory_entries(scene)[0])
+
+    _execute(scene)
+
+    ((holder,),) = seen
+    assert holder.job == job_slots.JobLabel(scene.request["job_id"], "sim", "top")
+
+
 def test_waiting_interactive_memory_claim_overtakes_a_waiting_baseline(
     memory_scene, foreign_owner
 ):

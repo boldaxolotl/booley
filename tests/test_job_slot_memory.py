@@ -52,10 +52,23 @@ def claim(
     )
 
 
-def join(store: SlotStore, world: FakeWorld, pid: int, memory, *, role: str = ROLE_INTERACTIVE):
-    """Start simulated process *pid* and submit its memory claim."""
+def join(
+    store: SlotStore,
+    world: FakeWorld,
+    pid: int,
+    memory,
+    *,
+    role: str = ROLE_INTERACTIVE,
+    job=None,
+):
+    """Start simulated process *pid* and submit its memory claim (with its *job* label)."""
     spawn(world, pid)
-    return store.submit(job_slots.CLASS_MEMORY, pid=pid, memory=memory, role=role)
+    return store.submit(job_slots.CLASS_MEMORY, pid=pid, memory=memory, role=role, job=job)
+
+
+def label(run_id: str, flow: str, target: str):
+    """The label of a queue report's named Job."""
+    return job_slots.JobLabel(run_id, flow, target)
 
 
 def test_claims_hold_while_reservations_fit_the_budget(root, world):
@@ -643,3 +656,116 @@ def test_front_that_can_start_now_under_its_own_budget_is_not_jumped(root, world
     jumper = join(store, world, 103, claim(50, wall_s=60.0, budget_mb=800.0))
     assert store.refresh(jumper).state == QUEUED  # the front starts first, not later
     assert store.refresh(front).state == HOLDING
+
+
+# --- queue reports: what a queued claim waits for (#3245) ----------------------------
+
+
+def test_queued_claim_reports_its_need_free_memory_position_and_largest_holders(root, world):
+    job_label = label("run-1", "sim", "a")
+    store = make_store(root, world)
+    small = join(store, world, 101, claim(200), job=job_label)
+    large = join(store, world, 102, claim(500), job=label("run-2", "synth", "b"))
+    waiting = join(store, world, 103, claim(400))
+    behind = join(store, world, 104, claim(100))
+    assert store.refresh(small).state == HOLDING and store.refresh(large).state == HOLDING
+    assert store.refresh(waiting) == TokenState(QUEUED, position=0)
+    assert store.refresh(behind) == TokenState(QUEUED, position=1)
+
+    wait = store.memory_wait(103)
+
+    assert wait is not None
+    assert wait.position == 1
+    assert wait.describe() == (
+        "needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-2 (synth, b) 500 MiB, run-1 (sim, a) 200 MiB"
+    )
+    behind_wait = store.memory_wait(104)
+    assert behind_wait is not None and behind_wait.position == 2
+    # Holders and non-waiters have no wait to report.
+    assert store.memory_wait(101) is None
+    assert store.memory_wait(999) is None
+
+
+def test_queued_run_alone_claim_says_it_waits_to_run_alone(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(500), job=label("run-1", "sim", "a"))
+    alone = join(store, world, 102, claim(run_alone=True))
+    unsized = join(store, world, 103, claim(run_alone=True, budget_mb=0.0))
+    assert store.refresh(holder).state == HOLDING
+    assert store.refresh(alone).state == QUEUED and store.refresh(unsized).state == QUEUED
+
+    wait = store.memory_wait(102)
+    no_budget = store.memory_wait(103)
+
+    assert wait is not None and no_budget is not None
+    assert wait.describe() == (
+        "waits to run alone (memory estimate unknown or above the Memory Budget); "
+        "largest holders: run-1 (sim, a) 500 MiB"
+    )
+    assert no_budget.describe() == (
+        "waits to run alone (Memory Budget unavailable); largest holders: run-1 (sim, a) 500 MiB"
+    )
+
+
+def test_seat_blocked_claim_names_the_tool_it_waits_for(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, seated(100, 1), job=label("run-1", "fpga", "a"))
+    waiting = join(store, world, 102, seated(100, 1))
+    assert store.refresh(holder).state == HOLDING
+    assert store.refresh(waiting).state == QUEUED
+
+    wait = store.memory_wait(102)
+
+    assert wait is not None
+    assert wait.describe() == (
+        "needs 100 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
+        "waits for a vivado seat (1 of 1 held); largest holders: run-1 (fpga, a) 100 MiB"
+    )
+
+
+def test_run_alone_holder_leaves_nothing_free_and_is_named_whole_budget(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(run_alone=True), job=label("", "lint", ""))
+    waiting = join(store, world, 102, claim(100))
+    assert store.refresh(holder).state == HOLDING
+
+    wait = store.memory_wait(102)
+
+    assert wait is not None
+    assert wait.describe() == (
+        "needs 100 MiB; 0 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: pid 101 (lint) whole budget"
+    )
+    assert store.refresh(waiting).state == QUEUED
+
+
+def test_unlabelled_holder_is_named_by_its_pid_and_at_most_three_are_listed(root, world):
+    store = make_store(root, world)
+    for pid, size in ((101, 100), (102, 400), (103, 300), (104, 150)):
+        assert store.refresh(join(store, world, pid, claim(size))).state == HOLDING
+    join(store, world, 105, claim(400))
+
+    wait = store.memory_wait(105)
+
+    assert wait is not None
+    assert wait.describe() == (
+        "needs 400 MiB; 50 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: pid 102 400 MiB, pid 103 300 MiB, pid 104 150 MiB"
+    )
+
+
+def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, world):
+    store = make_store(root, world)
+    token = join(store, world, 101, claim(100), job=label("run-1", "sim", "a"))
+    assert store.refresh(token).state == HOLDING
+    (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
+    assert holders[0].job == label("run-1", "sim", "a")
+
+    entry = token.path
+    payload = json.loads(entry.read_text(encoding="utf-8"))
+    for malformed in ("run-1", {"run_id": 1, "flow": "sim", "target": "a"}, {"run_id": "r"}):
+        payload["job"] = malformed
+        entry.write_text(json.dumps(payload), encoding="utf-8")
+        (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
+        assert holders[0].job is None

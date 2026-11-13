@@ -360,32 +360,48 @@ def _holder_deadline_seconds() -> float | None:
         return None
 
 
-def _queue_narrator(
-    endpoint: EndpointState,
-    store: job_slots.SlotStore,
-    job_class: str,
-    waiting_for: str,
-    detail: str = "",
-) -> Callable[[int], None]:
-    """Narrate a queued claim on stderr, the log and the display.
+def _narrate_line(endpoint: EndpointState, line: str) -> None:
+    """Narrate one queued-claim *line* on stderr, the log and the display.
 
     Direct Flow diagnostics run in-process without logging configured and
     without BOOLEY_LOGS_DIR, so stderr is the sink that keeps a queued run from
     looking like a hang with no hint that another job held the slot (F-27).
     """
+    logger.info("%s: %s", endpoint.name, line)
+    print(f"[slot] {endpoint.name}: {line}", file=sys.stderr, flush=True)
+    _write_display_event(
+        _endpoint_progress_event(endpoint.name, line, identity=endpoint._display_identity)
+    )
+
+
+def _queue_narrator(
+    endpoint: EndpointState,
+    store: job_slots.SlotStore,
+    job_class: str,
+    waiting_for: str,
+) -> Callable[[int], None]:
+    """Narrate a queued slot claim, naming who holds the slot."""
 
     def narrate(position: int) -> None:
         held_by = store.describe_holders(job_class)
-        line = f"waiting for {waiting_for} (position {position + 1}){detail}; held by {held_by}"
-        logger.info("%s: %s", endpoint.name, line)
-        print(f"[slot] {endpoint.name}: {line}", file=sys.stderr, flush=True)
-        _write_display_event(
-            _endpoint_progress_event(
-                endpoint.name,
-                line,
-                identity=endpoint._display_identity,
-            )
+        _narrate_line(
+            endpoint, f"waiting for {waiting_for} (position {position + 1}); held by {held_by}"
         )
+
+    return narrate
+
+
+def _memory_narrator(
+    endpoint: EndpointState, store: job_slots.SlotStore, pid: int
+) -> Callable[[int], None]:
+    """Narrate a queued memory claim: its need, the free memory, its position and the holders."""
+
+    def narrate(_position: int) -> None:
+        wait = store.memory_wait(pid)
+        if wait is not None:  # None: promoted since the tick, nothing left to wait for
+            _narrate_line(
+                endpoint, f"waiting for memory (position {wait.position}): {wait.describe()}"
+            )
 
     return narrate
 
@@ -447,22 +463,19 @@ def _acquire_memory_reservation(
     requests = None if prepared is None else prepared.invocation.job_requests()
     plan = measure_memory_claim(project, config, requests)
     claim = dataclasses.replace(plan.claim, seats=seats)
-    seat_detail = "".join(f"; needs a {tool} seat (cap {cap})" for tool, cap in seats)
     pid = os.getpid()
+    # A Job that names no request (an unknown invocation) has no Target to report.
+    targets = ", ".join(dict.fromkeys(request.target for request in requests or ()))
+    label = job_slots.JobLabel(os.environ.get("BOOLEY_RUN_ID", ""), endpoint.name, targets)
     token = store.acquire(
         job_slots.CLASS_MEMORY,
         pid=pid,
         argv=_proc_cmdline(pid) or [],
         role=job_slots.ROLE_INTERACTIVE,
         timeout_s=_holder_deadline_seconds(),
-        on_queued=_queue_narrator(
-            endpoint,
-            store,
-            job_slots.CLASS_MEMORY,
-            "memory",
-            f": {plan.describe()}{seat_detail}",
-        ),
+        on_queued=_memory_narrator(endpoint, store, pid),
         memory=claim,
+        job=label,
     )
     try:
         threads = job_threads_at_start(store, available_cpu_count())

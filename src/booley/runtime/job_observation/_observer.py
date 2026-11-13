@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable, Sequence
 from itertools import islice
 from pathlib import Path
@@ -46,10 +47,10 @@ class JobObserver:
         """Never poll, reconcile status, adopt, repair or invoke a reaper."""
         cache = self._artifacts
         cache.begin()
-        tokens = self._observe_slots()
+        tokens, memory = self._observe_slots()
         records, diagnostics = _snapshot_records(roots, self._validate_record)
         rows = [
-            _project_job(root, rec, tokens, self._proc_root, cache, self._validate_record)
+            _project_job(root, rec, tokens, memory, self._proc_root, cache, self._validate_record)
             for root, rec in records
         ]
         diagnostics.extend(cache.diagnostics)
@@ -58,14 +59,22 @@ class JobObserver:
         cache.complete()
         return snapshot
 
-    def _observe_slots(self) -> list[job_slots.SlotToken]:
-        tokens = []
+    def _observe_slots(
+        self,
+    ) -> tuple[
+        list[job_slots.SlotToken], tuple[list[job_slots.SlotToken], list[job_slots.SlotToken]]
+    ]:
+        """Every observed token, plus the memory class's own (holders, waiters)."""
+        tokens: list[job_slots.SlotToken] = []
+        memory: tuple[list[job_slots.SlotToken], list[job_slots.SlotToken]] = ([], [])
         if self._slots_root is not None:
             store = job_slots.SlotStore(self._slots_root)
             for kind in job_slots.JOB_CLASSES:
                 holders, waiters = store.observe(kind)
                 tokens.extend((*holders, *waiters))
-        return tokens
+                if kind == job_slots.CLASS_MEMORY:
+                    memory = (holders, waiters)
+        return tokens, memory
 
 
 def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_root: Path) -> str:
@@ -183,6 +192,7 @@ def _project_job(
     root: Path,
     rec: job_records.JobRecord,
     tokens: list[job_slots.SlotToken],
+    memory: tuple[list[job_slots.SlotToken], list[job_slots.SlotToken]],
     proc_root: Path,
     cache: JobArtifactCache,
     validate_record: RecordValidator | None,
@@ -213,7 +223,25 @@ def _project_job(
         report_path,
         stage,
         artifacts=artifacts,
+        queue=_queue_detail(rec, state, memory),
     )
+
+
+def _queue_detail(
+    rec: job_records.JobRecord,
+    state: str,
+    memory: tuple[list[job_slots.SlotToken], list[job_slots.SlotToken]],
+) -> str:
+    """What the Job's queued memory claim waits for; empty unless it is such a waiter."""
+    if state != "queued":
+        return ""
+    identity = ProcessIdentity.from_payload(rec.process_identity)
+    holders, waiters = memory
+    for waiter in waiters:
+        if waiter.owner_identity == identity:
+            wait = job_slots.memory_wait(waiter, holders, waiters, time.time())
+            return "" if wait is None else wait.describe()
+    return ""
 
 
 def _reported_stage(progress: dict[str, Any] | None) -> str:

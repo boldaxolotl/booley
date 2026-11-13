@@ -761,28 +761,90 @@ def test_specialist_keeps_its_light_slot_under_memory_admission(
     assert endpoint.acquisitions == 1
 
 
-def test_memory_queue_narration_names_the_estimate_and_the_holders(
-    capsys: pytest.CaptureFixture[str],
+def _memory_store(root: Path, *holders: tuple[int, float, str]) -> job_slots.SlotStore:
+    """A store whose memory class holds each ``(pid, MiB, run ID)`` as a labelled synth Job."""
+    import os
+
+    store = job_slots.SlotStore(root)
+    for pid, reservation_mb, run_id in holders:
+        token = store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),  # a live process, or the reaper would drop the entry
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=reservation_mb),
+            job=job_slots.JobLabel(run_id, "synth", f"t{pid}"),
+        )
+        assert store.refresh(token).state == job_slots.HOLDING
+    return store
+
+
+def test_memory_queue_narration_names_the_need_and_the_largest_holders(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+
+    store = _memory_store(tmp_path / "slots", (1, 200.0, "run-1"), (2, 500.0, "run-2"))
+    pid = os.getpid()
+    store.submit(
+        job_slots.CLASS_MEMORY,
+        pid=pid,
+        memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=400.0),
+    )
+    endpoint = SimpleNamespace(name="synth", _display_identity=None)
+
+    endpoint_admission._memory_narrator(endpoint, store, pid)(0)  # type: ignore[arg-type]
+
+    assert capsys.readouterr().err == (
+        "[slot] synth: waiting for memory (position 1): needs 400 MiB; 300 MiB free "
+        "of the 1,000 MiB Memory Budget; largest holders: run-2 (synth, t2) 500 MiB, "
+        "run-1 (synth, t1) 200 MiB\n"
+    )
+
+
+def test_memory_narrator_says_nothing_once_the_claim_has_started(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import os
+
+    store = job_slots.SlotStore(tmp_path / "slots")
+    endpoint = SimpleNamespace(name="synth", _display_identity=None)
+
+    endpoint_admission._memory_narrator(endpoint, store, os.getpid())(0)  # type: ignore[arg-type]
+
+    assert capsys.readouterr().err == ""
+
+
+def test_slot_queue_narration_is_unchanged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     class Store:
         def describe_holders(self, job_class: str) -> str:
             return f"pid 7 ({job_class})"
 
-    endpoint = SimpleNamespace(name="synth", _display_identity=None)
+    endpoint = SimpleNamespace(name="sim", _display_identity=None)
     narrate = endpoint_admission._queue_narrator(
         endpoint,  # type: ignore[arg-type]
         Store(),  # type: ignore[arg-type]
-        job_slots.CLASS_MEMORY,
-        "memory",
-        ": needs 500 MiB of the 1,000 MiB Memory Budget",
+        job_slots.CLASS_HEAVY,
+        "heavy slot",
     )
 
     narrate(0)
 
     assert capsys.readouterr().err == (
-        "[slot] synth: waiting for memory (position 1): needs 500 MiB of the "
-        "1,000 MiB Memory Budget; held by pid 7 (memory)\n"
+        "[slot] sim: waiting for heavy slot (position 1); held by pid 7 (heavy)\n"
     )
+
+
+def test_memory_claim_names_its_run_flow_and_target(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_history(memory_runtime, ("a", 400))
+    monkeypatch.setenv("BOOLEY_RUN_ID", "run-7")
+    flow = AsicSynthesizeFlow()
+
+    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.job == job_slots.JobLabel("run-7", "synth", "a")
 
 
 def test_unparseable_holder_timeout_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -925,7 +987,7 @@ def _assert_queues_behind_run_alone_job(
 
         return narrate
 
-    monkeypatch.setattr(endpoint_admission, "_queue_narrator", narrator)
+    monkeypatch.setattr(endpoint_admission, "_memory_narrator", narrator)
 
     try:
         with pytest.raises(_QueuedError), AdmissionGate(flow, prepared).enter():
@@ -1013,23 +1075,28 @@ def _hold_vivado_seat(booley_dir: Path, cap: int) -> tuple[job_slots.SlotStore, 
 def test_fpga_job_queues_for_its_vivado_seat_while_memory_fits(
     memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import os
+
     _write_jobs(memory_runtime, "vivado = 1")
     _seed_records(memory_runtime, ("a", "fpga_impl", 400))
     flow, prepared = _fpga_prepared(runtime, monkeypatch)
     store, first = _hold_vivado_seat(memory_runtime, cap=1)
     positions: list[int] = []
-    details: list[str] = []
+    waits: list[str] = []
 
-    def narrator(*args: object, **_kwargs: object) -> Callable[[int], None]:
-        details.append(str(args[-1]))
-
+    def narrator(
+        _endpoint: object, wait_store: job_slots.SlotStore, pid: int
+    ) -> Callable[[int], None]:
         def narrate(position: int) -> None:
             positions.append(position)
+            wait = wait_store.memory_wait(pid)
+            assert wait is not None
+            waits.append(wait.describe())
             raise _QueuedError
 
         return narrate
 
-    monkeypatch.setattr(endpoint_admission, "_queue_narrator", narrator)
+    monkeypatch.setattr(endpoint_admission, "_memory_narrator", narrator)
 
     try:
         # 100 + 500 MiB fit the 1,000 MiB budget: only the seat holds the Job back.
@@ -1037,7 +1104,10 @@ def test_fpga_job_queues_for_its_vivado_seat_while_memory_fits(
             pytest.fail("the Job entered while the only Vivado seat was held")
 
         assert positions == [0]
-        assert "needs a vivado seat (cap 1)" in details[0]
+        assert waits == [
+            "needs 500 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
+            f"waits for a vivado seat (1 of 1 held); largest holders: pid {os.getpid()} 100 MiB"
+        ]
         assert [token.seq for token in _held(memory_runtime, job_slots.CLASS_MEMORY)] == [
             first.seq
         ]
