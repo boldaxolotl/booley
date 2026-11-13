@@ -7,8 +7,6 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 _ROOT = Path(__file__).parents[2]
 
 _PACKAGE = "src/booley"
@@ -47,69 +45,56 @@ def _case(**changes: Any) -> dict[str, Any]:
     return config
 
 
-@pytest.mark.parametrize(
-    ("config", "ceiling", "phrase"),
-    [
-        pytest.param(
-            _case(include=["src/booley/core"]), 2, "whole package", id="include-narrowed"
-        ),
-        pytest.param(
+def test_scope_violation_is_reported() -> None:
+    """Each rule of the scope guard fails, on its own, for its own violation."""
+    cases: list[tuple[dict[str, Any], int, str]] = [
+        (_case(include=["src/booley/core"]), 2, "whole package"),
+        (
             _case(exclude=[f"{_PACKAGE}/b.py", "tools/a.py"]),
             2,
             "one module path",
-            id="outside-package",
         ),
-        pytest.param(
+        (
             _case(exclude=[f"{_PACKAGE}/a.py", f"{_PACKAGE}/flows"]),
             2,
             "one module path",
-            id="directory-entry",
         ),
-        pytest.param(
+        (
             _case(exclude=[f"{_PACKAGE}/*.py", f"{_PACKAGE}/a.py"]),
             2,
             "must not be a glob",
-            id="glob-entry",
         ),
-        pytest.param(
+        (
             _case(exclude=[f"{_PACKAGE}/a.py", f"{_PACKAGE}/a.py"]),
             2,
             "duplicate",
-            id="duplicate",
         ),
-        pytest.param(
+        (
             _case(exclude=[f"{_PACKAGE}/b.py", f"{_PACKAGE}/a.py"]),
             2,
             "sorted",
-            id="unsorted",
         ),
-        pytest.param(_valid_config(), 1, "renamed", id="grown"),
-        pytest.param(_valid_config(), 3, "lower EXCLUDE_CEILING", id="shrunk"),
-        pytest.param(
+        (_valid_config(), 1, "renamed"),
+        (_valid_config(), 3, "lower EXCLUDE_CEILING"),
+        (
             _case(exclude=[f"{_PACKAGE}/a.py", f"{_PACKAGE}/targets/x.py"]),
             2,
             "strict path",
-            id="under-strict",
         ),
-    ],
-)
-def test_scope_violation_is_reported(config: dict[str, Any], ceiling: int, phrase: str) -> None:
-    """Each rule of the scope guard fails on its own violation."""
-    violations = _violations(config, ceiling)
+    ]
+    for config, ceiling, phrase in cases:
+        violations = _violations(config, ceiling)
 
-    assert len(violations) == 1
-    assert phrase in violations[0]
-    if phrase == "renamed":
-        assert "fix the module's type errors" in violations[0]
+        assert len(violations) == 1, (phrase, violations)
+        assert phrase in violations[0]
+        if phrase == "renamed":
+            assert "fix the module's type errors" in violations[0]
 
 
-@pytest.mark.parametrize(
-    "exclude",
-    [
-        pytest.param([f"{_PACKAGE}/a.py", f"{_PACKAGE}/renamed_b.py"], id="renamed"),
-        pytest.param([f"{_PACKAGE}/a.py", f"{_PACKAGE}/deleted_module.py"], id="deleted"),
-    ],
-)
-def test_scope_accepts_renamed_and_deleted_entries(exclude: list[str]) -> None:
+def test_scope_accepts_renamed_and_deleted_entries() -> None:
     """A renamed entry (same count) and an entry for a deleted module pass."""
-    assert _violations(_case(exclude=exclude), 2) == []
+    renamed = [f"{_PACKAGE}/a.py", f"{_PACKAGE}/renamed_b.py"]
+    deleted = [f"{_PACKAGE}/a.py", f"{_PACKAGE}/deleted_module.py"]
+
+    assert _violations(_case(exclude=renamed), 2) == []
+    assert _violations(_case(exclude=deleted), 2) == []
