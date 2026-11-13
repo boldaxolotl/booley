@@ -131,7 +131,10 @@ async def test_auto_without_a_credential_warns_with_the_fix_and_still_submits(
             for line in shown(wizard, "#run-review").splitlines()
             if line.startswith("Warning")
         ]
-        assert len(warnings) == 1, f"expected one sign-in warning, got {warnings}"
+        assert len(warnings) == 1, (
+            f"expected one sign-in warning, got {warnings}; review:"
+            f" {shown(wizard, '#run-review')!r}; error: {shown(wizard, '#run-error')!r}"
+        )
         (warning,) = warnings
         assert warning.endswith(f"To sign in: {SIGN_IN}")
         assert "no claude credential found under auth = 'auto'" in warning
