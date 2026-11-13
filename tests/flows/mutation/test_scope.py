@@ -76,6 +76,7 @@ def _main(
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     reached = EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="reached generation")
+    (reports / "mutation.json").unlink(missing_ok=True)  # never read a previous run's report
     with patch.object(MutationFlow, "_generate", return_value=reached):
         code = MutationFlow().main(
             ["--work-dir", str(root), "--report-dir", str(reports), "--target", "sim", *args]
@@ -138,6 +139,17 @@ def test_unusable_scope_entries_end_as_error_in_dry_and_real_runs(
             *extra,
         )
         assert code == EXIT_SUCCESS, extra
+
+    # A file the Target still lists but that is gone from disk is refused by both runs alike.
+    (root / "rtl/a.sv").unlink()
+    for extra in ((), ("--dry-run",)):
+        code, out, report = _main(
+            tmp_path, monkeypatch, capsys, "--scope", "rtl/a.sv", "--count", "3", *extra
+        )
+        assert code == EXIT_ERROR, extra
+        assert "does not exist" in out, extra
+        if not extra:
+            _assert_real_report(code, report, "deleted Target file")
 
 
 def test_target_without_mutable_rtl_ends_as_error(

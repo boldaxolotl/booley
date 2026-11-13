@@ -888,25 +888,42 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             )
         by_base = {Path(r).name: r for r in resolved}
         for entry in scope_files:
-            if entry in resolved_set:
-                continue
-            suggestion = by_base.get(Path(entry).name)
-            hint = f" Did you mean '{suggestion}'?" if suggestion else ""
-            if entry in testbench_set:
-                problem = (
-                    f"is a testbench file of Target '{target}'; testbench files are never mutated"
-                )
-            elif not (self.args.work_dir / entry).exists():
-                problem = f"does not exist.{hint}"
-            else:
-                problem = (
-                    f"does not match any source file resolved for config '{target}'.{hint} "
-                    f"Resolved sources: {', '.join(resolved)}"
-                )
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR, report_text=f"mutation: --scope entry '{entry}' {problem}"
+            problem = self._target_entry_problem(
+                entry, target, resolved, resolved_set, testbench_set, by_base
             )
+            if problem:
+                return EndpointOutcome(
+                    exit_code=EXIT_ERROR,
+                    report_text=f"mutation: --scope entry '{entry}' {problem}",
+                )
         return None
+
+    def _target_entry_problem(
+        self,
+        entry: str,
+        target: str,
+        resolved: list[str],
+        resolved_set: set[str],
+        testbench_set: set[str],
+        by_base: dict[str, str],
+    ) -> str | None:
+        """Why *entry* is not a mutable source of *target*, or ``None``.
+
+        A file the Target lists but that is gone from disk is refused here too, so a
+        dry run fails exactly where the real run's generator would.
+        """
+        suggestion = by_base.get(Path(entry).name)
+        hint = f" Did you mean '{suggestion}'?" if suggestion and suggestion != entry else ""
+        if not (self.args.work_dir / entry).exists():
+            return f"does not exist.{hint}"
+        if entry in resolved_set:
+            return None
+        if entry in testbench_set:
+            return f"is a testbench file of Target '{target}'; testbench files are never mutated"
+        return (
+            f"does not match any source file resolved for config '{target}'.{hint} "
+            f"Resolved sources: {', '.join(resolved)}"
+        )
 
     def _scope_entry_problem(self, entry: str) -> str | None:
         """Why *entry* cannot be mutated whatever the Target is, or ``None``.
