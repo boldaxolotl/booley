@@ -155,6 +155,9 @@ _PASS_SCOPE_HINT = "pass --scope to choose the files to mutate"
 _MUTANT_TIMEOUT_FACTOR = 10
 _MUTANT_TIMEOUT_FLOOR_S = 30
 _MUTANT_TIMEOUT_CAP_S = 300
+#: Seconds the outer hard kill waits past the simulator's own limit, so the adapter
+#: stops a hang first and prints its TIMEOUT line.
+_MUTANT_HARD_KILL_MARGIN_S = 5
 
 
 #: Per-mutant sim-log cap. Deliberately small: this file is written once per
@@ -217,7 +220,7 @@ def _mutant_work(
         adapter=adapter,
         build_dir=pinned.rel,
         run_cwd=resolve_run_cwd(work_dir),
-        timeout_s=max(1, timeout - 5),
+        timeout_s=timeout,
         plusargs=tuple(plusargs),
         runtime_inputs=pinned.runtime_inputs,
     )
@@ -472,6 +475,26 @@ def _invalid_mutants_line(invalid_count: int) -> str:
     )
 
 
+def _time_limit_lines(time_limits: Mapping[str, MutantTimeLimit]) -> list[str]:
+    """Markdown lines showing each test run's baseline duration and Mutant time limit."""
+    if not time_limits:
+        return []
+    lines = [
+        "## Time limits",
+        "",
+        f"A Mutant's test run is stopped after {_MUTANT_TIMEOUT_FACTOR} x its baseline "
+        f"duration, at least {_MUTANT_TIMEOUT_FLOOR_S} s and at most {_MUTANT_TIMEOUT_CAP_S} s.",
+        "",
+        "| Test run | Baseline | Limit |",
+        "|----------|----------|-------|",
+    ]
+    lines += [
+        f"| `{_markdown_table_cell(name)}` | {limit.baseline_s:.2f} s | {limit.limit_s} s |"
+        for name, limit in time_limits.items()
+    ]
+    return [*lines, ""]
+
+
 def _identity_lines(identity: Mapping[str, Any]) -> list[str]:
     """Markdown lines naming everything that reproduces this run's Mutants."""
     lines = [
@@ -495,6 +518,7 @@ def generate_results_markdown(
     *,
     variant_paths: dict[int, str] | None = None,
     identity: Mapping[str, Any] | None = None,
+    time_limits: Mapping[str, MutantTimeLimit] | None = None,
 ) -> str:
     variant_paths = variant_paths or {}
     classified = summary.classify()
@@ -546,6 +570,7 @@ def generate_results_markdown(
             f"{_markdown_table_cell(c['sim_output_snippet'][:60])} |"
         )
     lines.append("")
+    lines += _time_limit_lines(time_limits or {})
     if identity is not None:
         lines += _identity_lines(identity)
     return "\n".join(lines).rstrip("\n") + "\n"
@@ -635,6 +660,8 @@ class RunResultInputs:
     #: IDs of the Mutants dropped for building the baseline's C++, in drop order.
     #: The Record's detail lists them; the report never does.
     equivalent_dropped: list[str] = field(default_factory=list)
+    #: Each test run's baseline duration and Mutant time limit, for the run artifacts.
+    time_limits: Mapping[str, MutantTimeLimit] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -652,10 +679,18 @@ class GeneratedMutants:
 
 
 @dataclass(frozen=True)
+class MutantTimeLimit:
+    """One test run's baseline duration and the time limit it gets on a Mutant."""
+
+    baseline_s: float
+    limit_s: int
+
+
+@dataclass(frozen=True)
 class Baseline:
     """What the pristine baseline run learned that the Mutant sweep needs."""
 
-    timeouts: Mapping[str, int]  # each test's Mutant time limit
+    time_limits: Mapping[str, MutantTimeLimit]  # each test run's baseline and Mutant limit
     #: Digests of the C++ Verilator generated for the baseline; ``None`` on a Target not
     #: simulated with Verilator, where no Mutant is compared.
     generated_cpp: Mapping[str, str] | None = None
@@ -1183,6 +1218,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             coverage_gap=self._is_variant_coverage_gap(summary, plan.min_detected),
             evidence=self._variant_evidence(variants),
             equivalent_dropped=sweep.dropped,
+            time_limits=baseline.time_limits,
         )
         if sweep.inconclusive:
             return self._variant_infra_error(plan, inputs, sweep.inconclusive)
@@ -1349,8 +1385,11 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 "; ".join(self._baseline_problems(runs)),
                 report_text="mutation baseline failed on pristine source\n" + tail(output, 50),
             )
-        timeouts = {run.test_name: _mutant_timeout(run.duration_s) for run in runs}
-        return Baseline(timeouts, cpp, version)
+        time_limits = {
+            run.test_name: MutantTimeLimit(run.duration_s, _mutant_timeout(run.duration_s))
+            for run in runs
+        }
+        return Baseline(time_limits, cpp, version)
 
     @staticmethod
     def _baseline_run_cwd_error(plan: MutationRunPlan) -> EndpointOutcome | None:
@@ -1837,7 +1876,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """Run the simulation image built in *build_path*.
 
         The Target's declared ``copyto`` inputs are exposed in ``run_cwd`` for
-        the run and removed afterwards, as the Simulation Flow does.
+        the run and removed afterwards, as the Simulation Flow does. *timeout*
+        is the simulator's own limit; the hard kill comes
+        ``_MUTANT_HARD_KILL_MARGIN_S`` later.
         """
         pinned = self._pinned_build(target, work_dir, build_path)
         cmd, launch = self._pinned_sim_command(
@@ -1872,7 +1913,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 ),
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=timeout + _MUTANT_HARD_KILL_MARGIN_S,
                 check=False,
             )
 
@@ -2202,7 +2243,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             plan.work_dir,
             build_path,
             plan.tb_top,
-            timeouts=baseline.timeouts,
+            timeouts={name: limit.limit_s for name, limit in baseline.time_limits.items()},
         )
         combined = self._suite_output(runs)
         verdict = self._classify_variant_suite(runs)
@@ -2440,6 +2481,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 plan.min_detected,
                 variant_paths=links,
                 identity=inputs.identity,
+                time_limits=inputs.time_limits,
             ),
             encoding="utf-8",
         )
@@ -2515,6 +2557,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             "baseline": {
                 "status": "passed",
                 "log": baseline_log.name if baseline_log is not None else None,
+                "test_runs": [
+                    {
+                        "run": name,
+                        "duration_s": round(limit.baseline_s, 3),
+                        "time_limit_s": limit.limit_s,
+                    }
+                    for name, limit in inputs.time_limits.items()
+                ],
             },
             "mutants": mutants,
             "artifacts": {
