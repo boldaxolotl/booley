@@ -405,7 +405,7 @@ def _validate_nested_reference(nested: Mapping[str, object]) -> None:
         or nested_parts[5:] != (COVERAGE_RECORD_DIRECTORY, "coverage.json")
     ):
         raise CoverageCampaignReferenceError(
-            "coverage_record.path is not an attempt-scoped Campaign path"
+            "coverage_record.path is not an attempt-scoped Coverage Record path"
         )
     try:
         size = require_int(nested["bytes"], field="coverage_record.bytes")

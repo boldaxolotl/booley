@@ -141,8 +141,7 @@ def test_retention_finds_a_dependent_report_through_simulation_record_id(
 
     def write(id_key: str) -> None:
         row = {id_key: record_id, "artifacts": {"manifest": reference}}
-        key = "records" if id_key == "simulation_record_id" else "campaigns"
-        sibling.write_text(json.dumps({"detail": {key: {"lite": row}}}), encoding="utf-8")
+        sibling.write_text(json.dumps({"detail": {"records": {"lite": row}}}), encoding="utf-8")
 
     write("simulation_record_id")
     assert _report_references_origin(sibling, (manifest,)), "no dependent via simulation_record_id"
@@ -213,7 +212,6 @@ def test_coverage_analyst_takes_the_record_argument_parameter_and_environment(
 
     record = tmp_path / "coverage.json"
     analyst = CoverageAnalystSpecialist()
-    assert "--record" in analyst._parser._option_string_actions, "no --record argument"
     analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(record)])
     assert analyst.args.record == record
 
@@ -232,7 +230,7 @@ def test_coverage_analyst_takes_the_record_argument_parameter_and_environment(
     monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(tmp_path / "missing.json"))
     with pytest.raises((OSError, ValueError)) as unreadable:
         coverage_evidence.query_active_coverage_evidence({})
-    assert "No active Coverage Campaign" not in str(unreadable.value)
+    assert "No active Coverage Record" not in str(unreadable.value)
 
 
 def test_coverage_analysis_scratch_and_cancellation_thread_use_record_names(
@@ -260,14 +258,10 @@ def test_coverage_analysis_scratch_and_cancellation_thread_use_record_names(
 def test_an_old_run_cwd_placeholder_fails_validation_naming_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    try:
+    with pytest.raises(ValueError) as refused:
         parse_run_cwd_template("runs/{campaign}")
-    except ValueError as refused:
-        message = str(refused)
-    else:
-        raise AssertionError("an old {campaign} run_cwd placeholder was accepted")
-    assert "{record}" in message
-    assert "{campaign}" in message
+    assert "{record}" in str(refused.value)
+    assert "{campaign}" in str(refused.value)
 
     run = run_campaign_sim(
         tmp_path,
@@ -292,7 +286,6 @@ def run_cwd_message(report_text: str) -> str:
 
 def test_coverage_analyst_refuses_the_old_campaign_input(tmp_path: Path) -> None:
     analyst = CoverageAnalystSpecialist()
-    assert "--campaign" not in analyst._parser._option_string_actions, "old --campaign accepted"
     with pytest.raises(SystemExit):
         analyst.parse_args(["--campaign", str(tmp_path / "coverage.json")])
 

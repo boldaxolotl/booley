@@ -22,14 +22,14 @@ _TERMINAL_ERROR: tuple[_SessionKey, str] | None = None
 
 
 def query_active_coverage_evidence(value: Mapping[str, object]) -> dict[str, object]:
-    """Query the Campaign bound to this isolated nested MCP server."""
+    """Query the Coverage Record bound to this isolated nested MCP server."""
     global _ACTIVE_SESSION, _TERMINAL_ERROR
 
     campaign_path = os.environ.get("BOOLEY_COVERAGE_RECORD", "")
     project_root = os.environ.get("BOOLEY_COVERAGE_PROJECT", "")
     source_snapshot = os.environ.get("BOOLEY_COVERAGE_SOURCE_SNAPSHOT", "")
     if not campaign_path or not project_root:
-        raise CoverageEvidenceError("No active Coverage Campaign is bound to this tool")
+        raise CoverageEvidenceError("No active Coverage Record is bound to this tool")
     audit_path = os.environ.get("BOOLEY_COVERAGE_AUDIT", "")
     key = (campaign_path, project_root, source_snapshot, audit_path)
     if _TERMINAL_ERROR is not None and _TERMINAL_ERROR[0] == key:

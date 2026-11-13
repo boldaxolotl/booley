@@ -19,6 +19,8 @@ from booley.core.exit_codes import (
 
 _ROW_LIMIT = 24
 _ITEM_LIMIT = 5
+# Headline for a Simulation report an older Booley wrote; matches the Flow's refusal in wording only.
+_OLDER_SIMULATION_REPORT = "written by an older Booley; no longer supported"
 # Endpoints whose reports are Flow reports; any other endpoint is an MCP tool.
 _FLOW_ENDPOINTS = frozenset({"sim", "lint", "synth", "fpga", "mutation"})
 
@@ -182,10 +184,6 @@ def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
     if cycles:
         rows.append(_row("  Cycles", ", ".join(cycles[:_ITEM_LIMIT])))
     return rows
-
-
-# Headline of a Simulation report an older Booley wrote; mirrors the Flow's own refusal.
-_OLDER_SIMULATION_REPORT = "written by an older Booley; no longer supported"
 
 
 def _campaigns(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
