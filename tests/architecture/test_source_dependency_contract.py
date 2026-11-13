@@ -478,6 +478,7 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
         "runtime.core_repository_hygiene",
         "runtime.core_resolution",
         "runtime.project_image",
+        "mcp.server_inspection",
     ],
 )
 @pytest.mark.parametrize(
@@ -506,6 +507,7 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
         root / "flows" / "sim" / "backends",
         root / "presentation",
         root / "runtime",
+        root / "mcp",
     ):
         package.mkdir(exist_ok=True)
         (package / "__init__.py").touch()
@@ -616,6 +618,36 @@ def test_core_resolution_owner_is_a_d26_diagnostic_owner(tmp_path):
     assert "D26" in report
     assert f"booley.{owner}" in report
     assert "booley.harness.doctor" in report
+
+
+def test_mcp_server_inspection_owner_is_a_d26_diagnostic_owner(tmp_path):
+    """The real MCP server inspection owner obeys D26 and D4; the contract catches violations."""
+    owner = "mcp.server_inspection"
+    importlib.import_module(f"booley.{owner}")  # fails until the production owner exists
+    real = format_problems(
+        evaluate_contract(analyze_imports(_SOURCE_ROOT), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert f"booley.{owner}" not in real
+
+    root = tmp_path / "booley"
+    for package in (root, root / "mcp", root / "harness", root / "harness" / "setup"):
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "harness" / "doctor.py").write_text("value = 1\n")
+    (root / "harness" / "setup" / "readiness.py").write_text("value = 1\n")
+    (root / "mcp" / "server_inspection.py").write_text("import booley.harness.doctor\n")
+    report = format_problems(
+        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert "D26" in report
+    assert "booley.harness.doctor" in report
+
+    (root / "mcp" / "server_inspection.py").write_text("import booley.harness.setup.readiness\n")
+    report = format_problems(
+        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert "D4" in report
+    assert "booley.harness.setup.readiness" in report
 
 
 @pytest.mark.parametrize(

@@ -57,7 +57,11 @@ from tests.diagnostic_helpers import (
     _Rec,
     _require_doctor_warning,
 )
-from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+from tests.docker_cli_guard import (
+    assert_docker_processes_unused,
+    forbid_docker_processes,
+    route_docker_helper_through_subprocess_run,
+)
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.subprocess_budget import run_bounded_child
@@ -400,6 +404,8 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             )
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
 
+    # ``doctor.subprocess`` is the stdlib module, so this one fake also answers the MCP
+    # server inspection owner's probe (``booley.mcp.server_inspection``).
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
     return calls
 
@@ -658,67 +664,98 @@ def test_doctor_fails_when_devcontainer_tracked(tmp_path, monkeypatch, capsys):
     assert ".devcontainer/ is tracked by git" in output
 
 
-def test_doctor_fails_when_mcp_probe_misses_required_tool(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
+_MCP_PASS_ROW = "  ✓  MCP server exposes 5 MCP tool(s)"
+_MCP_ADVISORY_ROW = (
+    "  !  MCP missing documented interactive endpoint(s): mutation"
+    "  interactive.mcp-tool-advisory-missing"
+)
+_MCP_TOOL_LIST_ROW = "      bwave, lint, sim, synth, reviewer"
+_MCP_PROBE_TOOLS = ["bwave", "lint", "sim", "synth", "reviewer"]
+
+
+def _full_run_rows_from(
+    tmp_path: Path, monkeypatch, capsys, start_row: str, *, verbose: bool, probe_exit: int = 0
+) -> tuple[int, list[str]]:
+    """Run full Doctor in a fresh project; return its rc and the rows from *start_row* on."""
+    tmp_path.mkdir()
     booley_dir = _write_project(tmp_path)
-    _patch_environment(
-        monkeypatch,
-        tmp_path,
-        booley_dir,
-        mcp_tools=["bwave", "lint", "sim"],
+    _patch_environment(monkeypatch, tmp_path, booley_dir, mcp_tools=_MCP_PROBE_TOOLS)
+    if probe_exit:
+        answer_other_commands = doctor.subprocess.run
+
+        def failing_probe(cmd, **kwargs):
+            if cmd[-3:] == ["python", "-m", "booley.mcp.probe"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    probe_exit,
+                    stdout="",
+                    stderr="Traceback (most recent call last):\n"
+                    "ImportError: cannot import name x\nfinal line\n",
+                )
+            return answer_other_commands(cmd, **kwargs)
+
+        monkeypatch.setattr(doctor.subprocess, "run", failing_probe)
+    rc = doctor.run_doctor(argparse.Namespace(verbose=verbose, deep=False), tmp_path)
+    lines = colors.strip_ansi(capsys.readouterr().out).splitlines()
+    first = lines.index(start_row)
+    return rc, lines[first : lines.index("Project checks") + 1]
+
+
+def test_doctor_mcp_probe_rows_and_exit_are_pinned(tmp_path, monkeypatch, capsys):
+    """Rows and exit code of the MCP probe, captured from Doctor before the owner existed."""
+    # Verbose: PASS, advisory WARN with its check ID, the tool list, then the next section.
+    rc, rows = _full_run_rows_from(
+        tmp_path / "v", monkeypatch, capsys, _MCP_PASS_ROW, verbose=True
+    )
+    assert (rc, rows) == (
+        0,
+        [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, _MCP_TOOL_LIST_ROW, "", "Project checks"],
+    )
+    # Not verbose: the tool list is hidden.
+    rc, rows = _full_run_rows_from(
+        tmp_path / "q", monkeypatch, capsys, _MCP_PASS_ROW, verbose=False
+    )
+    assert (rc, rows) == (0, [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, "", "Project checks"])
+    # A failed probe: FAIL row, fix hint and the excerpt (always shown) in that order, exit 1.
+    failed_row = "  ✗  MCP server probe failed with exit 3"
+    rc, rows = _full_run_rows_from(
+        tmp_path / "f", monkeypatch, capsys, failed_row, verbose=False, probe_exit=3
+    )
+    assert (rc, rows) == (
+        1,
+        [
+            failed_row,
+            "     → rebuild sandbox image",
+            "      Traceback (most recent call last):",
+            "      ImportError: cannot import name x",
+            "      final line",
+            "",
+            "Project checks",
+        ],
     )
 
-    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
-    output = capsys.readouterr().out
-    assert rc == 1
-    assert "MCP missing required endpoint(s): synth" in output
-
-
-def test_doctor_runs_supported_mcp_probe_entrypoint(tmp_path: Path) -> None:
-    booley_dir = tmp_path / ".booley"
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
-
-    command = doctor._mcp_probe_command(project, "docker", "booley:test")
-
-    assert command[-3:] == ["python", "-m", "booley.mcp.probe"]
-    assert "-c" not in command
-
-
-def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
-    tmp_path,
-    monkeypatch,
-    capsys,
+def test_full_run_doctor_answers_mcp_probe_through_owner_without_real_container(
+    tmp_path, monkeypatch
 ):
+    """Full Doctor reaches the probe only through the owner, answered by the fake."""
     booley_dir = _write_project(tmp_path)
-    _patch_environment(
-        monkeypatch,
-        tmp_path,
-        booley_dir,
-        mcp_payload={
-            "tools": [
-                "synth",
-                "bwave",
-                "coverage_analyst",
-                "lint",
-                "mutation",
-                "reviewer",
-                "sim",
-            ],
-            "errors": [],
-            "logs_dir": "/tmp/booley",
-            "logs_dir_ok": False,
-        },
-    )
+    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
+    forbid_docker_processes(monkeypatch)
+    inspected: list[object] = []
+    real_inspect = doctor.server_inspection.inspect_mcp_server
 
-    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+    def spy(request):
+        inspected.append(request)
+        return real_inspect(request)
 
-    output = capsys.readouterr().out
-    assert rc == 1
-    assert "MCP interactive log setup failed" in output
+    monkeypatch.setattr(doctor.server_inspection, "inspect_mcp_server", spy)
+
+    doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    assert len(inspected) == 1
+    assert [call for call in calls if call[-3:] == ["python", "-m", "booley.mcp.probe"]]
+    assert_docker_processes_unused()
 
 
 def _gitignore_probe(booley_dir: Path) -> list[DiagnosticFinding]:
@@ -3244,16 +3281,34 @@ def test_fpga_deep_notice_names_marked_target_and_manual_command(tmp_path):
     ]
 
 
-def test_marked_fpga_axis_requires_fpga_mcp_endpoint(tmp_path):
+def _mcp_findings_without_fpga_endpoint(monkeypatch, project) -> list[tuple[str, str]]:
+    """Grade, through the owner, a probe payload that lacks the ``fpga`` endpoint."""
+    payload = {
+        "tools": ["bwave", "lint", "mutation", "reviewer", "sim", "synth"],
+        "errors": [],
+        "logs_dir_ok": True,
+    }
+    answer = subprocess.CompletedProcess(["docker"], 0, stdout=json.dumps(payload), stderr="")
+    monkeypatch.setattr(doctor.server_inspection.subprocess, "run", lambda *_a, **_kw: answer)
+    request = doctor._mcp_server_inspection_request(project, "docker", "booley:test")
+    report = doctor.server_inspection.inspect_mcp_server(request)
+    return [(finding.severity, finding.message) for finding in report.findings]
+
+
+def test_marked_fpga_axis_requires_fpga_mcp_endpoint(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=True)
 
-    assert "fpga" in doctor._required_mcp_tools(project)
+    assert _mcp_findings_without_fpga_endpoint(monkeypatch, project) == [
+        (Severity.FAIL, "MCP missing required endpoint(s): fpga")
+    ]
 
 
-def test_disabled_fpga_axis_does_not_require_fpga_mcp_endpoint(tmp_path):
+def test_disabled_fpga_axis_does_not_require_fpga_mcp_endpoint(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=True, fpga_table={"enabled": False})
 
-    assert "fpga" not in doctor._required_mcp_tools(project)
+    findings = _mcp_findings_without_fpga_endpoint(monkeypatch, project)
+
+    assert [severity for severity, _message in findings] == [Severity.PASS]
 
 
 def test_marked_fpga_target_with_non_fpga_axis_fails_compatibility(tmp_path):
@@ -4681,13 +4736,6 @@ class TestHostAgentSession:
 class TestAdvisoryMcpTools:
     """Specialists are expected unless their own ``enabled`` flag is false."""
 
-    _SKILL_DEFAULT_BUILTIN = (
-        "sim",
-        "lint",
-        "synth",
-        "submit_run_report",
-    )
-
     def _project(self, tmp_path, endpoint_config):
         pd = tmp_path / ".booley"
         pd.mkdir(exist_ok=True)
@@ -4759,46 +4807,6 @@ class TestAdvisoryMcpTools:
         doctor._check_disabled_endpoints(audit, notes.append)
 
         assert notes == []
-
-    def test_default_expects_all_specialists(self, tmp_path):
-        p = self._project(tmp_path, {})
-        assert doctor._advisory_mcp_tools(p) == {"mutation", "reviewer"}
-
-    def test_explicitly_disabled_specialist_is_not_expected(self, tmp_path):
-        p = self._project(tmp_path, {"reviewer": {"enabled": False}})
-        assert doctor._advisory_mcp_tools(p) == {"mutation"}
-
-    def _skill_default_endpoint_config(self, *, reviewer=False):
-        """Every flow and optional specialist explicitly disabled."""
-        endpoint_config = {}
-        for name in ("sim", "lint", "synth"):
-            endpoint_config[name] = {"enabled": False}
-        endpoint_config["reviewer"] = {"enabled": reviewer}
-        endpoint_config["mutation"] = {"enabled": False}
-        return endpoint_config
-
-    def _payload(self, mcp_tool_names):
-        return {"tools": list(mcp_tool_names), "errors": [], "logs_dir_ok": True}
-
-    def test_payload_check_is_clean_on_the_skill_default(self, tmp_path):
-        # End to end through _check_mcp_tool_payload: a first-run project whose
-        # MCP surface (correctly) lacks the specialists must not WARN.
-        p = self._project(tmp_path, self._skill_default_endpoint_config())
-        rec = _Rec()
-        doctor._check_mcp_tool_payload(
-            p, self._payload([*self._SKILL_DEFAULT_BUILTIN, "bwave"]), False, rec.p, rec.w, rec.f
-        )
-        assert rec.kinds() == {"pass"}
-
-    def test_payload_check_warns_on_enabled_but_absent_specialist(self, tmp_path):
-        p = self._project(tmp_path, self._skill_default_endpoint_config(reviewer=True))
-        rec = _Rec()
-        doctor._check_mcp_tool_payload(
-            p, self._payload([*self._SKILL_DEFAULT_BUILTIN, "bwave"]), False, rec.p, rec.w, rec.f
-        )
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("reviewer" in m for m in warns)
-        assert not any("mutation" in m for m in warns)
 
 
 class TestFailPathSelfTest:
@@ -8477,11 +8485,7 @@ def test_stealth_exclude_check_requires_relocated_entry(tmp_path):
 def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    root, project = _relocated_project(tmp_path)
-    audit = doctor.ProjectAudit(root, project, {}, {}, "sim")
-
-    probe = doctor._mcp_probe_command(audit, "docker", "booley:test")
-    assert "BOOLEY_DIR=/work/tools/booley" in probe
+    root, _project = _relocated_project(tmp_path)
 
     # In-Sandbox Doctor sees the relocated directory at /work/tools/booley.
     sandbox_dir = Path("/work/tools/booley")
@@ -8492,12 +8496,6 @@ def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "contains", lambda path, booley_dir: Path(path).resolve())
     hint = doctor._display_report_dir(in_sandbox, sandbox_dir / "tmp" / "r")
     assert hint == "tools/booley/tmp/r (under the Project Root)"
-
-    # The default spelling is unchanged.
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    default_audit = doctor.ProjectAudit(plain, plain / ".booley", {}, {}, "sim")
-    assert "BOOLEY_DIR=/work/.booley" in doctor._mcp_probe_command(default_audit, "docker", "i")
 
 
 # ---------------------------------------------------------------------------
