@@ -310,7 +310,7 @@ def _render_coverage_analyst_reference() -> list[str]:
     return [
         "#### `coverage_analyst`",
         "",
-        'Call the `coverage_analyst` Specialist from your Developer Agent session with `campaign="<exact-coverage.json>"` '
+        'Call the `coverage_analyst` Specialist from your Developer Agent session with `record="<exact-coverage.json>"` '
         'and optional `instruction="<question>"`. The Analyst explains retained '
         "native evidence and proposes advisory next steps; its model only reads evidence. "
         "It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. "

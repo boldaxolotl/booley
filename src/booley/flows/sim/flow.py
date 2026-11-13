@@ -451,7 +451,7 @@ class SimulateFlow(
         outcomes = self._simulation_campaign_outcomes
         invocation = self._reserved_invocation_dir
         if outcomes and invocation is not None:
-            result.detail["campaigns"] = _campaign_structured_details(outcomes, invocation)
+            result.detail["records"] = _campaign_structured_details(outcomes, invocation)
 
     def report_candidate_workloads(
         self, prepared: PreparedSimulationEndpoint
@@ -1666,7 +1666,7 @@ class SimulateFlow(
         if isinstance(error, SimulationCampaignCancellationError):
             return self._campaign_cancelled_outcome(error)
         detail: dict[str, object] = (
-            {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
+            {"records": _campaign_structured_details(outcomes)} if outcomes else {}
         )
         if isinstance(error, SimulationBuildInfrastructureError):
             detail.update(_build_infrastructure_detail(error))
@@ -2108,7 +2108,7 @@ class SimulateFlow(
             invocation,
             coverage_campaigns,
         )
-        detail: dict[str, object] = {"campaigns": campaigns}
+        detail: dict[str, object] = {"records": campaigns}
         firings, current_keys = _campaign_hook_inputs(outcomes, invocation)
         pre_sim_detail, hook_lines = _pre_sim_projection(firings, current_keys, invocation)
         detail.update(pre_sim_detail)

@@ -196,7 +196,7 @@ def test_run_records_candidates_in_goal_mode(tmp_path: Path, monkeypatch) -> Non
     context = GoalCandidateContext(tmp_path / "reports", tmp_path / "record")
     monkeypatch.setattr(analyst_module.GoalCandidateContext, "from_recorder", lambda *_: context)
     analyst = CoverageAnalystSpecialist(model=_unreachable_model(monkeypatch))
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
 
     result = analyst._run()
 
@@ -212,7 +212,7 @@ def test_run_outside_goal_mode_records_nothing(tmp_path: Path, monkeypatch) -> N
     path = source_project(tmp_path)
     monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
     analyst = CoverageAnalystSpecialist(model=_unreachable_model(monkeypatch))
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
 
     result = analyst._run()
 

@@ -25,7 +25,7 @@ def query_active_coverage_evidence(value: Mapping[str, object]) -> dict[str, obj
     """Query the Campaign bound to this isolated nested MCP server."""
     global _ACTIVE_SESSION, _TERMINAL_ERROR
 
-    campaign_path = os.environ.get("BOOLEY_COVERAGE_CAMPAIGN", "")
+    campaign_path = os.environ.get("BOOLEY_COVERAGE_RECORD", "")
     project_root = os.environ.get("BOOLEY_COVERAGE_PROJECT", "")
     source_snapshot = os.environ.get("BOOLEY_COVERAGE_SOURCE_SNAPSHOT", "")
     if not campaign_path or not project_root:

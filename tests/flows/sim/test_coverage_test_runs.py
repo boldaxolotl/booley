@@ -222,7 +222,7 @@ def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeyp
     assert all(name.startswith("wrap@") for name in recorded[2:])
     # Each simulator process is one recorded Test Run, in the recorded order.
     assert [request.test.run_name for request in execution.runs] == recorded
-    campaign = result.outcome.detail["campaigns"]["sim_0"]
+    campaign = result.outcome.detail["records"]["sim_0"]
     stored = json.loads(next((tmp_path / "reports").rglob("work-items/*/result.json")).read_text())
     assert [row["test_run"] for row in stored["observations"]] == recorded
     assert [row["name"] for row in campaign["test_runs"]] == recorded
@@ -275,7 +275,7 @@ def test_flow_fails_when_one_of_several_runs_of_a_test_fails(tmp_path, monkeypat
     result = _flow_result(tmp_path, _FailingRun("reset+soak@1"), "reset", "reset+soak")
 
     assert result.exit_code == 1, result.outcome
-    rows = result.outcome.detail["campaigns"]["sim_0"]["test_runs"]
+    rows = result.outcome.detail["records"]["sim_0"]["test_runs"]
     assert [(row["name"], row["grade"]) for row in rows] == [
         ("reset+short@1", "pass"),
         ("reset+soak@1", "fail"),
@@ -422,7 +422,7 @@ def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identicall
     assert manifest.read_bytes() == frozen
     # Nothing ran again, and every published record names the frozen Test Runs.
     assert [request.test.run_name for request in execution.runs] == launched
-    rows = resumed.outcome.detail["campaigns"]["sim_0"]["test_runs"]
+    rows = resumed.outcome.detail["records"]["sim_0"]["test_runs"]
     assert [{key: row[key] for key in recorded[0]} for row in rows] == recorded
     nested = json.loads(next(reports.rglob("coverage-record/coverage.json")).read_text())
     assert [(run["test_run"], run["fingerprint"]) for run in nested["tests"]["runs"]] == [

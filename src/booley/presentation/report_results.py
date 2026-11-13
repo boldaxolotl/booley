@@ -184,8 +184,12 @@ def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
     return rows
 
 
+# Headline of a Simulation report an older Booley wrote; mirrors the Flow's own refusal.
+_OLDER_SIMULATION_REPORT = "written by an older Booley; no longer supported"
+
+
 def _campaigns(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
-    targets = _targets(detail.get("campaigns"))
+    targets = _targets(detail.get("records"))
     counts = [_counts(_functional(row)) for _, row in targets]
     known = [count for count in counts if count is not None]
     total = (
@@ -241,16 +245,25 @@ def _coverage(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
         )
         rows.append(_row(f"  {name}", " · ".join(facts), semantic))
     rows.extend(_more_targets(targets))
-    if _mapping(detail.get("campaigns")):
+    if _mapping(detail.get("records")):
         headline, supplementary = _campaigns(detail)
         rows.extend([_row("Campaign simulation", headline), *supplementary])
     return f"Coverage: {met}/{len(targets)} Targets met", rows
 
 
 def _simulation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
+    if not _mapping(detail.get("records")) and _mapping(detail.get("campaigns")):
+        # Booley 0.4.0 wrote ``detail.campaigns``; say so rather than render it as a result.
+        return _OLDER_SIMULATION_REPORT, [
+            _row(
+                "Result",
+                "delete its Simulation invocation directory and start a fresh run",
+                "attention",
+            )
+        ]
     if detail.get("coverage") is True and _targets(detail.get("targets")):
         return _coverage(detail)
-    if _mapping(detail.get("campaigns")):
+    if _mapping(detail.get("records")):
         return _campaigns(detail)
     if literal(detail.get("mode")).replace("_", "-").startswith("elab-only"):
         targets = _targets(detail.get("targets"))
@@ -603,7 +616,7 @@ _FACT_LABELS = {
     "at": "At",
     "target_selector": "Target selector",
     "target_identity": "Target identity",
-    "campaign_path": "Campaign path",
+    "campaign_path": "Coverage Record path",
     "point_id": "Point",
     "justification": "Justification",
     "proof_reference": "Proof reference",
@@ -652,7 +665,7 @@ _CONTAINERS = {
     "policy",
     "decision",
     "targets",
-    "campaigns",
+    "records",
     "metrics",
     "conditions",
     "scope",
@@ -703,7 +716,7 @@ def _fact_rows(data: Mapping[str, object], rows: list[ResultLine], *, depth: int
 
 def _container_facts(key: str, value: object, rows: list[ResultLine], *, depth: int) -> None:
     if isinstance(value, Mapping):
-        if key in {"targets", "campaigns", "per_clock"}:
+        if key in {"targets", "records", "per_clock"}:
             for name, target in list(value.items())[:_ITEM_LIMIT]:
                 rows.append(_row("Clock" if key in {"per_clock"} else "Target", name))
                 _fact_rows(_mapping(target), rows, depth=depth + 1)

@@ -109,7 +109,7 @@ unchanged to the Coverage Analyst. The fixture scripts
 Campaign manifest it points to (`booley.coverage-campaign/v5`):
 
 ```bash
-python3 -c 'import json,sys,pathlib; r=pathlib.Path(sys.argv[1]); print(r.parent / json.loads(r.read_text())["coverage_campaign"]["path"])' <target>/coverage.json
+python3 -c 'import json,sys,pathlib; r=pathlib.Path(sys.argv[1]); print(r.parent / json.loads(r.read_text())["coverage_record"]["path"])' <target>/coverage.json
 ```
 
 `path_base` is `origin_target`: the path resolves against the Target directory
@@ -410,7 +410,7 @@ deeper validation works. Restore by discarding only that copy, recreating it
 from the original, and analyzing the valid pair successfully.
 
 Analyst path faults use the exact invalid form in their name: missing-argument
-omits `--campaign`; target-name passes `sim_hdl`; latest passes the literal
+omits `--record`; target-name passes `sim_hdl`; latest passes the literal
 `latest`; point-store and waveform pass the actual owned gzip and VCD paths;
 legacy-flat-report passes a real run-owned JSON file named
 `coverage_report.json` that is not a Campaign reference. Wrong-Target and wrong-invocation cases move the valid

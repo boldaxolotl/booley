@@ -119,12 +119,12 @@ def test_nested_codex_home_includes_scoped_environment(tmp_path, monkeypatch):
         cb._ensure_nested_codex_home(
             "coverage_analyst",
             ["coverage_evidence"],
-            {"BOOLEY_COVERAGE_CAMPAIGN": "/reports/coverage.json"},
+            {"BOOLEY_COVERAGE_RECORD": "/reports/coverage.json"},
         )
     )
 
     config = (home / ".codex/config.toml").read_text(encoding="utf-8")
-    assert 'BOOLEY_COVERAGE_CAMPAIGN = "/reports/coverage.json"' in config
+    assert 'BOOLEY_COVERAGE_RECORD = "/reports/coverage.json"' in config
     assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
 
 

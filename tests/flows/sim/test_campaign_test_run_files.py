@@ -240,7 +240,7 @@ def test_rows_carry_null_paths_when_files_are_absent(
         build=SubprocessResult(returncode=1, stdout="compile failed\n"),
     )
     report = json.loads((tmp_path / "reports/sim/1/report.json").read_text("utf-8"))
-    (preview,) = report["detail"]["campaigns"]["lite"]["observations"]
+    (preview,) = report["detail"]["records"]["lite"]["observations"]
 
     (row,) = simulation["tests"]
     assert (row["log"], row["trace"]) == (None, None)

@@ -81,7 +81,7 @@ def test_a_diagnostic_run_report_names_the_goal_by_the_adapters_public_name(
     result = _with_frozen_runs_of_a_diagnostic_run(
         EndpointOutcome(
             report_text="sim: ran",
-            detail={"campaigns": {"top": {"test_runs": [run_row(grade="fail")]}}},
+            detail={"records": {"top": {"test_runs": [run_row(grade="fail")]}}},
         ),
         adapter.frozen_test_runs(),
         lambda selector: {selector, f"::{selector}:0#{selector}"},

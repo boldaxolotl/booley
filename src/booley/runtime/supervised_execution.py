@@ -125,7 +125,7 @@ def supervised_execution_scope(
     watcher = threading.Thread(
         target=_watch_scope_cancellation,
         args=(scope, stop),
-        name="booley-campaign-process-cancellation",
+        name="booley-record-process-cancellation",
         daemon=True,
     )
     watcher.start()

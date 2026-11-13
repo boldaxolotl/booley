@@ -45,7 +45,7 @@ from tests.flows.sim.campaign_test_support import (
 
 # Threads owned by other modules and unchanged by the pool: the slot store's lease
 # renewal and the supervised scope's per-scope process killer.
-_UNRELATED_THREAD_PREFIXES = ("booley-lease-", "booley-campaign-process-cancellation")
+_UNRELATED_THREAD_PREFIXES = ("booley-lease-", "booley-record-process-cancellation")
 
 
 class _Campaign:
@@ -390,7 +390,7 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_max_heavy(tmp_path: P
         _wait_until(lambda: "booley-campaign-outer" not in _campaign_thread_names(earlier_threads))
         assert _campaign_thread_names(earlier_threads) == {
             "booley-campaign-child-1",
-            "booley-campaign-process-cancellation",
+            "booley-record-process-cancellation",
         }
     finally:
         release_child.set()
@@ -445,7 +445,8 @@ def _campaign_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
     return {
         thread.name
         for thread in threading.enumerate()
-        if thread not in earlier_threads and thread.name.startswith("booley-campaign-")
+        if thread not in earlier_threads
+        and thread.name.startswith(("booley-campaign-", "booley-record-process-cancellation"))
     }
 
 

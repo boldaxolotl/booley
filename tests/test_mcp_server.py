@@ -1120,7 +1120,7 @@ class TestCoverageEvidenceTool:
     def test_bound_nested_server_exposes_only_coverage_evidence(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
-        monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", "/reports/coverage.json")
+        monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", "/reports/coverage.json")
         monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", "/project")
 
         tools = catalog.visible_definitions(catalog.Exposure.from_mapping(os.environ), [])
@@ -1135,7 +1135,7 @@ class TestCoverageEvidenceTool:
     def test_coverage_evidence_is_hidden_without_bound_campaign(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
-        monkeypatch.delenv("BOOLEY_COVERAGE_CAMPAIGN", raising=False)
+        monkeypatch.delenv("BOOLEY_COVERAGE_RECORD", raising=False)
         monkeypatch.delenv("BOOLEY_COVERAGE_PROJECT", raising=False)
 
         assert not catalog.coverage_visible(catalog.Exposure.from_mapping(os.environ))
@@ -1918,7 +1918,7 @@ def test_simulation_count_transport_omits_only_full_mapping():
         "flow": "sim",
         "passed": True,
         "detail": {
-            "campaigns": {
+            "records": {
                 "sim": {
                     "observations": [{"test": "one", "cycle_count": 7}],
                     "artifacts": {"simulation": {"path": "targets/sim/simulation.json"}},
@@ -1983,7 +1983,7 @@ def test_fetched_simulation_card_never_expands_top_level_counts():
 
     report = {
         "flow": "sim",
-        "detail": {"campaigns": {}},
+        "detail": {"records": {}},
         "cycle_counts": {"sim": [{"test": "hidden-full-row", "cycle_count": 7}]},
     }
     assert "hidden-full-row" not in _format_report_card(report, "sim")

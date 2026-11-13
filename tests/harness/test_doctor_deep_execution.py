@@ -111,7 +111,7 @@ def _real_simulation_transport(monkeypatch, flow_project, alias, data, host):
 
 
 def _assert_real_bad_simulation_report(outcome, build_failure):
-    campaign = outcome.detail["campaigns"]["sim"]
+    campaign = outcome.detail["records"]["sim"]
     assert campaign["complete"] is True
     assert campaign["test_run_total"] == campaign["observation_total"] == 1
     assert campaign["test_runs"][0]["grade"] == "fail"
