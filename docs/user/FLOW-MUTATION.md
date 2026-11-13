@@ -157,10 +157,13 @@ Verilator version).
 ## Reading results
 
 The report starts with what reproduces the run, then the tally and the
-verdict:
+verdict. The first line records the exact pyslang version, and on a
+Verilator Target the Verilator version, because pyslang finds the
+candidate Mutants and Verilator's generated C++ decides which of them are
+equivalent. Example (Verilator):
 
 ```text
-[mutation_test] 10 Mutants (seed 0, count 10, generator 4, pyslang 9.0.0, Verilator 5.052 2025-02-01 rev v5.052)
+[mutation_test] 10 Mutants (seed 0, count 10, generator 4, pyslang <version>, Verilator <version>)
 [mutation_test] sim sweep: 10/10 tested              4m
   8 detected (1 timeout), 0 invalid, 2 not detected
   detected: 8/10 (required: 8/10, default 80% of --count)
