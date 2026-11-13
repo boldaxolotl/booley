@@ -467,7 +467,7 @@ def test_target_less_git_classification_failure_is_not_fresh(project, monkeypatc
 
     from booley.runtime import git_ignore
 
-    original = git_ignore.subprocess.run
+    original = git_ignore.platform_paths.run_captured_bounded
 
     def broken(command, **kwargs):
         if command[1] != "check-ignore":
@@ -476,7 +476,7 @@ def test_target_less_git_classification_failure_is_not_fresh(project, monkeypatc
             raise subprocess.TimeoutExpired(command, 30)
         return subprocess.CompletedProcess(command, 128, b"", b"Git failure")
 
-    monkeypatch.setattr(git_ignore.subprocess, "run", broken)
+    monkeypatch.setattr(git_ignore.platform_paths, "run_captured_bounded", broken)
     with pytest.raises(OSError, match="classification"):
         DEFAULT_RESOLVERS.fingerprint(project, target=None)
 
