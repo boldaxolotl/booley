@@ -156,3 +156,31 @@ def test_wall_clock_unknown_and_independent_of_memory() -> None:
     run = _phase(job, "sim_run", "blank")
     assert (run.memory_mb.value, run.memory_mb.source) == (8750.0, estimates.Source.OWN)
     assert (run.wall_s.value, run.wall_s.source) == (None, estimates.Source.UNKNOWN)
+
+
+def test_own_wall_clock_needs_own_history_for_every_phase() -> None:
+    estimates = _estimates()
+    records = [
+        _record("t1", "sim_build", memory=100, wall=8.0),
+        _record("t1", "sim_run", memory=100, wall=12.0, test_run="a"),
+        _record("t2", "sim_run", memory=100, wall=2.0, test_run="b"),
+    ]
+    estimator = estimates.ResourceEstimator(records)
+
+    own = estimator.estimate([_sim("t1", "a")])
+    borrowed = estimator.estimate([_sim("t1", "a"), _sim("t1", "new")])
+    unknown = estimator.estimate([_sim("t3", "a")])
+
+    # Both phases have their own history: (8 + 12) x 1.25.
+    assert own.own_wall_s == 25.0
+    assert borrowed.own_wall_s is None  # the second Test Run borrows its wall-clock
+    assert unknown.own_wall_s is None
+    assert estimator.estimate([]).own_wall_s is None  # no phases
+    # A phase measured for memory only has no wall-clock of its own.
+    blank = estimates.ResourceEstimator([_record("t1", "sim_run", memory=1, test_run="a")])
+    assert blank.estimate([_sim("t1", "a")]).own_wall_s is None
+    # A corrupt (negative) record is no history either.
+    corrupt = estimates.ResourceEstimator(
+        [_record("t1", "sim_run", memory=1, wall=-5.0, test_run="a")]
+    )
+    assert corrupt.estimate([_sim("t1", "a")]).own_wall_s is None

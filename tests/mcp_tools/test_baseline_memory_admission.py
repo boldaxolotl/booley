@@ -82,7 +82,9 @@ def test_baseline_holds_a_background_memory_reservation_under_the_switch(memory_
         ("background", job_slots.CLASS_MEMORY, os.getpid())
     ]
     assert holders[0].memory == job_slots.MemoryClaim(
-        budget_mb=_BUDGET_MB, reservation_mb=_RESERVATION_MB
+        budget_mb=_BUDGET_MB,
+        reservation_mb=_RESERVATION_MB,
+        wall_s=2.5,  # sim_build + sim_run
     )
     assert waiters == []
     # It is not a heavy Job Slot.
