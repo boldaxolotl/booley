@@ -142,8 +142,8 @@ def _build_harness(kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch.setattr(flow, "run_prepared_simulation", run_prepared_simulation)
 
         def prepare() -> None:
-            from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
             from booley.flows.sim.flow import PreparedSimulationEndpoint
+            from booley.flows.sim.record_invocation import SimulationCampaignInvocation
             from tests.flows.invocation_doubles import prepare_as
 
             invocation = SimulationCampaignInvocation(
@@ -333,8 +333,8 @@ def _prepared(*, dry_run: bool = False, borrowing: bool = False) -> PreparedExec
 
 def _borrowing_invocation() -> object:
     """A prepared invocation of the borrowing kind, as a Simulation Campaign is."""
-    from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
     from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.flows.sim.record_invocation import SimulationCampaignInvocation
 
     return SimulationCampaignInvocation(
         SimulateFlow(), PreparedSimulationEndpoint((), None, (), {})
@@ -762,7 +762,7 @@ def test_over_budget_job_result_carries_the_memory_warning(
 ) -> None:
     from booley.flows.job_estimates import JobRequest
     from booley.flows.prepared_invocation import TargetSelectionInvocation
-    from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.record_invocation import SimulationCampaignInvocation
 
     # A 2,000 MiB peak is a 2,500 MiB estimate against the 1,000 MiB budget.
     _seed_history(memory_runtime, ("a", 2000))
@@ -1378,7 +1378,7 @@ def _requeue_harness(
     """A harness whose Job is sized from the Resource History: 400 MiB, reserving 500 MiB."""
     from booley.flows.job_estimates import JobRequest
     from booley.flows.prepared_invocation import TargetSelectionInvocation
-    from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.record_invocation import SimulationCampaignInvocation
 
     _seed_history(memory_runtime, ("demo", 400))
     sized = lambda _self: (JobRequest(flow="synth", target="demo"),)  # noqa: E731

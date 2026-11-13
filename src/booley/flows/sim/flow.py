@@ -44,8 +44,6 @@ from booley.flows.progress_lifecycle import (
 )
 from booley.flows.request import FlowRequest
 from booley.flows.sim.bwave_registration import register_trace_sessions
-from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
-from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
     resolve_pre_sim_commands,
@@ -61,7 +59,9 @@ from booley.flows.sim.live_progress import (
     install_progress,
     publish_checkpoint,
 )
+from booley.flows.sim.record_invocation import SimulationCampaignInvocation
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
+from booley.flows.sim.record_reports import target_report_directory
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
@@ -98,7 +98,18 @@ from .build import (
     SimulationBuildInfrastructureError,
     SimulationBuildPreparationError,
 )
-from .campaign import (
+from .elab_only import ElabOnlyMixin
+from .execution import (
+    SelectedTestRuns,
+    SimulationExecution,
+    SimulationOptions,
+    SimulationPreview,
+    SimulationSelection,
+)
+from .execution.engine import TRACE_CLEANUP_MARGIN_S
+from .flow_resume import CampaignResumeMixin
+from .mode import SimulationMode
+from .record import (
     CampaignOutcome,
     CampaignPolicy,
     NewCampaignPreviewRequest,
@@ -113,19 +124,19 @@ from .campaign import (
     started_campaign,
     validate_resume_manifest,
 )
-from .campaign.coverage_execution import (
+from .record.coverage_execution import (
     CoverageAggregateExecutor,
     _CoverageAggregateError,
 )
-from .campaign.flow_planning import (
+from .record.flow_planning import (
     plan_coarse_simulation_campaign,
     plan_ordinary_hdl_campaign,
 )
-from .campaign.planning import (
+from .record.planning import (
     manifest_digest,
 )
-from .campaign.serial_execution import OrdinaryHdlSerialExecutor
-from .campaign_presentation import (
+from .record.serial_execution import OrdinaryHdlSerialExecutor
+from .record_presentation import (
     _append_missing_report_lines,
     _baseline_refusal_line,
     _build_infrastructure_detail,
@@ -152,18 +163,7 @@ from .campaign_presentation import (
     _retain_coverage_campaign,
     _unmatched_coverage_failure,
 )
-from .campaign_scaffold import _CampaignRun, _CampaignSteps, _group_disclosures
-from .elab_only import ElabOnlyMixin
-from .execution import (
-    SelectedTestRuns,
-    SimulationExecution,
-    SimulationOptions,
-    SimulationPreview,
-    SimulationSelection,
-)
-from .execution.engine import TRACE_CLEANUP_MARGIN_S
-from .flow_resume import CampaignResumeMixin
-from .mode import SimulationMode
+from .record_scaffold import _CampaignRun, _CampaignSteps, _group_disclosures
 from .standalone import StandaloneMixin
 from .test_run_invocation import (
     BaselineLink,
@@ -365,8 +365,8 @@ class SimulateFlow(
 
     def _next_invocation_dir(self, report_dir: Path) -> Path:
         """Acquire the Simulation producer lock before publishing its directory."""
-        from .campaign_reports import campaign_invocation_lock
-        from .campaign_retention import invocation_booley_dir
+        from .record_reports import campaign_invocation_lock
+        from .record_retention import invocation_booley_dir
 
         endpoint_dir = report_dir / self.name
         endpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -684,8 +684,8 @@ class SimulateFlow(
         self, result: EndpointOutcome, origin_manifest: Path | None = None
     ) -> EndpointOutcome:
         """Attach authentic hook evidence even when no terminal Campaign outcome exists."""
-        from .campaign import collect_pre_sim_firings
-        from .campaign_retention import invocation_booley_dir
+        from .record import collect_pre_sim_firings
+        from .record_retention import invocation_booley_dir
 
         invocation = self._reserved_invocation_dir
         if invocation is None:
@@ -716,8 +716,8 @@ class SimulateFlow(
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
-        from .campaign import collect_pre_sim_firings
-        from .campaign_retention import invocation_booley_dir
+        from .record import collect_pre_sim_firings
+        from .record_retention import invocation_booley_dir
 
         firings = tuple(
             firing

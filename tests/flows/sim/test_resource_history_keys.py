@@ -22,7 +22,7 @@ from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SelectedCoverageRun, SimulationCommandRequest
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.runtime import resource_history
-from tests.flows.sim.test_verilator_build_reuse_campaign import (  # noqa: F401 -- fixture
+from tests.flows.sim.test_verilator_build_reuse_record import (  # noqa: F401 -- fixture
     flow_project,
 )
 from tests.flows.sim.test_verilator_coverage_execution import (

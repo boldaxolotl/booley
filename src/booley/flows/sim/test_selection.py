@@ -35,17 +35,17 @@ from booley.runtime.endpoint_execution import (
 )
 from booley.targets.catalog import TargetCatalog
 
-from .campaign_presentation import (
-    _diagnostic_test_run_notes,
-    _diagnostic_test_runs,
-    _with_frozen_runs_of_a_diagnostic_run,
-)
 from .execution import (
     DefaultSelection,
     NamedTests,
     SelectedTestRuns,
 )
 from .execution.engine import simulation_adapter_kind, target_test_plan
+from .record_presentation import (
+    _diagnostic_test_run_notes,
+    _diagnostic_test_runs,
+    _with_frozen_runs_of_a_diagnostic_run,
+)
 
 if TYPE_CHECKING:
     from booley.flows.execution_persistence import FlowExecutionAdapter

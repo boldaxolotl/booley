@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.campaign.codec import (
+from booley.flows.sim.record.codec import (
     MANIFEST_MAX_BYTES,
     UnsupportedSimulationCampaignFormatError,
     decode_simulation_campaign_manifest,

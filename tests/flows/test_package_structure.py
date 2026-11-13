@@ -84,7 +84,7 @@ def _imported_modules(source_file: Path) -> set[str]:
 
 
 def test_native_coverage_execution_imports_no_private_serial_executor_names() -> None:
-    source_file = FLOWS_ROOT / "sim" / "campaign" / "coverage_execution.py"
+    source_file = FLOWS_ROOT / "sim" / "record" / "coverage_execution.py"
     tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
     imported_names: set[str] = set()
     for node in ast.walk(tree):

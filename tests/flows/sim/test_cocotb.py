@@ -2,7 +2,7 @@
 
 Host-runnable: the Cocotb Target is simulated through the real campaign path
 (``SimulateFlow.execute``) with only the process edge faked
-(``campaign_boundary``). The fake process prints canned run-half output
+(``simulation_record_boundary``). The fake process prints canned run-half output
 ([COCOTB_RESULTS] + [SIM_SUMMARY] lines built with the real formatters) and the
 production Cocotb adapter's verdict logic turns it into the adapter result. The
 real icarus/verilator cocotb runs are the Sandbox e2e's job (G8-G15).
@@ -22,8 +22,8 @@ from booley.flows.sim.backends import cocotb_results as cr
 from booley.flows.sim.execution import engine as execution_engine
 from booley.flows.sim.result import format_summary
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from tests.flows.sim.campaign_boundary import CampaignSimRun, run_campaign_sim
 from tests.flows.sim.launched_work import launched_work
+from tests.flows.sim.simulation_record_boundary import CampaignSimRun, run_campaign_sim
 from tests.flows.sim.test_flow import SimulateFlow
 
 # A .core declaring a Cocotb Target (flow_options.cocotb_module — decision 2).

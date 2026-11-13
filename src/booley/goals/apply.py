@@ -21,7 +21,6 @@ from booley.criteria.evidence_ledger import prepare_observations
 from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentState
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.apply_effects import FileEffect, read_bytes
-from booley.goals.campaign_accounting import quarantine_unreadable
 from booley.goals.change_policy import conflict, validate_kind
 from booley.goals.changes import (
     ChangeEntry,
@@ -47,6 +46,7 @@ from booley.goals.proposals import (
     save_decision,
 )
 from booley.goals.recorder import GOAL_SCOPE, goal_identity
+from booley.goals.simulation_record_accounting import quarantine_unreadable
 from booley.goals.state_store import load_goal_state, review_categories
 from booley.goals.store import GoalStore, RecordLock, frozen_run_violation
 from booley.goals.test_run_freezing import (

@@ -16,7 +16,7 @@ from booley.harness import doctor
 from booley.harness import doctor_deep as deep
 from booley.runtime import health, runtime_context
 from tests.booley_checkouts_support import LAYOUTS, linked_worktree
-from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
+from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.harness.test_doctor import _write_project
 
 __all__ = ["flow_project"]

@@ -1,7 +1,7 @@
 """Where a Simulation run keeps its Record, and the refusal of the layout Booley 0.4.0 used.
 
 This is the one module that names the layout. It sits outside the
-``booley.flows.sim.campaign`` package, and imports the codec lazily, so every build and
+``booley.flows.sim.record`` package, and imports the codec lazily, so every build and
 check site can import the constants at module level without an import cycle.
 """
 
@@ -22,7 +22,7 @@ _OLDER_RECORD_DIRECTORY = "campaign"
 
 def _refusal(label: str, where: str, invocation: Path | None) -> Exception:
     """The Part 1 older-Booley refusal, for a layout rather than a schema."""
-    from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
+    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
 
     return UnsupportedSimulationCampaignFormatError(label, where, invocation)
 

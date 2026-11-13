@@ -12,19 +12,19 @@ import pytest
 from booley.flows.base import SubprocessResult
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim import trace_overlay as trace_overlay_module
-from booley.flows.sim.campaign.coordinator import (
+from booley.flows.sim.execution import SimulationExecution, SimulationOptions
+from booley.flows.sim.execution.contract import NamedTests
+from booley.flows.sim.execution.engine import PreparedOrdinaryGroup
+from booley.flows.sim.record.coordinator import (
     CampaignPolicy,
     NewCampaignRunRequest,
     SimulationCampaign,
 )
-from booley.flows.sim.campaign.flow_planning import (
+from booley.flows.sim.record.flow_planning import (
     plan_coarse_simulation_campaign,
     plan_ordinary_hdl_campaign,
 )
-from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.execution import SimulationExecution, SimulationOptions
-from booley.flows.sim.execution.contract import NamedTests
-from booley.flows.sim.execution.engine import PreparedOrdinaryGroup
+from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.trace_overlay import (
     _target_includes_dump_module,
     packaged_vcd_dump_source,

@@ -783,7 +783,7 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
     from contextlib import nullcontext
     from types import SimpleNamespace
 
-    from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, ScheduledAttempt
+    from booley.flows.sim.record.scheduler import BoundedCampaignScheduler, ScheduledAttempt
     from booley.runtime.supervised_execution import SupervisedExecutionScope
 
     capacity = SimpleNamespace(

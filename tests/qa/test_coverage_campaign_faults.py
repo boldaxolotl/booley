@@ -117,11 +117,11 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
     from tests.conftest import require_symlinks
 
     from booley.flows.sim import coverage_campaign_store as store
-    from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
     from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
     from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
     from booley.flows.sim.coverage_json import MANIFEST_JSON
     from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
 
     # One node, every mode; resource-ceiling is last because it patches the ceiling.
     for mode, expected_codes in _product_faults().items():

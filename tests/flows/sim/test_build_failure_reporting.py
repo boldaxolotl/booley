@@ -18,24 +18,24 @@ import pytest
 import booley.flows.sim.build as build_module
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import classify_build_outcome
-from booley.flows.sim.campaign.codec import (
+from booley.flows.sim.execution import SimulationOptions
+from booley.flows.sim.flow import OrdinaryCampaignPlanning, SimulateFlow
+from booley.flows.sim.record.codec import (
     MAX_DETAIL_BYTES,
     canonical_json_bytes,
 )
-from booley.flows.sim.campaign.coordinator import (
+from booley.flows.sim.record.coordinator import (
     CampaignPolicy,
     NewCampaignRunRequest,
     SimulationCampaign,
 )
-from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.campaign.store import CampaignStore
-from booley.flows.sim.execution import SimulationOptions
-from booley.flows.sim.flow import OrdinaryCampaignPlanning, SimulateFlow
+from booley.flows.sim.record.model import create_simulation_campaign_plan
+from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
+from booley.flows.sim.record.store import CampaignStore
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.mcp.base import EXIT_ERROR
-from tests.flows.sim import test_campaign_crash_matrix as crash_matrix
-from tests.flows.sim.campaign_test_support import (
+from tests.flows.sim import test_simulation_record_crash_matrix as crash_matrix
+from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _FailedCoverageBuild,
     _run_coverage_campaign,
@@ -237,8 +237,8 @@ def _run_private_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcom
 
 
 def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome):
-    from tests.flows.sim.campaign_test_support import _handle as shared_handle
-    from tests.flows.sim.campaign_test_support import _named_manifest
+    from tests.flows.sim.simulation_record_test_support import _handle as shared_handle
+    from tests.flows.sim.simulation_record_test_support import _named_manifest
 
     plan = create_simulation_campaign_plan(_named_manifest(("tail", "quick")))
     project = tmp_path / "project"
@@ -247,7 +247,7 @@ def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome
     monkeypatch.setenv("BOOLEY_DIR", str(project / ".booley"))
     handle = shared_handle(project)
     monkeypatch.setattr(
-        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
     )
     root = tmp_path / "engine-build"
@@ -553,7 +553,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
 ) -> None:
     from dataclasses import replace
 
-    from tests.flows.sim.campaign_test_support import _plan
+    from tests.flows.sim.simulation_record_test_support import _plan
 
     names = tuple(f"test_{index}" for index in range(1000))
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names, access=access)
