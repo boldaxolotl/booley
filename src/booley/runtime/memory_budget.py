@@ -3,8 +3,9 @@
 Default budget is the container's memory limit (or installed memory when the
 container has none) minus a reserve for what the Jobs do not own: the running
 Developer Agents, the MCP server, the Dashboard, and fixed headroom. Setting
-``[jobs].memory_budget`` replaces the whole default. Nothing admits Jobs with
-this yet; the module only computes and explains the number.
+``[jobs].memory_budget`` replaces the whole default. Memory admission
+holds each Job's Memory Reservation against this number; the module computes and
+explains it.
 """
 
 from __future__ import annotations

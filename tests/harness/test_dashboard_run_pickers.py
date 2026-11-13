@@ -131,7 +131,7 @@ async def test_target_field_offers_only_the_flows_compatible_targets(project):
 class RequiredTargetLauncher(FakeLauncher):
     """A launcher whose Flow insists on a Target: the form comes from such a parser."""
 
-    def form(self, flow):
+    def form(self, kind, name, worktree):
         from booley.harness.dashboard import run_form
 
         parser = parser_for("sim")
@@ -196,7 +196,7 @@ async def test_test_field_offers_the_targets_test_runs_and_toggles_several(proje
         )
         await pilot.press("enter")
         await pilot.pause()
-        assert launcher.submitted == [(project, "sim", expected)]
+        assert launcher.submitted == [(project, "flow", "sim", expected)]
 
 
 @pytest.mark.asyncio

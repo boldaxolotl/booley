@@ -120,7 +120,7 @@ def _stop_after_planning_authentication(_group: PreparedOrdinaryGroup):
 
 
 def _admission() -> AdmissionContext:
-    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
+    return AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False)
 
 
 # ---------------------------------------------------------------------------

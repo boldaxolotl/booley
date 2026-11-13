@@ -468,6 +468,10 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
     assert result.returncode == 0, result.stderr
 
 
+#: A Job that runs alone: any other claim of the memory class waits behind it.
+_RUN_ALONE = job_slots.MemoryClaim(budget_mb=1024.0, run_alone=True)
+
+
 class FastSupervisor(JobLifecycle):
     @staticmethod
     async def _run_process(cmd, **kwargs):
@@ -480,10 +484,11 @@ def queued_command(context):
     return command(f"""
         from pathlib import Path
         import os, time
-        from booley.runtime.job_slots import SlotStore, slots_dir
+        from booley.runtime.job_slots import MemoryClaim, SlotStore, slots_dir
         store = SlotStore(slots_dir())
         deadline = time.monotonic() + 60
-        token = store.acquire('heavy', pid=os.getpid(), timeout_s=30, poll_interval=0.01,
+        token = store.acquire("memory", pid=os.getpid(), timeout_s=30, poll_interval=0.01,
+            memory=MemoryClaim(budget_mb=1024.0, run_alone=True),
             on_submitted=lambda _: Path({str(context.work_dir / "queued")!r}).touch(),
             should_abort=lambda: time.monotonic() > deadline)
         try:
@@ -498,7 +503,7 @@ def queued_command(context):
 @pytest.mark.parametrize("withdraw", [False, True])
 async def test_real_queued_job_credit_and_withdrawal(context, withdraw):
     store = job_slots.SlotStore(job_slots.slots_dir())
-    holder = store.acquire("heavy", pid=os.getpid(), timeout_s=60)
+    holder = store.acquire("memory", pid=os.getpid(), timeout_s=60, memory=_RUN_ALONE)
     jobs = FastSupervisor()
     try:
         run_id = jobs.submit("lint", queued_command(context), JOB_TIMEOUT, context=context)
@@ -614,13 +619,13 @@ async def test_child_requeued_needs_a_claim_with_a_reason(context):
         status=job_records.STATUS_RUNNING,
     )
     assert jobs._child_requeued(mine) is False  # no claim at all
-    plain = store.acquire(job_slots.CLASS_HEAVY, pid=os.getpid(), timeout_s=60)
+    plain = store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), timeout_s=60)
     try:
         assert jobs._child_requeued(mine) is False  # a first claim has no reason
     finally:
         store.release(plain)
     reasoned = store.acquire(
-        job_slots.CLASS_HEAVY,
+        job_slots.CLASS_LIGHT,
         pid=os.getpid(),
         timeout_s=60,
         queue_reason="requeued after out-of-memory",
@@ -650,13 +655,13 @@ async def test_queued_cancel_withdrawal_unlink_faults(context, monkeypatch, faul
     """A transient sharing error on the withdrawal unlink is retried (queued, #2089);
     a missing entry means promotion won the race (running)."""
     store = job_slots.SlotStore(job_slots.slots_dir())
-    holder = store.acquire("heavy", pid=os.getpid(), timeout_s=60)
+    holder = store.acquire("memory", pid=os.getpid(), timeout_s=60, memory=_RUN_ALONE)
     jobs = FastSupervisor()
     real_unlink = Path.unlink
     raised: list[Path] = []
 
     def faulty_unlink(path, *args, **kwargs):
-        is_waiter = path.parent.name == "heavy" and path.name.startswith("w-")
+        is_waiter = path.parent.name == "memory" and path.name.startswith("w-")
         if is_waiter and not raised:
             raised.append(path)
             raise fault()
@@ -748,7 +753,7 @@ def test_restart_preserves_existing_submit_deadline_for_unstamped_queued_child(c
         "queued-legacy", "lint", "2000-01-01T00:00:00Z", 5, pid=os.getpid()
     )
     store = job_slots.SlotStore(job_slots.slots_dir())
-    token = store.submit("heavy", pid=os.getpid())  # Unpromoted, live waiter.
+    token = store.submit("light", pid=os.getpid())  # Unpromoted, live waiter.
     job_records.write_record(rec, context.jobs_root)
     try:
         JobLifecycle().reconcile_orphaned()

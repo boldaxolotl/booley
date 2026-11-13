@@ -72,8 +72,8 @@ Job details show how long each result waited before it was read.
 ### Resource use
 
 Booley measures every Job's peak memory and time. `booley resources` shows the
-recent range for each Target, which tells you how many heavy Jobs fit side by
-side (`max_heavy`) and how much memory to reserve for each (`heavy_memory`).
+recent range for each Target. Booley sizes each Job's memory reservation from
+it, and the range helps you choose `[sandbox].memory`.
 See [Job resource history](CONFIG.md#job-resource-history).
 
 ### Choosing Targets
@@ -154,8 +154,8 @@ from the agent's shell, Booley prints plain timestamped `[booley-progress]`
 lines instead: one per new step, plus one every five seconds with any new
 output.
 
-When Simulation runs several tests in parallel (`[jobs].max_heavy` above 1;
-see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs)), each running test
+When Simulation runs several tests in parallel (their memory reservations fit
+the Memory Budget; see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs)), each running test
 gets its own progress row and output lines, labelled `lane=<test>/<attempt>`.
 
 On a terminal, Booley prints the log paths once, on one line, after the verdict.

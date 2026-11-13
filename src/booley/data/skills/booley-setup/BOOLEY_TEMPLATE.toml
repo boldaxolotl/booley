@@ -58,11 +58,15 @@ enabled = false
 
 [flows.synth]
 enabled = false              # synthesis recipe belongs in Target flow_options
-# Doctor deep-runs every Target whose doctor list contains `synth` and retains
-# the largest measured memory peak.
+# Doctor deep-runs every Target whose doctor list contains `synth`;
+# `booley resources` reports their peak memory.
 
 [jobs]
-# heavy_memory = "4g"        # per-HEAVY-job reservation; calibrate in Step 4
+# memory_budget = "24g"      # optional; default is [sandbox].memory minus the agent reserve
+
+# Seat Caps are mandatory for a licensed tool such as Vivado.
+# [jobs.seats]
+# vivado = 1                 # license seats Booley may use at once
 
 # NOTE: RTL-vs-TB source isolation is derived from the .core filesets — a file
 # tagged `tags: [tb]` is testbench, everything else is RTL (ADR 0026). There is

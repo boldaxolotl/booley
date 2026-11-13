@@ -1,4 +1,4 @@
-"""Operating-system concurrency contracts for shared Job slots."""
+"""Operating-system concurrency contracts for the shared light-class slot store."""
 
 from __future__ import annotations
 
@@ -42,11 +42,11 @@ def _hold_single_slot(
 ) -> None:
     store = job_slots.SlotStore(
         Path(root),
-        job_slots.SlotCaps(max_heavy=1),
+        job_slots.SlotCaps(max_light=1),
     )
     start.wait(timeout=10)
     token = store.acquire(
-        job_slots.CLASS_HEAVY,
+        job_slots.CLASS_LIGHT,
         pid=os.getpid(),
         poll_interval=0.005,
     )
@@ -94,7 +94,7 @@ def test_single_slot_never_has_multiple_process_holders(tmp_path: Path) -> None:
 
 
 def test_acquire_recovers_stale_promotion_gate(tmp_path: Path) -> None:
-    class_dir = tmp_path / job_slots.CLASS_HEAVY
+    class_dir = tmp_path / job_slots.CLASS_LIGHT
     class_dir.mkdir(parents=True)
     gate = class_dir / ".promotion.lock"
     gate.write_text("987654321\n", encoding="utf-8")
@@ -102,12 +102,12 @@ def test_acquire_recovers_stale_promotion_gate(tmp_path: Path) -> None:
     os.utime(gate, (old, old))
     store = job_slots.SlotStore(
         tmp_path,
-        job_slots.SlotCaps(max_heavy=1),
+        job_slots.SlotCaps(max_light=1),
         is_pid_alive=lambda pid: pid == os.getpid(),
     )
 
     token = store.acquire(
-        job_slots.CLASS_HEAVY,
+        job_slots.CLASS_LIGHT,
         pid=os.getpid(),
         poll_interval=0.005,
     )

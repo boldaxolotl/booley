@@ -5,7 +5,6 @@ name = "goal-mode-image-smoke"
 provider = "codex"
 
 [jobs]
-max_heavy = 1
 max_light = 1
 queue_max = 4
 

@@ -19,14 +19,16 @@ from booley.config.host_config import SandboxHostPolicy
 from booley.config.project_config import normalize_tests_toml
 from booley.harness import doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
-from booley.runtime import doctor_stamp, inspection, session_admission, vaporview
+from booley.runtime import doctor_stamp, inspection, platform_paths, session_admission, vaporview
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 from tests.conftest import symlink_or_skip
 from tests.diagnostic_helpers import _Rec
-from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+from tests.docker_cli_guard import (
+    route_bounded_captures_through_subprocess_run,
+    route_docker_helper_through_subprocess_run,
+)
 from tests.harness.test_doctor import (
-    _disable_line_ending_stealth,
     _patch_environment,
     _write_project,
 )
@@ -132,6 +134,7 @@ def _run_host_doctor(
         return fixture_run(cmd, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
+    route_bounded_captures_through_subprocess_run(monkeypatch)
     return doctor.run_doctor_result(argparse.Namespace(deep=False), root), inventory_calls
 
 
@@ -223,7 +226,6 @@ def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
     waived, tmp_path, monkeypatch
 ):
     booley_dir = _write_project(tmp_path)
-    _disable_line_ending_stealth(tmp_path)
     bootstrap = host_diagnostics.bootstrap
     _use_real_host_checks(
         monkeypatch,
@@ -1048,12 +1050,17 @@ def test_core_repository_hygiene_section_output_is_pinned(
     fixture's fake answers every other Doctor command.
     """
     real_run = subprocess.run
+    real_bounded = platform_paths.run_captured_bounded
     booley_dir = _core_hygiene_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
+    owner = _core_hygiene_owner()
     monkeypatch.setattr(
-        _core_hygiene_owner(),
+        owner,
         "subprocess",
         SimpleNamespace(run=real_run, SubprocessError=subprocess.SubprocessError),
+    )
+    monkeypatch.setattr(
+        owner, "platform_paths", SimpleNamespace(run_captured_bounded=real_bounded)
     )
     reports = []
     render = doctor._Reporter.diagnostics

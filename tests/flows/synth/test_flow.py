@@ -153,7 +153,7 @@ class TestBoundaryCompatibility:
         ("process", "expected"),
         (
             (SubprocessResult(returncode=-1, timed_out=True), "timeout"),
-            (SubprocessResult(returncode=2, oom_kill_delta=1), "oom"),
+            (SubprocessResult(returncode=2, oom_kill_delta=1, oom_killed=True), "oom"),
             (SubprocessResult(returncode=137), "resource_killed"),
         ),
     )
@@ -2154,7 +2154,7 @@ class TestSingleConfigRun:
 
 
 class TestFlowEnablement:
-    """The built-in Flow uses the heavy Sandbox job class."""
+    """The built-in Flow is admitted by Memory Reservation."""
 
     @staticmethod
     def _flow(tmp_path: Path) -> AsicSynthesizeFlow:
@@ -2163,10 +2163,10 @@ class TestFlowEnablement:
         flow.read_state()
         return flow
 
-    def test_job_class_is_heavy(self, state_file: Path, tmp_path: Path):
+    def test_job_class_is_memory(self, state_file: Path, tmp_path: Path):
         from booley.runtime import job_slots
 
-        assert self._flow(tmp_path)._resolve_job_class() == job_slots.CLASS_HEAVY
+        assert self._flow(tmp_path)._resolve_job_class() == job_slots.CLASS_MEMORY
 
 
 # ===========================================================================
@@ -4976,6 +4976,7 @@ class TestIncompleteResourceResults:
             returncode=2,
             stderr="make: Error 137",
             oom_kill_delta=1,
+            oom_killed=True,
         )
         assert _termination_reason(ambiguous, ambiguous.stderr) == "resource_killed"
         assert _termination_reason(corroborated, corroborated.stderr) == "oom"
@@ -4983,7 +4984,6 @@ class TestIncompleteResourceResults:
     def test_own_oom_kill_classifies_as_oom_under_memory_admission(self, monkeypatch):
         from booley.flows.synth.flow import _termination_reason
 
-        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
         process = SubprocessResult(returncode=2, oom_kill_delta=1, oom_killed=True)
 
         assert _termination_reason(process, process.stderr) == "oom"
@@ -4991,7 +4991,6 @@ class TestIncompleteResourceResults:
     def test_ordinary_failure_during_another_jobs_oom_kill_is_tool_failure(self, monkeypatch):
         from booley.flows.synth.flow import _termination_reason
 
-        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
         # The container's OOM counter moved, but this command's own process was not killed.
         process = SubprocessResult(returncode=1, oom_kill_delta=1)
 
@@ -5000,7 +4999,6 @@ class TestIncompleteResourceResults:
     def test_merged_stage_result_keeps_the_openroad_oom_kill(self, monkeypatch):
         from booley.flows.synth.flow import _merge_stage_results, _termination_reason
 
-        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
         yosys = SubprocessResult(returncode=0)
         openroad = SubprocessResult(returncode=2, oom_kill_delta=1, oom_killed=True)
 
@@ -5645,7 +5643,7 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
     ("case", "termination"),
     [
         ({"process": {"returncode": 2, "timed_out": True}}, "timeout"),
-        ({"process": {"returncode": 2, "oom_kill_delta": 1}}, "oom"),
+        ({"process": {"returncode": 2, "oom_kill_delta": 1, "oom_killed": True}}, "oom"),
         ({"process": {"returncode": 137}}, "resource_killed"),
         (
             {

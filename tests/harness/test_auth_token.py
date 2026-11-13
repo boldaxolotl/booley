@@ -1343,9 +1343,7 @@ class TestAuthStorageAdmission:
             auth_token.store_token(_TOKEN + "-new")
         assert target.read_bytes() == previous
 
-    @pytest.mark.parametrize(
-        "relative", ["runtime", "runtime/session-specs", "eda/session-refresh"]
-    )
+    @pytest.mark.parametrize("relative", ["runtime", "runtime/session-specs"])
     def test_unsafe_project_storage_refuses_before_store(
         self, auth_project, monkeypatch, relative
     ):

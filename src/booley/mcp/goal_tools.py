@@ -54,6 +54,9 @@ GOAL_STATUS = "goal_status"
 GOAL_PROPOSE_CHANGE = "goal_propose_change"
 GOAL_FINISH = "goal_finish"
 GOAL_TOOL_NAMES: tuple[str, ...] = (GOAL_ENTER, GOAL_STATUS, GOAL_PROPOSE_CHANGE, GOAL_FINISH)
+# The Goal tools that start Goal baseline EDA Jobs, so they refuse like a Flow call
+# while booley.toml sets a retired key; ``goal_finish`` runs no EDA Job and stays open.
+BASELINE_GOAL_TOOL_NAMES: tuple[str, ...] = (GOAL_ENTER, GOAL_STATUS, GOAL_PROPOSE_CHANGE)
 
 _WORK_DIR = {
     "type": "string",

@@ -60,9 +60,12 @@ def test_complete_builtin_schema_is_compatible(flow_type):
 
 @pytest.fixture
 def runtime(monkeypatch, tmp_path):
+    from booley.flows import endpoint_admission
     from booley.runtime import runtime_context
 
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    # Seat Caps are covered by the admission tests; these tests are about transport.
+    monkeypatch.setattr(endpoint_admission, "required_seats", lambda _tools, _config: ())
     for name in (
         "BOOLEY_STATE_FILE",
         "BOOLEY_TICKET_FILE",
@@ -570,12 +573,16 @@ def test_typed_failure_releases_admission_and_restores_stdout(failure, runtime, 
     import sys
     from unittest.mock import Mock
 
-    from booley.config.jobs import SlotCaps
+    from booley.flows import endpoint_admission
 
     flow = LintFlow()
     claim = object()
-    store = Mock(caps=SlotCaps())
-    monkeypatch.setattr(EndpointState, "_acquire_job_slot", lambda self: (store, claim))
+    store = Mock()
+    monkeypatch.setattr(
+        endpoint_admission,
+        "_acquire_memory_reservation",
+        lambda _endpoint, _prepared, *, requeued=False: endpoint_admission._Claim(store, claim),
+    )
 
     def run():
         raise failure("interrupted execution")

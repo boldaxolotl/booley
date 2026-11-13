@@ -34,7 +34,6 @@ from booley.harness.setup.common import (
     warn,
 )
 from booley.harness.setup.line_endings import (
-    GITATTRIBUTES_RULE,
     LineEndingActionKind,
     LineEndingActionResult,
     LineEndingActionState,
@@ -46,7 +45,6 @@ from booley.harness.setup.line_endings import (
     RepositoryLineEndingReport,
     line_ending_repository_display,
     reconcile_project_line_endings,
-    unknown_attributes_policy_details,
 )
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
@@ -82,10 +80,6 @@ _ACTION_LINES = {
     (LineEndingActionState.COMPLETED, LineEndingActionKind.REFRESH_INDEX): (
         (ok, "refreshed stale Git index metadata for {count} tracked file(s)"),
     ),
-    (LineEndingActionState.COMPLETED, LineEndingActionKind.PUBLISH_ATTRIBUTES): (
-        (ok, "added '{rule}' as the first line of .gitattributes"),
-        (info, "  commit it — the rule only travels to your team through git"),
-    ),
     (LineEndingActionState.PLANNED, LineEndingActionKind.PIN_AUTOCRLF): (
         (info, "  would set core.autocrlf=false and core.eol=lf"),
     ),
@@ -95,30 +89,15 @@ _ACTION_LINES = {
     (LineEndingActionState.PLANNED, LineEndingActionKind.REFRESH_INDEX): (
         (warn, "would refresh stale Git index metadata for {count} tracked file(s)"),
     ),
-    (LineEndingActionState.PLANNED, LineEndingActionKind.PUBLISH_ATTRIBUTES): (
-        (info, "  would add '{rule}' to .gitattributes"),
-    ),
 }
 
 _FAILED_ACTION_DETAILS = {
     LineEndingActionKind.PIN_AUTOCRLF: "autocrlf update failed",
     LineEndingActionKind.NORMALIZE_FILES: "normalization failed",
     LineEndingActionKind.REFRESH_INDEX: "normalization failed",
-    LineEndingActionKind.PUBLISH_ATTRIBUTES: "attributes publication failed",
-    LineEndingActionKind.MIGRATE_ATTRIBUTES: "attributes migration failed",
 }
 
 _OBSERVATION_RESULT_DETAILS = (
-    (LineEndingObservationCode.LEAKED_ROOT_POLICY, "untracked legacy .gitattributes"),
-    (
-        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
-        "repository-local line-ending policy conflict",
-    ),
-    (
-        LineEndingObservationCode.LOCAL_POLICY_MISSING,
-        "repository-local line-ending policy missing",
-    ),
-    (LineEndingObservationCode.CANDIDATE_UNSAFE, "candidate unsafe"),
     (LineEndingObservationCode.CRLF_MISMATCH, "CRLF working tree"),
     (LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE, "autocrlf policy unsafe"),
     (LineEndingObservationCode.AUTOCRLF_NOT_PINNED, "autocrlf policy unsafe"),
@@ -139,35 +118,7 @@ def _render_line_ending_observations(report: RepositoryLineEndingReport) -> None
             warn(message)
 
 
-def _render_attributes_action(action: LineEndingActionResult) -> bool:
-    """Render a migration or repository-local publication; False for any other action."""
-    if action.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES:
-        if action.state is LineEndingActionState.PLANNED:
-            info(f"  would migrate line-ending default: {action.detail}")
-        elif action.state is LineEndingActionState.COMPLETED:
-            ok(f"migrated line-ending default: {action.detail}")
-        else:
-            warn(f"attributes migration {action.state}: {action.detail}")
-        return True
-    if (
-        action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
-        and action.target
-        and action.target.local
-    ):
-        destination = f"{action.target.path} (repository-local; shared by linked worktrees)"
-        if action.state is LineEndingActionState.COMPLETED:
-            ok(f"added '{GITATTRIBUTES_RULE}' to {destination}")
-        elif action.state is LineEndingActionState.PLANNED:
-            info(f"  would add '{GITATTRIBUTES_RULE}' to {destination}")
-        elif action.detail:
-            warn(f"attributes publication {action.state}: {action.detail}")
-        return True
-    return False
-
-
 def _render_line_ending_action(action: LineEndingActionResult) -> None:
-    if _render_attributes_action(action):
-        return
     if (
         action.kind is LineEndingActionKind.NORMALIZE_FILES
         and action.state is LineEndingActionState.COMPLETED
@@ -187,7 +138,7 @@ def _render_line_ending_action(action: LineEndingActionResult) -> None:
         ):
             note("detected core.autocrlf=true (Git for Windows' installer default)")
         for emit, template in lines:
-            emit(template.format(count=action.count, rule=GITATTRIBUTES_RULE))
+            emit(template.format(count=action.count))
     elif action.detail:
         prefix = (
             "would leave tracked files untouched: "
@@ -220,23 +171,10 @@ def _unreadable_line_ending_detail(
 
 
 def _unsafe_line_ending_observation_detail(report: RepositoryLineEndingReport) -> str | None:
-    observations = {
-        observation.code: observation
-        for observation in report.observations
-        if observation.code
-        not in (
-            LineEndingObservationCode.UPSTREAM_POLICY,
-            LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN,
-        )
-    }
+    observations = {observation.code: observation for observation in report.observations}
     for code, detail in _OBSERVATION_RESULT_DETAILS:
         if code in observations:
-            if code is LineEndingObservationCode.CANDIDATE_UNSAFE:
-                return observations[code].detail or detail
             return detail
-    if report.status is LineEndingStatus.UNSAFE and observations:
-        observation = next(iter(observations.values()))
-        return observation.detail or observation.code.value
     return None
 
 
@@ -273,9 +211,6 @@ def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
 
 
 def _safe_line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
-    unknown = unknown_attributes_policy_details(report)
-    if unknown:
-        return f"attributes policy inspection incomplete: {'; '.join(unknown)}"
     completed = {
         action.kind for action in report.actions if action.state is LineEndingActionState.COMPLETED
     }
@@ -339,37 +274,28 @@ def _render_repository_line_endings(report: RepositoryLineEndingReport) -> str |
     _render_line_ending_observations(report)
     for action in report.actions:
         _render_line_ending_action(action)
-    unknown = bool(unknown_attributes_policy_details(report))
     only_planned_pin = all(
         action.kind is LineEndingActionKind.PIN_AUTOCRLF
         and action.state is LineEndingActionState.PLANNED
         for action in report.actions
     )
-    if report.status is LineEndingStatus.SAFE and only_planned_pin and not unknown:
+    if report.status is LineEndingStatus.SAFE and only_planned_pin:
         ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
-    if report.status is LineEndingStatus.UNSAFE or unknown:
-        return f"{repository.role}: {_line_ending_summary_detail(report)}"
+    if report.status is LineEndingStatus.UNSAFE:
+        return f"{repository.role}: {_line_ending_result_detail(report)}"
     return None
-
-
-def _line_ending_summary_detail(report: RepositoryLineEndingReport) -> str:
-    detail = _line_ending_result_detail(report)
-    unknown = unknown_attributes_policy_details(report)
-    if report.status is LineEndingStatus.UNSAFE and unknown:
-        return f"{detail}; attributes policy inspection incomplete: {'; '.join(unknown)}"
-    return detail
 
 
 def _record_line_ending_summary(
     ctx: InitContext, report: LineEndingReport, details: list[str], mode: LineEndingMode
 ) -> None:
     if report.status is LineEndingStatus.SAFE:
-        status = "warn" if details else "ok"
+        status = "ok"
     else:
         # Only a full repair can fail to fix an unsafe tree; the other modes report it.
         status = "err" if mode is LineEndingMode.REPAIR else "warn"
     if len(report.repositories) == 1 and not report.discovery_failures:
-        detail = _line_ending_summary_detail(report.repositories[0])
+        detail = _line_ending_result_detail(report.repositories[0])
     elif status == "ok":
         detail = f"{len(report.repositories)} Git repositories container-safe"
     else:

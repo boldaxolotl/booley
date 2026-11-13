@@ -19,16 +19,18 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
-from booley.flows.sim.record.capacity import HeavyCapacity
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.scheduler import BoundedCampaignScheduler, ScheduledAttempt
 from booley.flows.sim.record.store import CampaignStore
 from booley.flows.terminal_progress import TerminalProgress, announce_unit
-from booley.runtime.execution_records import ExecutionId
-from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
-from tests.flows.sim.simulation_record_test_support import _managed, _two_item_manifest
+from booley.runtime.job_slots import SlotStore
+from tests.flows.sim.simulation_record_test_support import (
+    _item_capacity,
+    _managed,
+    _outer_claim,
+    _two_item_manifest,
+)
 from tests.flows.test_terminal_progress import settled_lines
 
 # Bound for every cross-lane wait so a regression fails instead of hanging.
@@ -83,8 +85,8 @@ def _run_two_lanes(
     project.mkdir()
     (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(manifest, project)
-    slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    slot_store = SlotStore(tmp_path / "slots")  # 2-holder budget
+    outer = _outer_claim(slot_store)
 
     def allocate(item) -> ScheduledAttempt:
         attempt_id = os.urandom(16).hex()
@@ -99,7 +101,7 @@ def _run_two_lanes(
         labels[name] = f"{name}/{attempt.attempt_id[:8]}"
         bodies[name]()
 
-    capacity = HeavyCapacity(_managed(slot_store, outer), manifest, registry.project_data)
+    capacity = _item_capacity(_managed(slot_store, outer), manifest, registry.project_data)
     try:
         with sink.installed():
             BoundedCampaignScheduler(capacity, allocate=allocate, execute=execute).run(

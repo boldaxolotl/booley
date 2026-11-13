@@ -1,9 +1,10 @@
-"""The Dashboard's Run wizard: worktree, Flow, its form, then review and submit.
+"""The Dashboard's Run wizard: worktree, Flow or Specialist, its form, then review and submit.
 
-One modal screen shows one stage at a time. The form stage is generated from the
-Flow's human parser (``run_form``): a row per option, changed in a choice list or
+One modal screen shows one stage at a time. A Flow's form stage is generated from its
+human parser (``run_form``): a row per option, changed in a choice list or
 a text editor stage, or for the Target and test fields a picker over the worktree's
-Targets and the chosen Target's Test Runs, plus one extra-arguments row. It dismisses with the new
+Targets and the chosen Target's Test Runs, plus one extra-arguments row. The ``reviewer``
+Specialist's form is written by hand (``specialist_form``) and has no extra-arguments row. It dismisses with the new
 Job's row key once submitted, or ``None`` when the human backs out of the first
 stage.
 """
@@ -33,6 +34,7 @@ from booley.harness.dashboard.launch import (
     CheckResult,
     Launcher,
     RunFacts,
+    SpecialistListing,
     shell_command,
 )
 from booley.harness.dashboard.review import (
@@ -51,6 +53,7 @@ from booley.harness.dashboard.run_form import (
     RunForm,
     command_argv,
 )
+from booley.harness.dashboard.specialist_form import FORM_NOT_BUILT, ReviewerForm
 from booley.harness.dashboard.targets import (
     RunChoices,
     TargetListing,
@@ -59,7 +62,7 @@ from booley.harness.dashboard.targets import (
     first_line,
 )
 from booley.harness.worktree_list import WorktreeListError
-from booley.runtime.job_slots import AdmissionOutlook
+from booley.runtime.job_slots import CLASS_MEMORY, AdmissionOutlook
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,8 @@ CHECK_GROUP = "run-check"
 FORM_GROUP = "run-form"
 TARGETS_GROUP = "run-targets"
 TESTS_GROUP = "run-tests"
+SPECIALISTS_GROUP = "run-specialists"
+LOADING_SPECIALISTS = "Loading Specialists…"
 LOADING_TARGETS, LOADING_RUNS = "Loading Targets…", "Loading Test Runs…"
 NO_TARGET_YET = "Choose a Target first; or type Test Runs in the extra arguments."
 # A Flow that is not Target-aware but drives another Flow's Targets: the Mutation Flow runs one
@@ -107,6 +112,8 @@ _PARENT = {
     "edit": "form",
     "review": "form",
 }
+# The stages that change one form row; their title names the row.
+_ROW_STAGES = ("choice", "edit", "target", "tests")
 # Which widgets each stage shows; the last one takes the keyboard.
 _SHOWN: dict[str, tuple[str, ...]] = {
     "worktree": ("#run-worktrees",),
@@ -137,7 +144,8 @@ class _Request:
     """What the human asked to run; a check answers exactly one."""
 
     worktree: Path
-    flow: str
+    kind: str
+    name: str
     argv: tuple[str, ...]
 
 
@@ -187,20 +195,26 @@ class RunWizard(ModalScreen[str | None]):
         self._launcher = launcher
         self._targets = targets  # the app's reader: its lock serializes every catalog read
         self._flows = launcher.flows()
+        # What each row of the Flow or Specialist step stands for: (kind, name), or None when disabled.
+        self._entries: list[tuple[str, str] | None] = []
+        self._specialists: SpecialistListing | None = None  # None while being read
+        self._specialists_for: Path | None = None
+        self._specialists_worker: Worker[SpecialistListing] | None = None
         self._choices = choices
         self._message = message
         self._preselect = preselect
         self._occupants = occupants
         self._stage = "worktree"
         self._worktree: Path | None = None
-        self._flow = ""
+        self._kind, self._name = "flow", ""
         self._argv: tuple[str, ...] = ()
         self._checking: _Request | None = None
         self._checked: _Checked | None = None  # the check the review screen shows
-        # The form belongs to one (worktree, Flow); None while it is being built or if it failed.
-        self._form_for: tuple[Path, str] | None = None
-        self._form: RunForm | None = None
-        self._form_worker: Worker[RunForm] | None = None  # the one build whose result counts
+        # The form belongs to one (worktree, kind, name); None while it is being built or if it failed.
+        self._form_for: tuple[Path, str, str] | None = None
+        self._form: RunForm | ReviewerForm | None = None
+        # The one build whose result counts.
+        self._form_worker: Worker[RunForm | ReviewerForm] | None = None
         self._building = False
         self._form_error = ""
         self._values: dict[str, str] = {}
@@ -216,11 +230,7 @@ class RunWizard(ModalScreen[str | None]):
         with Vertical(id="run-box"):
             yield Static(id="run-title", markup=False)
             yield OptionList(id="run-worktrees", markup=False)
-            yield OptionList(
-                *(Option(f"{flow.name} — {flow.blurb}") for flow in self._flows),
-                id="run-flows",
-                markup=False,
-            )
+            yield OptionList(id="run-flows", markup=False)
             yield Static(id="run-note", markup=False)
             yield OptionList(id="run-form", markup=False)
             yield Static(id="run-hint", markup=False)
@@ -235,11 +245,12 @@ class RunWizard(ModalScreen[str | None]):
 
     def on_mount(self) -> None:
         self.set_worktrees(self._choices, self._message)
+        self._fill_entries()
         if self._preset is None:
             self._show_stage("worktree")
         else:
             self._worktree = self._preset.worktree
-            self._choose_flow(self._preset.flow)
+            self._choose_entry("flow", self._preset.flow)
 
     def set_worktrees(self, choices: tuple[WorktreeChoice, ...], message: str) -> None:
         """Replace the worktree list (``message`` stands in while there is none), keeping the highlight.
@@ -265,17 +276,15 @@ class RunWizard(ModalScreen[str | None]):
         )
 
     def _title(self) -> str:
+        command = f"booley {self._kind} {self._name}"
+        row = f"{command}: {self._row_label(self._changing)}" if self._stage in _ROW_STAGES else ""
         titles = {
-            "worktree": "Run a Booley Flow: choose the worktree",
-            "flow": "Run a Booley Flow: choose the Flow",
-            "form": f"booley flow {self._flow} in {self._worktree.name if self._worktree else ''}",
-            "choice": f"booley flow {self._flow}: {self._row_label(self._changing)}",
-            "edit": f"booley flow {self._flow}: {self._row_label(self._changing)}",
-            "target": f"booley flow {self._flow}: {self._row_label(self._changing)}",
-            "tests": f"booley flow {self._flow}: {self._row_label(self._changing)}",
-            "review": "Run a Booley Flow: review the command",
+            "worktree": "Run a Booley Flow or Specialist: choose the worktree",
+            "flow": "Run a Booley Flow or Specialist: choose what to run",
+            "form": f"{command} in {self._worktree.name if self._worktree else ''}",
+            "review": "Run a Booley Flow or Specialist: review the command",
         }
-        return titles[self._stage]
+        return titles.get(self._stage, row)
 
     def _show_stage(self, stage: str) -> None:
         """Show *stage* only, give it the keyboard and clear the last stage's error."""
@@ -310,10 +319,11 @@ class RunWizard(ModalScreen[str | None]):
         event.stop()
         index = event.option_index
         if event.option_list.id == "run-worktrees":
-            self._worktree = self._choices[index].path
-            self._show_stage("flow")
+            self._choose_worktree(self._choices[index].path)
         elif event.option_list.id == "run-flows":
-            self._choose_flow(self._flows[index].name)
+            entry = self._entries[index]
+            assert entry is not None  # a disabled row is never selected
+            self._choose_entry(*entry)
         elif event.option_list.id == "run-form":
             self._form_row_selected(index)
         elif event.option_list.id == "run-choices":
@@ -337,29 +347,96 @@ class RunWizard(ModalScreen[str | None]):
     # --- the form -----------------------------------------------------------
 
     def _fields(self) -> tuple[Field, ...]:
+        if isinstance(self._form, ReviewerForm):
+            return self._form.fields(self._values)
         return self._form.fields if self._form else ()
+
+    def _has_extra(self) -> bool:
+        """Only a Flow's form takes extra arguments: a Specialist runs what its fields write."""
+        return self._kind == "flow"
 
     def _row_label(self, row: int) -> str:
         fields = self._fields()
         return fields[row].label if row < len(fields) else EXTRA_LABEL
 
-    def _choose_flow(self, flow: str) -> None:
-        """Show *flow*'s form: a fresh one for another worktree or Flow or after a failed build."""
+    # --- the Flow or Specialist step ---------------------------------------
+
+    def _choose_worktree(self, worktree: Path) -> None:
+        """Remember the worktree and list its Flows at once; its Specialists follow from a worker."""
+        self._worktree = worktree
+        listing = self._specialists
+        # A listing that failed is read again, so a fixed booley.toml shows on re-entry.
+        if worktree != self._specialists_for or (listing is not None and listing.problem):
+            self._specialists_for, self._specialists = worktree, None
+            self._specialists_worker = self.run_worker(
+                lambda: self._launcher.specialists(worktree),
+                thread=True,
+                exclusive=True,
+                group=SPECIALISTS_GROUP,
+                exit_on_error=False,
+            )
+        self._fill_entries()
+        self._show_stage("flow")
+
+    def _fill_entries(self) -> None:
+        """The step's rows: the Flows, then the Specialists (or why there are none), keeping the highlight."""
+        rows: list[tuple[Option, tuple[str, str] | None]] = [
+            (Option(f"{flow.name} — {flow.blurb}"), ("flow", flow.name)) for flow in self._flows
+        ]
+        listing = self._specialists
+        if listing is None:
+            rows.append((Option(LOADING_SPECIALISTS, disabled=True), None))
+        elif listing.problem:
+            rows.append(
+                (Option(f"Specialists unavailable: {listing.problem}", disabled=True), None)
+            )
+        for choice in listing.choices if listing else ():
+            text = f"{choice.name} — {choice.blurb}"
+            if choice.selectable:
+                rows.append((Option(text), ("specialist", choice.name)))
+            else:
+                rows.append((Option(f"{text} ({FORM_NOT_BUILT})", disabled=True), None))
+        options = self.query_one("#run-flows", OptionList)
+        kept = options.highlighted
+        options.clear_options()
+        options.add_options([option for option, _ in rows])
+        self._entries = [entry for _, entry in rows]
+        options.highlighted = kept or 0
+
+    def _specialists_read(self, event: Worker.StateChanged) -> None:
+        """Show the Specialists of the worktree now chosen; a worker that crashed becomes the reason row."""
+        if event.worker is not self._specialists_worker:
+            return  # a read for a worktree the human has since replaced
+        if event.state is WorkerState.ERROR:
+            error = event.worker.error or RuntimeError("the read failed")
+            self._specialists = SpecialistListing(
+                (), f"{type(error).__name__}: {first_line(error)}"
+            )
+        elif event.state is WorkerState.SUCCESS:
+            assert isinstance(event.worker.result, SpecialistListing)
+            self._specialists = event.worker.result
+        else:
+            return
+        event.stop()
+        self._fill_entries()
+
+    def _choose_entry(self, kind: str, name: str) -> None:
+        """Show the form of *name*: a fresh one for another worktree or entry or after a failed build."""
         assert self._worktree is not None
-        self._flow = flow
-        pair = (self._worktree, flow)
+        self._kind, self._name = kind, name
+        triple = (self._worktree, kind, name)
         listing_failed = self._listing is not None and bool(self._listing.problem)
-        if pair != self._form_for or self._form_error:
-            self._start_form(pair)
+        if triple != self._form_for or self._form_error:
+            self._start_form(triple)
         elif listing_failed:  # read the Targets again, keeping what was typed
             self._listing = None
-            self._start_listing(pair[0])
+            self._start_listing(triple[0])
         self._show_stage("form")
 
-    def _start_form(self, pair: tuple[Path, str]) -> None:
-        """Forget the old form and build the one for *pair* in a worker."""
-        _, flow = pair
-        self._form_for = pair
+    def _start_form(self, triple: tuple[Path, str, str]) -> None:
+        """Forget the old form and build the one for *triple* in a worker."""
+        worktree, kind, name = triple
+        self._form_for = triple
         self._form = None
         self._form_error = ""
         self._building = True
@@ -370,9 +447,10 @@ class RunWizard(ModalScreen[str | None]):
         self._changing = 0
         # The old Flow's rows must not stay selectable while the new form builds.
         self.query_one("#run-form", OptionList).clear_options()
-        self._start_listing(pair[0])
+        if kind == "flow":  # only a Flow's form has the Target and test pickers
+            self._start_listing(worktree)
         self._form_worker = self.run_worker(
-            lambda: self._launcher.form(flow),
+            lambda: self._launcher.form(kind, name, worktree),
             thread=True,
             exclusive=True,
             group=FORM_GROUP,
@@ -402,11 +480,14 @@ class RunWizard(ModalScreen[str | None]):
             self._fill_rows()
 
     def _fill_rows(self) -> None:
-        """One row per field, then the extra arguments and Review; the highlight is the last row used."""
+        """One row per field, then the extra arguments (Flows) and Review; the highlight is the last row used."""
         fields = self._fields()
-        width = max([len(field.label) for field in fields] + [len(EXTRA_LABEL)])
+        labels = [field.label for field in fields] + ([EXTRA_LABEL] if self._has_extra() else [])
+        width = max((len(label) for label in labels), default=0)
         prompts = [f"{field.label:<{width}}  {self._shown(field)}" for field in fields]
-        prompts += [f"{EXTRA_LABEL:<{width}}  {self._extra}", REVIEW]
+        if self._has_extra():
+            prompts.append(f"{EXTRA_LABEL:<{width}}  {self._extra}")
+        prompts.append(REVIEW)
         rows = self.query_one("#run-form", OptionList)
         rows.clear_options()
         rows.add_options([Option(prompt) for prompt in prompts])
@@ -440,14 +521,15 @@ class RunWizard(ModalScreen[str | None]):
             return
         fields = self._fields()
         self._changing = row
-        if row == len(fields) + 1:
+        if row == len(fields) + int(self._has_extra()):
             self._run_check()
         elif row == len(fields):
-            self._edit(self._extra, (self._form or NO_FORM).extra_hint())
+            form = self._form if isinstance(self._form, RunForm) else NO_FORM
+            self._edit(self._extra, form.extra_hint())
         else:
             field = fields[row]
             value = self._values.get(field.dest, "")
-            if field.kind == "toggle":
+            if field.kind in ("toggle", "more"):
                 # A check still running was for the old value: it must not open review.
                 self._values[field.dest] = "" if value else "on"
                 self._checking = None
@@ -474,11 +556,11 @@ class RunWizard(ModalScreen[str | None]):
 
     def _choose(self, field: Field, value: str) -> None:
         """Open the choice list for a three-way or list field, the current value highlighted."""
-        values = field.values()
+        values, skipped = field.values(), self._default_rows(field)
         choices = self.query_one("#run-choices", OptionList)
         choices.clear_options()
-        choices.add_options([Option(text) for text in (DEFAULT, *values)])
-        choices.highlighted = values.index(value) + 1 if value else 0
+        choices.add_options([Option(text) for text in (*(DEFAULT,) * skipped, *values)])
+        choices.highlighted = values.index(value) + skipped if value else 0
         self.query_one("#run-hint", Static).update(field.hint)
         self._show_stage("choice")
 
@@ -522,7 +604,7 @@ class RunWizard(ModalScreen[str | None]):
             return LOADING_TARGETS, rows
         if listing.problem:
             return f"Targets unavailable: {listing.problem}. {TYPE_TARGETS}", rows
-        drives = TARGET_KIND_OF_FLOW.get(self._flow, self._flow)
+        drives = TARGET_KIND_OF_FLOW.get(self._name, self._name)
         fitting = [row.selector for row in listing.rows if drives in row.flows]
         rows += [(selector, selector) for selector in fitting]
         return (field.hint if fitting else NO_FITTING_TARGET), rows
@@ -573,20 +655,40 @@ class RunWizard(ModalScreen[str | None]):
             self._runs = None
         self._show_stage("form")
 
+    @staticmethod
+    def _default_rows(field: Field) -> int:
+        """1 when the choice list opens with a ``default`` row; a required field has none."""
+        return 0 if field.required else 1
+
     def _keep_choice(self, index: int) -> None:
         field = self._fields()[self._changing]
-        self._values[field.dest] = field.values()[index - 1] if index else ""
+        position = index - self._default_rows(field)
+        self._values[field.dest] = field.values()[position] if position >= 0 else ""
+        if isinstance(self._form, ReviewerForm):
+            self._values = self._form.changed(self._values)
         self._show_stage("form")
 
-    def _run_check(self) -> None:
-        """Build the command from the form and have the Flow's own parser check it."""
-        assert self._worktree is not None
+    def _form_argv(self) -> tuple[str, ...] | None:
+        """The command's words from the form, or ``None`` after showing why they cannot be built."""
+        form = self._form
         try:
-            argv = command_argv(self._form or NO_FORM, self._all_values(), self._extra)
+            if isinstance(form, ReviewerForm):
+                problem = form.refusal(self._values)
+                if problem:
+                    raise ArgumentsError(problem)
+                return form.argv(self._values)
+            return command_argv(form or NO_FORM, self._all_values(), self._extra)
         except ArgumentsError as exc:
             self._show_error(str(exc))
+            return None
+
+    def _run_check(self) -> None:
+        """Build the command from the form and have the endpoint's own parser check it."""
+        assert self._worktree is not None
+        argv = self._form_argv()
+        if argv is None:
             return
-        request = _Request(self._worktree, self._flow, argv)
+        request = _Request(self._worktree, self._kind, self._name, argv)
         self._checking = request
         self._show_error("Checking…")
         self.run_worker(
@@ -628,7 +730,9 @@ class RunWizard(ModalScreen[str | None]):
 
         Runs in a worker thread: it spawns a child and reads the slot store and Git.
         """
-        result: CheckResult = self._launcher.check(request.worktree, request.flow, request.argv)
+        result: CheckResult = self._launcher.check(
+            request.worktree, request.kind, request.name, request.argv
+        )
         if result.facts is None:
             return _Checked(request, result.error or NO_FACTS)
         try:
@@ -638,8 +742,11 @@ class RunWizard(ModalScreen[str | None]):
         return _Checked(request, "", result.facts, self._read_outlook(result.facts), uncommitted)
 
     def _read_outlook(self, facts: RunFacts) -> AdmissionOutlook | str | None:
-        """The queue a run would meet; ``None`` when it takes no slot, a reason when unreadable."""
-        if not facts.takes_slot or facts.job_class is None:
+        """The queue a run would meet; ``None`` when it takes no counted slot, a reason when unreadable.
+
+        A memory-admitted Job has no count-based outlook: its fit depends on its estimate.
+        """
+        if not facts.takes_slot or facts.job_class in (None, CLASS_MEMORY):
             return None
         try:
             return self._launcher.outlook(facts.job_class)
@@ -657,8 +764,10 @@ class RunWizard(ModalScreen[str | None]):
             )
         elif event.state is WorkerState.SUCCESS:
             built = event.worker.result
-            assert isinstance(built, RunForm)
+            assert isinstance(built, (RunForm, ReviewerForm))
             self._form = built
+            if isinstance(built, ReviewerForm):
+                self._values = built.initial()
             self._form_error = ""
         else:
             return
@@ -685,8 +794,14 @@ class RunWizard(ModalScreen[str | None]):
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Apply a finished check unless the human moved on or changed the form meanwhile."""
         group = event.worker.group
-        if group in (FORM_GROUP, TARGETS_GROUP, TESTS_GROUP):
-            (self._form_built if group == FORM_GROUP else self._read_finished)(event)
+        handlers = {
+            SPECIALISTS_GROUP: self._specialists_read,
+            FORM_GROUP: self._form_built,
+            TARGETS_GROUP: self._read_finished,
+            TESTS_GROUP: self._read_finished,
+        }
+        if group in handlers:
+            handlers[group](event)
             return
         if event.worker.group != CHECK_GROUP:
             return
@@ -713,7 +828,9 @@ class RunWizard(ModalScreen[str | None]):
         self._checked = checked
         self._show_stage("review")
         self.query_one("#run-command", Static).update(
-            shell_command(checked.request.worktree, checked.request.flow, self._argv)
+            shell_command(
+                checked.request.worktree, checked.request.kind, checked.request.name, self._argv
+            )
         )
         self._render_review(checked.outlook)
 
@@ -732,7 +849,7 @@ class RunWizard(ModalScreen[str | None]):
 
     def _apply_action(self, action: str) -> None:
         assert self._worktree is not None
-        command = shell_command(self._worktree, self._flow, self._argv)
+        command = shell_command(self._worktree, self._kind, self._name, self._argv)
         if action == COPY:
             self.app.copy_to_clipboard(command)
             self.notify(COPY_NOTICE)
@@ -745,7 +862,7 @@ class RunWizard(ModalScreen[str | None]):
             if isinstance(outlook, AdmissionOutlook) and outlook.full:
                 return
         try:
-            key = self._launcher.submit(self._worktree, self._flow, self._argv)
+            key = self._launcher.submit(self._worktree, self._kind, self._name, self._argv)
         except OSError as exc:
             self._show_error(f"Could not start the Job: {exc}")
             return

@@ -210,17 +210,12 @@ def test_fresh_init_without_stealth_choice_keeps_booley_dir_trackable(repo):
 
 @pytest.mark.timeout(120)
 def test_hidden_setup_choice_hides_booley_dir_on_init_rerun(repo):
-    """Setup's hidden answer writes ``enabled = true``; the next init applies it.
-
-    The fresh non-Stealth init published an untracked root `.gitattributes`; the
-    booley-setup skill removes it before rerunning init, as mirrored here.
-    """
+    """Setup's hidden answer writes ``enabled = true``; the next init applies it."""
     assert _run_full_init(repo) == 0
     config = repo / ".booley/booley.toml"
     config.write_text(
         config.read_text(encoding="utf-8") + "\n[stealth]\nenabled = true\n", encoding="utf-8"
     )
-    (repo / ".gitattributes").unlink()
 
     assert _run_full_init(repo) == 0
 
@@ -1549,9 +1544,6 @@ def test_stealth_scaffold_after_plain_init_keeps_hidden_layout(repo, monkeypatch
     _current_auth_and_image(monkeypatch)
     _plain_init_with_legacy_hidden_layout(repo)
     _never_prompt(monkeypatch)
-    # The setup skill undoes plain init's untracked root `.gitattributes` before
-    # a `--stealth` scaffold, as its Stealth footprint step describes.
-    (repo / ".gitattributes").unlink()
 
     reset_cache()
     assert init_cmd.run_init(_after_init_scaffold_args(stealth=True), repo) == 0

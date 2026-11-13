@@ -237,15 +237,13 @@ def test_lint_and_custom_flow_hold_a_memory_reservation_through_the_run(runtime:
 def _assert_holds_reservation_through_run(
     kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Under the switch a Custom Flow and lint hold one Memory Reservation while they run."""
-    from booley.config.jobs import SlotCaps
+    """A Custom Flow and lint hold one Memory Reservation while they run."""
     from booley.flows import endpoint_admission
     from booley.runtime import job_slots
 
     booley_dir = runtime / ".booley"
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
     # A fake /proc with no process: ranking never touches the worker's real OOM priority.
     monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
@@ -258,7 +256,7 @@ def _assert_holds_reservation_through_run(
     else:
         flow, request = _target_selection(runtime, monkeypatch)
 
-    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=3))
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
     held_during_run: list[int] = []
     flow_type = type(flow)
     original_run = flow_type._run

@@ -1898,7 +1898,7 @@ class TestCancel:
             root = job_slots.slots_dir()
             assert root is not None
             store = job_slots.SlotStore(root)
-            token = store.submit(job_slots.CLASS_HEAVY, pid=child.pid, argv=[])
+            token = store.submit(job_slots.CLASS_LIGHT, pid=child.pid, argv=[])
             assert store.refresh(token).state == job_slots.HOLDING
             out = self._cancel({"run_id": "simulate-c-4"})
             assert "CANCELLED: running job" in _text(out)
@@ -1939,7 +1939,7 @@ class TestCancel:
             # Waiter entry, never refreshed → stays queued at position 0.
             # argv=[] skips the /proc identity check for the fake claim.
             job_slots.SlotStore(root).submit(
-                job_slots.CLASS_HEAVY,
+                job_slots.CLASS_LIGHT,
                 pid=child.pid,
                 argv=[],
             )
@@ -2141,7 +2141,7 @@ class TestJobPhase:
         root = job_slots.slots_dir()
         assert root is not None
         job_slots.SlotStore(root).submit(
-            job_slots.CLASS_HEAVY,
+            job_slots.CLASS_LIGHT,
             pid=os.getpid(),
             argv=[],
         )
@@ -2216,7 +2216,7 @@ class TestJobPhase:
         root = job_slots.slots_dir()
         assert root is not None
         store = job_slots.SlotStore(root)
-        token = store.submit(job_slots.CLASS_HEAVY, pid=os.getpid(), argv=[])
+        token = store.submit(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=[])
         assert store.refresh(token).state == job_slots.HOLDING
         assert _job_phase("simulate-p-3") == "RUNNING"
 
@@ -3087,3 +3087,29 @@ def test_server_supervisor_writes_job_log(tmp_path):
     )
     assert (exit_code, stdout.splitlines(), timed_out) == (0, ["to-agent"], False)
     assert log.read_text(encoding="utf-8").splitlines() == ["to-agent"]
+
+
+@pytest.mark.asyncio
+async def test_flow_tool_call_refuses_retired_jobs_keys(tmp_path, monkeypatch):
+    """A Flow call refuses while booley.toml sets a retired [jobs] key; the key's line is named."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 2\n")
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    monkeypatch.setattr(
+        mcp_server, "_dispatch_booley_mcp_tool", AsyncMock(side_effect=AssertionError("ran"))
+    )
+
+    result = await mcp_server._dispatch_application_tool(
+        "sim",
+        {},
+        {"name": "sim", "is_flow": True},
+        jobs=_JobManager(_FakeLifetime()),
+        status_mcp_tool_names=[],
+        mcp_tool_call_counts={},
+    )
+
+    assert result.is_error
+    text = result.value[0].text
+    assert "max_heavy (line 2)" in text
+    assert "booley-heal" in text

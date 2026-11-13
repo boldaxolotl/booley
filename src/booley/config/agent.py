@@ -419,7 +419,8 @@ def _retired_models_error(models: Mapping[str, Any], default_cli: str) -> Backen
     """The migration error for tier keys and ``[models.roles]``, showing the new entries."""
     tiers = dict(_RETIRED_TIER_MODELS[default_cli])
     tiers.update({t: models[t].strip() for t in tiers if isinstance(models.get(t), str)})
-    roles = models.get("roles") if isinstance(models.get("roles"), dict) else {}
+    raw_roles = models.get("roles")
+    roles = raw_roles if isinstance(raw_roles, dict) else {}
     lines, clis, notes = [], [default_cli], []
     for name in sorted(SPECIALISTS):
         pin = roles.get(name)

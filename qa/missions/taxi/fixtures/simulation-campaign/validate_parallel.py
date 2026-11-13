@@ -2,16 +2,10 @@
 
 The timeline document is the operator's own measurement of one parallel run:
 
-- ``outer_execution_id``: execution id of the outer Job that owns the Campaign.
-- ``slot_samples``: timestamp-ordered SlotStore samples, each with ``at_ns``,
-  ``heavy_holders``, and ``heavy_waiters`` (lists of execution ids).
-- ``final_slot_state``: holders and waiters after the Campaign exited.
-- ``claim_transitions``: ``submitted``/``promoted``/``released`` events with
-  ``at_ns`` and ``child_execution_id``, one triple per child heavy claim.
 - ``intervals``: one measured simulator process per Simulation Attempt with
   ``test``, ``start_ns``, ``end_ns``, ``work_item_id``, ``attempt_id``,
   ``child_execution_id`` (``null`` for an attempt that ran on the outer Job's
-  own slot), ``run_directory``, ``relative_output``, ``token``,
+  own claim), ``run_directory``, ``relative_output``, ``token``,
   ``output_text``, and ``output`` (``path`` and ``sha256`` of the retained
   copy of the attempt's output file, relative to the timeline document).
 
@@ -34,8 +28,6 @@ _EVIDENCE_FIELDS = {"path", "bytes", "sha256", "kind", "owner"}
 _SHARED_OUTPUT = "qa-shared-name.txt"
 _EXPECTED_TESTS = ["slow-first", "slow-fail", "slow-last"]
 _EXPECTED_GRADES = ["pass", "fail", "pass"]
-# The outer Job holds one heavy slot for as long as its Campaign runs.
-_OUTER_SLOTS = 1
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -97,170 +89,6 @@ def _intervals(document: dict[str, object]) -> list[dict[str, object]]:
         _need(child is None or _is_name(child), "child identity is invalid")
         intervals.append(item)
     return intervals
-
-
-def _peak_overlap(spans: list[tuple[int, int]]) -> int:
-    """Return the most half-open ``[start, end)`` spans active at one instant."""
-    events = []
-    for start, end in spans:
-        events.append((start, 1))
-        events.append((end, -1))
-    active = 0
-    peak = 0
-    for _at_ns, delta in sorted(events):
-        active += delta
-        peak = max(peak, active)
-    return peak
-
-
-def _process_spans(intervals: list[dict[str, object]]) -> list[tuple[int, int]]:
-    return [(item["start_ns"], item["end_ns"]) for item in intervals]
-
-
-def validate_heavy_cap(timeline_path: Path, max_heavy: int) -> dict[str, int]:
-    """Require measured simulator and real SlotStore samples to respect the cap."""
-    _need(max_heavy > 1, "heavy-cap case requires max_heavy greater than one")
-    timeline = _load(timeline_path)
-    intervals = _intervals(timeline)
-    peak = _peak_overlap(_process_spans(intervals))
-    _need(1 < peak <= max_heavy, "simulator overlap does not prove the heavy cap")
-    outer_id = timeline.get("outer_execution_id")
-    _need(_is_name(outer_id), "outer execution identity is missing")
-    samples = _slot_samples(timeline, max_heavy)
-    final = timeline.get("final_slot_state")
-    _need(
-        final == {"heavy_holders": [], "heavy_waiters": []},
-        "final SlotStore inspection is not empty",
-    )
-    transitioned = _validate_claim_transitions(timeline)
-    _need(outer_id not in transitioned, "outer Job is recorded as a child claim")
-    _validate_claim_peak(transitioned, max_heavy)
-    child_samples = {
-        value
-        for sample in samples
-        for value in sample["heavy_holders"] + sample["heavy_waiters"]
-        if value != outer_id
-    }
-    _need(child_samples == set(transitioned), "SlotStore samples do not account for every child")
-    _validate_sample_accounting(samples, outer_id, transitioned)
-    _validate_outer_coverage(samples, outer_id, intervals)
-    _validate_interval_accounting(intervals, transitioned)
-    return {"max_heavy": max_heavy, "peak_simulators": peak}
-
-
-def _slot_samples(timeline: dict[str, object], max_heavy: int) -> list[dict[str, object]]:
-    samples = timeline.get("slot_samples")
-    _need(isinstance(samples, list) and samples, "SlotStore samples are missing")
-    previous_sample = -1
-    for sample in samples:
-        _need(isinstance(sample, dict), "SlotStore sample is invalid")
-        holders = sample.get("heavy_holders")
-        waiters = sample.get("heavy_waiters")
-        at_ns = sample.get("at_ns")
-        _need(_is_timestamp(at_ns), "SlotStore sample timestamp is missing")
-        _need(at_ns >= previous_sample, "SlotStore samples are not timestamp ordered")
-        previous_sample = at_ns
-        _need(isinstance(holders, list), "heavy-holder sample is missing")
-        _need(isinstance(waiters, list), "heavy-waiter sample is missing")
-        _need(
-            len(set(holders + waiters)) == len(holders + waiters), "slot sample duplicates a claim"
-        )
-        _need(len(holders) <= max_heavy, "SlotStore heavy holders exceed max_heavy")
-    return samples
-
-
-def _validate_claim_transitions(
-    timeline: dict[str, object],
-) -> dict[str, list[dict[str, object]]]:
-    transitions = timeline.get("claim_transitions")
-    _need(isinstance(transitions, list) and transitions, "claim transitions are missing")
-    by_child: dict[str, list[dict[str, object]]] = {}
-    previous = -1
-    for transition in transitions:
-        _need(isinstance(transition, dict), "claim transition is invalid")
-        child = transition.get("child_execution_id")
-        state = transition.get("state")
-        at_ns = transition.get("at_ns")
-        _need(_is_name(child), "claim child identity is missing")
-        _need(state in {"submitted", "promoted", "released"}, "claim state is invalid")
-        _need(_is_timestamp(at_ns) and at_ns >= previous, "claim timestamps are invalid")
-        previous = at_ns
-        by_child.setdefault(child, []).append(transition)
-    _need(
-        all(
-            [event["state"] for event in events] == ["submitted", "promoted", "released"]
-            for events in by_child.values()
-        ),
-        "claim transitions do not end in exact release",
-    )
-    return by_child
-
-
-def _validate_claim_peak(transitions, max_heavy: int) -> None:
-    """Bound the slots held between samples: every promoted claim plus the outer Job."""
-    held = [(events[1]["at_ns"], events[2]["at_ns"]) for events in transitions.values()]
-    _need(
-        _peak_overlap(held) + _OUTER_SLOTS <= max_heavy,
-        "claim transitions exceed max_heavy",
-    )
-
-
-def _validate_sample_accounting(samples, outer_id, transitions) -> None:
-    for sample in samples:
-        at_ns = sample["at_ns"]
-        expected_holders: set[str] = set()
-        expected_waiters: set[str] = set()
-        for child, events in transitions.items():
-            prior = [event["state"] for event in events if event["at_ns"] <= at_ns]
-            state = prior[-1] if prior else None
-            if state == "submitted":
-                expected_waiters.add(child)
-            elif state == "promoted":
-                expected_holders.add(child)
-        actual_holders = set(sample["heavy_holders"]) - {outer_id}
-        actual_waiters = set(sample["heavy_waiters"])
-        _need(actual_holders == expected_holders, "holder sample contradicts transitions")
-        _need(actual_waiters == expected_waiters, "waiter sample contradicts transitions")
-        _need(outer_id not in actual_waiters, "outer Job waits behind its own Campaign")
-
-
-def _validate_outer_coverage(samples, outer_id, intervals) -> None:
-    """Require the outer Job to hold its slot while its Campaign uses capacity."""
-    for sample in samples:
-        children = set(sample["heavy_holders"] + sample["heavy_waiters"]) - {outer_id}
-        running = any(item["start_ns"] <= sample["at_ns"] <= item["end_ns"] for item in intervals)
-        _need(
-            outer_id in sample["heavy_holders"] or not (children or running),
-            "SlotStore sample omits the borrowed outer Job",
-        )
-    for interval in intervals:
-        _need(
-            any(
-                interval["start_ns"] <= sample["at_ns"] <= interval["end_ns"] for sample in samples
-            ),
-            "no SlotStore sample observed a simulator process",
-        )
-
-
-def _validate_interval_accounting(intervals: list[dict[str, object]], transitions) -> None:
-    """Bind each process to its own child claim or to the outer Job's one slot."""
-    _need(
-        len({item.get("attempt_id") for item in intervals}) == len(intervals), "attempt ids repeat"
-    )
-    claimed = [item for item in intervals if item["child_execution_id"] is not None]
-    borrowed = [item for item in intervals if item["child_execution_id"] is None]
-    children = [item["child_execution_id"] for item in claimed]
-    _need(len(set(children)) == len(children), "process intervals reuse a child identity")
-    _need(set(children) == set(transitions), "process intervals do not bind every exact child")
-    _need(bool(borrowed), "no process ran on the borrowed outer slot")
-    _need(
-        _peak_overlap(_process_spans(borrowed)) == _OUTER_SLOTS,
-        "processes overlap on the borrowed outer slot",
-    )
-    for interval in claimed:
-        events = transitions[interval["child_execution_id"]]
-        _need(events[1]["at_ns"] <= interval["start_ns"], "process started before promotion")
-        _need(events[2]["at_ns"] >= interval["end_ns"], "claim released before process exit")
 
 
 def validate_attempt_isolation(timeline_path: Path, campaign_path: Path) -> None:

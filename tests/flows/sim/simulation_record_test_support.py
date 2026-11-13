@@ -19,8 +19,7 @@ from typing import Any, cast
 
 import pytest
 
-from booley.config.jobs import SlotCaps
-from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
+from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.build_session import TargetCompileSurface
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
@@ -33,7 +32,7 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.record.capacity import HeavyCapacity
+from booley.flows.sim.record import capacity as campaign_capacity
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.codec import (
     RESULT_SCHEMA,
@@ -81,8 +80,11 @@ from booley.runtime.execution_records import (
     ExecutionId,
 )
 from booley.runtime.job_slots import (
-    CLASS_HEAVY,
+    CLASS_LIGHT,
+    CLASS_MEMORY,
+    MemoryClaim,
     SlotStore,
+    SlotToken,
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -277,7 +279,7 @@ def _simulation_outcome(
 
 
 def _admission() -> AdmissionContext:
-    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
+    return AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False)
 
 
 def _build_execution() -> dict[str, object]:
@@ -995,24 +997,79 @@ def _observe_pre_sim_reads(monkeypatch):
     return accesses, decodes, results
 
 
-def _managed(store: SlotStore, outer, *, max_heavy: int = 2) -> AdmissionContext:
+_BUDGET_MIB = 1000.0
+
+
+def _holder_claim(holders: int) -> MemoryClaim:
+    """A claim sized so that exactly *holders* of them fit the 1,000 MiB budget at once."""
+    return MemoryClaim(budget_mb=_BUDGET_MIB, reservation_mb=_BUDGET_MIB / (holders + 0.5))
+
+
+def _outer_claim(store: SlotStore) -> SlotToken:
+    """The Flow's own claim, as an admitted Campaign holds it once its items take their own."""
+    return store.acquire(
+        CLASS_MEMORY,
+        pid=os.getpid(),
+        execution_id=ExecutionId("a" * 32),
+        memory=MemoryClaim(budget_mb=_BUDGET_MIB, reservation_mb=1.0),
+    )
+
+
+class _FixedSizing:
+    """Stands in for ``MemorySizing``: every work item claims the same reservation."""
+
+    def __init__(self, claim: MemoryClaim) -> None:
+        self.claim = claim
+        self.warnings: list[str] = []
+
+    def plan_work_item(self, _request: object, *, build: bool) -> MemoryClaim:
+        return self.claim
+
+
+def _managed(store: SlotStore, outer, *, holders: int = 2, **overrides: Any) -> AdmissionContext:
+    """A managed admission whose Campaign lends *holders* claims' worth of memory."""
     return AdmissionContext(
         "managed",
         store,
         outer,
-        max_heavy,
         "interactive",
         "a" * 32,
         5.0,
         lambda: False,
+        memory_sizing=_FixedSizing(_holder_claim(holders)),  # type: ignore[arg-type]
+        **overrides,
     )
 
 
-def _capacity(admission: AdmissionContext, tmp_path: Path) -> HeavyCapacity:
-    """Real heavy capacity, with its lane registry, over a fresh Booley Directory."""
+def _pinned_lanes(*args: Any, lanes: int, **kwargs: Any) -> campaign_capacity.CampaignCapacity:
+    """Real capacity whose lane bound a test pins, not the machine's cores."""
+
+    class _PinnedLanes(campaign_capacity.CampaignCapacity):
+        @property
+        def max_lanes(self) -> int:
+            return lanes
+
+    return _PinnedLanes(*args, **kwargs)
+
+
+def _item_capacity(
+    admission: AdmissionContext, manifest, project_data: Path, *, lanes: int = 2
+) -> campaign_capacity.CampaignCapacity:
+    """Capacity whose every work item takes the admission's claim for itself."""
+    sizing = admission.memory_sizing
+    claim = sizing.claim if isinstance(sizing, _FixedSizing) else _holder_claim(lanes)
+    return _pinned_lanes(admission, manifest, project_data, lambda _item: claim, lanes=lanes)
+
+
+def _capacity(
+    admission: AdmissionContext, tmp_path: Path, *, lanes: int = 2
+) -> campaign_capacity.CampaignCapacity:
+    """Real capacity, with its lane registry, over a fresh Booley Directory."""
     project_data = tmp_path / "project" / ".booley"
     project_data.mkdir(parents=True, exist_ok=True)
-    return HeavyCapacity(admission, _two_item_manifest(), project_data)
+    if admission.memory_sizing is None:  # a Campaign that sizes no item claims
+        return campaign_capacity.CampaignCapacity(admission, _two_item_manifest(), project_data)
+    return _item_capacity(admission, _two_item_manifest(), project_data, lanes=lanes)
 
 
 def _lane_registry(tmp_path: Path) -> ChildExecutionRegistry:
@@ -1134,7 +1191,8 @@ class _ParallelGroup:
         )
 
     def _coordinate(self, name: str) -> None:
-        if name not in {"alpha", "beta"}:
+        # The first item builds alone under the Flow's claim; the next two overlap.
+        if name not in {"beta", "gamma"}:
             return
         self.state.barrier.wait()
         time.sleep(0.001 * self.state.schedule_seed)
@@ -1160,12 +1218,15 @@ class _CampaignAdmissionEndpoint:
         self._slots = slots
         self._runtime_execution_id = runtime_execution_id
 
+    def _memory_admitted(self) -> bool:
+        return False
+
     def _acquire_job_slot(self):
         execution_id = (
             ExecutionId(self._runtime_execution_id) if self._runtime_execution_id else None
         )
         return self._slots, self._slots.acquire(
-            CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id
+            CLASS_LIGHT, pid=os.getpid(), execution_id=execution_id
         )
 
 
@@ -1182,7 +1243,7 @@ def _validated_campaign(store, manifest, project, handle) -> ValidatedResumeMani
 def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     manifest = _three_item_manifest(runtime_execution_id or "")
     plan = create_simulation_campaign_plan(manifest)
-    project, state = _parallel_environment(tmp_path, "alpha", 0)
+    project, state = _parallel_environment(tmp_path, "beta", 0)
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
@@ -1193,7 +1254,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     )
     invocation = tmp_path / "reports/000001"
     invocation.mkdir(parents=True)
-    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=3))
+    slots = SlotStore(tmp_path / "slots")
     _set_runtime_execution_id(monkeypatch, runtime_execution_id)
     monkeypatch.setenv("BOOLEY_RUN_ID", _CampaignAdmissionEndpoint._invocation_id)
     fault_enabled, original_mark = [True], ChildExecutionRegistry.mark_terminal
@@ -1210,18 +1271,25 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
         original_mark(registry, prepared, terminal_cause)
 
     monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", interrupted_mark)
-    campaign = SimulationCampaign(executor)
-    with (
-        pytest.raises(RuntimeError, match="injected terminal-record interruption"),
-        AdmissionGate(
-            _CampaignAdmissionEndpoint(slots, runtime_execution_id)  # type: ignore[arg-type]
-        ).enter() as admission,
-    ):
-        campaign.run(
-            NewCampaignRunRequest(
-                plan, project, invocation.parent, CampaignPolicy(), invocation, admission
+    campaign = SimulationCampaign(executor, work_item_request=lambda *_args: None)
+    execution_id = ExecutionId(runtime_execution_id) if runtime_execution_id else None
+    # The Flow's claim, with three item claims' worth of memory left to lend its Campaign.
+    outer = slots.acquire(
+        CLASS_MEMORY,
+        pid=os.getpid(),
+        execution_id=execution_id,
+        memory=MemoryClaim(budget_mb=_BUDGET_MIB, reservation_mb=1.0),
+    )
+    admission = replace(_managed(slots, outer, holders=3), execution_id=execution_id)
+    try:
+        with pytest.raises(RuntimeError, match="injected terminal-record interruption"):
+            campaign.run(
+                NewCampaignRunRequest(
+                    plan, project, invocation.parent, CampaignPolicy(), invocation, admission
+                )
             )
-        )
+    finally:
+        slots.release(outer)
     store = CampaignStore(invocation / "targets/sim/record")
     validated = _validated_campaign(store, manifest, project, state.handle)
     return SimpleNamespace(

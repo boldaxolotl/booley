@@ -9,12 +9,9 @@ from typing import cast
 
 import pytest
 
-from booley.audit.resource_policy import GIB_BYTES
+from booley.flows.memory_admission import JOB_THREADS_ENV
 from booley.flows.sim import build_parallelism
-from booley.flows.sim.build_parallelism import (
-    load_verilator_build_budget,
-    verilator_backend_arguments,
-)
+from booley.flows.sim.build_parallelism import verilator_backend_arguments
 from booley.targets.domain import TargetHandle, TargetInspection
 
 
@@ -57,16 +54,21 @@ def test_cgroup_reader_ignores_absent_files_but_surfaces_access_failures(
         build_parallelism._read_text(tmp_path / "denied")
 
 
-def test_affinity_and_v2_quota_bound_each_heavy_lane() -> None:
-    budget = load_verilator_build_budget(
-        affinity_cpu_count=lambda: 6,
-        read_text=_reader({"/sys/fs/cgroup/cpu.max": "350000 100000"}),
-        config_loader=lambda: {"jobs": {"max_heavy": 2, "heavy_memory": "8g"}},
-    )
+def _cores(monkeypatch: pytest.MonkeyPatch, affinity: int, files: dict[str, str]) -> None:
+    """The container's cores: the affinity set, bounded by the cgroup files *files*."""
+    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: affinity)
+    monkeypatch.setattr(build_parallelism, "_read_text", _reader(files))
 
-    assert budget.effective_cpu_count == 3
-    assert budget.heavy_lane_count == 2
-    assert budget.make_jobs == 1
+
+def _make_jobs(monkeypatch: pytest.MonkeyPatch) -> tuple[str, ...]:
+    monkeypatch.delenv(JOB_THREADS_ENV, raising=False)
+    return verilator_backend_arguments(_inspection())
+
+
+def test_affinity_and_v2_quota_bound_the_admitted_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    _cores(monkeypatch, 6, {"/sys/fs/cgroup/cpu.max": "350000 100000"})
+
+    assert _make_jobs(monkeypatch) == ("-j3", "VM_PARALLEL_BUILDS=1")
 
 
 def test_affinity_below_host_cpu_count_is_authoritative(
@@ -125,79 +127,28 @@ def test_affinity_falls_back_when_platform_probe_fails(
     ),
     ids=("v2-unlimited", "v1-fractional", "v1-unlimited"),
 )
-def test_cgroup_cpu_variants(values: dict[str, str], expected: int) -> None:
-    budget = load_verilator_build_budget(
-        affinity_cpu_count=lambda: 8,
-        read_text=_reader(values),
-        config_loader=lambda: {"jobs": {"heavy_memory": "16g"}},
-    )
-
-    assert budget.effective_cpu_count == expected
-    assert budget.make_jobs == expected
-
-
-@pytest.mark.parametrize(
-    ("config", "memory_limit", "expected_memory", "expected_jobs"),
-    (
-        ({"jobs": {"heavy_memory": "2g"}}, None, 2 * GIB_BYTES, 2),
-        ({"jobs": {}}, None, 4 * GIB_BYTES, 4),
-        ({"jobs": {"heavy_memory": "invalid"}}, None, 4 * GIB_BYTES, 4),
-        (
-            {"jobs": {"max_heavy": 2, "heavy_memory": "8g"}},
-            str(6 * GIB_BYTES),
-            3 * GIB_BYTES,
-            3,
-        ),
-    ),
-    ids=("configured", "default", "invalid-fallback", "finite-cgroup-hard-cap"),
-)
-def test_heavy_memory_reservation_bounds_compiler_jobs(
-    config: dict,
-    memory_limit: str | None,
-    expected_memory: int,
-    expected_jobs: int,
+def test_cgroup_cpu_variants(
+    monkeypatch: pytest.MonkeyPatch, values: dict[str, str], expected: int
 ) -> None:
-    values = {"/sys/fs/cgroup/memory.max": memory_limit} if memory_limit else {}
-    budget = load_verilator_build_budget(
-        affinity_cpu_count=lambda: 16,
-        read_text=_reader(values),
-        config_loader=lambda: config,
-    )
+    _cores(monkeypatch, 8, values)
 
-    assert budget.memory_bytes == expected_memory
-    assert budget.make_jobs == expected_jobs
+    assert _make_jobs(monkeypatch) == (f"-j{expected}", "VM_PARALLEL_BUILDS=1")
 
 
-def test_unreserved_lane_stays_serial_and_divided_cpu_clamps_to_one() -> None:
-    def config() -> dict:
-        return {"jobs": {"max_heavy": 16, "heavy_memory": "16g"}}
-
-    heavy = load_verilator_build_budget(
-        affinity_cpu_count=lambda: 4, read_text=lambda _path: None, config_loader=config
-    )
-    unreserved = load_verilator_build_budget(
-        "unreserved",
-        affinity_cpu_count=lambda: 64,
-        read_text=lambda _path: None,
-        config_loader=config,
-    )
-
-    assert heavy.make_jobs == 1
-    assert unreserved.make_jobs == 1
-
-
-def test_unreserved_lane_does_not_probe_shared_resources() -> None:
-    def unexpected() -> int:
+def test_unreserved_lane_stays_serial_and_does_not_probe_shared_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected(*_args: object) -> int:
         pytest.fail("unreserved lane probed shared resources")
 
-    budget = load_verilator_build_budget(
-        "unreserved",
-        affinity_cpu_count=unexpected,
-        read_text=lambda _path: pytest.fail("unreserved lane read cgroup state"),
-        config_loader=lambda: pytest.fail("unreserved lane loaded Project config"),
-    )
+    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", unexpected)
+    monkeypatch.setattr(build_parallelism, "_read_text", unexpected)
+    monkeypatch.setenv(JOB_THREADS_ENV, "8")
 
-    assert budget == build_parallelism.VerilatorBuildBudget(1, 0, 1, 1)
+    assert verilator_backend_arguments(_inspection(), lane_kind="unreserved") == (
+        "-j1",
+        "VM_PARALLEL_BUILDS=1",
+    )
 
 
 @pytest.mark.parametrize(
@@ -218,10 +169,7 @@ def test_jobs_option_lookalikes_do_not_disable_parallel_policy(
     monkeypatch: pytest.MonkeyPatch,
     option: str,
 ) -> None:
-    monkeypatch.setattr(
-        "booley.flows.sim.build_parallelism.load_verilator_build_budget",
-        lambda _lane="heavy", **_kwargs: SimpleNamespace(make_jobs=3),
-    )
+    monkeypatch.setenv(JOB_THREADS_ENV, "3")
 
     assert verilator_backend_arguments(_inspection(modern=(option,))) == (
         "-j3",
@@ -233,87 +181,18 @@ def test_non_verilator_receives_no_backend_arguments() -> None:
     assert verilator_backend_arguments(_inspection(eda_tool="icarus")) == ()
 
 
-def test_checkout_build_budget_uses_the_main_job_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A checkout's own ``[jobs]`` never resizes the machine budget Main sets."""
-    from booley.runtime import booley_dir
-
-    main = tmp_path / "main-booley"
-    main.mkdir()
-    (main / "booley.toml").write_bytes(b'[jobs]\nmax_heavy = 1\nheavy_memory = "8g"\n')
-    checkout = tmp_path / "checkout"
-    (checkout / ".booley").mkdir(parents=True)
-    (checkout / ".booley" / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 4\n")
-    monkeypatch.setenv("BOOLEY_DIR", str(main))
-    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
-    monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
-    booley_dir.reset_cache()
-    try:
-        arguments = verilator_backend_arguments(_inspection(), project_root=checkout)
-    finally:
-        booley_dir.reset_cache()
-
-    assert arguments == ("-j8", "VM_PARALLEL_BUILDS=1")
-
-
-def test_build_budget_defaults_outside_any_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A bare invocation with no resolvable Project gets the default budget, not a crash."""
-    from booley.runtime import booley_dir
-
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    monkeypatch.chdir(tmp_path)
-    booley_dir.reset_cache()
-    try:
-        assert build_parallelism._load_common_job_budget(None) == {}
-    finally:
-        booley_dir.reset_cache()
-
-
-def test_build_budget_defaults_when_the_main_directory_cannot_be_resolved(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """An unusable selection that admission tolerates leaves the build on the defaults, loudly."""
-
-    def unusable(_start: Path | None) -> Path:
-        raise RuntimeError("selection is unusable")
-
-    monkeypatch.setattr(build_parallelism, "resolve_common_booley_dir", unusable)
-
-    with caplog.at_level("WARNING"):
-        assert build_parallelism._load_common_job_budget(None) == {}
-    assert "selection is unusable" in caplog.text
-
-
-def test_switch_alone_moves_the_heavy_lane_to_the_container_cores(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Switch unset: 8 cores / max_heavy 2 -> -j4. Switch set: the Job's cores, not the lane's."""
-    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
-    monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
-    monkeypatch.setattr(
-        build_parallelism,
-        "_load_common_job_budget",
-        lambda _root: {"jobs": {"max_heavy": 2, "heavy_memory": "16g"}},
-    )
+def test_admitted_lane_uses_the_job_thread_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Job's share of the cores, fixed at its admission; without one, every core."""
+    _cores(monkeypatch, 8, {})
     inspection = _inspection()
-    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION", raising=False)
 
-    assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
-    # The Job's thread count is ignored off the switch.
-    monkeypatch.setenv("BOOLEY_INTERNAL_JOB_THREADS", "8")
-    assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
-    monkeypatch.delenv("BOOLEY_INTERNAL_JOB_THREADS")
-
-    # Switch set, no Job count (nothing else admitted): every available core.
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    # No Job count (nothing else admitted): every available core.
+    monkeypatch.delenv(JOB_THREADS_ENV, raising=False)
     assert verilator_backend_arguments(inspection) == ("-j8", "VM_PARALLEL_BUILDS=1")
-    # ... bounded by the container's CPU quota.
-    monkeypatch.setattr(
-        build_parallelism,
-        "_read_text",
-        lambda path: "400000 100000" if path.name == "cpu.max" else None,
-    )
+    # The Job's count wins over the cores.
+    monkeypatch.setenv(JOB_THREADS_ENV, "2")
+    assert verilator_backend_arguments(inspection) == ("-j2", "VM_PARALLEL_BUILDS=1")
+    # Without a Job count the cores are bounded by the container's CPU quota.
+    monkeypatch.delenv(JOB_THREADS_ENV)
+    _cores(monkeypatch, 8, {"/sys/fs/cgroup/cpu.max": "400000 100000"})
     assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")

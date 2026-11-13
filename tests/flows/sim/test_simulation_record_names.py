@@ -218,7 +218,7 @@ def _prepared_lane(campaign: lane_pool._Campaign, parent: str) -> tuple[Executio
 
 
 def test_a_child_lane_writes_the_record_context_and_terminal_causes(tmp_path: Path) -> None:
-    campaign = lane_pool._Campaign(tmp_path, ("alpha",), max_heavy=1)
+    campaign = lane_pool._Campaign(tmp_path, ("alpha",), lanes=1)
     try:
         child, paths = _prepared_lane(campaign, "a" * 32)
 
@@ -380,7 +380,7 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
         read_campaign_dependencies(origin)
 
     # A context sidecar is the current one only: schema v1, or v2 with the old key, is not.
-    campaign = lane_pool._Campaign(tmp_path / "lane", ("alpha",), max_heavy=1)
+    campaign = lane_pool._Campaign(tmp_path / "lane", ("alpha",), lanes=1)
     try:
         child, paths = _prepared_lane(campaign, "a" * 32)
         context = _json(paths.context)
@@ -395,8 +395,8 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
 
 
 def test_a_lane_a_0_4_0_booley_left_is_still_recovered(tmp_path: Path) -> None:
-    """Only recovery reads the 0.4.0 sidecar, so its heavy job slot is released."""
-    campaign = lane_pool._Campaign(tmp_path, ("alpha",), max_heavy=1)
+    """Only recovery reads the 0.4.0 sidecar, so its claim is released."""
+    campaign = lane_pool._Campaign(tmp_path, ("alpha",), lanes=1)
     booley_dir = campaign.registry.project_data
     try:
         child, paths = _prepared_lane(campaign, "a" * 32)

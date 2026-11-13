@@ -46,75 +46,6 @@ def test_cgroup_limit_handles_v2_and_v1_unlimited_values(tmp_path: Path, monkeyp
     assert resource_policy.cgroup_memory_limit_bytes() == 9 * _GIB
 
 
-def test_heavy_reservation_validates_configured_value() -> None:
-    default = resource_policy.heavy_memory_reservation(None, None, ())
-    invalid = resource_policy.heavy_memory_reservation("lots", None, ())
-    zero = resource_policy.heavy_memory_reservation("0g", None, ())
-
-    assert default == resource_policy.HeavyMemoryReservation(4 * _GIB, "4g default")
-    assert invalid.bytes == 4 * _GIB
-    assert "unparseable" in str(invalid.error)
-    assert "greater than zero" in str(zero.error)
-
-
-def test_calibrated_peak_adds_margin_and_rounds_up_to_gib() -> None:
-    calibration = resource_policy.SynthesisMemoryCalibration(
-        target="asic_full",
-        peak_rss_bytes=int(15.8 * _GIB),
-    )
-
-    reservation = resource_policy.heavy_memory_reservation(
-        "16g",
-        calibration,
-        ("asic_full",),
-    )
-
-    assert reservation.bytes == 19 * _GIB
-    assert reservation.error is None
-    assert reservation.evidence == "15.8g measured on asic_full + 15% margin"
-
-
-def test_larger_configured_reservation_is_not_reduced_by_calibration() -> None:
-    calibration = resource_policy.SynthesisMemoryCalibration("asic_full", 8 * _GIB)
-
-    reservation = resource_policy.heavy_memory_reservation(
-        "16g",
-        calibration,
-        ("asic_full",),
-    )
-
-    assert reservation.bytes == 16 * _GIB
-    assert reservation.evidence == "configured 16g; calibrated peak 8g"
-
-
-def test_calibration_must_belong_to_current_doctor_matrix() -> None:
-    calibration = resource_policy.SynthesisMemoryCalibration("asic_small", 7 * _GIB)
-    current = resource_policy.heavy_memory_reservation(
-        None,
-        calibration,
-        ("asic_small", "asic_full"),
-    )
-    stale = resource_policy.heavy_memory_reservation(
-        None,
-        calibration,
-        ("asic_full",),
-    )
-
-    assert current.error is None
-    assert "unselected Target 'asic_small'" in str(stale.error)
-
-
-def test_memory_requirement_exposes_typed_admission_arithmetic() -> None:
-    requirement = resource_policy.memory_requirement(
-        max_heavy=2,
-        heavy_job_bytes=4 * _GIB,
-        agent_count=1,
-        agent_bytes=_GIB,
-    )
-
-    assert requirement.required_bytes == 11 * _GIB
-
-
 def test_doctor_does_not_reimplement_extracted_resource_mechanisms() -> None:
     doctor_path = _ROOT / "src" / "booley" / "harness" / "doctor.py"
     tree = ast.parse(doctor_path.read_text(encoding="utf-8"))
@@ -128,7 +59,6 @@ def test_doctor_does_not_reimplement_extracted_resource_mechanisms() -> None:
         "_cgroup_memory_limit_bytes",
         "_configured_sandbox_memory",
         "_fmt_g",
-        "_heavy_job_mem_bytes",
         "_parse_mem_limit",
     }
     assert not function_names & extracted
@@ -164,7 +94,7 @@ def test_memory_budget_override_parses_size() -> None:
     )
 
 
-@pytest.mark.parametrize("config", [{}, {"jobs": {}}, {"jobs": []}, {"jobs": {"max_heavy": 2}}])
+@pytest.mark.parametrize("config", [{}, {"jobs": {}}, {"jobs": []}, {"jobs": {"max_light": 2}}])
 def test_memory_budget_override_is_absent_without_the_key(config: dict) -> None:
     assert resource_policy.configured_memory_budget(config) is None
 

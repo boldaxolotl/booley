@@ -510,7 +510,7 @@ def test_chat_worktree_knob_must_be_auto_always_or_never(data: dict) -> None:
 
 
 def test_jobs_memory_budget_is_accepted() -> None:
-    audit = project_schema.audit_jobs_table({"jobs": {"memory_budget": "24g", "max_heavy": 2}})
+    audit = project_schema.audit_jobs_table({"jobs": {"memory_budget": "24g", "max_light": 2}})
 
     assert audit.is_valid
     assert audit.findings == ()

@@ -602,7 +602,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
     # --- Command building ---
 
     def _memory_admitted(self) -> bool:
-        """A lint Job runs the linter in the Sandbox, so the switch admits it (ADR 0087)."""
+        """A lint Job runs the linter in the Sandbox, so memory admission covers it (ADR 0087)."""
         return True
 
     def _build_command(self) -> list[str]:

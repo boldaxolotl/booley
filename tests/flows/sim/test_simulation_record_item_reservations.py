@@ -1,6 +1,6 @@
 """Each Simulation Campaign work item holds its own Memory Reservation (#3772, ADR 0087).
 
-Under ``BOOLEY_DEV_MEMORY_ADMISSION=1`` the Flow keeps one reservation for its
+The Flow keeps one reservation for its
 shared builds, then drops to zero and each later item takes a claim of its own
 (#3773: one lane per core, the claims decide how many run at once).
 The Campaign, slot store, Flow claim and foreign Jobs are real; only the
@@ -22,7 +22,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
 from booley.flows.endpoint_session import _attach_memory_warning
@@ -30,7 +29,7 @@ from booley.flows.job_estimates import JobRequest
 from booley.flows.memory_admission import job_thread_count
 from booley.flows.sim.build_parallelism import verilator_backend_arguments
 from booley.flows.sim.record import capacity
-from booley.flows.sim.record.capacity import HeavyCapacityError, LeaseLostError
+from booley.flows.sim.record.capacity import LeaseLostError
 from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record.coordinator import (
     CampaignPolicy,
@@ -54,7 +53,6 @@ from booley.runtime.endpoint_execution import (
     note_job_oom_kill,
 )
 from booley.runtime.job_slots import (
-    CLASS_HEAVY,
     CLASS_MEMORY,
     ClaimAbortedError,
     ClaimLostError,
@@ -265,9 +263,7 @@ def _scenario(
     *,
     flow_requests: Sequence[JobRequest] | None = FLOW_REQUESTS,
     history: Sequence[dict] = (),
-    switch: bool = True,
     cores: int = 1,
-    max_heavy: int = 1,
     held_at_admission: int = 0,
 ) -> Iterator[_Scenario]:
     """The Flow of a Campaign, admitted under a 1,000 MiB Memory Budget on *cores* cores.
@@ -275,12 +271,10 @@ def _scenario(
     *held_at_admission* 50 MiB claims are held (``early_holders``) when the Flow is admitted.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
-    project, state = _parallel_environment(tmp_path, "alpha", 0)
+    project, state = _parallel_environment(tmp_path, "beta", 0)
     state.barrier = threading.Barrier(1)  # one item at a time: nothing waits for a peer
     booley_dir = project / ".booley"
-    (booley_dir / "booley.toml").write_text(
-        f'[jobs]\nmemory_budget = "1000m"\nmax_heavy = {max_heavy}\n', encoding="utf-8"
-    )
+    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
     # The container's cores, as the CPU budget reads them (affinity bounded by the cgroup quota).
     monkeypatch.setattr("booley.runtime.cpu_budget._affinity_cpu_count", lambda: cores)
     monkeypatch.setattr("booley.runtime.cpu_budget._cgroup_cpu_count", lambda _read_text: None)
@@ -295,12 +289,8 @@ def _scenario(
         "booley.flows.sim.record.serial_execution._run_hook", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
-    if switch:
-        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
-        # A fake /proc with no process: ranking never touches the worker's real OOM priority.
-        monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
-    else:
-        monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION", raising=False)
+    # A fake /proc with no process: ranking never touches the worker's real OOM priority.
+    monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "a" * 32)
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     monkeypatch.delenv(job_slots.INHERITED_SLOT_ENV, raising=False)
@@ -310,7 +300,7 @@ def _scenario(
         if flow_requests is None
         else SimpleNamespace(invocation=SimpleNamespace(job_requests=lambda: tuple(flow_requests)))
     )
-    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=max_heavy))
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
     early = [
         store.acquire(
             CLASS_MEMORY,
@@ -402,7 +392,6 @@ def test_items_after_the_shared_build_hold_their_own_reservations(
         (still_held,) = scenario.store.observe(CLASS_MEMORY)[0]
         assert _held(still_held) == 0
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
-        assert scenario.store.observe(CLASS_HEAVY) == ([], [])
 
     assert outcome.complete is True
     # The first item builds under the Flow, which the finished build lowered to the
@@ -622,19 +611,6 @@ def test_lost_flow_lease_withdraws_the_item_claim_and_cancels(
     assert scenario.state.completion_order == ["alpha"]
 
 
-def test_switch_unset_campaign_takes_no_memory_claims(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    with _scenario(tmp_path, monkeypatch, history=_history("sim"), switch=False) as scenario:
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
-
-    assert outcome.complete is True
-    assert scenario.admission.memory_sizing is None
-    assert scenario.seen == {name: {"flow": [], "items": []} for name in NAMES}
-    assert _own_lanes(scenario) == [False] * 3
-    assert scenario.store.observe(CLASS_MEMORY) == ([], [])
-
-
 def _flow_claim(scenario: _Scenario):
     """A ``FlowClaim`` over the Flow's admission."""
     from booley.flows.sim.record.flow_claim import FlowClaim
@@ -830,7 +806,6 @@ def test_parallel_items_each_hold_their_own_reservation(
         (still_held,) = scenario.store.observe(CLASS_MEMORY)[0]
         assert _held(still_held) == 0
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
-        assert scenario.store.observe(CLASS_HEAVY) == ([], [])
 
     assert outcome.complete is True
     first, *later = names
@@ -923,7 +898,9 @@ def test_lost_flow_lease_cancels_running_lanes_and_withdraws_the_queued_claim(
         killer.start()
         try:
             # Which lane fails first (a waiting claim, or a cancelled running item) is a race.
-            with pytest.raises((ClaimAbortedError, ClaimLostError, HeavyCapacityError)):
+            with pytest.raises(
+                (ClaimAbortedError, ClaimLostError, capacity.CampaignCapacityError)
+            ):
                 scenario.campaign().run(scenario.request(_manifest_for(names)))
         finally:
             killer.join(_PARALLEL_SYNC_TIMEOUT_S)
@@ -933,30 +910,6 @@ def test_lost_flow_lease_cancels_running_lanes_and_withdraws_the_queued_claim(
 
     assert sorted(cancelled) == list(names[1:3])
     assert set(scenario.state.completion_order) <= set(names[:3])
-
-
-def test_switch_unset_campaign_keeps_heavy_cap_lanes_on_many_cores(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    names = _names(12)
-    with _scenario(
-        tmp_path, monkeypatch, history=(), switch=False, cores=CORES, max_heavy=2
-    ) as scenario:
-        # The outer lane takes item 1 and the one child lane item 2: they overlap.
-        together = _barrier(2)
-        for name in names[:2]:
-            scenario.hooks[name] = _meet(together)
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
-
-    assert outcome.complete is True
-    assert scenario.admission.memory_sizing is None
-    assert scenario.peak == 2
-    assert _campaign_lanes(scenario) == {"booley-campaign-outer", "booley-campaign-child-1"}
-    assert any(_own_lanes(scenario))  # items of the child lane ran on heavy slots
-    assert scenario.store.observe(CLASS_MEMORY) == ([], [])
-    # No Job thread count exists with the switch off: no item gets one.
-    assert set(scenario.threads) == set(names)
-    assert set(scenario.threads.values()) == {None}
 
 
 def test_waiting_campaign_queues_one_item_claim_in_manifest_order(
@@ -1167,21 +1120,6 @@ def test_item_failing_without_an_oom_kill_is_not_requeued(
     assert {name: count for name, (count, _) in attempts.items()} == dict.fromkeys(NAMES, 1)
     assert attempts["beta"][1]["grade"] == "fail"  # the fake's own failing Test
     assert not flow_attempt.oom_killed.is_set()
-
-
-def test_switch_unset_oom_noted_item_runs_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    with _scenario(tmp_path, monkeypatch, history=_history("sim"), switch=False) as scenario:
-        scenario.kills["beta"] = 1
-        with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
-            scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
-        assert scenario.store.observe(CLASS_MEMORY) == ([], [])
-
-    attempts = _item_attempts(scenario)
-    assert {name: count for name, (count, _) in attempts.items()} == dict.fromkeys(NAMES, 1)
-    assert not any(scenario.holds_own.values())  # no item took a claim
-    assert flow_attempt.oom_killed.is_set()  # the kill marks the Flow's attempt, as today
 
 
 # --- Each item's own thread count (#3788) ---

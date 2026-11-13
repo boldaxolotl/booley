@@ -16,7 +16,7 @@ definite answer instead of losing the in-flight wait with its shell.
 
 Pure + stdlib-only: no asyncio, no MCP types.  PID liveness (and the /proc argv
 lookup) are injected so the status derivation stays unit-testable.  The
-concurrency guarantee (only one heavy endpoint at a time) is NOT this module's job —
+concurrency guarantee (memory admission and the light-class cap) is NOT this module's job —
 it lives in ``mcp_server._JobManager``'s single-flight admission, with the
 detached child's own run-lock as belt-and-braces where that lock is active.
 Async here means "don't block the MCP call", never "run endpoints concurrently".

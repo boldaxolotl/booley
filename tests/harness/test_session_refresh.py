@@ -1,22 +1,34 @@
-"""Interaction tests for recoverable Session refresh orchestration."""
+"""Roll-forward ``booley session refresh``: orchestration, failure states, and rerun convergence.
+
+The runtime half is driven against a stateful fake host (``_Host``) behind the ``sr``
+primitives, so a rerun after a failed step sees the state the failure left behind.
+"""
 
 from __future__ import annotations
 
-import hashlib
-import json
-from dataclasses import replace
+import copy
+import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 
+from booley.harness import init_cmd
 from booley.harness import session_refresh as harness_refresh
-from booley.runtime import session_refresh
+from booley.runtime import issuance_invalidation, session_admission, session_refresh
+from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
-from booley.runtime.image_lifecycle import LifecycleResult, Status
-from booley.runtime.session_issuance import STAMP_VERSION, Issuance
-from booley.runtime.session_spec import SessionSpecSnapshot
+from booley.runtime.image_lifecycle import (
+    ImageLifecycleError,
+    Intent,
+    LifecycleResult,
+    ProjectImageScope,
+    Status,
+)
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.runtime import test_session_issuance as issuance_fixtures
 
@@ -26,504 +38,701 @@ issued = issuance_fixtures.issued
 issued_preview = issuance_fixtures.issued_preview
 trusted_validator = issuance_fixtures.trusted_validator
 
-
-@pytest.fixture(autouse=True)
-def isolated_refresh_outputs(monkeypatch):
-    finalize = session_refresh.finalize_project
-    monkeypatch.setattr(sr, "refresh_container_id", lambda _root: "container-new")
-    monkeypatch.setattr(session_refresh, "finalize_project", lambda _root: None)
-    return finalize
+OLD_IMAGE = "sha256:old"
+NEW_IMAGE = "sha256:new"
+UNCHANGED = "The running Sandbox is unchanged."
+RERUN = "Run `booley session refresh` again once the cause is fixed."
 
 
-def _result() -> session_refresh.RefreshImage:
+def _image(
+    selected_id: str = NEW_IMAGE, *, graph_changed: bool = True
+) -> session_refresh.RefreshImage:
     return session_refresh.RefreshImage(
-        "booley-sandbox",
-        "sha256:fresh",
-        payload_fingerprint="payload-123",
+        selected_id, "sha256:wheel-src", "wheel-sha", graph_changed
     )
 
 
-def _parked(root: Path) -> sr.ParkedSession:
-    name = sr.session_container_name(root)
-    return sr.ParkedSession(
+def _sandbox(name: str, container_id: str, *, vscode: bool = False) -> session_admission.Sandbox:
+    return session_admission.Sandbox(
+        container_id,
         name,
-        f"{name}-pre-refresh",
+        "/project",
+        "project-id",
+        datetime(2026, 1, 1, tzinfo=UTC),
+        datetime(2026, 1, 1, tzinfo=UTC),
         True,
-        project_id="project-id",
-        reconnect_egress=True,
-        container_id="container-prior",
-        image_id="sha256:prior",
-        egress_network_id="network-egress",
+        vscode,
     )
 
 
-def _issuance(root: Path, image_id: str = "sha256:prior") -> Issuance:
-    project = root.resolve()
-    identity = hashlib.sha256(str(project).encode()).hexdigest()
-    return Issuance(
-        STAMP_VERSION,
-        str(project),
-        "a" * 64,
-        image_id,
-        image_id,
-        f"booley-issued-{identity}:session",
-        1,
-        None,
-        None,
-        None,
-        None,
-        "b" * 64,
-        "c" * 64,
-        str(project / ".booley"),
-    )
+@dataclass
+class _Host:
+    """Stateful fake of the Docker and host state that refresh's ``sr`` primitives act on."""
+
+    project: Path
+    events: list[str] = field(default_factory=list)
+    running: session_admission.Sandbox | None = None
+    container_image: str | None = None
+    canonical_exists: bool = False
+    relay_exists: bool = False
+    pending_claim: bool = False
+    # Failure injections.
+    check_error: BaseException | None = None
+    start_error: Exception | None = None
+    leave_candidate_on_start_failure: bool = False
+    break_lookup_on_start_failure: bool = False
+    lookup_broken: bool = False
+    vscode_appears_after_removal: bool = False
+    docker_calls: list[list[str]] = field(default_factory=list)
+    # The real primitive, captured before the fixture replaces it. A missing primitive
+    # surfaces in the test body, so red evidence fails where the behavior is asserted.
+    original_start: Callable[..., str] | None = None
+
+    @property
+    def canonical(self) -> str:
+        return sr.session_container_name(self.project)
+
+    def run_old_sandbox(self, container_id: str = "old-id", image: str = OLD_IMAGE) -> None:
+        self.running = _sandbox(self.canonical, container_id)
+        self.container_image = image
+        self.canonical_exists = True
+
+    def run_other_sandbox(self, name: str, *, vscode: bool = False) -> None:
+        self.running = _sandbox(name, "other-id", vscode=vscode)
+
+    def mutations(self) -> list[str]:
+        """Events that changed Docker or host state."""
+        return [
+            event
+            for event in self.events
+            if event in {"reissue", "remove_predecessor", "remove_relay", "start", "finalize"}
+        ]
+
+    # -- fakes installed over the sr primitives ------------------------------------------
+
+    def resolve_running_sandbox(self, _project: Path):
+        if self.lookup_broken:
+            raise sr.SessionError("docker ps failed")
+        return self.running
+
+    def container_exists(self, name: str) -> bool:
+        return name == self.canonical and self.canonical_exists
+
+    def verified_headless_container(self, _project: Path, image: session_refresh.RefreshImage):
+        running = self.running
+        if (
+            running is None
+            or running.vscode
+            or running.name != self.canonical
+            or self.container_image != image.selected_id
+        ):
+            return None
+        return running.container_id
+
+    def check_refresh_start(self, _project: Path):
+        self.events.append("check")
+        if self.check_error is not None:
+            raise self.check_error
+        return SimpleNamespace(name=self.canonical)
+
+    def remove_refresh_predecessor(self, _project: Path) -> str | None:
+        self.events.append("remove_predecessor")
+        removed = None
+        if self.canonical_exists:
+            removed = "candidate-id" if self.running is None else self.running.container_id
+        self.running = None
+        self.container_image = None
+        self.canonical_exists = False
+        if self.vscode_appears_after_removal:
+            self.run_other_sandbox("vscode-owned", vscode=True)
+        return removed
+
+    def remove_refresh_relay(self, _project: Path) -> None:
+        self.events.append("remove_relay")
+        self.relay_exists = False
+
+    def start_refreshed_sandbox(self, _project: Path, _request, image) -> str:
+        self.events.append("start")
+        if self.relay_exists:
+            raise sr.SessionError("the old license relay is still present")
+        if self.start_error is not None:
+            if self.leave_candidate_on_start_failure:
+                self.canonical_exists = True
+            self.lookup_broken = self.break_lookup_on_start_failure
+            raise self.start_error
+        self.running = _sandbox(self.canonical, "new-id")
+        self.container_image = image.selected_id
+        self.canonical_exists = True
+        return "new-id"
+
+    def docker(self, argv, **_kwargs):
+        self.docker_calls.append(list(argv))
+        raise AssertionError(f"unexpected Docker call: {argv}")
 
 
-def _snapshot(root: Path) -> SessionSpecSnapshot:
-    project = root.resolve()
-    return SessionSpecSnapshot(
-        project / ".devcontainer" / "devcontainer.json",
-        b'{"image":"sha256:prior"}\n',
-        0o644,
-        session_refresh.runtime_spec.stamp_path(project),
-        b'{"version":4}\n',
-        0o600,
-        "sha256:prior",
-    )
-
-
-def test_candidate_is_prepared_before_running_target_is_parked(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+@pytest.fixture
+def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
+    """A stateful fake host with the Docker boundary closed; real lifecycle lock and guards."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    active = True
-    result, parked = _result(), _parked(tmp_path)
-    prior = _issuance(tmp_path)
-    candidate = _issuance(tmp_path, "sha256:fresh")
-    events: list[str] = []
-
-    def park(*_args) -> sr.ParkedSession:
-        nonlocal active
-        assert "planned: replace Sandbox after verification" in capsys.readouterr().out
-        active = False
-        events.append("park")
-        return parked
-
-    def prepare_image(*_args, **_kwargs) -> session_refresh.RefreshImage:
-        assert active
-        events.append("prepare")
-        return result
-
-    def commit_image() -> session_refresh.RefreshImage:
-        assert not active
-        events.append("commit")
-        return result
-
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    images.prepare.side_effect = prepare_image
-    images.commit.side_effect = commit_image
-    images.reissue.side_effect = lambda *_args, **_kwargs: events.append("reissue")
-
-    with (
-        patch.object(sr, "vscode_session_container", return_value=None),
-        patch.object(session_refresh, "capture_session_spec", return_value=_snapshot(tmp_path)),
-        patch.object(session_refresh, "_load_recovery_issuance", return_value=prior),
-        patch.object(sr, "plan_session_refresh", return_value=parked),
-        patch.object(sr, "park_planned_session", side_effect=park),
-        patch.object(session_refresh.runtime_spec, "load_issued_snapshot", return_value=candidate),
-        patch.object(
-            sr,
-            "_up_unlocked",
-            side_effect=lambda *_args, **_kwargs: events.append("up"),
-        ),
-        patch.object(
-            sr,
-            "discard_refresh_session",
-            side_effect=lambda *_args: events.append("discard"),
-        ),
-    ):
-        assert session_refresh.refresh(tmp_path, images).image is result
-
-    assert events == ["prepare", "park", "commit", "reissue", "up", "discard"]
-
-
-def test_candidate_failure_leaves_running_session_and_spec_untouched(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    images.prepare.side_effect = RuntimeError("candidate build failed")
-    monkeypatch.setattr(session_refresh, "_load_recovery_issuance", lambda *_: _issuance(tmp_path))
-    with (
-        patch.object(sr, "vscode_session_container", return_value=None),
-        patch.object(session_refresh, "capture_session_spec") as capture,
-        patch.object(sr, "park_planned_session") as park,
-        pytest.raises(RuntimeError, match="candidate build failed"),
-    ):
-        session_refresh.refresh(tmp_path, images)
-
-    capture.assert_called_once()
-    park.assert_not_called()
-    images.abort.assert_called_once_with()
-
-
-def test_commit_mismatch_names_every_refresh_image_field(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    prepared = _result()
-    committed = replace(
-        prepared,
-        selected_id="sha256:unexpected",
-        payload_fingerprint="payload-unexpected",
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    fake = _Host(project, original_start=getattr(sr, "start_refreshed_sandbox", None))
+    monkeypatch.setattr(sr, "vscode_session_container", lambda _project: None)
+    monkeypatch.setattr(
+        session_admission, "has_pending_claim", lambda _project: fake.pending_claim
     )
-    journal = session_refresh._RefreshJournal(
-        project_root=tmp_path.resolve(),
-        transaction_id="transaction",
-        direction=session_refresh._RecoveryDirection.RESTORE_ELIGIBLE,
-        snapshot=_snapshot(tmp_path),
-        prior_issuance=_issuance(tmp_path),
-        prior_runtime=None,
-        target_image_id=None,
-        target_payload_fingerprint=None,
-        target_wheel_sha256=None,
-        prepared_images=(),
-        replacement_issuance=None,
+    monkeypatch.setattr(sr, "resolve_running_sandbox", fake.resolve_running_sandbox)
+    monkeypatch.setattr(sr.idk, "container_exists", fake.container_exists)
+    monkeypatch.setattr(
+        sr, "verified_headless_container", fake.verified_headless_container, raising=False
     )
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    images.commit.return_value = committed
-    monkeypatch.setattr(session_refresh, "_write_journal", lambda _journal: None)
+    monkeypatch.setattr(sr, "check_refresh_start", fake.check_refresh_start, raising=False)
+    monkeypatch.setattr(
+        sr, "remove_refresh_predecessor", fake.remove_refresh_predecessor, raising=False
+    )
+    monkeypatch.setattr(sr, "remove_refresh_relay", fake.remove_refresh_relay, raising=False)
+    monkeypatch.setattr(sr, "start_refreshed_sandbox", fake.start_refreshed_sandbox, raising=False)
+    monkeypatch.setattr(sr, "_run", fake.docker)
+    monkeypatch.setattr(
+        session_refresh, "_cleanup_owned_images", lambda _project: fake.events.append("cleanup")
+    )
+    return fake
 
-    with pytest.raises(sr.SessionError, match="verified candidate") as caught:
-        session_refresh._reconcile_refresh_image(journal, prepared, images)
+
+def _images(
+    host: _Host, image: session_refresh.RefreshImage, *, spec_current: bool = False
+) -> Mock:
+    """Fake image operations that record their order next to the host's events."""
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+
+    def record(name: str, result=None):
+        def call(*_args, **_kwargs):
+            host.events.append(name)
+            return result
+
+        return call
+
+    images.inspect.side_effect = record("inspect")
+    images.converge.side_effect = record("converge", image)
+    images.prepare_spec.side_effect = record("prepare_spec")
+    images.spec_is_current.side_effect = record("spec_is_current", spec_current)
+    images.reissue.side_effect = record("reissue")
+    images.finalize.side_effect = record("finalize")
+    return images
+
+
+def test_changed_image_replaces_running_sandbox(host: _Host) -> None:
+    host.run_old_sandbox()
+    image = _image()
+    images = _images(host, image)
+
+    result = session_refresh.refresh(host.project, images, verbose=True)
+
+    assert result == session_refresh.RefreshResult(image, "replaced", "old-id", "new-id")
+    assert result.message == "replaced old-id → new-id"
+    # The spec is reissued and proven startable before the old Sandbox is removed.
+    assert host.events == [
+        "inspect",
+        "converge",
+        "prepare_spec",
+        "reissue",
+        "check",
+        "remove_predecessor",
+        "remove_relay",
+        "start",
+        "finalize",
+        "cleanup",
+    ]
+    images.converge.assert_called_once_with(host.project.resolve(), verbose=True)
+    images.prepare_spec.assert_called_once_with(host.project.resolve(), image)
+    assert host.running is not None and host.running.container_id == "new-id"
+    assert host.docker_calls == []
+
+
+def test_absent_sandbox_is_created(host: _Host) -> None:
+    image = _image()
+
+    result = session_refresh.refresh(host.project, _images(host, image))
+
+    assert result == session_refresh.RefreshResult(image, "created", None, "new-id")
+    assert result.message == "created new-id"
+    assert "remove_predecessor" in host.events and "start" in host.events
+
+
+def test_rerun_after_success_is_kept_without_docker_mutation(host: _Host) -> None:
+    host.run_old_sandbox()
+    first = session_refresh.refresh(host.project, _images(host, _image()))
+    assert first.outcome == "replaced"
+    host.events.clear()
+
+    # The rerun finds the graph unchanged and the spec current: nothing to replace.
+    stable = _image(graph_changed=False)
+    second = session_refresh.refresh(host.project, _images(host, stable, spec_current=True))
+
+    assert second == session_refresh.RefreshResult(stable, "kept", "new-id", "new-id")
+    assert second.message == "kept: already current"
+    assert host.mutations() == ["finalize"]
+    assert "cleanup" not in host.events
+    assert host.running is not None and host.running.container_id == "new-id"
+
+    # A stale spec, or a changed graph, is not kept even when the Sandbox is running.
+    for spec_current, graph_changed in ((False, False), (True, True)):
+        host.events.clear()
+        again = session_refresh.refresh(
+            host.project,
+            _images(host, _image(graph_changed=graph_changed), spec_current=spec_current),
+        )
+        assert again.outcome == "replaced"
+
+
+def test_image_failure_leaves_sandbox_and_tags_unchanged(host: _Host) -> None:
+    host.run_old_sandbox()
+    images = _images(host, _image())
+    images.converge.side_effect = ImageLifecycleError("candidate build failed")
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, images)
 
     message = str(caught.value)
-    assert "selected_id sha256:fresh -> sha256:unexpected" in message
-    assert "payload_fingerprint payload-123 -> payload-unexpected" in message
+    assert "session refresh failed while reconciling Sandbox Images" in message
+    assert "candidate build failed" in message
+    assert UNCHANGED in message
+    assert RERUN in message
+    assert host.mutations() == []
+    assert host.running is not None and host.running.container_id == "old-id"
 
 
-def test_incomplete_rollback_reports_recovery_container(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    parked = _parked(tmp_path)
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    images.prepare.return_value = _result()
-    images.commit.side_effect = RuntimeError("commit failed")
-    with (
-        patch.object(sr, "vscode_session_container", return_value=None),
-        patch.object(session_refresh, "capture_session_spec", return_value=_snapshot(tmp_path)),
-        patch.object(session_refresh, "_load_recovery_issuance", return_value=_issuance(tmp_path)),
-        patch.object(sr, "plan_session_refresh", return_value=parked),
-        patch.object(sr, "park_planned_session"),
-        patch.object(
-            session_refresh,
-            "restore_session_spec",
-            side_effect=RuntimeError("stamp busy"),
-        ),
-        patch.object(
-            sr,
-            "restore_refresh_session",
-            side_effect=sr.SessionError("network missing"),
-        ),
-        pytest.raises(sr.SessionError, match="recovery was incomplete") as raised,
-    ):
-        session_refresh.refresh(tmp_path, images)
-
-    assert parked.backup in str(raised.value)
-    assert isinstance(raised.value.__cause__, RuntimeError)
-
-
-def test_vscode_owner_is_rejected_before_image_inspection(tmp_path: Path) -> None:
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    with (
-        patch.object(sr, "vscode_session_container", return_value="vscode-owned"),
-        pytest.raises(sr.SessionError, match="VS Code owns"),
-    ):
-        session_refresh.refresh(tmp_path, images)
-
-    images.inspect.assert_not_called()
-
-
-def test_current_graph_issuance_and_running_sandbox_are_a_true_noop(
-    tmp_path: Path, monkeypatch, capsys
+def test_harness_converge_uses_host_init_engine(
+    host: _Host, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    result = session_refresh.RefreshImage(
+    reconciled = LifecycleResult(
         "booley-sandbox",
-        "sha256:fresh",
-        image_graph_changed=False,
-    )
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    images.prepare.return_value = result
-    images.commit.return_value = result
-    parked = replace(_parked(tmp_path), image_id="sha256:fresh")
-    with (
-        patch.object(sr, "vscode_session_container", return_value=None),
-        patch.object(session_refresh, "capture_session_spec", return_value=_snapshot(tmp_path)),
-        patch.object(
-            session_refresh,
-            "_load_recovery_issuance",
-            return_value=_issuance(tmp_path, "sha256:fresh"),
-        ),
-        patch.object(sr, "plan_session_refresh", return_value=parked),
-        patch.object(sr, "verify_refreshed_session"),
-        patch.object(sr, "park_planned_session") as park,
-        patch.object(sr, "_up_unlocked") as up,
-    ):
-        assert session_refresh.refresh(tmp_path, images).image == result
-
-    images.commit.assert_called_once_with()
-    park.assert_not_called()
-    up.assert_not_called()
-    assert "planned:" not in capsys.readouterr().out
-
-
-def test_noop_commit_mismatch_names_refresh_image_field(tmp_path: Path, monkeypatch) -> None:
-    prepared = replace(_result(), image_graph_changed=False)
-    committed = replace(prepared, wheel_sha256="unexpected-wheel")
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    images.commit.return_value = committed
-    monkeypatch.setattr(session_refresh, "_is_current_running_session", lambda *_args: True)
-    monkeypatch.setattr(sr, "verify_refreshed_session", lambda *_args, **_kwargs: None)
-
-    with pytest.raises(sr.SessionError, match="verified candidate") as caught:
-        session_refresh._try_complete_noop(
-            tmp_path,
-            prepared,
-            _issuance(tmp_path, "sha256:fresh"),
-            None,
-            images,
-        )
-
-    assert "wheel_sha256 <none> -> unexpected-wheel" in str(caught.value)
-
-
-def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    result = _result()
-    snapshot = _snapshot(tmp_path)
-    prior_issuance = _issuance(tmp_path)
-    candidate_issuance = _issuance(tmp_path, "sha256:fresh")
-    events: list[str] = []
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    images.prepare.return_value = result
-    images.commit.return_value = result
-    with (
-        patch.object(
-            sr,
-            "vscode_session_container",
-            side_effect=[None, None, "vscode-owned"],
-        ),
-        patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
-        patch.object(session_refresh, "_load_recovery_issuance", return_value=prior_issuance),
-        patch.object(
-            session_refresh.runtime_spec, "load_issued_snapshot", return_value=candidate_issuance
-        ),
-        patch.object(sr, "plan_session_refresh", return_value=None),
-        patch.object(
-            sr,
-            "_up_unlocked",
-            side_effect=lambda *_args, **_kwargs: events.append("up"),
-        ),
-        patch.object(
-            session_refresh,
-            "restore_session_spec",
-            side_effect=lambda *_args: events.append("restore-spec"),
-        ),
-        patch.object(
-            sr,
-            "discard_refresh_candidate",
-            side_effect=lambda root, issuance: events.append(
-                f"discard:{root == tmp_path}:{issuance == candidate_issuance}"
-            ),
-        ),
-        patch.object(session_refresh, "_verify_restored_journal"),
-        pytest.raises(sr.SessionError, match="new headless Session is being rolled back"),
-    ):
-        session_refresh.refresh(tmp_path, images)
-
-    assert events == ["up", "restore-spec", "discard:True:True"]
-
-
-def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    result = session_refresh.RefreshImage("booley-sandbox", None)  # type: ignore[arg-type]
-    snapshot = _snapshot(tmp_path)
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    images.prepare.return_value = result
-    with (
-        patch.object(sr, "vscode_session_container", return_value=None),
-        patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
-        patch.object(session_refresh, "_load_recovery_issuance", return_value=_issuance(tmp_path)),
-        patch.object(sr, "plan_session_refresh", return_value=None),
-        patch.object(session_refresh, "restore_session_spec") as restore,
-        patch.object(session_refresh, "_verify_restored_journal"),
-        pytest.raises(sr.SessionError, match="immutable Sandbox Image ID"),
-    ):
-        session_refresh.refresh(tmp_path, images)
-
-    restore.assert_not_called()
-
-
-def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> None:
-    (tmp_path / ".booley").mkdir()
-    refreshed = LifecycleResult(
-        "booley-sandbox",
-        "sha256:fresh",
+        NEW_IMAGE,
         Status.CHANGED,
+        changed_images=("booley-sandbox",),
         payload_fingerprint="payload-123",
+        wheel_source_fingerprint="wheel-src",
+        wheel_sha256="wheel-sha",
     )
+    reconcile = Mock(return_value=reconciled)
+    monkeypatch.setattr(harness_refresh.image_lifecycle, "reconcile_planned", reconcile)
+    monkeypatch.setattr(init_cmd, "_report_project_requirements", lambda *_a, **_k: None)
+    spec_calls = Mock(side_effect=AssertionError("no spec work before images converge"))
+    monkeypatch.setattr(init_cmd, "_current_interactive_spec_sources", spec_calls)
+    monkeypatch.setattr(harness_refresh.issuance, "preview", spec_calls)
+
+    image = harness_refresh._RuntimeImages().converge(tmp_path, verbose=True)
+
+    reconcile.assert_called_once_with(ProjectImageScope(tmp_path), Intent.ENSURE, verbose=True)
+    assert image == session_refresh.RefreshImage(NEW_IMAGE, "wheel-src", "wheel-sha", True)
+
+    # A lifecycle failure propagates out of the whole refresh before any spec or Docker call.
+    host.run_old_sandbox()
+    reconcile.side_effect = ImageLifecycleError("registry unreachable")
+    images = harness_refresh._RuntimeImages()
+    monkeypatch.setattr(images, "inspect", lambda _project: None)
+    with pytest.raises(sr.SessionError, match="registry unreachable") as caught:
+        session_refresh.refresh(host.project, images)
+    assert isinstance(caught.value.__cause__, ImageLifecycleError)
+    spec_calls.assert_not_called()
+    assert host.mutations() == [] and host.docker_calls == []
+
+    # Without an immutable ID there is nothing to pin the Sandbox to.
+    reconcile.side_effect = None
+    reconcile.return_value = LifecycleResult("booley-sandbox", None, Status.CHANGED)
+    with pytest.raises(sr.SessionError, match="immutable Sandbox Image ID"):
+        harness_refresh._RuntimeImages().converge(tmp_path, verbose=False)
+
+
+def test_start_failure_names_step_and_no_sandbox_then_rerun_creates(host: _Host) -> None:
+    host.run_old_sandbox()
+    host.start_error = sr.SessionError("docker run failed: no such network")
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    message = str(caught.value)
+    assert "session refresh failed while starting the new Sandbox" in message
+    assert "docker run failed: no such network" in message
+    assert "No Sandbox is running." in message
+    assert RERUN in message
+    # The old Sandbox is not restored: it was replaced and nothing runs now.
+    assert host.running is None and not host.canonical_exists
+
+    host.start_error = None
+    host.events.clear()
+    rerun = session_refresh.refresh(
+        host.project, _images(host, _image(graph_changed=False), spec_current=True)
+    )
+    assert rerun.outcome == "created" and rerun.previous_container_id is None
+    assert rerun.container_id == "new-id"
+
+
+def test_start_failure_leaves_unverified_container_named(host: _Host) -> None:
+    host.run_old_sandbox()
+    host.start_error = sr.SessionError("verification failed")
+    host.leave_candidate_on_start_failure = True
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    message = str(caught.value)
+    assert f"An unverified Sandbox container {host.canonical!r} was left in place" in message
+    assert "the next refresh verifies or replaces it" in message
+    assert "No Sandbox is running." not in message
+
+    # The rerun removes the leftover candidate by ID and starts a fresh Sandbox.
+    host.start_error = None
+    rerun = session_refresh.refresh(
+        host.project, _images(host, _image(graph_changed=False), spec_current=True)
+    )
+    assert rerun == session_refresh.RefreshResult(
+        _image(graph_changed=False), "replaced", "candidate-id", "new-id"
+    )
+
+
+@pytest.fixture
+def project_local_booley_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the harness-wide BOOLEY_DIR so ``issued`` uses its own Project data."""
+    from booley.runtime.booley_dir import reset_cache
+
+    monkeypatch.delenv("BOOLEY_DIR")
+    reset_cache()
+
+
+def _reissue_with(prepared: runtime_spec.PreparedSessionSpec, project: Path) -> Callable:
+    """A ``reissue`` that issues the real spec and stamp, as the harness does."""
+
+    def reissue(*_args, **_kwargs) -> None:
+        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+    return reissue
+
+
+def test_start_failure_keeps_reissued_spec_for_session_up(
+    project_local_booley_dir, issued_preview, host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, prepared, _path, stamp = issued_preview
+    host.project = project
+    runtime_spec.invalidate_project(str(project))  # the previous stamp is gone
+    images = _images(host, _image(stamp.image_id))
+    images.reissue.side_effect = _reissue_with(prepared, project)
+    host.start_error = sr.SessionError("docker run failed")
+
+    with pytest.raises(sr.SessionError, match="starting the new Sandbox"):
+        session_refresh.refresh(project, images)
+
+    # No journal and no park: the reissued spec is a normal Sandbox spec again.
+    assert runtime_spec.stamp_path(project).exists()
+    assert sr.validate(project)
+    assert sr.status(project) == "absent"
+    docker = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+    with (
+        patch.object(sr, "_run", docker),
+        patch.object(sr.idk, "network_exists", return_value=True),
+        patch.object(sr.idk, "image_exists", return_value=True),
+        patch.object(sr.idk, "inspect_image_metadata", return_value=None),
+        patch.object(sr.idk, "image_id", return_value=None),
+        patch.object(sr.idk, "container_running", return_value=False),
+        patch.object(sr, "_strict_running_interactive_states", return_value=[]),
+        patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+    ):
+        assert sr.up(project) == sr.session_container_name(project)
+    assert any(call.args[0][:2] == ["docker", "run"] for call in docker.call_args_list)
+
+
+def test_interruption_after_reissue_keeps_old_sandbox_then_rerun_replaces(host: _Host) -> None:
+    host.run_old_sandbox()
+    host.check_error = KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    # Interrupted after the reissue and before any removal: the old Sandbox still runs.
+    assert "reissue" in host.events
+    assert "remove_predecessor" not in host.events and "start" not in host.events
+    assert host.running is not None and host.running.container_id == "old-id"
+
+    # The rerun sees an unchanged graph and a current spec, but the old Sandbox is on the
+    # old image, so it is replaced rather than kept.
+    host.check_error = None
+    host.events.clear()
+    rerun = session_refresh.refresh(
+        host.project, _images(host, _image(graph_changed=False), spec_current=True)
+    )
+    assert rerun.outcome == "replaced"
+    assert (rerun.previous_container_id, rerun.container_id) == ("old-id", "new-id")
+
+
+def test_missing_gateway_export_fails_before_removal(host: _Host) -> None:
+    host.run_old_sandbox()
+    host.check_error = sr.SessionError("export BOOLEY_GATEWAY_KEY before refreshing")
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    message = str(caught.value)
+    assert "session refresh failed while removing the previous Sandbox" in message
+    assert "export BOOLEY_GATEWAY_KEY" in message
+    assert "The Sandbox spec was reissued" in message
+    assert f"the previous Sandbox {host.canonical!r} is still running" in message
+    assert "remove_predecessor" not in host.events and "remove_relay" not in host.events
+    assert host.running is not None and host.running.container_id == "old-id"
+
+
+def test_removal_failure_with_stopped_container_reports_it_left_in_place(host: _Host) -> None:
+    host.canonical_exists = True
+    host.check_error = sr.SessionError("docker stop failed")
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    assert f"container {host.canonical!r} was left in place" in str(caught.value)
+    assert RERUN in str(caught.value)
+
+
+def test_missing_or_withdrawn_stamp_refreshes(
+    project_local_booley_dir, issued_preview, host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.eda.provisioning.licensing import flexnet_docker
+
+    project, prepared, _path, stamp = issued_preview
+    host.project = project
+    host.run_old_sandbox()
+    monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", lambda _r: ())
+    root = str(project.resolve())
+
+    for case in ("no stamp", "withdrawn by an EDA Grant change"):
+        if case == "no stamp":
+            runtime_spec.stamp_path(project).unlink()
+        else:
+            # A revocation prepared its journal and withdrew the stamp, then stopped.
+            issuance_invalidation.prepare(root)
+            issuance_invalidation.invalidate(root)
+            assert issuance_invalidation.has_pending(project)
+        assert not runtime_spec.stamp_path(project).exists(), case
+        images = _images(host, _image(stamp.image_id))
+        images.reissue.side_effect = _reissue_with(prepared, project)
+
+        # Refresh completes the pending invalidation itself and carries on to replace.
+        result = session_refresh.refresh(project, images)
+
+        assert result.outcome == "replaced", case
+        assert runtime_spec.stamp_path(project).exists(), case
+        assert not issuance_invalidation.has_pending(project), case
+        host.run_old_sandbox()
+
+
+@pytest.mark.parametrize("sandbox_survives", [False, True])
+def test_invalidation_cleanup_failure_reports_the_state_it_left(
+    host: _Host, monkeypatch: pytest.MonkeyPatch, sandbox_survives: bool
+) -> None:
+    """Cleanup of a pending EDA Grant change can remove Sandboxes, so the message looks."""
+    if sandbox_survives:
+        host.run_old_sandbox()
+    monkeypatch.setattr(
+        issuance_invalidation,
+        "recover_all_locked",
+        Mock(side_effect=RuntimeError("could not remove network")),
+    )
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    message = str(caught.value)
+    assert "failed while completing pending EDA Grant invalidations" in message
+    assert "could not remove network" in message
+    if sandbox_survives:
+        assert f"Sandbox {host.canonical!r} is running." in message
+    else:
+        assert "No Sandbox is running; pending EDA Grant cleanup may have removed it." in message
+    assert RERUN in message
+    assert host.mutations() == []
+
+
+def test_licensed_sandbox_refreshes_with_relay_replaced(host: _Host) -> None:
+    host.run_old_sandbox()
+    host.relay_exists = True  # start refuses while the old relay is present
+
+    result = session_refresh.refresh(host.project, _images(host, _image()))
+
+    assert result.outcome == "replaced"
+    assert host.events.index("remove_relay") < host.events.index("start")
+    assert not host.relay_exists
+
+
+def test_vscode_owner_is_rejected_before_image_work(
+    host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sr, "vscode_session_container", lambda _project: "vscode-owned")
+    images = _images(host, _image())
+
+    with pytest.raises(sr.SessionError, match="VS Code owns the active Sandbox 'vscode-owned'"):
+        session_refresh.refresh(host.project, images)
+
+    assert host.events == []
+
+
+def test_pending_vscode_start_claim_refuses_before_any_change(
+    host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host.run_old_sandbox()
+    host.pending_claim = True
+    with pytest.raises(sr.SessionError, match="VS Code is starting a Sandbox") as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+    assert "booley session down" in str(caught.value)
+    assert host.events == []
+
+    # An unreadable claim store refuses the same way.
+    def unreadable(_project: Path) -> bool:
+        raise session_admission.AdmissionError("claim store unreadable")
+
+    monkeypatch.setattr(session_admission, "has_pending_claim", unreadable)
+    with pytest.raises(sr.SessionError, match="claim store unreadable"):
+        session_refresh.refresh(host.project, _images(host, _image()))
+    assert host.events == []
+
+
+def test_other_running_project_sandbox_blocks_relay_removal(host: _Host) -> None:
+    # Only resolve_running_sandbox is faked, so the real canonical-Sandbox guard runs.
+    cases = (
+        # canonical present, but a non-canonical Sandbox runs
+        ("a-different-sandbox", True),
+        # canonical absent, but a parked `-pre-refresh` container runs
+        (f"{sr.session_container_name(host.project)}-pre-refresh", False),
+    )
+    for name, canonical_exists in cases:
+        host.events.clear()
+        host.canonical_exists = canonical_exists
+        host.relay_exists = True
+        host.run_other_sandbox(name)
+        host.canonical_exists = canonical_exists
+
+        with pytest.raises(sr.SessionError) as caught:
+            session_refresh.refresh(host.project, _images(host, _image()))
+
+        message = str(caught.value)
+        assert "session refresh failed while removing the previous Sandbox" in message
+        assert "The Sandbox spec was reissued" in message
+        assert f"Sandbox {name!r} is running and was not touched" in message
+        assert "remove_predecessor" not in host.events
+        assert "remove_relay" not in host.events
+        assert "start" not in host.events
+        assert host.relay_exists
+
+
+def test_start_state_lookup_failure_keeps_step_and_rerun_advice(host: _Host) -> None:
+    host.run_old_sandbox()
+    host.start_error = sr.SessionError("docker run failed")
+    host.break_lookup_on_start_failure = True
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    message = str(caught.value)
+    assert "session refresh failed while starting the new Sandbox: docker run failed" in message
+    assert "The Sandbox state could not be read: docker ps failed." in message
+    assert message.endswith(RERUN)
+
+
+def test_refresh_refuses_external_image_with_unchanged_message(
+    host: _Host, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from booley.runtime.image_lifecycle import ImageRole
+
+    host.run_old_sandbox()
+    plan = SimpleNamespace(nodes=(SimpleNamespace(role=ImageRole.EXTERNAL),))
+    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
+    converge = Mock(side_effect=AssertionError("external images are never converged"))
+    monkeypatch.setattr(harness_refresh._RuntimeImages, "converge", converge)
+
+    with pytest.raises(RuntimeError) as caught:
+        session_refresh.refresh(host.project, harness_refresh._RuntimeImages())
+
+    assert str(caught.value) == (
+        "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
+        "Rebuild/pull it explicitly, then on the host run `booley session down`, "
+        "`booley init --seed`, and `booley session up`."
+    )
+    assert "booley session refresh" not in str(caught.value)
+    converge.assert_not_called()
+    assert host.mutations() == []
+
+
+def test_vscode_appearing_during_start_is_reported_untouched(
+    host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host.run_old_sandbox()
+    host.vscode_appears_after_removal = True
+    # The real start refuses while any Sandbox runs, before it makes any Docker call.
+    assert host.original_start is not None
+    monkeypatch.setattr(sr, "start_refreshed_sandbox", host.original_start)
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    message = str(caught.value)
+    assert "session refresh failed while starting the new Sandbox" in message
+    assert "VS Code started Sandbox 'vscode-owned' during refresh; it was not touched." in message
+    assert RERUN in message
+    assert host.docker_calls == []
+
+
+def test_refresh_writes_no_journal(host: _Host, tmp_path: Path) -> None:
+    config = tmp_path / "config"
+
+    def refresh_files() -> set[str]:
+        return {
+            path.relative_to(tmp_path).as_posix()
+            for path in tmp_path.rglob("*")
+            if "refresh" in path.name.lower()
+        }
+
+    before = refresh_files()
+    host.run_old_sandbox()
+    session_refresh.refresh(host.project, _images(host, _image()))
+    host.start_error = sr.SessionError("docker run failed")
+    with pytest.raises(sr.SessionError):
+        session_refresh.refresh(host.project, _images(host, _image(NEW_IMAGE + "2")))
+
+    assert refresh_files() == before
+    assert not (config / "eda" / "session-refresh").exists()
+
+
+def test_harness_refresh_reinitializes_project_after_replacement(tmp_path: Path) -> None:
+    outcome = session_refresh.RefreshResult(_image(), "replaced", "old-id", "new-id")
     events: list[tuple[object, ...]] = []
 
-    prepared = Mock()
-    prepared.plan.selected_reference = "booley-sandbox"
-    prepared.plan.nodes = (Mock(wheel_source_fingerprint="payload-123"),)
-    prepared.plan.steps = (Mock(action=object()),)
-    prepared.candidates = (
-        Mock(
-            reference="booley-sandbox",
-            candidate_reference="candidate",
-            image_id="sha256:fresh",
-            wheel_sha256=None,
-        ),
-    )
-    prepared.prior_tags = ()
-
-    def drive_runtime(project_root, images, *, verbose):
-        images.inspect(project_root, verbose=verbose)
-        result = images.prepare(project_root, verbose=verbose)
-        images.validate(result)
-        images.abort()
-        result = images.prepare(project_root, verbose=verbose)
-        result = images.commit()
-        images.reissue(project_root, result.selected_id, verbose=verbose)
-        return session_refresh.RefreshResult(result, "kept", None, "container-new")
+    def drive(root: Path, images: object, *, verbose: bool) -> session_refresh.RefreshResult:
+        assert isinstance(images, harness_refresh._RuntimeImages)
+        events.append(("refresh", root, verbose))
+        return outcome
 
     with (
+        patch.object(harness_refresh.runtime_refresh, "refresh", side_effect=drive),
         patch.object(
-            harness_refresh.init_cmd,
-            "inspect_refreshable_runtime_image",
-            side_effect=lambda root: events.append(("inspect", root)),
-        ),
-        patch.object(
-            harness_refresh.init_cmd,
-            "validate_runtime_image",
-            side_effect=lambda value: events.append(("validate", value)),
-        ),
-        patch.object(
-            harness_refresh.init_cmd,
-            "abort_runtime_image",
-            side_effect=lambda value: events.append(("abort", value)),
-        ),
-        patch.object(
-            harness_refresh.init_cmd,
-            "prepare_runtime_image",
-            side_effect=lambda root, *, verbose: (
-                events.append(("prepare", root, verbose)) or prepared
-            ),
-        ),
-        patch.object(
-            harness_refresh.init_cmd,
-            "commit_runtime_image",
-            side_effect=lambda value: events.append(("commit", value)) or refreshed,
-        ),
-        patch.object(
-            harness_refresh._RuntimeImages,
-            "reissue",
-            side_effect=lambda root, image_id, *, verbose: events.append(
-                ("reissue", root, image_id, verbose)
-            ),
-        ),
-        patch.object(harness_refresh.runtime_refresh, "refresh", side_effect=drive_runtime),
-        patch.object(
-            harness_refresh.init_cmd,
+            init_cmd,
             "_sandbox_git_version",
             side_effect=lambda image_id: events.append(("git-version", image_id)) or (2, 50, 0),
         ),
         patch.object(
-            harness_refresh.init_cmd,
+            init_cmd,
             "reinitialize_project",
             side_effect=lambda root, facts: events.append(("reinitialize", root, facts)) or [],
         ),
     ):
-        result = harness_refresh.refresh(tmp_path, verbose=True)
+        assert harness_refresh.refresh(tmp_path, verbose=True) is outcome
 
-    assert result.image == session_refresh.RefreshImage(
-        "booley-sandbox",
-        "sha256:fresh",
-        "payload-123",
-        prepared_images=(
-            session_refresh.RefreshPreparedImage(
-                "booley-sandbox",
-                "candidate",
-                "sha256:fresh",
-                None,
-            ),
-        ),
-        wheel_source_fingerprint="payload-123",
-    )
     assert events == [
-        ("inspect", tmp_path),
-        ("prepare", tmp_path, True),
-        ("validate", prepared),
-        ("abort", prepared),
-        ("prepare", tmp_path, True),
-        ("commit", prepared),
-        ("reissue", tmp_path, "sha256:fresh", True),
-        ("git-version", "sha256:fresh"),
-        ("reinitialize", tmp_path, harness_refresh.init_cmd.ProjectFacts((2, 50, 0))),
+        ("refresh", tmp_path, True),
+        ("git-version", NEW_IMAGE),
+        ("reinitialize", tmp_path, init_cmd.ProjectFacts((2, 50, 0))),
     ]
 
 
-def test_harness_runtime_images_requires_prepared_candidates() -> None:
-    images = harness_refresh._RuntimeImages()
-    with pytest.raises(sr.SessionError, match="were not prepared"):
-        images.commit()
-    with pytest.raises(sr.SessionError, match="were not prepared"):
-        images.validate(_result())
-
-
-def test_harness_runtime_images_rejects_commit_without_selected_id(monkeypatch) -> None:
-    images = harness_refresh._RuntimeImages()
-    prepared = Mock()
-    prepared.plan.nodes = (Mock(wheel_source_fingerprint="wheel"),)
-    prepared.plan.steps = (Mock(action=object()),)
-    prepared.candidates = (
-        Mock(reference="booley-sandbox", candidate_reference="candidate", image_id="id"),
-    )
-    prepared.prior_tags = ()
-    images._prepared = prepared
-    monkeypatch.setattr(
-        harness_refresh.init_cmd,
-        "commit_runtime_image",
-        lambda _prepared: LifecycleResult("booley-sandbox", None, Status.CHANGED),
-    )
-    with pytest.raises(sr.SessionError, match="immutable Sandbox Image ID"):
-        images.commit()
-
-
-def test_refresh_refuses_external_image_with_reseed_workflow(monkeypatch, tmp_path: Path) -> None:
-    from booley.harness import init_cmd
-    from booley.runtime.image_lifecycle import ImageRole
-
-    plan = SimpleNamespace(nodes=(SimpleNamespace(role=ImageRole.EXTERNAL),))
-    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
-    with pytest.raises(RuntimeError, match=r"externally managed.*booley init --seed"):
-        init_cmd.inspect_refreshable_runtime_image(tmp_path)
-
-
 def test_init_runtime_image_inspection_preserves_actionable_plan_errors(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from booley.harness import init_cmd
-    from booley.runtime.image_lifecycle import ImageLifecycleError
-
     monkeypatch.setattr(
         init_cmd.image_lifecycle,
         "plan",
@@ -533,56 +742,10 @@ def test_init_runtime_image_inspection_preserves_actionable_plan_errors(
         init_cmd.inspect_refreshable_runtime_image(tmp_path)
 
 
-def test_init_runtime_image_prepare_commit_validate_and_abort_wrappers(
-    monkeypatch, tmp_path: Path
-) -> None:
-    from booley.harness import init_cmd
-    from booley.runtime.image_lifecycle import PlanAction
-
-    step = SimpleNamespace(
-        reference="booley-sandbox",
-        action=PlanAction.BUILD,
-        role=SimpleNamespace(value="wheel-overlay"),
-        reason=SimpleNamespace(code="inputs-changed"),
-    )
-    plan = SimpleNamespace(
-        project_root=tmp_path,
-        nodes=(SimpleNamespace(reference=step.reference, effective_inputs="inputs"),),
-        steps=(step,),
-    )
-    prepared = object()
-    calls: list[tuple[str, object]] = []
-    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
-    monkeypatch.setattr(init_cmd.image_lifecycle, "prepare", lambda *args, **kwargs: prepared)
-    monkeypatch.setattr(init_cmd.image_lifecycle, "commit", lambda value, **kwargs: value)
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "validate",
-        lambda value, **kwargs: calls.append(("validate", value)),
-    )
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "abort",
-        lambda value, **kwargs: calls.append(("abort", value)),
-    )
-    monkeypatch.setattr(init_cmd, "info", lambda message: calls.append(("info", message)))
-
-    assert init_cmd.prepare_runtime_image(tmp_path) is prepared
-    assert init_cmd.commit_runtime_image(prepared) is prepared
-    init_cmd.validate_runtime_image(prepared)
-    init_cmd.abort_runtime_image(prepared)
-    assert calls[-2:] == [("validate", prepared), ("abort", prepared)]
-    assert any(
-        "inputs-changed inputs" in str(message) for kind, message in calls if kind == "info"
-    )
-
-
 @pytest.mark.parametrize("problem", ["duplicate", "unknown"])
 def test_refresh_project_sandbox_resolution_refuses_ambiguous_inventory(
     workspace, project_sandbox_resolution, problem
 ):
-    import copy
-
     fixture = project_sandbox_resolution
     if problem == "duplicate":
         second = copy.deepcopy(fixture.state)
@@ -594,259 +757,9 @@ def test_refresh_project_sandbox_resolution_refuses_ambiguous_inventory(
     cause = "multiple running Sandboxes" if problem == "duplicate" else "identity disagrees"
     with pytest.raises(sr.SessionError, match=cause):
         session_refresh._reject_existing_vscode(workspace)
-    consequence = "new headless Session is being rolled back"
-    with pytest.raises(sr.SessionError, match=consequence):
-        session_refresh._reject_vscode_started(workspace, consequence)
+    with pytest.raises(sr.SessionError, match=cause):
+        session_refresh._reject_vscode_started(workspace)
     assert all(call[1] in ("ps", "container") for call in fixture.calls)
-
-
-def _refresh_race_start(workspace, fixture, events):
-    import copy
-
-    editor = copy.deepcopy(fixture.state)
-    headless = copy.deepcopy(editor)
-    headless["Id"], headless["Name"] = "b" * 64, "/" + sr.session_container_name(workspace)
-    headless["Config"]["Labels"].pop("devcontainer.local_folder")
-    fixture.documents.clear()
-
-    def start(*_args, **_kwargs):
-        events.append("up")
-        fixture.documents.update({editor["Id"]: editor, headless["Id"]: headless})
-
-    return start
-
-
-def test_project_sandbox_resolution_refresh_race_rolls_back(
-    workspace, project_sandbox_resolution, monkeypatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(workspace / "config"))
-    result = _result()
-    snapshot = _snapshot(workspace)
-    prior_issuance = _issuance(workspace)
-    candidate_issuance = _issuance(workspace, "sha256:fresh")
-    events: list[str] = []
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.prepare.return_value = result
-    images.commit.return_value = result
-    start = _refresh_race_start(workspace, project_sandbox_resolution, events)
-
-    with (
-        patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
-        patch.object(session_refresh, "_load_recovery_issuance", return_value=prior_issuance),
-        patch.object(
-            session_refresh.runtime_spec, "load_issued_snapshot", return_value=candidate_issuance
-        ),
-        patch.object(sr, "plan_session_refresh", return_value=None),
-        patch.object(
-            sr,
-            "_up_unlocked",
-            side_effect=start,
-        ),
-        patch.object(
-            session_refresh,
-            "restore_session_spec",
-            side_effect=lambda *_args: events.append("restore-spec"),
-        ),
-        patch.object(
-            sr,
-            "discard_refresh_candidate",
-            side_effect=lambda root, issuance: events.append(
-                f"discard:{root == workspace}:{issuance == candidate_issuance}"
-            ),
-        ),
-        patch.object(session_refresh, "_verify_restored_journal"),
-        pytest.raises(
-            sr.SessionError,
-            match=r"multiple running Sandboxes.*new headless Session is being rolled back",
-        ),
-    ):
-        session_refresh.refresh(workspace, images)
-
-    assert events == ["up", "restore-spec", "discard:True:True"]
-
-
-@pytest.mark.parametrize("has_predecessor", [False, True])
-def test_verified_rollback_names_real_predecessor_or_absent_runtime(
-    tmp_path, monkeypatch, has_predecessor
-):
-    parked = _parked(tmp_path) if has_predecessor else None
-    journal = session_refresh._new_journal(
-        tmp_path, _snapshot(tmp_path), _issuance(tmp_path), parked
-    )
-    monkeypatch.setattr(session_refresh, "_load_journal", lambda _project: journal)
-    restored = Mock(
-        return_value=session_refresh.RecoveryResult(
-            tmp_path, session_refresh.RecoveryOutcome.RESTORED
-        )
-    )
-    monkeypatch.setattr(session_refresh, "_restore_journal", restored)
-    with pytest.raises(sr.SessionError) as caught:
-        session_refresh._recover_failed_refresh(tmp_path, sr.SessionError("wheel probe failed"))
-    restored.assert_called_once_with(journal)
-    if has_predecessor:
-        assert (
-            str(caught.value)
-            == "rolled back to container-prior; candidate failed: wheel probe failed"
-        )
-    else:
-        assert (
-            str(caught.value)
-            == "candidate failed: wheel probe failed; restored prior issuance; no prior Sandbox"
-        )
-        assert "rolled back to" not in str(caught.value)
-
-
-def test_adding_license_refuses_before_parking_even_stopped_predecessor(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = True
-    images.prepare.return_value = _result()
-    monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
-    monkeypatch.setattr(session_refresh, "capture_session_spec", lambda _root: _snapshot(tmp_path))
-    monkeypatch.setattr(
-        session_refresh, "_load_recovery_issuance", lambda *_args: _issuance(tmp_path)
-    )
-    monkeypatch.setattr(
-        sr, "plan_session_refresh", lambda *_args: replace(_parked(tmp_path), was_running=False)
-    )
-    park = Mock()
-    monkeypatch.setattr(sr, "park_planned_session", park)
-    with pytest.raises(sr.SessionError, match="cannot add a licensed relay"):
-        session_refresh.refresh(tmp_path, images)
-    park.assert_not_called()
-    images.reissue.assert_not_called()
-
-
-def test_abort_failure_cannot_skip_parked_predecessor_recovery(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.requires_license.return_value = False
-    images.prepare.return_value = _result()
-    images.commit.side_effect = RuntimeError("commit failed")
-    images.abort.side_effect = RuntimeError("cleanup inventory failed")
-    restored = Mock()
-    monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
-    monkeypatch.setattr(session_refresh, "capture_session_spec", lambda _root: _snapshot(tmp_path))
-    monkeypatch.setattr(
-        session_refresh, "_load_recovery_issuance", lambda *_args: _issuance(tmp_path)
-    )
-    monkeypatch.setattr(sr, "plan_session_refresh", lambda *_args: _parked(tmp_path))
-    monkeypatch.setattr(sr, "park_planned_session", lambda *_args: None)
-    monkeypatch.setattr(session_refresh, "_restore_journal", restored)
-    with pytest.raises(
-        sr.SessionError, match="rolled back to container-prior; candidate failed: commit failed"
-    ):
-        session_refresh.refresh(tmp_path, images)
-    restored.assert_called_once()
-
-
-def test_unauthenticated_predecessor_requires_reseed_even_with_valid_stamp(tmp_path, monkeypatch):
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
-    monkeypatch.setattr(
-        session_refresh.runtime_spec, "load_issued_snapshot", lambda _root: _issuance(tmp_path)
-    )
-    monkeypatch.setattr(
-        session_refresh.runtime_spec,
-        "load_recovery_snapshot",
-        Mock(side_effect=session_refresh.runtime_spec.RuntimeSpecError("prior keeper is missing")),
-    )
-    with pytest.raises(sr.SessionError) as caught:
-        session_refresh._load_recovery_issuance(tmp_path, _snapshot(tmp_path))
-    assert "booley init --seed" in str(caught.value)
-    assert "booley session refresh" not in str(caught.value)
-
-
-@pytest.mark.parametrize(
-    ("spec_content", "reason"),
-    [
-        (None, "prior Sandbox spec is missing"),
-        (b"{", "prior Sandbox spec is not valid JSON"),
-        (b"\xff", "prior Sandbox spec is not valid JSON"),
-        (b"[]", "prior Sandbox spec is not an object"),
-    ],
-)
-def test_recovery_issuance_refuses_an_unusable_prior_spec_snapshot(
-    tmp_path: Path, spec_content: bytes | None, reason: str
-) -> None:
-    snapshot = replace(_snapshot(tmp_path), spec_content=spec_content)
-    with pytest.raises(sr.SessionError, match=f"cannot preserve the prior Sandbox: {reason}"):
-        session_refresh._load_recovery_issuance(tmp_path, snapshot)
-
-
-@pytest.mark.parametrize("stealth", [False, True])
-def test_forward_finalization_uses_authorized_dashboard_source_and_exclusions(
-    tmp_path, monkeypatch, isolated_refresh_outputs, stealth
-):
-    from booley import commit_policy
-    from booley.runtime import dashboard_tasks
-    from booley.runtime import git as runtime_git
-
-    source = tmp_path / "authorized-data"
-    calls = []
-    monkeypatch.setattr(
-        session_refresh.runtime_spec, "authorized_project_data_source", lambda _root: source
-    )
-    monkeypatch.setattr(commit_policy, "stealth_enabled", lambda _root: stealth)
-    monkeypatch.setattr(
-        dashboard_tasks,
-        "reconcile",
-        lambda project, directory: calls.append(("dashboard", project, directory)),
-    )
-    monkeypatch.setattr(
-        runtime_git,
-        "add_git_excludes",
-        lambda project, patterns: calls.append(("excludes", project, patterns)),
-    )
-    isolated_refresh_outputs(tmp_path)
-    expected = (".devcontainer", ".claude", ".booley") if stealth else (".devcontainer", ".claude")
-    assert calls == [("dashboard", tmp_path, source), ("excludes", tmp_path, expected)]
-
-
-def test_new_journal_document_has_no_phase(tmp_path, monkeypatch):
-    """New journals record no phase: no recovery decision ever read it."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    journal = session_refresh._prepared_journal(
-        tmp_path, _snapshot(tmp_path), _issuance(tmp_path), _parked(tmp_path), _result()
-    )
-
-    session_refresh._write_journal(journal)
-
-    path = session_refresh.journal_store().path(str(tmp_path.resolve()))
-    document = json.loads(path.read_text(encoding="utf-8"))
-    assert document["version"] == 2
-    assert "phase" not in document
-    assert session_refresh._load_journal(tmp_path) == journal
-
-
-def test_ancillary_failure_after_verified_commit_keeps_forward_journal(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    journal = session_refresh._prepared_journal(
-        tmp_path, _snapshot(tmp_path), _issuance(tmp_path), _parked(tmp_path), _result()
-    )
-    journal = replace(
-        journal,
-        direction=session_refresh._RecoveryDirection.COMMITTED_FORWARD,
-        prepared_images=(
-            session_refresh.RefreshPreparedImage("ref", "ref-candidate", "sha256:c", None),
-        ),
-        replacement_issuance=_issuance(tmp_path, "sha256:fresh"),
-    )
-    session_refresh._write_journal(journal)
-    images = Mock(spec=session_refresh.RuntimeImageOperations)
-    images.finalize.side_effect = RuntimeError("tasks busy")
-    discard = Mock()
-    monkeypatch.setattr(sr, "discard_refresh_session", discard)
-    with pytest.raises(
-        sr.SessionError, match="replacement committed; final reconciliation is incomplete"
-    ) as caught:
-        session_refresh._finish_refresh(journal, _result(), images)
-    assert "rolled back" not in str(caught.value)
-    assert session_refresh._load_journal(tmp_path) == journal
-    discard.assert_called_once_with(journal.prior_runtime)
-    images.abort.assert_not_called()
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -865,12 +778,53 @@ def test_image_gc_deferral_does_not_block_completed_runtime(
     assert ("deferred" if failure else "retained by another Project") in caplog.text
 
 
-@pytest.fixture
-def project_local_booley_dir(monkeypatch):
-    """Drop the harness-wide BOOLEY_DIR so ``issued`` uses its own Project data."""
+@pytest.mark.parametrize("stealth", [False, True])
+def test_finalization_uses_authorized_dashboard_source_and_exclusions(
+    tmp_path, monkeypatch, stealth
+):
+    from booley import commit_policy
+    from booley.runtime import dashboard_tasks
+    from booley.runtime import git as runtime_git
+
+    source = tmp_path / "authorized-data"
+    calls = []
+    monkeypatch.setattr(runtime_spec, "authorized_project_data_source", lambda _root: source)
+    monkeypatch.setattr(commit_policy, "stealth_enabled", lambda _root: stealth)
+    monkeypatch.setattr(
+        dashboard_tasks,
+        "reconcile",
+        lambda project, directory: calls.append(("dashboard", project, directory)),
+    )
+    monkeypatch.setattr(
+        runtime_git,
+        "add_git_excludes",
+        lambda project, patterns: calls.append(("excludes", project, patterns)),
+    )
+    session_refresh.finalize_project(tmp_path)
+    expected = (".devcontainer", ".claude", ".booley") if stealth else (".devcontainer", ".claude")
+    assert calls == [("dashboard", tmp_path, source), ("excludes", tmp_path, expected)]
+
+
+def test_finalization_excludes_relocated_booley_dir_in_stealth(tmp_path, monkeypatch):
+    from booley import commit_policy
+    from booley.runtime import dashboard_tasks
+    from booley.runtime import git as runtime_git
     from booley.runtime.booley_dir import reset_cache
 
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    (tmp_path / "tools/booley").mkdir(parents=True)
+    reset_cache()
+    excluded: list[tuple[str, ...]] = []
+    monkeypatch.setattr(runtime_spec, "authorized_project_data_source", lambda _root: tmp_path)
+    monkeypatch.setattr(commit_policy, "stealth_enabled", lambda _root: True)
+    monkeypatch.setattr(dashboard_tasks, "reconcile", lambda _project, _directory: None)
+    monkeypatch.setattr(
+        runtime_git, "add_git_excludes", lambda _project, names: excluded.append(tuple(names))
+    )
+
+    session_refresh.finalize_project(tmp_path)
+
+    assert excluded == [(".devcontainer", ".claude", ".booley", "tools/booley")]
     reset_cache()
 
 
@@ -883,37 +837,10 @@ def test_refresh_prepares_spec_in_host_egress_mode(project_local_booley_dir, iss
     host_config_path().write_text('[sandbox]\negress = "unproxied"\n', encoding="utf-8")
     images = harness_refresh._RuntimeImages()
 
-    images.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
+    images.prepare_spec(project, _image(stamp.image_id))
 
     spec = images._spec.spec
     networks = [spec["runArgs"][i + 1] for i, a in enumerate(spec["runArgs"]) if a == "--network"]
     assert networks == [dc.UNPROXIED_NETWORK]
     assert spec["containerEnv"]["BOOLEY_EGRESS"] == "unproxied"
     assert not images.spec_is_current(project)
-
-
-def test_forward_finalization_excludes_relocated_booley_dir_in_stealth(
-    tmp_path, monkeypatch, isolated_refresh_outputs
-):
-    from booley import commit_policy
-    from booley.runtime import dashboard_tasks
-    from booley.runtime import git as runtime_git
-    from booley.runtime.booley_dir import reset_cache
-
-    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
-    (tmp_path / "tools/booley").mkdir(parents=True)
-    reset_cache()
-    excluded: list[tuple[str, ...]] = []
-    monkeypatch.setattr(
-        session_refresh.runtime_spec, "authorized_project_data_source", lambda _root: tmp_path
-    )
-    monkeypatch.setattr(commit_policy, "stealth_enabled", lambda _root: True)
-    monkeypatch.setattr(dashboard_tasks, "reconcile", lambda _project, _directory: None)
-    monkeypatch.setattr(
-        runtime_git, "add_git_excludes", lambda _project, names: excluded.append(tuple(names))
-    )
-
-    isolated_refresh_outputs(tmp_path)
-
-    assert excluded == [(".devcontainer", ".claude", ".booley", "tools/booley")]
-    reset_cache()

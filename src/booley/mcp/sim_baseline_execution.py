@@ -35,7 +35,6 @@ from booley.flows.memory_admission import (
     MemoryAdmissionPlan,
     job_threads_at_start,
     measure_memory_claim,
-    memory_admission_enabled,
 )
 from booley.flows.simulation_record_results import StartedCampaign
 from booley.flows.target_test_plan import TargetTestPlan
@@ -566,8 +565,8 @@ def _memory_plan(
     config: Mapping[str, object],
     work: tuple[Path, str, tuple[Any, ...]],
 ) -> MemoryAdmissionPlan | None:
-    """The Memory Reservation a heavy baseline plans under the switch, else ``None``."""
-    if not memory_admission_enabled() or job_class != job_slots.CLASS_HEAVY:
+    """The Memory Reservation a memory-class baseline plans, else ``None``."""
+    if job_class != job_slots.CLASS_MEMORY:
         return None
     return measure_memory_claim(booley_dir, config, executor.job_requests(*work))
 
@@ -631,9 +630,9 @@ def _background_slot(
 
     The supervisor, the process recorded on the Job, owns the claim so Job
     status shows the wait, spending the Job's own remaining budget: a starved
-    baseline ends unavailable, not as a live Job readers report failed. Under the memory admission switch a heavy Job holds
+    baseline ends unavailable, not as a live Job readers report failed. A memory-class Job holds
     a background Memory Reservation (sized from *work*, the ``(checkout,
-    target, units)`` it measures) instead of a heavy slot. Yields the claim and
+    target, units)`` it measures). Yields the claim and
     the Job's thread count (``None`` without a Memory Reservation).
 
     A *requeued* attempt (after an OOM kill) claims the whole Memory Budget to

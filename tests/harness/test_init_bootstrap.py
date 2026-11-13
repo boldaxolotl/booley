@@ -12,7 +12,7 @@ import pytest
 
 from booley.config.host_config import host_config_path
 from booley.harness import bootstrap, bootstrap_cli, init_cmd
-from booley.runtime import issuance_invalidation, session_refresh
+from booley.runtime import issuance_invalidation
 from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
@@ -89,7 +89,9 @@ def test_host_setup_waits_for_lifecycle_lock(
     lock_path = tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
     waiting = observe_lifecycle_contention(monkeypatch)
     invoked: list[str] = []
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
+    monkeypatch.setattr(
+        issuance_invalidation, "shared_recovery_blocks_command", lambda **_kw: False
+    )
     run = _host_setup_run(operation, tmp_path, monkeypatch, invoked)
 
     with (

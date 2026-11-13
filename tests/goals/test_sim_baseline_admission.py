@@ -119,7 +119,9 @@ def foreign_owner():
 
 def _foreign_claim(scene, owner, role: str):
     argv = job_slots._proc_cmdline(owner.pid) or []
-    return scene.store.submit(_job_class(), pid=owner.pid, argv=argv, role=role)
+    # A Job that runs alone: whatever the baseline sizes, it waits behind it.
+    claim = job_slots.MemoryClaim(budget_mb=1024.0, run_alone=True)
+    return scene.store.submit(_job_class(), pid=owner.pid, argv=argv, role=role, memory=claim)
 
 
 def _execute(scene):
@@ -232,7 +234,7 @@ def test_baseline_gives_up_its_slot_wait_at_its_budget(scene, foreign_owner):
     assert scene.store.refresh(holder).state == job_slots.HOLDING
     _rewind_job_start(scene, remaining_s=5)
     try:
-        with pytest.raises(TimeoutError, match="while waiting for a heavy slot"):
+        with pytest.raises(TimeoutError, match="while waiting for a memory slot"):
             _execute(scene)
     finally:
         scene.store.release(holder)

@@ -218,13 +218,15 @@ Try:
   nonzero). Interrupting a child with a descendant keeps signal semantics and leaves no
   descendants; then `up`/`enter` again.
 - `session refresh` after a permitted change gives a new immutable identity; an injected
-  replacement validation failure restores the old runtime; refreshing a VS Code-owned runtime
+  replacement failure names the failing step and what is still running, and
+  rerunning `session refresh` converges; refreshing a VS Code-owned runtime
   is refused.
 - Legacy VS Code containers (`fixtures/legacy-client/README.md`): a running VS Code container
   with an outdated Booley Directory layout is refused, never migrated: nothing stops or is
   removed, and the message names the removal and `booley init --seed` repair. Following that
   repair reopens cleanly. Headless, foreign, ambiguous and multiple candidates are refused.
-Look for: orphaned processes, a container stopped or removed, rollbacks that leave nothing up.
+Look for: orphaned processes, a container stopped or removed, a failure that
+names no step or leaves a rerun unable to converge.
 
 ### 11. doctor-upgrade — Doctor waivers and upgrade review (~20 min)
 Try:
@@ -291,7 +293,7 @@ Setup: copy `fixtures/simulation-campaign/` to `qa-campaign/` in the Project, re
 Try:
 - `runtime-inputs.toml`, tests `alpha` and `beta`: distinct run directories and vectors, owned
   files cleaned after publication, one unchanged shared Simulator Bundle.
-- `literal-cwd.toml`, `max_heavy > 1`: attempts on the same literal directory don't overlap,
+- `literal-cwd.toml`, a `[jobs] memory_budget` that admits two items: attempts on the same literal directory don't overlap,
   but a separate templated campaign started then does (per-directory lock, not global).
 - `immutable-presim.toml`: the hook sees no `BOOLEY_BUILD_ROOT` and exits 73. Expect an
   attributed setup failure, no pass, and unchanged source, bundle and snapshot hashes.

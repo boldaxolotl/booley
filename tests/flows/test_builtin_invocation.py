@@ -366,7 +366,7 @@ class _DryLifecycleFlow(BuiltinFlow):
     name = "dry_contract"
 
     def _resolve_job_class(self) -> str:
-        return "heavy"
+        return "memory"
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         return None
@@ -516,7 +516,7 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
         mock.patch.object(
             EndpointState,
             "_acquire_job_slot",
-            side_effect=AssertionError("dry-run acquired a heavy slot"),
+            side_effect=AssertionError("dry-run acquired a slot"),
         ),
         mock.patch.object(
             EndpointState,
@@ -605,7 +605,7 @@ def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
         mock.patch.object(
             EndpointState,
             "_acquire_job_slot",
-            side_effect=AssertionError("dry-run acquired a heavy slot"),
+            side_effect=AssertionError("dry-run acquired a slot"),
         ),
         mock.patch.object(
             EndpointState,

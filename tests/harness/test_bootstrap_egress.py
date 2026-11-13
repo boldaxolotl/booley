@@ -60,7 +60,7 @@ class _Host:
             bootstrap_cli, "inspect_bootstrap", lambda **_kw: _current_result(Intent.CHECK)
         )
         monkeypatch.setattr(
-            "booley.runtime.session_refresh.shared_recovery_blocks_command",
+            "booley.runtime.issuance_invalidation.shared_recovery_blocks_command",
             lambda **_kwargs: False,
         )
         monkeypatch.setattr(session_admission, "running_sandboxes", self._running_sandboxes)
@@ -101,7 +101,9 @@ def test_invalid_egress_result_writes_nothing_and_skips_bootstrap(
     original = b'[sandbox]\negress_allowlist = ["example.com"]\n'
     host.config.parent.mkdir(parents=True)
     host.config.write_bytes(original)
-    monkeypatch.setattr("booley.runtime.session_refresh.shared_recovery_blocks_command", _fail)
+    monkeypatch.setattr(
+        "booley.runtime.issuance_invalidation.shared_recovery_blocks_command", _fail
+    )
 
     assert host.run(egress="unproxied") == 2
 

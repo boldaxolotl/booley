@@ -337,25 +337,10 @@ include = ["src/booley"]
 # the same change; when renaming an excluded module, rename its entry; never add
 # a new module. See docs/internals/CONTRIBUTING.md#development-basics.
 exclude = [
-    "src/booley/audit/eda_environment.py",
-    "src/booley/audit/host_environment.py",
-    "src/booley/audit/project_schema.py",
-    "src/booley/bwave/cli.py",
-    "src/booley/bwave/vaporview_bridge.py",
-    "src/booley/bwave/waveform_store.py",
-    "src/booley/config/agent.py",
     "src/booley/criteria/actions.py",
     "src/booley/criteria/presentation.py",
     "src/booley/criteria/reference.py",
     "src/booley/criteria/templates.py",
-    "src/booley/data/docker/base_package_inventory.py",
-    "src/booley/data/docker/session_activity_hook.py",
-    "src/booley/dev_support/agent_readiness.py",
-    "src/booley/dev_support/pre_push_hook.py",
-    "src/booley/dev_support/validate_commit_msg.py",
-    "src/booley/eda/provisioning/licensing/flexnet_relay.py",
-    "src/booley/evidence/timing.py",
-    "src/booley/feedback/cli.py",
     "src/booley/flows/base.py",
     "src/booley/flows/cli_arguments.py",
     "src/booley/flows/cli_selection.py",
@@ -390,11 +375,6 @@ exclude = [
     "src/booley/flows/sim/record/store.py",
     "src/booley/flows/sim/record_invocation.py",
     "src/booley/flows/sim/record_retention.py",
-    "src/booley/flows/synth/backends/pipeline.py",
-    "src/booley/flows/synth/ppa_config.py",
-    "src/booley/flows/synth/warnings.py",
-    "src/booley/fusesoc/fusesoc_registry.py",
-    "src/booley/fusesoc/target_inspection.py",
     "src/booley/harness/booley.py",
     "src/booley/harness/bootstrap.py",
     "src/booley/harness/dashboard/app.py",
@@ -412,8 +392,6 @@ exclude = [
     "src/booley/mcp/server.py",
     "src/booley/mcp/session_registry.py",
     "src/booley/mcp/sim_baseline_execution.py",
-    "src/booley/presentation/report_results.py",
-    "src/booley/specialists/reviewer.py",
 ]
 strict = [
     # External-input coercion and the Booley Directory trust boundary.

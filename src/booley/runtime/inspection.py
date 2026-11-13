@@ -41,6 +41,7 @@ from booley.eda.provisioning.policies.vivado import (
 from booley.runtime import (
     auth_token,
     image_identity,
+    platform_paths,
     runtime_context,
     sandbox_layout,
     session_runtime,
@@ -135,13 +136,11 @@ def inspect_retained_resources(project_root: Path, docker_exe: str | None) -> Di
 
 def _devcontainer_tracked(project_root: Path) -> bool:
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", "ls-files", "--", ".devcontainer"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
+            cwd=project_root,
+            errors="strict",
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return False
@@ -911,13 +910,11 @@ def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
     check alone does not catch an already-poisoned repository.
     """
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", "ls-files", "--", ".interactive_logs"],
-            cwd=booley_dir,
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
+            cwd=booley_dir,
+            errors="strict",
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return
