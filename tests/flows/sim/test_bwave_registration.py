@@ -20,6 +20,7 @@ import pytest
 
 import booley
 from booley.flows.base import SubprocessResult
+from booley.flows.sim import bwave_registration
 from tests.flows.sim.campaign_boundary import CampaignSimRun, Launch, run_campaign_sim
 from tests.subprocess_budget import run_bounded_child
 
@@ -166,30 +167,31 @@ def test_untraced_run_leaves_existing_sessions_unchanged(
 def test_untraced_run_registers_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkout_store: Path
 ):
+    def refuse_store(_project_root: Path) -> None:
+        raise AssertionError("an untraced run must not resolve a session store")
+
+    monkeypatch.setattr(bwave_registration, "session_store", refuse_store)
+
     _run(tmp_path, monkeypatch, {"lite": ["smoke"]}, traced=False)
 
     assert not checkout_store.parent.exists()
 
 
-@pytest.mark.parametrize(
-    ("failing", "exit_code"), [((), 0), (("smoke",), 1)], ids=["pass", "fail"]
-)
 def test_registration_failure_keeps_the_verdict(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-    failing: tuple[str, ...],
-    exit_code: int,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
-    blocker = tmp_path / ".booley" / ".runtime" / "bwave"
-    blocker.parent.mkdir(parents=True)
-    blocker.write_text("a file where the store's directory should be", encoding="utf-8")
+    for case, failing, exit_code in (("passing", (), 0), ("failing", ("smoke",), 1)):
+        checkout = tmp_path / case
+        blocker = checkout / ".booley" / ".runtime" / "bwave"
+        blocker.parent.mkdir(parents=True)
+        blocker.write_text("a file where the store's directory should be", encoding="utf-8")
+        caplog.clear()
 
-    with caplog.at_level(logging.WARNING, logger="booley.flows.sim.bwave_registration"):
-        run = _run(tmp_path, monkeypatch, {"lite": ["smoke"]}, failing=failing)
+        with caplog.at_level(logging.WARNING, logger="booley.flows.sim.bwave_registration"):
+            run = _run(checkout, monkeypatch, {"lite": ["smoke"]}, failing=failing)
 
-    assert run.result.exit_code == exit_code
-    assert ("FAIL" if failing else "PASS") in run.result.outcome.report_text
-    warnings = [r for r in caplog.records if r.name == "booley.flows.sim.bwave_registration"]
-    assert [r.levelno for r in warnings] == [logging.WARNING]
-    assert "bwave" in warnings[0].getMessage()
+        assert run.result.exit_code == exit_code
+        assert ("FAIL" if failing else "PASS") in run.result.outcome.report_text
+        warnings = [r for r in caplog.records if r.name == "booley.flows.sim.bwave_registration"]
+        assert [r.levelno for r in warnings] == [logging.WARNING]
+        assert "bwave" in warnings[0].getMessage()
