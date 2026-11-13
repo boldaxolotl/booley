@@ -79,6 +79,20 @@ class TestSpecialistArgparse:
             ReviewSpecialist().parse_args(["--transcript", "injected"])
 
 
+def test_reviewer_model_calls_use_the_raised_minimum():
+    """The reviewer overrides ``_run`` without the base clamp, so every model call is raised here."""
+    from types import SimpleNamespace
+
+    from booley.specialists.reviewer import ReviewerSpecialist
+
+    reviewer = ReviewerSpecialist()
+    reviewer._args = SimpleNamespace(timeout_ms=300_000)
+    assert reviewer.model_call_timeout_ms(300_000) == 600_000
+    assert reviewer.timeout_seconds() == 600  # asked for 5m
+    reviewer._args = SimpleNamespace(timeout_ms=3_600_000)
+    assert reviewer.timeout_seconds() == 3600  # above the minimum: unchanged
+
+
 class TestTimeoutClamping:
     def test_timeout_below_min_is_clamped(self, tmp_path: Path):
         """Developer Agent passing too-low --timeout-ms gets clamped to min_timeout."""

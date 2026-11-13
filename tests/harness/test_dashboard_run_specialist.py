@@ -18,7 +18,7 @@ from textual.widgets import OptionList
 from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard import launch
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_request_path
-from booley.runtime import job_records
+from booley.runtime import auth_token, job_records
 from tests.goals import conftest as goals_conftest
 from tests.harness import test_dashboard_run as run_tests
 from tests.harness.test_dashboard_run import (
@@ -51,6 +51,30 @@ def _quiet_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generous first read and no timer reads: the tests order every read themselves."""
     monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
     monkeypatch.setattr(dashboard_app, "REFRESH_SECONDS", 3600)
+
+
+@pytest.fixture
+def empty_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """No credential in the environment or on disk; the Claude Agent CLI is the default.
+
+    The check child inherits this environment. ``BOOLEY_PRIMARY_PROVIDER`` keeps the
+    settings loader from refusing an unresolved provider when the suite runs in a Sandbox.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    for name in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(name, str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    for name in (
+        *auth_token.CREDENTIAL_ENV_KEYS,
+        "CODEX_HOME",
+        "BOOLEY_PRIMARY_AUTH",
+        "BOOLEY_AGENT_APP",
+        "BOOLEY_AGENT_CLIS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")
+    return home
 
 
 class ReviewerLauncher(FakeLauncher):
@@ -136,7 +160,10 @@ async def to_goal_reviewer(app, pilot, layout):
 
 
 @pytest.mark.asyncio
-async def test_reviewer_launches_with_the_shown_command_submitted(checkout, spawned, tmp_path):
+async def test_reviewer_launches_with_the_shown_command_submitted(
+    checkout, spawned, tmp_path, empty_home
+):
+    write_config(checkout, "")  # the check reads the worktree's settings, as the worker does
     booley_dir = tmp_path / "booley"
     app = make_app(checkout, real_launcher(booley_dir))
     copied: list[str] = []
