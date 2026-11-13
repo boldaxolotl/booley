@@ -60,6 +60,7 @@ from booley.flows.sim.runtime_inputs import (
     safe_runtime_relative,
 )
 from booley.flows.test_runs import TestRun
+from booley.runtime.endpoint_execution import work_item_attempt_requeues
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 
@@ -456,7 +457,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             checkpoint=self._publication_checkpoint,
         )
         failure = _fresh_shared_failure(directory, result, outcome)
-        self._shared_failure[key] = failure
+        if not work_item_attempt_requeues(passed=False):
+            # An OOM-killed work item attempt is run again: its killed build must not block it.
+            self._shared_failure[key] = failure
         return _blocked_shared_result(request, failure, time.monotonic() - started)
 
     @staticmethod

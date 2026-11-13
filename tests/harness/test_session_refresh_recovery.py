@@ -16,16 +16,25 @@ import pytest
 
 from booley.harness import bootstrap_cli, init_cmd
 from booley.runtime import devcontainer as dc
+from booley.runtime import session_admission, session_refresh
 from booley.runtime import session_issuance as runtime_spec
-from booley.runtime import session_refresh
 from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 from tests.devcontainer_spec_support import build_spec
+from tests.docker_cli_guard import assert_docker_processes_unused, forbid_docker_processes
 from tests.session_issuance_support import issue_built
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "session_refresh"
+
+
+@pytest.fixture(autouse=True)
+def no_docker_process(monkeypatch):
+    """Fail any test that starts a real ``docker`` process, even inside a swallowed error."""
+    forbid_docker_processes(monkeypatch)
+    yield
+    assert_docker_processes_unused()
 
 
 @pytest.fixture(autouse=True)
@@ -288,6 +297,7 @@ def test_checked_in_committed_fixture_resumes_forward(
 
     with (
         patch.object(sr, "resolve_running_sandbox", return_value=None),
+        patch.object(session_admission, "admit_start") as admitted,
         patch.object(sr, "_strict_all_interactive_states", return_value=[]),
         patch.object(sr, "_preflight"),
         patch.object(sr, "_warn_on_image_drift"),
@@ -305,6 +315,9 @@ def test_checked_in_committed_fixture_resumes_forward(
     assert result.outcome is session_refresh.RecoveryOutcome.RESUMED
     assert runtime_spec.validate(project, prepared.spec, spec_path) == replacement
     created.assert_called_once()
+    # Resume enters admission in recovery mode (the gate itself is tested elsewhere).
+    admitted.assert_called_once()
+    assert admitted.call_args.kwargs["recovery"] is True
     assert not journal_path.exists()
 
 

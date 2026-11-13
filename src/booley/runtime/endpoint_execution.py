@@ -204,9 +204,16 @@ def _record_and_finish(
 
 @dataclass(eq=False)
 class _JobAttempt:
-    """One attempt of a Job: whether its commands stop after an OOM kill, and what happened."""
+    """One attempt of a Job or of a Campaign work item: whether its commands stop after an OOM kill.
+
+    *parent* is the attempt it runs inside (a work item's attempt inside its
+    Flow's), so a kill marks only the innermost attempt while a kill of an
+    armed ancestor still stops the work inside it.
+    """
 
     stop_on_oom: bool
+    parent: _JobAttempt | None = None
+    work_item: bool = False
     oom_killed: threading.Event = field(default_factory=threading.Event)
     stopped: threading.Event = field(default_factory=threading.Event)
 
@@ -216,9 +223,12 @@ _JOB_ATTEMPT: ContextVar[_JobAttempt | None] = ContextVar("booley_job_attempt", 
 
 
 @contextmanager
-def job_attempt(*, stop_on_oom: bool) -> Iterator[_JobAttempt]:
-    """Run one attempt of a Job; with *stop_on_oom* its commands stop after an OOM kill."""
-    attempt = _JobAttempt(stop_on_oom=stop_on_oom)
+def job_attempt(*, stop_on_oom: bool, work_item: bool = False) -> Iterator[_JobAttempt]:
+    """Run one attempt of a Job; with *stop_on_oom* its commands stop after an OOM kill.
+
+    A *work_item* attempt is one Campaign work item's, run inside the Flow's.
+    """
+    attempt = _JobAttempt(stop_on_oom=stop_on_oom, parent=_JOB_ATTEMPT.get(), work_item=work_item)
     token = _JOB_ATTEMPT.set(attempt)
     try:
         yield attempt
@@ -227,7 +237,7 @@ def job_attempt(*, stop_on_oom: bool) -> Iterator[_JobAttempt]:
 
 
 def note_job_oom_kill() -> None:
-    """Record that a command of the current Job was OOM-killed; nothing outside a Job."""
+    """Record that a command of the current attempt was OOM-killed; nothing outside a Job."""
     attempt = _JOB_ATTEMPT.get()
     if attempt is not None:
         attempt.oom_killed.set()
@@ -237,13 +247,30 @@ def job_stopped_after_oom() -> bool:
     """Whether the current attempt must start no more commands.
 
     True once an attempt that will be requeued had a command OOM-killed: the
-    rest of its work is wasted, so it ends at its first kill (ADR 0087).
+    rest of its work is wasted, so it ends at its first kill (ADR 0087). A kill
+    of an enclosing Job attempt stops the work inside it too.
     """
     attempt = _JOB_ATTEMPT.get()
-    if attempt is None or not attempt.stop_on_oom or not attempt.oom_killed.is_set():
+    while attempt is not None:
+        if attempt.stop_on_oom and attempt.oom_killed.is_set():
+            attempt.stopped.set()
+            return True
+        attempt = attempt.parent
+    return False
+
+
+def work_item_attempt_requeues(*, passed: bool) -> bool:
+    """Whether the current Campaign work item attempt ended with an own OOM kill to requeue.
+
+    Only an armed work item attempt that was killed itself counts, and only
+    when its result does not survive the kill: it failed, or it skipped a
+    command (the Job rule). An item running under its Flow's claim has no
+    attempt of its own: its kill marks the Flow's attempt.
+    """
+    attempt = _JOB_ATTEMPT.get()
+    if attempt is None or not attempt.work_item or not attempt.stop_on_oom:
         return False
-    attempt.stopped.set()
-    return True
+    return attempt.oom_killed.is_set() and (not passed or attempt.stopped.is_set())
 
 
 def _name_requeue(outcome: EndpointOutcome, *, started_again: bool) -> None:

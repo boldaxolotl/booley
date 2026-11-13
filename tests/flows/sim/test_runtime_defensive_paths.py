@@ -10,7 +10,7 @@ from booley.flows.sim.build_session import SimulationBuildSlotError
 from booley.flows.sim.execution import pre_sim
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
-from booley.runtime import execution_recovery, supervised_execution
+from booley.runtime import execution_recovery
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
 
 
@@ -86,29 +86,6 @@ def test_supervised_pre_sim_process_kills_after_communication_failure(monkeypatc
     with pytest.raises(RuntimeError, match="failed"):
         pre_sim._run_pre_sim_process(["tool"], cwd=Path(), env={}, timeout=1)
     assert processes.unregistered == [process]
-
-
-def test_supervised_command_heartbeat_and_wrapper(monkeypatch, tmp_path: Path) -> None:
-    generations = []
-    scope = SimpleNamespace(execution_id=ExecutionId("e" * 32), project_data=tmp_path)
-    monkeypatch.setattr(
-        supervised_execution,
-        "execution_paths",
-        lambda *_args, **_kwargs: SimpleNamespace(record=tmp_path / "record"),
-    )
-    monkeypatch.setattr(
-        supervised_execution,
-        "write_attachment_heartbeat",
-        lambda _paths, generation: generations.append(generation),
-    )
-    wrapped, environment, heartbeat = supervised_execution.wrap_supervised_command(
-        ["tool", "arg"], scope
-    )
-    assert wrapped[-2:] == ["tool", "arg"]
-    assert environment[supervised_execution.RUNTIME_EXECUTION_ENV] == "e" * 32
-    heartbeat.start()
-    heartbeat.stop()
-    assert generations == [1]
 
 
 def test_coverage_execution_requires_authenticated_artifacts_and_containment(

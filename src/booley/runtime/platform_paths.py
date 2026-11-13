@@ -165,7 +165,7 @@ def popen_new_group_kwargs() -> dict:
     taskkill /T. On POSIX: start_new_session=True so killpg() reaches all
     descendants (xsim, xelab, yosys-abc, sv2v, .bat-spawned children, ...).
     """
-    return new_group_kwargs(is_windows=IS_WINDOWS)
+    return dict(new_group_kwargs(is_windows=IS_WINDOWS))
 
 
 def kill_process_tree(proc: subprocess.Popen) -> None:

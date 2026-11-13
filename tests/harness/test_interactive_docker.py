@@ -17,6 +17,7 @@ import pytest
 
 from booley.runtime import image_identity
 from booley.runtime import interactive_docker as idk
+from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 
 
 def _cp(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -470,37 +471,6 @@ def test_inspect_large_valid_metadata(monkeypatch):
 # _run_docker timeout contract (real processes, no Docker needed)
 # ---------------------------------------------------------------------------
 
-# Parent script: starts a heartbeat grandchild that inherits stdout/stderr, then
-# either sleeps (parent still alive at the timeout) or exits at once (the Docker
-# CLI is gone but a descendant still holds the output pipe).  Mode ``escape``
-# also puts the grandchild in its own session (POSIX), out of reach of the
-# process-group kill, so only abandoning the pipes can bound the call.  The grandchild
-# ends itself when the test creates the stop file (or after ~40 s) and then
-# writes the done file, so the tests never kill a recorded PID (which could have
-# been reused) yet leave no process behind.
-_PARENT_SCRIPT = """\
-import subprocess, sys, time
-heartbeat, stop, done, mode = sys.argv[1:5]
-child = (
-    "import os, time\\n"
-    "end = time.monotonic() + 40\\n"
-    "while time.monotonic() < end and not os.path.exists({stop!r}):\\n"
-    "    open({heartbeat!r}, 'a').write('x')\\n"
-    "    time.sleep(0.05)\\n"
-    "open({done!r}, 'w').close()\\n"
-).format(heartbeat=heartbeat, stop=stop, done=done)
-# Pass the std streams explicitly: on Windows a Popen without them inherits no
-# handles, so the grandchild would not hold the parent's output pipe at all.
-subprocess.Popen(
-    [sys.executable, "-c", child],
-    stdout=sys.stdout,
-    stderr=sys.stderr,
-    start_new_session=(mode == "escape"),
-)
-if mode == "live":
-    time.sleep(40)
-"""
-
 
 class TestRunDockerTimeout:
     """``_run_docker`` must honor ``timeout`` and clean up what it started."""
@@ -508,48 +478,24 @@ class TestRunDockerTimeout:
     @pytest.fixture
     def grandchild(self, tmp_path):
         """Paths for the heartbeat grandchild; teardown stops it and waits."""
-        paths = {name: tmp_path / name for name in ("heartbeat", "stop", "done")}
-        yield paths
-        paths["stop"].touch()
-        deadline = time.monotonic() + 5
-        while not paths["done"].exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        with heartbeat_tree(tmp_path) as paths:
+            yield paths
 
     @staticmethod
     def _run_timing_out(tmp_path, paths, mode: str) -> float:
         """Run the parent script through ``_run_docker``; return elapsed seconds."""
-        script = tmp_path / "parent.py"
-        script.write_text(_PARENT_SCRIPT, encoding="utf-8")
-        start = time.monotonic()
         # ``executable`` is the interpreter; the "docker args" are the script.
+        python, *args = parent_argv(tmp_path, sys.executable, paths, mode)
+        start = time.monotonic()
         with pytest.raises(subprocess.TimeoutExpired):
-            idk._run_docker(
-                [
-                    str(script),
-                    str(paths["heartbeat"]),
-                    str(paths["stop"]),
-                    str(paths["done"]),
-                    mode,
-                ],
-                timeout=2,
-                executable=sys.executable,
-            )
+            idk._run_docker(args, timeout=2, executable=python)
         return time.monotonic() - start
 
     def test_timeout_kills_the_whole_process_tree(self, tmp_path, grandchild):
         self._run_timing_out(tmp_path, grandchild, "live")
         heartbeat = grandchild["heartbeat"]
         assert heartbeat.exists(), "grandchild never started"
-        # Poll until the heartbeat stops growing (deadline poll, not a fixed sleep).
-        deadline = time.monotonic() + 10
-        stable = False
-        while time.monotonic() < deadline:
-            before = heartbeat.stat().st_size
-            time.sleep(0.5)
-            if heartbeat.stat().st_size == before:
-                stable = True
-                break
-        assert stable, "grandchild still running after the timeout"
+        assert wait_until_heartbeat_stops(heartbeat), "grandchild still running after the timeout"
 
     def test_timeout_returns_after_the_child_exits_while_a_grandchild_holds_the_pipe(
         self, tmp_path, grandchild
