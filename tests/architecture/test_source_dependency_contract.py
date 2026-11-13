@@ -479,6 +479,8 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
         "runtime.core_resolution",
         "runtime.project_image",
         "mcp.server_inspection",
+        "flows.runtime_reality",
+        "flows.fpga.vivado_startup",
     ],
 )
 @pytest.mark.parametrize(
@@ -498,11 +500,11 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     root = tmp_path / "booley"
     for package in (
         root,
-        root / "flows",
         root / "harness",
         root / "harness" / "setup",
         root / "flows",
         root / "flows" / "sim",
+        root / "flows" / "fpga",
         root / "audit",
         root / "flows" / "sim" / "backends",
         root / "presentation",
@@ -648,6 +650,53 @@ def test_mcp_server_inspection_owner_is_a_d26_diagnostic_owner(tmp_path):
     )
     assert "D4" in report
     assert "booley.harness.setup.readiness" in report
+
+
+def _assert_flow_owner_obeys_d26_and_d39(tmp_path, owner: str) -> None:
+    """The real *owner* breaks no rule; a fake one importing Doctor or setup is caught."""
+    importlib.import_module(f"booley.{owner}")  # fails until the production owner exists
+    real = format_problems(
+        evaluate_contract(analyze_imports(_SOURCE_ROOT), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert f"booley.{owner}" not in real
+
+    root = tmp_path / "booley"
+    for package in (
+        root,
+        root / "flows",
+        root / "flows" / "fpga",
+        root / "harness",
+        root / "harness" / "setup",
+    ):
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "harness" / "doctor.py").write_text("value = 1\n")
+    (root / "harness" / "setup" / "readiness.py").write_text("value = 1\n")
+    owner_file = root / (owner.replace(".", "/") + ".py")
+    owner_file.write_text("import booley.harness.doctor\n")
+    report = format_problems(
+        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert "D26" in report
+    assert "D39" in report
+    assert "booley.harness.doctor" in report
+
+    owner_file.write_text("import booley.harness.setup.readiness\n")
+    report = format_problems(
+        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert "D39" in report
+    assert "booley.harness.setup.readiness" in report
+
+
+def test_flow_runtime_reality_owner_is_a_d26_diagnostic_owner(tmp_path):
+    """The Flow runtime-reality owner obeys D26 and D39; the contract catches violations."""
+    _assert_flow_owner_obeys_d26_and_d39(tmp_path, "flows.runtime_reality")
+
+
+def test_vivado_startup_owner_is_a_d26_diagnostic_owner(tmp_path):
+    """The FPGA Vivado startup owner obeys D26 and D39; the contract catches violations."""
+    _assert_flow_owner_obeys_d26_and_d39(tmp_path, "flows.fpga.vivado_startup")
 
 
 @pytest.mark.parametrize(
