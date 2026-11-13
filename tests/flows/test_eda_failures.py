@@ -181,3 +181,84 @@ def test_2808_strip_failure_markers_drops_marker_lines_only() -> None:
     other_token = _MARKER_LINE.replace("0123456789abcdef", "fedcba9876543210")
     text = f"before\n{_MARKER_LINE}\n  BOOLEY_EDA_FAILURE junk\n{other_token}\nafter"
     assert strip_failure_markers(text) == "before\nafter"
+
+
+# Real capture: Verilator 5.054, ``verilator --lint-only -Wno-fatal top.sv``, exit 0.
+# ``top.sv`` line 6 holds a string literal that reads like a spawn failure;
+# Verilator echoes it (string literals kept, comments stripped) in a gutter line.
+_VERILATOR_ECHOED_SOURCE_LOG = """\
+%Warning-WIDTHEXPAND: top.sv:5:18: Operator ADD expects 8 bits on the LHS, but LHS's VARREF 'a' generates 4 bits.
+                                 : ... note: In instance 'top'
+    5 |     assign y = a + 8'h1;
+      |                  ^
+                      ... For warning description see https://verilator.org/warn/WIDTHEXPAND?v=5.054
+                      ... Use "/* verilator lint_off WIDTHEXPAND */" and lint_on around source to disable this message.
+%Warning-WIDTHTRUNC: top.sv:5:14: Operator ASSIGNW expects 4 bits on the Assign RHS, but Assign RHS's ADD generates 8 bits.
+                                : ... note: In instance 'top'
+    5 |     assign y = a + 8'h1;
+      |              ^
+                     ... For warning description see https://verilator.org/warn/WIDTHTRUNC?v=5.054
+                     ... Use "/* verilator lint_off WIDTHTRUNC */" and lint_on around source to disable this message.
+%Warning-WIDTHEXPAND: top.sv:6:19: Operator ADD expects 32 or 8 bits on the LHS, but LHS's VARREF 'a' generates 4 bits.
+                                 : ... note: In instance 'top'
+    6 |     initial if (a + 8'h1 == 0) $display("could not invoke verilator (x): [Errno 2] No such file or directory: 'verilator'");
+      |                   ^
+- V e r i l a t i o n   R e p o r t: Verilator 5.054 2026-11-01 rev vUNKNOWN-built20261112-bbb60a4
+- Verilator: Built from 0.029 MB sources in 3 modules, into 0.012 MB in 3 C++ files needing 0.000 MB
+- Verilator: Walltime 0.005 s (elab=0.001, cvt=0.002, bld=0.000); cpu 0.005 s on 1 threads; allocated 18.918 MB
+"""
+
+
+def test_echoed_verilator_source_is_not_a_missing_tool() -> None:
+    from booley.flows.eda_failures import find_missing_executable
+
+    assert "    6 |" in _VERILATOR_ECHOED_SOURCE_LOG
+    result = classify_eda_failure(
+        SubprocessResult(returncode=0, stdout=_VERILATOR_ECHOED_SOURCE_LOG),
+        expected_stage="lint",
+        expected_executable="verilator",
+        boundary_executable="sh",
+    )
+    assert result is None
+    assert find_missing_executable(_VERILATOR_ECHOED_SOURCE_LOG) is None
+
+
+@pytest.mark.parametrize(
+    "text,tool",
+    [
+        (
+            "setup failed: could not invoke fusesoc (fusesoc): [Errno 2] No such file or directory: 'fusesoc'",
+            "fusesoc",
+        ),
+        ("ERROR:root:FileNotFoundError: [Errno 2] No such file or directory: 'xrun'", "xrun"),
+        ("could not invoke vcs (vcs): missing", "vcs"),
+    ],
+)
+def test_wrapped_spawn_failure_still_names_the_tool(text: str, tool: str) -> None:
+    from booley.flows.eda_failures import find_missing_executable
+
+    assert find_missing_executable(text) == tool
+
+
+def test_ordinary_failure_during_another_jobs_oom_kill_keeps_its_own_failure(monkeypatch) -> None:
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    # The container's OOM counter moved, but this command's own process was not killed.
+    failure = classify_eda_failure(
+        SubprocessResult(returncode=1, oom_kill_delta=1),
+        expected_stage="yosys",
+        expected_executable="yosys",
+    )
+
+    assert failure is None
+
+
+def test_switch_unset_classifies_any_container_oom_kill_as_abnormal(monkeypatch) -> None:
+    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION", raising=False)
+
+    failure = classify_eda_failure(
+        SubprocessResult(returncode=1, oom_kill_delta=1, oom_killed=False),
+        expected_stage="yosys",
+        expected_executable="yosys",
+    )
+
+    assert failure is not None and failure.failure_kind == "abnormal_termination"

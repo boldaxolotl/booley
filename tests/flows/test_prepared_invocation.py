@@ -168,8 +168,10 @@ def _spy_lifecycle(monkeypatch: pytest.MonkeyPatch) -> tuple[list[object], list[
         return original_invoke(self, prepared, **kwargs)
 
     @contextmanager
-    def record_admission(self: EndpointState, prepared: PreparedExecution) -> Iterator[Any]:
-        with original_admission(self, prepared) as borrowed:
+    def record_admission(
+        self: EndpointState, prepared: PreparedExecution, *, requeued: bool = False
+    ) -> Iterator[Any]:
+        with original_admission(self, prepared, requeued=requeued) as borrowed:
             entered.append(borrowed)
             yield borrowed
 
@@ -218,3 +220,54 @@ def test_prepared_invocation_kind_drives_lifecycle(
     assert recorded == [key]
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == (key, True)
     assert_paired_headline(runtime / "reports", flow.name, (key, True))
+
+
+def test_lint_and_custom_flow_hold_a_memory_reservation_through_the_run(runtime: Path) -> None:
+    for kind in ("ordinary", "target_selection"):
+        # Each case gets its own patches, Project and state.
+        with pytest.MonkeyPatch.context() as patch:
+            case_dir = runtime / kind
+            case_dir.mkdir()
+            patch.chdir(case_dir)
+            patch.setenv("BOOLEY_RUNTIME_DIR", str(case_dir / "runtime"))
+            _assert_holds_reservation_through_run(kind, case_dir, patch)
+
+
+def _assert_holds_reservation_through_run(
+    kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the switch a Custom Flow and lint hold one Memory Reservation while they run."""
+    from booley.config.jobs import SlotCaps
+    from booley.flows import endpoint_admission
+    from booley.runtime import job_slots
+
+    booley_dir = runtime / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
+    monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
+    key = PLANNED_KEYS[kind]
+    _bind_strict_state(runtime, monkeypatch, key)
+    _install_acceptance_owner(runtime, monkeypatch)
+    if kind == "ordinary":
+        flow, request = _ordinary(runtime)
+    else:
+        flow, request = _target_selection(runtime, monkeypatch)
+
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=3))
+    held_during_run: list[int] = []
+    flow_type = type(flow)
+    original_run = flow_type._run
+
+    def observing_run(self: Any) -> EndpointOutcome:
+        held_during_run.append(len(store.observe(job_slots.CLASS_MEMORY)[0]))
+        return original_run(self)
+
+    monkeypatch.setattr(flow_type, "_run", observing_run)
+
+    result = flow.execute_cli(request) if kind == "ordinary" else flow.execute(request)
+
+    assert result.exit_code == 0, result.outcome.report_text
+    assert held_during_run == [1]
+    assert store.observe(job_slots.CLASS_MEMORY)[0] == []

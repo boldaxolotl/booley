@@ -195,6 +195,7 @@ def _job_view(
         stage=job.stage,
         diagnostic=job.diagnostic,
         artifacts=job.artifacts,
+        queue=job.queue,
         eda_tool=_configured_tool(job.record, catalogs),
         handle=handle,
         owner_handle=owner_handle,

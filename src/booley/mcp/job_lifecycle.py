@@ -122,6 +122,8 @@ class JobLifecycle:
         self._job_roots: dict[str, Path | None] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel_requested: set[str] = set()
+        # Why a withdrawn waiter was queued again (run id -> reason), for its cancellation text.
+        self._requeue_reasons: dict[str, str] = {}
         # run_id -> (exit_code, stdout, stderr, timed_out) once finished.
         self._results: dict[str, tuple[int, str, str, bool]] = {}
         self._counter = 0
@@ -202,17 +204,26 @@ class JobLifecycle:
         rec.process_identity = None if identity is None else identity.to_payload()
         jobrec.write_record(rec, root=self._write_root(rec))
 
-    def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
+    def _child_slot_state(self, rec: jobrec.JobRecord) -> job_slots.TokenState | None:
+        """The child's admission state, or ``None`` when it has no readable claim."""
         if rec.pid is None:
-            return False
+            return None
         root = job_slots.slots_dir()
         if root is None:
-            return False
+            return None
         try:
-            state = job_slots.SlotStore(root).state_for_pid(rec.pid)
+            return job_slots.SlotStore(root).state_for_pid(rec.pid)
         except OSError:
-            return False
+            return None
+
+    def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
+        state = self._child_slot_state(rec)
         return state is not None and state.state == job_slots.QUEUED
+
+    def _child_requeued(self, rec: jobrec.JobRecord) -> bool:
+        """Whether the child's claim says its Job was requeued after an OOM kill."""
+        state = self._child_slot_state(rec)
+        return state is not None and state.reason is not None
 
     def _stamp_run_started(self, rec: jobrec.JobRecord) -> None:
         rec.run_started_at = utc_now_rfc3339()
@@ -353,6 +364,7 @@ class JobLifecycle:
             on_spawn=lambda pid: self._stamp_pid(rec, pid),
             env=_endpoint_subprocess_env(context, pytest_scope=rec.endpoint, **overrides),
             is_queued=lambda: self._child_is_queued(rec),
+            is_requeued=lambda: self._child_requeued(rec),
             on_first_active=lambda: self._stamp_run_started(rec),
             log_path=jobrec.job_log_path(rec.run_id, self._write_root(rec)),
         )
@@ -380,10 +392,12 @@ class JobLifecycle:
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
         rec.ended_at = utc_now_rfc3339()
+        reason = self._requeue_reasons.pop(rec.run_id, None)
+        queued_again = f" while queued again ({reason})" if reason else ""
         self._results[rec.run_id] = (
             130,
             "",
-            f"CANCELLED: job {rec.run_id} was stopped by request.",
+            f"CANCELLED: job {rec.run_id} was stopped by request{queued_again}.",
             False,
         )
         jobrec.write_record(rec, root=self._write_root(rec))
@@ -406,10 +420,14 @@ class JobLifecycle:
         root = job_slots.slots_dir()
         if rec.pid is None or root is None:
             return False
+        state = self._child_slot_state(rec)  # read before the withdrawal removes it
         try:
-            return job_slots.SlotStore(root).cancel_waiter(rec.pid)
+            withdrawn = job_slots.SlotStore(root).cancel_waiter(rec.pid)
         except OSError:
             return False
+        if withdrawn and state is not None and state.reason is not None:
+            self._requeue_reasons[rec.run_id] = state.reason
+        return withdrawn
 
     async def _cancel_tracked_task(
         self,
@@ -476,6 +494,8 @@ class JobLifecycle:
             await self._cancel_tracked_task(run_id, task)
         else:
             await self._cancel_adopted_job(rec)
+        # A cancellation that was never recorded (the task had already finished) keeps no reason.
+        self._requeue_reasons.pop(run_id, None)
         final = self._read_run(run_id)
         if final is None or final.status != jobrec.STATUS_CANCELLED:
             return "finished"

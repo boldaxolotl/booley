@@ -118,7 +118,7 @@ def _facts(campaign_id: str, manifest_sha256: str, result_path: Path) -> dict[st
                 "attempt_id": result["attempt_id"],
                 "result": {
                     "path_base": "origin_invocation",
-                    "path": "targets/sim_toggle/campaign/work-items/item/result.json",
+                    "path": "targets/sim_toggle/record/work-items/item/result.json",
                     "bytes": len(raw),
                     "sha256": _sha256(raw),
                     "kind": "simulation_result",
@@ -280,7 +280,7 @@ def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> Recove
     campaign_id = "c3fa3451-3a73-4a43-936c-9a2c40f88d30"
     manifest_value = {
         "$schema": MANIFEST_SCHEMA,
-        "campaign_id": campaign_id,
+        "simulation_record_id": campaign_id,
     }
     manifest = _write(tmp_path / "manifest.json", manifest_value)
     manifest_sha256 = _sha256(_canonical(manifest_value))

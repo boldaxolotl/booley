@@ -158,7 +158,7 @@ def _manifest() -> dict[str, object]:
     variants, items = _manifest_work(target, source_recipe, build_recipe, workload)
     manifest = {
         "$schema": MANIFEST_SCHEMA,
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "simulation_record_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
         "created_at": "2026-09-21T10:00:00Z",
         "origin": {"execution_id": "", "invocation_id": 1},
         "target": target,
@@ -296,7 +296,7 @@ def _manifest_fingerprints(manifest, target, source_recipe, build_recipe, varian
 def _baseline_manifest():
     document = _manifest()
     document.pop("fingerprints")
-    document["campaign_id"] = "550e8400-e29b-41d4-a716-446655440000"
+    document["simulation_record_id"] = "550e8400-e29b-41d4-a716-446655440000"
     target = document["target"]
     target.update(  # type: ignore[union-attr]
         {
@@ -351,7 +351,7 @@ def _linked_campaign_stores(tmp_path: Path, *, topology_revisions=None):
         _retarget_topology_manifest(document, topology_revisions[1])
         baseline = finalize_manifest(document)
     invocation = tmp_path / "reports" / "000001"
-    baseline_store = CampaignStore(invocation / "targets" / "base-revision" / "campaign")
+    baseline_store = CampaignStore(invocation / "targets" / "base-revision" / "record")
     baseline_store.publish_manifest(baseline)
     raw = encode_simulation_campaign_manifest(baseline)
     baseline_json = json.loads(raw)
@@ -368,16 +368,16 @@ def _linked_campaign_stores(tmp_path: Path, *, topology_revisions=None):
                 "bytes": len(raw),
                 "sha256": manifest_digest(baseline),
                 "kind": "simulation_campaign_manifest",
-                "owner": baseline_json["campaign_id"],
+                "owner": baseline_json["simulation_record_id"],
             },
-            "campaign_id": baseline_json["campaign_id"],
+            "simulation_record_id": baseline_json["simulation_record_id"],
             "target": baseline_json["target"],
             "required_observation": "cycle_count",
             "work_item_id": baseline_json["work_items"][0]["work_item_id"],
         }
     ]
     candidate = finalize_manifest(candidate_document)
-    candidate_store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    candidate_store = CampaignStore(invocation / "targets" / "sim" / "record")
     candidate_store.publish_manifest(candidate)
     return candidate, candidate_store, baseline, baseline_store
 
@@ -482,7 +482,7 @@ def test_cycle_baseline_campaign_has_a_noncolliding_store_path(tmp_path: Path) -
     )
 
     assert candidate_store.root != baseline_store.root
-    assert baseline_store.root.name == "campaign"
+    assert baseline_store.root.name == "record"
     assert baseline_store.root.parent.name == "sim%40baseline-abc123"
 
 
@@ -536,9 +536,9 @@ def test_resume_rejects_linked_manifest_paths_without_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
 ) -> None:
     manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
-    real = CampaignStore(tmp_path / "real/000001/targets/sim/campaign")
+    real = CampaignStore(tmp_path / "real/000001/targets/sim/record")
     real.publish_manifest(manifest)
-    view = tmp_path / "view/000001/targets/sim/campaign"
+    view = tmp_path / "view/000001/targets/sim/record"
     if defect == "ancestor_symlink":
         (tmp_path / "view").mkdir()
         (tmp_path / "view/000001").symlink_to(real.root.parents[2], target_is_directory=True)
@@ -589,7 +589,7 @@ def test_resume_reads_through_the_booley_dir_entry(
         (root / "real-reports").mkdir()
         reports.symlink_to(root / "real-reports", target_is_directory=True)
         reports = root / "real-reports"
-    published = CampaignStore(reports / "000001/targets/sim/campaign")
+    published = CampaignStore(reports / "000001/targets/sim/record")
     published.publish_manifest(manifest)
     lexical = entry / "flow-reports" / published.manifest_path.relative_to(reports)
     physical = external / "flow-reports" / published.manifest_path.relative_to(reports)
@@ -627,7 +627,7 @@ def test_campaign_store_rejects_linked_root_before_lock_write(tmp_path: Path) ->
     outside.mkdir()
     linked = tmp_path / "linked"
     linked.symlink_to(outside, target_is_directory=True)
-    store = CampaignStore(linked / "campaign")
+    store = CampaignStore(linked / "record")
 
     with (
         pytest.raises(SimulationCampaignIntegrityError, match="contains a link"),
@@ -692,7 +692,7 @@ def _publish_stale_candidate_manifest(tmp_path: Path, revision: str) -> Campaign
     document["work_items"] = items
     document.pop("fingerprints")
     manifest = finalize_manifest(document)
-    store = CampaignStore(tmp_path / "000001" / "targets" / "sim" / "campaign")
+    store = CampaignStore(tmp_path / "000001" / "targets" / "sim" / "record")
     store.publish_manifest(manifest)
     return store
 
@@ -725,7 +725,7 @@ def test_recovery_retries_a_crash_after_attempt_directory_allocation(
     tmp_path: Path,
 ) -> None:
     manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
 
@@ -767,7 +767,7 @@ def test_hdl_resume_with_interrupted_item_is_not_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
     store.allocate_attempt_directory(work_item_id, "550e8400-e29b-41d4-a716-446655440001")
@@ -831,7 +831,7 @@ def _generator_campaign(tmp_path: Path, disclosure):
     document.pop("fingerprints")
     document["planning_disclosures"] = [disclosure]
     manifest = finalize_manifest(document)
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     item = manifest.document["work_items"][0]  # type: ignore[index]
     attempt_id = "550e8400-e29b-41d4-a716-446655440001"
@@ -1211,12 +1211,12 @@ def test_independent_container_additions_preserve_raw_fallback(region):
             {
                 "role": "cycle_count_baseline",
                 "target": target,
-                "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+                "simulation_record_id": "550e8400-e29b-41d4-a716-446655440000",
                 "work_item_id": "item:0000:0123456789abcdef",
                 "required_observation": "cycle_count",
                 "manifest": {
                     "path_base": "origin_invocation",
-                    "path": "targets/baseline/campaign/manifest.json",
+                    "path": "targets/baseline/record/manifest.json",
                     "bytes": 1,
                     "sha256": "sha256:" + "a" * 64,
                     "kind": "simulation_campaign_manifest",
@@ -1467,7 +1467,7 @@ def test_copyto_prepared_digest_diagnostic_uses_declared_source():
 def test_image_alias_resume_returns_canonical_manifest(project_alias, monkeypatch):
     alias, root = project_alias
     manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
-    store = CampaignStore(root / "sim/1/targets/sim/campaign")
+    store = CampaignStore(root / "sim/1/targets/sim/record")
     store.publish_manifest(manifest)
     target = manifest.document["target"]
     monkeypatch.setattr(

@@ -32,6 +32,7 @@ from booley.flows.endpoint_report_criteria import ReportCriteria
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.execution_persistence import (
     AcceptanceRecorder,
+    AcceptanceRecordingError,
     EvidenceDiscarded,
     FlowExecutionAdapter,
     StandaloneFlowExecution,
@@ -42,6 +43,7 @@ from booley.flows.prepared_invocation import OrdinaryRunInvocation, PreparedInvo
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import (
+    OOM_REQUEUE_MARKER,
     EndpointOutcome,
     ExecutionResult,
     execute_endpoint,
@@ -393,9 +395,38 @@ class EndpointState(ABC):
         return endpoint_session._apply_pre_state_gate(self)
 
     def admission(
-        self, prepared: PreparedExecution
+        self, prepared: PreparedExecution, *, requeued: bool = False
     ) -> AbstractContextManager[endpoint_admission.AdmissionContext | None]:
-        return endpoint_admission.admission(self, prepared)
+        return endpoint_admission.admission(self, prepared, requeued=requeued)
+
+    def may_requeue_after_oom(self, prepared: PreparedExecution, admission: object | None) -> bool:
+        """Whether an own OOM kill of this admitted Job's first attempt requeues it (ADR 0087).
+
+        Only a Flow Job holding its own Memory Reservation: not a dry run, not a
+        child under its parent's claim, not a Specialist or a tool. A Job bound
+        to a Goal waits for the Goal evidence work (#3763).
+        """
+        if self.endpoint_kind != "flow" or not isinstance(
+            admission, endpoint_admission.AdmissionContext
+        ):
+            return False
+        token = admission.outer_token
+        if not isinstance(token, job_slots.SlotToken) or token.job_class != job_slots.CLASS_MEMORY:
+            return False
+        try:
+            return not self._acceptance_recorder.acceptance_identity()
+        except AcceptanceRecordingError:
+            return False  # the identity cannot be read: treat the Job as bound to a Goal
+
+    def begin_requeued_attempt(self) -> None:
+        """Mark the stdout the killed attempt wrote and start the next attempt's report afresh.
+
+        The second attempt reports into its own numbered directory; the killed
+        attempt's directory keeps its partial artifacts and no report.
+        """
+        print(OOM_REQUEUE_MARKER, flush=True)
+        self._reserved_invocation_dir = None
+        self.reset_evidence_discard()
 
     def invoke_endpoint(
         self,
@@ -455,6 +486,22 @@ class EndpointState(ABC):
     def _resolve_job_class(self) -> str | None:
         """The Job Class this call belongs to, or None for unclassed endpoints."""
         return self.JOB_CLASS
+
+    def _licensed_tools(self) -> tuple[str, ...]:
+        """The licensed EDA tools one Job of this endpoint runs (it holds one seat of each).
+
+        Memory admission judges each against its Seat Cap (ADR 0087); an endpoint
+        that runs no licensed tool owes no seat.
+        """
+        return ()
+
+    def _memory_admitted(self) -> bool:
+        """Whether the development switch admits this Job by Memory Reservation (ADR 0087).
+
+        Heavy Jobs do; lint and Custom Flows override this, since they hold
+        nothing without the switch. Specialists keep their light count cap.
+        """
+        return self._resolve_job_class() == job_slots.CLASS_HEAVY
 
     def _acquire_job_slot(self) -> tuple[job_slots.SlotStore | None, object | None]:
         return endpoint_admission._acquire_job_slot(self)

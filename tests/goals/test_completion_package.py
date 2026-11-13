@@ -569,7 +569,7 @@ def _publish_current_base_simulation(layout):
     manifest = finalize_manifest(
         {
             "$schema": MANIFEST_SCHEMA,
-            "campaign_id": str(uuid4()),
+            "simulation_record_id": str(uuid4()),
             "created_at": "2026-10-07T10:00:00Z",
             "origin": {"execution_id": "b" * 32, "invocation_id": 8},
             "target": target,
@@ -582,12 +582,12 @@ def _publish_current_base_simulation(layout):
         }
     )
     paths = record_paths(layout.control, layout.record.id)
-    path = paths.runtime_dir / "flow-reports/sim/8/targets/base/campaign/manifest.json"
+    path = paths.runtime_dir / "flow-reports/sim/8/targets/base/record/manifest.json"
     path.parent.mkdir(parents=True)
     path.write_bytes(encode_simulation_campaign_manifest(manifest))
     facts = campaign_facts()
     facts.update(
-        campaign_id=manifest.document["campaign_id"],
+        campaign_id=manifest.document["simulation_record_id"],
         manifest_sha256=manifest_digest(manifest),
         origin={"execution_id": "b" * 32, "invocation_id": 8},
         target={"identity": "::base:0#base", "selector": "base"},

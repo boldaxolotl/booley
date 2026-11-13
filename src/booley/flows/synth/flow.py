@@ -72,6 +72,7 @@ from booley.flows.plan import (
     normalize_plan_path,
     stable_unit_id,
 )
+from booley.flows.reservation_phases import report_phase_end
 from booley.flows.result_table import (
     MISSING,
     TARGET_WIDTH,
@@ -202,6 +203,7 @@ def _merge_stage_results(yosys: SubprocessResult, openroad: SubprocessResult) ->
         dispatched_unix=yosys.dispatched_unix,
         peak_rss_mb=max(peaks) if peaks else None,
         oom_kill_delta=openroad.oom_kill_delta,
+        oom_killed=openroad.oom_killed,
     )
 
 
@@ -767,7 +769,7 @@ def _termination_reason(result: SubprocessResult, output: str) -> str:
         return "timeout"
     if result.returncode == 0:
         return "completed"
-    if result.oom_kill_delta > 0:
+    if result.oom_blamed:
         return "oom"
     if result.returncode in {-9, 137} or _RESOURCE_KILL_RE.search(output):
         return "resource_killed"
@@ -1198,6 +1200,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     request_type = SynthRequest
     argument_adapter = SynthArguments
+    _PAIR_CRITERION_PREFIX = "synthesis_ok_"
 
     def _resolve_job_class(self) -> str:
         """Synthesis is a heavy Sandbox workload."""
@@ -1484,6 +1487,22 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         self,
         target: str,
     ) -> tuple[SynthMetrics, str]:
+        """Run synthesis for one target and report its ``synth`` phase ended.
+
+        A phase that is skipped (a setup failure) ends at once. A baseline run
+        reports nothing: its Target may be the candidate's, whose phase it must
+        not count out of the Job's Memory Reservation.
+        """
+        try:
+            return self._synthesize_target(target)
+        finally:
+            if getattr(self, "_execution_role", "candidate") != "baseline":
+                report_phase_end(target, "synth")
+
+    def _synthesize_target(
+        self,
+        target: str,
+    ) -> tuple[SynthMetrics, str]:
         """Run synthesis for one target. Returns (metrics, raw_output).
 
         Baseline runs are isolated by their separate worktree.
@@ -1698,7 +1717,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         metrics.returncode = result.returncode
         metrics.timed_out = result.timed_out
         metrics.termination = _termination_reason(result, output)
-        input_error = _INPUT_ERROR_RE.search(output)
+        # The producer is a Tcl ``error`` that makes OpenROAD exit non-zero, so an
+        # exit-0 log mentioning the token (echoed RTL comment) is not an input error.
+        input_error = _INPUT_ERROR_RE.search(output) if result.returncode != 0 else None
         if input_error is not None:
             metrics.returncode = 2
             metrics.infra_error = input_error.group(1).strip()
@@ -1838,7 +1859,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         outcome: Any,
         stdout: str,
     ) -> None:
-        """Apply authoritative final-check evidence or legacy inline evidence."""
+        """Apply authoritative pre-mapping and final check evidence or legacy inline evidence."""
         structural = outcome.diagnostics.structural
         legacy_inline = (
             not getattr(outcome, "attempt_token", "")

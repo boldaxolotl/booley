@@ -111,7 +111,7 @@ def _run_owned_campaign(
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
-    campaigns = tuple(report_root.glob(f"sim/*/targets/{target}/campaign"))
+    campaigns = tuple(report_root.glob(f"sim/*/targets/{target}/record"))
     assert len(campaigns) == 1
     return campaigns[0], compiler_log
 
@@ -248,7 +248,7 @@ def test_taxi_validator_requires_one_shared_build(tmp_path: Path) -> None:
     _write_json(
         build,
         {
-            "$schema": "booley.bundle-build-result/v1",
+            "$schema": "booley.bundle-build-result/v2",
             "state": "ready",
             "bundle": {"bundle_id": "bundle-1", "sharing": "shared_variant"},
         },

@@ -19,6 +19,7 @@ raise an estimate but never lower it.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -93,6 +94,15 @@ def phase_keys(request: JobRequest) -> tuple[HistoryKey, ...]:
     ``sim_pre_run`` is never listed (nothing records it), nor are the
     per-module probe keys of ``--mode elab-only-standalone``.
     """
+    return tuple(dict.fromkeys(phase_occurrences(request)))
+
+
+def phase_occurrences(request: JobRequest) -> tuple[HistoryKey, ...]:
+    """The history keys of *request*'s phases in run order, one entry per planned run.
+
+    Unlike :func:`phase_keys` a key repeats once per entry of ``test_runs``, so
+    a Job can count its phases out as they finish.
+    """
     flags = tuple(sorted(request.flags))
 
     def key(phase: str, test_run: str = "") -> HistoryKey:
@@ -108,7 +118,7 @@ def phase_keys(request: JobRequest) -> tuple[HistoryKey, ...]:
     else:
         # A Custom Flow's unlabelled command is keyed by the Flow's name.
         keys = [key(_SINGLE_PHASE_FLOWS.get(request.flow, request.flow))]
-    return tuple(dict.fromkeys(keys))
+    return tuple(keys)
 
 
 class Source(StrEnum):
@@ -165,6 +175,25 @@ class JobEstimate:
         known = [p.memory_mb.value for p in self.phases if p.memory_mb.value is not None]
         return max(known, default=None)
 
+    @property
+    def own_wall_s(self) -> float | None:
+        """The Job's wall-clock: the sum over its phases, only when each has its own history.
+
+        ``None`` for no phases, or when any phase's wall-clock is borrowed or
+        unknown: such a Job must not jump ahead of the queue.
+        """
+        if not self.phases:
+            return None
+        total = 0.0
+        for phase in self.phases:
+            wall_s = phase.wall_s.value
+            if phase.wall_s.source is not Source.OWN or wall_s is None:
+                return None
+            if not math.isfinite(wall_s) or wall_s < 0:  # a corrupt record is no history
+                return None
+            total += wall_s
+        return total
+
     def fit(self, budget_mb: float) -> Fit:
         """Compare the reservation with *budget_mb*; over-budget wins so a caller can warn."""
         reservation = self.reservation_mb
@@ -219,10 +248,13 @@ class ResourceEstimator:
 
     def estimate(self, requests: Sequence[JobRequest]) -> JobEstimate:
         """Estimate a Job: one request per Target, phases concatenated in order."""
+        return self.estimate_keys(key for request in requests for key in phase_keys(request))
+
+    def estimate_keys(self, keys: Iterable[HistoryKey]) -> JobEstimate:
+        """Estimate one phase per entry of *keys*, in order."""
         return JobEstimate(
             tuple(
                 PhaseEstimate(key, self._memory.estimate(key), self._wall.estimate(key))
-                for request in requests
-                for key in phase_keys(request)
+                for key in keys
             )
         )

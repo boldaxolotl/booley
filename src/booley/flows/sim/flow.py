@@ -32,6 +32,7 @@ from booley.flows.execution_persistence import (
     register_campaign_for,
     wants_campaigns,
 )
+from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.progress_lifecycle import (
     ProgressLifecycle,
@@ -57,8 +58,10 @@ from booley.flows.sim.live_progress import (
     install_progress,
     publish_checkpoint,
 )
+from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
+from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_suite import (
     resolve_target_test_suite,
 )
@@ -295,6 +298,8 @@ class SimulateFlow(
         super()._start_invocation(adapter, request)
         self._simulation_campaign_outcomes: tuple[Any, ...] = ()
         self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
+        # Resumed origins this invocation's `publication_resources` already lock (see flow_resume).
+        self._held_resume_origins: set[Path] = set()
 
     def begin_invocation(self) -> None:
         """Start this invocation's Test Run decisions afresh.
@@ -311,7 +316,15 @@ class SimulateFlow(
         self._resolved_build_timeout_ms: int | None = None
         self._resume_coverage_plan: CoverageTargetPlan | None = None
         self._target_handles: dict[str, TargetHandle] = {}
+        self._work_item_plans: dict[str, TargetTestPlan] = {}
         self._standalone_plan_recipe = None
+
+    def begin_requeued_attempt(self) -> None:
+        """Drop the killed attempt's outcomes; keep its Test Runs, seeds and build settings."""
+        super().begin_requeued_attempt()
+        self._simulation_campaign_outcomes = ()
+        self._simulation_acceptance_outcomes = ()
+        self._current_published_pre_sim_keys = set()
 
     request_type = SimRequest
     argument_adapter = SimArguments
@@ -505,6 +518,56 @@ class SimulateFlow(
             return prepared
         return SimulationCampaignInvocation(self, prepared)
 
+    def memory_job_requests(self, handles: tuple[TargetHandle, ...]) -> tuple[JobRequest, ...]:
+        """An elaboration-only Job runs no simulator process: only its build is sized."""
+        flags = self._resource_flags()
+        return tuple(
+            JobRequest("sim", handle.selector, test_runs=(), flags=flags) for handle in handles
+        )
+
+    def campaign_job_requests(
+        self, prepared: PreparedSimulationEndpoint
+    ) -> tuple[JobRequest, ...] | None:
+        """What a prepared Simulation Campaign runs; ``None`` when that is not known yet.
+
+        A resume, and a Cycle Count baseline on another Target, have no Test
+        Runs resolved before admission. A baseline on a selected Target re-runs
+        that Target's keys at another revision, so it adds no request.
+        """
+        selected = set(prepared.selected_targets)
+        if prepared.resume is not None or any(
+            handle.selector not in selected
+            for handle in prepared.targets[len(prepared.selected_targets) :]
+        ):
+            return None
+        flags = self._resource_flags()
+        try:
+            return tuple(
+                sim_job_request(
+                    self._registered_test_plan(target, prepared.test_names_map),
+                    self._resolve_test_runs(target, prepared.test_names_map),
+                    flags=flags,
+                )
+                for target in prepared.selected_targets
+            )
+        except (fusesoc_registry.FuseSocError, OSError, ValueError):
+            return None
+
+    def work_item_job_request(
+        self, selector: str, runs: Sequence[TestRun], flags: tuple[str, ...]
+    ) -> JobRequest | None:
+        """What one Campaign work item runs, to size its own Memory Reservation.
+
+        *flags* come from the frozen manifest, never from ``args`` (a resume
+        reads them there). ``None`` when the Target does not resolve.
+        """
+        try:
+            if selector not in self._work_item_plans:
+                self._work_item_plans[selector] = self._target_test_plan(selector)
+            return sim_job_request(self._work_item_plans[selector], runs, flags=flags)
+        except (fusesoc_registry.FuseSocError, OSError, ValueError):
+            return None
+
     def manifest_names_targets(self) -> bool:
         """An explicit resume reads its Targets from the manifest."""
         return self.args.resume_from is not None
@@ -624,7 +687,7 @@ class SimulateFlow(
         if invocation is None:
             return result
         try:
-            paths = sorted((invocation / "targets").glob("*/campaign/manifest.json"))
+            paths = sorted((invocation / "targets").glob(f"*/{RECORD_DIRECTORY}/manifest.json"))
             if len(paths) > 4000:
                 raise SimulationCampaignIntegrityError("invocation Campaign count exceeds bound")
             if origin_manifest is not None:
@@ -1244,6 +1307,7 @@ class SimulateFlow(
             executor,
             publication_checkpoint=self._campaign_publication_checkpoint,
             manifest_published=manifest_published,
+            work_item_request=self.work_item_job_request,
         )
         execution_id = str(admission.execution_id or "")
         requests = [
@@ -1557,6 +1621,7 @@ class SimulateFlow(
                 OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
                 publication_checkpoint=self._campaign_publication_checkpoint,
                 manifest_published=manifest_published,
+                work_item_request=self.work_item_job_request,
             )
 
             def run() -> EndpointOutcome:
@@ -1771,7 +1836,7 @@ class SimulateFlow(
             target_report_directory(
                 Path(), f"{target}@baseline-{target_document['revision'][:12]}"
             )
-            / "campaign"
+            / RECORD_DIRECTORY
             / "manifest.json"
         )
         documents = self._campaign_prerequisite_documents(plan, relative)
@@ -1816,14 +1881,14 @@ class SimulateFlow(
             "bytes": len(raw),
             "sha256": manifest_digest(plan.manifest),
             "kind": "simulation_campaign_manifest",
-            "owner": plan.manifest.document["campaign_id"],
+            "owner": plan.manifest.document["simulation_record_id"],
         }
         baseline_target = dict(cast(Mapping[str, object], plan.manifest.document["target"]))
         return [
             {
                 "role": "cycle_count_baseline",
                 "manifest": manifest_ref,
-                "campaign_id": plan.manifest.document["campaign_id"],
+                "simulation_record_id": plan.manifest.document["simulation_record_id"],
                 "target": baseline_target,
                 "required_observation": "cycle_count",
                 "work_item_id": item["work_item_id"],

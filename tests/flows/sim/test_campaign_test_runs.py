@@ -20,7 +20,7 @@ from booley.flows.sim.campaign.flow_planning import (
     plan_ordinary_hdl_campaign,
 )
 from booley.flows.sim.campaign.planning import compare_manifests
-from booley.flows.sim.campaign.serial_execution import _work_item_test_runs
+from booley.flows.sim.campaign.test_run_binding import work_item_test_runs
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.flow_resume import _manifest_run_groups
 from booley.flows.sim.request import SimRequest
@@ -33,7 +33,7 @@ from booley.flows.test_runs import (
 from tests.flows.sim import test_campaign_resume_diagnostics as resume_support
 from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
 
-_V4 = "booley.simulation-campaign-manifest/v4"
+_V4 = "booley.simulation-record-manifest/v1"
 
 
 def _hdl_plan(
@@ -131,7 +131,7 @@ def test_work_item_test_runs_round_trip_to_the_same_values(tmp_path: Path):
     raw = encode_simulation_campaign_manifest(plan.manifest)
     manifest = decode_simulation_campaign_manifest(raw)
     assert _manifest_run_groups(manifest) == ((_SOAK,), (_FAULT,))
-    assert _work_item_test_runs(manifest.document["work_items"][1]) == (_FAULT,)
+    assert work_item_test_runs(manifest.document["work_items"][1]) == (_FAULT,)
     assert encode_simulation_campaign_manifest(manifest) == raw
 
 
@@ -366,13 +366,13 @@ def _stored_result(tmp_path: Path):
             plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     return outcome, [item.result for item in store.scan().items]
 
 
 def test_written_results_are_v3_and_name_their_test_run(tmp_path: Path):
     outcome, results = _stored_result(tmp_path)
-    assert [result.document["$schema"] for result in results] == ["booley.simulation-result/v3"]
+    assert [result.document["$schema"] for result in results] == ["booley.simulation-result/v4"]
     observations = results[0].document["observations"]
     assert [(item["test"], item["test_run"]) for item in observations] == [
         ("count", "count"),
@@ -407,7 +407,7 @@ def test_result_v3_round_trips(tmp_path: Path):
 @pytest.mark.parametrize(
     ("alter", "message"),
     [
-        (lambda document: document.update({"$schema": "booley.simulation-result/v4"}), "schema"),
+        (lambda document: document.update({"$schema": "booley.simulation-result/v5"}), "schema"),
     ],
 )
 def test_result_v3_refusals(tmp_path: Path, alter, message):

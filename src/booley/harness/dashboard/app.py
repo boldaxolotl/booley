@@ -89,6 +89,8 @@ CURSOR_POSITION_REQUEST = "\x1b[6n"
 FINISHED_JOBS = 50
 # An orphaned process is known dead even though its Job record never finalized.
 _REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
+# Fits a queued claim's need, free memory, a blocked seat and three named holders.
+_QUEUE_DETAIL_LIMIT = 400
 HELP = (
     "↑↓ move through the list · Enter opens the selected row · Esc goes back one level\n"
     "←→ switch between the Sessions, Jobs and Targets windows; each keeps its place\n"
@@ -600,6 +602,9 @@ def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]
         rows.append(ResultLine("EDA tool", tool))
     if job.stage:
         rows.append(ResultLine("Stage", literal(job.stage)))
+    if job.state == "queued" and job.queue:
+        # The text names other processes' run IDs and Targets: shown as data, bounded.
+        rows.append(ResultLine("Queue", literal(job.queue, limit=_QUEUE_DETAIL_LIMIT)))
     rows.extend(_job_resources(job))
     return rows
 

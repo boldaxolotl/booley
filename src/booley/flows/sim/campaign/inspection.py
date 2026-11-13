@@ -14,6 +14,11 @@ from booley.flows.campaign_results import (
     DurableCampaignResults,
     StartedCampaign,
 )
+from booley.flows.sim.record_layout import (
+    COVERAGE_RECORD_DIRECTORY,
+    RECORD_DIRECTORY,
+    refuse_older_manifest_path,
+)
 
 from .codec import (
     SimulationCampaignIntegrityError,
@@ -129,7 +134,7 @@ def inspect_retained_campaign(
         store.summary_path,
         digest,
         manifest,
-        cast(str, manifest.document["campaign_id"]),
+        cast(str, manifest.document["simulation_record_id"]),
         target["selector"],
         f"{target['vlnv']}#{target['name']}",
         recovery.complete,
@@ -161,7 +166,7 @@ def _retention_inventory(
     for attempt in attempts:
         attempt_id = attempt.name.split("-", 1)[1]
         if attempt_id in completed_attempts:
-            coverage_directories.append(attempt / "coverage-campaign")
+            coverage_directories.append(attempt / COVERAGE_RECORD_DIRECTORY)
             retention_files.update(
                 _result_named_files(store.root, attempt, completed_attempts[attempt_id])
             )
@@ -172,7 +177,7 @@ def _retention_inventory(
             "runtime-inputs",
             "evidence",
             "pre-sim",
-            "coverage-campaign",
+            COVERAGE_RECORD_DIRECTORY,
         ):
             retention_files.update(
                 path.absolute() for path in (attempt / name).rglob("*") if path.is_file()
@@ -271,7 +276,7 @@ def started_campaign(manifest_path: Path) -> StartedCampaign:
     target = cast(Mapping[str, object], manifest.document["target"])
     return StartedCampaign(
         manifest_path,
-        str(manifest.document["campaign_id"]),
+        str(manifest.document["simulation_record_id"]),
         manifest_digest(manifest),
         (str(target["selector"]), f"{target['vlnv']}#{target['name']}"),
         target["role"] == "candidate",
@@ -330,7 +335,7 @@ def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampa
     rows = tuple(observation_test_run_rows(manifest, observations))
     return DurableCampaignResults(
         digest,
-        str(manifest.document["campaign_id"]),
+        str(manifest.document["simulation_record_id"]),
         results,
         rows,
         complete=not recovery.pending and not recovery.interrupted,
@@ -339,9 +344,10 @@ def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampa
 
 def _store_for_manifest(manifest_path: Path, booley_dir: Path | None = None) -> CampaignStore:
     canonical = manifest_path.absolute()
-    if canonical.name != "manifest.json" or canonical.parent.name != "campaign":
+    refuse_older_manifest_path(canonical)
+    if canonical.name != "manifest.json" or canonical.parent.name != RECORD_DIRECTORY:
         raise SimulationCampaignIntegrityError(
-            "expected exact Simulation Campaign campaign/manifest.json path"
+            "expected exact Simulation Campaign record/manifest.json path"
         )
     return CampaignStore(canonical.parent, booley_dir=booley_dir)
 

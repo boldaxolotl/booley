@@ -201,7 +201,7 @@ MCP_KINDS = {
 def _retain(invocation: Path, key: str, raw: bytes) -> dict[str, object]:
     """Retain one Campaign artifact below the invocation and return its typed reference."""
     relative = {
-        "manifest": "targets/taxi/campaign/manifest.json",
+        "manifest": "targets/taxi/record/manifest.json",
         "simulation": "targets/taxi/simulation.json",
         "coverage": "targets/taxi/coverage.json",
     }[key]
@@ -392,7 +392,7 @@ def _rename_campaign(campaign) -> None:
             "manifest artifact reference is missing",
         ),
         (
-            lambda campaign: campaign["artifacts"].update(manifest="campaign/manifest.json"),
+            lambda campaign: campaign["artifacts"].update(manifest="record/manifest.json"),
             "not a typed artifact reference",
         ),
         (_retype_manifest, "manifest artifact reference kind differs"),
@@ -486,7 +486,7 @@ def _coverage_refusal_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     interrupted_attempt = _write(
         tmp_path / "interrupted-attempt.json",
         {
-            "$schema": "booley.simulation-attempt/v1",
+            "$schema": "booley.simulation-attempt/v2",
             "work_item_id": "item:0000:coverage",
             "attempt_id": "first",
         },

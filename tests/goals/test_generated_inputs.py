@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -40,6 +41,26 @@ def _as_0_3_0_manifest(raw: bytes) -> tuple[bytes, str]:
     return raw, "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
 
 
+def _install_older_layout(path: Path, invocation: Path) -> tuple[Path, bytes, str]:
+    """Put a committed older-layout invocation at ``flow-reports/sim/7``; return its manifest."""
+    shutil.rmtree(path.parents[3])
+    shutil.copytree(invocation, path.parents[3])
+    manifest = path.parents[3] / "targets/sim/campaign/manifest.json"
+    raw = manifest.read_bytes()
+    return manifest, raw, "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+
+
+def _write_producer_manifest(path, raw, digest, retired, older_layout_invocation):
+    """Write the producer's manifest as it is, as Booley 0.3.0 wrote it, or in the 0.4.0 layout."""
+    if older_layout_invocation is not None:
+        path, raw, digest = _install_older_layout(path, older_layout_invocation)
+        return path, digest
+    if retired:
+        raw, digest = _as_0_3_0_manifest(raw)
+    path.write_bytes(raw)
+    return path, digest
+
+
 def classified(
     layout,
     *,
@@ -61,6 +82,7 @@ def classified(
     criterion=LINT_KEY,
     criterion_detail=None,
     retired_manifest=False,
+    older_layout_invocation=None,
 ):
     layout.record = enter_goals(layout, goals or [{"family": "LINT", "target": "top"}])
     relative = (
@@ -132,7 +154,7 @@ def classified(
     manifest = finalize_manifest(
         {
             "$schema": MANIFEST_SCHEMA,
-            "campaign_id": str(uuid4()),
+            "simulation_record_id": str(uuid4()),
             "created_at": "2026-10-07T10:00:00Z",
             "origin": {"execution_id": ("c" if foreign_origin else "b") * 32, "invocation_id": 7},
             "target": target,
@@ -145,15 +167,15 @@ def classified(
         }
     )
     paths = record_paths(layout.control, layout.record.id)
-    path = paths.runtime_dir / "flow-reports/sim/7/targets/top/campaign/manifest.json"
+    path = paths.runtime_dir / "flow-reports/sim/7/targets/top/record/manifest.json"
     path.parent.mkdir(parents=True)
     raw = encode_simulation_campaign_manifest(manifest)
     digest = manifest_digest(manifest)
-    if retired_manifest:
-        raw, digest = _as_0_3_0_manifest(raw)
-    path.write_bytes(raw)
+    path, digest = _write_producer_manifest(
+        path, raw, digest, retired_manifest, older_layout_invocation
+    )
     facts = campaign_facts()
-    facts.update(campaign_id=manifest.document["campaign_id"], manifest_sha256=digest)
+    facts.update(campaign_id=manifest.document["simulation_record_id"], manifest_sha256=digest)
     recorder = GoalEvidenceRecorder(bind(layout))
     state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
     shadow = DevelopmentState.from_json_object(state.to_dict())
@@ -381,7 +403,7 @@ def test_v3_protected_source_requires_commit(layout, suffix):
     from booley.mcp.goal_generated_inputs import _disclosed_inputs
 
     paths = record_paths(layout.control, layout.record.id)
-    manifest = paths.runtime_dir / "flow-reports/sim/7/targets/top/campaign/manifest.json"
+    manifest = paths.runtime_dir / "flow-reports/sim/7/targets/top/record/manifest.json"
     producer = json.loads(manifest.read_bytes())
     row = {"detail": {"_source_fingerprint": {"target": "top"}}}
     assert _disclosed_inputs(layout.worktree, producer, row, {}) == []

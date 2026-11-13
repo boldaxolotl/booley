@@ -23,6 +23,11 @@ from booley.flows.sim.coverage_campaign_store import (
     load_coverage_campaign_bytes,
 )
 from booley.flows.sim.coverage_json import content_digest, freeze_coverage_mapping
+from booley.flows.sim.record_layout import (
+    COVERAGE_RECORD_DIRECTORY,
+    RECORD_DIRECTORY,
+    refuse_older_nested_path,
+)
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
@@ -109,6 +114,11 @@ def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
         error=CoverageCampaignReferenceError,
         booley_dir=crossed_booley_dir_entry(absolute),
     )
+    return _resolve_located(absolute, raw)
+
+
+def _resolve_located(absolute: Path, raw: bytes) -> ResolvedCoverageCampaign:
+    """Resolve the reference bytes; an older-Booley refusal names the directory to delete."""
     # Imported here: ``booley.flows.sim.campaign`` imports this module through its coordinator.
     from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
 
@@ -160,11 +170,11 @@ def _resolve_coverage_campaign_reference_bytes(
     parts = Path(cast(str, nested["path"])).parts
     if (
         len(parts) != 7
-        or parts[:2] != ("campaign", "work-items")
+        or parts[:2] != (RECORD_DIRECTORY, "work-items")
         or parts[2] != work_key
         or parts[3] != "attempts"
         or not re.fullmatch(rf"[0-9]{{4}}-{re.escape(attempt_id)}", parts[4])
-        or parts[5:] != ("coverage-campaign", "coverage.json")
+        or parts[5:] != (COVERAGE_RECORD_DIRECTORY, "coverage.json")
     ):
         raise CoverageCampaignReferenceError(
             "nested Coverage Campaign path disagrees with Simulation Attempt identity"
@@ -216,7 +226,7 @@ def resolve_persisted_coverage_campaign_reference(
         raise CoverageCampaignReferenceError(
             "persisted Coverage Campaign reference bytes disagree with acceptance state"
         )
-    resolved = _resolve_coverage_campaign_reference_bytes(public_path, raw)
+    resolved = _resolve_located(public_path, raw)
     nested = cast(Mapping[str, object], resolved.reference.document["coverage_campaign"])
     if nested["sha256"] != persisted["nested_campaign_sha256"]:
         raise CoverageCampaignReferenceError(
@@ -283,7 +293,7 @@ def authenticate_coverage_campaign_owner(
 
     document = resolved.reference.document
     nested = cast(Mapping[str, object], document["coverage_campaign"])
-    manifest_path = resolved.reference_path.parent / "campaign" / "manifest.json"
+    manifest_path = resolved.reference_path.parent / RECORD_DIRECTORY / "manifest.json"
     try:
         authenticated = authenticate_work_item(
             manifest_path,
@@ -314,7 +324,7 @@ def authenticate_coverage_campaign_owner(
             "enclosing Simulation result evidence is malformed"
         ) from exc
     if (
-        manifest.document["campaign_id"] != document["simulation_campaign_id"]
+        manifest.document["simulation_record_id"] != document["simulation_campaign_id"]
         or authenticated.manifest_sha256 != document["simulation_manifest_sha256"]
         or target["selector"] != cast(Mapping[str, str], document["target"])["selector"]
         or f"{target['vlnv']}#{target['name']}"
@@ -381,12 +391,13 @@ def _validate_nested_reference(nested: Mapping[str, object]) -> None:
     if nested["path_base"] != "origin_target" or nested["schema"] != CAMPAIGN_SCHEMA_V5:
         raise CoverageCampaignReferenceError("coverage_campaign storage contract is invalid")
     nested_path = _relative_path(nested["path"])
+    refuse_older_nested_path(nested_path)
     nested_parts = Path(nested_path).parts
     if (
         len(nested_parts) != 7
-        or nested_parts[:2] != ("campaign", "work-items")
+        or nested_parts[:2] != (RECORD_DIRECTORY, "work-items")
         or nested_parts[3] != "attempts"
-        or nested_parts[5:] != ("coverage-campaign", "coverage.json")
+        or nested_parts[5:] != (COVERAGE_RECORD_DIRECTORY, "coverage.json")
     ):
         raise CoverageCampaignReferenceError(
             "coverage_campaign.path is not an attempt-scoped Campaign path"

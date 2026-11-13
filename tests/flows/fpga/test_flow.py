@@ -1935,6 +1935,26 @@ def test_route_fact_does_not_hide_abnormal_termination(process):
     assert metrics.route_completed
 
 
+def test_ordinary_vivado_failure_during_another_jobs_oom_kill_is_not_abnormal(monkeypatch):
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    metrics = FpgaMetrics(route_completed=True, returncode=0)
+    process = SubprocessResult(returncode=1, oom_kill_delta=1)
+
+    FpgaImplFlow._apply_vivado_failure(FpgaImplFlow(), metrics, process, "", "", "")
+
+    assert metrics.returncode == 0
+    assert not metrics.infra_error
+
+
+def test_own_vivado_oom_kill_is_abnormal_termination_under_memory_admission(monkeypatch):
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    process = SubprocessResult(returncode=1, oom_kill_delta=1, oom_killed=True)
+
+    failure = FpgaImplFlow._classify_vivado_failure(process, "")
+
+    assert failure is not None and failure.failure_kind == "abnormal_termination"
+
+
 @pytest.mark.parametrize(
     "diagnostic",
     [

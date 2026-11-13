@@ -1518,3 +1518,16 @@ async def test_pilot_failing_result_names():
 @pytest.mark.asyncio
 async def test_pilot_no_report_result():
     await _result_pilot(None, "Summary unavailable")
+
+
+def test_queued_job_detail_shows_its_memory_wait():
+    wait = "position 2: needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget"
+    record = JobRecord("one", "synth", STAMP, 60, status="running")
+    queued = JobView(Path("/jobs"), record, "queued", queue=wait)
+
+    detail = dashboard_app.job_detail(queued)
+
+    assert f"\nQueue: {wait}\n" in detail
+    # The row belongs to a queued Job only, and only when there is something to say.
+    assert wait not in dashboard_app.job_detail(replace(queued, state="running"))
+    assert "Queue" not in dashboard_app.job_detail(replace(queued, queue=""))

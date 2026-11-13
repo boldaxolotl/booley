@@ -61,7 +61,7 @@ def test_project_alias_simulation_executes_campaign(flow_project, tmp_path, monk
     if result.exit_code:
         assert "Invocation lock paths must not contain symlinks" in result.outcome.report_text
     assert result.exit_code == 0, result.outcome.report_text
-    assert list((data / "reports").glob("sim/*/targets/sim/campaign/manifest.json"))
+    assert list((data / "reports").glob("sim/*/targets/sim/record/manifest.json"))
 
 
 def test_compatibility_projection_stays_incomplete_until_acceptance_commits(
@@ -235,7 +235,7 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypa
     recorded = _recorded_campaign(tmp_path, (one, two))
     outcome = SimpleNamespace(
         target={"selector": "sim"},
-        manifest_path=Path("/target/campaign/manifest.json"),
+        manifest_path=Path("/target/record/manifest.json"),
         aggregate_grade="fail",
         coverage_reference=object(),
         observations=[
@@ -255,7 +255,7 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     from tests.flows.sim.test_coverage_flow import NativeExecution, _interrupt_coverage_publication
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     execution = NativeExecution()
     if failure:
         symbol = (
@@ -610,7 +610,7 @@ def _observed_hook_request(tmp_path, observer):
     (tmp_path / ".booley").mkdir(exist_ok=True)
     commands = ("echo observed-hook",)
     plan, _disclosures = _pre_sim_plan("immutable", commands, lambda document: None)
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/record")
     store.publish_manifest(plan.manifest)
     request = _request(
         store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
@@ -670,7 +670,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     flow._current_published_pre_sim_keys = set()
 
     def baseline_role(document):
-        document["campaign_id"] = "01234567-89ab-4def-8123-456789abcdef"
+        document["simulation_record_id"] = "01234567-89ab-4def-8123-456789abcdef"
         document["target"].update(role="cycle_count_baseline", revision="baseline")
 
     _, baseline = _successful_pre_sim_campaign(
@@ -813,7 +813,7 @@ def test_final_published_baseline_hooks_bound_cycle_text(tmp_path, monkeypatch, 
     assert len(result.detail["pre_sim_lines"]) == 2
     (paths,) = evidence["reads"]
     invocation = flow._reserved_invocation_dir
-    assert set(paths) == set((invocation / "targets").glob("*/campaign/manifest.json"))
+    assert set(paths) == set((invocation / "targets").glob("*/record/manifest.json"))
     assert result.report_text.count("pre_run_commands") == 2
     assert result.report_text.count("Candidate:") == 1
     assert result.report_text.count("Cycle Count baseline:") == 1
@@ -1096,7 +1096,7 @@ def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_pat
     # Three roots reach one baseline reference: only distinct references count.
     monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 1)
     roots = (
-        *sorted((invocation / "targets").glob("*/campaign/manifest.json")),
+        *sorted((invocation / "targets").glob("*/record/manifest.json")),
         candidate.manifest_path,
     )
     assert len(collect_pre_sim_firings(*roots)) == 2
@@ -1305,8 +1305,8 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
     )
     outcome = SimpleNamespace(
         target={"selector": "sim"},
-        manifest_path=tmp_path / "targets/sim/campaign/manifest.json",
-        summary_path=tmp_path / "targets/sim/campaign/summary.json",
+        manifest_path=tmp_path / "targets/sim/record/manifest.json",
+        summary_path=tmp_path / "targets/sim/record/summary.json",
         coverage_reference=None,
         aggregate_grade="fail",
         complete=True,
@@ -1338,7 +1338,7 @@ def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -
     recorded = _recorded_campaign(tmp_path, (unnamed,), ())
     outcome = SimpleNamespace(
         target={"selector": "sim_fail"},
-        manifest_path=tmp_path / "campaign/manifest.json",
+        manifest_path=tmp_path / "record/manifest.json",
         aggregate_grade="fail",
         observations=(
             recorded.fact(unnamed, test=None, detail={"reason": "intentional simulator failure"}),
@@ -1347,7 +1347,7 @@ def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -
 
     assert _campaign_report_lines((outcome,), report_path=tmp_path / "sim.json")[0] == (
         "sim_fail: FAIL (Simulation Campaign unavailable)\n"
-        f"  manifest: {(tmp_path / 'campaign/manifest.json').resolve()}\n"
+        f"  manifest: {(tmp_path / 'record/manifest.json').resolve()}\n"
         f"  report: {(tmp_path / 'sim.json').resolve()}\n"
         "  intentional simulator failure"
     )
@@ -1482,7 +1482,7 @@ def _coverage_card(
     )
     outcome = SimpleNamespace(
         target={"selector": "sim_soc"},
-        manifest_path=tmp_path / "targets/sim_soc/campaign/manifest.json",
+        manifest_path=tmp_path / "targets/sim_soc/record/manifest.json",
         aggregate_grade="pass",
         coverage_reference=object(),
         observations=(),

@@ -33,6 +33,10 @@ from booley.flows.sim.run_guard import (
 from booley.flows.sim.trace_session import TraceSession
 from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
 
+# ``subprocess`` reports a child's death by signal N as ``returncode == -N``;
+# POSIX only (a Windows child never has a negative signal status).
+_SIGKILL = 9
+
 
 @dataclass(frozen=True)
 class SimulatorLaunch:
@@ -236,4 +240,12 @@ def _run(launch: SimulatorLaunch) -> tuple[deque[str], subprocess.Popen[str], Ru
         raise
     finally:
         supervisor.close(cpu_started)
-    return supervisor.lines, proc, supervisor.resolve()
+    termination = supervisor.resolve()
+    # A SIGKILL nobody in Booley sent is the OOM killer's mark: the Flow command
+    # that ran this adapter exits by verdict, so say it in its Job (ADR 0087).
+    if termination.kind == "completed" and proc.returncode == -_SIGKILL:
+        # Imported here: it pulls in the admission stack, which most runs never need.
+        from booley.flows.job_resources import report_descendant_kill
+
+        report_descendant_kill()
+    return supervisor.lines, proc, termination

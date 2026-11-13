@@ -473,7 +473,7 @@ def finalize_manifest(document: Mapping[str, object]) -> SimulationCampaignManif
     mutable = _json_copy(document)
     required = {
         "$schema",
-        "campaign_id",
+        "simulation_record_id",
         "created_at",
         "origin",
         "target",

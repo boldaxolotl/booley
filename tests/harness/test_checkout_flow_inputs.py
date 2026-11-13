@@ -101,6 +101,7 @@ TOOL_BEHAVIOR = {
     "yosys": "cat > stat_dut.txt <<'STAT'\n"
     "13. Printing statistics.\n=== dut ===\n  16 36.176 cells\n  1 - $_DLATCH_P_\n  Chip area for module '\\dut': 36.176\nSTAT\n"
     "cat stat_dut.txt\n"
+    "echo 'Found and reported 0 problems.' > premap_check_dut.txt\n"
     "echo 'Found and reported 0 problems.' > check_dut.txt\n"
     "echo 'module dut; endmodule' > synth_dut.v\n",
 }

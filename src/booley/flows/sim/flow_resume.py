@@ -328,25 +328,28 @@ class CampaignResumeMixin:
     ) -> EndpointOutcome | None:
         from .campaign_reports import campaign_invocation_lock
 
-        # The destination lock is already held; also retain the resumed origin.
-        try:
-            self.publication_resources.enter_context(
-                campaign_invocation_lock(
-                    validated.path.parents[3], booley_dir=validated.booley_dir
+        # The destination lock is already held; also retain the resumed origin. A Job's
+        # requeued attempt resumes the same origin, whose lock this process already holds
+        # until the Job ends: locking it again would refuse our own lock.
+        origin = validated.path.parents[3]
+        if origin not in self._held_resume_origins:
+            try:
+                self.publication_resources.enter_context(
+                    campaign_invocation_lock(origin, booley_dir=validated.booley_dir)
                 )
-            )
-        except (OSError, ValueError) as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Campaign resume origin is busy: {exc}",
-                detail=_campaign_recovery_detail(observed),
-            )
+            except (OSError, ValueError) as exc:
+                return EndpointOutcome(
+                    exit_code=EXIT_ERROR,
+                    report_text=f"Simulation Campaign resume origin is busy: {exc}",
+                    detail=_campaign_recovery_detail(observed),
+                )
+            self._held_resume_origins.add(origin)
         try:
             from .campaign.dependency import register_campaign_dependency
 
             register_campaign_dependency(
                 validated.path,
-                campaign_id=cast(str, validated.manifest.document["campaign_id"]),
+                campaign_id=cast(str, validated.manifest.document["simulation_record_id"]),
                 manifest_sha256=validated.sha256,
                 dependent_invocation=invocation,
             )
@@ -471,7 +474,9 @@ class CampaignResumeMixin:
         executor = self._resume_campaign_executor(coverage_plan)
         try:
             return SimulationCampaign(
-                executor, publication_checkpoint=self._campaign_publication_checkpoint
+                executor,
+                publication_checkpoint=self._campaign_publication_checkpoint,
+                work_item_request=self.work_item_job_request,
             ).run(
                 ResumeCampaignRunRequest(
                     validated,
