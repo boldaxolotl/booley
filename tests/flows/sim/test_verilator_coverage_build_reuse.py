@@ -62,7 +62,9 @@ class _Invoker:
         self.builds = 0
         self.launches: list[str] = []
 
-    def __call__(self, command: list[str], *, timeout: int) -> SubprocessResult:
+    def __call__(
+        self, command: list[str], *, timeout: int, cwd: Path | None = None
+    ) -> SubprocessResult:
         if command == ["verilator", "--version"]:
             return SubprocessResult(
                 returncode=0,
@@ -71,7 +73,7 @@ class _Invoker:
         started = time.monotonic()
         result = subprocess.run(
             command,
-            cwd=self._cwd,
+            cwd=cwd or self._cwd,
             env={**os.environ, "PYTHONPATH": self._python_path},
             capture_output=True,
             text=True,

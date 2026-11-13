@@ -2,8 +2,9 @@
 
 Uses long-sleeping python subprocesses as stand-ins for sim_proc and
 bwave_proc, so the test runs cross-platform without needing iverilog,
-verilator, or bwave on PATH.  Every test that starts a monitor pairs it with
-``stop_monitor`` so no monitor thread outlives the test.
+verilator, or bwave on PATH.  Every test that starts a monitor stops it with
+``stop_monitor``, bounded where a kill may be in flight, so no monitor thread
+outlives the test.
 """
 
 from __future__ import annotations
@@ -14,17 +15,37 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
+from typing import Protocol
 
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
 
 from booley.flows.sim.trace_session import TraceSession
+from booley.runtime import platform_paths
 from booley.runtime.platform_paths import popen_new_group_kwargs
+
+#: Bound on one stall kill, from monitor start to every process dead: ``stop_monitor``'s
+#: docstring puts the kill path at about 30 s on Windows (about 10 s on POSIX). Kept below
+#: the 60 s CI test budget so a kill that never happens fails as an assertion.
+_MONITOR_KILL_DEADLINE_S = 40.0
+#: Bound on the ``finally`` stop. Cleanup runs after the test body, which may already have
+#: spent its deadline: a short bound keeps a hung kill inside the 60 s CI budget, so the
+#: body's assertion message survives instead of an unattributed worker timeout.
+_CLEANUP_STOP_S = 5.0
+#: Sleeper lifetime: far beyond every deadline here, so a sleeper can only die early
+#: by being killed. (A 30 s sleeper would exit on its own inside a 40 s deadline and
+#: turn a missing kill into a pass.)
+_SLEEPER_LIFETIME_S = 600
+#: Extra time the AC1 test adds to the tree-kill, so the kill finishes well past the
+#: 5 s window the old fixed wait allowed.
+_SLOW_TREE_KILL_S = 5.0
 
 
 def _spawn_sleeper() -> subprocess.Popen:
-    """Spawn a Python subprocess that sleeps for 30s — long enough to outlast
-    any reasonable test, so the only way it exits is if the monitor kills it.
+    """Spawn a Python subprocess that sleeps for ``_SLEEPER_LIFETIME_S`` — long
+    enough to outlast any wait here, so the only way it exits is if the monitor
+    kills it.
 
     Spawned in its *own* process group (via popen_new_group_kwargs, matching
     how real sim/bwave procs are launched) so that the monitor's
@@ -33,21 +54,94 @@ def _spawn_sleeper() -> subprocess.Popen:
     with it.
     """
     return subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
+        [sys.executable, "-c", f"import time; time.sleep({_SLEEPER_LIFETIME_S})"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         **popen_new_group_kwargs(),
     )
 
 
-def _wait_dead(proc: subprocess.Popen, timeout: float = 5.0) -> bool:
-    """Poll until proc exits, returning True if it died inside the window."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
+class _Killable(Protocol):
+    """What the kill wait needs from a process or stream: an id and ``poll()``."""
+
+    @property
+    def pid(self) -> int: ...
+
+    def poll(self) -> object: ...
+
+
+def _poll_until(predicate: Callable[[], bool], deadline: float) -> bool:
+    """Evaluate ``predicate`` at least once, then every 50 ms until true or ``deadline``.
+
+    ``deadline`` is an absolute ``time.monotonic()`` value. Returns the last result.
+    """
+    while True:
+        if predicate():
             return True
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(0.05)
-    return False
+
+
+def _stop_monitor_within(session: TraceSession, timeout_s: float) -> bool:
+    """Run ``session.stop_monitor`` on a helper thread; True if it returned in time.
+
+    ``stop_monitor`` joins an in-flight stall kill without a bound, so a kill that
+    never ends would hang the test. The helper thread is a daemon: a stuck join
+    cannot keep the interpreter alive.
+    """
+    helper = threading.Thread(target=session.stop_monitor, daemon=True)
+    helper.start()
+    helper.join(timeout=max(0.0, timeout_s))
+    return not helper.is_alive()
+
+
+def _await_monitor_kill(
+    session: TraceSession,
+    *killed: _Killable,
+    reported: Callable[[], bool] | None = None,
+    deadline_s: float = _MONITOR_KILL_DEADLINE_S,
+) -> None:
+    """Wait in event order for the monitor's kill, one deadline over all steps.
+
+    1. the monitor reports the kill (default: ``session.stall_killed``);
+    2. ``stop_monitor`` returns, which joins the in-flight kill work;
+    3. every process in ``killed`` is dead.
+
+    Raises ``AssertionError`` naming the step that missed the deadline.
+    """
+    deadline = time.monotonic() + deadline_s
+    is_reported = reported if reported is not None else (lambda: session.stall_killed)
+    assert _poll_until(is_reported, deadline), "the monitor never reported a stall kill"
+    assert _stop_monitor_within(session, deadline - time.monotonic()), (
+        "stop_monitor did not return: the stall kill outlived its bound"
+    )
+    for proc in killed:
+        assert _poll_until(lambda proc=proc: proc.poll() is not None, deadline), (
+            f"pid {proc.pid} survived the stall kill"
+        )
+
+
+def _declared_stream_stalled_recorded(session: TraceSession) -> bool:
+    """True once the manifest records a ``declared_stream_stalled`` event.
+
+    A missing manifest means "not yet": ``TraceSession`` keeps its status in memory
+    until the first write, and the spare-simulator path writes first at that event.
+    The write is an atomic replace, so a present file is always complete JSON.
+    """
+    try:
+        manifest = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    return any(event.get("kind") == "declared_stream_stalled" for event in manifest["events"])
+
+
+def _kill_all(*procs: subprocess.Popen) -> None:
+    """Kill and reap every process still running (test cleanup)."""
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 class _StreamStub:
@@ -91,7 +185,18 @@ class _AliveStub:
 class TestStallKill:
     """The monitor must kill sim+bwave when .bwave never grows."""
 
-    def test_kills_after_stall_threshold(self, tmp_path):
+    def test_kills_after_stall_threshold(self, tmp_path, monkeypatch):
+        # The tree-kill is slowed past the old fixed 5 s window: the wait must follow
+        # the monitor's kill, not a guess at how long the kill takes.
+        real_kill_process_tree = platform_paths.kill_process_tree
+
+        def slow_kill_process_tree(proc):
+            time.sleep(_SLOW_TREE_KILL_S)
+            real_kill_process_tree(proc)
+
+        monkeypatch.setattr(
+            "booley.runtime.platform_paths.kill_process_tree", slow_kill_process_tree
+        )
         # .bwave file is never created → size stays at 0 forever
         ts = TraceSession(work_dir=tmp_path)
         sim_proc = _spawn_sleeper()
@@ -104,22 +209,44 @@ class TestStallKill:
                 poll_interval=0.05,
                 kill_after_stalls=2,
             )
-            # 2 windows x 0.2s = 0.4s expected kill time; allow generous slack
-            assert _wait_dead(sim_proc, timeout=5.0), (
-                "sim_proc should have been tree-killed by the monitor"
-            )
-            assert _wait_dead(bwave_proc, timeout=5.0), (
-                "bwave_proc should have been killed by the monitor"
+            _await_monitor_kill(
+                ts,
+                sim_proc,
+                bwave_proc,
+                deadline_s=_MONITOR_KILL_DEADLINE_S + _SLOW_TREE_KILL_S,
             )
             assert ts.stall_killed is True
             assert ts.stall_message is not None
             assert "stalled" in ts.stall_message
         finally:
-            ts.stop_monitor()
-            for p in (sim_proc, bwave_proc):
-                if p.poll() is None:
-                    p.kill()
-                    p.wait(timeout=2)
+            _kill_all(sim_proc, bwave_proc)
+            _stop_monitor_within(ts, _CLEANUP_STOP_S)
+
+    def test_stall_kill_wait_fails_when_the_tree_survives(self, tmp_path, monkeypatch):
+        # The monitor reports the kill but never kills the process tree: the wait
+        # must fail instead of passing on the report alone.
+        monkeypatch.setattr("booley.runtime.platform_paths.kill_process_tree", lambda _proc: None)
+        ts = TraceSession(work_dir=tmp_path)
+        sim_proc = _spawn_sleeper()
+        bwave_proc = _spawn_sleeper()
+        try:
+            ts.start_monitor(
+                _StreamStub(bwave_proc, ts.bwave_path),
+                sim_proc,
+                stall_timeout=0.2,
+                poll_interval=0.05,
+                kill_after_stalls=2,
+            )
+            assert _poll_until(
+                lambda: ts.stall_killed, time.monotonic() + _MONITOR_KILL_DEADLINE_S
+            )
+            # Join here so only the liveness step spends the short budget below.
+            assert _stop_monitor_within(ts, _MONITOR_KILL_DEADLINE_S)
+            with pytest.raises(AssertionError, match="survived the stall kill"):
+                _await_monitor_kill(ts, sim_proc, deadline_s=1.0)
+        finally:
+            _kill_all(sim_proc, bwave_proc)
+            _stop_monitor_within(ts, _CLEANUP_STOP_S)
 
     def test_natural_exit_during_incident_io_is_not_claimed_as_a_stall_kill(
         self, tmp_path, monkeypatch
@@ -308,15 +435,19 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
             kill_after_stalls=2,
             spare_simulator=True,
         )
-        assert _wait_dead(conversion, timeout=10.0), "stalled converter should be killed"
-        writer.join(timeout=10.0)
+        _await_monitor_kill(
+            session,
+            conversion,
+            reported=lambda: _declared_stream_stalled_recorded(session),
+        )
+        writer.join(timeout=_MONITOR_KILL_DEADLINE_S)
         assert not writer.is_alive(), "the writer must be drained, not left blocked"
         assert sim_proc.poll() is None
         assert session.stall_killed is False
     finally:
         sim_proc.kill()
         sim_proc.wait(timeout=5)
-        session.stop_monitor()
+        _stop_monitor_within(session, _CLEANUP_STOP_S)
         conversion.finish(timeout_s=5)
 
 
@@ -605,7 +736,7 @@ class TestTraceStatusManifest:
                 poll_interval=0.05,
                 kill_after_stalls=1,
             )
-            assert _wait_dead(sim_proc, timeout=5.0)
+            _await_monitor_kill(ts, sim_proc, bwave_proc)
             incident = tmp_path / "trace_incident.txt"
             assert incident.exists()
             text = incident.read_text(encoding="utf-8")
@@ -613,11 +744,8 @@ class TestTraceStatusManifest:
             assert "cache_dir:" in text
             assert "processes:" in text
         finally:
-            ts.stop_monitor()
-            for p in (sim_proc, bwave_proc):
-                if p.poll() is None:
-                    p.kill()
-                    p.wait(timeout=2)
+            _kill_all(sim_proc, bwave_proc)
+            _stop_monitor_within(ts, _CLEANUP_STOP_S)
 
     def test_no_kill_when_bwave_grows(self, tmp_path):
         ts = TraceSession(work_dir=tmp_path)

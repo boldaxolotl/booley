@@ -105,10 +105,10 @@ def _simulate(root: Path) -> str:
     """Run the ``check`` test through the real Simulation Flow; return all output."""
     outputs: list[str] = []
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> SubprocessResult:
         result = run_bounded_child(
             command,
-            cwd=root,
+            cwd=cwd or root,
             timeout=min(timeout + 120, _TOOL_TIMEOUT_S),
         )
         outputs.append(result.stdout + result.stderr)
