@@ -186,7 +186,7 @@ def test_prepared_invocation_kind_drives_lifecycle(
     kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.flows.prepared_invocation import OrdinaryRunInvocation, TargetSelectionInvocation
-    from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.record_invocation import SimulationCampaignInvocation
 
     expected_type = {
         "ordinary": OrdinaryRunInvocation,

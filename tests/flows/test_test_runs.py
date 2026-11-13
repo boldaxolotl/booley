@@ -11,8 +11,8 @@ from hypothesis import strategies as st
 
 from booley.config.tests_toml_rules import TestRunNameError
 from booley.flows.builtin_cli import parse_request
-from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record_files import document_digest
 from booley.flows.test_runs import (
     DEFAULT_SEED,
     MAX_MULTI_SEED_COUNT,

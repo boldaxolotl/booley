@@ -166,8 +166,8 @@ DIRECTION_RULES = (
         "D31",
         (prefix("booley"),),
         (
-            exact("booley.flows.sim.campaign.store"),
-            exact("booley.flows.sim.campaign.inspection"),
+            exact("booley.flows.sim.record.store"),
+            exact("booley.flows.sim.record.inspection"),
         ),
         "Simulation Campaign durable storage is private implementation behind the "
         "public Campaign interface",
@@ -250,6 +250,8 @@ DIRECTION_RULES = (
             exact("booley.runtime.core_resolution"),
             exact("booley.runtime.project_image"),
             exact("booley.mcp.server_inspection"),
+            exact("booley.flows.runtime_reality"),
+            exact("booley.flows.fpga.vivado_startup"),
         ),
         (
             exact("booley.harness.doctor"),
@@ -428,22 +430,22 @@ COMPOSITION_PERMISSIONS = (
     CompositionPermission(
         "C10",
         "D31",
-        "booley.flows.sim.campaign.coordinator",
-        "booley.flows.sim.campaign.store",
+        "booley.flows.sim.record.coordinator",
+        "booley.flows.sim.record.store",
         "Campaign execution composes durable transaction, recovery, and publication.",
     ),
     CompositionPermission(
         "C12",
         "D31",
-        "booley.flows.sim.campaign.inspection",
-        "booley.flows.sim.campaign.store",
+        "booley.flows.sim.record.inspection",
+        "booley.flows.sim.record.store",
         "Public read capabilities inspect storage through the private Campaign store.",
     ),
     CompositionPermission(
         "C13",
         "D31",
-        "booley.flows.sim.campaign",
-        "booley.flows.sim.campaign.inspection",
+        "booley.flows.sim.record",
+        "booley.flows.sim.record.inspection",
         "The Campaign package facade publishes the storage-backed read capabilities.",
     ),
     CompositionPermission(

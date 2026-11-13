@@ -5,7 +5,7 @@ receipt, supervised child context and terminal causes. Every 0.4.0 record is rea
 committed bytes: ``tests/flows/fixtures/booley_0_4_0/{complete,interrupted,coverage}``
 were written by Booley 0.4.0's own ``SimulateFlow``, and ``resumed/`` holds the one
 document those captures lack, a dependency receipt. It was captured the same way: the
-tag's ``tests/flows/sim/test_campaign_resume_diagnostics.py::_interrupted_campaign`` helper
+tag's ``tests/flows/sim/test_simulation_record_resume_diagnostics.py::_interrupted_campaign`` helper
 and fake simulator ran an interrupted run, a source change made the tag's
 ``SimulateFlow().execute(SimRequest(resume_from=<manifest>))`` refuse the resume, and that
 refusal registered the receipt under the origin's ``campaign/dependency-receipts/``. The
@@ -26,8 +26,9 @@ from typing import Any
 import pytest
 
 from booley.flows.builtin_cli import parse_request
-from booley.flows.sim.campaign import inspect_retained_campaign, read_durable_results
-from booley.flows.sim.campaign.codec import (
+from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record import inspect_retained_campaign, read_durable_results
+from booley.flows.sim.record.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -38,12 +39,11 @@ from booley.flows.sim.campaign.codec import (
     decode_simulation_result,
     decode_simulator_bundle,
 )
-from booley.flows.sim.campaign.dependency import (
+from booley.flows.sim.record.dependency import (
     read_campaign_dependencies,
     register_campaign_dependency,
 )
-from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
 from booley.runtime import execution_records
 from booley.runtime.execution_records import (
     ExecutionId,
@@ -52,15 +52,19 @@ from booley.runtime.execution_records import (
     read_json,
 )
 from booley.runtime.execution_recovery import recover_execution
-from tests.flows.sim import test_campaign_lane_pool as lane_pool
-from tests.flows.sim.campaign_test_support import _retained_invocation
-from tests.flows.sim.test_campaign_dependency import CAMPAIGN_ID, _origin, _two_role_campaigns
-from tests.flows.sim.test_campaign_unsupported_formats import (
+from tests.flows.sim import test_simulation_record_lane_pool as lane_pool
+from tests.flows.sim.simulation_record_test_support import _retained_invocation
+from tests.flows.sim.test_simulation_record_dependency import (
+    CAMPAIGN_ID,
+    _origin,
+    _two_role_campaigns,
+)
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
     copy_older_invocation,
 )
-from tests.flows.sim.test_campaign_unsupported_formats import (
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
     reports as _reports_fixture,
 )
 

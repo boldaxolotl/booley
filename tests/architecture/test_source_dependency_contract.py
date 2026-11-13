@@ -23,12 +23,12 @@ _CAMPAIGN_STORAGE_TYPES = frozenset(
 )
 _CAMPAIGN_STORAGE_OWNERS = frozenset(
     {
-        "booley.flows.sim.campaign.store",
-        "booley.flows.sim.campaign.coordinator",
-        "booley.flows.sim.campaign.inspection",
+        "booley.flows.sim.record.store",
+        "booley.flows.sim.record.coordinator",
+        "booley.flows.sim.record.inspection",
     }
 )
-_CAMPAIGN_PREFIX = "booley.flows.sim.campaign"
+_CAMPAIGN_PREFIX = "booley.flows.sim.record"
 _CAMPAIGN_SCAN = "campaign-storage-types"
 _TARGET_SCAN = "target-mechanics"
 
@@ -168,18 +168,18 @@ def _resolved_import_from(module: str, is_package: bool, node: ast.ImportFrom) -
 @pytest.mark.parametrize(
     "source",
     [
-        "from booley.flows.sim.campaign.coordinator import CampaignStore\n",
-        "from booley.flows.sim.campaign.coordinator import CampaignStore as Store\n",
-        "import booley.flows.sim.campaign.coordinator\n"
-        "booley.flows.sim.campaign.coordinator.CampaignRecovery\n",
-        "import booley.flows.sim.campaign.coordinator as coordinator\n"
+        "from booley.flows.sim.record.coordinator import CampaignStore\n",
+        "from booley.flows.sim.record.coordinator import CampaignStore as Store\n",
+        "import booley.flows.sim.record.coordinator\n"
+        "booley.flows.sim.record.coordinator.CampaignRecovery\n",
+        "import booley.flows.sim.record.coordinator as coordinator\n"
         "coordinator.WorkItemRecovery\n",
-        "from booley.flows.sim.campaign import coordinator\ncoordinator.SharedBuildRecovery\n",
-        "def deferred():\n    from booley.flows.sim.campaign.coordinator import CampaignStore\n",
-        "if enabled:\n    from booley.flows.sim.campaign.coordinator import CampaignRecovery\n",
+        "from booley.flows.sim.record import coordinator\ncoordinator.SharedBuildRecovery\n",
+        "def deferred():\n    from booley.flows.sim.record.coordinator import CampaignStore\n",
+        "if enabled:\n    from booley.flows.sim.record.coordinator import CampaignRecovery\n",
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    from booley.flows.sim.campaign.coordinator import WorkItemRecovery\n",
+        "    from booley.flows.sim.record.coordinator import WorkItemRecovery\n",
     ],
 )
 def test_campaign_storage_type_gate_resolves_static_escape_forms(source: str) -> None:
@@ -187,7 +187,7 @@ def test_campaign_storage_type_gate_resolves_static_escape_forms(source: str) ->
 
 
 def test_campaign_storage_type_gate_resolves_package_relative_imports() -> None:
-    tree = ast.parse("from .campaign.coordinator import CampaignStore\n")
+    tree = ast.parse("from .record.coordinator import CampaignStore\n")
 
     assert _campaign_storage_type_violations(tree, "booley.flows.sim", True)
     assert not _campaign_storage_type_violations(tree, "booley.flows.sim", False)
@@ -195,7 +195,7 @@ def test_campaign_storage_type_gate_resolves_package_relative_imports() -> None:
 
 @pytest.mark.parametrize("owner", sorted(_CAMPAIGN_STORAGE_OWNERS))
 def test_campaign_storage_type_gate_allows_exact_owners(owner: str) -> None:
-    tree = ast.parse("from booley.flows.sim.campaign.store import CampaignStore\n")
+    tree = ast.parse("from booley.flows.sim.record.store import CampaignStore\n")
 
     violations = _campaign_storage_violations_for_source(tree, owner, False)
 
@@ -479,6 +479,8 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
         "runtime.core_resolution",
         "runtime.project_image",
         "mcp.server_inspection",
+        "flows.runtime_reality",
+        "flows.fpga.vivado_startup",
     ],
 )
 @pytest.mark.parametrize(
@@ -498,11 +500,11 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     root = tmp_path / "booley"
     for package in (
         root,
-        root / "flows",
         root / "harness",
         root / "harness" / "setup",
         root / "flows",
         root / "flows" / "sim",
+        root / "flows" / "fpga",
         root / "audit",
         root / "flows" / "sim" / "backends",
         root / "presentation",
@@ -648,6 +650,53 @@ def test_mcp_server_inspection_owner_is_a_d26_diagnostic_owner(tmp_path):
     )
     assert "D4" in report
     assert "booley.harness.setup.readiness" in report
+
+
+def _assert_flow_owner_obeys_d26_and_d39(tmp_path, owner: str) -> None:
+    """The real *owner* breaks no rule; a fake one importing Doctor or setup is caught."""
+    importlib.import_module(f"booley.{owner}")  # fails until the production owner exists
+    real = format_problems(
+        evaluate_contract(analyze_imports(_SOURCE_ROOT), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert f"booley.{owner}" not in real
+
+    root = tmp_path / "booley"
+    for package in (
+        root,
+        root / "flows",
+        root / "flows" / "fpga",
+        root / "harness",
+        root / "harness" / "setup",
+    ):
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "harness" / "doctor.py").write_text("value = 1\n")
+    (root / "harness" / "setup" / "readiness.py").write_text("value = 1\n")
+    owner_file = root / (owner.replace(".", "/") + ".py")
+    owner_file.write_text("import booley.harness.doctor\n")
+    report = format_problems(
+        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert "D26" in report
+    assert "D39" in report
+    assert "booley.harness.doctor" in report
+
+    owner_file.write_text("import booley.harness.setup.readiness\n")
+    report = format_problems(
+        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert "D39" in report
+    assert "booley.harness.setup.readiness" in report
+
+
+def test_flow_runtime_reality_owner_is_a_d26_diagnostic_owner(tmp_path):
+    """The Flow runtime-reality owner obeys D26 and D39; the contract catches violations."""
+    _assert_flow_owner_obeys_d26_and_d39(tmp_path, "flows.runtime_reality")
+
+
+def test_vivado_startup_owner_is_a_d26_diagnostic_owner(tmp_path):
+    """The FPGA Vivado startup owner obeys D26 and D39; the contract catches violations."""
+    _assert_flow_owner_obeys_d26_and_d39(tmp_path, "flows.fpga.vivado_startup")
 
 
 @pytest.mark.parametrize(

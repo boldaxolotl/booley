@@ -16,8 +16,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from booley.bwave.sessions import register_trace, session_store
-from booley.flows.sim.campaign import CampaignOutcome
-from booley.flows.sim.campaign.test_run_report import (
+from booley.flows.sim.record import CampaignOutcome
+from booley.flows.sim.record.test_run_report import (
     campaign_test_run_files_by_row,
     campaign_test_run_rows,
 )
