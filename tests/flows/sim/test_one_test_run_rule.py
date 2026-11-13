@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows.sim.campaign.test_run_binding import observation_test_runs
-from booley.flows.sim.campaign.test_run_report import (
+from booley.flows.sim.record.test_run_binding import observation_test_runs
+from booley.flows.sim.record.test_run_report import (
     TEST_RUN_GRADES,
     _observed_run,
     test_run_grade,

@@ -154,8 +154,8 @@ def test_leaf_contracts_do_not_import_flow_or_execution_engine() -> None:
     package = Path(__file__).parents[4] / "src" / "booley" / "flows" / "sim"
     forbidden = {
         "booley.flows.sim.flow",
-        "booley.flows.sim.campaign_presentation",
-        "booley.flows.sim.campaign_scaffold",
+        "booley.flows.sim.record_presentation",
+        "booley.flows.sim.record_scaffold",
         "booley.flows.sim.watchdog_sizing",
         "booley.flows.sim.test_selection",
         "booley.flows.sim.elab_only",

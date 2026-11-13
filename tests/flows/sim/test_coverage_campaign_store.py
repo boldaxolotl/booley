@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaignValidationError,
     CoveragePoint,
@@ -42,6 +41,7 @@ from booley.flows.sim.coverage_policy import (
     coverage_metrics,
     evaluate_coverage_campaign,
 )
+from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
 from tests.flows.sim.coverage_campaign_test_support import decode_document, rewrite_manifest_as_v4
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
@@ -60,7 +60,7 @@ def test_nested_coverage_exact_and_over_limit_preserve_authoritative_hook_sideca
     tmp_path, monkeypatch, boundary
 ):
     import booley.flows.sim.coverage_campaign_store as store
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
 
     _invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]

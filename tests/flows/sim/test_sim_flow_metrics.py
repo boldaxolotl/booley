@@ -15,7 +15,7 @@ import pytest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
-from tests.flows.sim.campaign_test_support import _observation, _simulation_outcome
+from tests.flows.sim.simulation_record_test_support import _observation, _simulation_outcome
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 

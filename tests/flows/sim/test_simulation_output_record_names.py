@@ -23,14 +23,14 @@ from typing import Any
 
 import pytest
 
-from booley.flows.sim.campaign.run_directory import expand_run_directory
-from booley.flows.sim.campaign_presentation import (
+from booley.flows.sim.config import literal_run_cwd_problem, parse_run_cwd_template
+from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record.run_directory import expand_run_directory
+from booley.flows.sim.record_presentation import (
     _attach_failure_reference,
     _pre_sim_integrity_failure,
 )
-from booley.flows.sim.campaign_retention import _dependent_invocations, _report_references_origin
-from booley.flows.sim.config import literal_run_cwd_problem, parse_run_cwd_template
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record_retention import _dependent_invocations, _report_references_origin
 from booley.flows.sim.request import SimRequest
 from booley.mcp.catalog import Exposure
 from booley.mcp.flow_adapter import flow_schema
@@ -48,8 +48,8 @@ from booley.runtime.supervised_execution import (
 )
 from booley.specialists import coverage_analyst as coverage_analyst_module
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
-from tests.flows.sim.campaign_boundary import run_campaign_sim
-from tests.flows.sim.campaign_test_support import coverage_invocation
+from tests.flows.sim.simulation_record_boundary import run_campaign_sim
+from tests.flows.sim.simulation_record_test_support import coverage_invocation
 from tests.flows.sim.test_coverage_flow import NativeExecution, _interrupt_coverage_publication
 from tests.flows.sim.test_flow import PASS_PROCESS, _preview
 from tests.owned_scratch_support import exited_process_payload, write_marker

@@ -392,7 +392,7 @@ because the manifest, not progress, decides recovery.
 
 ### Exact report retention
 
-`booley.flows.sim.campaign_retention` removes the evidence of one exact
+`booley.flows.sim.record_retention` removes the evidence of one exact
 invocation; the command line is in
 [FLOW_REPORTS.md](FLOW_REPORTS.md#coverage-retention). It takes the report
 root explicitly (callers get Booley Directory roots from
