@@ -420,10 +420,9 @@ class JobLifecycle:
         root = job_slots.slots_dir()
         if rec.pid is None or root is None:
             return False
+        state = self._child_slot_state(rec)  # read before the withdrawal removes it
         try:
-            store = job_slots.SlotStore(root)
-            state = store.state_for_pid(rec.pid)  # read before the withdrawal removes it
-            withdrawn = store.cancel_waiter(rec.pid)
+            withdrawn = job_slots.SlotStore(root).cancel_waiter(rec.pid)
         except OSError:
             return False
         if withdrawn and state is not None and state.reason is not None:
@@ -495,6 +494,8 @@ class JobLifecycle:
             await self._cancel_tracked_task(run_id, task)
         else:
             await self._cancel_adopted_job(rec)
+        # A cancellation that was never recorded (the task had already finished) keeps no reason.
+        self._requeue_reasons.pop(run_id, None)
         final = self._read_run(run_id)
         if final is None or final.status != jobrec.STATUS_CANCELLED:
             return "finished"

@@ -1151,12 +1151,11 @@ def test_requeue_never_waits_behind_its_own_claim(memory_runtime: Path, runtime:
     )
     try:
         with (
-            pytest.raises(
-                EndpointRejectedError, match="could not be requeued after out-of-memory"
-            ),
+            pytest.raises(EndpointRejectedError, match="still holds its claim") as refused,
             AdmissionGate(flow, prepared, requeued=True).enter(),
         ):
             pytest.fail("the requeued claim queued behind its own process")
+        assert refused.value.outcome.oom_killed is True
         assert [token.seq for token in _held(memory_runtime, job_slots.CLASS_MEMORY)] == [
             leftover.seq
         ]

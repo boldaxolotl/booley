@@ -1797,6 +1797,31 @@ def test_resume_reports_busy_origin_lock(tmp_path, monkeypatch):
     assert "resume origin is busy" in result.outcome.report_text
 
 
+def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path, monkeypatch):
+    """The OOM requeue resumes the same origin again: this process must not refuse its own lock."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.dependency.register_campaign_dependency",
+        lambda *_args, **_kwargs: tmp_path,
+    )
+    origin = tmp_path / "sim/1"
+    validated = SimpleNamespace(
+        path=origin / "targets/sim_0/record/manifest.json",
+        booley_dir=None,
+        manifest=SimpleNamespace(document={"campaign_id": "campaign"}),
+        sha256="0" * 64,
+    )
+    flow = SimulateFlow()
+    origin.mkdir(parents=True)
+
+    first = flow._prepare_campaign_resume_dependency(validated, tmp_path / "sim/2", None)
+    second = flow._prepare_campaign_resume_dependency(validated, tmp_path / "sim/3", None)
+
+    assert (first, second) == (None, None)
+    flow.publication_resources.close()
+
+
 def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
     reports, _request, _runs = _interrupt_coverage_publication(
         tmp_path, monkeypatch, selected=("wrap",), skipped=("wrap",)

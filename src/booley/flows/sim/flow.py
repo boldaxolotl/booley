@@ -297,6 +297,8 @@ class SimulateFlow(
         super()._start_invocation(adapter, request)
         self._simulation_campaign_outcomes: tuple[Any, ...] = ()
         self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
+        # Resumed origins this invocation's `publication_resources` already lock (see flow_resume).
+        self._held_resume_origins: set[Path] = set()
 
     def begin_invocation(self) -> None:
         """Start this invocation's Test Run decisions afresh.

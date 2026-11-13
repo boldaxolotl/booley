@@ -457,10 +457,11 @@ def _claim_detail(plan: MemoryAdmissionPlan, requeued: bool) -> str:
 
 
 def _refuse_waiting_behind_own_claim(endpoint: EndpointState, store: job_slots.SlotStore) -> None:
-    """Refuse a requeued claim while this process still holds a memory entry.
+    """Refuse a requeued claim while this process still holds an entry in any class.
 
     A deferred release (a Campaign whose shutdown overruns) can keep the killed
     attempt's claim past its end; queueing behind it would wait for ourselves.
+    The process runs one Job, so a held entry of any class is the killed attempt's.
     """
     state = store.state_for_pid(os.getpid())
     if state is not None and state.state == job_slots.HOLDING:
@@ -468,8 +469,9 @@ def _refuse_waiting_behind_own_claim(endpoint: EndpointState, store: job_slots.S
             EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
-                    f"{endpoint.name}: the Job could not be requeued after out-of-memory: "
-                    "the killed attempt's work still holds its claim."
+                    f"{endpoint.name}: the killed attempt's work still holds its claim, "
+                    "so the Job cannot wait for the memory to itself."
                 ),
+                oom_killed=True,
             )
         )

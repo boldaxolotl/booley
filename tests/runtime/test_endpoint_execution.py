@@ -360,7 +360,7 @@ def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> No
         "finish:2:True",
     ]
     assert result.outcome.report_text == (
-        "queue full\nThe Job was requeued after out-of-memory and did not start again."
+        "queue full\nRequeued after out-of-memory: the Job did not start again."
     )
     assert result.outcome.detail["oom_requeue"]["attempts"] == 2
 

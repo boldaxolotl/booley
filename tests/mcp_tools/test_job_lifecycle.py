@@ -564,6 +564,34 @@ async def test_cancelled_requeued_job_names_the_requeue(context):
 
 
 @pytest.mark.asyncio
+async def test_unrecorded_cancellation_keeps_no_requeue_reason(context, monkeypatch):
+    """A reason saved for a cancellation that never got recorded must not linger."""
+    store = job_slots.SlotStore(job_slots.slots_dir())
+    holder_claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0)
+    holder = store.acquire(
+        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=60, memory=holder_claim
+    )
+    jobs = FastSupervisor()
+    try:
+        run_id = jobs.submit("lint", requeued_command(context), JOB_TIMEOUT, context=context)
+        await wait_until((context.work_dir / "queued").exists)
+
+        async def task_already_finished(*_args):
+            return None
+
+        monkeypatch.setattr(jobs, "_cancel_tracked_task", task_already_finished)
+        assert jobs._cancel_waiter(job_records.read_record(run_id, context.jobs_root))
+        assert jobs._requeue_reasons == {run_id: "requeued after out-of-memory"}
+
+        await jobs.cancel(run_id)
+
+        assert jobs._requeue_reasons == {}
+    finally:
+        store.release(holder)
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
 async def test_child_requeued_needs_a_claim_with_a_reason(context):
     store = job_slots.SlotStore(job_slots.slots_dir())
     jobs = JobLifecycle()
@@ -810,7 +838,6 @@ async def test_queue_wait_does_not_consume_active_budget(context, monkeypatch):
         clock.elapsed += timeout
         return await awaitable
 
-    monkeypatch.setattr(endpoint_process, "time", clock)
     monkeypatch.setattr(endpoint_process, "asyncio", SimpleNamespace(wait_for=wait_for))
     exited = await endpoint_process._wait_with_queue_credit(
         SimpleNamespace(wait=wait),
@@ -818,6 +845,7 @@ async def test_queue_wait_does_not_consume_active_budget(context, monkeypatch):
         lambda: len(attempts) < 4,
         lambda: active.append(clock.elapsed),
         tick_seconds=5,
+        clock=clock.monotonic,
     )
     assert exited is True
     assert attempts == [5, 5, 5, 5, 2]

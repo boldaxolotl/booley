@@ -31,6 +31,8 @@ _MAX_COMPLETION_MESSAGE_CHARS = 500
 
 #: Why a Job's second attempt waits for the memory to itself (ADR 0087).
 OOM_REQUEUE_REASON = "requeued after out-of-memory"
+#: Opens the note a requeued Job's final result ends with.
+OOM_REQUEUE_NOTE = "Requeued after out-of-memory"
 #: Printed to stdout between the killed attempt's output and the final attempt's.
 OOM_REQUEUE_MARKER = f"[requeue] {OOM_REQUEUE_REASON}; the output above is from the killed attempt"
 #: What a command that was not started because the attempt's earlier command was OOM-killed reports.
@@ -251,10 +253,9 @@ def _name_requeue(outcome: EndpointOutcome, *, started_again: bool) -> None:
         "oom_requeue": {"reason": OOM_REQUEUE_REASON, "attempts": 2},
     }
     line = (
-        "Requeued after out-of-memory: this result is from the Job's second attempt, "
-        "which ran alone."
+        f"{OOM_REQUEUE_NOTE}: this result is from the Job's second attempt, which ran alone."
         if started_again
-        else "The Job was requeued after out-of-memory and did not start again."
+        else f"{OOM_REQUEUE_NOTE}: the Job did not start again."
     )
     outcome.report_text = "\n".join(filter(None, (outcome.report_text, line)))
 
