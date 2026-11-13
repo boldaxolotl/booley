@@ -724,7 +724,7 @@ class SimulationCampaign:
         if self._flow_claim is not None:
             # The item's shared build is settled; the last one frees the Flow's reservation.
             self._flow_claim.settle(store.root, work_item)
-            self._flow_claim.release()
+            self._flow_claim.release(store.root)
         raise_if_cancelled_before_publication()
         try:
             self._publish_scheduled_result(store, attempt, work_item_id, result)

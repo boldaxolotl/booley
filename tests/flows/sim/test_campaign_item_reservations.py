@@ -522,7 +522,7 @@ def _flow_claim(scenario: _Scenario):
     return FlowClaim(scenario.admission, scenario.admission.memory_sizing, _sizer)
 
 
-def test_flow_claim_waits_only_for_the_builds_still_pending(
+def test_flow_claim_waits_only_for_the_running_campaigns_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = _manifest_for(NAMES)
@@ -533,17 +533,59 @@ def test_flow_claim_waits_only_for_the_builds_still_pending(
         # Two Campaigns published, each owing its shared build.
         claim.expect(tmp_path, manifest, items)
         claim.expect(other, manifest, items)
-        assert not claim.release()
+        assert not claim.release(tmp_path)
         claim.settle(tmp_path, items[0])
-        assert not claim.release()
-        # A resumed Campaign that already built its variant has nothing pending.
-        claim.expect(other, manifest, [])
-        assert claim.release()
+        # The later Campaign's build does not keep the Flow's reservation.
+        assert claim.release(tmp_path)
         assert _held(scenario.store.observe(CLASS_MEMORY)[0][0]) == 0
-        assert claim.release()  # idempotent
+        assert claim.release(other)  # idempotent, once dropped
+        # Its building item reserves the build nobody settled (the Flow is zero now).
+        building = claim.item_claim(other, manifest, items[0])
+        assert building is not None and building.reservation_mb == 500.0
         # A drop the store refuses (the Flow's lease is gone) leaves items under the Flow.
         scenario.store.release(scenario.flow_token)
-        assert not _flow_claim(scenario).release()
+        assert not _flow_claim(scenario).release(tmp_path)
+
+
+def test_item_with_pre_sim_commands_reserves_its_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _manifest_for(NAMES)
+    (item, *_) = manifest.document["work_items"]
+    document = json.loads(canonical_json_bytes(manifest.document))
+    document["workload"]["source_recipe"]["pre_sim_commands"] = ["make prepare"]
+    commanded = SimpleNamespace(document=document)
+    with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
+        claim = _flow_claim(scenario)
+        claim.settle(tmp_path, item)  # the shared build is settled, but the commands run again
+        plain = claim.item_claim(tmp_path, manifest, item)
+        with_commands = claim.item_claim(tmp_path, commanded, item)  # type: ignore[arg-type]
+
+    assert [held and held.reservation_mb for held in (plain, with_commands)] == [125.0, 500.0]
+
+
+def test_last_shared_build_frees_the_flow_inside_its_own_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
+        scenario.campaign().run(scenario.request(_manifest_for(("alpha",))))
+        (flow,) = scenario.store.observe(CLASS_MEMORY)[0]
+        assert _held(flow) == 0
+
+
+def test_a_later_campaign_does_not_keep_the_flow_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _manifest_for(NAMES)
+    with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
+        campaign = scenario.campaign()
+        requests = [scenario.request(manifest, number) for number in (1, 2)]
+        for request in requests:
+            campaign.publish_new(request)
+        campaign.run(requests[0])
+        # The first Campaign's items after its build already held claims of their own.
+        assert [seen["flow"] for seen in scenario.seen.values()] == [[250.0], [0], [0]]
+        assert [seen["items"] for seen in scenario.seen.values()] == [[], [250.0], [200.0]]
 
 
 def test_coverage_aggregate_reserves_its_build_and_coverage_phases(

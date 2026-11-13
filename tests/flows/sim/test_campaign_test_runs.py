@@ -126,7 +126,7 @@ def test_hdl_test_runs_that_differ_each_get_their_own_work_item(tmp_path: Path):
     assert len(document["build_variants"]) == 1
 
 
-def testwork_item_test_runs_round_trip_to_the_same_values(tmp_path: Path):
+def test_work_item_test_runs_round_trip_to_the_same_values(tmp_path: Path):
     plan = _hdl_plan(tmp_path, ((_SOAK,), (_FAULT,)))
     raw = encode_simulation_campaign_manifest(plan.manifest)
     manifest = decode_simulation_campaign_manifest(raw)

@@ -1,7 +1,7 @@
 """The Flow's Memory Reservation across a Campaign, and each work item's own (#3772, ADR 0087).
 
 The Flow reserves memory for preparation, the shared builds and any item that
-runs before the last build is settled. Then it drops to zero, keeping its claim
+runs before the running Campaign's last build is settled. Then it drops to zero, keeping its claim
 for its lease and cancellation, and each later item takes a claim of its own.
 """
 
@@ -67,19 +67,22 @@ class FlowClaim:
         self._settled.add((store_root, variant))
         self._unsettled.get(store_root, set()).discard(variant)
 
-    def release(self) -> bool:
-        """Drop the Flow's reservation to zero once no shared build is unsettled.
+    def release(self, store_root: Path) -> bool:
+        """Drop the Flow's reservation to zero once the Campaign at *store_root* has no unsettled build.
 
-        True from then on. False while a build is unsettled or when the drop is
-        refused (the Flow's lease is gone): an item then runs under the Flow's
-        claim, and the next item tries again.
+        Later Campaigns of the invocation do not hold the Flow's reservation:
+        their own building item reserves its build. True from then on. False
+        while this Campaign has an unsettled build or when the drop is refused
+        (the Flow's lease is gone): an item then runs under the Flow's claim,
+        and the next item tries again.
         """
         if self._dropped:
             return True
-        if any(self._unsettled.values()):
+        if self._unsettled.get(store_root):
             return False
         store, token = self._admission.slot_store, self._admission.outer_token
-        assert store is not None and isinstance(token, SlotToken), "a sized Flow holds a token"
+        if store is None or not isinstance(token, SlotToken):
+            raise RuntimeError("a sized Flow holds a Memory Reservation token")
         self._dropped = store.shrink_reservation(token, 0)
         return self._dropped
 
@@ -91,7 +94,7 @@ class FlowClaim:
         An item reserves its build when it builds inside itself: a private build,
         a coverage aggregate, Pre-Sim Commands, or a shared build nobody expected.
         """
-        if not self.release():
+        if not self.release(store_root):
             return None
         document = manifest.document
         workload = cast(Mapping[str, object], document["workload"])

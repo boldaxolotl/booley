@@ -83,7 +83,12 @@ def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_ro
         return "orphaned"
     if observed == ProcessState.UNKNOWN:
         return "unavailable"
-    matched = [token for token in slots if token.owner_identity == identity]
+    # Child lanes (one execution each) run under the Job's PID but are not the Job's own entry.
+    matched = [
+        token
+        for token in slots
+        if token.owner_identity == identity and token.owner_kind != "execution"
+    ]
     if matched:
         return (
             "unavailable"
