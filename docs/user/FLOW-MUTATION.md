@@ -41,7 +41,7 @@ refused.
 | `--scope <file,...>` | RTL files to plant Mutants in; repeat the flag to add more. Default: the Target's own RTL, without testbench, vendored, and generated files. A file you name must be a Verilog or SystemVerilog source of the Target inside the Project: testbench files are refused, while vendored and generated files may be named explicitly. |
 | `--count <N\|auto>` | Number of Mutants (default `10`). `auto` derives it from the size of the scope, capped by the time limit (about one Mutant per 150 seconds, at least 3). |
 | `--seed <N>` | Non-negative integer that selects the Mutants (default `0`). Change it to try a different sample. |
-| `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up. |
+| `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up; when fewer Mutants run than `--count` (the candidates ran out), 80 % of the Mutants that ran, rounded up, invalid ones included. |
 | `--dry-run` | Validate the Target and scope and print the count, threshold, and seed. Nothing is built or simulated. |
 
 The shared options (`-C/--project`, `--timeout`, `--report-dir`, `--diagnostic`,
@@ -158,10 +158,11 @@ Only design code is mutated. Booley skips:
    one kind.
 
 If fewer candidates exist than `--count`, all of them run and the report says
-so. The knobs are `--scope` (where to look), `--count` (how many), and
-`--seed` (which sample); there is no filter by operator. The same RTL, scope,
-count, and seed choose the same Mutants (on a Verilator Target, with the same
-Verilator version).
+so. An unset `--min-detected` then becomes 80 % of the Mutants that ran, rounded
+up (invalid Mutants included), and the tally labels that base as scored. The knobs are `--scope` (where to
+look), `--count` (how many), and `--seed` (which sample); there is no filter by
+operator. The same RTL, scope, count, and seed choose the same Mutants (on a
+Verilator Target, with the same Verilator version).
 
 ## Reading results
 
@@ -172,7 +173,7 @@ verdict:
 [mutation_test] 10 Mutants (seed 0, count 10, generator 5, pyslang 9.0.0, Verilator 5.052 2025-02-01 rev v5.052)
 [mutation_test] sim sweep: 10/10 tested              4m
   8 detected (1 timeout), 0 invalid, 2 not detected
-  detected: 8/10 (required: 8/10, default 80% of --count)
+  detected: 8/10 (required: 8, default 80% of --count)
   NOT DETECTED [arithmetic-logical] rtl/alu.sv:42: 'a + b' -> 'a - b'
 …
 RESULT: PASS (8/10 detected)
