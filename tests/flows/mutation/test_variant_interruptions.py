@@ -21,11 +21,14 @@ from booley.flows.mutation.build_sources import (
     validate_mutation_closure,
 )
 from booley.flows.mutation.flow import (
+    Baseline,
+    GeneratedMutants,
     MutationFlow,
     MutationRunPlan,
     MutationSpec,
     MutationTestRun,
 )
+from booley.flows.mutation.generator import Mutant
 from booley.flows.mutation.variants import MutationVariantPlan
 from booley.mcp import job_results
 from booley.mcp.call_context import CallContext
@@ -152,7 +155,20 @@ def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
         formula_count=1,
         source_size_budget=None,
     )
-    endpoint._run_variant_sweep(plan, specs, variants, {})
+    ranked = tuple(
+        Mutant(
+            spec.mutant_id,
+            spec.category,
+            spec.file,
+            spec.line,
+            spec.original_code,
+            spec.mutated_code,
+            0,
+            0,
+        )
+        for spec in specs
+    )
+    endpoint._run_variant_sweep(plan, GeneratedMutants(plan, variants, {}, ranked), Baseline({}))
 
 
 def _command(worktree: Path, fifo: Path, stage: str) -> list[str]:

@@ -75,8 +75,24 @@ class MutationVariantPlan:
         scope_files: Sequence[str],
     ) -> MutationVariantPlan:
         """Resolve proposals against pristine source or raise one clear error."""
-        allowed = set(scope_files)
-        originals = cls._read_originals(work_dir, allowed)
+        originals = cls._read_originals(work_dir, set(scope_files))
+        return cls(work_dir, originals, cls._resolve_all(proposals, originals))
+
+    def with_proposals(self, proposals: Sequence[MutationProposal]) -> MutationVariantPlan:
+        """A plan for ``proposals`` over the pristine source this plan already read.
+
+        The files are not read again, so a later proposal is anchored against the same
+        snapshot as the first ones.  Raises like :meth:`resolve`.
+        """
+        return MutationVariantPlan(
+            self._work_dir, self._originals, self._resolve_all(proposals, self._originals)
+        )
+
+    @classmethod
+    def _resolve_all(
+        cls, proposals: Sequence[MutationProposal], originals: dict[str, bytes]
+    ) -> tuple[ResolvedMutation, ...]:
+        """Anchor every proposal in ``originals`` (the allowed scope files) or raise."""
         seen: set[int] = set()
         resolved: list[ResolvedMutation] = []
         for proposal in proposals:
@@ -85,12 +101,12 @@ class MutationVariantPlan:
                     f"mutation index must be unique and positive: {proposal.index}"
                 )
             seen.add(proposal.index)
-            if proposal.file not in allowed:
+            if proposal.file not in originals:
                 raise MutationVariantError(
                     f"mutation #{proposal.index} escapes scope: {proposal.file}"
                 )
             resolved.append(cls._resolve_one(proposal, originals[proposal.file]))
-        return cls(work_dir, originals, tuple(resolved))
+        return tuple(resolved)
 
     @staticmethod
     def _read_originals(work_dir: Path, scope_files: set[str]) -> dict[str, bytes]:
