@@ -39,7 +39,8 @@ SELECTIVE_FLOW_KNOBS = {
     "trace_args": frozenset({"sim"}),
     "trace_files": frozenset({"sim"}),
     "output_dir": frozenset({"synth"}),
-    "expected_latches": frozenset({"synth"}),
+    "expected_latches": frozenset({"synth", "fpga"}),
+    "expected_comb_loops": frozenset({"synth", "fpga"}),
     "timing_report_paths": frozenset({"synth"}),
 }
 

@@ -55,6 +55,7 @@ from booley.flows.eda_failures import (
     first_tool_diagnostic,
     strip_failure_markers,
 )
+from booley.flows.flow_config import expected_count
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
 from booley.flows.job_resources import resolved_source_bytes, resource_phase
@@ -85,7 +86,6 @@ from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.domain import TargetHandle
-from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent
 
 from .. import artifacts, run_evidence
@@ -190,21 +190,6 @@ _FPGA_METRIC_MAP: dict[str, str] = {
     "fmax_mhz": "fmax_mhz",
     "period_ns": "period_ns",
 }
-
-
-def _load_rtl_config(work_dir: Path) -> dict[str, Any]:
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config as load_config
-
-        return load_config(work_dir) or {}
-    except Exception:  # noqa: BLE001 — best-effort config read; any failure degrades to empty config
-        return {}
-
-
-def _load_flow_config(work_dir: Path) -> dict[str, Any]:
-    cfg = _load_rtl_config(work_dir)
-    flows = cfg.get("flows", {}) if cfg else {}
-    return config_section(flows, "fpga") if isinstance(flows, dict) else {}
 
 
 def _resolve_fpga_timeout_ms(work_dir: Path | None, requested: Any = None) -> int:
@@ -895,7 +880,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             work_root, min_mtime=result.dispatched_unix
         )
         metric_dict["exit_code"] = 0 if route_completed else result.returncode
-        metrics = self._metrics_from_parsed_reports(metric_dict, result.duration_s)
+        metrics = self._metrics_with_allowances(metric_dict, result.duration_s)
         metrics.route_completed = route_completed
         metrics.cache_fingerprint = fingerprint
         self._apply_route_report_error(metrics, report_error)
@@ -1043,7 +1028,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             return None
         parsed = fpga_edam.parse_fpga_reports(hit.report_text)
         parsed["exit_code"] = 0
-        metrics = self._metrics_from_parsed_reports(parsed, 0.0)
+        metrics = self._metrics_with_allowances(parsed, 0.0)
         if not metrics.passed:
             return None
         metrics.route_completed = True
@@ -1218,6 +1203,19 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             role = "impl" if run_dir.name.startswith("impl") else "synth"
             dirs.setdefault(role, run_dir)
         return artifacts.artifacts_block(self.args.work_dir, dirs=dirs).get("dirs", {})  # type: ignore[return-value]
+
+    def _metrics_with_allowances(self, raw: dict[str, Any], elapsed_s: float) -> FpgaMetrics:
+        """Parse *raw* reports and attach the declared ``[flows.fpga]`` allowances.
+
+        Used before the cache-store decision and on every cache reload, so a
+        cached route is reused only while it passes under the current allowance.
+        """
+        metrics = self._metrics_from_parsed_reports(raw, elapsed_s)
+        metrics.expected_latches = expected_count("fpga", self.args.work_dir, "expected_latches")
+        metrics.expected_comb_loops = expected_count(
+            "fpga", self.args.work_dir, "expected_comb_loops"
+        )
+        return metrics
 
     @staticmethod
     def _metrics_from_parsed_reports(raw: dict[str, Any], elapsed_s: float) -> FpgaMetrics:
@@ -1621,14 +1619,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
 
     @staticmethod
     def _format_critical_line(cfg: str, cur: FpgaMetrics) -> str:
-        parts = []
-        if cur.latches:
-            parts.append(f"{cur.latches} latches")
-        if cur.comb_loops:
-            parts.append(f"{cur.comb_loops} comb loops")
-        if cur.multi_driven:
-            parts.append(f"{cur.multi_driven} multi-driven")
-        return note_line(cfg, "CRITICAL", ", ".join(parts))
+        return note_line(cfg, "CRITICAL", cur.critical_summary())
 
     @staticmethod
     def _format_failure_output(cfg: str, cur: FpgaMetrics) -> str:
@@ -1647,7 +1638,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         if not cur.timing_met:
             return f"{cfg}: timing not met"
         if cur.has_critical:
-            return f"{cfg}: critical conditions"
+            return f"{cfg}: critical conditions: {cur.critical_summary()}"
         return f"{cfg}: failed"
 
     def _write_target_report(

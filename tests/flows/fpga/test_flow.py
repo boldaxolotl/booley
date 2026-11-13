@@ -759,6 +759,158 @@ def test_negative_wns_fails_fpga_criterion(
     assert entry.detail["timing_met"] is False
 
 
+def _run_structural_case(
+    tmp_path: Path,
+    state_file: Path,
+    *,
+    config_lines: str = "",
+    latches: int = 0,
+    comb_loops: int = 0,
+):
+    """Route one Target reporting *latches*/*comb_loops*; return (result, report JSON)."""
+    _write_project_config(tmp_path, execution_lines=config_lines)
+    flow = _flow(tmp_path, state_file)
+    parsed = {
+        "status": "pass",
+        "lut_count": 1200,
+        "ff_count": 700,
+        "wns_ns": 0.2,
+        "whs_ns": 0.1,
+        "latch_count": latches,
+        "comb_loop_count": comb_loops,
+    }
+    with (
+        patch.object(
+            FpgaImplFlow,
+            "_prepare_fpga_command",
+            return_value=_PreparedFpgaCommand(["make", "-C", "x"], tmp_path, "", False, None),
+        ),
+        patch.object(flow, "_route_evidence", return_value=(True, "")),
+        patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=parsed),
+        patch.object(
+            flow,
+            "_execute_boundary",
+            return_value=SubprocessResult(returncode=0, stdout="routed\n"),
+        ),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "fpga_default.json").read_text(encoding="utf-8"))
+    return result, report
+
+
+def _check_structural_allowance(
+    tmp_path: Path, state_file: Path, key: str, unexpected_key: str, count_kwarg: str
+) -> None:
+    """Pass at the declared count, fail one above it, naming actual/expected/excess."""
+    within_dir = tmp_path / "within"
+    within_dir.mkdir()
+    result, report = _run_structural_case(
+        within_dir,
+        state_file,
+        config_lines=f"{key} = 2\n",
+        **{count_kwarg: 2},
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    conditions = report["implementation"]["conditions"]
+    assert conditions[key] == 2
+    assert conditions[unexpected_key] == 0
+    assert conditions["has_critical"] is False
+    assert DevelopmentState.load(state_file).is_met("fpga_impl_ok_default")
+
+    over_dir = tmp_path / "over"
+    over_dir.mkdir()
+    result, report = _run_structural_case(
+        over_dir,
+        state_file,
+        config_lines=f"{key} = 2\n",
+        **{count_kwarg: 3},
+    )
+    assert result.exit_code == EXIT_FAILURE
+    conditions = report["implementation"]["conditions"]
+    assert conditions[unexpected_key] == 1
+    assert conditions["has_critical"] is True
+    assert "actual=3, expected=2, excess=1" in result.report_text
+    reasons = report["implementation"]["status"]["failure_reasons"]
+    assert any("actual=3, expected=2, excess=1" in reason for reason in reasons)
+
+
+def test_declared_latch_allowance_passes_and_excess_fails(
+    tmp_path: Path, state_file: Path
+) -> None:
+    _check_structural_allowance(
+        tmp_path, state_file, "expected_latches", "unexpected_latches", "latches"
+    )
+
+
+def test_declared_comb_loop_allowance_passes_and_excess_fails(
+    tmp_path: Path, state_file: Path
+) -> None:
+    _check_structural_allowance(
+        tmp_path, state_file, "expected_comb_loops", "unexpected_comb_loops", "comb_loops"
+    )
+
+
+def test_unset_structural_allowances_fail_any_latch_or_loop(
+    tmp_path: Path, state_file: Path
+) -> None:
+    """No knob (or a malformed one) keeps the strict behavior: any latch or loop fails."""
+    cases = {
+        "latch": ("", {"latches": 1}, "latches"),
+        "loop": ("", {"comb_loops": 1}, "comb_loops"),
+        "malformed": ("expected_latches = true\n", {"latches": 1}, "latches"),
+    }
+    for name, (config_lines, counts, noun) in cases.items():
+        case_dir = tmp_path / name
+        case_dir.mkdir()
+        result, report = _run_structural_case(
+            case_dir, state_file, config_lines=config_lines, **counts
+        )
+        assert result.exit_code == EXIT_FAILURE, name
+        assert "actual=1, expected=0, excess=1" in result.report_text, name
+        conditions = report["implementation"]["conditions"]
+        assert conditions["expected_latches"] == 0, name
+        assert conditions["expected_comb_loops"] == 0, name
+        assert conditions["unexpected_" + noun] == 1, name
+        reasons = report["implementation"]["status"]["failure_reasons"]
+        assert any("actual=1, expected=0, excess=1" in reason for reason in reasons), name
+
+
+def test_cached_route_reused_only_within_latch_allowance(tmp_path: Path, state_file: Path) -> None:
+    """A cached route with one latch is reused only while the allowance covers it."""
+    from booley.flows.fpga.backends.vivado.cache import CacheHit
+
+    parsed = {
+        "status": "pass",
+        "lut_count": 1,
+        "ff_count": 1,
+        "wns_ns": 0.1,
+        "whs_ns": 0.1,
+        "latch_count": 1,
+    }
+    outcomes = {}
+    for name, config_lines in {"allowed": "expected_latches = 1\n", "strict": ""}.items():
+        case_dir = tmp_path / name
+        case_dir.mkdir()
+        _write_project_config(case_dir, execution_lines=config_lines)
+        flow = _flow(case_dir, state_file)
+        flow._project_root = case_dir
+        work_root = work_root_for(case_dir, "fpga", "default")
+        work_root.mkdir(parents=True)
+        with (
+            patch.object(fpga_cache, "load", return_value=CacheHit("fingerprint", "reports", {})),
+            patch.object(flow, "_route_evidence", return_value=(True, "")),
+            patch(
+                "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=parsed
+            ),
+        ):
+            outcomes[name] = flow._load_cached_metrics(
+                "default", work_root, "fingerprint", require_bitstream=False
+            )
+
+    assert outcomes["allowed"] is not None and outcomes["allowed"].cached
+    assert outcomes["strict"] is None
+
+
 def test_enable_out_of_context_appends_synth_property(tmp_path: Path) -> None:
     """The OOC patch lands the -mode out_of_context property in the project tcl
     exactly once, even when applied to an already-patched materialization."""

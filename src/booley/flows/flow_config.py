@@ -80,3 +80,18 @@ def _load_flow_config(flow_name: str, work_dir: Path) -> dict[str, Any]:
         cfg = {}
     flows = cfg.get("flows", {})
     return config_section(flows, flow_name) if isinstance(flows, dict) else {}
+
+
+def expected_count(flow_name: str, work_dir: Path, key: str) -> int:
+    """Read one declared structural allowance, ``[flows.<flow_name>].<key>``.
+
+    One validation rule serves every allowance (``expected_latches`` and
+    ``expected_comb_loops`` under ``synth`` and ``fpga``). A missing,
+    negative, boolean, or non-integer value is treated as 0 rather than
+    silently widening the gate. The rationale lives in
+    ``docs/internals/FLOW_IMPLEMENTATION.md`` (Intentional latches and loops).
+    """
+    raw = _load_flow_config(flow_name, work_dir).get(key, 0)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 0
+    return max(0, raw)
