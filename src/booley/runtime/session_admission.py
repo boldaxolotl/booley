@@ -35,7 +35,11 @@ from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime.filesystem_utils import unlink_file
-from booley.runtime.platform_paths import host_path_from_docker_mount, same_host_path
+from booley.runtime.platform_paths import (
+    host_path_from_docker_mount,
+    run_captured_bounded,
+    same_host_path,
+)
 from booley.runtime.private_store import SESSION_STORE_REPAIR
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
@@ -84,8 +88,17 @@ class Sandbox:
     egress: str = "proxy"
 
 
-def _run(argv: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, check=False, timeout=timeout)
+#: Seconds an admission Docker command may run before it is killed.
+_DOCKER_TIMEOUT_S = 30
+
+
+def _run(argv: list[str], *, timeout: int = _DOCKER_TIMEOUT_S) -> subprocess.CompletedProcess[str]:
+    """Run *argv* capturing text; on timeout kill its whole process tree and raise.
+
+    Raises ``subprocess.TimeoutExpired`` within a bounded margin of *timeout*, even
+    when a descendant still holds the output pipes.
+    """
+    return run_captured_bounded(argv, timeout=timeout)
 
 
 def admit_start(
@@ -185,7 +198,7 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
     local_name = session_container_name(project_root)
     command = ["docker", "ps", "--no-trunc", "--format", _PROJECT_LISTING_FORMAT]
     try:
-        result = run(command, timeout=30)
+        result = run(command, timeout=_DOCKER_TIMEOUT_S)
         if result.returncode:
             raise AdmissionError("cannot enumerate Project Sandboxes safely: " + _detail(result))
         items = {}
@@ -307,7 +320,8 @@ def _foreign_listing(folder: str, project_id: str, name: str, root: str, local_n
 def _verify_workspace_mount(item: Sandbox, root: str, run: Run) -> None:
     container_id = item.container_id
     result = run(
-        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
+        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"],
+        timeout=_DOCKER_TIMEOUT_S,
     )
     try:
         if result.returncode:
@@ -350,7 +364,7 @@ def _inventory(run: Run) -> tuple[Sandbox, ...]:
         "--format",
         "{{.ID}}\t{{.Names}}",
     ]
-    result = run(command)
+    result = run(command, timeout=_DOCKER_TIMEOUT_S)
     if result.returncode:
         raise AdmissionError("cannot enumerate Booley Sandboxes safely: " + _detail(result))
     items = []
@@ -384,7 +398,8 @@ def _vscode_inventory(
             f"label={_FOLDER_LABEL}",
             "--format",
             '{{.ID}}\t{{.Names}}\t{{.Label "devcontainer.local_folder"}}',
-        ]
+        ],
+        timeout=_DOCKER_TIMEOUT_S,
     )
     if result.returncode:
         raise AdmissionError("cannot enumerate VS Code Sandboxes safely: " + _detail(result))
@@ -411,7 +426,8 @@ def _vscode_inventory(
 def _inspect_document(container_id: str, listed_name: str, run: Run) -> dict[str, Any]:
     """Run the one ``docker container inspect`` for a listed container and parse it."""
     result = run(
-        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
+        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"],
+        timeout=_DOCKER_TIMEOUT_S,
     )
     if result.returncode:
         raise AdmissionError(f"cannot inspect Sandbox {listed_name}: {_detail(result)}")
