@@ -51,21 +51,29 @@ def synth_job_requests(
 
 
 def _synthesize(
-    checkout: Path, selector: str, report_dir: Path, timeout_ms: int
-) -> dict[str, Any]:
-    """The actual synthesis Flow seam: standalone execution, then its canonical report."""
+    checkout: Path, selector: str, report_dir: Path, timeout_ms: int, *, armed: bool = False
+) -> tuple[dict[str, Any] | None, bool]:
+    """The actual synthesis Flow seam: standalone execution, then its canonical report.
+
+    Returns the report's envelope and whether the Flow reports an own OOM kill.
+    An *armed* run that was killed returns ``None`` before reading the report,
+    which the kill may have left missing.
+    """
     from booley.flows.execution_persistence import StandaloneFlowExecution
     from booley.flows.synth.flow import AsicSynthesizeFlow
     from booley.flows.synth.request import SynthRequest
 
-    AsicSynthesizeFlow().execute(
+    result = AsicSynthesizeFlow().execute(
         SynthRequest(
             target=selector, work_dir=checkout, report_dir=report_dir, timeout_ms=timeout_ms
         ),
         adapter=StandaloneFlowExecution(),
     )
+    oom_killed = result.outcome.oom_killed
+    if armed and oom_killed:
+        return None, True
     (report,) = report_dir.glob("synth_*.json")
-    return json.loads(report.read_text(encoding="utf-8"))["implementation"]
+    return json.loads(report.read_text(encoding="utf-8"))["implementation"], oom_killed
 
 
 def synth_row(unit: Mapping[str, Any], envelope: Mapping[str, Any]) -> dict[str, Any]:
@@ -84,7 +92,11 @@ def synth_row(unit: Mapping[str, Any], envelope: Mapping[str, Any]) -> dict[str,
 
 def measure_synth(request: Mapping[str, Any]) -> dict[str, Any]:
     """Run inside the watchdog child: synthesise the baseline Target once."""
-    from booley.mcp.sim_baseline_execution import _remaining_seconds, contents_stamp
+    from booley.mcp.sim_baseline_execution import (
+        _remaining_seconds,
+        contents_stamp,
+        oom_killed_result,
+    )
 
     checkout, output, target = (
         Path(request["checkout"]),
@@ -101,10 +113,19 @@ def measure_synth(request: Mapping[str, Any]) -> dict[str, Any]:
         return contents_stamp(fingerprint, SYNTH_BASELINE.freshness_key)
 
     before = stamp()
-    envelope = _synthesize(checkout, unit["name"], output / "reports", int(budget_s * 1000))
+    envelope, oom_killed = _synthesize(
+        checkout,
+        unit["name"],
+        output / "reports",
+        int(budget_s * 1000),
+        armed=request.get("armed") is True,
+    )
+    if envelope is None:
+        return oom_killed_result(request["schema"])
     return {
         "schema": request["schema"],
         "rows": [synth_row(unit, envelope)],
         "stamps": [before, stamp()],
         "reason": "",
+        "oom_killed": oom_killed,
     }
