@@ -380,6 +380,22 @@ def test_malformed_seats_field_is_read_as_no_claim(root, world):
     assert reloaded is not None and reloaded.memory == claim(100)
 
 
+def test_seat_blocked_front_starts_when_the_seat_holder_finishes_so_a_short_claim_jumps(
+    root, world
+):
+    store = make_store(root, world)
+    holder = job_slots.MemoryClaim(
+        budget_mb=BUDGET_MB, reservation_mb=100, wall_s=600.0, seats=(("vivado", 1),)
+    )
+    hold(store, world, 101, holder)
+    front = join(store, world, 102, seated(100, 1))  # memory fits; only the seat blocks it
+    short = join(store, world, 103, claim(100, wall_s=60.0))  # needs no seat, ends first
+    long = join(store, world, 104, claim(100, wall_s=900.0))  # outlasts the seat holder
+    assert store.refresh(front) == TokenState(QUEUED, position=0)
+    assert store.refresh(long).state == QUEUED
+    assert store.refresh(short).state == HOLDING
+
+
 def test_seat_cap_shape_is_validated():
     for cap in (0, -1, True, 1.5, "1"):
         with pytest.raises(ValueError):
