@@ -357,14 +357,14 @@ class _MemoryLoad:
         running = [held for _finish, held in self.finishes]
         if _fits_among(front, running, front.budget_mb):
             return now
-        remaining = sorted(self.finishes, key=lambda pair: pair[0])
-        while remaining:
-            finish, _released = remaining.pop(0)
-            if math.isinf(finish):
-                return None
-            if _fits_among(front, [held for _f, held in remaining], front.budget_mb):
-                return finish
-        return None
+        released = sorted(self.finishes, key=lambda pair: pair[0])
+        # Once every claim has finished the front fits, so a finish is always found.
+        finish = next(
+            when
+            for index, (when, _held) in enumerate(released)
+            if _fits_among(front, [held for _f, held in released[index + 1 :]], front.budget_mb)
+        )
+        return None if math.isinf(finish) else finish
 
     def _may_jump(self, claim: MemoryClaim, now: float) -> bool:
         """True when *claim* fits now and is estimated to finish before the front starts."""

@@ -474,3 +474,12 @@ def test_wall_clock_survives_the_entry_file(root, world):
     assert store.renew(token)
     reloaded = store._load_token(token.path)
     assert reloaded is not None and reloaded.memory == claim(100, wall_s=42.5)
+
+
+def test_front_that_can_start_now_under_its_own_budget_is_not_jumped(root, world):
+    store = make_store(root, world)
+    hold(store, world, 101, claim(500, wall_s=600.0))
+    front = join(store, world, 102, claim(400))  # fits its own 1000 MiB budget, not 800 MiB
+    jumper = join(store, world, 103, claim(50, wall_s=60.0, budget_mb=800.0))
+    assert store.refresh(jumper).state == QUEUED  # the front starts first, not later
+    assert store.refresh(front).state == HOLDING
