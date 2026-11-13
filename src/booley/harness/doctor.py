@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import shlex
 import shutil
 import socket
@@ -77,8 +76,9 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
-from booley.flows import execution, target_test_plan_inspection
+from booley.flows import execution, runtime_reality, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.fpga import vivado_startup
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -4032,14 +4032,12 @@ def _run_flow_audit(
         )
         if not targets:
             continue
-        _check_flow_runtime_reality(
+        _run_flow_runtime_inspection(
             project,
             flow_name,
             targets,
             flow_runtime=flow_runtime,
-            _pass=_pass,
-            _skip=_skip,
-            _fail=_fail,
+            _diagnostics=_diagnostics,
         )
         for target in targets:
             rejected_core = core_tree_inspection.rejected_target_core(
@@ -4063,170 +4061,27 @@ def _run_flow_audit(
             _diagnostics(outcome.report)
 
 
-def _check_flow_runtime_reality(
+def _run_flow_runtime_inspection(
     project: ProjectAudit,
     flow_name: str,
     targets: list[str],
     *,
     flow_runtime: _DoctorFlowRuntime,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
+    _diagnostics: Diagnostics,
 ) -> None:
-    """Probe every selected Target's EDA binary in the Sandbox."""
-    for binary in _runtime_probe_binaries(project, targets, flow_name=flow_name):
-        _check_session_binary(
-            flow_name,
-            binary,
-            flow_runtime=flow_runtime,
-            _pass=_pass,
-            _skip=_skip,
-            _fail=_fail,
-        )
-
-
-_EDA_TOOL_BINARIES = {
-    "verilator": "verilator",
-    "icarus": "iverilog",
-    "yosys": "yosys",
-    "vivado": "vivado",
-    "verible": "verible-verilog-lint",
-}
-
-
-def _runtime_probe_binaries(
-    project: ProjectAudit,
-    targets: list[str],
-    *,
-    flow_name: str | None = None,
-) -> list[str]:
-    """Return the distinct runtime executables required by selected Targets."""
-    if flow_name == "fpga":
-        return ["vivado"]
-    binaries: list[str] = []
-    try:
-        catalog = TargetCatalog.build(project.project_root)
-    except FuseSocError:
-        return binaries
-    for target in targets:
-        try:
-            handle = catalog.select(target)
-        except FuseSocError:
-            continue
-        eda_tool = handle.eda_tool or ""
-        family = LINT_EDA_TOOL_FAMILIES.get(eda_tool, eda_tool)
-        binary = _EDA_TOOL_BINARIES.get(family.lower())
-        if binary and binary not in binaries:
-            binaries.append(binary)
-    return binaries
-
-
-def _check_session_binary(
-    flow_name: str,
-    binary: str,
-    *,
-    flow_runtime: _DoctorFlowRuntime,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """PASS/FAIL on *binary* being on the Sandbox PATH."""
-    if flow_name == "fpga" and binary == "vivado":
-        _check_vivado_startup(flow_runtime, _pass=_pass, _skip=_skip, _fail=_fail)
-        return
-    label = f"{flow_name}: '{binary}' on the Sandbox PATH"
-    if flow_runtime.inside:
-        if shutil.which(binary):
-            _pass(label)
-        else:
-            _fail(
-                f"{flow_name}: '{binary}' is not on this container's PATH",
-                f"bake {binary} into the Sandbox Image and rebuild (booley init --force)",
-            )
-        return
-    if not flow_runtime.available:
-        _skip(f"{label} - container runtime unavailable")
-        return
-    try:
-        command = flow_runtime.command(["sh", "-c", f"command -v {binary}"])
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (session_runtime.SessionError, subprocess.SubprocessError, FileNotFoundError) as exc:
-        _fail(f"{label} (runtime/probe error: {exc})", "run 'booley init --seed' and retry")
-        return
-    if result.returncode == 0:
-        _pass(label)
-    else:
-        _fail(
-            f"{flow_name}: '{binary}' is not on the issued Sandbox PATH",
-            f"bake {binary} into the Sandbox Image and rebuild (booley init --force)",
-        )
-
-
-def _vivado_startup_command(marker: str) -> list[str]:
-    """Keep the Tcl probe, side files and tool process group Sandbox-local."""
-    script = (
-        "command -v timeout >/dev/null 2>&1 || { echo 'Vivado startup probe requires GNU timeout'; exit 127; }; "
-        "probe_dir=$(mktemp -d) || exit 1; "
-        "trap 'rm -rf -- \"$probe_dir\"' EXIT HUP INT TERM; "
-        'cd "$probe_dir" || exit 1; '
-        f"printf '%s\\n' 'puts {marker}' 'exit 0' > startup.tcl; "
-        "timeout --kill-after=2s 27s vivado -mode batch -nolog -nojournal -source startup.tcl"
+    """Render the Flow's runtime probe: Vivado startup for FPGA, else per-binary checks."""
+    request = runtime_reality.FlowRuntimeInspectionRequest(
+        flow_name=flow_name,
+        targets=tuple(targets),
+        project_root=project.project_root,
+        runtime_available=flow_runtime.available,
+        inside_sandbox=flow_runtime.inside,
+        sandbox_command=flow_runtime.command,
     )
-    return ["sh", "-c", script]
-
-
-def _check_vivado_startup(
-    flow_runtime: _DoctorFlowRuntime, *, _pass: Check, _skip: Check, _fail: Fail
-) -> None:
-    """Require this attempt's Tcl marker from a bounded actual batch startup."""
-    label = "fpga: Vivado batch startup"
-    if not flow_runtime.inside and not flow_runtime.available:
-        _skip(f"{label} - container runtime unavailable")
-        return
-    marker = "BOOLEY_VIVADO_STARTUP_" + secrets.token_hex(16)
-    try:
-        result = subprocess.run(
-            flow_runtime.command(_vivado_startup_command(marker)),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        _fail(
-            f"{label}: runtime did not complete within 30s",
-            "check Sandbox transport and Vivado startup",
-        )
-        return
-    except (session_runtime.SessionError, subprocess.SubprocessError, OSError) as exc:
-        _fail(
-            f"{label}: runtime/probe error: {str(exc)[:500]}", "run 'booley init --seed' and retry"
-        )
-        return
-    if result.returncode == 0 and marker in result.stdout.splitlines():
-        _pass(label)
-        return
-    if result.returncode in (124, 137):
-        cause = "Vivado did not start within 27s"
+    if flow_name == "fpga":
+        _diagnostics(vivado_startup.inspect_vivado_startup(request))
     else:
-        lines = (result.stdout + "\n" + result.stderr).splitlines()
-        cause = next(
-            (
-                line.strip()[:500]
-                for line in lines
-                if re.search(
-                    r"error|fatal|failed|cannot|missing|requires|not found", line, re.IGNORECASE
-                )
-            ),
-            f"current Tcl startup marker missing (exit {result.returncode})",
-        )
-    _fail(f"{label}: {cause}", "verify Vivado runtime dependencies in the Sandbox Image")
+        _diagnostics(runtime_reality.inspect_flow_runtime_reality(request))
 
 
 def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path, str]]:

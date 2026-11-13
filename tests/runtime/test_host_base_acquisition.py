@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import host_base_acquisition as owner
@@ -22,6 +23,12 @@ from booley.runtime.image_provenance import (
     LABEL_SCHEMA,
     PROVENANCE_SCHEMA,
 )
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of owner."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, owner)
 
 
 def _image(
@@ -97,7 +104,9 @@ def test_metadata_upgrade_preserves_layers_and_never_cold_builds(
     monkeypatch.setattr(
         owner.subprocess,
         "run",
-        lambda args, **_kw: mutations.append(args) or SimpleNamespace(returncode=0, stderr=""),
+        lambda args, **_kw: (
+            mutations.append(args) or subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        ),
     )
     if layers == ["base"]:
         assert owner.acquire(tmp_path) == "upgraded-id"
@@ -172,7 +181,7 @@ def _inspect_response(monkeypatch, *, returncode=0, stdout="", stderr=""):
     """Answer every ``docker image inspect`` with one canned CLI result."""
 
     def answer(*_args, **_kwargs):
-        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+        return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
 
     monkeypatch.setattr(interactive_docker, "_run_docker", answer)
     monkeypatch.setattr(owner.subprocess, "run", answer)
@@ -247,7 +256,7 @@ def test_upgrade_pins_parent_uses_thin_plan_and_rechecks_base(
         calls.append(command)
         if command[1] == "tag":
             records[command[-1]] = installed if command[2] == installed.image_id else candidate
-        return SimpleNamespace(returncode=0, stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     def build(_root, recipe, output, plan):
         parent = recipe.read_text().strip().removeprefix("FROM ")
@@ -373,10 +382,10 @@ def test_acquire_migration_failure_preserves_base_and_cleans_owned_tags(
             return None if failure == "alias" else installed
         return candidate
 
-    def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        return SimpleNamespace(
-            returncode=1 if command[1] == "image" else 0, stderr="image is in use"
+        return subprocess.CompletedProcess(
+            command, 1 if command[1] == "image" else 0, stdout="", stderr="image is in use"
         )
 
     monkeypatch.setattr(owner, "inspect_image_metadata", inspect)

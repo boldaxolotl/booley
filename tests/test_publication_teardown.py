@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _CHILD_TESTS = """
 from pathlib import Path
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.campaign_reports import campaign_invocation_lock
+from booley.flows.sim.record_reports import campaign_invocation_lock
 
 marker = Path(__MARKER__)
 reservation = None

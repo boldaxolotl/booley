@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from booley.runtime import platform_paths
 from booley.runtime.git_environment import inherited_git_environment
 
 
@@ -41,14 +42,13 @@ def ignored_paths(
 
 def _git(root: Path, arguments: list[str], payload: bytes | None = None) -> bytes:
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", *arguments],
             cwd=root,
             env=inherited_git_environment(),
             input=payload,
-            capture_output=True,
             timeout=30,
-            check=False,
+            text=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise OSError("Git ignored-input classification timed out") from exc

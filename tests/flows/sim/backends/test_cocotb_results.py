@@ -347,7 +347,7 @@ class TestResultsLineRoundTrip:
             cr.decode_results_payload(payload)
 
     def test_large_candidate_detail_is_safe_for_campaign_evidence(self):
-        from booley.flows.sim.campaign.codec import MAX_DETAIL_BYTES
+        from booley.flows.sim.record.codec import MAX_DETAIL_BYTES
 
         res = cr.CocotbResults(
             state=cr.STATE_OK,

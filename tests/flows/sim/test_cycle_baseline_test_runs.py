@@ -284,7 +284,7 @@ def test_campaign_criterion_names_why_the_comparison_is_inconclusive(tmp_path: P
     from booley.criteria.templates import cycle_count_criterion_key
     from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator, _OutcomeEvidence
     from booley.flows.test_runs import build_test_run
-    from tests.flows.sim.test_campaign_test_runs import _hdl_plan, _run_campaign
+    from tests.flows.sim.test_simulation_record_test_runs import _hdl_plan, _run_campaign
 
     run = build_test_run("count", seed=1)
     outcome = _run_campaign(tmp_path, _hdl_plan(tmp_path, ((run,),)))
@@ -380,7 +380,7 @@ def test_a_criterion_binds_only_the_baseline_observation_of_the_candidates_test_
 
 
 def test_prerequisite_facts_carry_the_baseline_work_items_test_run():
-    from booley.flows.sim.campaign.coordinator import _baseline_test_run_facts
+    from booley.flows.sim.record.coordinator import _baseline_test_run_facts
     from booley.flows.test_runs import build_test_run, test_run_document
 
     run = build_test_run("stress", variant="soak", seed=7, args=("+iters=9",))

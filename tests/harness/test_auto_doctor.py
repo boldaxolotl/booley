@@ -18,9 +18,16 @@ import pytest
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.bwave import vaporview_bridge
 from booley.harness import auto_doctor, doctor
-from booley.runtime import doctor_stamp, health, health_presentation, vaporview
+from booley.runtime import doctor_stamp, health, health_presentation, inspection, vaporview
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of vaporview, inspection."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, vaporview, inspection)
 
 
 @pytest.fixture(autouse=True)

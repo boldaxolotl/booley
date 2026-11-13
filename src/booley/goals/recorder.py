@@ -65,9 +65,9 @@ from booley.criteria.evidence_ledger import (
 )
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY, SOURCE_INVALIDATED_REASON
-from booley.flows.campaign_results import CampaignResultsReader, StartedCampaign
 from booley.flows.execution_persistence import AcceptanceRecordingError
-from booley.goals import campaign_accounting
+from booley.flows.simulation_record_results import CampaignResultsReader, StartedCampaign
+from booley.goals import simulation_record_accounting
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.binding import GoalRunBinding
 from booley.goals.freshness import (
@@ -432,10 +432,13 @@ class GoalEvidenceRecorder:
                     publication_checkpoint=self._checkpoint,
                 )
                 # The campaign's results are in the ledger now: nothing is left to adopt.
-                campaign_accounting.mark_published(
+                simulation_record_accounting.mark_published(
                     self._gate.store, self._binding.record_id, acceptance_facts
                 )
-            except (AcceptanceLedgerError, campaign_accounting.RegistrationFormatError) as exc:
+            except (
+                AcceptanceLedgerError,
+                simulation_record_accounting.RegistrationFormatError,
+            ) as exc:
                 raise AcceptanceRecordingError(str(exc)) from exc
             return transaction
 
@@ -446,14 +449,14 @@ class GoalEvidenceRecorder:
         registered with the freshness stamp of each Goal of its Target as
         the files are now, so that its finished results can be adopted with
         the contents they ran at if the campaign never publishes
-        (:mod:`booley.goals.campaign_accounting`). A run whose evidence the
+        (:mod:`booley.goals.simulation_record_accounting`). A run whose evidence the
         gate discards registers nothing: nothing it observes will count.
         """
         store = self._gate.store
         try:
             with self._gate.publishing(()):
                 self._account(store)
-                campaign_accounting.register_campaign(
+                simulation_record_accounting.register_campaign(
                     store, self._binding, campaign, self._start_stamp
                 )
         except EvidenceDiscarded:
@@ -465,7 +468,7 @@ class GoalEvidenceRecorder:
 
     def _account(self, store: GoalStore) -> None:
         """Bring earlier durable evidence into the ledger; this run's campaigns are its own."""
-        campaign_accounting.account_for_campaigns(
+        simulation_record_accounting.account_for_campaigns(
             store,
             self._binding.record_id,
             reader=self._campaign_reader,

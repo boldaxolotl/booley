@@ -70,9 +70,9 @@ def mandatory_file_locks(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     if sys.platform == "win32":
         return
-    from booley.flows.sim import campaign_retention
+    from booley.flows.sim import record_retention
 
-    monkeypatch.setattr(campaign_retention, "_MANDATORY_FILE_LOCKS", True)
+    monkeypatch.setattr(record_retention, "_MANDATORY_FILE_LOCKS", True)
     read_bytes = Path.read_bytes
     rename = Path.rename
 

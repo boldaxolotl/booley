@@ -109,9 +109,6 @@ def test_directory_alias_preserves_traversal(project_alias):
 
 
 def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
-    from booley.flows.sim.campaign import SimulationCampaignIntegrityError
-    from booley.flows.sim.campaign.resume import validate_resume_manifest
-    from booley.flows.sim.campaign_retention import CampaignRetentionError, _invocation
     from booley.flows.sim.coverage_analysis_input import (
         CoverageAnalysisError,
         read_coverage_campaign,
@@ -126,6 +123,9 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
         resolve_coverage_campaign_reference,
         resolve_persisted_coverage_campaign_reference,
     )
+    from booley.flows.sim.record import SimulationCampaignIntegrityError
+    from booley.flows.sim.record.resume import validate_resume_manifest
+    from booley.flows.sim.record_retention import CampaignRetentionError, _invocation
 
     alias, target = project_alias
     path = alias / "child/../coverage.json"

@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from booley.runtime import platform_paths
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.git_facts import is_rememberable, run_remembered
 from booley.runtime.history_commit import FileCommitError
@@ -43,14 +44,13 @@ def raw_git(
     environment.update(env or {})
 
     def run() -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(
+        return platform_paths.run_captured_bounded(
             ["git", *args],
             cwd=repository,
             env=environment,
             input=input_bytes,
-            capture_output=True,
             timeout=60,
-            check=False,
+            text=False,
         )
 
     try:

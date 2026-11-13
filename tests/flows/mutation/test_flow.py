@@ -230,7 +230,7 @@ def _two_core_endpoint(
     criteria: dict[str, dict[str, Any]],
     *,
     target: str = _CORE_A_FIRST,
-    scope: str = "x.v",
+    scope: str | None = "x.v",
     strict: bool = False,
 ) -> MutationFlow:
     """Endpoint on a two-core Project (both declare ``first``) holding *criteria*."""
@@ -242,9 +242,9 @@ def _two_core_endpoint(
     return endpoint
 
 
-@pytest.mark.parametrize("scope", ["x.v", ""], ids=["explicit-scope", "criterion-scope"])
+@pytest.mark.parametrize("scope", ["x.v", None], ids=["explicit-scope", "criterion-scope"])
 def test_qualified_target_applies_criterion_settings(
-    tmp_path: Path, monkeypatch, scope: str
+    tmp_path: Path, monkeypatch, scope: str | None
 ) -> None:
     """``--target vlnv#name`` reads the Target-name criterion, not a core-bound sibling."""
     endpoint = _two_core_endpoint(
@@ -305,31 +305,11 @@ def test_qualified_target_without_any_scope_defaults_to_its_own_rtl(
 ) -> None:
     """A criterion that declares no scope leaves the scope to the Target's own RTL."""
     endpoint = _two_core_endpoint(
-        tmp_path, monkeypatch, {"mutation_score_first": {"total": 7}}, scope=""
+        tmp_path, monkeypatch, {"mutation_score_first": {"total": 7}}, scope=None
     )
 
     assert endpoint._apply_campaign_defaults() is None
     assert (endpoint.args.scope, endpoint.args.count) == ("x.v", 7)
-
-
-def test_target_with_no_mutable_rtl_has_no_default_scope(tmp_path: Path, monkeypatch) -> None:
-    """A Target of only testbench files refuses instead of mutating nothing."""
-    write_two_core_sim_project(
-        tmp_path, '["vendor:a:x:1.0#first"]\ntests = ["one"]\n', target="first"
-    )
-    core = tmp_path / "x.core"
-    core.write_text(
-        core.read_text().replace(
-            "{files: [x.v], file_type: verilogSource}",
-            "{files: [x.v], file_type: verilogSource, tags: [tb]}",
-        )
-    )
-    endpoint = _make_endpoint(tmp_path, monkeypatch, target=_CORE_A_FIRST, scope=None, count=None)
-
-    result = endpoint._apply_campaign_defaults()
-
-    assert result is not None and result.exit_code == EXIT_FAILURE
-    assert "has no mutable RTL" in result.report_text
 
 
 def _eighty_percent(count: int) -> int:
@@ -1277,7 +1257,7 @@ def _campaign(
     tmp_path: Path,
     monkeypatch,
     *,
-    scope: str = _SCOPE,
+    scope: str | None = _SCOPE,
     run: Callable[[int | None], subprocess.CompletedProcess] | None = None,
     build: Callable[[int | None], subprocess.CompletedProcess] | None = None,
     simulation: dict[str, Any] | None = None,
@@ -1285,10 +1265,13 @@ def _campaign(
 ) -> tuple[MutationFlow, EndpointOutcome, FakeSimulation]:
     """Run one whole campaign of the scope file ``rtl/mod_a.sv`` (30 sites) on fake results.
 
+    ``scope=None`` leaves ``--scope`` out, so the Target's own RTL (that file) is the scope.
+    Comma-separated scope entries are each prepared as a file.
+
     ``simulation`` holds the extra arguments of ``_patch_fake_simulation`` (the Target's
     simulator, whether builds leave Verilator C++, the Verilator version).
     """
-    _prepare_scope_files(tmp_path, [scope])
+    _prepare_scope_files(tmp_path, (scope or _SCOPE).split(","))
     fake = _patch_fake_simulation(monkeypatch, run=run, build=build, **(simulation or {}))
     endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, **endpoint_args)
     return endpoint, endpoint._run(), fake
@@ -1473,7 +1456,7 @@ def test_omitted_scope_with_a_declared_criterion_scope_uses_the_criterion(
     tmp_path: Path, monkeypatch
 ) -> None:
     endpoint = _two_core_endpoint(
-        tmp_path, monkeypatch, {"mutation_score_first": {"scope": ["y.v"], "total": 3}}, scope=""
+        tmp_path, monkeypatch, {"mutation_score_first": {"scope": ["y.v"], "total": 3}}, scope=None
     )
 
     assert endpoint._apply_campaign_defaults() is None
@@ -1624,7 +1607,6 @@ def test_generator_failures_refuse_before_any_build(
 
     assert result.exit_code == EXIT_ERROR
     assert message in result.report_text
-    assert "pass --scope to choose the files to mutate" in result.report_text
     assert result.detail["phase"] == "mutant_generation"
     assert fake.builds == []
 
@@ -1889,12 +1871,22 @@ class TestValidateScopeAgainstTarget:
         endpoint = _make_endpoint(tmp_path, target="sim")
         # The stealth-cores mirror path is NOT a resolved source; its basename
         # (counter.sv) matches rtl/counter.sv, so a "did you mean" hint fires.
-        result = endpoint._validate_scope_against_target(
-            [".booley/cores/rtl/counter.sv"],
-        )
+        mirror = ".booley/cores/rtl/counter.sv"
+        (tmp_path / mirror).parent.mkdir(parents=True)
+        (tmp_path / mirror).write_text("// stub\n", encoding="utf-8")
+        result = endpoint._validate_scope_against_target([mirror])
         assert result is not None
-        assert result.exit_code == 1
+        assert result.exit_code == EXIT_ERROR
         assert "does not match" in result.report_text
+        assert "Did you mean 'rtl/counter.sv'" in result.report_text
+
+    def test_missing_mirror_path_says_it_does_not_exist_with_the_same_hint(self, tmp_path: Path):
+        _author_scope_core(tmp_path)
+        endpoint = _make_endpoint(tmp_path, target="sim")
+        result = endpoint._validate_scope_against_target([".booley/cores/rtl/counter.sv"])
+        assert result is not None
+        assert result.exit_code == EXIT_ERROR
+        assert "does not exist" in result.report_text
         assert "Did you mean 'rtl/counter.sv'" in result.report_text
 
     def test_refuses_when_target_unresolvable(self, tmp_path: Path):
@@ -2250,7 +2242,11 @@ def test_scope_accepts_canonical_rtl_through_symlink(
     assert expected in inspection.rtl_files
     endpoint = _make_endpoint(tmp_path, target="sim")
     assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
-    rejected = endpoint._validate_scope_against_target(["tb/tb_counter.sv"])
+    testbench = endpoint._validate_scope_against_target(["tb/tb_counter.sv"])
+    assert testbench is not None
+    assert "is a testbench file" in testbench.report_text
+    (tmp_path / "rtl/other.sv").write_text("// stub\n", encoding="utf-8")
+    rejected = endpoint._validate_scope_against_target(["rtl/other.sv"])
     assert rejected is not None
     assert "does not match" in rejected.report_text
     assert expected in rejected.report_text
@@ -2268,7 +2264,7 @@ def test_scope_rejects_rtl_symlink_outside_project(tmp_path: Path) -> None:
     endpoint = _make_endpoint(root, target="sim")
     rejected = endpoint._validate_scope_against_target([str(external)])
     assert rejected is not None
-    assert "does not match" in rejected.report_text
+    assert "outside the Project" in rejected.report_text
 
 
 def test_scope_refuses_when_identity_resolution_fails(tmp_path: Path) -> None:
@@ -2302,7 +2298,7 @@ def test_cpp_sim_harness_is_not_mutation_scope(tmp_path):
     endpoint = _make_endpoint(tmp_path, target="sim")
     result = endpoint._validate_scope_against_target(["tb/sim_main.cpp"])
     assert result is not None
-    assert result.exit_code != 0
+    assert result.exit_code == EXIT_ERROR
 
 
 def test_cpp_scope_refuses_before_generation_and_build(tmp_path):
@@ -2315,7 +2311,7 @@ def test_cpp_scope_refuses_before_generation_and_build(tmp_path):
         patch.object(endpoint, "_run_elab") as build,
     ):
         result = endpoint._run()
-    assert result.exit_code != 0
+    assert result.exit_code == EXIT_ERROR
     assert "not an HDL RTL mutation source" in result.report_text
     generate.assert_not_called()
     build.assert_not_called()

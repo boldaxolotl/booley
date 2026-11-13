@@ -38,6 +38,7 @@ from booley.config.sandbox import (
     project_image_name,
     project_sandbox_image,
 )
+from booley.runtime.platform_paths import run_captured_bounded
 
 logger = logging.getLogger(__name__)
 
@@ -237,7 +238,7 @@ def base_image_packages(image: str = BASE_IMAGE, *, timeout_s: int = 60) -> dict
     would have produced.
     """
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             [
                 "docker",
                 "run",
@@ -251,10 +252,7 @@ def base_image_packages(image: str = BASE_IMAGE, *, timeout_s: int = 60) -> dict
                 "--format=freeze",
                 "--disable-pip-version-check",
             ],
-            capture_output=True,
-            text=True,
             timeout=timeout_s,
-            check=False,
         )
     except (subprocess.SubprocessError, OSError):
         logger.debug("could not query packages in base image %s", image, exc_info=True)
@@ -431,7 +429,7 @@ def project_data_alias_capable(image_id: str) -> bool:
         "print('canonical-alias' if alias else 'directory')"
     )
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             [
                 "docker",
                 "run",
@@ -444,9 +442,6 @@ def project_data_alias_capable(image_id: str) -> bool:
                 "-c",
                 script,
             ],
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -509,13 +504,8 @@ def inspect_layout_image(image: str, *, executable: str = "docker") -> dict:
     import json
 
     try:
-        result = subprocess.run(
-            [executable, "image", "inspect", image],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        )
+        result = run_captured_bounded([executable, "image", "inspect", image], timeout=30)
+        result.check_returncode()
         rows = json.loads(result.stdout)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         raise RuntimeError(f"cannot inspect Booley Directory layout image {image}: {exc}") from exc
@@ -612,7 +602,7 @@ def _verify_layout_labels(original: dict, actual: dict) -> None:
 
 def _probe_layout_directory(image_id: str, *, executable: str = "docker") -> None:
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             [
                 executable,
                 "run",
@@ -625,9 +615,6 @@ def _probe_layout_directory(image_id: str, *, executable: str = "docker") -> Non
                 "-c",
                 'test -d /booley-project && ! test -L /booley-project && test "$(stat -c %u /booley-project)" = 0',
             ],
-            capture_output=True,
-            text=True,
-            check=False,
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -640,13 +627,11 @@ def _probe_layout_directory(image_id: str, *, executable: str = "docker") -> Non
 
 def _image_history(image_id: str, executable: str) -> list[str]:
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             [executable, "history", "--no-trunc", "--format", "{{.CreatedBy}}", image_id],
-            capture_output=True,
-            text=True,
-            check=True,
             timeout=30,
         )
+        result.check_returncode()
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f"cannot verify Booley Directory layout build history: {exc}") from exc
     if len(result.stdout) > 1_048_576:
