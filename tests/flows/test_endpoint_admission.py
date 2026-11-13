@@ -1192,3 +1192,140 @@ def test_switch_unset_phase_ends_change_no_claim(
         assert reservation_phases._active.get() is None
         assert heavy.path.read_bytes() == before
         assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+
+
+# --- Verilator -j from the container's cores and the running Jobs (#3246) ------------
+
+
+@contextmanager
+def _running_memory_jobs(booley_dir: Path, count: int) -> Iterator[None]:
+    """Hold *count* other Jobs' Memory Reservations (50 MiB each) in the memory Job Class."""
+    import os
+
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=MAX_HEAVY))
+    pid = os.getpid()
+    tokens = [
+        store.acquire(
+            job_slots.CLASS_MEMORY,
+            pid=pid,
+            argv=endpoint_admission._proc_cmdline(pid) or [],
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=50.0),
+        )
+        for _ in range(count)
+    ]
+    try:
+        yield
+    finally:
+        for token in tokens:
+            store.release(token)
+
+
+@pytest.fixture
+def eight_cores(monkeypatch: pytest.MonkeyPatch) -> None:
+    """8 available cores, and the old per-lane rule pinned to ``-j1`` (1 GiB heavy lane)."""
+    import importlib
+
+    from booley.flows.sim import build_parallelism
+
+    # Admission reads the cores from cpu_budget; the lane rule from build_parallelism.
+    # Resolved by name so a tree without cpu_budget still reaches its assertions.
+    for name in ("booley.runtime.cpu_budget", "booley.flows.sim.build_parallelism"):
+        try:
+            module = importlib.import_module(name)
+        except ModuleNotFoundError:
+            continue
+        monkeypatch.setattr(module, "_affinity_cpu_count", lambda: 8)
+        monkeypatch.setattr(module, "_read_text", lambda _path: None)
+    monkeypatch.setattr(
+        build_parallelism,
+        "_load_common_job_budget",
+        lambda _root: {"jobs": {"heavy_memory": "1g"}},
+    )
+
+
+def _verilator_inspection(*make_options: str) -> Any:
+    from tests.flows.sim.test_build_parallelism import _inspection
+
+    return _inspection(modern=make_options)
+
+
+def _verilator_arguments_in_admitted_job(
+    memory_runtime: Path, runtime: Path, *inspections: Any
+) -> list[tuple[str, ...]]:
+    """The Verilator backend arguments each inspection gets inside one admitted Job."""
+    from booley.flows.sim.build_parallelism import verilator_backend_arguments
+
+    # A history that fits beside the other Jobs' reservations.
+    _seed_history(memory_runtime, ("a", 40))
+    flow = AsicSynthesizeFlow()
+    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
+        return [verilator_backend_arguments(inspection) for inspection in inspections]
+
+
+@pytest.mark.usefixtures("eight_cores")
+def test_memory_admitted_verilator_build_shares_cores_with_one_running_job(
+    memory_runtime: Path, runtime: Path
+) -> None:
+    from booley.flows.sim.build_parallelism import verilator_backend_arguments
+
+    _seed_history(memory_runtime, ("a", 40))
+    flow = AsicSynthesizeFlow()
+    with (
+        _running_memory_jobs(memory_runtime, 1),
+        AdmissionGate(flow, _selection_prepared(flow, runtime)).enter(),
+    ):
+        inspection = _verilator_inspection()
+        assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
+        # The count is fixed at the Job's start: a Job that arrives later changes nothing.
+        with _running_memory_jobs(memory_runtime, 1):
+            assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
+
+
+@pytest.mark.usefixtures("eight_cores")
+def test_memory_admitted_verilator_build_alone_and_among_ten_jobs(
+    memory_runtime: Path, runtime: Path
+) -> None:
+    # Other running Jobs -> the -j this Job gets: 8 // (others + 1), rounded down.
+    expected = {0: "-j8", 2: "-j2", 9: "-j1"}
+    for others, jobs_option in expected.items():
+        with _running_memory_jobs(memory_runtime, others):
+            (arguments,) = _verilator_arguments_in_admitted_job(
+                memory_runtime, runtime, _verilator_inspection()
+            )
+        assert arguments == (jobs_option, "VM_PARALLEL_BUILDS=1"), f"{others} other Jobs"
+
+
+@pytest.mark.usefixtures("eight_cores")
+def test_memory_admitted_job_keeps_a_project_set_thread_count(
+    memory_runtime: Path, runtime: Path
+) -> None:
+    with _running_memory_jobs(memory_runtime, 1):
+        authored, plain = _verilator_arguments_in_admitted_job(
+            memory_runtime,
+            runtime,
+            _verilator_inspection("-j2"),
+            _verilator_inspection(),
+        )
+
+    # The authored -j2 passes through untouched; the same Job's other Target is shared.
+    assert authored == ()
+    assert plain == ("-j4", "VM_PARALLEL_BUILDS=1")
+
+
+def test_failed_thread_count_releases_the_memory_reservation(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(*_args: object) -> int:
+        raise OSError("slot directory unreadable")
+
+    monkeypatch.setattr(endpoint_admission, "job_threads_at_start", unreadable)
+    _seed_history(memory_runtime, ("a", 40))
+    flow = AsicSynthesizeFlow()
+    with (
+        pytest.raises(OSError, match="unreadable"),
+        AdmissionGate(flow, _selection_prepared(flow, runtime)).enter(),
+    ):
+        pytest.fail("admission must not be entered")
+
+    # The claim was admitted before the count failed; nothing may stay reserved.
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []

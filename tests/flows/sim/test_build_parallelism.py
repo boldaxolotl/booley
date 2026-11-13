@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -72,12 +73,12 @@ def test_affinity_below_host_cpu_count_is_authoritative(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        build_parallelism.os,
+        os,
         "sched_getaffinity",
         lambda _pid: {0, 1, 2},
         raising=False,
     )
-    monkeypatch.setattr(build_parallelism.os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
 
     assert build_parallelism._affinity_cpu_count() == 3
 
@@ -85,8 +86,8 @@ def test_affinity_below_host_cpu_count_is_authoritative(
 def test_affinity_falls_back_when_platform_has_no_affinity_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delattr(build_parallelism.os, "sched_getaffinity", raising=False)
-    monkeypatch.setattr(build_parallelism.os, "cpu_count", lambda: 7)
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 7)
 
     assert build_parallelism._affinity_cpu_count() == 7
 
@@ -97,8 +98,8 @@ def test_affinity_falls_back_when_platform_probe_fails(
     def unavailable(_pid: int) -> set[int]:
         raise OSError("affinity unavailable")
 
-    monkeypatch.setattr(build_parallelism.os, "sched_getaffinity", unavailable, raising=False)
-    monkeypatch.setattr(build_parallelism.os, "cpu_count", lambda: None)
+    monkeypatch.setattr(os, "sched_getaffinity", unavailable, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
 
     assert build_parallelism._affinity_cpu_count() == 1
 
@@ -284,3 +285,35 @@ def test_build_budget_defaults_when_the_main_directory_cannot_be_resolved(
     with caplog.at_level("WARNING"):
         assert build_parallelism._load_common_job_budget(None) == {}
     assert "selection is unusable" in caplog.text
+
+
+def test_switch_alone_moves_the_heavy_lane_to_the_container_cores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Switch unset: 8 cores / max_heavy 2 -> -j4. Switch set: the Job's cores, not the lane's."""
+    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
+    monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
+    monkeypatch.setattr(
+        build_parallelism,
+        "_load_common_job_budget",
+        lambda _root: {"jobs": {"max_heavy": 2, "heavy_memory": "16g"}},
+    )
+    inspection = _inspection()
+    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION", raising=False)
+
+    assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
+    # The Job's thread count is ignored off the switch.
+    monkeypatch.setenv("BOOLEY_INTERNAL_JOB_THREADS", "8")
+    assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
+    monkeypatch.delenv("BOOLEY_INTERNAL_JOB_THREADS")
+
+    # Switch set, no Job count (nothing else admitted): every available core.
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    assert verilator_backend_arguments(inspection) == ("-j8", "VM_PARALLEL_BUILDS=1")
+    # ... bounded by the container's CPU quota.
+    monkeypatch.setattr(
+        build_parallelism,
+        "_read_text",
+        lambda path: "400000 100000" if path.name == "cpu.max" else None,
+    )
+    assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")

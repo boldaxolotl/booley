@@ -31,7 +31,12 @@ from booley.flows.campaign_results import StartedCampaign
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import current_declaration
 from booley.flows.job_estimates import JobRequest, sim_job_request
-from booley.flows.memory_admission import measure_memory_claim, memory_admission_enabled
+from booley.flows.memory_admission import (
+    JOB_THREADS_ENV,
+    job_threads_at_start,
+    measure_memory_claim,
+    memory_admission_enabled,
+)
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, test_run_document
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
@@ -64,6 +69,7 @@ from booley.mcp.synth_baseline_execution import (
 )
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.git_ignore import ignored_paths
 from booley.runtime.process_group import (
     ProcessGroup,
@@ -577,15 +583,15 @@ def _slot_narrator(store: job_slots.SlotStore, job_class: str) -> Callable[[int 
 @contextmanager
 def _background_slot(
     owner: Mapping[str, Any], output: Path, work: tuple[Path, str, tuple[Any, ...]]
-) -> Iterator[job_slots.SlotToken]:
+) -> Iterator[tuple[job_slots.SlotToken, int | None]]:
     """Hold one background-priority claim of the Flow's Job Class while measuring.
 
     The supervisor, the process recorded on the Job, owns the claim so Job
-    status shows the wait. The wait spends the Job's own remaining budget:
-    a starved baseline ends unavailable rather than as a live Job that
-    readers report failed. Under the memory admission switch a heavy Job holds
+    status shows the wait, spending the Job's own remaining budget: a starved
+    baseline ends unavailable, not as a live Job readers report failed. Under the memory admission switch a heavy Job holds
     a background Memory Reservation (sized from *work*, the ``(checkout,
-    target, units)`` it measures) instead of a heavy slot.
+    target, units)`` it measures) instead of a heavy slot. Yields the claim and
+    the Job's thread count (``None`` without a Memory Reservation).
     """
     from booley.config.jobs import parse_caps
     from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
@@ -621,7 +627,8 @@ def _background_slot(
             f"baseline Job exceeded its total execution budget while waiting for a {job_class} slot"
         ) from exc
     try:
-        yield token
+        threads = None if memory is None else job_threads_at_start(store, available_cpu_count())
+        yield token, threads
     finally:
         store.release(token)
 
@@ -651,10 +658,12 @@ def execute_child(
         },
     )
     command = [sys.executable, "-m", "booley.mcp.sim_baseline_execution", str(document)]
-    with _background_slot(owner, output, (checkout, target, runs)) as token:
+    with _background_slot(owner, output, (checkout, target, runs)) as (token, threads):
         environment = detached_environment() | {
             job_slots.INHERITED_SLOT_ENV: f"{token.job_class}/{token.path.name}"
         }
+        if threads is not None:
+            environment[JOB_THREADS_ENV] = str(threads)
         process = subprocess.Popen(command, env=environment, **new_group_kwargs())
         group = capture_process_group(process)
         from booley.runtime.pid import capture_process_identity
