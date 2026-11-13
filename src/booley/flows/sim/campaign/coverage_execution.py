@@ -411,7 +411,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
 
 def _attempt_identity(request: WorkExecutionRequest) -> dict[str, object]:
     return {
-        "campaign_id": request.manifest.document["campaign_id"],
+        "simulation_record_id": request.manifest.document["simulation_record_id"],
         "work_item_id": request.work_item["work_item_id"],
         "attempt_id": request.attempt_id,
     }

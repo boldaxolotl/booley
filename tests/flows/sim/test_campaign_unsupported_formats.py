@@ -280,7 +280,7 @@ def test_a_0_3_0_projection_is_refused_naming_its_invocation(tmp_path) -> None:
     projection.update(
         {
             "$schema": _PROJECTION_V2,
-            "campaign_id": store.load_manifest().document["campaign_id"],
+            "simulation_record_id": store.load_manifest().document["simulation_record_id"],
             "campaign_manifest": {},
         }
     )

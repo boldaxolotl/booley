@@ -26,7 +26,7 @@ def _run(root: Path, test: str = "t") -> tuple[rd.RunDirectory, dict[str, str]]:
         work_item_key=test,
         attempt_key="a1",
     )
-    return run, {"campaign_id": "c", "work_item_id": test, "attempt_id": "a1"}
+    return run, {"simulation_record_id": "c", "work_item_id": test, "attempt_id": "a1"}
 
 
 def _make_marked_parent(root: Path) -> Path:
@@ -197,7 +197,7 @@ def test_templated_run_directory_follows_only_the_booley_dir_entry(
         work_item_key="t",
         attempt_key="a1",
     )
-    identity = {"campaign_id": "c", "work_item_id": "t", "attempt_id": "a1"}
+    identity = {"simulation_record_id": "c", "work_item_id": "t", "attempt_id": "a1"}
 
     if linked == "below":
         with (

@@ -248,10 +248,13 @@ class ResourceEstimator:
 
     def estimate(self, requests: Sequence[JobRequest]) -> JobEstimate:
         """Estimate a Job: one request per Target, phases concatenated in order."""
+        return self.estimate_keys(key for request in requests for key in phase_keys(request))
+
+    def estimate_keys(self, keys: Iterable[HistoryKey]) -> JobEstimate:
+        """Estimate one phase per entry of *keys*, in order."""
         return JobEstimate(
             tuple(
                 PhaseEstimate(key, self._memory.estimate(key), self._wall.estimate(key))
-                for request in requests
-                for key in phase_keys(request)
+                for key in keys
             )
         )

@@ -413,6 +413,74 @@ def test_sim_campaign_that_cannot_resolve_its_test_runs_is_unknown(
     assert flow.campaign_job_requests(_prepared()) is None
 
 
+def test_work_item_claim_reserves_its_build_only_when_it_builds() -> None:
+    """A work item reserves its run; its build too only when it builds inside itself (#3772)."""
+    records = [
+        _record("top", "sim_build", 400),
+        _record("top", "sim_run", 100, test_run="smoke"),
+    ]
+    request = JobRequest("sim", "top", test_runs=("smoke",))
+
+    def size(request, *, build, records=records, budget=BUDGET_MIB, error=None):
+        return _admission().plan_work_item_claim(
+            request, build=build, records=records, budget_mb=budget, budget_error=error
+        )
+
+    settled, _ = size(request, build=False)
+    building, _ = size(request, build=True)
+    assert (settled.reservation_mb, settled.run_alone) == (125.0, False)
+    assert (building.reservation_mb, building.run_alone) == (500.0, False)
+    # An item whose Target does not resolve, or whose run has no estimate, runs alone.
+    unknown, no_warning = size(None, build=False)
+    assert (unknown, no_warning) == (
+        job_slots.MemoryClaim(budget_mb=BUDGET_MIB, run_alone=True),
+        None,
+    )
+    unestimated, _ = size(request, build=False, records=[_record("top", "sim_build", 400)])
+    assert unestimated.run_alone
+    # Over the budget it runs alone, with the warning a Job gets; without a budget too.
+    huge = [_record("top", "sim_run", 2000, test_run="smoke")]
+    over, warning = size(request, build=False, records=huge)
+    assert over.run_alone
+    assert warning == (
+        "Memory estimate 2500 MiB exceeds the Memory Budget of 1200 MiB; this Job ran alone."
+    )
+    _, unavailable = size(request, build=False, budget=None, error="no MemTotal")
+    assert unavailable == "Memory Budget unavailable (no MemTotal); this Job ran alone."
+
+
+def test_work_item_request_resolves_each_target_plan_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = _sim_flow()
+    flow.begin_invocation()
+    plans: list[str] = []
+
+    def plan_of(selector: str) -> Any:
+        plans.append(selector)
+        if selector == "gone":
+            raise ValueError("no such Target")
+        return SimpleNamespace(target=selector)
+
+    monkeypatch.setattr(flow, "_target_test_plan", plan_of)
+    monkeypatch.setattr(
+        "booley.flows.sim.flow.sim_job_request",
+        lambda plan, runs, *, flags: JobRequest(
+            "sim", plan.target, test_runs=tuple(run.name for run in runs), flags=flags
+        ),
+    )
+    runs = (SimpleNamespace(name="smoke"),)
+
+    first = flow.work_item_job_request("top", runs, ("trace",))  # type: ignore[arg-type]
+    second = flow.work_item_job_request("top", runs, ())  # type: ignore[arg-type]
+
+    assert first == JobRequest("sim", "top", test_runs=("smoke",), flags=("trace",))
+    assert second == JobRequest("sim", "top", test_runs=("smoke",))
+    assert plans == ["top"]
+    # A Target that does not resolve is unknown, not an error: its item runs alone.
+    assert flow.work_item_job_request("gone", runs, ()) is None  # type: ignore[arg-type]
+
+
 def test_job_thread_count_prefers_the_admission_then_the_inherited_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

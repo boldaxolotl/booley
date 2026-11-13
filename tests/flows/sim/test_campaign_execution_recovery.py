@@ -691,8 +691,8 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
         attempts.append(attempt.directory / "attempt.json")
         published = SimulationAttempt(
             {
-                "$schema": "booley.simulation-attempt/v1",
-                "campaign_id": manifest.document["campaign_id"],
+                "$schema": "booley.simulation-attempt/v2",
+                "simulation_record_id": manifest.document["simulation_record_id"],
                 "manifest_sha256": manifest_digest(manifest),
                 "workload_sha256": "sha256:" + "0" * 64,
                 "work_item_id": attempt.item["work_item_id"],

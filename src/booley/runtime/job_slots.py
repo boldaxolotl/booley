@@ -242,6 +242,7 @@ class MemoryClaim:
     a reloaded token equals its owner's). Exactly one of ``reservation_mb`` and
     ``run_alone`` is given. A reservation above the budget could never start
     and would block the queue forever, so the caller must mark it run-alone.
+    A holder may drop to zero reservation; it then blocks no claim.
     ``seats`` lists the licensed EDA tools the Job holds one seat of, each with
     the Seat Cap it is judged against (persisted like ``budget_mb``).
     ``wall_s`` is the Job's own wall-clock estimate in seconds (``None`` when it
@@ -270,8 +271,8 @@ class MemoryClaim:
             return
         if self.reservation_mb is None:
             raise ValueError("a memory claim needs reservation_mb or run_alone")
-        if require_finite_number(self.reservation_mb, field="reservation_mb") <= 0:
-            raise ValueError(f"reservation_mb must be > 0, got {self.reservation_mb!r}")
+        if require_finite_number(self.reservation_mb, field="reservation_mb") < 0:
+            raise ValueError(f"reservation_mb must be >= 0, got {self.reservation_mb!r}")
         if self.reservation_mb > self.budget_mb:
             raise ValueError(
                 f"reservation_mb {self.reservation_mb!r} exceeds budget_mb {self.budget_mb!r}: "
@@ -437,13 +438,18 @@ def _holder_weight(claim: MemoryClaim) -> tuple[int, float]:
     return (0, 0.0) if claim.run_alone else (1, -(claim.reservation_mb or 0.0))
 
 
+def _reserves(claim: MemoryClaim) -> bool:
+    """True when *claim* holds memory: a run-alone claim or a reservation above zero."""
+    return claim.run_alone or bool(claim.reservation_mb)
+
+
 def _fits_among(claim: MemoryClaim, running: list[MemoryClaim], budget_mb: float) -> bool:
     """True when *claim* can start beside the *running* claims under *budget_mb*."""
     seats_held = Counter(tool for other in running for tool, _cap in other.seats)
     if any(seats_held[tool] >= cap for tool, cap in claim.seats):
         return False
     if claim.run_alone:
-        return not running
+        return not any(_reserves(other) for other in running)
     if any(other.run_alone for other in running):
         return False
     used_mb = sum(other.reservation_mb or 0.0 for other in running)
@@ -461,7 +467,7 @@ class _MemoryLoad:
 
     budget_mb: float
     used_mb: float = 0.0
-    running: int = 0
+    running: int = 0  # claims that reserve memory (a zero holder is none)
     alone: bool = False
     stopped: bool = False  # an earlier claim could not start: only a short claim may jump it
     seats_used: dict[str, int] = field(default_factory=dict[str, int])
@@ -488,7 +494,7 @@ class _MemoryLoad:
 
     def start(self, claim: MemoryClaim, finish: float) -> None:
         """Count *claim* as running until the estimated *finish* (``inf`` = unknown)."""
-        self.running += 1
+        self.running += _reserves(claim)
         self.alone = self.alone or claim.run_alone
         self.used_mb += claim.reservation_mb or 0.0
         for tool, _cap in claim.seats:
@@ -816,13 +822,18 @@ class SlotStore:
         execution_id: str | ExecutionId | None = None,
         memory: MemoryClaim | None = None,
         job: JobLabel | None = None,
+        bounded: bool = True,
     ) -> SlotToken:
         """Join *job_class* admission or raise when its bounded queue is full.
 
         *memory* is required for the memory class and refused for the others.
+        A claim that opens as zero is refused (only a holder reaches zero).
+        ``bounded=False`` skips the queue bound for an admitted Job's own claim.
         """
         if (memory is not None) != (job_class == CLASS_MEMORY):
             raise ValueError(f"a memory claim goes with the {CLASS_MEMORY} class only")
+        if memory is not None and not _reserves(memory):
+            raise ValueError("a new memory claim must reserve memory or run alone")
         if memory is None:
             self.caps.cap_for(job_class)  # an unknown class raises before any directory exists
         cls_dir = self.root / job_class
@@ -837,7 +848,7 @@ class SlotStore:
         # count can race a concurrent submit; the post-create rank check
         # catches whatever slips through.
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
-        if self._queue_overfull(job_class, priority, memory):
+        if bounded and self._queue_overfull(job_class, priority, memory):
             raise QueueFullError(self._refusal(job_class))
 
         created = self._now()
@@ -859,7 +870,7 @@ class SlotStore:
 
         # Post-create backstop: if a racing submit pushed us past the bound,
         # withdraw our own entry and refuse — the queue must stay bounded.
-        if self._queue_overfull(job_class, priority, memory, entry=token):
+        if bounded and self._queue_overfull(job_class, priority, memory, entry=token):
             self.release(token)
             raise QueueFullError(self._refusal(job_class))
         return token
@@ -1278,6 +1289,7 @@ class SlotStore:
         on_submitted: Callable[[SlotToken], None] | None = None,
         memory: MemoryClaim | None = None,
         job: JobLabel | None = None,
+        bounded: bool = True,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
 
@@ -1293,6 +1305,7 @@ class SlotStore:
             execution_id=execution_id,
             memory=memory,
             job=job,
+            bounded=bounded,
         )
         if on_submitted is not None:
             on_submitted(token)
@@ -1428,7 +1441,8 @@ class SlotStore:
         Returns True only when the on-disk claim now carries *reservation_mb*.
         Refuses, writing nothing, when the entry is not this lease's active
         holder (recovery may have claimed it), carries no sized claim, or
-        *reservation_mb* is not positive and lower than the held value. Waiters
+        *reservation_mb* is negative or not lower than the held value. Zero keeps
+        the lease and also works from a run-alone claim. Waiters
         read the claim fresh on their next poll, so a lower claim admits them.
         """
         with self._lease_gate(token) as acquired:
@@ -1444,16 +1458,23 @@ class SlotStore:
                 or current.lease_id != token.lease_id
                 or current.lease_state != LEASE_ACTIVE
                 or current.memory is None
-                or current.memory.reservation_mb is None
-                or not 0 < reservation_mb < current.memory.reservation_mb
+                or reservation_mb < 0
+                or not self._lowers(current.memory, reservation_mb)
             ):
                 return False
-            lowered = replace(current.memory, reservation_mb=reservation_mb)
+            lowered = replace(current.memory, reservation_mb=reservation_mb, run_alone=False)
             current.memory = lowered
             if not self._rewrite_token(current):
                 return False
             token.memory = lowered
             return True
+
+    @staticmethod
+    def _lowers(held: MemoryClaim, reservation_mb: float) -> bool:
+        """True when *reservation_mb* is a drop to zero or strictly under a sized *held* claim."""
+        if reservation_mb == 0:
+            return _reserves(held)
+        return held.reservation_mb is not None and reservation_mb < held.reservation_mb
 
     def _start_renewal(self, token: SlotToken) -> None:
         if not self._auto_renew or not token.lease_id or token.lease_id in self._renewals:

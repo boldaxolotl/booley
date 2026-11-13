@@ -401,7 +401,7 @@ def validate_acceptance_recovery(
 ) -> None:
     """Require byte-authenticated, idempotent acceptance recovery."""
     manifest, _ = _load(manifest_path)
-    campaign_id = manifest.get("campaign_id")
+    campaign_id = manifest.get("simulation_record_id")
     manifest_sha256 = _digest(_canonical(manifest))
     facts, envelope = _validate_intent(intent_path, campaign_id, manifest_sha256)
     _validate_consumed_results(facts, result_paths)

@@ -41,7 +41,7 @@ from tests.flows.sim.test_campaign_manifest_codec import (
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 
 _MISSING = "literal run directory must already exist"
-_IDENTITY = {"campaign_id": "c", "work_item_id": "w", "attempt_id": "a"}
+_IDENTITY = {"simulation_record_id": "c", "work_item_id": "w", "attempt_id": "a"}
 
 
 def literal_manifest(access: str, *, configured: str = "run"):
@@ -302,9 +302,9 @@ def test_owner_missing_run_cwd_fails_before_prerequisite_build(
                 "bytes": len(raw),
                 "sha256": manifest_digest(baseline),
                 "kind": "simulation_campaign_manifest",
-                "owner": baseline_json["campaign_id"],
+                "owner": baseline_json["simulation_record_id"],
             },
-            "campaign_id": baseline_json["campaign_id"],
+            "simulation_record_id": baseline_json["simulation_record_id"],
             "target": baseline_json["target"],
             "required_observation": "cycle_count",
             "work_item_id": baseline_json["work_items"][0]["work_item_id"],
@@ -332,9 +332,9 @@ def _prerequisite_entry(harness, manifest, slug: str) -> dict:
             "bytes": len(raw),
             "sha256": manifest_digest(manifest),
             "kind": "simulation_campaign_manifest",
-            "owner": document["campaign_id"],
+            "owner": document["simulation_record_id"],
         },
-        "campaign_id": document["campaign_id"],
+        "simulation_record_id": document["simulation_record_id"],
         "target": document["target"],
         "required_observation": "cycle_count",
         "work_item_id": document["work_items"][0]["work_item_id"],
@@ -350,7 +350,7 @@ def test_nested_prerequisite_missing_run_cwd_fails_before_deeper_build(
     leaf = _prerequisite_entry(harness, _baseline_manifest(), "leaf-revision")
     middle_document = json.loads(encode_simulation_campaign_manifest(_baseline_manifest()))
     middle_document.pop("fingerprints")
-    middle_document["campaign_id"] = "550e8400-e29b-41d4-a716-446655440001"
+    middle_document["simulation_record_id"] = "550e8400-e29b-41d4-a716-446655440001"
     middle_document["workload"]["run_cwd"]["configured"] = "middle-run"
     middle_document["prerequisites"] = [leaf]
     middle = _prerequisite_entry(harness, finalize_manifest(middle_document), "middle-revision")

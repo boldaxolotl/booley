@@ -248,7 +248,7 @@ def test_taxi_validator_requires_one_shared_build(tmp_path: Path) -> None:
     _write_json(
         build,
         {
-            "$schema": "booley.bundle-build-result/v1",
+            "$schema": "booley.bundle-build-result/v2",
             "state": "ready",
             "bundle": {"bundle_id": "bundle-1", "sharing": "shared_variant"},
         },

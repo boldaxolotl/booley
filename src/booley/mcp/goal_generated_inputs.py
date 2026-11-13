@@ -77,7 +77,7 @@ def _producer_manifest(runtime: Path, envelope: dict[str, Any]) -> Mapping[str, 
             # ``<invocation>/targets/<target>/record/manifest.json``
             raise exc.located(path.parents[3]) from None
         if (
-            producer["campaign_id"] != envelope["campaign_id"]
+            producer["simulation_record_id"] != envelope["campaign_id"]
             or producer["origin"] != envelope["origin"]
         ):
             raise LifecycleError("selected campaign manifest has a foreign producer identity")

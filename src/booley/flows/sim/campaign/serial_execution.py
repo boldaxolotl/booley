@@ -59,7 +59,7 @@ from booley.flows.sim.runtime_inputs import (
     materialize_campaign_runtime_inputs,
     safe_runtime_relative,
 )
-from booley.flows.test_runs import TestRun, test_run_from_document
+from booley.flows.test_runs import TestRun
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 
@@ -98,7 +98,7 @@ from .model import (
 from .planning import manifest_digest
 from .pre_sim_evidence import publish_pre_sim_firing
 from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
-from .test_run_binding import observation_test_runs
+from .test_run_binding import observation_test_runs, work_item_test_runs
 
 #: Where a build directory keeps its Simulator Bundle manifest.
 _BUNDLE_MANIFEST_PATH = "evidence/bundle.json"
@@ -324,7 +324,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     ) -> SimulationResult:
         """Claim the run directory and launch *build* (a ``(result, bundle, group)``) in it."""
         identity = {
-            "campaign_id": cast(str, request.manifest.document["campaign_id"]),
+            "simulation_record_id": cast(str, request.manifest.document["simulation_record_id"]),
             "work_item_id": cast(str, request.work_item["work_item_id"]),
             "attempt_id": request.attempt_id,
         }
@@ -375,7 +375,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             request, directory, BuildScope.shared(build_id, ordinal)
         )
         with execution.ordinary_group(
-            handle, names, _work_item_test_runs(request.work_item)
+            handle, names, work_item_test_runs(request.work_item)
         ) as group:
             _authenticate_planning_disclosure(request, group)
             captured = self._compile_and_capture(request, directory, attempt, group, workload)
@@ -462,7 +462,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     @staticmethod
     def _prepare_shared_launch(request, ready, execution, handle, names):
         with execution.ordinary_group(
-            handle, names, _work_item_test_runs(request.work_item)
+            handle, names, work_item_test_runs(request.work_item)
         ) as group:
             _authenticate_planning_disclosure(request, group)
             group.bind_authenticated_bundle(ready.build_execution)
@@ -477,7 +477,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     ) -> SimulationResult:
         started = time.monotonic()
         inputs = self._group_inputs(request)
-        runs = _work_item_test_runs(request.work_item)
+        runs = work_item_test_runs(request.work_item)
         with inputs.execution.ordinary_group(inputs.handle, inputs.names, runs) as group:
             prepared = self._prepare_bundle_artifacts(
                 request, build_directory, build_attempt, group, inputs, started
@@ -556,7 +556,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         return _GroupInputs(
             handle,
             names,
-            _work_item_test_runs(request.work_item),
+            work_item_test_runs(request.work_item),
             options,
             execution,
             workload,
@@ -582,7 +582,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             None,
             True,
             commands=_frozen_hook_commands(request),
-            test_runs=_work_item_test_runs(request.work_item),
+            test_runs=work_item_test_runs(request.work_item),
         )
         if pre_sim is not None:
             publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
@@ -740,7 +740,7 @@ def _immutable_hook_failure(
         run_cwd,
         False,
         commands=_frozen_hook_commands(request),
-        test_runs=_work_item_test_runs(request.work_item),
+        test_runs=work_item_test_runs(request.work_item),
     )
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
@@ -775,7 +775,7 @@ def simulation_attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt
     run = expand_run_directory(
         configured,
         project_root=request.project_root,
-        campaign_id=cast(str, request.manifest.document["campaign_id"]),
+        campaign_id=cast(str, request.manifest.document["simulation_record_id"]),
         target_key=target["selector"].replace("/", "%2F"),
         work_item_key=request.store.work_item_directory(
             cast(str, request.work_item["work_item_id"])
@@ -783,7 +783,7 @@ def simulation_attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt
         attempt_key=f"{request.attempt_ordinal:04d}-{request.attempt_id}",
     )
     document = {
-        "$schema": "booley.simulation-attempt/v1",
+        "$schema": "booley.simulation-attempt/v2",
         **_common(request),
         "attempt_id": request.attempt_id,
         "attempt_ordinal": request.attempt_ordinal,
@@ -925,21 +925,6 @@ def _fresh_shared_failure(
     )
 
 
-def _work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...]:
-    """The concrete Test Runs a work item froze.
-
-    Manifest decode reads these records raw, so this is where they are parsed
-    strictly; a failure means the record was altered after planning.
-    """
-    try:
-        return tuple(
-            test_run_from_document(entry)
-            for entry in cast(tuple[object, ...], work_item["test_runs"])
-        )
-    except ValueError as exc:
-        raise SimulationCampaignIntegrityError(f"work item Test Runs are invalid: {exc}") from exc
-
-
 def _setup_result(
     request: WorkExecutionRequest,
     build_directory: Path,
@@ -1000,7 +985,7 @@ def bundle_build_attempt(request: WorkExecutionRequest, scope: BuildScope) -> Bu
     workload = cast(Mapping[str, object], request.manifest.document["workload"])
     eda = cast(Mapping[str, str], workload["eda"])
     document = {
-        "$schema": "booley.bundle-build-attempt/v1",
+        "$schema": "booley.bundle-build-attempt/v2",
         **_common(request, include_work_item=False),
         "build_variant_id": request.work_item["build_variant_id"],
         "build_attempt_id": scope.build_attempt_id,
@@ -1021,7 +1006,7 @@ def bundle_build_attempt(request: WorkExecutionRequest, scope: BuildScope) -> Bu
 def _common(request: WorkExecutionRequest, *, include_work_item: bool = True) -> dict[str, object]:
     fingerprints = cast(Mapping[str, str], request.manifest.document["fingerprints"])
     common: dict[str, object] = {
-        "campaign_id": request.manifest.document["campaign_id"],
+        "simulation_record_id": request.manifest.document["simulation_record_id"],
         "manifest_sha256": manifest_digest(request.manifest),
         "workload_sha256": fingerprints["workload_sha256"],
     }
@@ -1062,7 +1047,7 @@ def _simulator_bundle(
 ) -> SimulatorBundle:
     attempt = build_attempt.document
     document = {
-        "$schema": "booley.simulator-bundle/v1",
+        "$schema": "booley.simulator-bundle/v2",
         **_common(request, include_work_item=False),
         "build_variant_id": request.work_item["build_variant_id"],
         "build_attempt_id": attempt["build_attempt_id"],
@@ -1091,7 +1076,7 @@ def _ready_result_document(
 ) -> dict[str, object]:
     build_id = cast(str, build_attempt.document["build_attempt_id"])
     return {
-        "$schema": "booley.bundle-build-result/v1",
+        "$schema": "booley.bundle-build-result/v2",
         **_common(request, include_work_item=False),
         "build_variant_id": request.work_item["build_variant_id"],
         "build_attempt": record_reference(
@@ -1232,7 +1217,7 @@ def _failed_build_result(
     )
     state = "infrastructure_error" if infrastructure else "design_failure"
     document = {
-        "$schema": "booley.bundle-build-result/v1",
+        "$schema": "booley.bundle-build-result/v2",
         **_common(request, include_work_item=False),
         "build_variant_id": request.work_item["build_variant_id"],
         "build_attempt": record_reference(
@@ -1470,7 +1455,7 @@ def create_snapshot(
         bundle_root=build_directory,
         snapshot_root=snapshot_root,
         identity=SnapshotAttemptIdentity(
-            campaign_id=cast(str, request.manifest.document["campaign_id"]),
+            campaign_id=cast(str, request.manifest.document["simulation_record_id"]),
             manifest_sha256=manifest_digest(request.manifest),
             workload_sha256=fingerprints["workload_sha256"],
             work_item_id=cast(str, request.work_item["work_item_id"]),

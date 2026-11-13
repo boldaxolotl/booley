@@ -14,7 +14,7 @@ CAMPAIGN_ID = "01234567-89ab-4def-8123-456789abcdef"
 def _origin(tmp_path):
     origin = tmp_path / "reports/sim/1/targets/sim_0/record/manifest.json"
     origin.parent.mkdir(parents=True)
-    origin.write_text(json.dumps({"campaign_id": CAMPAIGN_ID}) + "\n", encoding="utf-8")
+    origin.write_text(json.dumps({"simulation_record_id": CAMPAIGN_ID}) + "\n", encoding="utf-8")
     digest = "sha256:" + hashlib.sha256(origin.read_bytes()).hexdigest()
     return origin, digest
 
@@ -53,7 +53,7 @@ def _two_role_campaigns(tmp_path, monkeypatch):
     invocation = tmp_path / "reports/1"
 
     def baseline_role(document):
-        document["campaign_id"] = CAMPAIGN_ID
+        document["simulation_record_id"] = CAMPAIGN_ID
         document["target"].update(role="cycle_count_baseline", revision="baseline")
 
     _, baseline = _successful_pre_sim_campaign(
@@ -155,7 +155,7 @@ def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
     for receipt in origin.parent.glob("dependency-receipts/*.json"):
         assert set(json.loads(receipt.read_text())) == {
             "$schema",
-            "campaign_id",
+            "simulation_record_id",
             "dependent_invocation",
             "dependent_invocation_id",
             "manifest_sha256",
@@ -333,7 +333,7 @@ def test_dependency_receipt_rejects_malformed_fields(tmp_path, field, value, mes
     document = json.loads(receipt.read_text())
     assert len(read_campaign_dependencies(origin)) == 1
     if field == "missing":
-        del document["campaign_id"]
+        del document["simulation_record_id"]
     else:
         document[field] = value
     receipt.write_text("{" if field == "truncated" else json.dumps(document), encoding="utf-8")
@@ -344,7 +344,7 @@ def test_dependency_receipt_rejects_malformed_fields(tmp_path, field, value, mes
 
 @pytest.mark.parametrize(
     "manifest_document",
-    [[], {"campaign_id": "fedcba98-7654-4def-8123-456789abcdef"}],
+    [[], {"simulation_record_id": "fedcba98-7654-4def-8123-456789abcdef"}],
 )
 def test_dependency_receipt_reauthenticates_origin_manifest(tmp_path, manifest_document):
     from booley.flows.sim.campaign.dependency import (
@@ -401,7 +401,7 @@ def _cycle_baseline_manifest(names):
 
     document = json.loads(canonical_json_bytes(_manifest_for(names).document))
     document.pop("fingerprints")
-    document["campaign_id"] = CAMPAIGN_ID
+    document["simulation_record_id"] = CAMPAIGN_ID
     document["target"].update(role="cycle_count_baseline", revision="baseline")
     for ordinal, item in enumerate(document["work_items"]):
         item.update(target=document["target"], role="cycle_count_baseline", revision="baseline")
@@ -484,7 +484,7 @@ def test_relative_cycle_goals_on_two_tests_share_one_baseline_campaign(tmp_path,
         create_simulation_campaign_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     assert len(prerequisites) == 2
-    assert len({item["campaign_id"] for item in prerequisites}) == 1
+    assert len({item["simulation_record_id"] for item in prerequisites}) == 1
 
     candidate, counters = _run_campaign(
         tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), prerequisites), invocation
@@ -554,9 +554,9 @@ def test_a_campaign_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monke
             "bytes": 1,
             "sha256": "sha256:" + "a" * 64,
             "kind": "simulation_campaign_manifest",
-            "owner": own["campaign_id"],
+            "owner": own["simulation_record_id"],
         },
-        "campaign_id": own["campaign_id"],
+        "simulation_record_id": own["simulation_record_id"],
         "target": baseline.document["target"],
         "required_observation": "cycle_count",
         "work_item_id": baseline.document["work_items"][0]["work_item_id"],
@@ -583,7 +583,7 @@ def _write_candidate_with_prerequisite(tmp_path, manifest_path):
             "kind": "simulation_campaign_manifest",
             "owner": CAMPAIGN_ID,
         },
-        "campaign_id": CAMPAIGN_ID,
+        "simulation_record_id": CAMPAIGN_ID,
         "target": {**document["target"], "role": "cycle_count_baseline"},
         "required_observation": "cycle_count",
         "work_item_id": "item:0000:0123456789abcdef",
@@ -643,7 +643,10 @@ def test_planning_refuses_a_duplicate_prerequisite_link():
     from booley.flows.test_runs import build_test_run
 
     def document(ordinal):
-        return {"campaign_id": CAMPAIGN_ID, "work_item_id": f"item:{ordinal:04d}:0123456789abcdef"}
+        return {
+            "simulation_record_id": CAMPAIGN_ID,
+            "work_item_id": f"item:{ordinal:04d}:0123456789abcdef",
+        }
 
     alpha, beta, gamma = (build_test_run(name, seed=1) for name in ("alpha", "beta", "gamma"))
     by_run = {alpha.name: document(0), beta.name: document(1), gamma.name: document(1)}
