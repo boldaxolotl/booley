@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -14,7 +15,6 @@ from booley.flows.sim.build_parallelism import (
     load_verilator_build_budget,
     verilator_backend_arguments,
 )
-from booley.runtime import cpu_budget
 from booley.targets.domain import TargetHandle, TargetInspection
 
 
@@ -48,13 +48,13 @@ def test_cgroup_reader_ignores_absent_files_but_surfaces_access_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     missing = tmp_path / "missing"
-    assert cpu_budget._read_text(missing) is None
+    assert build_parallelism._read_text(missing) is None
 
     monkeypatch.setattr(
         Path, "read_text", lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("denied"))
     )
     with pytest.raises(PermissionError, match="denied"):
-        cpu_budget._read_text(tmp_path / "denied")
+        build_parallelism._read_text(tmp_path / "denied")
 
 
 def test_affinity_and_v2_quota_bound_each_heavy_lane() -> None:
@@ -73,23 +73,23 @@ def test_affinity_below_host_cpu_count_is_authoritative(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        cpu_budget.os,
+        os,
         "sched_getaffinity",
         lambda _pid: {0, 1, 2},
         raising=False,
     )
-    monkeypatch.setattr(cpu_budget.os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
 
-    assert cpu_budget._affinity_cpu_count() == 3
+    assert build_parallelism._affinity_cpu_count() == 3
 
 
 def test_affinity_falls_back_when_platform_has_no_affinity_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delattr(cpu_budget.os, "sched_getaffinity", raising=False)
-    monkeypatch.setattr(cpu_budget.os, "cpu_count", lambda: 7)
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 7)
 
-    assert cpu_budget._affinity_cpu_count() == 7
+    assert build_parallelism._affinity_cpu_count() == 7
 
 
 def test_affinity_falls_back_when_platform_probe_fails(
@@ -98,10 +98,10 @@ def test_affinity_falls_back_when_platform_probe_fails(
     def unavailable(_pid: int) -> set[int]:
         raise OSError("affinity unavailable")
 
-    monkeypatch.setattr(cpu_budget.os, "sched_getaffinity", unavailable, raising=False)
-    monkeypatch.setattr(cpu_budget.os, "cpu_count", lambda: None)
+    monkeypatch.setattr(os, "sched_getaffinity", unavailable, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
 
-    assert cpu_budget._affinity_cpu_count() == 1
+    assert build_parallelism._affinity_cpu_count() == 1
 
 
 @pytest.mark.parametrize(

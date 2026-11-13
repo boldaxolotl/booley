@@ -989,11 +989,15 @@ def _running_memory_jobs(booley_dir: Path, count: int) -> Iterator[None]:
 @pytest.fixture
 def eight_cores(monkeypatch: pytest.MonkeyPatch) -> None:
     """8 available cores, and the old per-lane rule pinned to ``-j1`` (1 GiB heavy lane)."""
-    from booley.flows.sim import build_parallelism
-    from booley.runtime import cpu_budget
+    import importlib
 
     # Admission reads the cores from cpu_budget; the lane rule from build_parallelism.
-    for module in (cpu_budget, build_parallelism):
+    # Resolved by name so a tree without cpu_budget still reaches its assertions.
+    for name in ("booley.runtime.cpu_budget", "booley.flows.sim.build_parallelism"):
+        try:
+            module = importlib.import_module(name)
+        except ModuleNotFoundError:
+            continue
         monkeypatch.setattr(module, "_affinity_cpu_count", lambda: 8)
         monkeypatch.setattr(module, "_read_text", lambda _path: None)
     monkeypatch.setattr(
