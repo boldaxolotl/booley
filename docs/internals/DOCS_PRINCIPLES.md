@@ -238,6 +238,23 @@ Commit `AGENTS.md` in the Booley Directory's own repository instead:
   ASIC), hard limits (no coverage on Icarus), and reference tables that must
   list every value.
 
+**EDA tools are variants too.** A Flow doc (a `FLOW-*.md` page, or a guide
+for one Flow such as `TESTS.md` and `COVERAGE.md`) describes what the Flow
+does in words that hold for every EDA tool it supports, and so does any
+summary of a Flow in another user doc. A Flow promises the same call and
+result whichever tool runs it, and tool-neutral text stays true when a tool
+is added.
+
+- Collapse only where tools differ. A fact every supported tool shares is
+  written neutrally and stays in the main text; a Flow with one tool keeps
+  its content visible.
+- When a tool changes what the user sees or does, put the difference in a
+  `With <Tool>` callout (`With Verilator`, `With Xcelium`).
+- Tool setup, such as waiver files and rule configs, goes in that tool's
+  Target recipe in `TARGETS.md`; the Flow doc links it.
+- Hard limits stay in the main text. So does example output, labeled with
+  the tool that produced it: "Example (Verilator):".
+
 ### 27. Mirror parallel variants
 
 If one step shows the Codex form next to the Claude form, every step does.
