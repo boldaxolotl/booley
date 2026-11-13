@@ -1130,4 +1130,6 @@ def test_jobs_owing_no_seat_ignore_seat_caps(
     fpga, prepared = _fpga_prepared(runtime, monkeypatch, enabled=False)
     with AdmissionGate(fpga, prepared).enter():
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
-        assert holder.memory == job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0)
+        assert holder.memory == job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25
+        )
