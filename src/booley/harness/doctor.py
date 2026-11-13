@@ -2892,7 +2892,7 @@ def _check_cli_credentials(
             if required
             else None
         ),
-        missing_fix="" if is_default else _missing_credential_fix(cli, auth_policy),
+        missing_fix="" if is_default else auth_token.missing_credential_fix(cli, auth_policy),
         is_default=is_default,
         missing_fails=runs_specialist and not is_default,
     )
@@ -2928,20 +2928,6 @@ def _check_cli_rotation_risk(
         plan=plan,
         display_overrides=reporter.display_overrides,
     )
-
-
-def _missing_credential_fix(cli: str, policy: str) -> str:
-    """The sign-in that *policy* accepts for *cli* (see ``auth_token.allowed_credential_keys``)."""
-    if cli == auth_token.APP_CLAUDE:
-        if policy == "api_key":
-            return f"export {auth_token.API_KEY_ENV[cli]}"
-        return "run claude and use /login, or on the host: booley auth --cli claude"
-    host_login = f"booley auth --cli {cli}"
-    if policy == "subscription":
-        return "codex login"
-    if policy == "api_key":
-        return f"export {auth_token.API_KEY_ENV[cli]}, or on the host: {host_login}"
-    return f"codex login, or on the host: {host_login}"
 
 
 def _report_agent_app_choice(reporter: _Reporter) -> tuple[bool, AgentAppChoice | None]:
