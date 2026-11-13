@@ -16,6 +16,11 @@ coordinator's process tree every ``RANK_INTERVAL_SECONDS``: a tool just
 started runs at its coordinator's value (still above the agent) for at most
 that long, and a re-rank after another Job starts or ends converges within one
 interval. Where ``/proc`` is unavailable nothing changes.
+
+A Simulation Campaign work item that holds a Memory Reservation of its own
+ranks as its own Job: it is newer than its Flow, and its registered processes
+(``work_item_processes``) and their descendants take the level its admission
+order gives, so an out-of-memory kill takes the newest item's simulator first.
 """
 
 from __future__ import annotations
@@ -23,10 +28,11 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from types import TracebackType
+from typing import Protocol
 
 from booley.runtime import job_slots, process_tree
 
@@ -53,6 +59,36 @@ LOWEST_COORDINATOR_ADJ = TOOL_ADJ[-1] - COORDINATOR_GAP
 _JOIN_TIMEOUT_SECONDS = 5.0
 
 
+class _PidSource(Protocol):
+    """What a running work item exposes to be ranked: the PIDs of its registered commands."""
+
+    def pids(self) -> tuple[int, ...]: ...
+
+
+# Work items of this process that hold a Memory Reservation of their own, by lease.
+_WORK_ITEMS: dict[str, _PidSource] = {}
+_WORK_ITEMS_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def work_item_processes(lease_id: str, processes: _PidSource) -> Iterator[None]:
+    """Rank the commands registered with *processes* as the Job that holds claim *lease_id*."""
+    with _WORK_ITEMS_LOCK:
+        _WORK_ITEMS[lease_id] = processes
+    try:
+        yield
+    finally:
+        with _WORK_ITEMS_LOCK:
+            _WORK_ITEMS.pop(lease_id, None)
+
+
+def _item_roots(lease_ids: Collection[str]) -> dict[str, tuple[int, ...]]:
+    """The registered command PIDs of each of *lease_ids* that is a ranked work item."""
+    with _WORK_ITEMS_LOCK:
+        sources = {lease: _WORK_ITEMS[lease] for lease in lease_ids if lease in _WORK_ITEMS}
+    return {lease: source.pids() for lease, source in sources.items()}
+
+
 def tool_adj(newer: int) -> int:
     """The tool level of a Job that *newer* running Jobs were admitted after."""
     return TOOL_ADJ[min(newer, len(TOOL_ADJ) - 1)]
@@ -77,9 +113,21 @@ class ProcOom:
             return False
         return True
 
-    def descendants(self, pid: int, exclude: Collection[int]) -> list[int]:
-        """*pid*'s descendants, skipping the subtrees rooted at *exclude*."""
-        return process_tree.descendant_pids(pid, exclude=exclude)
+    def subtrees(
+        self, pid: int, roots: Collection[int], exclude: Collection[int]
+    ) -> tuple[list[int], dict[int, list[int]]]:
+        """One ``/proc`` scan: *pid*'s descendants outside *roots*, and each root's subtree.
+
+        A root's subtree holds the root itself and its descendants. The subtrees
+        rooted at *exclude* are skipped throughout.
+        """
+        children = process_tree.children_map()
+        rest = process_tree.descendants_in(children, pid, exclude={*exclude, *roots})
+        by_root = {
+            root: [root, *process_tree.descendants_in(children, root, exclude=exclude)]
+            for root in roots
+        }
+        return rest, by_root
 
     def nested_in(self, pid: int, others: Collection[int]) -> bool:
         """Whether *pid* descends from one of the *others* (a Job inside another Job)."""
@@ -157,28 +205,41 @@ class JobOomRanking:
                 logger.debug("OOM ranking pass failed: %s", exc)
 
     def apply(self) -> None:
-        """Write the coordinator's and its descendants' values from the current holders.
+        """Write the coordinator's, its items' and its descendants' values from the current holders.
 
-        One PID is one Job, ordered by its earliest entry: a Campaign's work
-        item claims share the Flow's PID, so they never count as newer Jobs
-        against their own Flow and count once against another Job.
+        Every claim is one Job, ordered by its admission: a Campaign's work item
+        claims share the Flow's PID but each is newer than the Flow and than any
+        claim admitted before it. The processes of an item that holds its own
+        claim take that claim's level; everything else of the coordinator keeps
+        the Flow's level.
         """
         holders, _waiters = self._store.observe(job_slots.CLASS_MEMORY)
-        if not any(holder.lease_id == self._token.lease_id for holder in holders):
-            return  # the claim is gone; the next pass or the exit settles it
-        order: dict[int, tuple[int, str]] = {}
-        for holder in holders:
-            key = (holder.admitted or 0, holder.path.name)
-            order[holder.pid] = min(key, order.get(holder.pid, key))
-        own_key = order.get(self._token.pid)
+        keys = {holder.lease_id: (holder.admitted or 0, holder.path.name) for holder in holders}
+        own_key = keys.get(self._token.lease_id)
         if own_key is None:
-            return
-        others = {pid for pid in order if pid != self._token.pid}
-        newer = sum(1 for pid in others if order[pid] > own_key)
-        level = tool_adj(newer)
+            return  # the claim is gone; the next pass or the exit settles it
+
+        def level_of(key: tuple[int, str]) -> int:
+            return tool_adj(sum(1 for other in keys.values() if other > key))
+
+        others = {holder.pid for holder in holders if holder.pid != self._token.pid}
+        own_items = [
+            holder.lease_id
+            for holder in holders
+            if holder.pid == self._token.pid and holder.lease_id != self._token.lease_id
+        ]
+        roots = _item_roots(own_items)
+        item_roots = {root for pids in roots.values() for root in pids}
+        rest, by_root = self._proc.subtrees(self._token.pid, item_roots, others)
+        level = level_of(own_key)
         self._set(self._token.pid, level - COORDINATOR_GAP)
-        for pid in self._proc.descendants(self._token.pid, others):
+        for pid in rest:
             self._set(pid, level)
+        for lease, pids in roots.items():
+            item_level = level_of(keys[lease])
+            for root in pids:
+                for pid in by_root[root]:
+                    self._set(pid, item_level)
 
     def _set(self, pid: int, value: int) -> None:
         if self._stop.is_set():

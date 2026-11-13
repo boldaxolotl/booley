@@ -140,3 +140,28 @@ def test_inspection_export_cannot_follow_symlink_to_live_source(tmp_path):
     with pytest.raises(MutationVariantError):
         plan.write_variants(destination)
     assert "a + b" in source.read_text()
+
+
+def test_with_proposals_anchors_against_the_snapshot_already_read(tmp_path: Path):
+    path = _source(tmp_path, "module dut;\nassign y = a + b;\nassign z = c & d;\nendmodule\n")
+    plan = MutationVariantPlan.resolve([Proposal()], tmp_path, ["rtl/dut.sv"])
+    path.write_text("changed after the first read\n", encoding="utf-8")
+
+    later = plan.with_proposals([Proposal(index=2, line=3, original_code="c & d")])
+
+    # The new plan resolves against the first read, not the file as it is now.
+    assert [(m.index, m.line) for m in later.mutations] == [(2, 3)]
+    assert later.source_fingerprint() == plan.source_fingerprint()
+    assert [m.index for m in plan.mutations] == [1]  # the first plan is unchanged
+
+
+def test_with_proposals_validates_like_resolve(tmp_path: Path):
+    _source(tmp_path)
+    plan = MutationVariantPlan.resolve([Proposal()], tmp_path, ["rtl/dut.sv"])
+
+    with pytest.raises(MutationVariantError, match="escapes scope"):
+        plan.with_proposals([Proposal(file="rtl/other.sv")])
+    with pytest.raises(MutationVariantError, match="unique and positive"):
+        plan.with_proposals([Proposal(), Proposal()])
+    with pytest.raises(MutationVariantError, match="not found"):
+        plan.with_proposals([Proposal(original_code="a * b")])

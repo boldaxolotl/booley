@@ -67,6 +67,7 @@ PLAIN_TEXT_TARGETS: frozenset[str] = frozenset(
         "docs/user/STEALTH.md",
         "docs/user/GOAL-MODE.md",
         "docs/user/SPECIALISTS.md",
+        "docs/user/REVIEWER.md",
         "docs/user/CLI-REFERENCE.md",
         "docs/user/INSTALL.md",
         "docs/user/WINDOWS.md",

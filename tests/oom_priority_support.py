@@ -61,7 +61,7 @@ class FakeProc:
         self.values[pid] = value
         return True
 
-    def descendants(self, pid: int, exclude: Collection[int]) -> list[int]:
+    def _below(self, pid: int, exclude: Collection[int]) -> list[int]:
         found: list[int] = []
         frontier = [pid]
         while frontier:
@@ -70,6 +70,12 @@ class FakeProc:
                     found.append(child)
                     frontier.append(child)
         return found
+
+    def subtrees(
+        self, pid: int, roots: Collection[int], exclude: Collection[int]
+    ) -> tuple[list[int], dict[int, list[int]]]:
+        rest = self._below(pid, {*exclude, *roots})
+        return rest, {root: [root, *self._below(root, exclude)] for root in roots}
 
     def nested_in(self, pid: int, others: Collection[int]) -> bool:
         parent = self.parents.get(pid)

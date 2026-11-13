@@ -577,7 +577,12 @@ def _fake_inspection(work_dir) -> SimpleNamespace:
     )
 
 
-def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
+_VERILATOR_VERSION = "Verilator 5.052 2025-01-01 rev v5.052"
+
+
+def _patch_resolve_target(
+    monkeypatch, *, eda_tool: str | None = "verilator", verilator: str = _VERILATOR_VERSION
+):
     """Stub catalog selection and handle resolution — no real FuseSoC (Unit A.3).
 
     Returns a fake ResolvedTarget whose ``build_root`` is the requested build
@@ -677,6 +682,12 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
         "booley.flows.mutation.flow.prepare_simulation_build",
         _fake_prepare,
     )
+    # No faked test spawns a real `verilator`: the baseline build's version is `verilator`.
+    monkeypatch.setattr(
+        "booley.flows.mutation.flow.verilator_version",
+        lambda _environment: verilator,
+        raising=False,  # the node ids of the criterion tests must fail in their bodies on main
+    )
 
 
 @dataclass
@@ -690,8 +701,24 @@ class FakeSimulation:
 
 def _mutant_index(text: str) -> int | None:
     """The Mutant a build directory or launched work names, or ``None`` for the baseline."""
-    match = re.search(r"mutant_(\d+)", text)
+    # Anchored on the builds directory: a test's own name may end in `mutant_<digit>`.
+    match = re.search(r"builds[/\\]mutant_(\d+)", text)
     return int(match.group(1)) if match else None
+
+
+def _write_fake_verilation(build_root: Path) -> None:
+    """What a Verilator build leaves in its root: a dependency file and the RTL's C++.
+
+    The C++ names each staged source by its absolute path, as ``VL_STOP_MT`` does for a
+    design that calls ``$error``, and holds the source without the lines marked ``// dead``,
+    the code a default assignment that every branch overwrites compiles away.
+    """
+    (build_root / "Vtb__ver.d").write_bytes(b"Vtb.cpp: deps\n")
+    lines: list[bytes] = []
+    for staged in sorted(build_root.glob("src/**/*.sv")):
+        lines.append(f'VL_STOP_MT("{staged}", 1, "")'.encode())
+        lines += [line for line in staged.read_bytes().split(b"\n") if b"// dead" not in line]
+    (build_root / "Vtb___024root__0.cpp").write_bytes(b"\n".join(lines) + b"\n")
 
 
 def _patch_fake_simulation(
@@ -699,14 +726,19 @@ def _patch_fake_simulation(
     *,
     run: Callable[[int | None], subprocess.CompletedProcess] | None = None,
     build: Callable[[int | None], subprocess.CompletedProcess] | None = None,
+    eda_tool: str = "verilator",
+    verilate: Callable[[Path], None] | None = None,
+    verilator: str = _VERILATOR_VERSION,
 ) -> FakeSimulation:
     """Fake every build and simulator run of a mutation campaign.
 
     ``run(index)`` and ``build(index)`` return the process for the baseline
     (``index`` is ``None``) or Mutant ``index``; by default everything passes.
-    A ``run`` may raise ``subprocess.TimeoutExpired``.
+    A ``run`` may raise ``subprocess.TimeoutExpired``.  ``verilate(build_root)`` runs after
+    a build that passes, to leave what Verilator would (``_write_fake_verilation``);
+    ``verilator`` is the version the baseline build reports.
     """
-    _patch_resolve_target(monkeypatch)
+    _patch_resolve_target(monkeypatch, eda_tool=eda_tool, verilator=verilator)
     fake = FakeSimulation()
     original = subprocess.run
 
@@ -714,8 +746,11 @@ def _patch_fake_simulation(
         if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
             index = _mutant_index(" ".join(cmd))
             fake.builds.append(index)
-            return build(index) if build else _fake_proc(rc=0, stdout="[make] ok")
-        if isinstance(cmd, list) and "booley.flows.sim.backends.verilator" in " ".join(cmd):
+            built = build(index) if build else _fake_proc(rc=0, stdout="[make] ok")
+            if verilate and built.returncode == 0:
+                verilate(Path(cmd[2]))
+            return built
+        if isinstance(cmd, list) and f"booley.flows.sim.backends.{eda_tool}" in " ".join(cmd):
             index = _mutant_index(repr(launched_work(cmd)))
             fake.runs.append(index)
             fake.run_timeouts.append(kwargs["timeout"])
@@ -787,6 +822,11 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
             _fake_proc(rc=0),
         )[1],
     )
+    probed: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "booley.flows.mutation.flow.verilator_version",
+        lambda environment: probed.append(dict(environment)) or "Verilator 5.052",
+    )
     endpoint = _make_endpoint(tmp_path, monkeypatch)
 
     result = endpoint._run_elab("default", tmp_path, build_dir)
@@ -796,6 +836,12 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
     )
     assert captured == [["custom-build", "--exact-command"]]
     assert result.returncode == 0
+    # The baseline build records the version of the Verilator it builds with.
+    assert (build_dir / ".booley_verilator_version").read_text(encoding="utf-8") == (
+        "Verilator 5.052"
+    )
+    assert len(probed) == 1
+    assert probed[0]["PATH"] == os.environ["PATH"]
 
 
 @pytest.mark.parametrize(
@@ -1234,11 +1280,16 @@ def _campaign(
     scope: str = _SCOPE,
     run: Callable[[int | None], subprocess.CompletedProcess] | None = None,
     build: Callable[[int | None], subprocess.CompletedProcess] | None = None,
+    simulation: dict[str, Any] | None = None,
     **endpoint_args: Any,
 ) -> tuple[MutationFlow, EndpointOutcome, FakeSimulation]:
-    """Run one whole campaign of the scope file ``rtl/mod_a.sv`` (30 sites) on fake results."""
+    """Run one whole campaign of the scope file ``rtl/mod_a.sv`` (30 sites) on fake results.
+
+    ``simulation`` holds the extra arguments of ``_patch_fake_simulation`` (the Target's
+    simulator, whether builds leave Verilator C++, the Verilator version).
+    """
     _prepare_scope_files(tmp_path, [scope])
-    fake = _patch_fake_simulation(monkeypatch, run=run, build=build)
+    fake = _patch_fake_simulation(monkeypatch, run=run, build=build, **(simulation or {}))
     endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, **endpoint_args)
     return endpoint, endpoint._run(), fake
 
@@ -1623,6 +1674,7 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
         "pyslang_version": importlib.metadata.version("pyslang"),
         "seed": 5,
         "count": 2,
+        "verilator_version": _VERILATOR_VERSION,  # a Verilator Target records its version
     }
     criterion = endpoint.state.criteria[result.criterion_key].detail
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
@@ -1633,10 +1685,14 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
         "- Count: 2",
         f"- Generator version: {GENERATOR_VERSION}",
         f"- pyslang version: {expected['pyslang_version']}",
+        f"- Verilator version: {_VERILATOR_VERSION}",
         f"`{_SCOPE}`: {digest}",
     ):
         assert line in markdown
-    assert f"seed 5, count 2, generator {GENERATOR_VERSION}" in result.report_text
+    assert (
+        f"seed 5, count 2, generator {GENERATOR_VERSION}, "
+        f"pyslang {expected['pyslang_version']}, {_VERILATOR_VERSION})"
+    ) in result.report_text
 
 
 def test_happy_path_publishes_campaign_artifacts(tmp_path: Path, monkeypatch) -> None:
@@ -2347,3 +2403,337 @@ def test_scope_validation_requires_a_target(tmp_path: Path, monkeypatch) -> None
     outcome = endpoint._validate_scope_against_target([])
     assert outcome is not None
     assert outcome.report_text == "mutation: scope validation requires a Target"
+
+
+# ---------------------------------------------------------------------------
+# Equivalent Mutants: on a Verilator Target a Mutant that builds the baseline's
+# C++ is replaced by the next candidate (ADR 0088, amendment 2026-11-13)
+# ---------------------------------------------------------------------------
+
+# `y = 4'd0` is a default every `case` branch overwrites: the fake build drops its line.
+_DEAD_DEFAULT_RTL = """\
+module m (input logic [1:0] sel, input logic [3:0] a, input logic [3:0] b, output logic [3:0] y);
+  always_comb begin
+    y = 4'd0; // dead
+    case (sel)
+      2'd0: y = a & b;
+      2'd1: y = a | b;
+      2'd2: y = a ^ b;
+      default: y = ~a;
+    endcase
+  end
+endmodule
+"""
+_DEAD_LINE = 3
+_VERILATED = {"verilate": _write_fake_verilation}  # builds leave the C++ that is compared
+
+
+def _write_scope(tmp_path: Path, text: str = _DEAD_DEFAULT_RTL) -> None:
+    (tmp_path / "rtl").mkdir(exist_ok=True)
+    (tmp_path / _SCOPE).write_bytes(text.encode())
+
+
+def _candidates(tmp_path: Path, seed: int = 0) -> tuple[Any, ...]:
+    """Every candidate Mutant of the scope in pick order: the run's selection is a prefix.
+
+    Replacements for dropped Mutants follow that prefix in the same order.
+    """
+    from booley.flows.mutation.generator import generate_mutants
+
+    return generate_mutants(tmp_path, [_SCOPE], 10_000, seed).mutants
+
+
+def _expected_sweep(ranked: tuple[Any, ...], count: int) -> tuple[list[str], list[str]]:
+    """The (kept, dropped) Mutant IDs when the Mutants on the dead line build the baseline's C++."""
+    kept: list[str] = []
+    dropped: list[str] = []
+    for mutant in ranked:
+        if len(kept) == count:
+            break
+        (dropped if mutant.line == _DEAD_LINE else kept).append(mutant.id)
+    return kept, dropped
+
+
+def _expected_builds(ranked: tuple[Any, ...], count: int) -> list[int | None]:
+    """The Mutant numbers built in order (after the baseline's ``None``): a dropped
+    candidate's number is built again by the next candidate."""
+    builds: list[int | None] = [None]
+    kept = 0
+    for mutant in ranked:
+        if kept == count:
+            break
+        builds.append(kept + 1)
+        kept += mutant.line != _DEAD_LINE
+    return builds
+
+
+def test_verilator_equivalent_mutant_is_replaced_by_the_next_candidate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_scope(tmp_path)
+    ranked = _candidates(tmp_path)
+    kept, dropped = _expected_sweep(ranked, 4)
+    assert dropped, "the fixture must put a dead-line Mutant among the first candidates"
+
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=4,
+        seed=0,
+        min_detected=0,
+        run=_detects_every_mutant,
+        simulation=_VERILATED,
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert [row["id"] for row in result.detail["classified"]] == kept
+    assert result.detail["total_requested"] == len(result.detail["classified"]) == 4
+    assert "shortfall" not in result.detail
+    # The dropped Mutant was built (its C++ was compared) but never simulated, and the
+    # next candidate took its number and build directory.
+    assert fake.runs == [None, 1, 2, 3, 4]
+    assert fake.builds == _expected_builds(ranked, 4)
+    assert len(fake.builds) == 1 + len(kept) + len(dropped)
+    # Each build's C++ names its own private copy by absolute path, as `$error` does, and
+    # the dropped Mutant still matched the baseline's.
+    assert result.detail["equivalent_dropped"] == dropped
+
+
+def test_verilator_mutant_that_changes_the_build_is_scored(tmp_path: Path, monkeypatch) -> None:
+    _write_scope(tmp_path)
+    live = _candidates(tmp_path)[0]
+    assert live.line != _DEAD_LINE
+
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=1,
+        seed=0,
+        min_detected=1,
+        run=_detects_every_mutant,
+        simulation=_VERILATED,
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert fake.builds == [None, 1]
+    assert fake.runs == [None, 1]  # the Mutant's tests ran
+    assert [(row["id"], row["status"]) for row in result.detail["classified"]] == [
+        (live.id, "detected")
+    ]
+    assert result.detail["equivalent_dropped"] == []
+
+
+def test_dropped_mutants_are_in_the_detail_not_the_report(tmp_path: Path, monkeypatch) -> None:
+    _write_scope(tmp_path)
+    _, dropped = _expected_sweep(_candidates(tmp_path), 4)
+    assert dropped
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count=4, seed=0, min_detected=0, simulation=_VERILATED
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert result.detail["equivalent_dropped"] == dropped
+    campaign = (tmp_path / result.detail["artifacts"]["manifest"]).parent
+    texts = [
+        result.report_text,
+        _results_markdown(tmp_path, result),
+        (campaign / "mutation-specs.md").read_text(encoding="utf-8"),
+        (campaign / "manifest.json").read_text(encoding="utf-8"),
+        json.dumps(result.detail["classified"]),
+    ]
+    for text in texts:
+        for mutant_id in dropped:
+            assert mutant_id not in text
+        assert f"{_SCOPE}:{_DEAD_LINE})" not in text and f"{_SCOPE}:{_DEAD_LINE}]" not in text
+        assert "y = 4'd0" not in text
+    assert [row["index"] for row in result.detail["variant_files"]] == [1, 2, 3, 4]
+    assert "equivalent_dropped" not in result.report_text
+
+
+def test_running_out_during_replacement_reports_the_shortfall(tmp_path: Path, monkeypatch) -> None:
+    _write_scope(tmp_path)
+    ranked = _candidates(tmp_path)
+    kept, dropped = _expected_sweep(ranked, len(ranked))
+    assert dropped and len(kept) < len(ranked)
+
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=len(ranked),
+        seed=0,
+        run=_detects_every_mutant,
+        simulation=_VERILATED,
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    expected = (
+        f"only {len(kept)} candidate Mutants exist; "
+        f"returning all of them ({len(ranked)} requested)"
+    )
+    assert result.detail["shortfall"] == expected
+    assert expected in result.report_text
+    assert [row["id"] for row in result.detail["classified"]] == kept  # the Mutants it has
+    assert result.detail["equivalent_dropped"] == dropped
+    # The default threshold follows the Mutants kept, not the ones asked for.
+    assert result.detail["min_detected"] == _eighty_percent(len(kept))
+    assert result.detail["total_requested"] == len(kept)
+    assert fake.runs == [None, *range(1, len(kept) + 1)]
+
+
+def test_explicit_threshold_survives_a_shortfall_after_drops(tmp_path: Path, monkeypatch) -> None:
+    _write_scope(tmp_path)
+    count = len(_candidates(tmp_path))
+
+    _, result, _ = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=count,
+        seed=0,
+        min_detected=count,
+        run=_detects_every_mutant,
+        simulation=_VERILATED,
+    )
+
+    assert result.exit_code == EXIT_FAILURE  # more were required than the run could score
+    assert result.detail["min_detected"] == count
+
+
+def test_icarus_target_simulates_every_mutant_without_comparing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_scope(tmp_path)
+    ranked = _candidates(tmp_path)
+    assert any(mutant.line == _DEAD_LINE for mutant in ranked)
+
+    def refuse(*_args: Any) -> None:
+        pytest.fail("an Icarus Target must not compare builds")
+
+    monkeypatch.setattr("booley.flows.mutation.flow.generated_cpp", refuse, raising=False)
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=4,
+        seed=0,
+        min_detected=0,
+        run=_detects_every_mutant,
+        simulation={"eda_tool": "icarus", "verilate": _write_fake_verilation},
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert fake.runs == [None, 1, 2, 3, 4]
+    assert [row["id"] for row in result.detail["classified"]] == [m.id for m in ranked[:4]]
+    assert result.detail["equivalent_dropped"] == []
+    assert "verilator_version" not in result.detail["identity"]
+
+
+def test_invalid_verilator_mutant_is_not_replaced(tmp_path: Path, monkeypatch) -> None:
+    _write_scope(tmp_path)
+    first = _candidates(tmp_path)[0]
+
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=1,
+        seed=0,
+        min_detected=0,
+        build=lambda index: _fake_proc(rc=0 if index != 1 else 1, stdout="", stderr="syntax"),
+        simulation=_VERILATED,
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert [(row["id"], row["status"]) for row in result.detail["classified"]] == [
+        (first.id, "invalid")
+    ]
+    assert fake.builds == [None, 1]  # candidates remain, but an invalid Mutant keeps its slot
+    assert result.detail["equivalent_dropped"] == []
+
+
+def test_verilator_version_separates_run_identities(tmp_path: Path, monkeypatch) -> None:
+    identities = []
+    for name, simulation in (
+        ("old", {"verilator": "Verilator 5.052 2025-01-01"}),
+        ("new", {"verilator": "Verilator 5.054 2025-06-01"}),
+        ("icarus", {"eda_tool": "icarus"}),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        _write_scope(root)
+        _, result, _ = _campaign(
+            root, monkeypatch, count=2, seed=0, min_detected=0, simulation=simulation
+        )
+        assert result.exit_code == EXIT_SUCCESS, result.report_text
+        identities.append(result.detail["identity"])
+
+    old, new, icarus = identities
+    assert old["verilator_version"] == "Verilator 5.052 2025-01-01"
+    assert new["verilator_version"] == "Verilator 5.054 2025-06-01"
+    assert old != new
+    assert {**old, "verilator_version": None} == {**new, "verilator_version": None}
+    assert "verilator_version" not in icarus
+
+
+def test_inconclusive_run_after_a_drop_names_only_kept_mutants(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_scope(tmp_path)
+    ranked = _candidates(tmp_path)
+    kept, dropped = _expected_sweep(ranked, 3)
+    assert dropped
+
+    def run(index: int | None) -> subprocess.CompletedProcess:
+        if index == 2:
+            return _fake_proc(rc=1, stdout=_INFRA_OUT)
+        return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count=3, seed=0, run=run, simulation=_VERILATED
+    )
+
+    assert result.exit_code == EXIT_ERROR, result.report_text
+    assert result.detail["phase"] == "variant_infrastructure"
+    assert result.detail["equivalent_dropped"] == dropped
+    assert [mutation["id"] for mutation in result.detail["mutations"]] == kept
+    assert [row["id"] for row in result.detail["classified"]] == kept
+    assert [row["index"] for row in result.detail["variant_files"]] == [1, 2, 3]
+    for mutant_id in dropped:
+        assert mutant_id not in json.dumps(result.detail["mutations"])
+    assert f"{_SCOPE}:{_DEAD_LINE}" not in result.report_text
+
+
+def test_run_whose_every_candidate_builds_the_baseline_has_nothing_to_score(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_scope(tmp_path, "module m;\n  assign y = a + b; // dead\nendmodule\n")
+    ranked = _candidates(tmp_path)
+
+    _, result, fake = _campaign(tmp_path, monkeypatch, count=2, seed=0, simulation=_VERILATED)
+
+    assert result.exit_code == EXIT_ERROR
+    assert "no candidate Mutant changes what the Target builds" in result.report_text
+    assert result.detail["phase"] == "mutant_selection"
+    assert result.detail["equivalent_dropped"] == [m.id for m in ranked]
+    assert fake.runs == [None]  # no Mutant was simulated
+
+
+def test_mutant_whose_build_lacks_the_verilator_layout_is_still_simulated(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_scope(tmp_path)
+
+    def only_the_baseline_has_a_layout(build_root: Path) -> None:
+        if build_root.name == "baseline":
+            _write_fake_verilation(build_root)
+
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=4,
+        seed=0,
+        min_detected=0,
+        simulation={"verilate": only_the_baseline_has_a_layout},
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert fake.runs == [None, 1, 2, 3, 4]  # nothing matches the baseline: all are simulated
+    assert result.detail["equivalent_dropped"] == []

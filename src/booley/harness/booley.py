@@ -36,30 +36,16 @@ from typing import TYPE_CHECKING, Any, cast
 from booley.config.agent import AGENT_CLIS
 from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
-from booley.feedback.storage import feedback_storage_dir
 from booley.harness import (
     cheatsheet,
     coverage_cli,
-    feedback_view,
-    projects_view,
     resources_cli,
     upgrade_cli,
-    upgrade_review,
 )
-from booley.harness.auth_cmd import run_auth
-from booley.harness.bootstrap_cli import run_bootstrap
-from booley.harness.chat_cmd import run as run_chat
-from booley.harness.chat_cmd import session_name
-from booley.harness.doctor import run_doctor
-from booley.harness.feedback_environment import resolve_feedback_environment
-from booley.harness.init_cmd import run_init
-from booley.harness.render_md import render
 from booley.harness.setup import cleanup_cli
-from booley.harness.setup.common import configure_progress_output
 from booley.harness.terminal_status import MAX_WIDTH, section_header
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
-from booley.presentation import colors
 from booley.presentation.terminal_table import render_table, width_budget
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
@@ -497,6 +483,19 @@ class _RootHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
     def __init__(self, prog: str) -> None:
         super().__init__(prog, width=_help_width())
+
+
+_SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}")
+
+
+def _session_name(value: str) -> str:
+    """Validate a `--name` label (argparse ``type=``): the trimmed text, or a usage error."""
+    name = value.strip()
+    if _SESSION_NAME.fullmatch(name) is None:
+        raise argparse.ArgumentTypeError(
+            "use 1-32 letters, digits, spaces, '.', '_' or '-', starting with a letter or digit"
+        )
+    return name
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -996,7 +995,7 @@ def _add_utility_subparsers(sub) -> None:
         "--name",
         dest="session_name",
         metavar="NAME",
-        type=session_name,
+        type=_session_name,
         default=None,
         help=(
             "Label the session: the tab title and the Dashboard show `S3 · NAME` "
@@ -1500,6 +1499,8 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     # Drop the HTML-comment markers so they don't reach the terminal.
     text = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("<!--"))
 
+    from booley.harness.render_md import render
+
     rendered = render(text, width=width_budget())
     # The listing is TOML, not prose: it is never wrapped or inline-formatted.
     print(rendered if listing is None else rendered.replace(_METRICS_PLACEHOLDER, listing), end="")
@@ -1552,9 +1553,11 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
 
 def _report_upgrade_before_session(project_root: Path) -> None:
     """Observe host version state and advise before starting a Sandbox."""
-    try:
-        from booley.runtime.booley_dir import resolve_common_booley_dir
+    # Imported before the `try` so an import failure is not swallowed as advisory noise.
+    from booley.harness import upgrade_review
+    from booley.runtime.booley_dir import resolve_common_booley_dir
 
+    try:
         status = upgrade_review.observe(resolve_common_booley_dir(project_root))
     except Exception:  # noqa: BLE001 — advisory state must never block Session startup
         return
@@ -1565,9 +1568,11 @@ def _report_upgrade_before_session(project_root: Path) -> None:
 
 def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
     """Reconcile the Sandbox Image and replace its Sandbox."""
-    configure_progress_output()
     from booley.harness.session_refresh import refresh
+    from booley.harness.setup.common import configure_progress_output
     from booley.runtime import health
+
+    configure_progress_output()
 
     verbose = getattr(args, "verbose", False)
     result = refresh(project_root, verbose=verbose)
@@ -1809,6 +1814,7 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
 def _flow_listing(flows: list[McpToolInfo]) -> str:
     """Render available Flows for the CLI."""
     from booley.mcp.registry import flow_blurb
+    from booley.presentation import colors
 
     if not flows:
         return "  (none discovered)"
@@ -1821,6 +1827,7 @@ def _flow_listing(flows: list[McpToolInfo]) -> str:
 
 def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolInfo | int:
     """List or select a registered endpoint, with wrong-command guidance."""
+    from booley.presentation import colors
     from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW, canonical
 
     choices = [item for item in endpoints if item.kind == kind]
@@ -2051,18 +2058,55 @@ def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
 
 def _cmd_feedback(args: argparse.Namespace, project_root: Path) -> int:
     """Compose Doctor state only for Feedback operations that render it."""
+    from booley.feedback.storage import feedback_storage_dir
+    from booley.harness import feedback_view
+    from booley.harness.feedback_environment import resolve_feedback_environment
+
     env = None
     if feedback_cli.requires_environment(args):
         env = resolve_feedback_environment(feedback_storage_dir(project_root))
     return feedback_cli.run(args, project_root, env=env, list_view=feedback_view.render_listing)
 
 
+def _cmd_chat(args: argparse.Namespace, project_root: Path) -> int:
+    """Dispatch `booley chat`; the chat module loads only when it runs."""
+    from booley.harness.chat_cmd import run
+
+    return run(args, project_root)
+
+
+def _cmd_doctor(args: argparse.Namespace, project_root: Path) -> int:
+    """Dispatch `booley doctor`; Doctor and its audits load only when it runs."""
+    from booley.harness.doctor import run_doctor
+
+    return run_doctor(args, project_root)
+
+
+def _cmd_init(args: argparse.Namespace, project_root: Path) -> int:
+    """Dispatch `booley init`; the init module loads only when it runs."""
+    from booley.harness.init_cmd import run_init
+
+    return run_init(args, project_root)
+
+
+def _cmd_auth(args: argparse.Namespace, project_root: Path | None) -> int:
+    """Dispatch `booley auth`; the auth module loads only when it runs."""
+    from booley.harness.auth_cmd import run_auth
+
+    return run_auth(args, project_root)
+
+
+# Startup rule (enforced by tests/harness/test_cli_startup_imports.py): a module that only a
+# handler needs is imported inside that handler, never at the top of this file. Top-level
+# imports serve parser build, CLI normalization and dispatch, so `booley --help` and
+# `--version` do not pay for commands they never run. Entries that name an imported module's
+# function (`resources_cli.run`, ...) are fine: those modules also register their subparser.
 _EARLY_COMMANDS: dict[str, Callable] = {
-    "chat": run_chat,
+    "chat": _cmd_chat,
     "cheat": _cmd_cheat,
-    "doctor": run_doctor,
-    "init": run_init,
-    "auth": run_auth,
+    "doctor": _cmd_doctor,
+    "init": _cmd_init,
+    "auth": _cmd_auth,
     "shell": _cmd_shell,
     "session": _cmd_session,
     "targets": _cmd_targets,
@@ -2397,8 +2441,11 @@ def _dispatch_selected(
         print(authority_error, file=sys.stderr)
         return 2
     if command == "bootstrap":
+        from booley.harness.bootstrap_cli import run_bootstrap
+
         return run_bootstrap(args)
     if command == "projects":
+        from booley.harness import projects_view
         from booley.runtime import image_keepers as runtime_image_keepers
 
         return project_inventory_cli.run(

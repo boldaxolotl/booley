@@ -97,8 +97,9 @@ def _distribution_attribution(package_file: Path) -> VersionAttribution | None:
     for name in ("booley-rtl", "booley"):
         for dist in importlib.metadata.distributions(name=name):
             files = dist.files
+            # ``locate_file`` is typed as a path-like protocol without ``resolve``; it is a Path.
             if not files or not any(
-                dist.locate_file(path).resolve() == resolved for path in files
+                Path(str(dist.locate_file(path))).resolve() == resolved for path in files
             ):
                 continue
             version = dist.version.strip()

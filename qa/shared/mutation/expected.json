@@ -105,7 +105,7 @@
     {"file": "rtl/self_check.sv", "line": 10, "text": "!OK", "never": "*", "reason": "elaboration-time generate check, not design behavior (`Only design code is mutated`); the doc does not name generate conditions, so a Mutant here is a finding to judge, not a certain bug"}
   ],
   "outcomes": {
-    "note": "Same on sim_icarus and sim_cocotb. Keys are `file:line:site->replacement`.",
+    "note": "Same on sim_icarus and sim_cocotb. Keys are `file:line:site->replacement`. On sim_cocotb (a Verilator Target) the Flow also compares each Mutant's generated C++ with the baseline's and replaces an identical one; Verilator 5.052 (the version checked; another version may differ) writes different C++ for the equivalent `rtl/counter.sv:11` deletion, so it is still run and survives, and no Mutant is dropped.",
     "survivors": [
       "rtl/status.sv:7:==->!=",
       "rtl/status.sv:7:9->8",

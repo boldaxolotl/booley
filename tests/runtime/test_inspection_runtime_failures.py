@@ -370,6 +370,7 @@ def test_host_inspection_reports_unknown_project_inventory(
     report = inspection.Findings()
     inspection._inspect_live_runtime(
         inspection.RuntimeInspectionRequest(workspace, fixture.spec["image"], "docker"),
+        "docker",
         fixture.spec,
         fixture.issuance,
         report,

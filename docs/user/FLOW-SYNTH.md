@@ -14,19 +14,20 @@ options, logs, exit codes), see [Running Flows](FLOW_REFERENCE.md).
 
 ## Running synthesis
 
-1. Check that the Project has a synthesis Target (`booley targets --for synth`
-   lists them) and that it has a timing constraints file defining at least one
-   clock. Project Setup normally creates both; see
-   [Timing constraints](#timing-constraints) to add them yourself.
-2. Ask the Developer Agent, naming the Target and, to compare, a git revision:
+1. **Check for a synthesis Target.** `booley targets --for synth` lists
+   them. Each needs a timing constraints file that defines at least one
+   clock. Project Setup normally creates both; to add them yourself, name the
+   Target `synth_<subject>` and see [Timing constraints](#timing-constraints)
+   and the [Synthesis Target recipe](TARGETS.md#synthesis-target).
+2. **Ask the agent**, naming the Target and, to compare, a git revision:
 
     > *"Synthesize `synth_core` and compare area and Fmax with `main`."*
     >
     > *"Try the `max_frequency` profile on `synth_core` and tell me what Fmax it reaches."*
 
-3. The agent runs synthesis at the current code and, when you gave a revision,
-   again at that revision, then reports the area and timing of each with the
-   change in percent.
+3. **Read the result.** The agent runs synthesis at the current code and,
+   when you gave a revision, again at that revision, then reports the area,
+   timing and verdict of each Target with the change in percent.
 
 To reproduce a run yourself inside the Sandbox:
 
@@ -35,7 +36,8 @@ booley flow synth --target synth_core --baseline main
 ```
 
 The Target's `flow_options` set how it is built. Most also have an option that
-overrides the Target for one run:
+overrides the Target for one run; with `--baseline`, the override applies to
+the baseline build too:
 
 | Target setting | Option for one run | Effect |
 |---|---|---|
@@ -46,7 +48,7 @@ overrides the Target for one run:
 | `slang_options` | none | Options passed unchanged to the `slang` frontend. Add `--single-unit` when the RTL relies on macros from a header included only once at the top of the file list. |
 | `advanced_settings_yosys`, `advanced_settings_openroad` | the expert options | Override single settings of the profile. See [Optimization profiles](#optimization-profiles). |
 | none | `--baseline <git-ref>` | Also synthesize the Target at that revision and add the change in percent to every row. Its timing reports are kept beside the current run's; the JSON report names both. Shared rules: [Running Flows](FLOW_REFERENCE.md#common-options). |
-| none | `--fresh-openroad` | Run OpenROAD even when [its results could be reused](#reusing-openroad-results), and store the new results instead. MCP: `fresh_openroad`. |
+| none | `--no-cache` | Run OpenROAD even when [its results could be reused](#reusing-earlier-runs), and store the new results instead. |
 
 ## Reading results
 
@@ -84,10 +86,15 @@ Everything else is in the run's numbered directory (`synth/3/` above; see
 
 | File | What it holds |
 |---|---|
-| `targets/<target>.json` | The Target's results. `area_kge` and `cells`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multiply-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
+| `targets/<target>.json` | The Target's results. `area_kge` and `cells`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
 | `artifacts/synth_<target>/run.log` | The full Yosys and OpenROAD output: every warning and error. |
 | `artifacts/synth_<target>/timing/` | The STA reports, physical mode only (see [`timing_report_paths`](#configuration-flowssynth)). |
 | `artifacts/synth_<target>/baseline_timing/` | With `--baseline`: the baseline run's STA reports. |
+
+For the rest of the EDA tools' output, such as the netlist and OpenROAD's
+intermediate files, go to the build directory in your checkout,
+`.booley/.runtime/edalize/synth/<target>/`. The next run of the same Target
+overwrites it.
 
 `flow-reports/synth_<target>.json`, next to `synth/`, is a copy of the latest
 run's `targets/<target>.json`. A VLNV-qualified Target selector becomes a
@@ -97,15 +104,17 @@ sanitized file name with a hash suffix.
 |---|---|---:|
 | `PASS` | Synthesis finished, the netlist is clean, timing is met. | `0` |
 | `WARN` | Timing is violated, the EDA tools reported actionable warnings, or the baseline turned out to be the same source. | `0` |
-| `FAIL` | The design cannot be synthesized, or the final netlist has latches beyond `expected_latches`, combinational loops, multiply-driven nets, or logic that never became cells; or timing is violated while `fail_on_timing_violation = true`. | `1` |
+| `FAIL` | The design cannot be synthesized, or the final netlist has latches beyond `expected_latches`, combinational loops, multi-driven nets, or logic that never became cells; or timing is violated while `fail_on_timing_violation = true`. | `1` |
 | `ERROR` | No verdict: missing constraints, bad configuration, timeout, out of memory, or a crash. | `2` |
 
+A timing violation is `WARN` by default, unlike an
+[FPGA build](FLOW-FPGA.md#reading-results), where it is `FAIL`: synthesis
+timing is an estimate, and early constraints are often placeholders. Set
+[`fail_on_timing_violation`](#configuration-flowssynth) to make it `FAIL`.
+
 Warnings known to be harmless, and warnings Yosys reports against your own
-source lines, are counted but don't cause `WARN`. A loop or multiply-driven
-warning is still checked and can fail the run. A
-`SYNTH:{target}` Goal is met when the run finishes with a clean netlist and
-every area or timing threshold set on the Goal passes; see
-[Goal Mode](GOAL-MODE.md).
+source lines, are counted but don't cause `WARN`. A loop or multi-driven
+warning is still checked and can fail the run.
 
 ## Timing constraints
 
@@ -128,41 +137,6 @@ an error before synthesis starts, and one whose SDC creates no clock stops
 with an `ERROR` when the constraints are read. Booley sets no fanout limit: the library's limit applies, or 50 when it
 sets none. If very high-fanout nets dominate timing, set your own with
 `set_max_fanout <n> [current_design]`.
-
-## Fast logical estimates
-
-By default a Target runs physical synthesis: mapping, then placement, timing
-repair and timing analysis. Set `synth_mode: logical` on the Target to stop
-after mapping. It runs much faster and needs no SDC, and reports mapped area
-and an estimated Fmax from the longest chain of mapped logic. Both are usually
-optimistic. The Fmax ignores placement and wires; every run prints that
-warning, and the Crit path column reads `logical estimate`. The area leaves out
-the buffers and larger cells that timing repair adds in physical mode.
-Use logical mode for quick area trends on large designs, and physical mode
-whenever timing matters. The mode belongs to the Target. There is
-no per-call `--synth-mode` option, so keep one Target per mode if you need
-both.
-
-## Reusing OpenROAD results
-
-In physical mode Yosys always runs. OpenROAD, usually the slow part, is skipped
-when everything it reads matches this Target's last completed run in this
-checkout: the exact netlist Yosys wrote, the generated OpenROAD script, the
-library and SDC contents, the OpenROAD build, the Sandbox image, Booley's own
-build and OpenROAD's environment. That run's OpenROAD results are then used
-as this run's. A comment-only or testbench-only RTL edit usually gives the same
-netlist and reuses; a changed clock period, or any logic change that alters
-the netlist, runs OpenROAD again.
-
-A reused run prints `<target>: REUSED -- OpenROAD results reused from run <id>
-(<time>)`, its `run.log` ends with a `BOOLEY_OPENROAD_REUSED` line, and its
-JSON report has an `openroad_reuse` entry naming the producing run. The numbers
-are that run's, and the result counts like a fresh one, including for Goals.
-SDC files that use Tcl beyond plain constraint commands (variables, `set`,
-`expr`, `source`, `;`) always run OpenROAD, as do runs outside the Sandbox,
-a library that includes other files, and a preloaded library (`LD_PRELOAD`). The stored results survive
-cleaning the Target's build directory; `--fresh-openroad` runs OpenROAD anyway
-and replaces them.
 
 ## Optimization profiles
 
@@ -214,6 +188,41 @@ reports list is a project setting, not a Target setting; see
 
 After changing the mapping options, rerun the baseline with the same options;
 otherwise the comparison mixes two recipes.
+
+## Reusing earlier runs
+
+In physical mode Yosys always runs. OpenROAD, usually the slow part, is skipped
+when everything it reads matches this Target's last completed run in this
+checkout: the exact netlist Yosys wrote, the generated OpenROAD script, the
+library and SDC contents, the OpenROAD build, the Sandbox image, Booley's own
+build and OpenROAD's environment. That run's OpenROAD results are then used
+as this run's. A comment-only or testbench-only RTL edit usually gives the same
+netlist and reuses; a changed clock period, or any logic change that alters
+the netlist, runs OpenROAD again.
+
+A reused run prints `<target>: REUSED -- OpenROAD results reused from run <id>
+(<time>)`, its `run.log` ends with a `BOOLEY_OPENROAD_REUSED` line, and its
+JSON report has an `openroad_reuse` entry naming the producing run. The numbers
+are that run's, and the result counts like a fresh one.
+SDC files that use Tcl beyond plain constraint commands (variables, `set`,
+`expr`, `source`, `;`) always run OpenROAD, as do runs outside the Sandbox,
+a library that includes other files, and a preloaded library (`LD_PRELOAD`). The stored results survive
+cleaning the Target's build directory. Pass `--no-cache`, or ask the agent
+for a fresh run, to run OpenROAD anyway and replace them.
+
+## Fast logical estimates
+
+By default a Target runs physical synthesis: mapping, then placement, timing
+repair and timing analysis. Set `synth_mode: logical` on the Target to stop
+after mapping. It runs much faster and needs no SDC, and reports mapped area
+and an estimated Fmax from the longest chain of mapped logic. Both are usually
+optimistic. The Fmax ignores placement and wires; every run prints that
+warning, and the Crit path column reads `logical estimate`. The area leaves out
+the buffers and larger cells that timing repair adds in physical mode.
+Use logical mode for quick area trends on large designs, and physical mode
+whenever timing matters. The mode belongs to the Target. There is
+no per-call `--synth-mode` option, so keep one Target per mode if you need
+both.
 
 ## Large memories
 
@@ -308,8 +317,8 @@ timing_report_paths = 10           # worst setup paths listed per timing report
 ```
 
 Keep `fail_on_timing_violation = false` while the constraints are
-placeholders. Turn it on once they are real, so a CI step or Goal that reads
-only the exit code doesn't treat a design missing timing as success.
+placeholders. Turn it on once they are real, so a CI step that reads only the
+exit code doesn't treat a design missing timing as success.
 
 `timing_report_paths` (integer, at least 1; a smaller value stops the run
 with a configuration error) sets how many setup paths the timing reports in

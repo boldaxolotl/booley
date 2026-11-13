@@ -4,8 +4,9 @@
 the RTL, runs the Target's tests against each one, and reports how many Mutants
 the tests detected. A passing simulation only shows the tests accept the
 design; a high mutation score shows they would notice if it were wrong. No LLM
-is involved: the same RTL, `--count`, and `--seed` always give the same
-Mutants, so scores are reproducible and comparable across runs. For what all
+is involved: the same RTL, `--count`, and `--seed` give the same Mutants (on a
+Verilator Target, with the same Verilator version), so scores are reproducible
+and comparable across runs. For what all
 Flows share (choosing Targets, common options, logs, exit codes), see
 [Running Flows](FLOW_REFERENCE.md).
 
@@ -65,6 +66,18 @@ Every run rebuilds the baseline and every Mutant, so a result never depends on
 stale builds. Some survivors may be equivalent Mutants that change no
 observable behavior, which is why the default threshold is 80 %, not all.
 
+### Equivalent Mutants on Verilator Targets
+
+On a Verilator Target, Booley compares the C++ Verilator generates for each
+Mutant with the baseline's. A Mutant with identical C++ builds the same
+simulator as the original, so no test could detect it: Booley skips it and
+takes the next candidate instead. The run still scores `--count` Mutants
+unless the candidates run out; the report then states how many it scored. A
+Mutant that does not build is `invalid` and is not replaced. The report does
+not list the skipped Mutants; the run's machine-readable result holds their IDs
+in `equivalent_dropped`. On other Targets, such as Icarus, every selected
+Mutant runs.
+
 ## Which Mutants it plants
 
 Booley parses each scope file (Verilog or SystemVerilog) and finds every spot
@@ -89,7 +102,9 @@ yields one candidate Mutant per change.
 | `bit-select` | Swaps two neighbouring operands of a concatenation. | `{hi, lo}` -> `{lo, hi}` |
 | `deletion` | Removes one assignment, net initializer, or `case` item. | `q <= d;` removed, `case` branch removed |
 
-`/`, `%`, and `**` are never swapped, so Mutants do not divide by zero.
+`/`, `%`, and `**` are never swapped, so Mutants do not divide by zero. A `+`
+is not swapped for `-` (or the reverse) where both give the same result at the
+expression's width, such as a one-bit sum.
 
 Mutations also reach the arguments of `$signed` and `$unsigned` and the
 expressions in the port connections of module and interface instances.
@@ -133,10 +148,11 @@ Only design code is mutated. Booley skips:
    small `--count` therefore covers different kinds of bugs instead of many of
    one kind.
 
-If fewer candidates exist than `--count`, all of them run and the report
-says so. The knobs are `--scope` (where to look), `--count` (how many), and
+If fewer candidates exist than `--count`, all of them run and the report says
+so. The knobs are `--scope` (where to look), `--count` (how many), and
 `--seed` (which sample); there is no filter by operator. The same RTL, scope,
-count, and seed always choose the same Mutants.
+count, and seed choose the same Mutants (on a Verilator Target, with the same
+Verilator version).
 
 ## Reading results
 
@@ -144,7 +160,7 @@ The report starts with what reproduces the run, then the tally and the
 verdict:
 
 ```text
-[mutation_test] 10 Mutants (seed 0, count 10, generator 3, pyslang 9.0.0)
+[mutation_test] 10 Mutants (seed 0, count 10, generator 4, pyslang 9.0.0, Verilator 5.052 2025-02-01 rev v5.052)
 [mutation_test] sim sweep: 10/10 tested              4m
   8 detected (1 timeout), 0 invalid, 2 not detected
   detected: 8/10 (required: 8/10, default 80% of --count)
@@ -170,7 +186,7 @@ the Booley Directory or `--report-dir`
 |---|---|
 | `mutation/<N>/campaign/mutation-results.md` | The Mutants and the outcome of each. |
 | `mutation/<N>/campaign/mutation-specs.md` | Every Mutant: operator, file and line, original and mutated code. |
-| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, scope hashes) and each Mutant's status. |
+| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, scope hashes) and each Mutant's status. |
 | `mutation/<N>/campaign/variants/` | The mutated source of each Mutant. |
 | `mutation/<N>/campaign/baseline.log`, `mutant-logs/` | The simulator output of the baseline and of each Mutant. |
 

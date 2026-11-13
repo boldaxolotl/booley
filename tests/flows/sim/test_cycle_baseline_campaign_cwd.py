@@ -38,8 +38,9 @@ def test_campaign_baseline_builds_and_runs_in_the_baseline_checkout(tmp_path, mo
         )
 
     assert result.exit_code == 0, result.outcome.report_text
-    # Build, then launch: the baseline's in its checkout, then the candidate's in its own.
-    assert started == [baseline.resolve()] * 2 + [candidate.resolve()] * 2
+    # FuseSoC setup, build, then launch: the baseline's in its checkout, then the
+    # candidate's in its own.
+    assert started == [baseline.resolve()] * 3 + [candidate.resolve()] * 3
     assert _observed_cycles(tmp_path / "reports/sim/1/targets") == {
         "sim_a": [("a", 120)],
         f"sim_a%40baseline-{_REVISION[:12]}": [("a", 100)],

@@ -424,3 +424,50 @@ def test_an_unarmed_endpoint_is_never_requeued_after_an_oom_kill() -> None:
     assert endpoint.events.count("invoke") == 1
     assert result.outcome.oom_killed is True
     assert "oom_requeue" not in result.outcome.detail
+
+
+def test_item_attempt_kill_stays_in_the_item() -> None:
+    """A work item's OOM kill marks only its own attempt, and a Flow kill still stops the item."""
+    from booley.runtime import endpoint_execution as attempts
+
+    job_attempt = attempts.job_attempt
+    job_stopped_after_oom = attempts.job_stopped_after_oom
+    note_job_oom_kill = attempts.note_job_oom_kill
+
+    with job_attempt(stop_on_oom=True) as flow:
+        with job_attempt(stop_on_oom=True, work_item=True) as item:
+            assert not job_stopped_after_oom()
+            assert not attempts.work_item_attempt_requeues(passed=False)  # no kill yet
+            note_job_oom_kill()
+            assert item.oom_killed.is_set() and not flow.oom_killed.is_set()
+            assert job_stopped_after_oom() and item.stopped.is_set()
+            # A failed attempt, or one that skipped a command, is requeued.
+            assert attempts.work_item_attempt_requeues(passed=False)
+            assert attempts.work_item_attempt_requeues(passed=True)
+        # The Flow's own lanes keep running: its attempt was not killed or stopped.
+        assert not job_stopped_after_oom() and not flow.stopped.is_set()
+
+        with job_attempt(stop_on_oom=True, work_item=True) as other:
+            note_job_oom_kill()
+            # A kill that skipped nothing and passed leaves a complete result.
+            assert not other.stopped.is_set()
+            assert not attempts.work_item_attempt_requeues(passed=True)
+
+        with job_attempt(stop_on_oom=False, work_item=True) as last:
+            note_job_oom_kill()  # the requeued attempt is never armed
+            assert last.oom_killed.is_set()
+            assert not job_stopped_after_oom()
+            assert not attempts.work_item_attempt_requeues(passed=False)
+
+        with job_attempt(stop_on_oom=True, work_item=True) as stopped_by_flow:
+            flow.oom_killed.set()  # a Flow-level kill (for example a shared build)
+            assert job_stopped_after_oom() and flow.stopped.is_set()
+            assert not stopped_by_flow.oom_killed.is_set()
+            assert not attempts.work_item_attempt_requeues(passed=False)
+
+    # Under the Flow's own claim the current attempt is the Flow's: never a work item's.
+    with job_attempt(stop_on_oom=True) as flow_only:
+        note_job_oom_kill()
+        assert flow_only.oom_killed.is_set()
+        assert not attempts.work_item_attempt_requeues(passed=False)
+    assert not attempts.work_item_attempt_requeues(passed=False)  # outside any attempt

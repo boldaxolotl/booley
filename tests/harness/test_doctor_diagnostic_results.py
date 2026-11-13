@@ -20,6 +20,8 @@ from booley.config.project_config import normalize_tests_toml
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import doctor_stamp, inspection, session_admission, vaporview
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 from tests.conftest import symlink_or_skip
 from tests.diagnostic_helpers import _Rec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
@@ -28,6 +30,7 @@ from tests.harness.test_doctor import (
     _patch_environment,
     _write_project,
 )
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
@@ -921,3 +924,231 @@ def test_core_audit_renders_core_tree_owner_reports_in_place(tmp_path, monkeypat
         "vendored .core",
     )
     assert not [m for _level, m in rec.events if m.startswith(moved_row_prefixes)]
+
+
+_CORE_HYGIENE_ROW_PREFIXES = (
+    "1 .core-referenced file(s) exist on disk",
+    "1 $readmemh/$readmemb memory image(s)",
+    "1 committed artifact(s) look built",
+)
+
+
+def _core_hygiene_owner():
+    """The core repository hygiene owner module, imported where used."""
+    return importlib.import_module("booley.runtime.core_repository_hygiene")
+
+
+def _core_hygiene_project(root: Path) -> Path:
+    """A real Git Project that trips each hygiene rule once.
+
+    ``tb/tb.sv`` (a ``.core``-referenced file) and ``fw/boot.vmem`` (its
+    ``$readmemh`` target, listed in no ``.core``) are untracked; the committed
+    ``firmware/firmware.hex`` sits next to its ``hello.c`` source.
+    """
+    run_bounded_child(["git", "init", "-q"], cwd=root, check=True)
+    booley_dir = _write_project(root)
+    core = root / "unit.core"
+    text = core.read_text(encoding="utf-8")
+    text = text.replace(
+        "targets:\n",
+        "  fw:\n    files:\n      - firmware/firmware.hex: {file_type: user}\ntargets:\n",
+        1,
+    ).replace("    filesets: [rtl, tb]\n", "    filesets: [rtl, tb, fw]\n", 1)
+    core.write_text(text, encoding="utf-8", newline="\n")
+    (root / "tb" / "tb.sv").write_text(
+        'module tb; reg [7:0] mem[0:255];\n  initial $display("[SIM_RESULT] PASSED");\n'
+        '  initial $readmemh("fw/boot.vmem", mem);\nendmodule\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (root / "fw").mkdir()
+    (root / "fw" / "boot.vmem").write_text("00\n", encoding="utf-8", newline="\n")
+    (root / "firmware").mkdir()
+    (root / "firmware" / "firmware.hex").write_text("00\n", encoding="utf-8", newline="\n")
+    (root / "firmware" / "hello.c").write_text("int main(){}\n", encoding="utf-8", newline="\n")
+    run_bounded_child(
+        [
+            "git",
+            "add",
+            "-f",
+            "unit.core",
+            "rtl/dut.sv",
+            "firmware/firmware.hex",
+            "firmware/hello.c",
+        ],
+        cwd=root,
+        check=True,
+    )
+    # The index is exactly the tracked set the pin below relies on.
+    index = run_bounded_child(["git", "ls-files"], cwd=root, check=True).stdout.split()
+    assert sorted(index) == [
+        "firmware/firmware.hex",
+        "firmware/hello.c",
+        "rtl/dut.sv",
+        "unit.core",
+    ]
+    return booley_dir
+
+
+_CORE_HYGIENE_SECTION = """\
+FuseSoC .core checks
+  ✓  .core tree has no provider or recursive-symlink setup hazards
+  ✓  .core CAPI2 schema valid
+  ✓  .core Targets enumerated: lint_fast, sim_fast, synth_fast
+  ✓  Doctor Target matrix valid: 3 Target/Flow pair(s)
+  ✓  .core Targets use the flow API (no legacy FuseSoC tools-section targets)
+  ✓  Target names follow the <axis>_<subject> convention
+  ✓  no dead 'default:' Targets in Booley-authored .core files
+  ✓  synth Target 'synth_fast' (yosys) declares flow_options.arch
+  ✓  1 Verilator sim Target(s) trace-capable (own a --exe main)
+  ✓  sim Target 'sim_fast' TB fileset tagged
+  ✓  sim Target 'sim_fast' TB emits a recognized pass sentinel
+  ✓  lint Target 'lint_fast' toplevel 'dut' elaborates standalone
+  ✓  generic Target 'synth_fast' toplevel 'dut' elaborates standalone
+  !  1 .core-referenced file(s) exist on disk but are untracked by git (tb/tb.sv) — if gitignored (vendored firmware / build artifact), force-add with `git add -f <file>` and verify with `git ls-files <file>`; a fresh clone or CI checkout will lack them  project.core-file-untracked:tb/tb.sv
+  !  1 $readmemh/$readmemb memory image(s) exist on disk but are untracked by git (fw/boot.vmem) — if gitignored (vendored firmware / build output), force-add with `git add -f <file>`; a fresh clone or CI checkout will lack them and the sim boots uninitialized RAM  project.memory-image-untracked:fw/boot.vmem
+  !  1 committed artifact(s) look built from in-repo source (firmware/firmware.hex) — ship the toolchain in the sandbox image and rebuild on demand (project Dockerfile + post-setup hook) instead of committing a frozen blob (booley-setup SKILL.md)  project.committed-build-artifact:firmware/firmware.hex
+  ✓  .core security validation passed (no fpga hooks / expr-params / in-scope scripts)
+  ·  tests.toml not present (each sim Target runs its testbench's default test)
+"""
+
+_CORE_HYGIENE_ROWS = [
+    (
+        Severity.WARN,
+        "1 .core-referenced file(s) exist on disk but are untracked by git (tb/tb.sv) — if gitignored (vendored firmware / build artifact), force-add with `git add -f <file>` and verify with `git ls-files <file>`; a fresh clone or CI checkout will lack them",
+        "",
+        "project.core-file-untracked",
+        "tb/tb.sv",
+    ),
+    (
+        Severity.WARN,
+        "1 $readmemh/$readmemb memory image(s) exist on disk but are untracked by git (fw/boot.vmem) — if gitignored (vendored firmware / build output), force-add with `git add -f <file>`; a fresh clone or CI checkout will lack them and the sim boots uninitialized RAM",
+        "",
+        "project.memory-image-untracked",
+        "fw/boot.vmem",
+    ),
+    (
+        Severity.WARN,
+        "1 committed artifact(s) look built from in-repo source (firmware/firmware.hex) — ship the toolchain in the sandbox image and rebuild on demand (project Dockerfile + post-setup hook) instead of committing a frozen blob (booley-setup SKILL.md)",
+        "",
+        "project.committed-build-artifact",
+        "firmware/firmware.hex",
+    ),
+]
+
+
+def test_core_repository_hygiene_section_output_is_pinned(
+    tmp_path, monkeypatch, capsys, isolated_git_attributes
+):
+    """The hygiene lines keep their text, order, check IDs, position and exit code.
+
+    The literals were captured from Doctor's own hygiene checks before they moved
+    to their owner and are unchanged by the move; the rows now reach the section
+    as the owner's typed report. Only the owner's Git queries reach real Git; the
+    fixture's fake answers every other Doctor command.
+    """
+    real_run = subprocess.run
+    booley_dir = _core_hygiene_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    monkeypatch.setattr(
+        _core_hygiene_owner(),
+        "subprocess",
+        SimpleNamespace(run=real_run, SubprocessError=subprocess.SubprocessError),
+    )
+    reports = []
+    render = doctor._Reporter.diagnostics
+
+    def record_then_render(self, report):
+        reports.append(report)
+        render(self, report)
+
+    monkeypatch.setattr(doctor._Reporter, "diagnostics", record_then_render)
+    result = doctor.run_doctor_result(
+        argparse.Namespace(deep=False, verbose=True, concise=False), tmp_path
+    )
+    section = _core_tree_section(capsys.readouterr().out, tmp_path)
+    assert section == _CORE_HYGIENE_SECTION.rstrip("\n")
+    rows = [
+        (f.severity, f.message, f.fix, f.check_id, f.subject)
+        for f in result.findings
+        if f.message.startswith(_CORE_HYGIENE_ROW_PREFIXES)
+    ]
+    assert rows == _CORE_HYGIENE_ROWS
+    assert result.exit_code == 0
+    assert [
+        f.severity for f in result.findings if f.message.startswith(_CORE_HYGIENE_ROW_PREFIXES)
+    ] == [Severity.WARN] * 3
+    owner_rows = [
+        finding.message
+        for report in reports
+        for finding in report.findings
+        if finding.message.startswith(_CORE_HYGIENE_ROW_PREFIXES)
+    ]
+    assert owner_rows == [row[1] for row in _CORE_HYGIENE_ROWS], (
+        "the hygiene rows must reach Doctor as one owner report"
+    )
+
+
+def test_core_audit_renders_core_repository_hygiene_report_in_place(tmp_path, monkeypatch):
+    """Doctor builds the owner request, renders its report once, and adds no rows itself.
+
+    The report follows the Target checks and leads the security report.
+    """
+    owner = _core_hygiene_owner()
+    project = _cocotb_audit_project(tmp_path)
+    hygiene_report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "hygiene-row"),))
+    security_report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "security-row"),))
+    hygiene_requests = []
+
+    def hygiene_spy(request):
+        hygiene_requests.append(request)
+        return hygiene_report
+
+    monkeypatch.setattr(owner, "inspect_core_repository_hygiene", hygiene_spy)
+    monkeypatch.setattr(
+        importlib.import_module("booley.audit.core_tree_inspection"),
+        "inspect_core_security",
+        lambda _request: security_report,
+    )
+    rendered = []
+    rec = _Rec()
+    doctor._run_core_audit(
+        project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=rendered.append
+    )
+
+    assert hygiene_requests == [owner.CoreRepositoryHygieneRequest(tmp_path)]
+    assert rendered.count(hygiene_report) == 1
+    assert rendered.index(hygiene_report) + 1 == rendered.index(security_report)
+    assert not [m for _level, m in rec.events if m.startswith(_CORE_HYGIENE_ROW_PREFIXES)]
+
+
+def test_core_audit_skips_core_repository_hygiene_without_targets(tmp_path, monkeypatch):
+    """No enumerated Target, no hygiene report: with no ``.core`` at all, and when
+    Target enumeration raises."""
+    owner = _core_hygiene_owner()
+    calls = []
+    monkeypatch.setattr(
+        owner,
+        "inspect_core_repository_hygiene",
+        lambda request: calls.append(request) or DiagnosticReport(),
+    )
+    for case in ("no-core", "enumeration-error"):
+        root = tmp_path / case
+        root.mkdir()
+        project = _cocotb_audit_project(root)
+        if case == "no-core":
+            (root / "design.core").unlink()
+        with monkeypatch.context() as patch:
+            if case == "enumeration-error":
+
+                def refuse(_catalog, **_kwargs):
+                    raise FuseSocError("catalog unavailable")
+
+                patch.setattr(TargetCatalog, "list", refuse)
+            rec = _Rec()
+            doctor._run_core_audit(
+                project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=lambda _r: None
+            )
+        failure = "project has no .core" if case == "no-core" else ".core enumeration failed"
+        assert any(failure in message for level, message in rec.events if level == "fail"), case
+        assert not calls, case

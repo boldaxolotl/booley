@@ -792,3 +792,56 @@ def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
     assert store.scan().pending == ()
     assert len(store.scan().interrupted) == 1
     assert not tuple(store.root.glob("work-items/*/result.json"))
+
+
+def _run_failed_shared_build_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, work_item_attempt: bool
+) -> dict[str, int]:
+    """Run two items sharing a failing build, its compiler OOM-killed inside one attempt."""
+    from booley.runtime.endpoint_execution import job_attempt, note_job_oom_kill
+
+    manifest = _named_manifest(("tail", "quick"))
+    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    project = tmp_path / "project"
+    project.mkdir(parents=True)
+    handle = _handle(project)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
+    )
+    # Publish the results as the Campaign would for an item that took no claim of its own.
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.coordinator.work_item_attempt_requeues", lambda **_: False
+    )
+    counters = {"compile": 0, "launch": 0}
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    # An OOM-killed compiler is an infrastructure failure, which recovery never settles.
+    executor = _failed_shared_executor(
+        tmp_path / "engine-build", counters, note_job_oom_kill, infrastructure=True
+    )
+
+    with job_attempt(stop_on_oom=True, work_item=work_item_attempt):
+        SimulationCampaign(executor).run(
+            NewCampaignRunRequest(
+                plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+            )
+        )
+    return counters
+
+
+def test_requeued_attempt_rebuilds_the_shared_build_its_kill_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The build was an OOM-killed work item attempt's own: a failure the item runs again
+    # for must not be cached, so each attempt compiles the variant itself.
+    item = _run_failed_shared_build_campaign(
+        tmp_path / "item", monkeypatch, work_item_attempt=True
+    )
+    # A build killed under the Flow's own attempt is cached as before: it compiles once.
+    flow = _run_failed_shared_build_campaign(
+        tmp_path / "flow", monkeypatch, work_item_attempt=False
+    )
+
+    assert item["compile"] == 2
+    assert flow["compile"] == 1

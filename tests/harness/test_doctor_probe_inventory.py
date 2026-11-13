@@ -35,7 +35,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit), or a named public owner entry point.
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_viewer_bridge$|inspect_native_dependencies$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_viewer_bridge$|inspect_native_dependencies$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -146,9 +146,9 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_core_audit": frozenset(
         {
-            "_check_core_repository_hygiene",
             "_check_target_metadata",
             "_check_target_sources",
+            "inspect_core_repository_hygiene",
             "inspect_core_security",
             "inspect_core_tree",
             "inspect_native_dependencies",
@@ -343,3 +343,39 @@ def test_doctor_holds_no_core_tree_rules() -> None:
     assert not moved & defined, (
         f"core-tree rules moved back into Doctor: {sorted(moved & defined)}"
     )
+
+
+def test_core_audit_inventory_names_the_core_repository_hygiene_owner_call() -> None:
+    """The core audit calls the owner; no Doctor check stands in for its rules."""
+    refs = _probe_refs("_run_core_audit")
+    assert "inspect_core_repository_hygiene" in refs
+    assert not refs & {
+        "_check_core_repository_hygiene",
+        "_check_core_files_tracked",
+        "_check_readmemh_targets_tracked",
+        "_check_committed_build_artifacts",
+    }
+
+
+def test_doctor_holds_no_core_repository_hygiene_rules() -> None:
+    """The three Git-hygiene rules for authored ``.core`` inputs live in the owner."""
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    moved = {
+        "_check_core_repository_hygiene",
+        "_check_core_files_tracked",
+        "_check_readmemh_targets_tracked",
+        "_check_committed_build_artifacts",
+        "_looks_built_from_sibling_source",
+        "_readmem_literal_targets",
+        "_BUILD_ARTIFACT_SUFFIXES",
+        "_BUILD_SOURCE_SUFFIXES",
+        "_BUILD_SOURCE_NAMES",
+        "_READMEM_RE",
+    }
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    assert not moved & defined, f"hygiene rules moved back into Doctor: {sorted(moved & defined)}"
