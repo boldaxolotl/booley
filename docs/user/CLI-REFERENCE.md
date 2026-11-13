@@ -174,9 +174,10 @@ booley worktree new <name>
 ```
 
 This creates `.booley/worktrees/<name>`, prints its path, and starts it at the
-current commit on a new branch `booley/<name>`. An existing `booley/<name>`
-branch or destination is refused and left untouched, and so is a name Git
-cannot use in a branch name (such as `x.lock` or `a..b`). A name of the form
+current commit on a new branch `booley/<name>`. A branch that occupies that
+name (the name itself, a leading path such as `booley`, or a branch below it), or an
+existing destination, is refused and left untouched; the error names the branch in
+the way. So is a name Git cannot use in a branch name (such as `x.lock` or `a..b`). A name of the form
 `<branch>--<description>` checks out the existing branch `<branch>` instead and
 creates no branch. Git submodules are filled in from the main
 checkout, without network access. Then the Project's `post-setup` hook
@@ -184,7 +185,8 @@ checkout, without network access. Then the Project's `post-setup` hook
 new worktree. Its output is shown and saved to
 `.booley/worktrees/.logs/<name>.log` in the main Booley Directory. If the
 submodule step or the hook fails, Booley removes the worktree and its
-`booley/<name>` and `booley-worktree/<name>` branches and exits nonzero. A
+branch (`booley/<name>`, or `wt/<name>` in Stealth Mode), plus any
+`booley-worktree/<name>` branch, and exits nonzero. A
 branch that already gained commits is kept.
 
 The worktree gets its own Booley Directory (the `.booley/` folder), a
@@ -196,14 +198,18 @@ not copied, and the command names it.
 <details markdown>
 <summary>In stealth mode</summary>
 
-Your Booley Directory is its own Git repository, so the worktree gets a
+With [Stealth Mode](STEALTH.md), your Booley Directory is its own Git repository, so the worktree gets a
 **Paired Checkout** instead: a checkout of its last commit on branch
 `booley-worktree/<name>`. Uncommitted and untracked files are left out; one
 warning names them (the first 10, then a count). Commit them first if the
 worktree needs them. Booley refuses a repository with no commits or an
 existing branch of that name. Ignored files stay behind. Booley refuses to
-create a worktree from inside a Paired Checkout. See
-[STEALTH.md](STEALTH.md).
+create a worktree from inside a Paired Checkout. The worktree's own branch is
+`wt/<name>` (`wt/s<N>` for `booley chat`) instead of `booley/<name>`, so the
+product name stays out of branch names you may push. A branch named `wt` (or
+`wt/<name>/...`) blocks the name, like `booley` does outside Stealth Mode.
+A worktree keeps the branch it was created with, and `list`, `rm` and `gc` work
+with either prefix.
 
 </details>
 
@@ -231,7 +237,7 @@ booley worktree rm <name> [--force]
 ```
 
 It moves the worktree's evidence aside, removes the worktree, and keeps its
-branch (`booley/<name>`, or the Goal Branch), so commits made in the worktree
+branch (`booley/<name>`, `wt/<name>` in Stealth Mode, or the Goal Branch), so commits made in the worktree
 stay reachable. A worktree on a detached HEAD, which has no branch, is reported
 as `detached HEAD was <commit>`; save that commit on a branch if you need it.
 
@@ -269,8 +275,8 @@ example across file systems, nothing is removed.
 If the command is interrupted, run it again: it finishes the removal, and checks
 a worktree that is still intact again, so work added since is never removed
 without the refusal. It never prunes other worktrees' registrations. To reuse
-the name, delete the kept branch first with
-`git -C <absolute-project-root> branch -D booley/<name>`.
+the name, first delete each branch `rm` listed under `Branches kept` with
+`git -C <absolute-project-root> branch -D <branch>`.
 
 **Cleaning up idle worktrees.** `booley worktree gc` removes every worktree that
 nobody has used for a while, so abandoned ones do not pile up:

@@ -57,6 +57,8 @@ Doctor warn `stealth.enabled-unset`; add `enabled = true` to keep Stealth, or
   repository's last commit on its own branch, so commit Booley changes there
   before you create a worktree
   ([CLI-REFERENCE.md](CLI-REFERENCE.md#worktrees)).
+- **Worktree branches are `wt/<name>`**, not `booley/<name>`, so the product
+  name does not reach a branch you push.
 
 If your repository ships `.core` files that are broken, obsolete, or that you
 don't want Booley to see, add `ignore_native_cores = true`. Booley then reads
@@ -158,7 +160,14 @@ push that the destination doesn't already have, and blocks the push when:
 - the author or committer isn't on `allowed_authors`, when you set it.
 
 File contents aren't checked. The hook lists each offending commit and what it
-found; rewrite those commits and push again. To skip every check for one push,
+found; rewrite those commits and push again.
+
+It also blocks a push that creates or updates a branch, tag or other ref whose
+name on the remote contains a word from the same list (`ticket`, for example,
+so `ticket/123` is blocked too), and names the ref and the word. Push it under
+another name (`git push <remote> <local>:<new-name>`) or rename it; only the
+remote name is checked, and deleting such a remote branch or tag is always
+allowed. To skip every check for one push,
 set `BOOLEY_SKIP_PUSH_GUARD=1`.
 
 The hook also blocks when it can't finish the check: an unreadable
