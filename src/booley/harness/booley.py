@@ -2543,9 +2543,10 @@ def main() -> int:
         return 2
     except _CancelledRun:
         # Die by SIGINT like any interrupted program, so a calling shell loop stops
-        # too; only the traceback is dropped.
+        # too; only the traceback is dropped. Re-raise the plain class: Python 3.11
+        # exits by SIGINT only for exactly KeyboardInterrupt, not a subclass (exit 1).
         sys.excepthook = _quiet_keyboard_interrupt(sys.excepthook)
-        raise
+        raise KeyboardInterrupt from None
 
 
 if __name__ == "__main__":

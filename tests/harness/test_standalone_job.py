@@ -420,7 +420,7 @@ def test_ctrl_c_prints_one_line_and_dies_by_sigint(tmp_path):
         returncode, stderr = run_child_until_signalled(
             project, tmp_path / kind, signal.SIGINT, script=CLI_CHILD, extra_args=(kind,)
         )
-        assert returncode == -signal.SIGINT, kind
+        assert returncode == -signal.SIGINT, (kind, stderr)
         assert "Traceback" not in stderr, stderr
         assert "KeyboardInterrupt" not in stderr, stderr
         lines = [line for line in stderr.splitlines() if line and line != "err line"]
@@ -432,7 +432,7 @@ def test_ctrl_c_prints_one_line_and_dies_by_sigint(tmp_path):
 def test_cancelled_run_reaches_main_and_silences_only_the_interrupt_traceback(
     monkeypatch, project, capsys
 ):
-    """``main()`` re-raises the marker and leaves a hook that drops it but not other errors."""
+    """``main()`` re-raises a plain interrupt and leaves a hook that drops it but not other errors."""
     info = McpToolInfo(name="stub", path="stub.py", description="stub", kind="flow")
     monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
     monkeypatch.setattr(cli, "_parse_cli", lambda: command(["flow", "stub"]))
@@ -445,8 +445,10 @@ def test_cancelled_run_reaches_main_and_silences_only_the_interrupt_traceback(
     monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: StubEndpoint)
     StubEndpoint.outcome = KeyboardInterrupt()
 
-    with pytest.raises(cli._CancelledRun):
+    with pytest.raises(KeyboardInterrupt) as raised:
         cli.main()
+    # Exactly the base class: Python 3.11 dies by SIGINT only for that, not a subclass.
+    assert type(raised.value) is KeyboardInterrupt
 
     capsys.readouterr()
     hook = sys.excepthook
