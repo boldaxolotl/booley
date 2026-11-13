@@ -23,7 +23,7 @@ from booley.flows.cli_help import option_groups
 from booley.flows.cli_selection import EndpointProjectAction
 from booley.harness.dashboard.launch import split_arguments
 
-FieldKind = Literal["toggle", "three-way", "list", "text", "target", "tests"]
+FieldKind = Literal["toggle", "three-way", "list", "text", "target", "tests", "more"]
 
 # Common and each Flow's own options are fields; Output and the Expert groups are extra arguments.
 GROUP_PLACEMENT: Final[dict[str, Literal["field", "extra"]]] = {
@@ -83,13 +83,17 @@ class Field:
             return ", ".join(value) or DEFAULT_SUITE
         if self.kind == "toggle":
             return "on" if value else "off"
-        if self.kind == "text":
-            return value
-        if self.kind == "target":
-            return value or ("" if self.required else AUTOMATIC)
+        if self.kind == "more":
+            return "▾" if value else "▸ max turns, timeout"
+        return value or self._unset()
+
+    def _unset(self) -> str:
+        """What the row shows while nothing is chosen: a required field shows nothing."""
         if self.kind == "tests":
-            return value or DEFAULT_SUITE
-        return value or DEFAULT
+            return DEFAULT_SUITE
+        if self.kind == "text" or self.required:
+            return ""
+        return AUTOMATIC if self.kind == "target" else DEFAULT
 
 
 @dataclass(frozen=True)
@@ -242,12 +246,12 @@ def describe(parser: argparse.ArgumentParser) -> RunForm:
     return RunForm(tuple(fields), tuple(extras))
 
 
-def _text_words(field: Field, value: str) -> list[str]:
+def text_words(flag: str, value: str) -> list[str]:
     """``--opt value``; a value starting with ``-`` is written ``--opt=value`` so it is never an option."""
     text = value.strip()
     if not text:
         return []
-    return [f"{field.flag}={text}"] if text.startswith("-") else [field.flag, text]
+    return [f"{flag}={text}"] if text.startswith("-") else [flag, text]
 
 
 def command_argv(
@@ -275,6 +279,6 @@ def command_argv(
         elif field.kind == "list" and value:
             words.extend((field.flag, value))
         elif field.kind in ("text", "target"):
-            words.extend(_text_words(field, value))
+            words.extend(text_words(field.flag, value))
     extra = split_arguments(extra_text)
     return (*words, *(extra[1:] if extra[:1] == ("--",) else extra))
