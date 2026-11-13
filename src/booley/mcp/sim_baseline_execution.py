@@ -68,7 +68,7 @@ from booley.mcp.synth_baseline_execution import (
     synth_job_class,
     synth_job_requests,
 )
-from booley.runtime import job_slots
+from booley.runtime import job_slots, oom_priority
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON
@@ -698,7 +698,8 @@ def _background_slot(
         if requeued:
             _restart_budget(owner)
         threads = None if memory is None else job_threads_at_start(store, available_cpu_count())
-        yield token, threads
+        with oom_priority.job_oom_priority(store, token):
+            yield token, threads
     finally:
         store.release(token)
 
