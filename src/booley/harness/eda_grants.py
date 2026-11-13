@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from booley.eda.provisioning import authority
-from booley.runtime import issuance_invalidation, lifecycle_lock, session_refresh
+from booley.runtime import issuance_invalidation, lifecycle_lock
 
 
 class GrantCoordinator:
@@ -13,7 +13,7 @@ class GrantCoordinator:
 
     def recovery_pending(self) -> bool:
         try:
-            return session_refresh.shared_recovery_blocks_command(read_only=True)
+            return issuance_invalidation.shared_recovery_blocks_command(read_only=True)
         except RuntimeError as exc:
             raise authority.AuthorityError(str(exc)) from exc
 
@@ -32,7 +32,7 @@ class GrantCoordinator:
         """
         try:
             with lifecycle_lock.host_lifecycle_lock("EDA grant add"):
-                session_refresh.shared_recovery_blocks_command(read_only=False)
+                issuance_invalidation.shared_recovery_blocks_command(read_only=False)
                 identity = authority.grant_project_identity(project)
                 with authority._prepare_add_grant(
                     identity,
@@ -54,7 +54,7 @@ class GrantCoordinator:
         """
         try:
             with lifecycle_lock.host_lifecycle_lock("EDA grant revoke"):
-                session_refresh.shared_recovery_blocks_command(read_only=False)
+                issuance_invalidation.shared_recovery_blocks_command(read_only=False)
                 identity = authority.revoke_project_identity(project, kind)
                 with authority._prepare_revoke_grant(identity, kind) as commit:
                     issuance_invalidation.prepare(identity)
