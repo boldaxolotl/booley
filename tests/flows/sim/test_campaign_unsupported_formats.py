@@ -205,14 +205,14 @@ def test_full_prune_cli_refuses_an_unsupported_nested_coverage_campaign_naming_i
     raw = canonical_json_bytes(nested)
     _rewrite(run.campaign_path, raw)
     reference = json.loads(run.public.read_bytes())
-    reference["coverage_campaign"].update(bytes=len(raw), sha256=content_digest(raw))
+    reference["coverage_record"].update(bytes=len(raw), sha256=content_digest(raw))
     _rewrite(run.public, canonical_json_bytes(reference))
 
     result = _run_retention_cli("--reports-root", str(run.reports), "--invocation", "1", "--full")
 
     assert result.returncode == 2
-    assert "COV_SCHEMA_VERSION_UNSUPPORTED" in result.stderr
-    assert str(run.storage) in result.stderr
+    _assert_refused(result.stderr, "booley.coverage-campaign/v4", run.reports / "sim" / "1")
+    assert "COV_SCHEMA_VERSION_UNSUPPORTED" not in result.stderr
     assert "Traceback" not in result.stderr
     assert run.campaign_path.is_file()
 

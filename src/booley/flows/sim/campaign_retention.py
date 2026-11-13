@@ -48,7 +48,7 @@ from .campaign.artifact_reference import (
     decode_artifact_reference,
     resolve_report_artifact_reference,
 )
-from .campaign.codec import MANIFEST_MAX_BYTES
+from .campaign.codec import MANIFEST_MAX_BYTES, raise_if_retired_schema
 from .campaign.dependency import (
     CampaignDependencyReceipt,
     dependency_receipt_files,
@@ -210,6 +210,14 @@ def _fail_closed_on_sharing_error(error: OSError, path: Path) -> None:
         raise _UnreadableDependencyError(f"cannot read {path}: {error}") from error
 
 
+def _refuse_older_coverage_schema(root: Path, public: Mapping[str, object]) -> None:
+    """Report a Target ``coverage.json`` an older Booley wrote as old, not damaged or standalone."""
+    try:
+        raise_if_retired_schema(public.get("$schema"))
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise CampaignRetentionError(str(exc.located(root))) from exc
+
+
 def _is_standalone_coverage(public: Mapping[str, object]) -> bool:
     """Whether a Target's ``coverage.json`` is a full Campaign, not a reference to one."""
     return public.get("$schema") != REFERENCE_SCHEMA
@@ -244,6 +252,7 @@ def _target(
     target = target_report_directory(root, selector)
     public_path = target / "coverage.json"
     public = _read_object(public_path)
+    _refuse_older_coverage_schema(root, public)
     if _is_standalone_coverage(public):
         raise _refuse_standalone_coverage(root, target)
     try:
@@ -1074,7 +1083,10 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
 def _campaign_coverage_files(coverage: Path) -> set[Path]:
     campaign_path = coverage / "coverage.json"
     if campaign_path.exists():
-        loaded = load_coverage_campaign(campaign_path)
+        try:
+            loaded = load_coverage_campaign(campaign_path)
+        except UnsupportedSimulationCampaignFormatError as exc:
+            raise CampaignRetentionError(str(exc)) from exc
         return _coverage_owned_files(coverage, loaded)
     if not coverage.exists():
         return set()
@@ -1116,9 +1128,9 @@ def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> di
     campaign = loaded.campaign
     point_store = loaded.summary.point_store
     return {
-        "$schema": "booley.coverage-availability/v1",
-        "campaign_id": campaign.campaign_id,
-        "campaign_sha256": loaded.summary.manifest_sha256.removeprefix("sha256:"),
+        "$schema": "booley.coverage-availability/v2",
+        "coverage_record_id": campaign.campaign_id,
+        "coverage_record_sha256": loaded.summary.manifest_sha256.removeprefix("sha256:"),
         "point_store_sha256": point_store.sha256 if point_store is not None else None,
         "artifacts": _native_artifacts(campaign),
         "status": status,
@@ -1179,9 +1191,12 @@ def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
     ):
         raise CampaignRetentionError("Target does not resolve exactly in this invocation")
     target = target_report_directory(root, selector)
+    public = target / "coverage.json"
+    if public.exists():
+        # Before the Simulation Record is inspected: a 0.4.0 reference binds digests of it.
+        _refuse_older_coverage_schema(root, _read_object(public))
     manifest = target / RECORD_DIRECTORY / "manifest.json"
     if not manifest.exists():
-        public = target / "coverage.json"
         if public.exists() and _is_standalone_coverage(_read_object(public)):
             raise _refuse_standalone_coverage(root, target)
         raise CampaignRetentionError(

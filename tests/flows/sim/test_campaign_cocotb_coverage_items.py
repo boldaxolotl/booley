@@ -327,9 +327,7 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
     assert first.complete is True
     assert resumed.complete is True
     assert len(native.runs) == 2
-    assert resumed.coverage_reference["coverage_campaign"]["schema"] == (
-        "booley.coverage-campaign/v5"
-    )
+    assert resumed.coverage_reference["coverage_record"]["schema"] == ("booley.coverage-record/v1")
 
 
 @pytest.mark.parametrize(
