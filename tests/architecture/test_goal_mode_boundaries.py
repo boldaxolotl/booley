@@ -77,8 +77,10 @@ _ALLOWED: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"criteria"}),
         "evidence and staleness #3512",
     ),
+    "booley.flows.sim.elab_only": (frozenset({"criteria"}), "evidence and staleness #3512"),
     "booley.flows.sim.flow": (frozenset({"criteria"}), "evidence and staleness #3512"),
     "booley.flows.sim.flow_resume": (frozenset({"criteria"}), "evidence and staleness #3512"),
+    "booley.flows.sim.standalone": (frozenset({"criteria"}), "evidence and staleness #3512"),
     "booley.flows.sim.workload": (frozenset({"criteria"}), "evidence and staleness #3512"),
     "booley.harness.booley": (
         frozenset({"criteria", "goals"}),
