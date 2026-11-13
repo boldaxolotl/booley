@@ -89,6 +89,8 @@ WRITTEN_PATH_SAMPLES = {
     ".runtime/mcp-tool-reports/x": "checkout",
     ".runtime/display.jsonl": "checkout",
     ".runtime/prompts/x": "checkout",
+    ".runtime/bwave/bwave_sessions.json": "checkout",
+    ".runtime/bwave/bwave_sessions.json.lock": "checkout",
     "tmp/fusesoc-isolated-cores/x": "checkout",
     "runtime/dashboard-task.json": "common",
     "runtime/upgrade_review.lock": "common",
@@ -193,6 +195,7 @@ SOURCE_TIED_PATTERNS = {
     ".runtime/mcp-tool-reports/",
     ".runtime/display.jsonl",
     ".runtime/prompts/",
+    ".runtime/bwave/",
     "tmp/fusesoc-isolated-cores/",
 }
 

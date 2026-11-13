@@ -187,7 +187,7 @@ def test_native_open_ended_range_includes_tail_clock_events(
 ) -> None:
     from booley.bwave import cli
 
-    monkeypatch.setattr(cli, "_load_sessions", lambda: {})
+    monkeypatch.setattr(cli, "_load_sessions", lambda *_args: {})
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
     resolver = cli._TickResolver(str(store), "test")
     assert resolver.range_to_ticks("170ns:") == (170, 200)
