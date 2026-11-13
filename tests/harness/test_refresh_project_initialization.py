@@ -99,14 +99,12 @@ def test_refresh_reports_crlf_without_rewriting_tracked_file(
     crlf_bytes = b"line one\r\nline two\r\n"
     _commit_crlf_checkout(root, "notes.txt", crlf_bytes)
     _git(root, "config", "--unset", "core.autocrlf")
-    inner_attributes = (root / ".booley" / ".gitattributes").read_bytes()
     capsys.readouterr()
 
     _refresh(root)
 
     assert (root / "notes.txt").read_bytes() == crlf_bytes
     assert not (root / ".gitattributes").exists()
-    assert (root / ".booley" / ".gitattributes").read_bytes() == inner_attributes
     assert "1 tracked file(s) are checked out with CRLF" in capsys.readouterr().out
     # Pinning autocrlf=false over a CRLF checkout would only add phantom diffs.
     unpinned = run_bounded_child(

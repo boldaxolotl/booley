@@ -160,9 +160,6 @@ leaves all of this on a blank slate:
 - **no inner git repo** and no `/.booley` exclusion: the skeleton records no
   `[stealth] enabled`, and a missing key means Stealth Mode is off, so
   `.booley/` shows as untracked in the RTL repo until row 16 is executed;
-- the non-Stealth line-ending rule `* text=auto eol=lf` as the first line of
-  the root `.gitattributes` (a new untracked file when the repo had none),
-  unless the repo already sets a whole-tree line-ending policy;
 - `.git/hooks/commit-msg` + `pre-push` delegators (inactive until Stealth is
   enabled), and `.devcontainer/devcontainer.json`;
 - one generated block in `.git/info/exclude` under the header

@@ -26,7 +26,6 @@ from tests.conftest import symlink_or_skip
 from tests.diagnostic_helpers import _Rec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.harness.test_doctor import (
-    _disable_line_ending_stealth,
     _patch_environment,
     _write_project,
 )
@@ -223,7 +222,6 @@ def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
     waived, tmp_path, monkeypatch
 ):
     booley_dir = _write_project(tmp_path)
-    _disable_line_ending_stealth(tmp_path)
     bootstrap = host_diagnostics.bootstrap
     _use_real_host_checks(
         monkeypatch,

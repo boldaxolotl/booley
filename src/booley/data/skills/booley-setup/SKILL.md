@@ -250,12 +250,9 @@ plain-English reason it matters.
    (including hybrid) with row 20 `enabled = true`. A fresh `booley init` records no Stealth choice
    (missing key = off), so it neither hid `.booley/` nor gave it a repo. Write
    the plan's `[stealth]` block into `.booley/booley.toml` now (Step 2 keeps
-   it). Undo init's non-Stealth line-ending edit: delete the root
-   `.gitattributes` if `git status` shows it untracked and it holds only
-   `* text=auto eol=lf`, otherwise remove just that added first line. Then
-   re-run `booley init`: it adds `/.booley` to `.git/info/exclude`, creates
-   the inner repo, keeps the line-ending rule repository-local, and activates
-   the commit-msg and pre-push hooks.
+   it). Then re-run `booley init`: it adds `/.booley` to
+   `.git/info/exclude`, creates the inner repo, and activates the commit-msg
+   and pre-push hooks.
 3. **Commercial EDA authority · host.** Only if row 14 selects
    host-provisioned EDA: perform Step 2's
    [host-authority bootstrap](steps/2-project-config.md#host-authority-bootstrap)

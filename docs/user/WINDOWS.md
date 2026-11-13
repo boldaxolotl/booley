@@ -38,11 +38,12 @@ for you:
 
 - It turns off Git's line-ending conversion for the repository
   (`core.autocrlf=false`) and pins `core.eol=lf`, so a checkout writes LF.
-- It adds the rule `* text=auto eol=lf` unless your repository already sets a
-  line-ending policy. The rule goes in the root `.gitattributes`, which you
-  commit only if you want to share it.
 - It converts files already checked out with CRLF back to LF, but only on a
   clean tree.
+
+Booley sets no commit-side policy and never creates or edits a
+`.gitattributes` file. If you want Git to normalize CRLF when you commit, add
+your own `.gitattributes`, for example with `* text=auto eol=lf`.
 
 If init does not convert the files, it says why. Commit or stash your
 uncommitted changes, or clear an `assume-unchanged` or `skip-worktree` flag
@@ -55,9 +56,8 @@ it is, and init lists it.
 <details markdown>
 <summary>In stealth mode</summary>
 
-The rule goes in `.git/info/attributes` and stays local. `booley doctor` also
-checks line endings in the Booley Directory's own repository. See
-[STEALTH.md](STEALTH.md).
+`booley doctor` also checks line endings in the Booley Directory's own
+repository. See [STEALTH.md](STEALTH.md).
 
 </details>
 
@@ -65,9 +65,7 @@ Don't fix this by hand: `git checkout -- .` keeps the CRLF endings.
 
 `booley doctor` checks line endings on every run and fails with the fix (usually `booley init`) when files are checked out with
 CRLF again. It warns `git.autocrlf-risk` when a Git config change would bring
-CRLF back on the next checkout. If it warns
-`git.attributes-policy-unknown` instead, see
-[Doctor](DOCTOR.md#unknown-git-attributes-policy).
+CRLF back on the next checkout.
 
 ## Init can't find the Booley executable
 

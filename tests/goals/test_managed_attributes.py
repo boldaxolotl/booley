@@ -150,18 +150,20 @@ def test_finish_accepts_and_records_managed_policy_for_each_participant(layout, 
 def test_init_preserves_export_only_content_and_finish_replays_it(
     layout, tmp_path, monkeypatch, comment
 ):
-    enable_stealth(layout)  # the repository-local attributes default is Stealth's
+    enable_stealth(layout)  # the repository-local attributes file is Stealth's
     external_policy(layout.worktree, tmp_path, monkeypatch, "default-user", "# no checkout policy")
     info = managed_attributes(layout.worktree)
     exports = b"\n\nrtl.v export-ignore -export-subst\n*.txt -export-ignore export-subst\n"
     extra = b"# " + comment + exports
-    info.write_bytes(extra)
+    # The file an earlier Booley wrote: the managed rule first, then the user's own lines.
+    written = GITATTRIBUTES_RULE.encode() + b"\n" + extra
+    info.write_bytes(written)
     git(layout.worktree, "config", "--unset", "core.autocrlf")
     report = reconcile_project_line_endings(
         layout.worktree, layout.worktree / ".booley", mode=LineEndingMode.REPAIR
     )
     assert report.status.value == "safe"
-    assert info.read_bytes() == GITATTRIBUTES_RULE.encode() + b"\n" + extra
+    assert info.read_bytes() == written
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     result = finish_goal(request(layout), environment(layout))

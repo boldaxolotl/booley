@@ -221,8 +221,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   footprint step re-ran `booley init`, which wrote `/.devcontainer`,
   `/.booley`, and `/.claude` there, so normally you are only **verifying**:
   `git check-ignore -v .booley` should name `.git/info/exclude`, and `git
-  status --porcelain` must not list `.booley/` or a Booley-added root
-  `.gitattributes`. Repair a missing entry by running that host step
+  status --porcelain` must not list `.booley/`. Repair a missing entry by running that host step
   (idempotent), not by hand-editing. A fresh init records no Stealth choice,
   so it never hides `.booley/` itself.
   Worktree gotcha: git honors `info/exclude` only from `$GIT_COMMON_DIR`, so
