@@ -440,7 +440,7 @@ The Target's `.core` owns the recipe and timing inputs: frontend, PPA profile,
 flattening, synthesis mode, backend overrides, sources, SDC, and toplevel
 ([Synthesis Target](../user/TARGETS.md#synthesis-target)). `[flows.synth]` owns
 execution and verdict policy (`timeout_ms`, `expected_latches`,
-`fail_on_timing_violation`, `timing_report_paths`); see
+`expected_comb_loops`, `fail_on_timing_violation`, `timing_report_paths`); see
 [FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth). Doctor fails
 recipe keys such as `ppa_profile`, `synth_mode`, or `sdc` placed under a
 `[flows.*]` table (`booley/audit/flow_schema.py`), because a recipe value on
@@ -501,12 +501,16 @@ stages' output.
 
 ### Intentional latches
 
-An inferred latch is normally a bug, so any latch fails the run. An integrated
+An inferred latch or combinational loop is normally a bug, so any one fails the run. An integrated
 clock-gating cell is the exception: it is built from a deliberate
 `always_latch` (lowRISC's generic `prim_clock_gating` has one), and failing on
 it made correct designs unsynthesizable. `[flows.synth].expected_latches`
-declares how many latches are intended. It is an allowance, not a mute: the
-raw count is always reported, and one latch more than declared still fails.
+declares how many latches are intended, and `expected_comb_loops` does the same
+for combinational loops. `[flows.fpga]` has both keys too. They are allowances,
+not mutes: the raw count is always reported, and one more than declared still
+fails. All four share one reader (`expected_count` in
+`booley/flows/flow_config.py`): a missing, negative, boolean, or non-integer
+value is 0. Multi-driven nets have no allowance.
 
 ### RTL frontend
 
@@ -528,7 +532,7 @@ transpile. Both feed the same mapping and timing steps. See
   `area_source`, and in physical mode OpenROAD timing evidence; a clean exit
   without them never passes;
 - no critical condition remains: no latches beyond `expected_latches`, no
-  combinational loops, no multi-driven nets, no unmapped processes.
+  combinational loops beyond `expected_comb_loops`, no multi-driven nets, no unmapped processes.
 
 The loop count comes from a Yosys `check` that Booley runs right after `synth`
 and before mapping (`premap_check_<design>.txt`). Mapped library cells are black
@@ -536,8 +540,8 @@ boxes to `check`, so a check after mapping cannot trace a loop through them.
 `check` works per module, so without `flatten` a loop that crosses a module
 boundary is not counted. The multi-driver count comes from a final `check` run
 after mapping and optimization (`check_<design>.txt`). The reported loop count
-is the larger of the two, so a loop that either check reports still fails the
-run. Yosys also runs `check` inside `synth`; loops seen only there (an
+is the larger of the two, so a loop that either check reports counts toward
+`expected_comb_loops`. Yosys also runs `check` inside `synth`; loops seen only there (an
 optimization removes them, as in
 [#1417](https://github.com/boldaxolotl/booley/issues/1417)) are advisory when
 neither check finds a loop, and are kept with that rationale. Missing, stale,
@@ -561,7 +565,9 @@ Each current and baseline result carries a bounded `warning_summary`: total
 and unique counts, counts by EDA tool, category, and disposition, and one
 representative message per group; `artifacts.log` keeps every raw message.
 Structural warnings become fatal when the check that owns their count
-confirms them. Other actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
+confirms them and the confirmed count exceeds its declared allowance. A loop
+within `expected_comb_loops` still prints its Yosys warning, so that run grades
+`warn`. Other actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
 known to be benign is counted with its rationale and does not downgrade the
 result. A located Yosys warning (`file:line[:col]: Warning:`, in practice from
 the `read_verilog` and `slang` frontends, slang on Yosys 0.69 and 0.70) is counted under category `frontend`
@@ -593,7 +599,7 @@ The Target owns the build intent under `flow_options`: device `part`,
 `ppa_profile`, and `out_of_context`, plus its sources, `toplevel`, XDC
 fileset, and typed `vlogdefine` parameters
 ([FPGA Target](../user/TARGETS.md#fpga-target)). `[flows.fpga]` owns execution
-policy only ([FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga)), and
+and verdict policy (`timeout_ms`, `expected_latches`, `expected_comb_loops`) ([FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga)), and
 Doctor fails recipe keys such as `part`, `ppa_profile`, or `out_of_context`
 placed there. Keeping the part on the Target stops one global setting from
 silently applying the wrong device to another Target. There is no per-call
@@ -669,7 +675,7 @@ log, accepting only files written by this run. Everything else Vivado writes
 | `lut_count`, `ff_count` | Required |
 | `wns_ns`, `whs_ns` | Required: worst setup and hold slack across all clocks, in ns |
 | `bram_count`, `dsp_count` | Reported when the device family provides them; never gate the verdict |
-| `latch_count`, `comb_loop_count`, `multi_driven_count` | Critical conditions; nonzero fails the run |
+| `latch_count`, `comb_loop_count`, `multi_driven_count` | Critical conditions; a latch or loop count above `expected_latches` or `expected_comb_loops` (default 0) fails the run, and any multi-driven net does |
 | `per_clock` | Per-clock `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, `fmax_mhz` |
 
 Fmax and critical path only make sense per clock, so they exist only inside
@@ -693,7 +699,7 @@ such as `fmax_mhz_min` applies to every clock; a clock-scoped one such as
 - fresh, nonempty utilization, timing, and DRC reports give LUT, FF, `wns_ns`,
   and `whs_ns`;
 - `wns_ns >= 0` and `whs_ns >= 0`;
-- the latch, loop, and multi-driver counts are zero.
+- the latch and loop counts do not exceed `expected_latches` and `expected_comb_loops`, and the multi-driver count is zero.
 
 Provisioning and setup failures, a missing completion marker, and a routed run
 whose reports lack the required metrics are Flow errors (exit 2). Timing

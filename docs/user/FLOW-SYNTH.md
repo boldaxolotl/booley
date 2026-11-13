@@ -104,7 +104,7 @@ sanitized file name with a hash suffix.
 |---|---|---:|
 | `PASS` | Synthesis finished, the netlist is clean, timing is met. | `0` |
 | `WARN` | Timing is violated, the EDA tools reported actionable warnings, or the baseline turned out to be the same source. | `0` |
-| `FAIL` | The design cannot be synthesized, or the final netlist has latches beyond `expected_latches`, combinational loops, multi-driven nets, or logic that never became cells; or timing is violated while `fail_on_timing_violation = true`. | `1` |
+| `FAIL` | The design cannot be synthesized, or the final netlist has latches beyond `expected_latches`, combinational loops beyond `expected_comb_loops`, multi-driven nets, or logic that never became cells; or timing is violated while `fail_on_timing_violation = true`. | `1` |
 | `ERROR` | No verdict: missing constraints, bad configuration, timeout, out of memory, or a crash. | `2` |
 
 A timing violation is `WARN` by default, unlike an
@@ -114,7 +114,9 @@ timing is an estimate, and early constraints are often placeholders. Set
 
 Warnings known to be harmless, and warnings Yosys reports against your own
 source lines, are counted but don't cause `WARN`. A loop or multi-driven
-warning is still checked and can fail the run.
+warning is still checked and can fail the run. A loop within
+`expected_comb_loops` doesn't fail the run, but Yosys still prints its
+warning, so the run ends `WARN` rather than `PASS`.
 
 ## Timing constraints
 
@@ -306,15 +308,24 @@ the synthesis Target anyway; it keeps the frontend's work small.
 ## Configuration (`[flows.synth]`)
 
 Besides the shared `enabled` and `timeout_ms` (default `1800000`, 30 minutes
-per Target), synthesis has three settings:
+per Target), synthesis has four settings:
 
 ```toml
 [flows.synth]
 timeout_ms = 5400000
 expected_latches = 0               # intentional latches allowed before FAIL
+expected_comb_loops = 0            # intentional combinational loops allowed before FAIL
 fail_on_timing_violation = false   # true: timing violations are FAIL (exit 1)
 timing_report_paths = 10           # worst setup paths listed per timing report
 ```
+
+`expected_latches` and `expected_comb_loops` (integers, default `0`) declare
+structures the design contains on purpose, such as the latch inside a
+standard-cell clock gater. The run reports the actual count and fails only on
+the excess, so one more than declared still fails. A negative, boolean, or
+non-integer value counts as `0`. Multi-driven nets have no allowance. Set
+these only to counts you have checked in the RTL, never to make a failing run
+pass.
 
 Keep `fail_on_timing_violation = false` while the constraints are
 placeholders. Turn it on once they are real, so a CI step that reads only the

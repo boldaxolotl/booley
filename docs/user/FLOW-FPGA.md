@@ -100,14 +100,15 @@ deleted when the run ends.
 
 | Verdict | Meaning | Exit |
 |---|---|---:|
-| `PASS` | Routing completed, LUT and FF counts were found, setup and hold slack are both ≥ 0 on every clock, and there are no latches, combinational loops, or multi-driven nets. | `0` |
-| `FAIL` | Vivado rejected the RTL (a syntax or port error), setup or hold slack is negative (`timing not met`), or the design has latches, combinational loops, or multi-driven nets (`critical conditions`). | `1` |
+| `PASS` | Routing completed, LUT and FF counts were found, setup and hold slack are both ≥ 0 on every clock, and there are no latches or combinational loops beyond `expected_latches` and `expected_comb_loops`, and no multi-driven nets. | `0` |
+| `FAIL` | Vivado rejected the RTL (a syntax or port error), setup or hold slack is negative (`timing not met`), or the design has latches or combinational loops beyond those allowances, or multi-driven nets (`critical conditions`). | `1` |
 | `ERROR` | No verdict: Vivado missing, crashed, or timed out; routing did not complete or reported no resource or timing numbers; a Target error such as a missing part or XDC; or a baseline that could not be compared. | `2` |
 
 A timing violation is `FAIL`, unlike [ASIC synthesis](FLOW-SYNTH.md#reading-results),
 where it is `WARN` by default: routed timing on a real part is the result
-itself, not an estimate. FPGA builds allow no latches at all; there is no
-`expected_latches` setting.
+itself, not an estimate. FPGA builds allow no latches or combinational loops
+unless you declare them with `expected_latches` and `expected_comb_loops`
+under [Configuration](#configuration-flowsfpga).
 
 ## Timing constraints
 
@@ -161,12 +162,22 @@ pinout. Such a build produces no bitstream.
 ## Configuration (`[flows.fpga]`)
 
 Besides the shared `enabled` and `timeout_ms` (default `7200000`, two hours
-per Target build), FPGA implementation has no settings in `booley.toml`:
+per Target build), FPGA implementation has two settings in `booley.toml`:
 
 ```toml
 [flows.fpga]
 timeout_ms = 7200000
+expected_latches = 0       # intentional latches allowed before FAIL
+expected_comb_loops = 0    # intentional combinational loops allowed before FAIL
 ```
+
+`expected_latches` and `expected_comb_loops` (integers, default `0`) declare
+structures the design contains on purpose. The build reports the actual count
+and fails only on the excess, so one more than declared still fails. A
+negative, boolean, or non-integer value counts as `0`. Multi-driven nets have
+no allowance. Set these only to counts you have checked in the RTL, never to
+make a failing build pass. The reasoning is the same as for
+[synthesis](FLOW-SYNTH.md#configuration-flowssynth).
 
 Everything about how the design is built lives on the Target in the `.core`
 file, not in `booley.toml`: see the [Target settings](#running-an-fpga-build)
