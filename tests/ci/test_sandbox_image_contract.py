@@ -136,13 +136,22 @@ def test_dockerfile_parser_rejects_unresolved_from_arg() -> None:
             "booley-runtime-base=docker-image://booley-runtime-base:ci",
         ),
         (
-            "local RISC-V candidate",
-            "test_workflow",
-            "test.yml",
-            "riscv-image",
-            "Run RISC-V candidate image contract",
+            "published-base test candidate",
+            "demo_workflow",
+            "picorv32-demo.yml",
+            "demo-contract",
+            "Build candidate from published stable base",
             None,
-            "booley-standard-substrate=docker-image://booley-standard-substrate:ci",
+            "booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}",
+        ),
+        (
+            "local-base candidate",
+            "demo_workflow",
+            "picorv32-demo.yml",
+            "demo-contract",
+            "Build candidate from changed stable base",
+            None,
+            "booley-runtime-base=docker-image://booley-runtime-base:ci",
         ),
         (
             "release RISC-V image",
@@ -172,6 +181,39 @@ def test_each_symbolic_parent_requires_its_named_context(
     errors = _errors(sources, role)
 
     assert "named contexts" in errors
+
+
+def test_local_riscv_candidate_requires_its_named_context() -> None:
+    sources = _sources()
+    mapping = "booley-standard-substrate=docker-image://booley-standard-substrate:ci"
+    sources = replace(
+        sources,
+        riscv_candidate_script=sources.riscv_candidate_script.replace(
+            f"--build-context {mapping}", ""
+        ),
+    )
+
+    assert "named contexts" in _errors(sources, "local RISC-V candidate")
+
+
+@pytest.mark.parametrize(
+    ("workflow_field", "workflow_name", "job", "name"),
+    [
+        ("test_workflow", "test.yml", "riscv-image", "Run RISC-V candidate image contract"),
+        ("demo_workflow", "picorv32-demo.yml", "demo-contract", "Build RISC-V Sandbox candidate"),
+    ],
+    ids=["tests-workflow", "demo-workflow"],
+)
+def test_riscv_candidate_jobs_must_build_through_the_shared_script(
+    workflow_field: str, workflow_name: str, job: str, name: str
+) -> None:
+    sources = _sources()
+    step = _step(sources, workflow_field, workflow_name, job, name)
+    step["run"] = str(step["run"]).replace("riscv_candidate.sh build", "true build")
+
+    assert "must call .github/scripts/riscv_candidate.sh" in _errors(
+        sources, "local RISC-V candidate"
+    )
 
 
 @pytest.mark.parametrize("target", ["standard", "riscv"])
@@ -273,10 +315,17 @@ def test_local_stable_base_must_precede_its_candidate() -> None:
     assert "must precede" in _errors(sources, "test candidate alternatives")
 
 
-@pytest.mark.parametrize("job", ["bwave-smoke", "riscv-image"])
-def test_published_base_resolver_must_precede_its_candidate(job: str) -> None:
+@pytest.mark.parametrize(
+    ("field", "job"),
+    [
+        ("test_workflow", "bwave-smoke"),
+        ("test_workflow", "riscv-image"),
+        ("demo_workflow", "demo-contract"),
+    ],
+)
+def test_published_base_resolver_must_precede_its_candidate(field: str, job: str) -> None:
     sources = _sources()
-    steps = sources.test_workflow["jobs"][job]["steps"]
+    steps = getattr(sources, field)["jobs"][job]["steps"]
     resolver = next(
         step for step in steps if step.get("name") == "Select compatible stable runtime base"
     )
@@ -797,13 +846,11 @@ def test_release_riscv_substrate_must_be_pulled_before_inspection() -> None:
 def test_riscv_candidate_must_stay_in_the_local_image_store(output: str, problem: str) -> None:
     """The zstd export is the RISC-V candidate only while it lands under its tag locally."""
     sources = _sources()
-    step = _step(
-        sources, "test_workflow", "test.yml", "riscv-image", "Run RISC-V candidate image contract"
-    )
-    step["run"] = _sub_once(
-        r"--output \S+",
-        f"--output {output}",
-        str(step["run"]),
+    sources = replace(
+        sources,
+        riscv_candidate_script=_sub_once(
+            r"--output \S+", f"--output {output}", sources.riscv_candidate_script
+        ),
     )
 
     assert problem in _errors(sources, "local RISC-V candidate")

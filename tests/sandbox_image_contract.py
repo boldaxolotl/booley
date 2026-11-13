@@ -68,6 +68,8 @@ class ContractSources:
     overlay_dockerfile: str
     riscv_dockerfile: str
     test_workflow: dict[str, Any]
+    demo_workflow: dict[str, Any]
+    riscv_candidate_script: str
     release_workflow: dict[str, Any]
     base_workflow: dict[str, Any]
     base_python_requirements: str
@@ -121,6 +123,10 @@ def load_sources(repo: Path) -> ContractSources:
         overlay_dockerfile=(docker_dir / "Dockerfile.wheel").read_text(encoding="utf-8"),
         riscv_dockerfile=(docker_dir / "Dockerfile.riscv").read_text(encoding="utf-8"),
         test_workflow=_load_yaml(repo / ".github/workflows/test.yml"),
+        demo_workflow=_load_yaml(repo / ".github/workflows/picorv32-demo.yml"),
+        riscv_candidate_script=(repo / ".github/scripts/riscv_candidate.sh").read_text(
+            encoding="utf-8"
+        ),
         release_workflow=_load_yaml(repo / ".github/workflows/docker-publish.yml"),
         base_workflow=_load_yaml(repo / ".github/workflows/docker-base-publish.yml"),
         base_python_requirements=(repo / _REQUIREMENTS_PATH).read_text(encoding="utf-8"),
@@ -310,7 +316,7 @@ def validate_sources(sources: ContractSources) -> tuple[str, ...]:
     errors: list[str] = []
     errors.extend(_dockerfile_errors(sources))
     errors.extend(_stable_base_errors(sources.base_workflow))
-    errors.extend(_test_graph_errors(sources.test_workflow))
+    errors.extend(_test_graph_errors(sources))
     errors.extend(_release_graph_errors(sources.release_workflow, sources.base_workflow))
     errors.extend(_runtime_role_errors(sources))
     errors.extend(_inventory_dockerfile_errors(sources))
@@ -372,21 +378,32 @@ def _stable_base_errors(workflow: dict[str, Any]) -> list[str]:
     return errors
 
 
-# Each job that builds the standard candidate from the stable base. The RISC-V
-# job builds its own copy so it never waits on bwave-smoke.
-_TEST_CANDIDATE_JOBS = ("bwave-smoke", "riscv-image")
+# Each job that builds the standard candidate from the stable base: workflow
+# file, then job. The RISC-V job builds its own copy so it never waits on
+# bwave-smoke; the PicoRV32 demo job builds one to run the demo in (#3590).
+_TEST_CANDIDATE_JOBS = (
+    ("test.yml", "bwave-smoke"),
+    ("test.yml", "riscv-image"),
+    ("picorv32-demo.yml", "demo-contract"),
+)
+# The steps that call the shared RISC-V candidate build, by workflow and job.
+_RISCV_CANDIDATE_STEPS = (
+    ("test.yml", "riscv-image", "Run RISC-V candidate image contract"),
+    ("picorv32-demo.yml", "demo-contract", "Build RISC-V Sandbox candidate"),
+)
+_RISCV_CANDIDATE_SCRIPT = ".github/scripts/riscv_candidate.sh"
 
 
-def _test_graph_errors(workflow: dict[str, Any]) -> list[str]:
+def _test_graph_errors(sources: ContractSources) -> list[str]:
+    workflows = {"test.yml": sources.test_workflow, "picorv32-demo.yml": sources.demo_workflow}
     errors: list[str] = []
-    for job in _TEST_CANDIDATE_JOBS:
-        errors.extend(_test_candidate_errors(workflow, job))
-    errors.extend(_test_riscv_errors(workflow))
+    for name, job in _TEST_CANDIDATE_JOBS:
+        errors.extend(_test_candidate_errors(name, workflows[name], job))
+    errors.extend(_test_riscv_errors(workflows, sources.riscv_candidate_script))
     return errors
 
 
-def _test_candidate_errors(workflow: dict[str, Any], job: str) -> list[str]:
-    name = "test.yml"
+def _test_candidate_errors(name: str, workflow: dict[str, Any], job: str) -> list[str]:
     try:
         resolver = find_step(name, workflow, job, name="Select compatible stable runtime base")
         base_step = find_step(
@@ -409,24 +426,40 @@ def _test_candidate_errors(workflow: dict[str, Any], job: str) -> list[str]:
     return errors
 
 
-def _test_riscv_errors(workflow: dict[str, Any]) -> list[str]:
-    """The riscv-image job derives its candidate from its own standard substrate."""
+def _test_riscv_errors(workflows: dict[str, dict[str, Any]], script: str) -> list[str]:
+    """Each RISC-V candidate derives from its job's own standard substrate.
+
+    Both jobs build through the shared script, so its one ``docker buildx build``
+    is the build the contract describes; each job must call it.
+    """
+    errors: list[str] = []
+    for name, job, step_name in _RISCV_CANDIDATE_STEPS:
+        try:
+            step = find_step(name, workflows[name], job, name=step_name)
+        except ValueError as error:
+            errors.append(f"test image graph: {error}")
+            continue
+        if f"{_RISCV_CANDIDATE_SCRIPT} build" not in str(step.value.get("run", "")):
+            errors.append(
+                f"local RISC-V candidate: {step.locator} must call {_RISCV_CANDIDATE_SCRIPT}"
+            )
     try:
         riscv = parse_build(
-            find_step(
-                "test.yml", workflow, "riscv-image", name="Run RISC-V candidate image contract"
-            )
+            WorkflowStep("riscv_candidate.sh", "build", (), {"name": "build", "run": script})
         )
     except ValueError as error:
-        return [f"test image graph: {error}"]
-    return _build_shape_errors(
-        "local RISC-V candidate",
-        riscv,
-        _RISCV_DOCKERFILE,
-        {"booley-standard-substrate": "docker-image://booley-standard-substrate:ci"},
-        ("booley-riscv-substrate:ci",),
-        load=True,
-    )
+        return [*errors, f"test image graph: riscv_candidate.sh: {error}"]
+    return [
+        *errors,
+        *_build_shape_errors(
+            "local RISC-V candidate",
+            riscv,
+            _RISCV_DOCKERFILE,
+            {"booley-standard-substrate": "docker-image://booley-standard-substrate:ci"},
+            ("booley-riscv-substrate:ci",),
+            load=True,
+        ),
+    ]
 
 
 def _test_build_shape_errors(local: Build, remote: Build) -> list[str]:
