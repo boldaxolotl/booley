@@ -141,7 +141,7 @@ def test_failed_shared_build_blocks_each_named_work_item_with_its_own_selection(
         )
     )
 
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     results = _completed_result_documents(store)
     assert outcome.complete is True
     assert outcome.aggregate_grade == "fail"
@@ -165,7 +165,7 @@ def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_sel
     handle = _handle(project)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     _, seed_counters, validated = _seed_failed_campaign(
         store, manifest, project, handle, tmp_path / "seed-build"
     )
@@ -238,7 +238,7 @@ def test_shared_build_failure_preserves_each_selection_identity(
         )
     )
 
-    result = _completed_result_documents(CampaignStore(invocation / "targets/sim/campaign"))[0]
+    result = _completed_result_documents(CampaignStore(invocation / "targets/sim/record"))[0]
     assert [item["test"] for item in result["observations"]] == expected
 
 
@@ -285,7 +285,7 @@ def _assert_shared_campaign(outcome, compile_count, launches, bindings, invocati
     assert launches[0][1] != launches[1][1]
     assert [item[2] for item in launches] == [b"pristine", b"pristine"]
     assert all(not item[1].exists() for item in launches)
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     build_results = tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))
     assert len(build_results) == 1
     result_documents = [
@@ -555,7 +555,7 @@ def test_recovered_bundle_preserves_verdict_log_trace_timeout_and_launch_contrac
     tmp_path: Path,
 ) -> None:
     manifest = _compatibility_manifest()
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -631,7 +631,7 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     items = manifest.document["work_items"]
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -722,7 +722,7 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         from booley.flows.sim.campaign.coordinator import ResumeCampaignRunRequest
         from tests.flows.sim.campaign_test_support import _validated_campaign
 
-        store = CampaignStore(invocation / "targets/sim/campaign")
+        store = CampaignStore(invocation / "targets/sim/record")
         validated = _validated_campaign(store, manifest, project, _handle(project))
         resumed = SimulationCampaign(_executor(build_root, counters, disclosures=disclosures)).run(
             ResumeCampaignRunRequest(
@@ -745,7 +745,7 @@ def _assert_private_legacy_results(outcome, counters, hooks, invocation) -> None
     assert counters["compile"] == 2
     assert counters["durable_reuse"] == 0
     assert hooks == [(("alpha",), True, None), (("beta",), True, None)]
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     private_results = tuple(
         store.root.glob("work-items/*/attempts/*/private-build/build-result.json")
     )
@@ -787,7 +787,7 @@ def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
             )
         )
 
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     assert counters["launch"] == 1
     assert store.scan().pending == ()
     assert len(store.scan().interrupted) == 1

@@ -11,6 +11,7 @@ from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows.baseline_worktree import git_full_sha
 from booley.flows.sim.campaign_files import read_bounded
 from booley.flows.sim.campaign_reports import simulation_booley_dir
+from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -103,9 +104,10 @@ def validate_resume_manifest(
         canonical = canonical_project_alias_path(manifest_path.absolute())
     except ValueError as exc:
         raise SimulationCampaignIntegrityError(str(exc)) from exc
-    if canonical.name != "manifest.json" or canonical.parent.name != "campaign":
+    refuse_older_manifest_path(canonical)
+    if canonical.name != "manifest.json" or canonical.parent.name != RECORD_DIRECTORY:
         raise SimulationCampaignIntegrityError(
-            "--resume-from must name one exact campaign/manifest.json"
+            "--resume-from must name one exact record/manifest.json"
         )
     booley_dir = simulation_booley_dir(project_root)
     # A copied physical path names the same lexical origin, so receipts stay consistent.

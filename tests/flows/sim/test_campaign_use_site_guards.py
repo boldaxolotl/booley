@@ -39,8 +39,8 @@ from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
 @pytest.mark.parametrize(
     "path",
     [
-        "targets/x/campaign/manifest.json",
-        "targets/x%40baseline-abc/campaign/manifest.json",
+        "targets/x/record/manifest.json",
+        "targets/x%40baseline-abc/record/manifest.json",
     ],
 )
 def test_a_planned_prerequisite_path_stays_inside_its_invocation(
@@ -52,10 +52,10 @@ def test_a_planned_prerequisite_path_stays_inside_its_invocation(
 @pytest.mark.parametrize(
     "path",
     [
-        "../outside/targets/x/campaign/manifest.json",
-        "targets/../campaign/manifest.json",
-        "targets/x/campaign/manifest.json/extra",
-        "/abs/targets/x/campaign/manifest.json",
+        "../outside/targets/x/record/manifest.json",
+        "targets/../record/manifest.json",
+        "targets/x/record/manifest.json/extra",
+        "/abs/targets/x/record/manifest.json",
         None,
     ],
 )

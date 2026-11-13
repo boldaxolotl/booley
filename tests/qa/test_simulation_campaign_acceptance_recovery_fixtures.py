@@ -118,7 +118,7 @@ def _facts(campaign_id: str, manifest_sha256: str, result_path: Path) -> dict[st
                 "attempt_id": result["attempt_id"],
                 "result": {
                     "path_base": "origin_invocation",
-                    "path": "targets/sim_toggle/campaign/work-items/item/result.json",
+                    "path": "targets/sim_toggle/record/work-items/item/result.json",
                     "bytes": len(raw),
                     "sha256": _sha256(raw),
                     "kind": "simulation_result",

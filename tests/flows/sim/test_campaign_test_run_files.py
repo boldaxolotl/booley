@@ -250,7 +250,7 @@ def test_rows_carry_null_paths_when_files_are_absent(
 
 def _campaign_stand_in(tmp_path: Path) -> SimpleNamespace:
     """The outcome of the campaign under *tmp_path*, as the lookup reads it from disk."""
-    campaign = _target_directory(tmp_path) / "campaign"
+    campaign = _target_directory(tmp_path) / "record"
     results = sorted(campaign.glob("work-items/*/result.json"))
     consumed = [
         {
@@ -275,7 +275,7 @@ def test_paths_name_the_attempt_the_campaign_accepted(
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
     outcome = _campaign_stand_in(tmp_path)
-    (result,) = (_target_directory(tmp_path) / "campaign").glob("work-items/*/result.json")
+    (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
     document = json.loads(result.read_text("utf-8"))
     first = result.parent / "attempts" / f"0001-{document['attempt_id']}"
     accepted = result.parent / "attempts" / f"0002-{document['attempt_id']}"
@@ -300,7 +300,7 @@ def test_lookup_yields_no_files_for_unreadable_or_missing_records(
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
     outcome = _campaign_stand_in(tmp_path)
-    (result,) = (_target_directory(tmp_path) / "campaign").glob("work-items/*/result.json")
+    (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
 
     # No consumed result for the observation's work item.
     stranger = SimpleNamespace(
@@ -337,7 +337,7 @@ def test_a_reference_that_escapes_its_attempt_names_no_file(
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
     outcome = _campaign_stand_in(tmp_path)
-    (result,) = (_target_directory(tmp_path) / "campaign").glob("work-items/*/result.json")
+    (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
     document = json.loads(result.read_text("utf-8"))
     for reference in document["evidence"]:
         if reference["kind"] == "live_run_log":

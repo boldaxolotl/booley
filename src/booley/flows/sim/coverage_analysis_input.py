@@ -34,6 +34,7 @@ from booley.flows.sim.coverage_reference import (
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
 )
+from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
@@ -143,7 +144,7 @@ def _reference_projection(
     Authority comes from the locally supplied Coverage reference, its enclosing
     authenticated Simulation Campaign, and the projection's Target/verdict fields.
     """
-    expected_manifest = (public_path.parent / "campaign" / "manifest.json").absolute()
+    expected_manifest = (public_path.parent / RECORD_DIRECTORY / "manifest.json").absolute()
     document = projection.document
     owner = str(resolved.reference.document["simulation_campaign_id"])
     if document.get("campaign_id") != owner:

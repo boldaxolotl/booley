@@ -70,6 +70,7 @@ from .coverage_reference import (
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
 )
+from .record_layout import RECORD_DIRECTORY, refuse_older_layout
 
 
 class CampaignRetentionError(ValueError):
@@ -284,7 +285,16 @@ def prune_native_payload(reports_root: Path, invocation: int, target: str) -> Pa
         return _prune_native(root, target)
 
 
+def _refuse_older_record_layout(root: Path) -> None:
+    """Report an invocation Booley 0.4.0 or earlier wrote as an older record, not corrupt."""
+    try:
+        refuse_older_layout(root)
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise CampaignRetentionError(str(exc)) from exc
+
+
 def _prune_native(root: Path, target: str) -> Path:
+    _refuse_older_record_layout(root)
     _safe_tree(root, invocation_booley_dir(root))
     _validate_native_pruning_eligibility(root, target)
     directory, loaded = _target(root, target)
@@ -324,6 +334,7 @@ def prune_invocation(
     with _retention_invocation_lock(root):
         if _completed_tombstone(root):
             return
+        _refuse_older_record_layout(root)
         batch = _read_prune_batch(root)
         if batch is not None:
             if not include_dependents:
@@ -520,7 +531,7 @@ def _dependent_invocations(
     root: Path, *, reject_unknown: bool = True
 ) -> tuple[_DependentInvocation, ...]:
     found: dict[Path, _DependentInvocation] = {}
-    manifests = tuple(sorted(root.glob("targets/*/campaign/manifest.json")))
+    manifests = tuple(sorted(root.glob(f"targets/*/{RECORD_DIRECTORY}/manifest.json")))
     for manifest in manifests:
         try:
             receipts = read_campaign_dependencies(manifest)
@@ -558,7 +569,7 @@ def _authenticate_dependent_report(receipt: CampaignDependencyReceipt) -> bool:
         return _completed_tombstone(receipt.dependent_invocation)
     return _report_references_campaign(
         report,
-        receipt.origin_target / "campaign/manifest.json",
+        receipt.origin_target / RECORD_DIRECTORY / "manifest.json",
         receipt.campaign_id,
         external_origin_target=receipt.origin_target,
     )
@@ -612,8 +623,8 @@ def _reject_unknown_producers(root: Path, found: Mapping[Path, _DependentInvocat
         and path.name.removeprefix(".pruned-").isdecimal()
     )
     patterns = (
-        "targets/*/campaign/work-items/*/attempts/*/attempt.json",
-        "targets/*/campaign/work-items/*/attempts/*/result.json",
+        f"targets/*/{RECORD_DIRECTORY}/work-items/*/attempts/*/attempt.json",
+        f"targets/*/{RECORD_DIRECTORY}/work-items/*/attempts/*/result.json",
     )
     producers: set[int] = set()
     for pattern in patterns:
@@ -820,7 +831,9 @@ def _preflight_campaign_resources(root: Path, project_data: Path | None) -> None
 def _campaign_directories(root: Path) -> tuple[Path, ...]:
     return tuple(
         sorted(
-            path.parent for path in root.glob("targets/*/campaign/manifest.json") if path.is_file()
+            path.parent
+            for path in root.glob(f"targets/*/{RECORD_DIRECTORY}/manifest.json")
+            if path.is_file()
         )
     )
 
@@ -908,7 +921,7 @@ def _validate_invocation_targets(root: Path) -> None:
                 target for target in targets if target_report_directory(root, target) == directory
             )
             _target(root, selector, require_projection=False)
-        campaign = directory / "campaign"
+        campaign = directory / RECORD_DIRECTORY
         if (campaign / "manifest.json").exists():
             _inspect_simulation_campaign(directory, campaign)
 
@@ -1025,7 +1038,7 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
         # Already validated by _validate_invocation_targets; the nested storage is owned
         # through the Simulation Campaign's coverage directories below.
         expected.add(public.absolute())
-    campaign = target / "campaign"
+    campaign = target / RECORD_DIRECTORY
     manifest = campaign / "manifest.json"
     if manifest.exists():
         booley_dir = invocation_booley_dir(root)
@@ -1156,7 +1169,7 @@ def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
     ):
         raise CampaignRetentionError("Target does not resolve exactly in this invocation")
     target = target_report_directory(root, selector)
-    manifest = target / "campaign" / "manifest.json"
+    manifest = target / RECORD_DIRECTORY / "manifest.json"
     if not manifest.exists():
         public = target / "coverage.json"
         if public.exists() and _is_standalone_coverage(_read_object(public)):

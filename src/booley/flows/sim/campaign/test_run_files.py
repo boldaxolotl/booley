@@ -83,7 +83,7 @@ def campaign_test_run_files(outcome: _Outcome) -> tuple[TestRunFiles, ...]:
     """
     facts = getattr(getattr(outcome, "acceptance_facts", None), "document", {})
     consumed = cast(Sequence[Mapping[str, object]], facts.get("consumed_results", ()))
-    # ``<invocation>/targets/<Target>/campaign/manifest.json``: a manifest kept
+    # ``<invocation>/targets/<Target>/record/manifest.json``: a manifest kept
     # anywhere else names no invocation to resolve the results against.
     ancestors = outcome.manifest_path.parents
     if len(ancestors) < 4:
