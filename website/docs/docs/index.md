@@ -17,14 +17,15 @@ The Booley user guide. The first time, read **Get started** in order.
 <tr><td><a href="setup/">Setup</a></td><td>Connect an installed Booley to your RTL project.</td></tr>
 <tr><td><a href="usage/">Usage</a></td><td>Day-to-day work with the Developer Agent and waveforms.</td></tr>
 <tr><td><a href="goal-mode/">Goal Mode</a></td><td>Evidence-backed Goals, Goalsets, and review.</td></tr>
-<tr><th scope="rowgroup" rowspan="8">Flows &amp; Specialists</th><td><a href="flow-reference/">Running Flows</a></td><td>What every Flow shares: Targets, options, and results.</td></tr>
+<tr><th scope="rowgroup" rowspan="9">Flows &amp; Specialists</th><td><a href="flow-reference/">Running Flows</a></td><td>What every Flow shares: Targets, options, and results.</td></tr>
 <tr><td><a href="flow-sim/">Simulation</a></td><td>Run a Target's tests and report which ones passed.</td></tr>
 <tr><td><span class="docs__tree" aria-hidden="true">└</span><a href="coverage/">Coverage</a></td><td>Guide to measuring how much of the RTL your tests exercise.</td></tr>
 <tr><td><a href="flow-lint/">Lint</a></td><td>Check RTL for structural, semantic, and style problems.</td></tr>
 <tr><td><a href="flow-synth/">ASIC synthesis</a></td><td>Estimate ASIC area and timing while you iterate.</td></tr>
 <tr><td><a href="flow-fpga/">FPGA implementation</a></td><td>Build for an FPGA and report resources and timing.</td></tr>
 <tr><td><a href="flow-mutation/">Mutation testing</a></td><td>Plant small bugs in the RTL and check that your tests catch them.</td></tr>
-<tr><td><a href="specialists/">Specialists</a></td><td>LLM helpers that review code and test your tests.</td></tr>
+<tr><td><a href="specialists/">Specialists</a></td><td>LLM helpers that review code and explain coverage.</td></tr>
+<tr><td><span class="docs__tree" aria-hidden="true">└</span><a href="reviewer/">Reviewer</a></td><td>Single-focus AI review of RTL or testbench code.</td></tr>
 <tr><th scope="rowgroup" rowspan="7">Reference</th><td><a href="config/">Config</a></td><td>Project-wide <code>booley.toml</code> settings.</td></tr>
 <tr><td><a href="tests/">tests.toml</a></td><td>A sim Target's Tests, Test Variants, and seeds.</td></tr>
 <tr><td><a href="targets/">Targets</a></td><td>Describe how your design builds for every Flow.</td></tr>
