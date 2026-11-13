@@ -51,6 +51,7 @@ from booley.runtime.execution_records import (
 )
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
+    ClaimAbortedError,
     HOLDING,
     INHERITED_SLOT_ENV,
     QUEUED,
@@ -244,6 +245,32 @@ def test_child_permit_checks_lease_loss_before_return(tmp_path: Path) -> None:
             permit.token.path.unlink()
     finally:
         store.release(outer)
+
+
+def test_child_permit_never_yields_a_claim_admitted_after_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A claim admitted in the same moment the campaign is cancelled never starts its item."""
+    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
+    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    capacity = _capacity(_managed(store, outer), tmp_path)
+    acquire_child = capacity._acquire_child
+
+    def acquire_then_cancel(*args, **kwargs):
+        token = acquire_child(*args, **kwargs)
+        capacity.cancel_waiters("test cancellation")  # lands while the claim was granted
+        return token
+
+    monkeypatch.setattr(capacity, "_acquire_child", acquire_then_cancel)
+    started: list[bool] = []
+    try:
+        with capacity.outer_permit():
+            with pytest.raises(ClaimAbortedError, match="cancellation"), _child_permit(capacity):
+                started.append(True)
+    finally:
+        store.release(outer)
+    assert started == []
+    assert store.snapshot(CLASS_HEAVY) == ([], [])
 
 
 def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.flows.endpoint_admission import AdmissionContext
@@ -145,7 +145,7 @@ class HeavyCapacity:
         claim = None if self._item_claim is None else self._item_claim(item)
         if claim is None or not alone:
             return claim
-        return MemoryClaim(budget_mb=claim.budget_mb, run_alone=True, wall_s=claim.wall_s)
+        return replace(claim, reservation_mb=None, run_alone=True)
 
     @contextmanager
     def child_permit(
@@ -210,6 +210,9 @@ class HeavyCapacity:
         try:
             try:
                 try:
+                    # A claim admitted as the campaign was cancelled never starts its item.
+                    if self._cancelled():
+                        raise ClaimAbortedError("campaign cancellation requested")
                     yield permit
                 except HeavyCapacityError as exc:
                     cause = self._failed_cause(exc, permit)
