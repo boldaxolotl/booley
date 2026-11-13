@@ -18,6 +18,11 @@ from types import ModuleType
 
 import pytest
 
+from booley.flows import runtime_reality
+from booley.flows.fpga import vivado_startup
+from booley.harness import bootstrap, doctor, sandbox, sandbox_stop_warning
+from booley.harness.setup import docker_image, readiness
+from booley.mcp import server_inspection
 from booley.runtime import (
     booley_dir_migration,
     docker_capacity,
@@ -88,6 +93,15 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
 #: Host-side modules, besides the session runtime and admission, whose timed Docker CLI
 #: commands go through ``platform_paths.run_captured_bounded``.
 HOST_DOCKER_MODULES = (
+    bootstrap,
+    doctor,
+    docker_image,
+    readiness,
+    runtime_reality,
+    sandbox,
+    sandbox_stop_warning,
+    server_inspection,
+    vivado_startup,
     booley_dir_migration,
     docker_capacity,
     host_base_acquisition,

@@ -24,6 +24,7 @@ from typing import Any
 from booley.config.project_config import project_name
 from booley.runtime import auth_token
 from booley.runtime.platform_paths import docker_mount_path as _docker_mount_path
+from booley.runtime.platform_paths import run_captured_bounded
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +61,7 @@ class DockerSandboxConfig:
             return "docker not found on PATH"
 
         try:
-            result = subprocess.run(
-                ["docker", "info"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
+            result = run_captured_bounded(["docker", "info"], timeout=15)
             if result.returncode != 0:
                 stderr = (result.stderr or "").strip()
                 # Distinguish permission errors from a down daemon — collapsing
@@ -89,13 +84,7 @@ class DockerSandboxConfig:
             return "docker not found on PATH"
 
         try:
-            result = subprocess.run(
-                ["docker", "image", "inspect", self.image],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
+            result = run_captured_bounded(["docker", "image", "inspect", self.image], timeout=15)
             if result.returncode != 0:
                 return (
                     f"Docker image '{self.image}' not found. "

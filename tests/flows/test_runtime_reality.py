@@ -15,6 +15,7 @@ from typing import Any
 
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.runtime import session_runtime
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 
 _BAKE_FIX = "bake verilator into the Sandbox Image and rebuild (booley init --force)"
 
@@ -66,6 +67,7 @@ class _HostProbe:
         self.run_calls: list[tuple[list[str], dict[str, Any]]] = []
         self._returncode = returncode
         self._error = error
+        route_bounded_capture_through_subprocess_run(monkeypatch, _owner())
         monkeypatch.setattr(_owner().subprocess, "run", self._run)
 
     def command(self, argv: list[str]) -> list[str]:

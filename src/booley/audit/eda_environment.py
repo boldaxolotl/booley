@@ -69,7 +69,7 @@ def audit_riscv_toolchain(
     image: str,
     flavor: str | None,
     *,
-    run: CommandRunner = subprocess.run,
+    run: CommandRunner,
 ) -> tuple[EdaEnvironmentFinding, ...]:
     """Probe RISC-V image promises when its baked flavor marker opts in."""
     if flavor != "riscv":
@@ -84,13 +84,7 @@ def _run_probe(
     run: CommandRunner,
 ) -> EdaEnvironmentFinding:
     try:
-        result = run(
-            [docker_exe, "run", "--rm", image, *probe.command],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        result = run([docker_exe, "run", "--rm", image, *probe.command], timeout=30)
     except (subprocess.SubprocessError, FileNotFoundError):
         return EdaEnvironmentFinding(
             EdaFindingSeverity.FAIL,

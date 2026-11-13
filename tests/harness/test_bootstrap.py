@@ -21,6 +21,13 @@ from booley.runtime.docker_capacity import (
 )
 from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult, Status
 from tests.conftest import require_symlinks
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+
+
+@pytest.fixture(autouse=True)
+def _bootstrap_probes_use_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module fakes the Git and Docker probes through ``subprocess.run``."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, bootstrap)
 
 
 def _current(resource: str) -> bootstrap.BootstrapFinding:
@@ -1692,6 +1699,8 @@ def test_cli_invalid_registration_never_prints_update_success(
 def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_current=False):
     from booley.config import editor
 
+    # Other modules' check-only tests call this helper: route the probes in any of them.
+    route_bounded_capture_through_subprocess_run(monkeypatch, bootstrap)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
