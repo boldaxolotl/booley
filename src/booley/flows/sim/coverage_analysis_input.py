@@ -147,23 +147,23 @@ def _reference_projection(
     expected_manifest = (public_path.parent / RECORD_DIRECTORY / "manifest.json").absolute()
     document = projection.document
     owner = str(resolved.reference.document["simulation_campaign_id"])
-    if document.get("campaign_id") != owner:
+    if document.get("simulation_record_id") != owner:
         raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
     entry = crossed_booley_dir_entry(public_path)
     manifest_artifact = resolve_artifact_reference(
-        document.get("campaign_manifest"),
+        document.get("simulation_record_manifest"),
         bases={"origin_target": public_path.parent},
         allowed_bases={"origin_target"},
-        expected_kind="simulation_campaign_manifest",
+        expected_kind="simulation_record_manifest",
         expected_owner=owner,
         maximum=MANIFEST_MAX_BYTES,
         booley_dir=entry,
     )
     coverage_artifact = resolve_artifact_reference(
-        document.get("coverage_campaign"),
+        document.get("coverage_record"),
         bases={"origin_target": public_path.parent},
         allowed_bases={"origin_target"},
-        expected_kind="coverage_campaign_reference",
+        expected_kind="coverage_record_reference",
         expected_owner=owner,
         maximum=MAX_REFERENCE_BYTES,
         booley_dir=entry,

@@ -64,6 +64,7 @@ from .codec import (
     encode_simulation_campaign_manifest,
     encode_simulation_result,
     linked_manifest_path,
+    raise_if_retired_schema,
     reads_campaign_records,
     validate_relative_path,
 )
@@ -81,7 +82,7 @@ from .planning import manifest_digest
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder, _reference
 
 _T = TypeVar("_T", bound=SimulationCampaignDocument)
-_SUMMARY_SCHEMA = "booley.simulation-campaign-summary/v1"
+_SUMMARY_SCHEMA = "booley.simulation-record-summary/v1"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _COMMON_BUILD_FIELDS = (
     "simulation_record_id",
@@ -194,8 +195,14 @@ class CampaignStore:
         try:
             return decode(raw)
         except UnsupportedSimulationCampaignFormatError as exc:
-            invocation = _invocation_of(self.root)
-            raise (exc if invocation is None else exc.located(invocation)) from None
+            raise self._locate(exc) from None
+
+    def _locate(
+        self, refusal: UnsupportedSimulationCampaignFormatError
+    ) -> UnsupportedSimulationCampaignFormatError:
+        """The refusal naming this Record's invocation directory, when it has one."""
+        invocation = _invocation_of(self.root)
+        return refusal if invocation is None else refusal.located(invocation)
 
     @property
     def manifest_path(self) -> Path:
@@ -222,6 +229,10 @@ class CampaignStore:
         _require_safe_parents(self.summary_path, self.root, self.booley_dir)
         raw = self._read(self.summary_path, limit=SUMMARY_MAX_BYTES)
         document = parse_json_object(raw, error=SimulationCampaignIntegrityError)
+        try:
+            raise_if_retired_schema(document.get("$schema"))
+        except UnsupportedSimulationCampaignFormatError as exc:
+            raise self._locate(exc) from None
         try:
             schema = require_str_value(document.get("$schema"), field="campaign summary schema")
             require_bool_value(document.get("complete"), field="campaign summary complete")
@@ -713,7 +724,7 @@ class CampaignStore:
         )
         document: dict[str, object] = {
             "$schema": _SUMMARY_SCHEMA,
-            "campaign_id": manifest.document["simulation_record_id"],
+            "simulation_record_id": manifest.document["simulation_record_id"],
             "manifest_sha256": manifest_sha256,
             "workload_sha256": cast(Mapping[str, str], manifest.document["fingerprints"])[
                 "workload_sha256"

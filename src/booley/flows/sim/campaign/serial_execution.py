@@ -1845,7 +1845,7 @@ def _capture_outcome_evidence(
             source_observations = _decode_cocotb_source(source_raw, artifact.test_names)
             raw = canonical_json_bytes(
                 {
-                    "$schema": "booley.cocotb-campaign-transport/v1",
+                    "$schema": "booley.cocotb-record-transport/v1",
                     "source_bytes": len(source_raw),
                     "source_sha256": content_digest(source_raw),
                     "source_observations": source_observations,
