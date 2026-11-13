@@ -1120,10 +1120,21 @@ _PARALLEL_SYNC_TIMEOUT_S = 20.0
 
 
 def _remove_slot_entry(slots: SlotStore, token: SlotToken) -> None:
-    """Remove *token*'s entry the way a reaper does."""
-    with slots._lease_gate(token) as acquired:
-        assert acquired
-        token.path.unlink()
+    """Remove *token*'s entry the way a reaper does, one pass after another.
+
+    Each pass takes the lease gate and removes through the store's own
+    bounded entry removal, so a concurrent reader's Windows sharing
+    violation is retried like a real reap (#3982). A pass that cannot take
+    the gate (a renewal holds it through its ~1.1 s read/replace retries)
+    or exhausts the removal bound is retried on the next pass, until
+    ``_PARALLEL_SYNC_TIMEOUT_S``.
+    """
+
+    def removed() -> bool:
+        with slots._lease_gate(token) as acquired:
+            return acquired and slots._unlink_entry(token.path)
+
+    _wait_until(removed, timeout=_PARALLEL_SYNC_TIMEOUT_S)
 
 
 def _remove_child_lease(slots: SlotStore, child_id: str) -> None:

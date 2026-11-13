@@ -869,6 +869,34 @@ class TestGhostReaping:
         tok = b.submit(CLASS_LIGHT, pid=200)
         assert b.refresh(tok).state == HOLDING
 
+    def test_reap_leaves_entry_for_a_later_reap_when_sharing_violation_outlasts_retries(
+        self, root, world, monkeypatch, caplog
+    ):
+        spawn(world, 100)
+        store = make_store(root, world)
+        dead_tok = store.submit(CLASS_LIGHT, pid=100)
+        assert store.refresh(dead_tok).state == HOLDING
+        del world.alive[100]
+        original_unlink = Path.unlink
+        denied = True
+
+        def sharing_violating_unlink(path, *args, **kwargs):
+            if denied and path == dead_tok.path:
+                raise windows_sharing_error()
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", sharing_violating_unlink)
+        with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
+            assert store.reap(CLASS_LIGHT) == []
+
+        assert dead_tok.path.exists()
+        assert [r.getMessage() for r in caplog.records] == [
+            f"Could not remove slot entry after retries: {dead_tok.path.name}"
+        ]
+        denied = False
+        assert store.reap(CLASS_LIGHT) == [dead_tok.path.name]
+        assert not dead_tok.path.exists()
+
     def test_dead_waiter_is_reaped_out_of_the_queue(self, root, world):
         spawn(world, 100)
         spawn(world, 200)
