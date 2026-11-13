@@ -867,31 +867,36 @@ def test_lint_job_reserves_its_largest_target_estimate(
     assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
-@pytest.mark.parametrize(
-    ("target", "key_target"), (("echo", "echo"), ("", "")), ids=["echo", "no-target"]
-)
-def test_custom_flow_job_reserves_its_flow_phase(
-    target: str, key_target: str, memory_runtime: Path
-) -> None:
-    _seed_records(memory_runtime, (key_target, "echo_flow", 400))
-    flow, prepared = _custom_flow(target)
+def test_custom_flow_job_reserves_its_flow_phase(memory_runtime: Path) -> None:
+    # With and without a Target: the history key's Target is the one given, else empty.
+    for target in ("echo", ""):
+        _seed_records(memory_runtime, (target, "echo_flow", 400))
+        flow, prepared = _custom_flow(target)
 
-    with AdmissionGate(flow, prepared).enter():
-        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
-        assert holder.memory == job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0)
-        assert _held(memory_runtime, job_slots.CLASS_HEAVY) == []
+        with AdmissionGate(flow, prepared).enter():
+            (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+            expected = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0)
+            assert holder.memory == expected, target
+            assert _held(memory_runtime, job_slots.CLASS_HEAVY) == [], target
 
-    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+        assert _held(memory_runtime, job_slots.CLASS_MEMORY) == [], target
 
 
 class _QueuedError(Exception):
     """Raised from the queue narrator to stop the wait once the Job is known to be QUEUED."""
 
 
-@pytest.mark.parametrize("kind", ("lint", "custom"))
 def test_lint_and_custom_flow_jobs_queue_behind_a_run_alone_job(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for kind in ("lint", "custom"):
+        _assert_queues_behind_run_alone_job(kind, memory_runtime, runtime, monkeypatch)
+
+
+def _assert_queues_behind_run_alone_job(
     kind: str, memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A *kind* Job waits (QUEUED, position 0) while a run-alone Job holds the budget."""
     import os
 
     flow, prepared = _admitted_job(kind, runtime, memory_runtime)
@@ -926,10 +931,17 @@ def test_lint_and_custom_flow_jobs_queue_behind_a_run_alone_job(
         store.release(first)
 
 
-@pytest.mark.parametrize("kind", ("lint", "custom"))
 def test_switch_unset_leaves_lint_and_custom_flow_jobs_unadmitted(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for kind in ("lint", "custom"):
+        _assert_unadmitted_without_switch(kind, memory_runtime, runtime, monkeypatch)
+
+
+def _assert_unadmitted_without_switch(
     kind: str, memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A *kind* Job takes no admission without the switch, and a Reservation with it."""
     flow, prepared = _admitted_job(kind, runtime, memory_runtime)
     monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
 

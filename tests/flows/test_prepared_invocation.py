@@ -220,8 +220,20 @@ def test_prepared_invocation_kind_drives_lifecycle(
     assert_paired_headline(runtime / "reports", flow.name, (key, True))
 
 
-@pytest.mark.parametrize("kind", ["ordinary", "target_selection"])
 def test_lint_and_custom_flow_hold_a_memory_reservation_through_the_run(
+    runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for kind in ("ordinary", "target_selection"):
+        # Each case gets its own patches, Project and state.
+        with pytest.MonkeyPatch.context() as patch:
+            case_dir = runtime / kind
+            case_dir.mkdir()
+            patch.chdir(case_dir)
+            patch.setenv("BOOLEY_RUNTIME_DIR", str(case_dir / "runtime"))
+            _assert_holds_reservation_through_run(kind, case_dir, patch)
+
+
+def _assert_holds_reservation_through_run(
     kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Under the switch a Custom Flow and lint hold one Memory Reservation while they run."""

@@ -276,8 +276,7 @@ def test_lint_requests_every_target_it_lints() -> None:
     assert phase_keys(requests[0]) == (HistoryKey("a", "lint", (), ""),)
 
 
-@pytest.mark.parametrize("target", ("echo", ""), ids=["echo", "no-target"])
-def test_custom_flow_invocation_sizes_its_flow_phase(target: str) -> None:
+def test_custom_flow_invocation_sizes_its_flow_phase() -> None:
     import argparse
 
     from booley.flows.base import BooleyFlow
@@ -294,16 +293,18 @@ def test_custom_flow_invocation_sizes_its_flow_phase(target: str) -> None:
         def _run(self) -> EndpointOutcome:
             return EndpointOutcome()
 
-    flow = EchoFlow()
-    flow._args = SimpleNamespace(target=target)  # type: ignore[assignment]
+    # With and without a Target: the request names the one given, else the empty Target.
+    for target in ("echo", ""):
+        flow = EchoFlow()
+        flow._args = SimpleNamespace(target=target)  # type: ignore[assignment]
 
-    invocation = flow.prepare_endpoint_invocation()
+        invocation = flow.prepare_endpoint_invocation()
 
-    assert isinstance(invocation, OrdinaryRunInvocation)
-    assert invocation.job_requests() == (JobRequest("echo_flow", target),)
-    # The key the recorder writes for an unlabelled Custom Flow command.
-    (request,) = invocation.job_requests() or ()
-    assert phase_keys(request) == (HistoryKey(target, "echo_flow", (), ""),)
+        assert isinstance(invocation, OrdinaryRunInvocation), target
+        assert invocation.job_requests() == (JobRequest("echo_flow", target),), target
+        # The key the recorder writes for an unlabelled Custom Flow command.
+        (request,) = invocation.job_requests() or ()
+        assert phase_keys(request) == (HistoryKey(target, "echo_flow", (), ""),), target
 
 
 def test_ordinary_run_invocation_is_unknown() -> None:
