@@ -238,7 +238,7 @@ def test_inspection_failures_are_location_specific(project, monkeypatch):
 @pytest.mark.parametrize("failure", ["malformed", "returncode", "timeout", "exception"])
 def test_git_failures_are_inspection_warnings(project, monkeypatch, failure):
     root, selected = project
-    original = pt.subprocess.run
+    original = pt.platform_paths.run_captured_bounded
 
     def broken(args, **kwargs):
         if "check-ignore" not in args:
@@ -251,7 +251,7 @@ def test_git_failures_are_inspection_warnings(project, monkeypatch, failure):
             args, 128 if failure == "returncode" else 0, b"bad", b"bad Git"
         )
 
-    monkeypatch.setattr(pt.subprocess, "run", broken)
+    monkeypatch.setattr(pt.platform_paths, "run_captured_bounded", broken)
     assert pt.inspect_project_trackability(root, selected).errors
 
 
