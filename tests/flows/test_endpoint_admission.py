@@ -794,7 +794,7 @@ def test_unparseable_holder_timeout_is_ignored(monkeypatch: pytest.MonkeyPatch) 
 # --- lint and Custom Flow Jobs under the switch (#3703) ------------------------------
 
 
-def _prepared_for(flow: Any, invocation: Any) -> PreparedExecution:
+def _prepared_for(invocation: Any) -> PreparedExecution:
     return PreparedExecution(
         display_target=None,
         display_label=None,
@@ -816,7 +816,7 @@ def _lint_prepared(work_dir: Path) -> tuple[Any, PreparedExecution]:
     flow._args = SimpleNamespace(work_dir=work_dir, target="a,b")
     selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
     invocation = TargetSelectionInvocation(flow, selection, flow._run)  # type: ignore[arg-type]
-    return flow, _prepared_for(flow, invocation)
+    return flow, _prepared_for(invocation)
 
 
 def _custom_flow(target: str) -> tuple[Any, PreparedExecution]:
@@ -839,7 +839,7 @@ def _custom_flow(target: str) -> tuple[Any, PreparedExecution]:
     flow._args = SimpleNamespace(target=target)  # type: ignore[assignment]
     invocation = flow.prepare_endpoint_invocation()
     assert not isinstance(invocation, EndpointOutcome)
-    return flow, _prepared_for(flow, invocation)
+    return flow, _prepared_for(invocation)
 
 
 def _admitted_job(kind: str, work_dir: Path, booley_dir: Path) -> tuple[Any, PreparedExecution]:
@@ -870,7 +870,9 @@ def test_lint_job_reserves_its_largest_target_estimate(
 def test_custom_flow_job_reserves_its_flow_phase(memory_runtime: Path) -> None:
     # With and without a Target: the history key's Target is the one given, else empty.
     for target in ("echo", ""):
-        _seed_records(memory_runtime, (target, "echo_flow", 400))
+        # The larger record under another Target is what a Job keyed by the wrong Target
+        # would be sized from (875, not 500).
+        _seed_records(memory_runtime, ("other", "echo_flow", 700), (target, "echo_flow", 400))
         flow, prepared = _custom_flow(target)
 
         with AdmissionGate(flow, prepared).enter():

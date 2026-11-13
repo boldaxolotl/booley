@@ -220,9 +220,7 @@ def test_prepared_invocation_kind_drives_lifecycle(
     assert_paired_headline(runtime / "reports", flow.name, (key, True))
 
 
-def test_lint_and_custom_flow_hold_a_memory_reservation_through_the_run(
-    runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_lint_and_custom_flow_hold_a_memory_reservation_through_the_run(runtime: Path) -> None:
     for kind in ("ordinary", "target_selection"):
         # Each case gets its own patches, Project and state.
         with pytest.MonkeyPatch.context() as patch:
