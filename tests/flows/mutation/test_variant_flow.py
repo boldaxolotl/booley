@@ -11,13 +11,17 @@ import yaml
 
 from booley.flows.mutation.build_sources import materialize_build_mutation
 from booley.flows.mutation.flow import (
+    Baseline,
+    GeneratedMutants,
     MutationFlow,
     MutationRunPlan,
     MutationSpec,
     MutationTestRun,
     UnsupportedSimTargetError,
+    VariantSweep,
     compute_source_size_budget,
 )
+from booley.flows.mutation.generator import Mutant
 from booley.flows.mutation.variants import MutationVariantPlan
 from booley.flows.sim.backends.cocotb_results import COCOTB_RESULTS_PREFIX
 
@@ -47,6 +51,30 @@ def _plan(tmp_path: Path, scope: str) -> MutationRunPlan:
         formula_count=2,
         source_size_budget=None,
     )
+
+
+def _sweep(
+    endpoint: MutationFlow,
+    plan: MutationRunPlan,
+    specs: list[MutationSpec],
+    variants: MutationVariantPlan,
+) -> VariantSweep:
+    """Sweep ``specs`` as the ranked candidates of a run that compares no builds."""
+    ranked = tuple(
+        Mutant(
+            spec.mutant_id,
+            spec.category,
+            spec.file,
+            spec.line,
+            spec.original_code,
+            spec.mutated_code,
+            0,
+            0,
+        )
+        for spec in specs
+    )
+    generated = GeneratedMutants(plan, variants, {}, ranked)
+    return endpoint._run_variant_sweep(plan, generated, Baseline({}))
 
 
 def test_sweep_builds_one_exact_replacement_at_a_time(
@@ -107,12 +135,10 @@ def test_sweep_builds_one_exact_replacement_at_a_time(
 
     endpoint._run_elab = elaborate
     endpoint._run_target_test_suite = run_suite
-    results, _elapsed, infra = endpoint._run_variant_sweep(
-        _plan(tmp_path, scope), specs, variants, {}
-    )
+    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
 
-    assert infra == ""
-    assert [result.detected for result in results] == [True, False]
+    assert sweep.inconclusive == ""
+    assert [result.detected for result in sweep.results] == [True, False]
     assert built_sources == [
         "assign x = a - b;\nassign y = c & d;\n",
         "assign x = a + b;\nassign y = c | d;\n",
@@ -158,11 +184,10 @@ def test_cocotb_absent_or_malformed_results_are_inconclusive(
 
     endpoint._run_target_test_suite = run_suite
 
-    results, _elapsed, infra = endpoint._run_variant_sweep(
-        _plan(tmp_path, scope), specs, variants, {}
-    )
+    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
+    results = sweep.results
 
-    assert "cocotb result line is missing or malformed" in infra
+    assert "cocotb result line is missing or malformed" in sweep.inconclusive
     assert len(results) == 1
     assert results[0].invalid is True
     assert results[0].detected is False
@@ -201,11 +226,10 @@ def test_sweep_classifies_every_variant_after_inconclusive_result(tmp_path: Path
 
     endpoint._run_target_test_suite = run_suite
 
-    results, _elapsed, infra = endpoint._run_variant_sweep(
-        _plan(tmp_path, scope), specs, variants, {}
-    )
+    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
+    results = sweep.results
 
-    assert "state is missing" in infra
+    assert "state is missing" in sweep.inconclusive
     assert len(results) == 2
     assert results[0].invalid is True
     assert results[1].detected is True
@@ -297,9 +321,7 @@ def test_unsupported_variant_build_is_invalid_before_suite(tmp_path):
         1, "unsupported generated/imperative source closure"
     )
     endpoint._run_target_test_suite = lambda *_args: pytest.fail("scored invalid build")
-    results, _elapsed, _infra = endpoint._run_variant_sweep(
-        _plan(tmp_path, "rtl/dut.sv"), specs, variants, {}
-    )
+    results = _sweep(endpoint, _plan(tmp_path, "rtl/dut.sv"), specs, variants).results
     assert results[0].invalid and not results[0].detected
     assert "unsupported generated/imperative" in results[0].sim_output_snippet
     assert "a + b" in source.read_text()

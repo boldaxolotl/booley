@@ -147,11 +147,12 @@ endmodule
     ]
 
 
-def _invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+def _invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> SubprocessResult:
     try:
         # Unbounded child: the test handles the timeout itself and falls back to a timed_out result
         completed = subprocess.run(
             command,
+            cwd=cwd,
             timeout=timeout,
             capture_output=True,
             text=True,

@@ -62,8 +62,10 @@ from .build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
     classify_build_outcome,
+    measured_setup_runner,
     prepare_simulation_build,
     setup_failure_outcome,
+    setup_timeout_s,
     simulation_build_script,
     simulation_setup_command,
 )
@@ -599,6 +601,11 @@ class ElabOnlyMixin:
                 handle,
                 build_root=build_root,
                 environment=self._target_sim_env(target),
+                setup_runner=measured_setup_runner(
+                    self._execute_boundary,
+                    target=handle.selector,
+                    timeout_s=setup_timeout_s(max(1, self._effective_build_timeout_ms() // 1000)),
+                ),
             )
         except SimulationBuildPreparationError as exc:
             logger.debug("sim elab-only setup failed for %s", target, exc_info=True)

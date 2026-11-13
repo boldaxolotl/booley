@@ -68,7 +68,8 @@ def sim_job_request(
     ``test+variant``; seeds never appear.
 
     The request always lists simulator processes; a ``--mode elab-only`` Job
-    runs none, so its caller builds ``JobRequest(..., test_runs=())`` itself.
+    runs none (only its FuseSoC setup and build), so its caller builds
+    ``JobRequest(..., test_runs=())`` itself.
     """
     one_process_per_run = plan.adapter != "cocotb" or _COVERAGE_FLAG in flags
     groups = batch_test_runs(runs, one_process_per_run=one_process_per_run)
@@ -110,8 +111,8 @@ def phase_occurrences(request: JobRequest) -> tuple[HistoryKey, ...]:
 
     if request.flow == _SIM_FLOW:
         coverage = _COVERAGE_FLAG in request.flags
-        keys = [key("sim_prepare")] if coverage else []
-        keys.append(key("sim_build"))
+        # FuseSoC setup runs once per prepared build, coverage or not.
+        keys = [key("sim_prepare"), key("sim_build")]
         keys.extend(key("sim_run", name) for name in request.test_runs)
         if coverage:
             keys.append(key("sim_postprocess"))

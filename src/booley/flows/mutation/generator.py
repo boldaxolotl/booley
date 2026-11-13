@@ -27,7 +27,7 @@ from booley.flows.mutation.operators import (
 
 # Bump whenever the operator table, site rules, anchoring, ID recipe, or selection
 # rule changes: the same inputs give the same Mutants only for the same version.
-GENERATOR_VERSION = "3"
+GENERATOR_VERSION = "4"
 
 _ID_LENGTH = 20  # hex characters of the SHA-256 digest kept in a Mutant ID
 
@@ -56,21 +56,38 @@ class Mutant:
 
 @dataclass(frozen=True)
 class MutantSelection:
-    """The selected Mutants in pick order, with how many were asked for and exist."""
+    """Every candidate Mutant in pick order, and how many were asked for.
 
-    mutants: tuple[Mutant, ...]
+    The first ``requested`` are the selection; the rest are the reserve that replaces a
+    Mutant a run drops, in the same order.
+    """
+
+    ranked: tuple[Mutant, ...]
     requested: int
-    available: int
+
+    @property
+    def mutants(self) -> tuple[Mutant, ...]:
+        """The selected Mutants: the first ``requested`` candidates."""
+        return self.ranked[: self.requested]
+
+    @property
+    def available(self) -> int:
+        """How many candidate Mutants exist."""
+        return len(self.ranked)
 
     @property
     def shortfall(self) -> str | None:
         """A message when fewer candidates exist than were requested, else None."""
-        if self.available >= self.requested:
-            return None
-        return (
-            f"only {self.available} candidate Mutants exist; "
-            f"returning all of them ({self.requested} requested)"
-        )
+        return shortfall_message(self.available, self.requested)
+
+
+def shortfall_message(available: int, requested: int) -> str | None:
+    """A message when ``available`` Mutants fall short of ``requested``, else None."""
+    if available >= requested:
+        return None
+    return (
+        f"only {available} candidate Mutants exist; returning all of them ({requested} requested)"
+    )
 
 
 def generate_mutants(
@@ -178,11 +195,11 @@ def _anchor(source: bytes, start: int, end: int) -> tuple[int, int]:
 
 
 def _select(candidates: list[Mutant], count: int, seed: int) -> MutantSelection:
-    """Rank each operator's candidates by hash(seed, ID) and take them round-robin."""
+    """Rank each operator's candidates by hash(seed, ID) and order them round-robin."""
 
     def rank(mutant: Mutant) -> tuple[str, str]:
         return hashlib.sha256(f"{seed}\0{mutant.id}".encode()).hexdigest(), mutant.id
 
     queues = [sorted((m for m in candidates if m.operator == n), key=rank) for n in OPERATOR_NAMES]
     picked = [m for row in zip_longest(*queues) for m in row if m is not None]
-    return MutantSelection(tuple(picked[:count]), requested=count, available=len(candidates))
+    return MutantSelection(tuple(picked), requested=count)
