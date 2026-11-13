@@ -86,7 +86,7 @@ def test_a_candidate_that_does_not_resolve_has_no_test_run_to_compare(tmp_path, 
 
 
 def test_a_resume_hint_names_every_frozen_run_when_the_plan_cannot_be_built(tmp_path, monkeypatch):
-    from tests.flows.sim.test_campaign_test_runs import _hdl_plan
+    from tests.flows.sim.test_simulation_record_test_runs import _hdl_plan
 
     default = build_test_run("stress", variant="short", seed=1)
     manifest = _hdl_plan(tmp_path, ((default,),), ("reset", "stress")).manifest

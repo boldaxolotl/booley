@@ -20,7 +20,7 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
 from booley.flows.base import SubprocessResult
 from booley.runtime.endpoint_execution import EXIT_SUCCESS
-from tests.flows.sim.campaign_boundary import CampaignSimRun, Launch, run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import CampaignSimRun, Launch, run_campaign_sim
 from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
 
 _REVISION = "b" * 40

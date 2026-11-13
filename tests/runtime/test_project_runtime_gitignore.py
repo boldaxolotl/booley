@@ -345,17 +345,17 @@ def test_compiler_cache_preparation_keeps_project_clean(versioned_project, monke
 
 
 def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project):
-    from tests.flows.sim.test_campaign_manifest_codec import _manifest
+    from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 
-    from booley.flows.sim.campaign.codec import (
+    from booley.flows.sim.record.codec import (
         canonical_json_bytes,
         decode_simulation_campaign_manifest,
     )
-    from booley.flows.sim.campaign.run_directory import (
+    from booley.flows.sim.record.run_directory import (
         claimed_run_directory,
         expand_run_directory,
     )
-    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.record.store import CampaignStore
 
     root, data, repo = versioned_project
     store = CampaignStore(data / ".runtime/campaigns/audit")

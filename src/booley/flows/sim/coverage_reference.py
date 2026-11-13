@@ -11,11 +11,6 @@ from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import BoundaryError, require_int, require_str_value
 from booley.flows.artifact_durability import durable_create
-from booley.flows.sim.campaign_files import (
-    canonical_json,
-    parse_json_object,
-    read_bounded,
-)
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA,
     MAX_MANIFEST_BYTES,
@@ -23,6 +18,11 @@ from booley.flows.sim.coverage_campaign_store import (
     load_coverage_campaign_bytes,
 )
 from booley.flows.sim.coverage_json import content_digest, freeze_coverage_mapping
+from booley.flows.sim.record_files import (
+    canonical_json,
+    parse_json_object,
+    read_bounded,
+)
 from booley.flows.sim.record_layout import (
     COVERAGE_RECORD_DIRECTORY,
     RECORD_DIRECTORY,
@@ -32,7 +32,7 @@ from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
-    from booley.flows.sim.campaign import CampaignWorkItemEvidence
+    from booley.flows.sim.record import CampaignWorkItemEvidence
 
 REFERENCE_SCHEMA = "booley.coverage-record-reference/v1"
 MAX_REFERENCE_BYTES = 1024 * 1024
@@ -75,8 +75,8 @@ def decode_coverage_campaign_reference(raw: bytes) -> CoverageCampaignReference:
     if not raw or len(raw) > MAX_REFERENCE_BYTES:
         raise CoverageCampaignReferenceError("Coverage Campaign reference exceeds size limit")
     value = parse_json_object(raw, error=CoverageCampaignReferenceError, canonical=True)
-    # Imported here: ``booley.flows.sim.campaign`` imports this module through its coordinator.
-    from booley.flows.sim.campaign.codec import raise_if_retired_schema
+    # Imported here: ``booley.flows.sim.record`` imports this module through its coordinator.
+    from booley.flows.sim.record.codec import raise_if_retired_schema
 
     # An older Booley's reference is refused as old before its fields are checked.
     raise_if_retired_schema(value.get("$schema"))
@@ -124,8 +124,8 @@ def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
 
 def _resolve_located(absolute: Path, raw: bytes) -> ResolvedCoverageCampaign:
     """Resolve the reference bytes; an older-Booley refusal names the directory to delete."""
-    # Imported here: ``booley.flows.sim.campaign`` imports this module through its coordinator.
-    from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
+    # Imported here: ``booley.flows.sim.record`` imports this module through its coordinator.
+    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
 
     try:
         return _resolve_coverage_campaign_reference_bytes(absolute, raw)
@@ -290,7 +290,7 @@ def authenticate_coverage_campaign_owner(
     resolved: ResolvedCoverageCampaign,
 ) -> CampaignWorkItemEvidence:
     """Authenticate the enclosing Simulation manifest, result, and nested evidence."""
-    from booley.flows.sim.campaign import (
+    from booley.flows.sim.record import (
         SimulationCampaignIntegrityError,
         SimulationCampaignWorkItemError,
         authenticate_work_item,
@@ -389,8 +389,8 @@ def _validate_reference(value: Mapping[str, object]) -> None:
 
 
 def _validate_nested_reference(nested: Mapping[str, object]) -> None:
-    # Imported here: ``booley.flows.sim.campaign`` imports this module through its coordinator.
-    from booley.flows.sim.campaign.codec import raise_if_retired_schema
+    # Imported here: ``booley.flows.sim.record`` imports this module through its coordinator.
+    from booley.flows.sim.record.codec import raise_if_retired_schema
 
     raise_if_retired_schema(nested["schema"])
     if nested["path_base"] != "origin_target" or nested["schema"] != CAMPAIGN_SCHEMA:

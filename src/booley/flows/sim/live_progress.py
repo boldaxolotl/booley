@@ -16,7 +16,7 @@ from booley.flows.job_resources import label_commands
 from booley.flows.progress_lifecycle import write_progress_json
 from booley.flows.reservation_phases import report_phase_end
 from booley.flows.run_log import RunLogIdentity, current_run_token
-from booley.flows.sim.campaign_reports import simulation_booley_dir
+from booley.flows.sim.record_reports import simulation_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 # Each lifecycle stage, and the Job resource history phase of the commands it runs.

@@ -61,7 +61,6 @@ from booley.flows.sim.build_session import (
     snapshot_generation_files,
     verify_existing_build_inputs,
 )
-from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
     resolve_cycle_sentinels,
@@ -81,6 +80,7 @@ from booley.flows.sim.live_progress import (
     observe_stage,
     prepare_attempt_log,
 )
+from booley.flows.sim.record_reports import simulation_booley_dir
 from booley.flows.sim.runtime_inputs import (
     declared_runtime_inputs,
     preview_runtime_inputs,

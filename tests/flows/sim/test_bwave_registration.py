@@ -1,6 +1,6 @@
 """A traced sim run registers its waveforms as bwave sessions (issue #2578).
 
-Tests run a real Campaign through the faked process edge of ``campaign_boundary``
+Tests run a real Campaign through the faked process edge of ``simulation_record_boundary``
 (so the traces are the evidence files a Campaign records) and then look the
 sessions up the way an agent shell does: a separate process in the run's
 checkout, with its own temporary directory, that resolves the checkout's bwave
@@ -21,7 +21,7 @@ import pytest
 import booley
 from booley.flows.base import SubprocessResult
 from booley.flows.sim import bwave_registration
-from tests.flows.sim.campaign_boundary import CampaignSimRun, Launch, run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import CampaignSimRun, Launch, run_campaign_sim
 from tests.subprocess_budget import run_bounded_child
 
 # The child prints the trace a bwave argv resolves to (what ``bwave`` would query).
