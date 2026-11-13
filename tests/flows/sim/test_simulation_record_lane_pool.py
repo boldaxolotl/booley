@@ -9,13 +9,16 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.record.capacity import CampaignCapacity, CampaignCapacityError
+from booley.flows.sim.record.capacity import (
+    SimulationRecordCapacity,
+    SimulationRecordCapacityError,
+)
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.scheduler import (
-    BoundedCampaignScheduler,
-    CampaignSchedulingError,
+    BoundedSimulationRecordScheduler,
+    SimulationRecordSchedulingError,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.execution_records import (
     ExecutionId,
     execution_paths,
@@ -55,7 +58,7 @@ class _Campaign:
 
     def __init__(self, tmp_path: Path, names: tuple[str, ...], lanes: int) -> None:
         self.manifest = _named_manifest(names)
-        self.store = CampaignStore(tmp_path / "record")
+        self.store = SimulationRecordStore(tmp_path / "record")
         self.store.publish_manifest(self.manifest)
         project = tmp_path / "project"
         project.mkdir()
@@ -83,7 +86,7 @@ class _Campaign:
         self.capacity = _item_capacity(
             admission, self.manifest, self.registry.project_data, lanes=self.lanes
         )
-        return BoundedCampaignScheduler(
+        return BoundedSimulationRecordScheduler(
             self.capacity,
             allocate=lambda item: _scheduled_attempt(self.store, item),
             execute=execute,
@@ -199,7 +202,7 @@ def test_child_token_left_after_terminal_proof_fails_the_campaign(
 
     try:
         with pytest.raises(
-            CampaignCapacityError, match="child token remained after terminal proof"
+            SimulationRecordCapacityError, match="child token remained after terminal proof"
         ):
             campaign.scheduler(execute, timeout_seconds=30.0).run(campaign.items)
     finally:
@@ -240,7 +243,7 @@ def test_lost_child_lease_interrupts_only_that_lane_item(
 
     scheduler = campaign.scheduler(execute, timeout_seconds=30.0)
     try:
-        with pytest.raises(CampaignCapacityError, match="lease lost"):
+        with pytest.raises(SimulationRecordCapacityError, match="lease lost"):
             scheduler.run(campaign.items)
     finally:
         campaign.slots.release(campaign.outer)
@@ -300,13 +303,13 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
         lambda _registry, execution_id: cancelled.append(execution_id),
     )
     scheduler = campaign.scheduler(lambda _attempt, _child_id: None, timeout_seconds=30.0)
-    confirm = CampaignCapacity._confirm_lease
+    confirm = SimulationRecordCapacity._confirm_lease
 
     def recording_confirm(capacity, permit) -> bool:
         confirmed.append(permit)
         return confirm(capacity, permit)
 
-    monkeypatch.setattr(CampaignCapacity, "_confirm_lease", recording_confirm)
+    monkeypatch.setattr(SimulationRecordCapacity, "_confirm_lease", recording_confirm)
     try:
         scheduler.run(campaign.items)
     finally:
@@ -348,7 +351,7 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path)
     competitors: list = []
     earlier_threads = set(threading.enumerate())
     try:
-        with pytest.raises(CampaignSchedulingError, match="bounded shutdown"):
+        with pytest.raises(SimulationRecordSchedulingError, match="bounded shutdown"):
             scheduler.run(campaign.items)
         campaign.slots.release(campaign.outer)  # the endpoint's admission finally
         # Cancellation already recovered the stuck item's claim, so memory is
@@ -406,7 +409,7 @@ def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
 
     monkeypatch.setattr(campaign.capacity, "recover_lost_children", failing_recovery)
     try:
-        with pytest.raises(CampaignSchedulingError, match="bounded shutdown"):
+        with pytest.raises(SimulationRecordSchedulingError, match="bounded shutdown"):
             scheduler.run(campaign.items)
         campaign.slots.release(campaign.outer)  # the endpoint's admission finally
         holders, _waiters = campaign.slots.snapshot(CLASS_MEMORY)
@@ -440,7 +443,7 @@ def _campaign_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
     ("when", "error", "match", "cause"),
     [
         ("before_slot", ClaimAbortedError, "shutdown requested", "record_error"),
-        ("in_work", CampaignCapacityError, "plain capacity failure", "orphan_recovered"),
+        ("in_work", SimulationRecordCapacityError, "plain capacity failure", "orphan_recovered"),
         ("after_work", ClaimAbortedError, "cancellation requested", "completed"),
     ],
 )
@@ -473,7 +476,7 @@ def test_child_permit_retires_the_lane_on_every_exit(
             ),
         ):
             if when == "in_work":
-                raise CampaignCapacityError("plain capacity failure")
+                raise SimulationRecordCapacityError("plain capacity failure")
             cancelled.set()
     finally:
         store.release(outer)

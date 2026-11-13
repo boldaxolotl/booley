@@ -25,7 +25,7 @@ from booley.flows.sim.coverage_reference import (
     CoverageCampaignReferenceError,
     resolve_coverage_campaign_reference,
 )
-from booley.flows.sim.record.coordinator import CampaignOutcome
+from booley.flows.sim.record.coordinator import SimulationRecordOutcome
 from booley.flows.sim.record.test_run_report import observation_grade
 
 # Coverage Campaign metric key (``coverage_policy``) -> declared metric name.
@@ -68,12 +68,12 @@ SIM_METRIC_DECLARATIONS = _declarations(CostTier.MEDIUM, coverage=False)
 COVERAGE_METRIC_DECLARATIONS = _declarations(CostTier.HIGH, coverage=True)
 
 
-def coverage_campaign_path(outcome: CampaignOutcome) -> Path:
+def coverage_campaign_path(outcome: SimulationRecordOutcome) -> Path:
     """Return the public ``coverage.json`` beside the Target's Campaign directory."""
     return outcome.manifest_path.parents[1] / "coverage.json"
 
 
-def _coverage_percents(outcome: CampaignOutcome) -> dict[str, MetricValue]:
+def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValue]:
     """Coverage percentages by declared name; empty unless collection completed.
 
     Computed from the point counts, not the stored two-decimal ``percent``, which would
@@ -97,7 +97,7 @@ def _coverage_percents(outcome: CampaignOutcome) -> dict[str, MetricValue]:
     }
 
 
-def simulation_flow_metrics(outcome: CampaignOutcome) -> FlowMetricValues:
+def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValues:
     """Return the typed metrics of one Target's simulation or coverage run.
 
     ``tests_failed`` counts every Test Run that did not pass (failed, timed out,

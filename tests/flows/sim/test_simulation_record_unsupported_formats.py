@@ -18,13 +18,13 @@ import pytest
 
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record import inspect_retained_campaign
+from booley.flows.sim.record import inspect_retained_simulation_record
 from booley.flows.sim.record.codec import (
     canonical_json_bytes,
-    decode_simulation_campaign_manifest,
+    decode_simulation_record_manifest,
 )
 from booley.flows.sim.record.resume import validate_resume_manifest
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.unpublished_results import read_unpublished_results
@@ -53,7 +53,7 @@ from tests.goals.test_simulation_record_accounting import (  # noqa: F401  (fixt
 _MANIFEST = "booley.simulation-campaign-manifest/"
 _RESULT_V2 = "booley.simulation-result/v2"
 _PROJECTION_V2 = "booley.simulation-projection/v2"
-_UNSUPPORTED = "UnsupportedSimulationCampaignFormatError"
+_UNSUPPORTED = "UnsupportedSimulationRecordFormatError"
 _FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 
@@ -96,7 +96,7 @@ def _assert_refused(text: str, schema: str, invocation: Path | None = None) -> N
 def _assert_unsupported_type(error: BaseException) -> None:
     """Compare by name: the class must not be an integrity error, whatever it inherits."""
     assert type(error).__name__ == _UNSUPPORTED
-    assert "SimulationCampaignIntegrityError" not in [t.__name__ for t in type(error).__mro__]
+    assert "SimulationRecordIntegrityError" not in [t.__name__ for t in type(error).__mro__]
 
 
 def _as_030_manifest(raw: bytes, version: str) -> bytes:
@@ -127,7 +127,7 @@ def _as_030_invocation(store, version: str) -> None:
 def test_manifest_decoder_refuses_0_3_0_manifests(version: str) -> None:
     raw = _as_030_manifest(canonical_json_bytes(_manifest()), version)
     with pytest.raises(ValueError) as excinfo:
-        decode_simulation_campaign_manifest(raw)
+        decode_simulation_record_manifest(raw)
     _assert_unsupported_type(excinfo.value)
     _assert_refused(str(excinfo.value), _MANIFEST + version)
 
@@ -137,7 +137,7 @@ def test_inspection_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_path) -> 
     _as_030_invocation(store, "v1")
 
     with pytest.raises(ValueError) as excinfo:
-        inspect_retained_campaign(store.manifest_path)
+        inspect_retained_simulation_record(store.manifest_path)
 
     _assert_unsupported_type(excinfo.value)
     _assert_refused(str(excinfo.value), _MANIFEST + "v1", reports / "sim/1")
@@ -227,7 +227,7 @@ def test_the_refusal_names_an_older_booley_and_what_to_do(reports: Path) -> None
     invocation = copy_older_invocation("0.3.0", "complete", reports)
 
     with pytest.raises(ValueError) as excinfo:
-        CampaignStore(invocation / "targets" / "sim" / "campaign").load_manifest()
+        SimulationRecordStore(invocation / "targets" / "sim" / "campaign").load_manifest()
 
     _assert_unsupported_type(excinfo.value)
     assert str(excinfo.value) == (
@@ -252,7 +252,7 @@ def test_a_schema_less_projection_cannot_authenticate_a_coverage_campaign() -> N
 
 
 def test_a_store_outside_the_report_layout_cannot_name_an_invocation(tmp_path) -> None:
-    store = CampaignStore(tmp_path / "campaign")
+    store = SimulationRecordStore(tmp_path / "campaign")
     store.root.mkdir()
     store.manifest_path.write_bytes(_as_030_manifest(canonical_json_bytes(_manifest()), "v1"))
 

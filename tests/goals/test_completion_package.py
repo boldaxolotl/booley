@@ -555,7 +555,7 @@ def _publish_current_base_simulation(layout):
     from booley.criteria.state import DevelopmentState
     from booley.flows.sim.record.codec import (
         MANIFEST_SCHEMA,
-        encode_simulation_campaign_manifest,
+        encode_simulation_record_manifest,
     )
     from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
     from booley.goals.paths import record_paths
@@ -587,7 +587,7 @@ def _publish_current_base_simulation(layout):
     paths = record_paths(layout.control, layout.record.id)
     path = paths.runtime_dir / "flow-reports/sim/8/targets/base/record/manifest.json"
     path.parent.mkdir(parents=True)
-    path.write_bytes(encode_simulation_campaign_manifest(manifest))
+    path.write_bytes(encode_simulation_record_manifest(manifest))
     facts = campaign_facts()
     facts.update(
         campaign_id=manifest.document["simulation_record_id"],

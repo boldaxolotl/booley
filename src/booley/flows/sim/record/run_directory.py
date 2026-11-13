@@ -18,7 +18,7 @@ from booley.flows.sim.record_reports import is_report_link, report_link_ancestor
 from booley.runtime.booley_dir import checkout_runtime_dir
 from booley.runtime.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
 
-from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
+from .codec import SimulationRecordIntegrityError, canonical_json_bytes
 
 _MARKER = ".booley-simulation-attempt.json"
 _PARENT_MARKER = ".booley-simulation-parent.json"
@@ -72,21 +72,21 @@ def require_literal_run_directory(path: Path) -> None:
     """Raise with the actionable remedy unless ``path`` is an existing real directory."""
     message = literal_run_cwd_error(path)
     if message is not None:
-        raise SimulationCampaignIntegrityError(message)
+        raise SimulationRecordIntegrityError(message)
 
 
 def expand_run_directory(
     configured: str,
     *,
     project_root: Path,
-    campaign_id: str,
+    simulation_record_id: str,
     target_key: str,
     work_item_key: str,
     attempt_key: str,
 ) -> RunDirectory:
     """Expand the four supported placeholders and canonicalize collisions."""
     values = {
-        "record": campaign_id,
+        "record": simulation_record_id,
         "target": target_key,
         "test": work_item_key,
         "attempt": attempt_key,
@@ -94,12 +94,12 @@ def expand_run_directory(
     rendered = configured
     for name, value in values.items():
         if not value or any(character in value for character in ("/", "\\", "\0")):
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"run-directory placeholder {name!r} is not one component"
             )
         rendered = rendered.replace("{" + name + "}", value)
     if "{" in rendered or "}" in rendered or not rendered or "\0" in rendered:
-        raise SimulationCampaignIntegrityError("run-directory template is invalid")
+        raise SimulationRecordIntegrityError("run-directory template is invalid")
     resolved = _absolute(rendered, project_root)
     collision_key = os.path.normcase(str(resolved.resolve(strict=False)))
     lock_name = hashlib.sha256(collision_key.encode("utf-8")).hexdigest() + ".lock"
@@ -131,7 +131,7 @@ def claimed_run_directory(
 def _claimed_run_directory(run: RunDirectory, *, identity: Mapping[str, str]) -> Iterator[Path]:
     """Apply ownership semantics while the canonical collision lock is held."""
     if set(identity) != _FIELDS or any(not value for value in identity.values()):
-        raise SimulationCampaignIntegrityError("run-directory identity is incomplete")
+        raise SimulationRecordIntegrityError("run-directory identity is incomplete")
     if not run.owned:
         require_literal_run_directory(run.path)
         yield run.path
@@ -142,7 +142,7 @@ def _claimed_run_directory(run: RunDirectory, *, identity: Mapping[str, str]) ->
     created = False
     if run.path.exists():
         if not marker.is_file() or marker.read_bytes() != expected:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"run directory is not owned by this attempt: {run.path}"
             )
     else:
@@ -155,7 +155,7 @@ def _claimed_run_directory(run: RunDirectory, *, identity: Mapping[str, str]) ->
             _remove_owned_tree(run.path)
             _remove_booley_parents(run)
         elif created:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"run-directory ownership changed before cleanup: {run.path}"
             )
 
@@ -175,7 +175,7 @@ def _cleanup_interrupted_run_directory(run: RunDirectory, *, identity: Mapping[s
         marker = run.path / _MARKER
         expected = canonical_json_bytes(dict(identity))
         if not marker.is_file() or marker.read_bytes() != expected:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"refusing to clean unowned run directory: {run.path}"
             )
         _remove_owned_tree(run.path)
@@ -200,7 +200,7 @@ def _restore_run_directory(
     path = Path(str(document["resolved"]))
     collision_key = os.path.normcase(str(path.resolve(strict=False)))
     if collision_key != document["collision_key"]:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "persisted run-directory collision key disagrees with resolved path"
         )
     lock_name = hashlib.sha256(collision_key.encode("utf-8")).hexdigest() + ".lock"
@@ -300,7 +300,7 @@ def _create_run_directory(run: RunDirectory, expected: bytes) -> None:
             except FileNotFoundError:
                 continue  # an ancestor vanished under us (unlocked sibling); start over
             return
-    raise SimulationCampaignIntegrityError(f"run directory could not be created: {run.path}")
+    raise SimulationRecordIntegrityError(f"run directory could not be created: {run.path}")
 
 
 def _create_marked_chain(
@@ -370,7 +370,7 @@ def _remove_owned_tree(root: Path) -> None:
         elif path.is_file():
             path.unlink()
         else:
-            raise SimulationCampaignIntegrityError(f"unsafe run-directory entry: {path}")
+            raise SimulationRecordIntegrityError(f"unsafe run-directory entry: {path}")
     root.rmdir()
 
 
@@ -380,7 +380,7 @@ def _require_no_links(path: Path, booley_dir: Path | None) -> None:
         existing = existing.parent
     parent = report_link_ancestor(existing, booley_dir)
     if parent is not None:
-        raise SimulationCampaignIntegrityError(f"run-directory path contains a link: {parent}")
+        raise SimulationRecordIntegrityError(f"run-directory path contains a link: {parent}")
 
 
 def _fsync_file(path: Path) -> None:
@@ -388,7 +388,7 @@ def _fsync_file(path: Path) -> None:
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
-            raise SimulationCampaignIntegrityError("ownership marker is not regular")
+            raise SimulationRecordIntegrityError("ownership marker is not regular")
         os.fsync(descriptor)
     finally:
         os.close(descriptor)

@@ -25,11 +25,11 @@ from booley.runtime.execution_recovery import recover_execution
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
-    reads_campaign_records,
+    reads_simulation_record_documents,
 )
-from .model import SimulationCampaignManifest
+from .model import SimulationRecordManifest
 from .planning import manifest_digest
 from .run_directory import (
     cleanup_interrupted_run_directory,
@@ -61,14 +61,14 @@ class _ChildIdentity:
 class ChildExecutionRegistry:
     """Give parallel lanes execution identities and make interrupted ones terminal."""
 
-    def __init__(self, manifest: SimulationCampaignManifest, project_root: Path) -> None:
+    def __init__(self, manifest: SimulationRecordManifest, project_root: Path) -> None:
         project_data = resolve_checkout_booley_dir(project_root)
         self._configure(manifest, project_data, project_data)
 
     @classmethod
     def from_project_data(
         cls,
-        manifest: SimulationCampaignManifest,
+        manifest: SimulationRecordManifest,
         project_data: Path,
         *,
         booley_dir: Path | None = None,
@@ -84,7 +84,7 @@ class ChildExecutionRegistry:
 
     def _configure(
         self,
-        manifest: SimulationCampaignManifest,
+        manifest: SimulationRecordManifest,
         project_data: Path,
         booley_dir: Path | None,
     ) -> None:
@@ -143,12 +143,12 @@ class ChildExecutionRegistry:
             paths = execution_paths(prepared.execution_id, booley_dir=self._project_data)
             terminal = read_json(paths.record)
             if terminal is None:
-                raise SimulationCampaignIntegrityError("child execution record disappeared")
+                raise SimulationRecordIntegrityError("child execution record disappeared")
             if terminal.get("state") == "waiting" and terminal.get("leader") is None:
                 atomic_write_json(paths.record, _terminal_record(terminal_cause))
                 return
             if terminal.get("state") != "terminal" or terminal.get("tree_terminal") is not True:
-                raise SimulationCampaignIntegrityError(
+                raise SimulationRecordIntegrityError(
                     "child execution lacks process-tree terminal proof"
                 )
 
@@ -186,7 +186,7 @@ class ChildExecutionRegistry:
         if not record_path.exists() or self.is_terminal(execution_id):
             return
         if not self.cancel(execution_id):
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"child execution recovery is incomplete: {execution_id}"
             )
 
@@ -233,12 +233,12 @@ def _publish_or_verify(path: Path, raw: bytes, *, booley_dir: Path | None = None
         current = read_bounded(
             path,
             limit=_PROTOCOL_RECORD_LIMIT,
-            error=SimulationCampaignIntegrityError,
+            error=SimulationRecordIntegrityError,
             booley_dir=booley_dir,
             single_link=True,
         )
         if current != raw:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"child protocol record disagrees with durable identity: {path}"
             )
         return
@@ -249,20 +249,20 @@ def _publish_or_verify(path: Path, raw: bytes, *, booley_dir: Path | None = None
             read_bounded(
                 path,
                 limit=_PROTOCOL_RECORD_LIMIT,
-                error=SimulationCampaignIntegrityError,
+                error=SimulationRecordIntegrityError,
                 booley_dir=booley_dir,
                 single_link=True,
             )
             != raw
         ):
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"child protocol publication raced with different bytes: {path}"
             ) from None
 
 
-@reads_campaign_records
+@reads_simulation_record_documents
 def recover_interrupted_attempts(
-    manifest: SimulationCampaignManifest,
+    manifest: SimulationRecordManifest,
     attempts: Mapping[str, Mapping[str, object]],
     project_data: Path,
     *,

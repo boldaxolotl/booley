@@ -106,7 +106,7 @@ def grade_observations(
 
 
 @dataclass(frozen=True)
-class SimulationCampaignDocument:
+class SimulationRecordDocument:
     document: Mapping[str, FrozenJson]
 
     def __post_init__(self) -> None:
@@ -116,60 +116,58 @@ class SimulationCampaignDocument:
         object.__setattr__(self, "document", frozen)
 
     def canonical_bytes(self) -> bytes:
-        from .codec import encode_simulation_campaign_document
+        from .codec import encode_simulation_record_document
 
-        return encode_simulation_campaign_document(self)
+        return encode_simulation_record_document(self)
 
 
 @dataclass(frozen=True)
-class SimulationCampaignManifest(SimulationCampaignDocument):
+class SimulationRecordManifest(SimulationRecordDocument):
     pass
 
 
 @dataclass(frozen=True)
-class SimulationAttempt(SimulationCampaignDocument):
+class SimulationAttempt(SimulationRecordDocument):
     pass
 
 
 @dataclass(frozen=True)
-class BundleBuildAttempt(SimulationCampaignDocument):
+class BundleBuildAttempt(SimulationRecordDocument):
     pass
 
 
 @dataclass(frozen=True)
-class BundleBuildResult(SimulationCampaignDocument):
+class BundleBuildResult(SimulationRecordDocument):
     pass
 
 
 @dataclass(frozen=True)
-class SimulationResult(SimulationCampaignDocument):
+class SimulationResult(SimulationRecordDocument):
     pass
 
 
 @dataclass(frozen=True)
-class SimulatorBundle(SimulationCampaignDocument):
+class SimulatorBundle(SimulationRecordDocument):
     pass
 
 
 @dataclass(frozen=True)
-class ExecutableSnapshot(SimulationCampaignDocument):
+class ExecutableSnapshot(SimulationRecordDocument):
     pass
 
 
 @dataclass(frozen=True, init=False)
-class SimulationCampaignPlan:
+class SimulationRecordPlan:
     """A validated manifest paired with its immutable scheduled work-item order."""
 
-    manifest: SimulationCampaignManifest
+    manifest: SimulationRecordManifest
     work_item_ids: tuple[str, ...]
 
-    def __new__(cls) -> SimulationCampaignPlan:
-        raise TypeError("use create_simulation_campaign_plan()")
+    def __new__(cls) -> SimulationRecordPlan:
+        raise TypeError("use create_simulation_record_plan()")
 
     @classmethod
-    def _from_validated_manifest(
-        cls, manifest: SimulationCampaignManifest
-    ) -> SimulationCampaignPlan:
+    def _from_validated_manifest(cls, manifest: SimulationRecordManifest) -> SimulationRecordPlan:
         items = cast(tuple[Mapping[str, FrozenJson], ...], manifest.document["work_items"])
         instance = object.__new__(cls)
         object.__setattr__(instance, "manifest", manifest)
@@ -181,8 +179,8 @@ class SimulationCampaignPlan:
         return instance
 
 
-def create_simulation_campaign_plan(
-    manifest: SimulationCampaignManifest,
-) -> SimulationCampaignPlan:
+def create_simulation_record_plan(
+    manifest: SimulationRecordManifest,
+) -> SimulationRecordPlan:
     """Derive the immutable scheduled work-item order of a decoded manifest."""
-    return SimulationCampaignPlan._from_validated_manifest(manifest)
+    return SimulationRecordPlan._from_validated_manifest(manifest)

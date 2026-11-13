@@ -18,31 +18,34 @@ import pytest
 from booley.config.jobs import SlotCaps
 from booley.flows.base import FlowMechanics
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.sim.record.capacity import CampaignCapacity, CampaignCapacityError
+from booley.flows.sim.record.capacity import (
+    SimulationRecordCapacity,
+    SimulationRecordCapacityError,
+)
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.codec import (
     canonical_json_bytes,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
 )
-from booley.flows.sim.record.model import create_simulation_campaign_plan
+from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.run_directory import (
     RunDirectory,
     claimed_run_directory,
     expand_run_directory,
 )
 from booley.flows.sim.record.scheduler import (
-    BoundedCampaignScheduler,
-    CampaignSchedulingError,
+    BoundedSimulationRecordScheduler,
     ScheduledAttempt,
+    SimulationRecordSchedulingError,
 )
 from booley.flows.sim.record.serial_execution import (
     OrdinaryHdlSerialExecutor,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.execution_records import (
     ExecutionId,
     child_context_matches,
@@ -93,7 +96,7 @@ def _unique_execution_id() -> ExecutionId:
     return ExecutionId(uuid.uuid4().hex)
 
 
-def _child_permit(capacity: CampaignCapacity, work_item_id: str = "item"):
+def _child_permit(capacity: SimulationRecordCapacity, work_item_id: str = "item"):
     """Enter a child lane for a dummy attempt."""
     return capacity.child_permit(
         work_item_id,
@@ -107,7 +110,7 @@ def _child_permit(capacity: CampaignCapacity, work_item_id: str = "item"):
 
 def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "record")
+    campaign_store = SimulationRecordStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -208,7 +211,7 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
     started = time.monotonic()
     try:
         with (
-            pytest.raises(CampaignCapacityError, match="lease lost"),
+            pytest.raises(SimulationRecordCapacityError, match="lease lost"),
             capacity.outer_permit(),
             _child_permit(capacity) as permit,
         ):
@@ -244,7 +247,7 @@ def test_child_permit_checks_lease_loss_before_return(tmp_path: Path) -> None:
     try:
         with (
             capacity.outer_permit(),
-            pytest.raises(CampaignCapacityError, match="lease lost"),
+            pytest.raises(SimulationRecordCapacityError, match="lease lost"),
             _child_permit(capacity) as permit,
         ):
             permit.token.path.unlink()
@@ -288,10 +291,13 @@ def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child(tmp_path: 
         assert isinstance(capacity.parent_execution_id, ExecutionId)
         assert capacity.max_lanes == 1
         assert capacity.managed is False
-    with pytest.raises(CampaignCapacityError, match="exactly once"), capacity.outer_permit():
+    with (
+        pytest.raises(SimulationRecordCapacityError, match="exactly once"),
+        capacity.outer_permit(),
+    ):
         pass
     with (
-        pytest.raises(CampaignCapacityError, match="cannot acquire child"),
+        pytest.raises(SimulationRecordCapacityError, match="cannot acquire child"),
         _child_permit(capacity),
     ):
         pass
@@ -425,7 +431,7 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
 
 def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "record")
+    campaign_store = SimulationRecordStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -455,7 +461,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
 
     capacity = _item_capacity(_managed(slot_store, outer), manifest, registry.project_data)
     try:
-        BoundedCampaignScheduler(capacity, allocate=allocate, execute=execute).run(
+        BoundedSimulationRecordScheduler(capacity, allocate=allocate, execute=execute).run(
             manifest.document["work_items"]
         )
     finally:
@@ -467,7 +473,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
 
 def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "record")
+    campaign_store = SimulationRecordStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -475,7 +481,7 @@ def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) ->
     admission = AdmissionContext(
         "unmanaged", None, None, "interactive", "a" * 32, 0.01, lambda: False
     )
-    capacity = CampaignCapacity(admission, manifest, project / ".booley")
+    capacity = SimulationRecordCapacity(admission, manifest, project / ".booley")
 
     def allocate(item) -> ScheduledAttempt:
         attempt_id = os.urandom(16).hex()
@@ -485,7 +491,7 @@ def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) ->
         return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
 
     started = time.monotonic()
-    BoundedCampaignScheduler(
+    BoundedSimulationRecordScheduler(
         capacity,
         allocate=allocate,
         execute=lambda *_args: time.sleep(0.04),
@@ -497,7 +503,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     tmp_path: Path,
 ) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "record")
+    campaign_store = SimulationRecordStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -516,7 +522,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
         entered.set()
         release_worker.wait()
 
-    scheduler = BoundedCampaignScheduler(
+    scheduler = BoundedSimulationRecordScheduler(
         capacity,
         allocate=lambda item: _scheduled_attempt(campaign_store, item),
         execute=execute,
@@ -524,7 +530,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     trigger = threading.Thread(target=lambda: (entered.wait(), cancelled.set()))
     trigger.start()
     started = time.monotonic()
-    with pytest.raises(CampaignSchedulingError, match="bounded shutdown"):
+    with pytest.raises(SimulationRecordSchedulingError, match="bounded shutdown"):
         scheduler.run(manifest.document["work_items"][:1])
     assert time.monotonic() - started < 0.5
     slots.release(outer)  # endpoint AdmissionGate finally must be deferred
@@ -550,7 +556,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
 ) -> None:
     """Regression for #977: a lane that exits in the final wait is a clean shutdown."""
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "record")
+    campaign_store = SimulationRecordStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     # A zero budget means the shutdown deadline has always passed after the wait.
     capacity = SimpleNamespace(
@@ -560,7 +566,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
         cancel_waiters=lambda: None,
         hold_outer_until=lambda _exited: pytest.fail("held the outer slot after a clean exit"),
     )
-    scheduler = BoundedCampaignScheduler(
+    scheduler = BoundedSimulationRecordScheduler(
         capacity,  # type: ignore[arg-type]
         allocate=lambda item: _scheduled_attempt(campaign_store, item),
         execute=lambda *_args: None,
@@ -578,7 +584,7 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(
     schedule_seed: int,
 ) -> None:
     manifest = _three_item_manifest()
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path, first_finisher, schedule_seed)
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
@@ -601,12 +607,12 @@ def _run_parallel_campaign(tmp_path, manifest, plan, project, executor):
     slot_store = SlotStore(tmp_path / "slots")
     outer = _outer_claim(slot_store)
     try:
-        outcome = SimulationCampaign(executor, work_item_request=lambda *_args: None).run(
-            NewCampaignRunRequest(
+        outcome = SimulationRecord(executor, work_item_request=lambda *_args: None).run(
+            NewSimulationRecordRunRequest(
                 plan,
                 project,
                 invocation.parent,
-                CampaignPolicy(),
+                SimulationRecordPolicy(),
                 invocation,
                 _managed(slot_store, outer),
             )
@@ -632,7 +638,7 @@ def _assert_parallel_outcome(outcome, plan, state, first_finisher) -> None:
 
 
 def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) -> None:
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     summary = json.loads(store.summary_path.read_text())
     assert summary["completed"] == list(plan.work_item_ids)
     attempts = [
@@ -659,7 +665,7 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
 ) -> None:
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "record")
+    campaign_store = SimulationRecordStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -680,13 +686,13 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
         manifest,
         registry.project_data,
     )
-    scheduler = BoundedCampaignScheduler(
+    scheduler = BoundedSimulationRecordScheduler(
         capacity,
         allocate=lambda item: _scheduled_attempt(campaign_store, item),
         execute=execute,
     )
     try:
-        with pytest.raises(CampaignCapacityError):
+        with pytest.raises(SimulationRecordCapacityError):
             scheduler.run(manifest.document["work_items"])
     finally:
         child_finished.set()
@@ -721,8 +727,8 @@ def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
             try:
                 _execute_pre_cancelled_coverage(tmp_path)
             except PreSimScopeStoppedError as exc:
-                raise CampaignCapacityError("scope stopped") from exc
-        raise CampaignCapacityError("unrelated publication failure")
+                raise SimulationRecordCapacityError("scope stopped") from exc
+        raise SimulationRecordCapacityError("unrelated publication failure")
 
     return execute
 
@@ -744,7 +750,7 @@ def _execute_pre_cancelled_coverage(tmp_path):
     )
 
     plan, _ = _maximum_hook_selection_plan(("alpha",))
-    store = CampaignStore(tmp_path / "coverage-cancel")
+    store = SimulationRecordStore(tmp_path / "coverage-cancel")
     store.publish_manifest(plan.manifest)
     request = _request(
         store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
@@ -784,7 +790,7 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
     first = expand_run_directory(
         str(literal),
         project_root=tmp_path,
-        campaign_id=str(uuid.uuid4()),
+        simulation_record_id=str(uuid.uuid4()),
         target_key="sim",
         work_item_key="item",
         attempt_key="attempt",
@@ -792,7 +798,7 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
     alias = expand_run_directory(
         str(literal / ".." / "literal"),
         project_root=tmp_path,
-        campaign_id=str(uuid.uuid4()),
+        simulation_record_id=str(uuid.uuid4()),
         target_key="sim",
         work_item_key="item",
         attempt_key="attempt",
@@ -824,7 +830,7 @@ def test_unsized_memory_admitted_campaign_runs_work_items_without_child_lanes(
     from booley.runtime.job_slots import CLASS_MEMORY
 
     manifest = _three_item_manifest()
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path, "beta", 0)
     # One item at a time: nothing waits for a peer to overlap.
     state.barrier = threading.Barrier(1)
@@ -849,9 +855,9 @@ def test_unsized_memory_admitted_campaign_runs_work_items_without_child_lanes(
 
     with AdmissionGate(AsicSynthesizeFlow()).enter() as admission:
         assert admission.slot_store is not None
-        outcome = SimulationCampaign(executor).run(
-            NewCampaignRunRequest(
-                plan, project, invocation.parent, CampaignPolicy(), invocation, admission
+        outcome = SimulationRecord(executor).run(
+            NewSimulationRecordRunRequest(
+                plan, project, invocation.parent, SimulationRecordPolicy(), invocation, admission
             )
         )
         (outer,) = admission.slot_store.snapshot(CLASS_MEMORY)[0]
@@ -862,7 +868,7 @@ def test_unsized_memory_admitted_campaign_runs_work_items_without_child_lanes(
     runs = sorted(state.intervals, key=lambda interval: interval[1])
     assert [name for name, _start, _end in runs] == ["alpha", "beta", "gamma"]
     assert all(left[2] <= right[1] for left, right in pairwise(runs))
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     attempts = [
         json.loads(path.read_bytes())
         for path in store.root.glob("work-items/*/attempts/*/attempt.json")

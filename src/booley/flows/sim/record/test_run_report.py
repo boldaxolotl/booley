@@ -25,25 +25,25 @@ from booley.flows.test_runs import (
 )
 
 from .codec import (
-    SimulationCampaignIntegrityError,
-    SimulationCampaignManifest,
-    UnsupportedSimulationCampaignFormatError,
-    decode_simulation_campaign_manifest,
+    SimulationRecordIntegrityError,
+    SimulationRecordManifest,
+    UnsupportedSimulationRecordFormatError,
+    decode_simulation_record_manifest,
 )
 from .planning import manifest_digest
-from .test_run_files import TestRunFiles, campaign_test_run_files
+from .test_run_files import TestRunFiles, simulation_record_test_run_files
 
 __all__ = [
     "PATH_ROW_LIMIT",
     "ROW_LIMIT",
     "TEST_RUN_GRADES",
-    "campaign_test_run_files_by_row",
-    "campaign_test_run_lines",
-    "campaign_test_run_rows",
     "evidence_test_run_rows",
     "informative_test_run_lines",
     "observation_grade",
     "observation_test_run_rows",
+    "simulation_record_test_run_files_by_row",
+    "simulation_record_test_run_lines",
+    "simulation_record_test_run_rows",
     "test_run_grade",
     "test_run_report_lines",
     "test_run_row",
@@ -116,8 +116,8 @@ def observation_grade(observation: Mapping[str, object]) -> str:
 def _recorded_test_runs(manifest_path: Path) -> dict[tuple[object, str], TestRun]:
     """Every Test Run the manifest at *manifest_path* records; none if unreadable."""
     try:
-        manifest = decode_simulation_campaign_manifest(manifest_path.read_bytes())
-    except (OSError, SimulationCampaignIntegrityError, UnsupportedSimulationCampaignFormatError):
+        manifest = decode_simulation_record_manifest(manifest_path.read_bytes())
+    except (OSError, SimulationRecordIntegrityError, UnsupportedSimulationRecordFormatError):
         return {}
     try:
         return _manifest_test_runs(manifest)
@@ -126,7 +126,7 @@ def _recorded_test_runs(manifest_path: Path) -> dict[tuple[object, str], TestRun
         return {}
 
 
-def _manifest_test_runs(manifest: SimulationCampaignManifest) -> dict[tuple[object, str], TestRun]:
+def _manifest_test_runs(manifest: SimulationRecordManifest) -> dict[tuple[object, str], TestRun]:
     """Every Test Run *manifest* records, by work item and Test Run name."""
     recorded: dict[tuple[object, str], TestRun] = {}
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
@@ -182,7 +182,7 @@ def _observed_rows(outcome: _Outcome) -> list[tuple[dict[str, object], int]]:
     return rows
 
 
-def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
+def simulation_record_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
     """One row per observed Test Run: what it is, and how it ended.
 
     Each row holds the recorded ``name``, ``test``, ``variant``, ``seed``,
@@ -192,13 +192,13 @@ def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
     return [row for row, _ in _observed_rows(outcome)]
 
 
-def campaign_test_run_files_by_row(outcome: _EvidenceOutcome) -> tuple[TestRunFiles, ...]:
+def simulation_record_test_run_files_by_row(outcome: _EvidenceOutcome) -> tuple[TestRunFiles, ...]:
     """The evidence files of each row of :func:`campaign_test_run_rows`, in its order."""
-    files = campaign_test_run_files(outcome)
+    files = simulation_record_test_run_files(outcome)
     return tuple(files[index] for _, index in _observed_rows(outcome))
 
 
-def campaign_test_run_lines(
+def simulation_record_test_run_lines(
     selector: str, outcome: _EvidenceOutcome, *, default_seed: int | None
 ) -> list[str]:
     """The report lines of *outcome*'s Test Runs, per :func:`informative_test_run_lines`.
@@ -207,7 +207,7 @@ def campaign_test_run_lines(
     command that reruns the batch, since it has no registered Test to select.
     """
     recorded = _recorded_test_runs(outcome.manifest_path)
-    evidence = campaign_test_run_files(outcome)
+    evidence = simulation_record_test_run_files(outcome)
     rows: list[dict[str, object]] = []
     files: list[TestRunFiles] = []
     batches: dict[str, TestRun] = {}
@@ -250,20 +250,20 @@ def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]
     facts = outcome.acceptance_facts.document
     observations = cast(tuple[Mapping[str, object], ...], facts["observations"])
     try:
-        manifest = decode_simulation_campaign_manifest(outcome.manifest_path.read_bytes())
+        manifest = decode_simulation_record_manifest(outcome.manifest_path.read_bytes())
     except OSError as exc:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"Simulation Campaign manifest cannot be read for its Test Runs: {exc}"
         ) from exc
     if manifest_digest(manifest) != facts["manifest_sha256"]:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "Simulation Campaign manifest is not the one its acceptance facts name"
         )
     return observation_test_run_rows(manifest, observations)
 
 
 def observation_test_run_rows(
-    manifest: SimulationCampaignManifest, observations: Sequence[Mapping[str, object]]
+    manifest: SimulationRecordManifest, observations: Sequence[Mapping[str, object]]
 ) -> list[dict[str, object]]:
     """One row per observation fact, from the Test Runs the authenticated *manifest* records.
 
@@ -275,7 +275,7 @@ def observation_test_run_rows(
     for observation in observations:
         run = _observed_run(observation, recorded)
         if run is None or run.fingerprint != observation["test_run_fingerprint"]:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"observation of Test Run {observation['test_run']!r} has no recorded "
                 "Test Run with its fingerprint in the Simulation Campaign manifest"
             )

@@ -13,12 +13,12 @@ from booley.flows.sim.runtime_inputs import preview_runtime_inputs
 from booley.targets.domain import TargetInput
 
 from .codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
-    decode_simulation_campaign_manifest,
+    decode_simulation_record_manifest,
     validate_relative_path,
 )
-from .model import SimulationCampaignManifest
+from .model import SimulationRecordManifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +63,7 @@ class WorkloadDiagnostic:
         return "\n".join(lines)
 
 
-class SimulationCampaignWorkloadMismatchError(SimulationCampaignIntegrityError):
+class SimulationRecordWorkloadMismatchError(SimulationRecordIntegrityError):
     """Resume refusal retaining every original difference and its presentation."""
 
     def __init__(self, diagnostic: WorkloadDiagnostic) -> None:
@@ -90,8 +90,8 @@ class _Projection:
 
 
 def project_workload_mismatches(
-    expected: SimulationCampaignManifest,
-    current: SimulationCampaignManifest,
+    expected: SimulationRecordManifest,
+    current: SimulationRecordManifest,
     findings: tuple[WorkloadMismatch, ...] | None = None,
 ) -> WorkloadDiagnostic:
     """Summarize validated values without changing comparison or reading files."""
@@ -450,13 +450,13 @@ def derive_runtime_input_declarations(
             normalized = validate_relative_path(
                 _relative_path(destination, field="runtime input destination")
             )
-        except SimulationCampaignIntegrityError as exc:
-            raise SimulationCampaignIntegrityError(
+        except SimulationRecordIntegrityError as exc:
+            raise SimulationRecordIntegrityError(
                 f"Target input copyto destination {destination!r} must be a relative path "
                 f"inside the run directory ({exc}); fix copyto in the Target's .core file"
             ) from exc
         if normalized in seen:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"duplicate runtime input destination {normalized!r}"
             )
         seen.add(normalized)
@@ -468,7 +468,7 @@ def derive_runtime_input_declarations(
     return tuple(declarations)
 
 
-def finalize_manifest(document: Mapping[str, object]) -> SimulationCampaignManifest:
+def finalize_manifest(document: Mapping[str, object]) -> SimulationRecordManifest:
     """Compute every component fingerprint and return the decoded manifest."""
     mutable = _json_copy(document)
     required = {
@@ -485,12 +485,12 @@ def finalize_manifest(document: Mapping[str, object]) -> SimulationCampaignManif
         "work_items",
     }
     if set(mutable) != required:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"manifest planning input must have exact fields {sorted(required)}"
         )
     mutable["fingerprints"] = _manifest_fingerprints(mutable)
     raw = canonical_json_bytes(mutable)
-    return decode_simulation_campaign_manifest(raw)
+    return decode_simulation_record_manifest(raw)
 
 
 def _manifest_fingerprints(mutable: Mapping[str, object]) -> dict[str, str]:
@@ -535,8 +535,8 @@ def _manifest_fingerprints(mutable: Mapping[str, object]) -> dict[str, str]:
 
 
 def compare_manifests(
-    expected: SimulationCampaignManifest,
-    current: SimulationCampaignManifest,
+    expected: SimulationRecordManifest,
+    current: SimulationRecordManifest,
 ) -> tuple[WorkloadMismatch, ...]:
     """Return all workload-identity mismatches in deterministic pointer order."""
     left = _identity_document(expected)
@@ -547,23 +547,23 @@ def compare_manifests(
 
 
 def verify_workload(
-    expected: SimulationCampaignManifest,
-    current: SimulationCampaignManifest,
+    expected: SimulationRecordManifest,
+    current: SimulationRecordManifest,
 ) -> None:
     """Reject resume with one stable complete mismatch report."""
     findings = compare_manifests(expected, current)
     if findings:
-        raise SimulationCampaignWorkloadMismatchError(
+        raise SimulationRecordWorkloadMismatchError(
             project_workload_mismatches(expected, current, findings)
         )
 
 
-def manifest_digest(manifest: SimulationCampaignManifest) -> str:
+def manifest_digest(manifest: SimulationRecordManifest) -> str:
     """Return the canonical digest used by durable records."""
     return document_digest(manifest.document)
 
 
-def _identity_document(manifest: SimulationCampaignManifest) -> Mapping[str, object]:
+def _identity_document(manifest: SimulationRecordManifest) -> Mapping[str, object]:
     document = manifest.document
     return {
         key: document[key]
@@ -617,7 +617,7 @@ def _relative_path(value: str, *, field: str) -> str:
         or path.is_absolute()
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
-        raise SimulationCampaignIntegrityError(f"invalid {field} {value!r}")
+        raise SimulationRecordIntegrityError(f"invalid {field} {value!r}")
     return path.as_posix()
 
 
@@ -634,7 +634,7 @@ def _display(value: object) -> str:
 
 
 __all__ = [
-    "SimulationCampaignWorkloadMismatchError",
+    "SimulationRecordWorkloadMismatchError",
     "WorkloadDiagnostic",
     "WorkloadMismatch",
     "compare_manifests",

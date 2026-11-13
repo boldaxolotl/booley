@@ -26,17 +26,17 @@ from booley.runtime.job_slots import (
 from booley.runtime.supervised_execution import SupervisedExecutionScope
 
 from .child_protocol import ChildExecutionRegistry, PreparedChild
-from .model import SimulationCampaignManifest
+from .model import SimulationRecordManifest
 
 _MAX_CHILD_ACQUIRE_POLL_SECONDS = 0.01
 _SHUTDOWN_POLL_SLICES = 10
 
 
-class CampaignCapacityError(RuntimeError):
+class SimulationRecordCapacityError(RuntimeError):
     """The campaign can no longer safely use its admitted capacity."""
 
 
-class LeaseLostError(CampaignCapacityError):
+class LeaseLostError(SimulationRecordCapacityError):
     """One child lane lost its lease; the other lanes can still finish."""
 
 
@@ -58,13 +58,13 @@ class ChildPermit:
     scope: SupervisedExecutionScope
 
 
-class CampaignCapacity:
+class SimulationRecordCapacity:
     """Deep adapter from an admitted endpoint context to campaign permits."""
 
     def __init__(
         self,
         admission: AdmissionContext,
-        manifest: SimulationCampaignManifest,
+        manifest: SimulationRecordManifest,
         project_data: Path,
         item_claim: Callable[[Mapping[str, object]], MemoryClaim | None] | None = None,
     ) -> None:
@@ -116,12 +116,14 @@ class CampaignCapacity:
     def outer_permit(self) -> Iterator[OuterPermit]:
         """Lend the already-held outer permit exactly once."""
         if self._outer_entered:
-            raise CampaignCapacityError("outer campaign permit may be borrowed exactly once")
+            raise SimulationRecordCapacityError(
+                "outer campaign permit may be borrowed exactly once"
+            )
         self._outer_entered = True
         if self.managed and (
             self._admission.slot_store is None or self._admission.outer_token is None
         ):
-            raise CampaignCapacityError("managed admission is missing its outer token")
+            raise SimulationRecordCapacityError("managed admission is missing its outer token")
         yield OuterPermit(self._admission.execution_id)
 
     def outer_scope(self, stopped: Callable[[], bool]) -> SupervisedExecutionScope:
@@ -167,7 +169,7 @@ class CampaignCapacity:
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
-            raise CampaignCapacityError("unmanaged campaigns cannot acquire child permits")
+            raise SimulationRecordCapacityError("unmanaged campaigns cannot acquire child permits")
         child_id = ExecutionId(uuid.uuid4().hex)
         prepared = self._lanes.prepare(
             child_id,
@@ -198,7 +200,9 @@ class CampaignCapacity:
         ):
             yield permit
         if not store.token_absent(token):
-            raise CampaignCapacityError(f"child token remained after terminal proof: {child_id}")
+            raise SimulationRecordCapacityError(
+                f"child token remained after terminal proof: {child_id}"
+            )
 
     def _item_thread_count(self, store: SlotStore) -> int:
         """The item's share of the cores, counted now that its own claim is admitted.
@@ -207,7 +211,7 @@ class CampaignCapacity:
         """
         flow_token = self._admission.outer_token
         if not isinstance(flow_token, SlotToken):
-            raise CampaignCapacityError("a memory-admitted campaign holds a Flow token")
+            raise SimulationRecordCapacityError("a memory-admitted campaign holds a Flow token")
         return job_threads_at_start(store, available_cpu_count(), own_flow=flow_token)
 
     @contextmanager
@@ -234,7 +238,7 @@ class CampaignCapacity:
                     if self._cancelled():
                         raise ClaimAbortedError("campaign cancellation requested")
                     yield permit
-                except CampaignCapacityError as exc:
+                except SimulationRecordCapacityError as exc:
                     cause = self._failed_cause(exc, permit)
                     if permit.lease_health.lost.is_set() and not self.shutdown_requested:
                         raise LeaseLostError(lease_lost) from exc
@@ -265,7 +269,7 @@ class CampaignCapacity:
             store.release(token)
 
     @staticmethod
-    def _failed_cause(exc: CampaignCapacityError, permit: ChildPermit) -> str:
+    def _failed_cause(exc: SimulationRecordCapacityError, permit: ChildPermit) -> str:
         """The terminal cause of a lane whose work raised a capacity error."""
         from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 
@@ -403,9 +407,9 @@ class CampaignCapacity:
 
 
 __all__ = [
-    "CampaignCapacity",
-    "CampaignCapacityError",
     "ChildPermit",
     "LeaseLostError",
     "OuterPermit",
+    "SimulationRecordCapacity",
+    "SimulationRecordCapacityError",
 ]

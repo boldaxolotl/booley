@@ -27,21 +27,21 @@ import pytest
 
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record import inspect_retained_campaign, read_durable_results
+from booley.flows.sim.record import inspect_retained_simulation_record, read_durable_results
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
     decode_bundle_build_result,
     decode_executable_snapshot,
     decode_simulation_attempt,
-    decode_simulation_campaign_manifest,
+    decode_simulation_record_manifest,
     decode_simulation_result,
     decode_simulator_bundle,
 )
 from booley.flows.sim.record.dependency import (
-    read_campaign_dependencies,
-    register_campaign_dependency,
+    read_simulation_record_dependencies,
+    register_simulation_record_dependency,
 )
 from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
 from booley.runtime import execution_records
@@ -82,7 +82,7 @@ _OLD_MANIFEST = "booley.simulation-campaign-manifest/v4"
 _OLD_RESULT = "booley.simulation-result/v3"
 _OLD_RECEIPT = "booley.simulation-campaign-dependency/v1"
 _OLD_RECORDS = {
-    _OLD_MANIFEST: decode_simulation_campaign_manifest,
+    _OLD_MANIFEST: decode_simulation_record_manifest,
     _OLD_RESULT: decode_simulation_result,
     "booley.simulation-attempt/v1": decode_simulation_attempt,
     "booley.bundle-build-attempt/v1": decode_bundle_build_attempt,
@@ -186,9 +186,9 @@ def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
     origin, digest = _origin(tmp_path / "origin")
     dependent = tmp_path / "origin" / "reports" / "sim" / "2"
     dependent.mkdir(parents=True)
-    register_campaign_dependency(
+    register_simulation_record_dependency(
         origin,
-        campaign_id=CAMPAIGN_ID,
+        simulation_record_id=CAMPAIGN_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -199,8 +199,8 @@ def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
     assert receipt["simulation_record_id"] == CAMPAIGN_ID
     assert "campaign_id" not in receipt
     assert "record_id" not in receipt
-    (read_back,) = read_campaign_dependencies(origin)
-    assert read_back.campaign_id == CAMPAIGN_ID
+    (read_back,) = read_simulation_record_dependencies(origin)
+    assert read_back.simulation_record_id == CAMPAIGN_ID
 
 
 def _prepared_lane(campaign: lane_pool._Campaign, parent: str) -> tuple[ExecutionId, Any]:
@@ -250,13 +250,13 @@ def test_a_0_4_0_manifest_is_refused_naming_its_invocation(reports: Path) -> Non
     manifest = invocation / "targets" / "sim" / "record" / "manifest.json"
 
     with pytest.raises(ValueError) as decoded:
-        decode_simulation_campaign_manifest(manifest.read_bytes())
+        decode_simulation_record_manifest(manifest.read_bytes())
     _assert_unsupported_type(decoded.value)
     _assert_refused(str(decoded.value), _OLD_MANIFEST)
 
     # Retention, Goal status and the Dashboard each read it through one of these.
     for read in (
-        lambda: inspect_retained_campaign(manifest),
+        lambda: inspect_retained_simulation_record(manifest),
         lambda: read_durable_results(manifest, "sha256:" + "0" * 64),
     ):
         with pytest.raises(ValueError) as refused:
@@ -289,7 +289,7 @@ def test_a_0_4_0_dependency_receipt_is_refused(tmp_path: Path) -> None:
     shutil.copyfile(_0_4_0_receipt(), receipts / _0_4_0_receipt().name)
 
     with pytest.raises(ValueError) as read:
-        read_campaign_dependencies(store.manifest_path)
+        read_simulation_record_dependencies(store.manifest_path)
     _assert_unsupported_type(read.value)
     _assert_refused(str(read.value), _OLD_RECEIPT)
 
@@ -357,13 +357,13 @@ def _with_old_key(document: dict[str, Any]) -> bytes:
 def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
     _reports, _project_data, store = _retained_invocation(tmp_path)
     documents = {
-        decode_simulation_campaign_manifest: store.manifest_path,
+        decode_simulation_record_manifest: store.manifest_path,
         decode_simulation_result: next(store.root.glob("work-items/*/result.json")),
         decode_simulation_attempt: next(store.root.glob("work-items/*/attempts/*/attempt.json")),
     }
     for decode, path in documents.items():
         # The old key is an unknown field: an integrity error, not an older Booley's record.
-        with pytest.raises(SimulationCampaignIntegrityError, match="exact fields") as refused:
+        with pytest.raises(SimulationRecordIntegrityError, match="exact fields") as refused:
             decode(_with_old_key(_json(path)))
         assert "older Booley" not in str(refused.value)
 
@@ -371,13 +371,16 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
     origin, digest = _origin(tmp_path / "origin")
     dependent = tmp_path / "origin" / "reports" / "sim" / "2"
     dependent.mkdir(parents=True)
-    register_campaign_dependency(
-        origin, campaign_id=CAMPAIGN_ID, manifest_sha256=digest, dependent_invocation=dependent
+    register_simulation_record_dependency(
+        origin,
+        simulation_record_id=CAMPAIGN_ID,
+        manifest_sha256=digest,
+        dependent_invocation=dependent,
     )
     (receipt_path,) = origin.parent.glob("dependency-receipts/*.json")
     _rewrite(receipt_path, _with_old_key(_json(receipt_path)))
     with pytest.raises(ValueError, match="Malformed Simulation Campaign dependency receipt"):
-        read_campaign_dependencies(origin)
+        read_simulation_record_dependencies(origin)
 
     # A context sidecar is the current one only: schema v1, or v2 with the old key, is not.
     campaign = lane_pool._Campaign(tmp_path / "lane", ("alpha",), lanes=1)

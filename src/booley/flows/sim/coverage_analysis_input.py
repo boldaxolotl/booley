@@ -31,7 +31,7 @@ from booley.flows.sim.record import (
 )
 from booley.flows.sim.record.codec import (
     MANIFEST_MAX_BYTES,
-    UnsupportedSimulationCampaignFormatError,
+    UnsupportedSimulationRecordFormatError,
     raise_if_retired_schema,
 )
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
@@ -40,7 +40,7 @@ from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
-    from booley.flows.sim.record import CampaignWorkItemEvidence
+    from booley.flows.sim.record import SimulationRecordWorkItemEvidence
 
 
 class CoverageAnalysisError(ValueError):
@@ -70,7 +70,7 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
         schema = require_dict(json.loads(path.read_text(encoding="utf-8"))).get("$schema")
         try:
             raise_if_retired_schema(schema)
-        except UnsupportedSimulationCampaignFormatError as exc:
+        except UnsupportedSimulationRecordFormatError as exc:
             # An older Booley's reference or record: name the invocation to delete.
             raise exc.located(invocation) from None
         resolved = (
@@ -93,7 +93,7 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
             authenticated = authenticate_coverage_campaign_owner(resolved)
             _reference_projection(path, projection, resolved, authenticated)
         return loaded
-    except UnsupportedSimulationCampaignFormatError as exc:
+    except UnsupportedSimulationRecordFormatError as exc:
         raise CoverageAnalysisError(str(exc)) from exc
     except (OSError, ValueError, BoundaryError) as exc:
         raise CoverageAnalysisError(
@@ -123,7 +123,7 @@ def _projection(
             require_dict(json.loads(path.read_text(encoding="utf-8"))),
             coverage_expected=coverage_expected,
         )
-    except UnsupportedSimulationCampaignFormatError as exc:
+    except UnsupportedSimulationRecordFormatError as exc:
         raise exc.located(path.parents[2]) from None
     expected = {
         "flow": "sim",
@@ -143,7 +143,7 @@ def _reference_projection(
     public_path: Path,
     projection: SimulationProjection,
     resolved: ResolvedCoverageCampaign,
-    authenticated: CampaignWorkItemEvidence,
+    authenticated: SimulationRecordWorkItemEvidence,
 ) -> None:
     """Authenticate a Simulation projection through local Simulation Campaign bytes.
 
