@@ -484,6 +484,4 @@ def test_retired_progress_of_a_requeued_attempt_is_not_read_for_its_run(tmp_path
     assert other_flow.read_bytes() == other_flow_before
     # Retiring twice is a no-op: the run id is already empty.
     retire_progress_of_requeued_attempt(killed, endpoint="sim", run_id="run-1")
-    assert json.loads(killed.read_text(encoding="utf-8")) == retired | {
-        "terminal_timestamp": retired["terminal_timestamp"]
-    }
+    assert json.loads(killed.read_text(encoding="utf-8")) == retired
