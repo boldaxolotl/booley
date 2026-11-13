@@ -322,6 +322,86 @@ def test_vanished_holder_does_not_refuse_a_claim_that_fits(root, world, monkeypa
     assert store.refresh(join(store, world, 102, claim(100))).state == HOLDING
 
 
+# --- Seat Caps for licensed EDA tools (#3244, ADR 0087) ------------------------------
+
+
+def seated(reservation_mb: float, cap: int, tool: str = "vivado"):
+    """A claim that also holds one *tool* seat, judged against a Seat Cap of *cap*."""
+    return job_slots.MemoryClaim(
+        budget_mb=BUDGET_MB, reservation_mb=reservation_mb, seats=((tool, cap),)
+    )
+
+
+def test_seat_cap_queues_a_claim_that_fits_memory_while_the_seats_are_taken(root, world):
+    store = make_store(root, world)
+    first = join(store, world, 101, seated(100, 1))
+    second = join(store, world, 102, seated(100, 1))
+    other_tool = join(store, world, 103, claim(100))
+    assert store.refresh(first).state == HOLDING
+    # Memory fits (200 of 1,000 MiB) but the only vivado seat is held.
+    assert store.refresh(second) == TokenState(QUEUED, position=0)
+    # The seat-blocked claim blocks the claims behind it, as a memory-blocked one does.
+    assert store.refresh(other_tool) == TokenState(QUEUED, position=1)
+    store.release(first)
+    assert store.refresh(second).state == HOLDING
+    assert store.refresh(other_tool).state == HOLDING
+
+
+def test_seat_cap_of_two_holds_two_claims_together(root, world):
+    store = make_store(root, world)
+    first = join(store, world, 101, seated(100, 2))
+    second = join(store, world, 102, seated(100, 2))
+    third = join(store, world, 103, seated(100, 2))
+    assert store.refresh(first).state == HOLDING
+    assert store.refresh(second).state == HOLDING
+    assert store.refresh(third) == TokenState(QUEUED, position=0)
+    # A lease renewal rewrites the entry: it must keep the seat.
+    assert store.renew(first) and store.renew(second)
+    assert store.refresh(third) == TokenState(QUEUED, position=0)
+    store.release(second)
+    assert store.refresh(third).state == HOLDING
+
+
+def test_malformed_seats_field_is_read_as_no_claim(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, seated(100, 2))
+    assert store.refresh(holder).state == HOLDING
+    payload = json.loads(holder.path.read_text(encoding="utf-8"))
+    assert payload["memory"]["seats"] == {"vivado": 2}
+    for malformed in ({"vivado": 0}, {"vivado": True}, {"vivado": "two"}, ["vivado"]):
+        payload["memory"]["seats"] = malformed
+        holder.path.write_text(json.dumps(payload), encoding="utf-8")
+        reloaded = store._load_token(holder.path)
+        assert reloaded is not None and reloaded.memory is None, malformed
+    # An entry written before seats existed carries none.
+    del payload["memory"]["seats"]
+    holder.path.write_text(json.dumps(payload), encoding="utf-8")
+    reloaded = store._load_token(holder.path)
+    assert reloaded is not None and reloaded.memory == claim(100)
+
+
+def test_seat_blocked_front_starts_when_the_seat_holder_finishes_so_a_short_claim_jumps(
+    root, world
+):
+    store = make_store(root, world)
+    holder = job_slots.MemoryClaim(
+        budget_mb=BUDGET_MB, reservation_mb=100, wall_s=600.0, seats=(("vivado", 1),)
+    )
+    hold(store, world, 101, holder)
+    front = join(store, world, 102, seated(100, 1))  # memory fits; only the seat blocks it
+    short = join(store, world, 103, claim(100, wall_s=60.0))  # needs no seat, ends first
+    long = join(store, world, 104, claim(100, wall_s=900.0))  # outlasts the seat holder
+    assert store.refresh(front) == TokenState(QUEUED, position=0)
+    assert store.refresh(long).state == QUEUED
+    assert store.refresh(short).state == HOLDING
+
+
+def test_seat_cap_shape_is_validated():
+    for cap in (0, -1, True, 1.5, "1"):
+        with pytest.raises(ValueError):
+            seated(100, cast(Any, cap))
+
+
 def _on_disk_reservation(token) -> float | None:
     """The reservation the token's entry file carries right now."""
     payload = json.loads(token.path.read_text(encoding="utf-8"))
@@ -368,6 +448,30 @@ def test_shrink_refuses_a_run_alone_or_vanished_entry(root, world):
     assert not store.shrink_reservation(alone, 100)
     store.release(alone)
     assert not store.shrink_reservation(alone, 100)
+
+
+def test_shrink_keeps_the_claims_seats_and_wall_clock_estimate(root, world):
+    """A shrink lowers only the reservation: the seat stays held and the estimate stays."""
+    store = make_store(root, world)
+    holder = join(
+        store,
+        world,
+        101,
+        job_slots.MemoryClaim(
+            budget_mb=BUDGET_MB, reservation_mb=800, seats=(("vivado", 1),), wall_s=60.0
+        ),
+    )
+    assert store.refresh(holder).state == HOLDING
+    waiter = join(store, world, 102, seated(100, 1))
+    assert store.shrink_reservation(holder, 300)
+    on_disk = json.loads(holder.path.read_text(encoding="utf-8"))["memory"]
+    assert on_disk["reservation_mb"] == 300
+    assert on_disk["seats"] == {"vivado": 1}
+    assert on_disk["wall_s"] == 60.0
+    # Memory now fits the waiter, but the shrunk holder still owns the only seat.
+    assert store.refresh(waiter) == TokenState(QUEUED, position=0)
+    store.release(holder)
+    assert store.refresh(waiter).state == HOLDING
 
 
 # ------------------------------------------------------------- jumping ahead
