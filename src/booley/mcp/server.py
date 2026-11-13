@@ -557,6 +557,7 @@ async def _run_subprocess(
     on_first_active: Callable[[], None] | None = None,
     is_requeued: Callable[[], bool] | None = None,
     log_path: Path | None = None,
+    cwd: Path | None = None,
 ) -> tuple[int, str, str, bool]:
     """Delegate process supervision with adapter-configured diagnostic timings."""
     return await endpoint_process._run_subprocess(
@@ -570,6 +571,7 @@ async def _run_subprocess(
         watchdog_tick=endpoint_process._WATCHDOG_TICK_SECONDS,
         cancel_grace=endpoint_process.CANCEL_GRACE_SECONDS,
         log_path=log_path,
+        cwd=cwd,
     )
 
 
@@ -837,8 +839,13 @@ def _dispatch_report(arguments: dict[str, Any]) -> McpToolContent:
 async def _dispatch_bwave(
     name: str,
     arguments: dict[str, Any],
+    request_context: McpRequestContext | None = None,
 ) -> list[TextContent] | None:
-    """Handle B-Wave MCP tool calls. Returns None if *name* is not a B-Wave MCP tool."""
+    """Handle B-Wave MCP tool calls. Returns None if *name* is not a B-Wave MCP tool.
+
+    The child runs in the calling agent's routed checkout, so ``@<alias>`` resolves
+    from that checkout's session store; unrouted callers keep the server cwd.
+    """
     bwave_subcmds = {
         "bwave": lambda a: [
             sys.executable,
@@ -867,7 +874,8 @@ async def _dispatch_bwave(
     started = time.monotonic()
     exit_code = 2
     try:
-        exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd)
+        checkout = request_context.checkout if request_context is not None else None
+        exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd, cwd=checkout)
         return [
             TextContent(
                 type="text",
@@ -1910,7 +1918,7 @@ async def _dispatch_application_tool(
         )
     if special_result is not None:
         return special_result
-    bwave_result = await _dispatch_bwave(name, arguments)
+    bwave_result = await _dispatch_bwave(name, arguments, request_context)
     if bwave_result is not None:
         return _prepend_changed_health_alert(bwave_result)
     args = (name, arguments, dict(mcp_tool_def), mcp_tool_call_counts, jobs)

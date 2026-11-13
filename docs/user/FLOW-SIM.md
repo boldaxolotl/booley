@@ -306,13 +306,13 @@ no trace path. Each traced Target becomes session `@<target>`, so
 `bwave @<target> list` reads it. The session points at the waveform of the
 last Test Run that did not pass if any, else of the last Test Run. The last
 Target's waveform also becomes the default session, so `bwave list` alone reads
-the newest trace. The session store is one file per temporary directory (one
-per Sandbox), shared by every agent session in it: the latest traced run owns
-`@<target>` and the default session. A shell
-sees the sessions when it shares the temporary directory of the process that
-ran the simulation, which is the default. A failure to register never changes
-the run's result. A per-checkout store is tracked in
-[#3483](https://github.com/boldaxolotl/Booley/issues/3483).
+the newest trace. Each checkout, the main checkout or a linked worktree, keeps
+its own sessions in its Booley Directory, so `@<target>` and the default session
+are that checkout's latest traced run. A shell or an agent reads the sessions of
+the checkout it works in, and a new worktree starts with none. Outside any
+Project, or in a checkout without a Booley Directory of its own, sessions stay in
+the temporary directory instead. A failure to
+register never changes the run's result.
 
 Booley stores every waveform as FST, a compact format that B-Wave and common
 viewers (GTKWave, VaporView) read. An FST file from the simulator is used as

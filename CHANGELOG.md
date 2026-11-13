@@ -32,11 +32,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 - A traced `sim` run now registers each traced Target's waveform as B-Wave
   session `@<target>` (its last Test Run that did not pass, else its last) and
   the last Target's as the default session, so `bwave @<target> list` and a path-less
-  `bwave list` work without finding the trace file. The session store is shared
-  by the Sandbox, so the latest traced run owns `@<target>` and the default
-  session ([#3483](https://github.com/boldaxolotl/Booley/issues/3483) tracks a
-  per-checkout store). `bwave` without a trace path or session now says to rerun
-  the simulation with `--trace`.
+  `bwave list` work without finding the trace file. Each checkout keeps its own
+  session store in its Booley Directory, so `@<target>` and the default session
+  belong to that checkout's latest traced run
+  ([#3483](https://github.com/boldaxolotl/Booley/issues/3483)); outside a
+  Project the store stays in the temporary directory. Sessions and markers
+  registered before the upgrade are not carried over. `bwave` without a trace
+  path or session now says to rerun the simulation with `--trace`.
 - The Mutation Tester now generates Mutants deterministically and runs no LLM:
   the same RTL, `--count`, and the new `--seed` (default 0) give identical
   Mutants. `--scope` is optional and defaults to the Target's own RTL. The

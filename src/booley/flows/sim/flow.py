@@ -410,8 +410,9 @@ class SimulateFlow(
                 outcome, outcomes, self._simulation_acceptance_outcomes
             )
             raise
-        # After acceptance, in this process (never a sim child with a private TMPDIR).
-        register_trace_sessions(outcomes)
+        # After acceptance, in this process. ``work_dir`` is the candidate checkout again
+        # (``_in_checkout`` restored it): never a baseline worktree, the cwd or BOOLEY_DIR.
+        register_trace_sessions(outcomes, Path(self.args.work_dir))
         return True
 
     def generic_binding_gate_applies(self) -> bool:
