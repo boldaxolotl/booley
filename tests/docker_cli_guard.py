@@ -1,10 +1,12 @@
 """Guard that keeps unit tests from starting a real ``docker`` process.
 
-``booley.runtime.interactive_docker._run_docker`` is the single seam every
-Docker CLI call goes through.  Tests that must never reach Docker replace it
-with a function that fails the test at once and records the call, so a call
-made from a worker thread (where the failure may be swallowed) still fails the
-test when :func:`assert_docker_cli_unused` runs at teardown.
+``booley.runtime.interactive_docker._run_docker`` is the seam the interactive
+Docker CLI calls go through; other runtime modules call
+``booley.runtime.platform_paths.run_captured_bounded`` directly.  Tests that
+must never reach Docker replace the seam with a function that fails the test at
+once and records the call, so a call made from a worker thread (where the
+failure may be swallowed) still fails the test when
+:func:`assert_docker_cli_unused` runs at teardown.
 """
 
 from __future__ import annotations
