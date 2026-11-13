@@ -86,14 +86,14 @@ def forget_project(
     can be cleaned; the live-Grant guard still applies.
     """
     with _locked_roots() as roots:
+        grants = _authority_grants()
         if allow_forgotten and project_root.is_absolute():
             # Never follow symlinks: the path may now point at another Project.
-            identity = _stored_spelling(
-                os.path.normpath(str(project_root)), roots | _grant_roots()
-            )
+            known = roots | {grant.project_root for grant in grants}
+            identity = _stored_spelling(os.path.normpath(str(project_root)), known)
         else:
             identity = _remembered_identity(project_root, roots)
-        if any(grant.project_root == identity for grant in _authority_grants()):
+        if any(grant.project_root == identity for grant in grants):
             raise ProjectInventoryError(
                 f"cannot forget {identity}: revoke its live Project Grant first"
             )
@@ -291,6 +291,8 @@ def _grant_roots() -> set[str]:
 
 def _stored_spelling(identity: str, known: set[str]) -> str:
     """Map a case variant to the stored root where the OS folds case (a no-op on POSIX)."""
+    if identity in known:
+        return identity
     folded = os.path.normcase(identity)
     return next((root for root in sorted(known) if os.path.normcase(root) == folded), identity)
 

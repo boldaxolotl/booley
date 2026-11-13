@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -324,12 +325,22 @@ def test_host_doctor_warns_once_for_stamps_of_deleted_forgotten_projects(
     xdg_home = tmp_path / "config"
     xdg_home.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    from types import SimpleNamespace
+
+    from booley.projects import inventory
+
     remembered = _remembered_project(tmp_path / "remembered")
+    # A remembered Project whose directory is gone is still in the inventory: no WARN.
+    remembered_gone = _remembered_project(tmp_path / "remembered-gone")
+    shutil.rmtree(remembered_gone)
+    granted_gone = str(tmp_path / "granted-gone")
+    grant = SimpleNamespace(project_root=granted_gone)
+    monkeypatch.setattr(inventory, "_authority_grants", lambda: (grant,))
     seeded = tmp_path / "seeded-worktree"
     seeded.mkdir()
     deleted = [str(tmp_path / "gone-a"), str(tmp_path / "gone-b")]
     stamps = session_issuance.stamp_store()
-    for root in (remembered, str(seeded), *deleted):
+    for root in (remembered, remembered_gone, granted_gone, str(seeded), *deleted):
         stamps.write(root, json.dumps({"project_root": root}))
     _stub_offline_host(monkeypatch)
 
@@ -342,7 +353,8 @@ def test_host_doctor_warns_once_for_stamps_of_deleted_forgotten_projects(
     assert warning.message.startswith("2 ")
     for root in deleted:
         assert f"booley projects forget --purge {root}" in warning.fix
-    assert remembered not in warning.fix and str(seeded) not in warning.fix
+    for kept in (remembered, remembered_gone, granted_gone, str(seeded)):
+        assert kept not in warning.fix
 
     for root in deleted:
         stamps.private.root.joinpath(stamps.filename(root)).unlink()
@@ -373,3 +385,27 @@ def test_host_doctor_skips_forgotten_stamp_check_when_inventory_is_unreadable(
     skips = [f for f in findings if f.severity is Severity.SKIP]
     assert any("forgotten-Project stamp check skipped" in f.message for f in skips)
     assert any("Project Inventory is unreadable" in f.message for f in skips)
+
+
+def test_host_doctor_does_not_call_an_unreadable_root_deleted(monkeypatch, tmp_path: Path):
+    """A root that cannot be checked (EACCES, stale mount) never earns a purge remedy."""
+    import os
+
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    unreadable = str(tmp_path / "unreadable")
+    session_issuance.stamp_store().write(unreadable, json.dumps({"project_root": unreadable}))
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if str(path) == unreadable:
+            raise PermissionError(13, "Permission denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host().report.findings
+
+    assert not _forgotten_stamp_findings(findings)

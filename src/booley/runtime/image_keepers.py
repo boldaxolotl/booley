@@ -61,7 +61,7 @@ def forget_project(
     ``purge`` also accepts an already-forgotten absolute root and then removes
     the root's unused images and state volumes, returning what it removed and kept.
     Forgetting also withdraws the root's Sandbox issuance stamp and admission
-    claim, so a forgotten Project must be initialized again.
+    claim, so a Session of a forgotten Project must be reissued before it runs.
     """
     outcomes: list[KeeperRelease] = []
 

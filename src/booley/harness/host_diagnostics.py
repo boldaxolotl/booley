@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shlex
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,7 +86,7 @@ def _inspect_session_stores(report: Findings) -> None:
     )
     count = 0
     healthy = True
-    stamps: tuple[ProjectStoreEntry, ...] = ()
+    stamps: tuple[ProjectStoreEntry, ...] = ()  # stays empty when the stamp scan fails
     for store in stores:
         try:
             entries = store.scan()
@@ -101,6 +104,7 @@ def _inspect_session_stores(report: Findings) -> None:
             healthy = False
     if healthy:
         report.pass_(f"Session stores: {count} per-Project file(s) match their Project Roots")
+    if stamps:  # a failing sibling store must not hide stamps that scanned cleanly
         _inspect_forgotten_stamps(stamp_store, stamps, report)
 
 
@@ -120,16 +124,32 @@ def _inspect_forgotten_stamps(
     orphans = sorted(
         entry.project_root
         for entry in stamps
-        if store.filename(entry.project_root) not in known
-        and not Path(entry.project_root).exists()
+        if store.filename(entry.project_root) not in known and _root_is_gone(entry.project_root)
     )
     if orphans:
         report.warn(
             f"{len(orphans)} Sandbox issuance stamp(s) belong to deleted Projects "
             "not in the Project Inventory",
-            "; ".join(f"booley projects forget --purge {root}" for root in orphans),
+            "; ".join(_forget_purge_command(root) for root in orphans),
             check_id="host.forgotten-project-stamps",
         )
+
+
+def _root_is_gone(root: str) -> bool:
+    """Return whether *root* is positively absent; an unreadable path is not proof it is gone."""
+    try:
+        Path(root).stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False  # EACCES, ESTALE, an unmounted drive: the Project may still exist
+    return False
+
+
+def _forget_purge_command(root: str) -> str:
+    """Quote the remedy for the host shell so a root with spaces stays copyable."""
+    argv = ["booley", "projects", "forget", "--purge", root]
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
 
 
 def _inspect_sandbox_egress(host_egress: str, docker_ready: bool, report: Findings) -> None:
