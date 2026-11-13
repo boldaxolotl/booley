@@ -274,7 +274,8 @@ Try:
 - Copy `fixtures/simulation-campaign/` in, register `campaign.core`, merge `tests.toml` into the
   test catalog. `first` + `second` in one campaign → exactly one ready `shared_variant` bundle for
   both attempts, bytes unchanged (cross-check `validate_bundle.py`).
-- Apply `parallel.toml` with a `[jobs] memory_budget` that admits three items; run `slow-first`,
+- Run each slow item once first: an item with no Resource History runs alone. Apply
+  `parallel.toml` with a `[jobs] memory_budget` that admits three items; run `slow-first`,
   `slow-fail`, `slow-last` and measure the simulator processes: they overlap, each
   `qa-shared-name.txt` is in its own attempt, pass/fail/pass in manifest order with strict `fail`.
   Cross-check with `validate_parallel.py`; record the timeline in the format its module docstring
