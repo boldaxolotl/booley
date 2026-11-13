@@ -187,18 +187,22 @@ class BoundedCampaignScheduler:
             self._lane_exited()
 
     def _run_lane_item(self, item: Mapping[str, object], outer: bool) -> bool:
-        """Run one item; ``False`` retires the lane because the item failed."""
+        """Run one item; ``False`` retires the lane because the item failed.
+
+        A lost lease ends only its item. The outer lane takes the next item (its
+        permit is a fresh claim, or the Flow's own); a child lane retires.
+        """
         try:
             self._run_item(item, outer)
         except LeaseLostError as exc:
             if self._capacity.shutdown_requested:
                 self._fail_campaign(exc)
             else:
-                # Only this lane's lease is gone. Its old token may still be a
-                # cancelling holder, so the lane takes no further item; the others
+                # Only this item's lease is gone. A child lane's old token may still
+                # be a cancelling holder, so it takes no further item; the others
                 # drain the queue.
                 self._interruptions.put(exc)
-            return False
+            return outer
         except BaseException as exc:  # noqa: BLE001 -- ferry lane failures to owner
             self._fail_campaign(exc)
             return False
@@ -213,7 +217,9 @@ class BoundedCampaignScheduler:
         with self._allocation_gate:
             attempt = self._allocate(item)
         with self._collision_permit(attempt.collision_key), self._lane_scope(attempt):
-            if outer:
+            # The outer lane runs under the Flow's claim, unless the item takes its own.
+            memory = self._capacity.work_item_claim(item) if outer else None
+            if outer and memory is None:
                 with supervised_execution_scope(self._capacity.outer_scope(self._stop.is_set)):
                     self._execute(attempt, None)
                 return
@@ -224,6 +230,7 @@ class BoundedCampaignScheduler:
                     attempt_ordinal=attempt.ordinal,
                     attempt_directory=attempt.directory,
                     publish=lambda child: self._prepare_child(attempt, str(child)),
+                    memory=memory,
                 ) as permit,
                 supervised_execution_scope(permit.scope),
             ):

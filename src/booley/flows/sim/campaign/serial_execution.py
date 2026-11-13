@@ -59,7 +59,7 @@ from booley.flows.sim.runtime_inputs import (
     materialize_campaign_runtime_inputs,
     safe_runtime_relative,
 )
-from booley.flows.test_runs import TestRun, test_run_from_document
+from booley.flows.test_runs import TestRun
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 
@@ -98,7 +98,7 @@ from .model import (
 from .planning import manifest_digest
 from .pre_sim_evidence import publish_pre_sim_firing
 from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
-from .test_run_binding import observation_test_runs
+from .test_run_binding import observation_test_runs, work_item_test_runs
 
 #: Where a build directory keeps its Simulator Bundle manifest.
 _BUNDLE_MANIFEST_PATH = "evidence/bundle.json"
@@ -375,7 +375,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             request, directory, BuildScope.shared(build_id, ordinal)
         )
         with execution.ordinary_group(
-            handle, names, _work_item_test_runs(request.work_item)
+            handle, names, work_item_test_runs(request.work_item)
         ) as group:
             _authenticate_planning_disclosure(request, group)
             captured = self._compile_and_capture(request, directory, attempt, group, workload)
@@ -462,7 +462,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     @staticmethod
     def _prepare_shared_launch(request, ready, execution, handle, names):
         with execution.ordinary_group(
-            handle, names, _work_item_test_runs(request.work_item)
+            handle, names, work_item_test_runs(request.work_item)
         ) as group:
             _authenticate_planning_disclosure(request, group)
             group.bind_authenticated_bundle(ready.build_execution)
@@ -477,7 +477,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     ) -> SimulationResult:
         started = time.monotonic()
         inputs = self._group_inputs(request)
-        runs = _work_item_test_runs(request.work_item)
+        runs = work_item_test_runs(request.work_item)
         with inputs.execution.ordinary_group(inputs.handle, inputs.names, runs) as group:
             prepared = self._prepare_bundle_artifacts(
                 request, build_directory, build_attempt, group, inputs, started
@@ -556,7 +556,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         return _GroupInputs(
             handle,
             names,
-            _work_item_test_runs(request.work_item),
+            work_item_test_runs(request.work_item),
             options,
             execution,
             workload,
@@ -582,7 +582,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             None,
             True,
             commands=_frozen_hook_commands(request),
-            test_runs=_work_item_test_runs(request.work_item),
+            test_runs=work_item_test_runs(request.work_item),
         )
         if pre_sim is not None:
             publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
@@ -740,7 +740,7 @@ def _immutable_hook_failure(
         run_cwd,
         False,
         commands=_frozen_hook_commands(request),
-        test_runs=_work_item_test_runs(request.work_item),
+        test_runs=work_item_test_runs(request.work_item),
     )
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
@@ -923,21 +923,6 @@ def _fresh_shared_failure(
         FailureClass.INFRASTRUCTURE if outcome.infrastructure_failure else FailureClass.DESIGN,
         _bounded_reason(detail) if outcome.infrastructure_failure else detail[-1536:],
     )
-
-
-def _work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...]:
-    """The concrete Test Runs a work item froze.
-
-    Manifest decode reads these records raw, so this is where they are parsed
-    strictly; a failure means the record was altered after planning.
-    """
-    try:
-        return tuple(
-            test_run_from_document(entry)
-            for entry in cast(tuple[object, ...], work_item["test_runs"])
-        )
-    except ValueError as exc:
-        raise SimulationCampaignIntegrityError(f"work item Test Runs are invalid: {exc}") from exc
 
 
 def _setup_result(

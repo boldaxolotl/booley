@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast, overload
@@ -34,6 +34,7 @@ from .codec import (
     reads_campaign_records,
 )
 from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
+from .flow_claim import FlowClaim, WorkItemRequest
 from .model import (
     AssertionObservation,
     ExecutionObservation,
@@ -270,8 +271,12 @@ class SimulationCampaign:
         *,
         publication_checkpoint: Callable[[str], None] | None = None,
         manifest_published: Callable[[Path], None] | None = None,
+        work_item_request: WorkItemRequest | None = None,
     ) -> None:
         self._manifest_published = manifest_published
+        # Sizes a work item's own Memory Reservation; without it items stay under the Flow's.
+        self._work_item_request = work_item_request
+        self._flow_claim: FlowClaim | None = None
         self._executor = executor
         self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
         self._publication_gate = threading.Lock()
@@ -448,9 +453,33 @@ class SimulationCampaign:
         self._publication_checkpoint("before:coverage_reference")
         return publish_coverage_campaign_reference(store.root.parent / "coverage.json", reference)
 
+    def _expect_builds(
+        self,
+        admission: AdmissionContext,
+        store: CampaignStore,
+        manifest: SimulationCampaignManifest,
+        items: Iterable[Mapping[str, object]],
+    ) -> None:
+        """Tell the Flow's claim which shared builds *items* still need (memory admission only)."""
+        if self._flow_claim is None and (
+            admission.memory_sizing is not None and self._work_item_request is not None
+        ):
+            self._flow_claim = FlowClaim(
+                admission, admission.memory_sizing, self._work_item_request
+            )
+        if self._flow_claim is not None:
+            self._flow_claim.expect(store.root, manifest, items)
+
     def publish_new(self, request: NewCampaignRunRequest) -> Path:
         """Atomically publish one planned manifest without starting work."""
         store = _new_store(request)
+        manifest = request.plan.manifest
+        self._expect_builds(
+            request.admission,
+            store,
+            manifest,
+            cast(tuple[Mapping[str, object], ...], manifest.document["work_items"]),
+        )
         if store.manifest_path.exists():
             if store.load_manifest() != request.plan.manifest:
                 raise SimulationCampaignIntegrityError(
@@ -600,7 +629,16 @@ class SimulationCampaign:
         if pending:
             _preflight_run_directory(manifest, project_root)
         self._raise_if_cancelled(request)
-        capacity = HeavyCapacity(request.admission, manifest, project_data)
+        self._expect_builds(request.admission, store, manifest, pending)
+        flow_claim = self._flow_claim
+        capacity = HeavyCapacity(
+            request.admission,
+            manifest,
+            project_data,
+            None
+            if flow_claim is None
+            else lambda item: flow_claim.item_claim(store.root, manifest, item),
+        )
         self._scheduler(capacity, store, manifest, project_root, invocation, request).run(pending)
         self._raise_if_cancelled(request)
 
@@ -683,6 +721,10 @@ class SimulationCampaign:
             )
         except PreSimScopeStoppedError as signal:
             raise HeavyCapacityError(str(signal)) from signal
+        if self._flow_claim is not None:
+            # The item's shared build is settled; the last one frees the Flow's reservation.
+            self._flow_claim.settle(store.root, work_item)
+            self._flow_claim.release()
         raise_if_cancelled_before_publication()
         try:
             self._publish_scheduled_result(store, attempt, work_item_id, result)

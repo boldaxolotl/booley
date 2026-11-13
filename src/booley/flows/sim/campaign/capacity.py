@@ -6,7 +6,7 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,8 +15,10 @@ from booley.flows.endpoint_admission import AdmissionContext
 from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
+    CLASS_MEMORY,
     ClaimAbortedError,
     LeaseHealth,
+    MemoryClaim,
     SlotToken,
 )
 from booley.runtime.supervised_execution import SupervisedExecutionScope
@@ -58,9 +60,14 @@ class HeavyCapacity:
     """Deep adapter from an admitted endpoint context to campaign permits."""
 
     def __init__(
-        self, admission: AdmissionContext, manifest: SimulationCampaignManifest, project_data: Path
+        self,
+        admission: AdmissionContext,
+        manifest: SimulationCampaignManifest,
+        project_data: Path,
+        item_claim: Callable[[Mapping[str, object]], MemoryClaim | None] | None = None,
     ) -> None:
         self._admission = admission
+        self._item_claim = item_claim
         self._lanes = ChildExecutionRegistry.from_project_data(
             manifest, project_data, booley_dir=project_data
         )
@@ -117,6 +124,10 @@ class HeavyCapacity:
             self.cancellation_cause,
         )
 
+    def work_item_claim(self, item: Mapping[str, object]) -> MemoryClaim | None:
+        """The Memory Reservation *item* takes itself; ``None`` while it runs under the Flow's."""
+        return None if self._item_claim is None else self._item_claim(item)
+
     @contextmanager
     def child_permit(
         self,
@@ -126,10 +137,12 @@ class HeavyCapacity:
         attempt_ordinal: int,
         attempt_directory: Path,
         publish: Callable[[ExecutionId], None],
+        memory: MemoryClaim | None = None,
     ) -> Iterator[ChildHeavyPermit]:
         """Give one lane its identity and slot, retiring both on exit.
 
-        ``publish`` gets the lane ID before the slot is requested.
+        ``publish`` gets the lane ID before the slot is requested. A *memory*
+        claim takes a Memory Reservation instead of a heavy slot.
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
@@ -147,7 +160,7 @@ class HeavyCapacity:
             publish(child_id)
             if self._cancelled():
                 raise ClaimAbortedError("campaign shutdown requested")
-            token = self._acquire_child(store, child_id)
+            token = self._acquire_child(store, child_id, memory)
         except BaseException:
             self._lanes.mark_terminal(prepared, "campaign_error")
             raise
@@ -232,7 +245,9 @@ class HeavyCapacity:
                 self._confirmed.add(permit.token.lease_id)
         return held
 
-    def _acquire_child(self, store, child_execution_id: ExecutionId) -> SlotToken:
+    def _acquire_child(
+        self, store, child_execution_id: ExecutionId, memory: MemoryClaim | None
+    ) -> SlotToken:
         submitted: list[SlotToken] = []
 
         def register(token: SlotToken) -> None:
@@ -242,7 +257,7 @@ class HeavyCapacity:
 
         try:
             token = store.acquire(
-                CLASS_HEAVY,
+                CLASS_HEAVY if memory is None else CLASS_MEMORY,
                 pid=os.getpid(),
                 argv=list(sys.argv),
                 role=self._admission.role,
@@ -254,6 +269,9 @@ class HeavyCapacity:
                 should_abort=self._cancelled,
                 execution_id=child_execution_id,
                 on_submitted=register,
+                memory=memory,
+                # The item's Flow is admitted already: a full queue never refuses it.
+                bounded=memory is None,
             )
         except BaseException:
             with self._gate:

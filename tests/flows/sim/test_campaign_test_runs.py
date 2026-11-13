@@ -20,7 +20,7 @@ from booley.flows.sim.campaign.flow_planning import (
     plan_ordinary_hdl_campaign,
 )
 from booley.flows.sim.campaign.planning import compare_manifests
-from booley.flows.sim.campaign.serial_execution import _work_item_test_runs
+from booley.flows.sim.campaign.test_run_binding import work_item_test_runs
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.flow_resume import _manifest_run_groups
 from booley.flows.sim.request import SimRequest
@@ -126,12 +126,12 @@ def test_hdl_test_runs_that_differ_each_get_their_own_work_item(tmp_path: Path):
     assert len(document["build_variants"]) == 1
 
 
-def test_work_item_test_runs_round_trip_to_the_same_values(tmp_path: Path):
+def testwork_item_test_runs_round_trip_to_the_same_values(tmp_path: Path):
     plan = _hdl_plan(tmp_path, ((_SOAK,), (_FAULT,)))
     raw = encode_simulation_campaign_manifest(plan.manifest)
     manifest = decode_simulation_campaign_manifest(raw)
     assert _manifest_run_groups(manifest) == ((_SOAK,), (_FAULT,))
-    assert _work_item_test_runs(manifest.document["work_items"][1]) == (_FAULT,)
+    assert work_item_test_runs(manifest.document["work_items"][1]) == (_FAULT,)
     assert encode_simulation_campaign_manifest(manifest) == raw
 
 
