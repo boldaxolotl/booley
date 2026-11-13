@@ -93,6 +93,15 @@ def phase_keys(request: JobRequest) -> tuple[HistoryKey, ...]:
     ``sim_pre_run`` is never listed (nothing records it), nor are the
     per-module probe keys of ``--mode elab-only-standalone``.
     """
+    return tuple(dict.fromkeys(phase_occurrences(request)))
+
+
+def phase_occurrences(request: JobRequest) -> tuple[HistoryKey, ...]:
+    """The history keys of *request*'s phases in run order, one entry per planned run.
+
+    Unlike :func:`phase_keys` a key repeats once per entry of ``test_runs``, so
+    a Job can count its phases out as they finish.
+    """
     flags = tuple(sorted(request.flags))
 
     def key(phase: str, test_run: str = "") -> HistoryKey:
@@ -108,7 +117,7 @@ def phase_keys(request: JobRequest) -> tuple[HistoryKey, ...]:
     else:
         # A Custom Flow's unlabelled command is keyed by the Flow's name.
         keys = [key(_SINGLE_PHASE_FLOWS.get(request.flow, request.flow))]
-    return tuple(dict.fromkeys(keys))
+    return tuple(keys)
 
 
 class Source(StrEnum):

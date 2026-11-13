@@ -958,3 +958,62 @@ def _assert_unadmitted_without_switch(
     flow, prepared = _admitted_job(kind, runtime, memory_runtime)
     with AdmissionGate(flow, prepared).enter():
         assert len(_held(memory_runtime, job_slots.CLASS_MEMORY)) == 1
+
+
+def _two_target_synth_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExecution:
+    """The preparation of *flow* as a Target-selection invocation over Targets ``a`` and ``b``."""
+    from booley.flows.prepared_invocation import TargetSelectionInvocation
+    from tests.target_test_support import make_target_handle
+
+    handles = tuple(make_target_handle(work_dir, name, drivable_by=("synth",)) for name in "ab")
+    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
+    flow._args = SimpleNamespace(work_dir=work_dir, target="a,b")
+    selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
+    return _prepared_for(TargetSelectionInvocation(flow, selection, flow._run))  # type: ignore[arg-type]
+
+
+def test_memory_admitted_job_shrinks_when_a_phase_ends(
+    memory_runtime: Path, runtime: Path
+) -> None:
+    from booley.flows.reservation_phases import report_phase_end
+
+    _seed_history(memory_runtime, ("a", 400), ("b", 200))
+    flow = AsicSynthesizeFlow()
+
+    with AdmissionGate(flow, _two_target_synth_prepared(flow, runtime)).enter():
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.memory is not None and holder.memory.reservation_mb == 500.0
+        report_phase_end("a", "synth")
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.memory is not None and holder.memory.reservation_mb == 250.0
+        # The last planned phase's end changes nothing: the claim is held to the end.
+        report_phase_end("b", "synth")
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.memory is not None and holder.memory.reservation_mb == 250.0
+
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+    # The shrinker is gone with the claim: a late report touches nothing.
+    from booley.flows import reservation_phases
+
+    assert reservation_phases._active.get() is None
+
+
+def test_switch_unset_phase_ends_change_no_claim(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the switch the real Target-end report runs inside the gate and changes nothing."""
+    from booley.flows import reservation_phases
+
+    _seed_history(memory_runtime, ("a", 400), ("b", 200))
+    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
+    flow = AsicSynthesizeFlow()
+    monkeypatch.setattr(flow, "_synthesize_target", lambda _target: (None, ""))
+
+    with AdmissionGate(flow, _two_target_synth_prepared(flow, runtime)).enter():
+        # Heavy Jobs still take a heavy slot; the memory class is untouched.
+        (heavy,) = _held(memory_runtime, job_slots.CLASS_HEAVY)
+        before = heavy.path.read_bytes()
+        flow._run_single_config("a")
+        assert reservation_phases._active.get() is None
+        assert heavy.path.read_bytes() == before
+        assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
