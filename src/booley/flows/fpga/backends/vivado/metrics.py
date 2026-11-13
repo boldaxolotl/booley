@@ -88,6 +88,11 @@ class FpgaMetrics:
     latches: int = 0
     comb_loops: int = 0
     multi_driven: int = 0
+    #: Latches / combinational loops the design is declared to contain on
+    #: purpose (``[flows.fpga].expected_latches`` / ``expected_comb_loops``).
+    #: Raw counts are always reported; only the excess is critical.
+    expected_latches: int = 0
+    expected_comb_loops: int = 0
     returncode: int = 0
     route_completed: bool = False
     timed_out: bool = False
@@ -142,8 +147,37 @@ class FpgaMetrics:
         )
 
     @property
+    def unexpected_latches(self) -> int:
+        """Latches beyond the declared intentional count (never negative)."""
+        return max(0, self.latches - self.expected_latches)
+
+    @property
+    def unexpected_comb_loops(self) -> int:
+        """Combinational loops beyond the declared count (never negative)."""
+        return max(0, self.comb_loops - self.expected_comb_loops)
+
+    @property
     def has_critical(self) -> bool:
-        return self.latches > 0 or self.comb_loops > 0 or self.multi_driven > 0
+        return (
+            self.unexpected_latches > 0 or self.unexpected_comb_loops > 0 or self.multi_driven > 0
+        )
+
+    def critical_summary(self) -> str:
+        """Name each critical structural count with its actual, expected, and excess."""
+        parts = []
+        if self.unexpected_latches:
+            parts.append(
+                f"{self.latches} latches (actual={self.latches}, "
+                f"expected={self.expected_latches}, excess={self.unexpected_latches})"
+            )
+        if self.unexpected_comb_loops:
+            parts.append(
+                f"{self.comb_loops} comb loops (actual={self.comb_loops}, "
+                f"expected={self.expected_comb_loops}, excess={self.unexpected_comb_loops})"
+            )
+        if self.multi_driven:
+            parts.append(f"{self.multi_driven} multi-driven")
+        return ", ".join(parts)
 
     @property
     def passed(self) -> bool:

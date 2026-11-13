@@ -333,6 +333,12 @@ script lines) as you go.
   post-inference mapping as a fallback. Reconcile `[flows.synth].expected_latches`
   with the evidenced intentional-latch remainder after replacement: it is an
   allowance, not evidence that replacement occurred.
+- **Structural allowances.** In the plan, record the intentional latches and
+  intentional combinational loops the RTL evidence supports for each of `synth`
+  and `fpga` (`expected_latches` and `expected_comb_loops`); record none where
+  the evidence shows none. Each Flow counts its own way, so confirm a count
+  against that Flow's reported count. Record an `fpga` allowance only when the
+  Project has an FPGA Target: a `[flows.fpga]` table makes Doctor require one.
 - **Testbench style.** Booley scores a simulation by matching a stdout
   sentinel. A self-checking SV/Verilog testbench that prints a clear pass/fail
   line is green: its wording becomes config in Step 2. UVM is fine as long as
