@@ -125,6 +125,9 @@ def test_unusable_scope_entries_end_as_error_in_dry_and_real_runs(
         assert reason in dry_out, label
         _assert_real_report(code, report, label)
         assert reason in out, label
+        for printed in (dry_out, out):
+            last_line = printed.rstrip().splitlines()[-1]
+            assert last_line.startswith("RESULT: ERROR (scope: --scope "), label
 
     # Vendored and generated files may be named explicitly: both runs get past validation.
     for extra in ((), ("--dry-run",)):
