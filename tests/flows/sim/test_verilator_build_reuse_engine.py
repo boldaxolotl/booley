@@ -273,11 +273,13 @@ class _Recorder:
         self.launches: list[str] = []
         self.launch_commands: list[str] = []
 
-    def __call__(self, command: list[str], *, timeout: int) -> SubprocessResult:
+    def __call__(
+        self, command: list[str], *, timeout: int, cwd: Path | None = None
+    ) -> SubprocessResult:
         started = time.monotonic()
         result = subprocess.run(
             command,
-            cwd=self._cwd,
+            cwd=cwd or self._cwd,
             env={**os.environ, "PYTHONPATH": self._python_path},
             capture_output=True,
             text=True,

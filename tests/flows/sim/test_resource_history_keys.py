@@ -6,6 +6,7 @@ of the build-reuse tests and reads the history file the Flow wrote.
 
 from __future__ import annotations
 
+import itertools
 import os
 from collections import Counter
 from dataclasses import replace
@@ -16,6 +17,7 @@ import pytest
 
 from booley.flows import job_resources
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SelectedCoverageRun, SimulationCommandRequest
 from booley.flows.target_test_plan_loading import load_target_test_plan
@@ -125,12 +127,100 @@ def test_sim_request_maps_to_recorded_keys(
         key = resource_history.history_key(record)
         if key not in recorded:
             recorded.append(key)
-    # Nothing writes these, which is why the request never lists them.
-    assert {key.phase for key in recorded} == {"sim_build", "sim_run"}
+    # FuseSoC setup is measured as ``sim_prepare`` too (#3787), keyed by no Test Run.
+    assert [key.phase for key in recorded] == ["sim_prepare", "sim_build", "sim_run", "sim_run"]
     plan = load_checkout_target_test_plan(flow_project, "sim")
     request = sim_job_request(plan, plan.resolve(selectors))
     assert list(phase_keys(request)) == recorded
-    assert [key.test_run for key in recorded] == ["", "first+slow", "first"]
+    assert [key.test_run for key in recorded] == ["", "", "first+slow", "first"]
+
+
+def test_elab_only_request_maps_to_recorded_keys(
+    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An elaboration-only run records the FuseSoC setup and build its request lists (#3787)."""
+    from booley.flows.job_estimates import JobRequest, phase_keys
+
+    booley_dir = flow_project / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim",
+            work_dir=flow_project,
+            report_dir=tmp_path / "reports",
+            mode=SimulationMode.ELAB_ONLY,
+            timeout_ms=30_000,
+        )
+    )
+    assert result.exit_code == 0, result.outcome.report_text
+
+    recorded: list[resource_history.HistoryKey] = []
+    for record in resource_history.load_records(booley_dir):
+        key = resource_history.history_key(record)
+        if key not in recorded:
+            recorded.append(key)
+    assert list(phase_keys(JobRequest("sim", "sim", test_runs=()))) == recorded
+    assert [key.phase for key in recorded] == ["sim_prepare", "sim_build"]
+
+
+def _fusesoc_killed_by_sigkill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put a ``fusesoc`` first on PATH that dies by SIGKILL, as the OOM killer would."""
+    stub_dir = tmp_path / "oom-bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "fusesoc"
+    stub.write_bytes(b"#!/bin/sh\nkill -9 $$\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(stub_dir), os.environ["PATH"])))
+
+
+def test_oom_killed_fusesoc_setup_requeues_the_job(
+    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OOM kill of FuseSoC setup is blamed, recorded and ends the attempt for requeue (#3787).
+
+    Drives the engine with the Flow's measured runner, as ``SimulateFlow`` does,
+    inside the attempt scope that arms a requeue (``tests/runtime`` covers the
+    requeue itself: an own OOM kill plus a failed result).
+    """
+    from booley.flows.memory_admission import MEMORY_ADMISSION_ENV
+    from booley.flows.sim.build import SimulationBuildPreparationError
+    from booley.flows.sim.execution.contract import SimulationOptions
+    from booley.flows.sim.execution.engine import SimulationExecution
+    from booley.runtime.endpoint_execution import job_attempt
+    from tests.flows.sim.prepared_group import run_prepared_group
+    from tests.flows.sim.test_verilator_build_reuse_engine import _select
+
+    booley_dir = flow_project / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    monkeypatch.setenv(MEMORY_ADMISSION_ENV, "1")
+    _fusesoc_killed_by_sigkill(tmp_path, monkeypatch)
+    # The container's OOM counter rises over every command, so each kill is blamed.
+    counter = itertools.count()
+    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counter))
+    flow = SimulateFlow()
+    # What ``execute`` binds before preparing: the Flow reads its flags for the history key.
+    flow._args = SimRequest(
+        target="sim", work_dir=flow_project, report_dir=tmp_path / "reports", timeout_ms=30_000
+    )
+    execution = SimulationExecution(
+        invoke=flow._execute_boundary, options=SimulationOptions(timeout_ms=30_000)
+    )
+
+    with (
+        job_attempt(stop_on_oom=True) as attempt,
+        pytest.raises(SimulationBuildPreparationError) as raised,
+    ):
+        run_prepared_group(execution, _select(flow_project), ("first",))
+
+    assert "OOM kill" in str(raised.value)
+    assert attempt.oom_killed.is_set()
+    records = [r for r in resource_history.load_records(booley_dir) if r["key"]["phase"]]
+    assert [(r["key"]["phase"], r["outcome"]) for r in records] == [("sim_prepare", "oom_kill")]
 
 
 def test_coverage_request_maps_to_recorded_keys(tmp_path: Path, monkeypatch) -> None:

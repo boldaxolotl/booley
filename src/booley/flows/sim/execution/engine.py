@@ -44,7 +44,9 @@ from booley.flows.sim.build import (
     SimulationBuildPreparationError,
     build_failure_report,
     classify_build_outcome,
+    measured_setup_runner,
     prepare_simulation_build,
+    setup_timeout_s,
     simulation_build_script,
     simulation_setup_command,
 )
@@ -1014,6 +1016,11 @@ class SimulationExecution:
                 build_root=build_root,
                 resolution_vlnv=overlay.vlnv if overlay is not None else None,
                 environment=simulation_target_environment(handle),
+                setup_runner=measured_setup_runner(
+                    self._invoke,
+                    target=handle.selector,
+                    timeout_s=setup_timeout_s(self._build_timeout_s()),
+                ),
             )
             if overlay is not None and prepared.resolved.cocotb_module:
                 trace_overlay.validate_cocotb_trace_mode(
