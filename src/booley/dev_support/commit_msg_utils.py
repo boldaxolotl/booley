@@ -14,7 +14,7 @@ except ImportError:
         sys.path.insert(0, str(source_root))
         from booley.commit_policy import policy as _policy
     else:
-        import booley_commit_policy as _policy
+        import booley_commit_policy as _policy  # pyright: ignore[reportMissingImports]
 
 StealthPolicy = _policy.StealthPolicy
 BANNED_PHRASES = _policy.BANNED_PHRASES
