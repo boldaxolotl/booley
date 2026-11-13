@@ -36,7 +36,10 @@ from ..baseline_worktree import (
 from .build import (
     SimulationBuildInfrastructureError,
 )
-from .campaign import (
+from .execution import (
+    SelectedTestRuns,
+)
+from .record import (
     CampaignOutcome,
     CampaignRecoveryStatus,
     ResumeCampaignPreview,
@@ -49,21 +52,21 @@ from .campaign import (
     SimulationCampaignPlan,
     ValidatedResumeManifest,
 )
-from .campaign.coordinator import CampaignPublicationError
-from .campaign.coverage_execution import (
+from .record.coordinator import CampaignPublicationError
+from .record.coverage_execution import (
     CoverageAggregateExecutor,
     _CoverageAggregateError,
 )
-from .campaign.flow_planning import (
+from .record.flow_planning import (
     plan_coarse_simulation_campaign,
     plan_ordinary_hdl_campaign,
 )
-from .campaign.planning import (
+from .record.planning import (
     SimulationCampaignWorkloadMismatchError,
     verify_workload,
 )
-from .campaign.serial_execution import OrdinaryHdlSerialExecutor
-from .campaign_presentation import (
+from .record.serial_execution import OrdinaryHdlSerialExecutor
+from .record_presentation import (
     _build_infrastructure_detail,
     _campaign_recovery_detail,
     _coverage_failed_target,
@@ -71,10 +74,7 @@ from .campaign_presentation import (
     _CoverageTargetError,
     _retain_coverage_campaign,
 )
-from .campaign_scaffold import _CampaignRun, _CampaignSteps, _group_disclosures
-from .execution import (
-    SelectedTestRuns,
-)
+from .record_scaffold import _CampaignRun, _CampaignSteps, _group_disclosures
 
 
 def _manifest_no_waivers(manifest: SimulationCampaignManifest) -> bool:
@@ -326,7 +326,7 @@ class CampaignResumeMixin:
         invocation: Path,
         observed: CampaignRecoveryStatus,
     ) -> EndpointOutcome | None:
-        from .campaign_reports import campaign_invocation_lock
+        from .record_reports import campaign_invocation_lock
 
         # The destination lock is already held; also retain the resumed origin. A Job's
         # requeued attempt resumes the same origin, whose lock this process already holds
@@ -345,7 +345,7 @@ class CampaignResumeMixin:
                 )
             self._held_resume_origins.add(origin)
         try:
-            from .campaign.dependency import register_campaign_dependency
+            from .record.dependency import register_campaign_dependency
 
             register_campaign_dependency(
                 validated.path,

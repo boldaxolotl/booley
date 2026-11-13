@@ -16,15 +16,20 @@ from booley.flows.sim.acceptance import (
     _campaign_projection,
     _OutcomeEvidence,
 )
-from booley.flows.sim.campaign import AcceptanceFacts, decode_simulation_projection
-from booley.flows.sim.campaign.codec import (
+from booley.flows.sim.record import AcceptanceFacts, decode_simulation_projection
+from booley.flows.sim.record.codec import (
     SimulationCampaignIntegrityError,
     encode_simulation_campaign_manifest,
 )
-from booley.flows.sim.campaign.projection import ProjectionTrust
-from booley.flows.sim.campaign.test_run_report import evidence_test_run_rows
+from booley.flows.sim.record.projection import ProjectionTrust
+from booley.flows.sim.record.test_run_report import evidence_test_run_rows
 from booley.flows.test_runs import build_test_run, test_run_document
-from tests.flows.sim.test_campaign_test_runs import _FAULT, _SOAK, _hdl_plan, _run_campaign
+from tests.flows.sim.test_simulation_record_test_runs import (
+    _FAULT,
+    _SOAK,
+    _hdl_plan,
+    _run_campaign,
+)
 
 _RESET = build_test_run("reset", seed=1)
 _COUNT = build_test_run("count", variant="soak", seed=42, args=("+iters=9",))

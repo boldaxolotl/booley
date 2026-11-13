@@ -1991,11 +1991,11 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
 ):
     from types import SimpleNamespace
 
-    from booley.flows.sim.campaign_presentation import _campaign_report_lines
+    from booley.flows.sim.record_presentation import _campaign_report_lines
     from booley.flows.test_runs import build_test_run
     from booley.mcp.server import _format_mcp_tool_result
     from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error
-    from tests.flows.sim.campaign_test_support import _recorded_campaign
+    from tests.flows.sim.simulation_record_test_support import _recorded_campaign
 
     manifest = Path("/manifest.json")
     pointer_bytes = len(f"  manifest: {manifest.resolve()}\n".encode())
@@ -2161,7 +2161,7 @@ def test_registered_poll_observes_blocked_campaign_simulation(tmp_path, monkeypa
 
     from booley.mcp import server
     from booley.runtime.timefmt import utc_now_rfc3339
-    from tests.flows.sim.campaign_boundary import PASS_PROCESS, run_campaign_sim
+    from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_campaign_sim
 
     run_id = "gated-campaign-sim"
     monkeypatch.setenv("BOOLEY_RUN_ID", run_id)

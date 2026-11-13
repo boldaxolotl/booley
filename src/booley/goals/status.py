@@ -11,8 +11,8 @@ from typing import Any, Literal
 from booley.core.boundary import as_str
 from booley.criteria.evidence_ledger import AcceptanceLedgerError
 from booley.criteria.state import DevelopmentState
-from booley.flows.campaign_results import CampaignResultsReader
-from booley.goals import campaign_accounting
+from booley.flows.simulation_record_results import CampaignResultsReader
+from booley.goals import simulation_record_accounting
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.change_policy import conflict
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
@@ -155,7 +155,7 @@ def _build_status(
     drift = ("Goal apply is interrupted; recovery is required" if interrupted else "") or (
         protected[0] if protected else checkout_violation(store, record, root)
     )
-    unaccounted = campaign_accounting.unaccounted_goals(
+    unaccounted = simulation_record_accounting.unaccounted_goals(
         store, record, state, history, campaign_reader
     )
     goals = _goal_statuses(record, state, history, store, root, drift, resolvers, unaccounted)
@@ -406,7 +406,9 @@ def _brought_up_to_date(
     except GoalStoreError as exc:
         logger.warning("Test Runs of Goal Mode %s were not resolved now: %s", record.id, exc)
     try:
-        campaign_accounting.account_for_campaigns(store, record.id, reader=campaign_reader)
+        simulation_record_accounting.account_for_campaigns(
+            store, record.id, reader=campaign_reader
+        )
     except (GoalStoreError, AcceptanceLedgerError) as exc:
         logger.warning("evidence of Goal Mode %s was not accounted for now: %s", record.id, exc)
     return record
