@@ -440,3 +440,48 @@ def test_held_checkpoint_of_another_run_does_not_hide_this_run(
     found = read_progress_for_run((tmp_path,), "sim", "run-1")
     assert found is not None
     assert found[0] == mine
+
+
+def test_retired_progress_of_a_requeued_attempt_is_not_read_for_its_run(tmp_path: Path) -> None:
+    from booley.flows.progress_lifecycle import retire_progress_of_requeued_attempt
+
+    killed = tmp_path / "sim" / "1" / "progress.json"
+    original = _write_progress(killed)
+    other_run = tmp_path / "sim" / "2" / "progress.json"
+    _write_progress(other_run, run_id="run-2")
+    other_flow = tmp_path / "synth" / "1" / "progress.json"
+    _write_progress(other_flow)
+    other_flow.write_text(
+        json.dumps({**json.loads(other_flow.read_bytes()), "flow": "synth"}), encoding="utf-8"
+    )
+    other_flow_before = other_flow.read_bytes()
+    other_run_before = other_run.read_bytes()
+
+    retire_progress_of_requeued_attempt(killed, endpoint="sim", run_id="run-1")
+
+    retired = json.loads(killed.read_text(encoding="utf-8"))
+    assert retired["phase"] == "superseded"
+    assert retired["complete"] is True
+    assert retired["run_id"] == ""
+    assert retired["superseded_by"] == {
+        "reason": "requeued after out-of-memory",
+        "run_id": "run-1",
+    }
+    # What the killed attempt observed is kept.
+    assert retired["completed_targets"] == original["completed_targets"]
+    assert retired["detail"] == original["detail"]
+    assert read_progress_for_run((tmp_path,), "sim", "run-1") is None
+    found = read_progress_for_run((tmp_path,), "sim", "run-2")
+    assert found is not None and found[0] == other_run
+    # Another run's or another Flow's document, and a missing one, are left alone.
+    retire_progress_of_requeued_attempt(other_run, endpoint="sim", run_id="run-1")
+    retire_progress_of_requeued_attempt(other_flow, endpoint="sim", run_id="run-1")
+    retire_progress_of_requeued_attempt(
+        tmp_path / "sim" / "3" / "progress.json", endpoint="sim", run_id="run-1"
+    )
+    retire_progress_of_requeued_attempt(other_run, endpoint="sim", run_id="")
+    assert other_run.read_bytes() == other_run_before
+    assert other_flow.read_bytes() == other_flow_before
+    # Retiring twice is a no-op: the run id is already empty.
+    retire_progress_of_requeued_attempt(killed, endpoint="sim", run_id="run-1")
+    assert json.loads(killed.read_text(encoding="utf-8")) == retired

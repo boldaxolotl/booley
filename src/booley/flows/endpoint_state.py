@@ -40,6 +40,7 @@ from booley.flows.execution_persistence import (
     state_persistence_for,
 )
 from booley.flows.prepared_invocation import OrdinaryRunInvocation, PreparedInvocation
+from booley.flows.progress_lifecycle import retire_progress_of_requeued_attempt
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import (
@@ -54,6 +55,16 @@ if TYPE_CHECKING:
     from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
+
+
+def _booley_dir_or_none() -> Path | None:
+    """The Booley Directory entry the report roots may sit behind, or ``None`` without one."""
+    from booley.runtime.booley_dir import resolve_booley_dir
+
+    try:
+        return resolve_booley_dir()
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 class EndpointState(ABC):
@@ -135,6 +146,8 @@ class EndpointState(ABC):
         self._display_identity = DisplayIdentity.current(invocation_id)
         self._invocation_id = self._display_identity.invocation_id
         self._reserved_invocation_dir: Path | None = None
+        # Failures retiring a killed attempt's progress; the final result reports them.
+        self._requeue_cleanup_errors: list[Exception] = []
         self._skip_report_detail_refresh = False
         # The live terminal observer; only a CLI-attached Flow sets one.
         self.terminal_progress: TerminalProgress | None = None
@@ -404,7 +417,9 @@ class EndpointState(ABC):
 
         Only a Flow Job holding its own Memory Reservation: not a dry run, not a
         child under its parent's claim, not a Specialist or a tool. A Job bound
-        to a Goal waits for the Goal evidence work (#3763).
+        to a Goal is never requeued, so its Goal evidence and Simulation Campaign
+        registrations come from its only attempt; the exclusion ends when Goal Mode
+        is deleted (#3511).
         """
         if self.endpoint_kind != "flow" or not isinstance(
             admission, endpoint_admission.AdmissionContext
@@ -422,9 +437,22 @@ class EndpointState(ABC):
         """Mark the stdout the killed attempt wrote and start the next attempt's report afresh.
 
         The second attempt reports into its own numbered directory; the killed
-        attempt's directory keeps its partial artifacts and no report.
+        attempt's directory keeps its partial artifacts and no report, and its
+        progress document is retired so no caller reads it for this Job. A failed
+        retirement does not stop the requeue: the final result reports it.
         """
         print(OOM_REQUEUE_MARKER, flush=True)
+        killed_dir = self._reserved_invocation_dir
+        if killed_dir is not None:
+            try:
+                retire_progress_of_requeued_attempt(
+                    killed_dir / "progress.json",
+                    endpoint=self.name,
+                    run_id=os.environ.get("BOOLEY_RUN_ID", ""),
+                    booley_dir=_booley_dir_or_none(),
+                )
+            except (OSError, ValueError) as exc:
+                self._requeue_cleanup_errors.append(exc)
         self._reserved_invocation_dir = None
         self.reset_evidence_discard()
 

@@ -281,7 +281,8 @@ def _attempt_endpoint(
 
     Once admitted, the claim stays held through acceptance recording and
     mutable persistence/reporting. A first attempt that is requeued publishes
-    nothing: its acceptance, report and display end never happen.
+    nothing: its acceptance, report and display end never happen, and its
+    progress document is retired so no caller reads it for the Job.
     """
     admission = ExitStack()
     try:
