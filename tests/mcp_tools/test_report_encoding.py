@@ -143,6 +143,23 @@ def test_sim_projection_and_live_oversize_keep_nonterminal_semantics():
     assert small == {"reports": [{"flow": "sim"}]}
 
 
+def test_sim_projection_drops_the_per_test_run_metrics_of_each_record():
+    report = {
+        "flow": "sim",
+        "detail": {
+            "records": {
+                "dut": {"grade": "pass", "metrics": {"per_test": {"cycle_count": {"t": 1}}}}
+            }
+        },
+    }
+    before = copy.deepcopy(report)
+    payload = ReportEncoder().structured_report(report)
+    assert payload == {
+        "reports": [{"flow": "sim", "detail": {"records": {"dut": {"grade": "pass"}}}}]
+    }
+    assert report == before  # the stored report keeps them
+
+
 @pytest.mark.parametrize("report", [None, {}, {"flow": object()}])
 def test_absent_or_unserializable_report_falls_back_to_text(report):
     encoder = ReportEncoder()

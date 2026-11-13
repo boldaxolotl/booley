@@ -100,6 +100,10 @@ _IMPORT_FAILURE_RE = re.compile(
 _MISSING_MODULE_RE = re.compile(r"No module named ['\"](?P<name>[\w.]+)['\"]")
 
 
+# Opens the reason of a cocotb import failure; metrics detect it by this prefix.
+IMPORT_FAILURE_PREFIX = "cocotb could not import the test module"
+
+
 def find_import_failure(output: str) -> str:
     """Explain a cocotb test-module import failure found in *output*, or ``""``.
 
@@ -112,7 +116,7 @@ def find_import_failure(output: str) -> str:
         return ""
     module = m.group("module")
     error = m.group("error").strip()
-    detail = f"cocotb could not import the test module '{module}': {error}"
+    detail = f"{IMPORT_FAILURE_PREFIX} '{module}': {error}"
 
     missing = _MISSING_MODULE_RE.search(error)
     if missing:

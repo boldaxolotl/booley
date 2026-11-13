@@ -142,7 +142,7 @@ def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 # Flows whose reports do not carry their metric values yet, so no report reader exists.
-_FLOWS_WITHOUT_REPORT_READER = {"sim", "coverage", "lint"}
+_FLOWS_WITHOUT_REPORT_READER = {"coverage"}  # read by the ``sim`` reader
 
 # Every Flow that declares metrics maps to a run that returns its typed values.
 _SAMPLE_RUNS: dict[str, Callable[[Path, pytest.MonkeyPatch], Any]] = {
@@ -216,6 +216,26 @@ def test_synth_report_yields_declared_metric_values() -> None:
         {"clk_core": 800.0, "clk_io": 166.667}, rel=1e-4
     )
     assert values["asic"].per_clock["wns_ns"] == pytest.approx({"clk_core": 0.75, "clk_io": -1.0})
+
+
+def test_synth_report_returns_every_reported_clock() -> None:
+    from booley.flows.synth.flow import _aggregate_detail, _parse_synth_output
+    from booley.measurement.flow_metrics import report_metric_values
+
+    # ``jtag`` reports a period but no slack (NA), so no fmax can be derived for it.
+    output = (
+        "Chip area for top module '\\t': 100.0\n"
+        "Number of cells: 5\n"
+        "STA_PERCLOCK: name=core period_ns=4.000000 wns_ns=0.000000 whs_ns=0.100000\n"
+        "STA_PERCLOCK: name=jtag period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+    )
+    metrics = _parse_synth_output(output, 1.0)
+    detail = json.loads(json.dumps(_aggregate_detail(["asic"], {"asic": metrics})))
+
+    values = report_metric_values("synth", detail)["asic"]
+
+    assert values.clocks == ("core", "jtag")
+    assert values.per_clock["fmax_mhz"] == pytest.approx({"core": 250.0})  # jtag has none
 
 
 def test_fpga_report_yields_declared_metric_values() -> None:

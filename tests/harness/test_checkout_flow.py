@@ -47,7 +47,8 @@ TIMEOUT_S = 30
 FLOW = "checkout_stub"
 
 # The stub Flow's behavior follows ``--target``: ``pass`` runs one real command,
-# ``fail`` returns a failing outcome, ``wait`` waits (bounded) for the ``release``
+# ``fail`` returns a failing outcome, ``crash`` raises, ``abort`` exits at once with no
+# report, ``wait`` waits (bounded) for the ``release``
 # marker and ``env`` records what it saw. Its control directory is written into the source.
 STUB_FLOW = """
 import json, os, signal, time
@@ -67,7 +68,7 @@ class CheckoutStub(BooleyFlow):
     target_required = False
 
     def _add_args(self, parser):
-        pass
+        parser.add_argument("--coverage", action="store_true")
 
     def _run(self):
         seen = {{
@@ -75,12 +76,18 @@ class CheckoutStub(BooleyFlow):
             "home_is_dir": os.path.isdir(os.environ["HOME"]),
             "tmp_is_dir": os.path.isdir(os.environ["TMPDIR"]),
             "work_dir": str(self.args.work_dir),
+            "coverage": self.args.coverage,
         }}
         (CTL / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
         (CTL / "started").write_text("1", encoding="utf-8")
         target = self.args.target
         if target == "fail":
             return EndpointOutcome(exit_code=1)
+        if target == "crash":
+            raise RuntimeError("stub crashed")
+        if target == "abort":
+            print("stub aborted", flush=True)
+            os._exit(3)  # dies without writing a report or a terminal record
         if target == "metrics":
             return EndpointOutcome(detail={{"marker": 7}})
         if target == "presim":
@@ -334,6 +341,56 @@ def test_checkout_flow_returns_typed_metrics_of_its_report(
     result = run_checkout_flow(world.request("metrics"))
 
     assert result.metrics == {"top": FlowMetricValues(plain={"cell_count": 7}, per_clock={})}
+
+
+@linux_only
+def test_coverage_request_runs_the_flow_with_coverage_collection(world: World) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
+
+    plain = run_checkout_flow(world.request("pass"))
+    assert plain.status is CheckoutFlowStatus.PASSED
+    assert world.seen()["coverage"] is False
+    assert record_of(world, plain).argv == ["booley", "flow", FLOW, "--target", "pass"]
+
+    result = run_checkout_flow(world.request("pass", coverage=True))
+
+    assert result.status is CheckoutFlowStatus.PASSED
+    assert world.seen()["coverage"] is True
+    assert record_of(world, result).argv[-1] == "--coverage"
+
+
+@linux_only
+def test_failed_crashed_or_timed_out_flow_returns_an_excerpt_that_errors_every_verdict(
+    world: World,
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
+    from booley.measurement.metrics_file import Bound, TableRules
+    from booley.measurement.run_document import Verdict
+    from booley.measurement.verdicts import (
+        FlowFailed,
+        evaluate_table,
+        measure_exit_code,
+    )
+
+    rules = TableRules(
+        "t", "vlnv:x#t", "lint", (Bound("errors_max", "errors", "max", 0, None, None, None),), ()
+    )
+    cases = [
+        ("crash", {}, CheckoutFlowStatus.FAILED, "RuntimeError: stub crashed"),
+        ("abort", {}, CheckoutFlowStatus.FAILED, "stub aborted"),
+        ("wait", {"timeout_s": 2}, CheckoutFlowStatus.TIMED_OUT, "the run timed out after 2 s"),
+    ]
+    for target, changes, status, expected in cases:
+        result = run_checkout_flow(world.request(target, **changes))
+
+        assert result.status is status, target
+        assert result.metrics == {}, target
+        assert result.excerpt is not None and expected in result.excerpt, target
+        if status is CheckoutFlowStatus.TIMED_OUT:
+            assert result.excerpt.startswith(expected)
+        verdicts = evaluate_table(rules, FlowFailed(result.excerpt))
+        assert [(v.verdict, v.detail) for v in verdicts] == [(Verdict.ERROR, result.excerpt)]
+        assert measure_exit_code(v.verdict for v in verdicts) == 2
 
 
 def refusal_requests(

@@ -9,10 +9,11 @@ registry lives in :mod:`booley.measurement.flow_metrics`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 
+from booley.core.boundary import as_dict
 from booley.evidence.timing import ClockTiming
 
 MetricValue = int | float
@@ -61,6 +62,9 @@ class FlowMetricValues:
     per_test: dict[str, dict[str, MetricValue]] = field(
         default_factory=dict[str, dict[str, MetricValue]]
     )  # metric name -> Test Run name -> value
+    # Every clock the run reported timing for, valued or not: a clock with no fmax is
+    # absent from ``per_clock`` but still named here.
+    clocks: tuple[str, ...] = ()
 
 
 class UndeclaredMetricError(ValueError):
@@ -125,4 +129,50 @@ def metric_values(
         plain={name: value for name, value in plain.items() if value is not None},
         per_clock=clock_values,
         per_test=test_values,
+        clocks=tuple(per_clock),
+    )
+
+
+@dataclass(frozen=True)
+class MetricsUnavailable:
+    """A Target whose values the run could not produce; *reason* says why."""
+
+    reason: str
+
+
+def metrics_document(measure: Callable[[], FlowMetricValues]) -> dict[str, object]:
+    """The ``report.json`` form of one Target's values, or of why it has none.
+
+    Returns the four value maps of *measure*'s result, or ``{"unavailable": reason}``
+    when *measure* raises :class:`MetricsUnavailableError`.
+    """
+    try:
+        values = measure()
+    except MetricsUnavailableError as error:
+        return {"unavailable": str(error)}
+    return {
+        "plain": values.plain,
+        "per_clock": values.per_clock,
+        "per_test": values.per_test,
+        "clocks": list(values.clocks),
+    }
+
+
+def metrics_from_document(raw: object) -> FlowMetricValues | MetricsUnavailable | None:
+    """Read back what :func:`metrics_document` wrote; ``None`` when *raw* is no such entry.
+
+    The entry came from this code, so its fields are trusted (no field-level re-proof).
+    """
+    document = as_dict(raw)
+    if document is None:
+        return None
+    if "unavailable" in document:
+        return MetricsUnavailable(str(document["unavailable"]))
+    return FlowMetricValues(
+        plain=dict(document.get("plain", {})),
+        per_clock={
+            name: dict(by_clock) for name, by_clock in document.get("per_clock", {}).items()
+        },
+        per_test={name: dict(by_test) for name, by_test in document.get("per_test", {}).items()},
+        clocks=tuple(document.get("clocks", ())),
     )

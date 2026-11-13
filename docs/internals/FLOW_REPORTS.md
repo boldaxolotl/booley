@@ -185,9 +185,10 @@ before it runs anything, and refuses when the suite or sources changed.
 - Nested Coverage Campaign `coverage.json`: `booley.coverage-campaign/v5`.
 - Existing files are never migrated to a newer schema.
 
-In `report.json`, `detail.campaigns.<selector>` summarizes each Target. Its
-`artifacts` hold references to `manifest`, `simulation`, and, for coverage,
-`coverage`; follow `artifacts.simulation` to a Target's results. A reference
+In `report.json`, `detail.records.<selector>` summarizes each Target. Its
+`metrics` holds the Target's typed values (`plain`, `per_clock`, `per_test`,
+`clocks`) or `unavailable` with the reason it has none. Its `artifacts` hold
+references to `manifest`, `simulation`, and, for coverage, `coverage`; follow `artifacts.simulation` to a Target's results. A reference
 stores a relative `path` and names its base in `path_base`:
 
 - `report_invocation`: this run's directory;
@@ -207,10 +208,11 @@ If writing the final report fails, the run exits `2` with
 
 `report.json` also keeps every observed cycle count in top-level
 `cycle_counts.<selector>[]` rows `{test, cycle_count}`, both nullable
-(`test: null` is the unnamed test). The `detail.campaigns.<selector>.observations`
-preview keeps only the first 32, and inline MCP output drops `cycle_counts`. If
-the counts can't be computed, the report has `cycle_counts_error: unavailable`
-instead; the verdict and Criteria are unaffected.
+(`test: null` is the unnamed test). The `detail.records.<selector>.observations`
+preview keeps only the first 32, and inline MCP output drops `cycle_counts` and
+each record's `metrics`. If the counts can't be computed, the report has
+`cycle_counts_error: unavailable` instead; the verdict and Criteria are
+unaffected.
 
 ### `simulation.json`
 
@@ -409,6 +411,7 @@ preview:
 | `findings_total` | Integer: distinct in-scope warnings plus Target errors, before truncation. |
 | `findings_truncated` | Boolean: `findings_total > 20`. |
 | `findings_by_target` | Multiple Targets only: every selected Target → `{warnings: int, errors: int}`, zeros included. |
+| `metrics` | Every selected Target → its typed values (`plain`, `per_clock`, `per_test`, `clocks`), or `{unavailable: reason}` when the linter could not run. Also written when Target preparation fails. |
 
 Every finding has string `severity`, `message`, and `target`, plus `rule`,
 `file`, and `line`. Warnings have `severity: "warning"`, string `rule` and

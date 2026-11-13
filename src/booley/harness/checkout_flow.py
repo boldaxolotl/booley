@@ -62,14 +62,14 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.core.booley_layout import validate_environment
 from booley.core.boundary import as_dict
-from booley.flows.metric_declarations import FlowMetricValues
+from booley.flows.metric_declarations import FlowMetricValues, MetricsUnavailable
 from booley.harness.standalone_job import (
     RUN_ID_ENV,
     STANDALONE_TIMEOUT_S,
@@ -112,6 +112,11 @@ _PREFLIGHT_BOOTSTRAP = (
 # not be eaten by the interpreter start and a FuseSoC setup.
 _PREFLIGHT_MIN_S = 60
 _PREFLIGHT_LOG_LINES = 20
+# Bounds of a failed run's excerpt (see :func:`_failure_excerpt`).
+_EXCERPT_LINES = 20
+_EXCERPT_TARGET_CHARS = 500
+_EXCERPT_TEXT_CHARS = 2000
+_LOG_TAIL_BYTES = 16 * 1024
 # Where ``import booley`` resolves from: located by argv, so ``PYTHONPATH`` stays out.
 _BOOLEY_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -139,6 +144,7 @@ class CheckoutFlowRequest:
     flow: str
     target: str
     timeout_s: float | None = None  # wall clock of the run, admission queueing included
+    coverage: bool = False  # run the Flow with coverage collection (``sim`` only)
 
 
 @dataclass(frozen=True)
@@ -151,6 +157,11 @@ class CheckoutFlowResult:
     reports: tuple[Path, ...]  # this run's ``report.json`` files, oldest first
     metrics: Mapping[str, FlowMetricValues]  # per Target; empty when the Flow declares none
     log: Path  # the Job's ``job.log`` in the Main Booley Directory
+    # Target -> why the run produced no values for it.
+    unavailable: Mapping[str, str] = field(default_factory=dict[str, str])
+    # Why the run failed or measured nothing: the Flow's own failure text, bounded; ``None``
+    # when the run passed with values for every Target.
+    excerpt: str | None = None
 
 
 def _refuse_malformed_request(request: CheckoutFlowRequest) -> None:
@@ -324,6 +335,11 @@ def _prepare_scratch(checkout: Path) -> Path:
     return scratch
 
 
+def _flow_arguments(request: CheckoutFlowRequest) -> list[str]:
+    """The Flow's own arguments for *request*: its Target, and coverage when asked."""
+    return ["--target", request.target, *(["--coverage"] if request.coverage else [])]
+
+
 def _launch(
     request: CheckoutFlowRequest,
     checkout: Path,
@@ -342,8 +358,7 @@ def _launch(
         str(main),
         run_id,
         request.flow,
-        "--target",
-        request.target,
+        *_flow_arguments(request),
         "--report-dir",
         str(report_dir / "flow-reports"),
     ]
@@ -601,15 +616,84 @@ def _result_from(
             if final.status == job_records.STATUS_DONE
             else CheckoutFlowStatus.FAILED
         )
-    detail = as_dict(reports[-1][1].get("detail")) if reports else None
+    last = reports[-1][1] if reports else {}
+    detail = as_dict(last.get("detail"))
+    read = {} if detail is None else report_metric_values(request.flow, detail)
+    metrics = {
+        target: value
+        for target, value in read.items()
+        if not isinstance(value, MetricsUnavailable)
+    }
+    unavailable = {
+        target: value.reason
+        for target, value in read.items()
+        if isinstance(value, MetricsUnavailable)
+    }
+    timed_out_status = status is CheckoutFlowStatus.TIMED_OUT
+    excerpt = None
+    if status is not CheckoutFlowStatus.PASSED or unavailable or not metrics:
+        report_text = last.get("report_text")
+        excerpt = _failure_excerpt(
+            request.timeout_s if timed_out_status else None,
+            unavailable,
+            report_text if isinstance(report_text, str) else "",
+            log_path,
+            timed_out=timed_out_status,
+        )
     return CheckoutFlowResult(
         run_id=run_id,
         status=status,
         exit_code=final.exit_code if final.exit_code is not None else _START_FAILURE_EXIT_CODE,
         reports=tuple(path for path, _ in reports),
-        metrics={} if detail is None else report_metric_values(request.flow, detail),
+        metrics=metrics,
         log=log_path,
+        unavailable=unavailable,
+        excerpt=excerpt,
     )
+
+
+def _failure_excerpt(
+    timeout_s: float | None,
+    unavailable: Mapping[str, str],
+    report_text: str,
+    log_path: Path,
+    *,
+    timed_out: bool,
+) -> str:
+    """Why a run failed or measured nothing, from the Flow's own words, bounded.
+
+    A timeout line comes first, then each unavailable Target's reason (500 characters),
+    then the first 20 lines of the report text (2,000 characters), where a Flow puts
+    its cause. A run that left no report text falls back to the last 20 lines of
+    ``job.log``, which is where a child that died abruptly prints.
+    """
+    parts: list[str] = []
+    if timed_out:
+        parts.append(
+            "the run timed out"
+            if timeout_s is None
+            else f"the run timed out after {timeout_s:g} s"
+        )
+    parts.extend(
+        f"{target}: {reason[:_EXCERPT_TARGET_CHARS]}" for target, reason in unavailable.items()
+    )
+    text = report_text.strip() or _log_tail(log_path)
+    if text:
+        parts.append("\n".join(text.splitlines()[:_EXCERPT_LINES])[:_EXCERPT_TEXT_CHARS])
+    return "\n".join(parts)
+
+
+def _log_tail(log_path: Path) -> str:
+    """The last lines of ``job.log``, read from its last 16 KiB; empty when unreadable."""
+    try:
+        with log_path.open("rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - _LOG_TAIL_BYTES))
+            data = log.read()
+    except OSError:
+        return ""
+    lines = data.decode("utf-8", errors="replace").strip().splitlines()
+    return "\n".join(lines[-_EXCERPT_LINES:])
 
 
 def _execute(
@@ -639,7 +723,7 @@ def _execute(
         timeout_s=STANDALONE_TIMEOUT_S
         if request.timeout_s is None
         else math.ceil(request.timeout_s),
-        argv=["booley", "flow", request.flow, "--target", request.target],
+        argv=["booley", "flow", request.flow, *_flow_arguments(request)],
         report_root=str(report_dir),
     )
     try:

@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from booley.flows.fpga.backends.vivado.metrics import FPGA_METRIC_DECLARATIONS
 from booley.flows.fpga.backends.vivado.metrics import report_metric_values as _fpga_values
-from booley.flows.lint.flow import LINT_METRIC_DECLARATIONS
-from booley.flows.metric_declarations import FlowMetricValues, MetricDeclaration
-from booley.flows.sim.metrics import COVERAGE_METRIC_DECLARATIONS, SIM_METRIC_DECLARATIONS
+from booley.flows.lint.flow import LINT_METRIC_DECLARATIONS, lint_report_metric_values
+from booley.flows.metric_declarations import (
+    FlowMetricValues,
+    MetricDeclaration,
+    MetricsUnavailable,
+)
+from booley.flows.sim.metrics import (
+    COVERAGE_METRIC_DECLARATIONS,
+    SIM_METRIC_DECLARATIONS,
+    simulation_report_metric_values,
+)
 from booley.flows.synth.flow import SYNTH_METRIC_DECLARATIONS
 from booley.flows.synth.flow import report_metric_values as _synth_values
 
@@ -21,8 +29,13 @@ _DECLARATIONS_BY_FLOW: dict[str, tuple[MetricDeclaration, ...]] = {
     "synth": SYNTH_METRIC_DECLARATIONS,
     "fpga": FPGA_METRIC_DECLARATIONS,
 }
-# Booley Flow name -> reader of its typed values from a report's ``detail``.
-_READERS_BY_FLOW: dict[str, Callable[[dict[str, Any]], dict[str, FlowMetricValues]]] = {
+# Booley Flow name -> reader of its typed values from a report's ``detail``. The ``coverage``
+# table has no Flow of its own: the ``sim`` reader returns a coverage run's values too.
+_READERS_BY_FLOW: dict[
+    str, Callable[[dict[str, Any]], Mapping[str, FlowMetricValues | MetricsUnavailable]]
+] = {
+    "sim": simulation_report_metric_values,
+    "lint": lint_report_metric_values,
     "synth": _synth_values,
     "fpga": _fpga_values,
 }
@@ -43,7 +56,9 @@ def metric_declarations(flow: str) -> tuple[MetricDeclaration, ...]:
         ) from None
 
 
-def report_metric_values(flow: str, detail: dict[str, Any]) -> dict[str, FlowMetricValues]:
-    """Typed metric values per Target from a *flow* report's ``detail``; ``{}`` if it declares none."""
+def report_metric_values(
+    flow: str, detail: dict[str, Any]
+) -> Mapping[str, FlowMetricValues | MetricsUnavailable]:
+    """Per Target, a *flow* report's typed metric values or why it has none; ``{}`` if undeclared."""
     reader = _READERS_BY_FLOW.get(flow)
     return {} if reader is None else reader(detail)
