@@ -532,7 +532,9 @@ def test_lost_work_item_lease_stops_only_that_item(
             ]
             with scenario.store._lease_gate(own) as acquired:
                 assert acquired
-                own.path.unlink()
+                assert own.path.exists(), own.path  # nothing removed it first
+                # Retries Windows sharing violations like the production release.
+                assert scenario.store._unlink_entry(own.path), own.path
             scope = current_supervised_execution()
             assert scope is not None
             _wait_until(scope.cancelled)
@@ -824,7 +826,9 @@ def test_lost_work_item_lease_stops_only_that_item_while_other_lanes_run(
             ]
             with scenario.store._lease_gate(own) as acquired:
                 assert acquired
-                own.path.unlink()
+                assert own.path.exists(), own.path  # nothing removed it first
+                # Retries Windows sharing violations like the production release.
+                assert scenario.store._unlink_entry(own.path), own.path
             _wait_until(scope.cancelled)
 
         scenario.hooks["t01"] = _meet(together)
