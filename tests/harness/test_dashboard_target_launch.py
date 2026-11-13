@@ -152,34 +152,36 @@ async def test_target_detail_lists_exactly_the_flows_that_drive_it(checkout):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("selector", "flow"), [("sim_wide", "sim"), ("synth_fifo", "synth")])
-async def test_choosing_a_flow_opens_the_form_with_worktree_and_target_filled_in(
-    checkout, selector, flow
-):
+@pytest.mark.asyncio
+async def test_choosing_a_flow_opens_the_form_with_worktree_and_target_filled_in(checkout):
     wt_a = worktree_a(checkout)
     app = make_app(checkout, FakeLauncher())
     async with app.run_test(size=(130, 40)) as pilot:
         await targets_of_wt_a(app, pilot)
-        wizard = await launch_from_detail(app, pilot, selector)
-        assert wizard.query_one("#run-form", OptionList).display
-        assert shown(wizard, "#run-title") == f"booley flow {flow} in wt-a"
-        assert row_value(wizard, "--target") == selector
-        # Enter on the Target row does not open the picker: the Target comes from the detail.
-        await goto_row(pilot, wizard, "--target")
-        await pilot.press("enter")
-        await settle(app, pilot)
-        assert wizard.query_one("#run-form", OptionList).display
-        assert not wizard.query_one("#run-picks", OptionList).display
-        assert shown(wizard, "#run-error") == PRESET_TARGET
-        assert row_value(wizard, "--target") == selector
-        if flow == "sim":  # the Test Runs picker reads the preset Target's runs in wt-a
-            await open_picker(app, pilot, wizard, "--test")
-            assert [row.split()[-1] for row in pick_rows(wizard)] == ["wide", "narrow"]
-            await pilot.press("escape")
-        await review_command(app, pilot, wizard)
-        assert (
-            shown(wizard, "#run-command") == f"cd {wt_a} && booley flow {flow} --target {selector}"
-        )
+        for selector, flow in [("sim_wide", "sim"), ("synth_fifo", "synth")]:
+            wizard = await launch_from_detail(app, pilot, selector)
+            assert wizard.query_one("#run-form", OptionList).display
+            assert shown(wizard, "#run-title") == f"booley flow {flow} in wt-a"
+            assert row_value(wizard, "--target") == selector
+            # Enter on the Target row does not open the picker: the Target comes from the detail.
+            await goto_row(pilot, wizard, "--target")
+            await pilot.press("enter")
+            await settle(app, pilot)
+            assert wizard.query_one("#run-form", OptionList).display
+            assert not wizard.query_one("#run-picks", OptionList).display
+            assert shown(wizard, "#run-error") == PRESET_TARGET
+            assert row_value(wizard, "--target") == selector
+            if flow == "sim":  # the Test Runs picker reads the preset Target's runs in wt-a
+                await open_picker(app, pilot, wizard, "--test")
+                assert [row.split()[-1] for row in pick_rows(wizard)] == ["wide", "narrow"]
+                await pilot.press("escape")
+            await review_command(app, pilot, wizard)
+            command = f"cd {wt_a} && booley flow {flow} --target {selector}"
+            assert shown(wizard, "#run-command") == command
+            # Review, the form, then the detail, then the Targets list for the next Target.
+            await pilot.press("escape", "escape", "escape")
+            await pilot.pause()
+            assert app.navigation.view == "targets"
 
 
 class BrokenForm(FakeLauncher):
