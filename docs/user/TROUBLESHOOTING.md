@@ -219,12 +219,12 @@ means the next build rebuilds the layers it removed.
 
 ### Deleted `[jobs]` keys
 
-`booley.toml` sets `max_heavy` or `heavy_memory`. Every command except
-`booley doctor` and `booley upgrade` stops with a message that names each key
-and its line, for example `max_heavy (line 12)`. Memory admission replaced both
-keys. Delete the named lines from the Project's
-`booley.toml`, or type `/booley-heal` in the Developer Agent chat to have them
-removed. Then set `[sandbox].memory` if you want to choose the Memory Budget;
+`booley.toml` sets `max_heavy` or `heavy_memory`. Flow and Specialist runs and
+every command that works on a Project stop with a message that names each key,
+its line and the file, for example `max_heavy (line 12)`; `booley doctor` and
+`booley upgrade` still run. Memory admission replaced both keys. Delete the
+named lines from that file. In a Developer Agent chat that is already open,
+`/booley-heal` removes them for you. Then set `[sandbox].memory` if you want to choose the Memory Budget;
 see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
 
 ### Job killed out of memory

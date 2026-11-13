@@ -763,8 +763,9 @@ What goes here:
   `--deep` names their manual implementation commands but skips the long runs.
 - **Doctor runs the whole synthesis matrix.** Mark every synthesis Target that
   setup must validate with `booley: {doctor: [synth]}`. Deep Doctor runs all of
-  them and retains the largest measured memory peak; there is no separately
-  configured calibration Target.
+  them, and `booley resources` reports their peak memory, which sizes
+  `[sandbox].memory` in Step 4; there is no separately configured calibration
+  Target.
 - **Size the Memory Budget.** Booley admits each EDA Job against a Memory
   Budget taken from `[sandbox].memory`, the one container cgroup limit; do not
   write `[jobs].heavy_memory` or `[jobs].max_heavy`: memory admission

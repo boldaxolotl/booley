@@ -218,9 +218,10 @@ was wrong or what evidence you want next.
 
 Every Flow or Specialist run is a **Job**. The agent starts it and waits for the
 result, which can take seconds for lint and much longer for big simulations or
-synthesis. By default only one simulation or synthesis runs at a time; others
-wait in a queue, so a run that seems stuck may just be waiting its turn. To
-allow more, see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
+synthesis. A simulation, synthesis or other EDA run starts while its estimated
+memory fits the Memory Budget; others wait in a queue, so a run that seems
+stuck may just be waiting its turn. To size the budget, see
+[Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
 
 The agent tells you the verdict and the paths to the report and logs. Reports
 from normal runs are kept under `.booley/flow-reports/`, never in your RTL. `booley resources`

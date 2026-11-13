@@ -436,7 +436,7 @@ def audit_retired_jobs_keys(path: Path) -> ConfigTableAudit:
         tuple(
             fail_finding(
                 f"booley.toml sets retired [jobs] key {found.key} (line {found.line})",
-                retired_jobs_keys_fix(found),
+                f"{retired_jobs_keys_fix(found)} (in {path})",
             )
             for found in retired_jobs_keys(path)
         )

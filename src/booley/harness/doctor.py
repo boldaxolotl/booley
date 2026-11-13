@@ -1724,7 +1724,8 @@ def _check_sandbox_memory(
     mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
     if not mem_str:
         _warn(
-            "[sandbox].memory is unset: the Memory Budget falls back to installed memory",
+            "[sandbox].memory is unset: the Memory Budget falls back to installed memory "
+            "unless [jobs].memory_budget is set",
             'set [sandbox] memory = "<size>" (booley resources shows Job peaks)',
         )
         return

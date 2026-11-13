@@ -135,7 +135,7 @@ container shares one trust domain.
 
 Every Flow or Specialist run is a Job in one of two classes: `memory` for EDA
 work (simulation, synthesis, FPGA implementation, lint, Custom Flows) and
-`light` for model-bound Specialist work. Light Jobs are capped by count
+`light` for model-bound work (Specialists and the Mutation Flow). Light Jobs are capped by count
 (`max_light`). A memory Job holds a reservation, estimated from the Resource
 History, and runs while the reservations fit the Memory Budget
 (`runtime/memory_budget.py`, [`[jobs]`](../user/CONFIG.md#jobs--concurrency-jobs)).

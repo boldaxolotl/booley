@@ -20,6 +20,7 @@ from typing import Any
 from booley.audit import agent_schema, config_common, configs_schema, flow_schema, project_schema
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.eda import EdaConfig, parse_eda_config
+from booley.core.config_paths import resolve_toml
 from booley.fusesoc import core_projection, fusesoc_registry
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.harness.bootstrap import RELATIVE_WORKTREE_MIN_GIT_VERSION, parse_git_version
@@ -576,8 +577,15 @@ def _check_project_setup(
 
     valid = _validate_booley_toml(booley_toml, booley_dir, report)
     # Nothing reads the retired keys any more, so they fail without invalidating
-    # the rest of the Project (Doctor keeps checking).
-    _add_config_audit(project_schema.audit_retired_jobs_keys(booley_dir / "booley.toml"), report)
+    # the rest of the Project (Doctor keeps checking). Audit the Main Booley
+    # Directory's file: the one every command's refusal reads, so a linked worktree's
+    # Doctor reports what the refusal names.
+    _add_config_audit(
+        project_schema.audit_retired_jobs_keys(
+            resolve_toml(resolve_common_booley_dir(project_root))
+        ),
+        report,
+    )
     from booley.targets.flow_names import canonicalize_config
 
     booley_toml = canonicalize_config(booley_toml)

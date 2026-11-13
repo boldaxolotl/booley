@@ -125,11 +125,11 @@ A run of a Booley Flow or Specialist, tracked by a Job record and its `run_id` f
 _Avoid_: task, process, async call
 
 **Standalone Job**:
-A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It is admitted against the Memory Budget like any other Job, writes `job.log`, and never records, satisfies, or invalidates Goal evidence.
+A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It is admitted like any other Job of its class (an EDA Job against the Memory Budget), writes `job.log`, and never records, satisfies, or invalidates Goal evidence.
 _Avoid_: human run, dashboard job, manual job
 
 **Job Class**:
-How a Job is admitted. The **memory** class holds EDA Jobs (simulation, synthesis, FPGA implementation, lint, Custom Flows): each reserves its estimated peak memory and runs while the reservations fit the Memory Budget, which is `[jobs].memory_budget`, else the container's memory limit, else the installed memory, minus a reserve for the agents. The **light** class holds Specialists and the Mutation Flow: a count (`max_light`) caps them, because the AI provider, not memory, limits them.
+How a Job is admitted. The **memory** class holds EDA Jobs (simulation, synthesis, FPGA implementation, lint, Custom Flows): each reserves its estimated peak memory and runs while the reservations fit the Memory Budget, which is `[jobs].memory_budget` if set, otherwise the container's memory limit, else the installed memory, minus a reserve for the agents. The **light** class holds Specialists and the Mutation Flow: a count (`max_light`) caps them, because the AI provider, not memory, limits them.
 _Avoid_: Job type, Job kind, queue
 
 ### Configuration

@@ -97,6 +97,7 @@ from booley.mcp.call_context import (
 )
 from booley.mcp.flow_execution_selection import select_flow_execution
 from booley.mcp.goal_tools import (
+    BASELINE_GOAL_TOOL_NAMES,
     GOAL_TOOL_NAMES,
     dispatch_goal_tool,
 )
@@ -1904,6 +1905,12 @@ async def _dispatch_application_tool(
 ) -> McpToolContent | McpInputRequired:
     """Dispatch one validated application call to its concrete endpoint."""
     _stamp_worktree_use(arguments, request_context)
+    if name in BASELINE_GOAL_TOOL_NAMES:
+        # These Goal tools schedule baseline EDA Jobs, which the retired-key refusal covers.
+        try:
+            refuse_retired_jobs_keys(None)
+        except RetiredJobsKeyError as exc:
+            return _error_result(f"ERROR: {exc}")
     caller = (
         None
         if server_identity is None

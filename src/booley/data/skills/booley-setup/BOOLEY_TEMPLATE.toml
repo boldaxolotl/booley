@@ -58,8 +58,8 @@ enabled = false
 
 [flows.synth]
 enabled = false              # synthesis recipe belongs in Target flow_options
-# Doctor deep-runs every Target whose doctor list contains `synth` and retains
-# the largest measured memory peak.
+# Doctor deep-runs every Target whose doctor list contains `synth`;
+# `booley resources` reports their peak memory.
 
 [jobs]
 # memory_budget = "24g"      # optional; default is [sandbox].memory minus the agent reserve

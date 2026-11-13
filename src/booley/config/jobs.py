@@ -183,14 +183,14 @@ def _retired_key_lines(text: str) -> dict[str, int]:
                 delimiter = None
             continue
         header = _TABLE_HEADER.match(line)
-        if header is not None and "=" not in line:
+        if header is not None:
             table = _normalized_name(header.group(1))
             continue
         name = _normalized_name(line.partition("=")[0])
         if _JOBS_INLINE.match(line):
             lines.setdefault("", number)
         for key in RETIRED_JOBS_KEYS:
-            if name in (key, f"jobs.{key}") and (table == "jobs") == (name == key):
+            if (name == key and table == "jobs") or (name == f"jobs.{key}" and table == ""):
                 lines.setdefault(key, number)
         delimiter = _opens_multiline_string(line)
     return lines
