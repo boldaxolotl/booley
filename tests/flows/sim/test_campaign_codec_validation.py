@@ -243,7 +243,7 @@ def _prerequisite_entry() -> dict[str, object]:
         "role": "cycle_count_baseline",
         "manifest": {
             "path_base": "origin_invocation",
-            "path": "targets/base/campaign/manifest.json",
+            "path": "targets/base/record/manifest.json",
             "bytes": 1,
             "sha256": "sha256:" + "a" * 64,
             "kind": "simulation_campaign_manifest",
@@ -281,7 +281,7 @@ def test_manifest_reader_rejects_a_missing_nested_field(tmp_path, path, field) -
     raw = codec.canonical_json_bytes(document)
     with pytest.raises(SimulationCampaignIntegrityError, match=field):
         codec.decode_simulation_campaign_manifest(raw)
-    manifest = tmp_path / "campaign" / "manifest.json"
+    manifest = tmp_path / "record" / "manifest.json"
     manifest.parent.mkdir()
     manifest.write_bytes(raw)
     with pytest.raises(SimulationCampaignIntegrityError, match=field):

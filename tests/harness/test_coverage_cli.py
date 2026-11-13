@@ -264,7 +264,7 @@ def _not_a_campaign(path: Path) -> None:
 
 def _nested_attempt_manifest(path: Path) -> Path:
     """Copy the record to where an attempt writes its own manifest."""
-    nested = path.parents[1] / "campaign/work-items/w1/attempts/a1/coverage-campaign"
+    nested = path.parents[1] / "record/work-items/w1/attempts/a1/coverage-record"
     nested.mkdir(parents=True)
     for item in path.parent.iterdir():
         if item.is_file():

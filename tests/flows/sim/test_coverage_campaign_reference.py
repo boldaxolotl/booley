@@ -49,14 +49,14 @@ _ORIGIN_INVOCATION_ID = 12
 def _nested_campaign(origin_target: Path, *, attempt_id: str = _SIMULATION_ATTEMPT_ID) -> Path:
     attempt = (
         origin_target
-        / "campaign"
+        / "record"
         / "work-items"
         / "0001-0123456789abcdef"
         / "attempts"
         / f"0001-{attempt_id}"
     )
     campaign = decode_document(_valid_document(), DurableTargetIdentity(_TARGET_IDENTITY))
-    return publish_coverage_campaign(attempt / "coverage-campaign", campaign).campaign
+    return publish_coverage_campaign(attempt / "coverage-record", campaign).campaign
 
 
 def _reference(origin_target: Path, nested: Path) -> CoverageCampaignReference:
@@ -151,9 +151,9 @@ def test_building_and_encoding_a_built_reference_never_decodes(
         (("simulation_attempt_id",), "87654321-4321-1432-a234-cba987654321"),
         (("target", "identity"), ""),
         (("coverage_campaign", "path_base"), "report_root"),
-        (("coverage_campaign", "path"), "/campaign/coverage.json"),
-        (("coverage_campaign", "path"), "campaign/../coverage.json"),
-        (("coverage_campaign", "path"), "campaign/work-items/\0/coverage.json"),
+        (("coverage_campaign", "path"), "/record/coverage.json"),
+        (("coverage_campaign", "path"), "record/../coverage.json"),
+        (("coverage_campaign", "path"), "record/work-items/\0/coverage.json"),
         (("coverage_campaign", "path"), "elsewhere/coverage.json"),
         (("coverage_campaign", "bytes"), True),
         (("coverage_campaign", "bytes"), 0),
@@ -416,8 +416,8 @@ def test_resolver_rejects_linked_reference_and_nested_path_components(tmp_path: 
         resolve_coverage_campaign_reference(target / "coverage.json")
 
     (target / "coverage.json").unlink()
-    actual_work_items = target / "campaign" / "work-items"
-    moved_work_items = target / "campaign" / "real-work-items"
+    actual_work_items = target / "record" / "work-items"
+    moved_work_items = target / "record" / "real-work-items"
     actual_work_items.rename(moved_work_items)
     actual_work_items.symlink_to(moved_work_items.name)
     (target / "coverage.json").write_bytes(encode_coverage_campaign_reference(value))
@@ -430,12 +430,12 @@ def test_resolver_rejects_attempt_identity_as_unrelated_path_substring(tmp_path:
     honest = _nested_campaign(target)
     misleading = (
         target
-        / "campaign"
+        / "record"
         / "work-items"
         / "prefix-0123456789abcdef-suffix"
         / "attempts"
         / f"0001-prefix-{_SIMULATION_ATTEMPT_ID}-suffix"
-        / "coverage-campaign"
+        / "coverage-record"
         / "coverage.json"
     )
     misleading.parent.mkdir(parents=True)

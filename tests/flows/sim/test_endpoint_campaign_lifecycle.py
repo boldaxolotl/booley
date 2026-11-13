@@ -230,7 +230,7 @@ def test_successful_pre_sim_firing_reaches_public_reports(
     assert (invocation / "report.json").read_bytes() == (
         invocation.parent / "sim.json"
     ).read_bytes()
-    sidecars = list(invocation.glob("targets/sim/campaign/work-items/*/attempts/*/pre-sim/*.json"))
+    sidecars = list(invocation.glob("targets/sim/record/work-items/*/attempts/*/pre-sim/*.json"))
     assert len(sidecars) == 1
     evidence = json.loads(sidecars[0].read_bytes())
     assert evidence["returncode"] == 0
@@ -1015,7 +1015,7 @@ def test_partial_publication_discloses_only_committed_target(
             if line.startswith("  manifest: ")
         )
     )
-    assert manifest.parts[-4:] == ("targets", "sim_0", "campaign", "manifest.json")
+    assert manifest.parts[-4:] == ("targets", "sim_0", "record", "manifest.json")
     assert manifest.is_absolute() and manifest.is_file()
 
 
@@ -1583,7 +1583,7 @@ def test_public_ordinary_prepared_endpoint_reports_each_shared_build_launch(tmp_
     assert (tmp_path / "reports/sim/1/report.json").read_bytes() == (
         tmp_path / "reports/sim.json"
     ).read_bytes()
-    manifest = tmp_path / "reports/sim/1/targets/sim_a/campaign/manifest.json"
+    manifest = tmp_path / "reports/sim/1/targets/sim_a/record/manifest.json"
 
     firings = collect_pre_sim_firings(manifest)
     assert len(firings) == 2
@@ -1668,7 +1668,7 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
         tmp_path, monkeypatch, "immutable", transform=_cocotb_hook_plan
     )
     assert outcome.aggregate_grade == "pass"
-    firings = collect_pre_sim_firings(invocation / "targets/sim/campaign/manifest.json")
+    firings = collect_pre_sim_firings(invocation / "targets/sim/record/manifest.json")
     assert len(firings) == 1
     assert firings[0].document["test_names"] == ("alpha", "beta")
     assert firings[0].document["stdout_tail"] == "hook-out\n"
@@ -1980,7 +1980,7 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
         SimRequest(target="sim_a", work_dir=project, report_dir=control_reports)
     )
     assert control.exit_code == 0, control.outcome.report_text
-    control_campaign = control_reports / "sim/1/targets/sim_a/campaign"
+    control_campaign = control_reports / "sim/1/targets/sim_a/record"
     control_records = sorted(
         (
             json.loads(path.read_text())
@@ -2004,7 +2004,7 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
     assert failures
     assert "observation_error" in result.outcome.detail
     assert "campaign_error" not in result.outcome.detail
-    campaign = reports / "sim/1/targets/sim_a/campaign"
+    campaign = reports / "sim/1/targets/sim_a/record"
     results = [json.loads(path.read_text()) for path in campaign.glob("work-items/*/result.json")]
     assert len(results) == 2
     assert all(record["grade"] == "pass" for record in results)
@@ -2029,7 +2029,7 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
 
     def fail_build(group):
         sidecars = list(
-            tmp_path.glob("reports/1/targets/sim/campaign/work-items/*/attempts/*/pre-sim/*.json")
+            tmp_path.glob("reports/1/targets/sim/record/work-items/*/attempts/*/pre-sim/*.json")
         )
         assert len(sidecars) == 1, "hook must be published before the build fails"
         return SimpleNamespace(passed=False)
@@ -2139,7 +2139,7 @@ def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     outcome.pre_sim_firings[0].path.unlink()
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
 
     with pytest.raises(SimulationCampaignIntegrityError, match="result references disagree"):
         collect_pre_sim_firings(store.manifest_path)

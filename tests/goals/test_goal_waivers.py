@@ -247,12 +247,12 @@ def persist_campaign(paths, campaign):
     attempt = str(uuid4())
     nested = publish_coverage_campaign(
         origin
-        / "campaign"
+        / "record"
         / "work-items"
         / "0001-0123456789abcdef"
         / "attempts"
         / f"0001-{attempt}"
-        / "coverage-campaign",
+        / "coverage-record",
         campaign,
     ).campaign
     loaded = load_coverage_campaign(nested)

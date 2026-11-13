@@ -309,7 +309,7 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
             _admission(),
         )
     )
-    store = CampaignStore(invocation / "targets/sim_0/campaign")
+    store = CampaignStore(invocation / "targets/sim_0/record")
     validated = _validated_resume(store, plan, target, tmp_path)
 
     resumed = campaign.run(
@@ -501,7 +501,7 @@ def test_coverage_infrastructure_build_failure_has_terminal_error_result(
     assert outcome.complete
     assert outcome.aggregate_grade == "error"
 
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
     recovery = store.scan()
     assert not recovery.interrupted
     directory = store.work_item_directory(recovery.items[0].work_item_id)
@@ -617,7 +617,7 @@ def _start_crashed_cocotb_campaign(
     crash = _CrashOnce("before:simulation_result")
     with pytest.raises(_InjectedProcessDeath):
         SimulationCampaign(executor, publication_checkpoint=crash).run(request)
-    return invocation, CampaignStore(invocation / "targets/sim/campaign")
+    return invocation, CampaignStore(invocation / "targets/sim/record")
 
 
 def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path) -> None:
@@ -691,7 +691,7 @@ def _run_cocotb(
         plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
     )
     SimulationCampaign(executor).run(request)
-    return CampaignStore(invocation / "targets/sim/campaign")
+    return CampaignStore(invocation / "targets/sim/record")
 
 
 def test_cocotb_result_preserves_exact_ordered_observations(tmp_path: Path) -> None:
@@ -803,7 +803,7 @@ def test_unfiltered_cocotb_shared_build_failure_has_one_unnamed_observation(
         )
     )
 
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     result = _completed_result_documents(store)[0]
     assert outcome.complete is True
     assert outcome.aggregate_grade == "fail"
@@ -841,7 +841,7 @@ def _aggregate_result_bound_fixture(tmp_path, monkeypatch):
 
     names = tuple(f"test{index:04d}" for index in range(4000))
     plan, _ = _maximum_hook_selection_plan(names)
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(plan.manifest)
     request = _request(
         store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1

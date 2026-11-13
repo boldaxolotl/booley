@@ -16,6 +16,7 @@ from booley.flows.sim.campaign.codec import (
     UnsupportedSimulationCampaignFormatError,
     decode_simulation_campaign_manifest,
 )
+from booley.flows.sim.record_layout import refuse_older_manifest_path
 from booley.goals.derivation import selected_observations
 from booley.goals.generated_artifacts import committed_only_inputs
 from booley.goals.input_view import GeneratedBuildInput, is_always_committed_input
@@ -69,10 +70,11 @@ def _producer_manifest(runtime: Path, envelope: dict[str, Any]) -> Mapping[str, 
             != envelope["manifest_sha256"]
         ):
             continue
+        refuse_older_manifest_path(path)
         try:
             producer = decode_simulation_campaign_manifest(raw).document
         except UnsupportedSimulationCampaignFormatError as exc:
-            # ``<invocation>/targets/<target>/campaign/manifest.json``
+            # ``<invocation>/targets/<target>/record/manifest.json``
             raise exc.located(path.parents[3]) from None
         if (
             producer["campaign_id"] != envelope["campaign_id"]
