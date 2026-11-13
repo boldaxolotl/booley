@@ -126,6 +126,7 @@ class _ContainerState:
 class _ActiveSession:
     name: str
     project_root: str
+    vscode: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1001,8 +1002,15 @@ def _active_session_summary(sessions: tuple[_ActiveSession, ...]) -> str:
     """Describe active Sessions with a copyable Project-scoped shutdown command."""
     descriptions = []
     for session in sessions:
-        command = _shell_command(["booley", "session", "down", "--project", session.project_root])
-        descriptions.append(f"{session.name} (Project {session.project_root}; run `{command}`)")
+        if session.vscode:
+            # `session down` always refuses an editor-owned Sandbox; name its owner's remedy.
+            remedy = "close its VS Code window or stop it with Dev Containers"
+        else:
+            command = _shell_command(
+                ["booley", "session", "down", "--project", session.project_root]
+            )
+            remedy = f"run `{command}`"
+        descriptions.append(f"{session.name} (Project {session.project_root}; {remedy})")
     return ", ".join(descriptions)
 
 
@@ -1055,7 +1063,8 @@ def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
             raise SidecarError(f"cannot prove active Session ownership for {name}")
         if state.project_root is None:
             raise SidecarError(f"cannot identify owning Project for active Session {name}")
-        sessions.append(_ActiveSession(name, state.project_root))
+        vscode = _DEVCONTAINER_FOLDER_LABEL in (state.labels or {})
+        sessions.append(_ActiveSession(name, state.project_root, vscode))
     return tuple(sorted(sessions, key=lambda session: session.name))
 
 
