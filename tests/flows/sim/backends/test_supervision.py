@@ -133,6 +133,37 @@ def test_deadline_line_leaves_a_dying_child_to_the_abort_that_started_it(
     assert trace.incidents == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_sigkilled_simulator_is_reported_to_its_command(tmp_path: Path, monkeypatch):
+    report = tmp_path / "kills"
+    monkeypatch.setenv("BOOLEY_JOB_KILL_REPORT", str(report))
+    script = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+
+    _, proc, termination = run_supervised(_launch(tmp_path, script))
+
+    assert (proc.returncode, termination.kind) == (-signal.SIGKILL, "completed")
+    assert len(report.read_text(encoding="utf-8").splitlines()) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_simulator_killed_by_booley_is_not_reported(tmp_path: Path, monkeypatch):
+    report = tmp_path / "kills"
+    monkeypatch.setenv("BOOLEY_JOB_KILL_REPORT", str(report))
+    # Ignores SIGTERM, so the deadline's kill ends in SIGKILL, sent by Booley.
+    booley_killed = (
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "print('ready', flush=True); time.sleep(60)"
+    )
+    self_killed = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+
+    _, proc, termination = run_supervised(_launch(tmp_path, booley_killed, timeout_s=3))
+    assert (proc.returncode, termination.kind) == (-signal.SIGKILL, "timeout")
+    run_supervised(_launch(tmp_path, self_killed))
+
+    # Only the second death, which nobody in Booley caused, was reported.
+    assert len(report.read_text(encoding="utf-8").splitlines()) == 1
+
+
 def test_silent_simulator_is_killed_by_the_timer(tmp_path: Path):
     """F-13/F-21: a sim that prints nothing is still killed at its budget."""
     start = time.monotonic()

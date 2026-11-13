@@ -128,6 +128,24 @@ def test_oom_build_names_oom_evidence_and_remedy(
     assert "BOOLEY_BUILD_STAGE" not in report
 
 
+def test_ordinary_build_failure_during_another_jobs_oom_kill_is_not_oom(monkeypatch) -> None:
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    diagnostic = "%Error: rtl/top.sv:4:3: syntax error"
+    outcome = classify_build_outcome(
+        SubprocessResult(
+            returncode=1,
+            stdout=f"{diagnostic}\nBOOLEY_BUILD_STAGE token=abc123 rc=1\n",
+            oom_kill_delta=1,
+        ),
+        "abc123",
+        timeout_s=600,
+    )
+
+    assert outcome.design_failed
+    assert "OOM" not in (outcome.reason or "")
+    assert diagnostic in outcome.output
+
+
 def test_compile_error_still_shows_compiler_lines(tmp_path: Path) -> None:
     diagnostic = "%Error: rtl/top.sv:4:3: syntax error"
     outcome = classify_build_outcome(
