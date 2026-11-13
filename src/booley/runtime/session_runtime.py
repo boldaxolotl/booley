@@ -84,8 +84,12 @@ def session_container_name(workspace: Path) -> str:
 
     Distinct from the VS Code container (Dev Containers derives its own name), so
     `booley session up` never adopts or clobbers a container VS Code is driving.
+
+    The identity resolves non-strictly: it equals `dc.canonical_project_id` for an
+    existing directory, and for a deleted Project it still names the container
+    `session up` created, so `session down` can stop it.
     """
-    return f"booley-session-{dc.canonical_project_id(workspace)}"
+    return f"booley-session-{dc.project_name_id(str(workspace.resolve()))}"
 
 
 # Label the Dev Containers CLI stamps on the container it creates, naming the

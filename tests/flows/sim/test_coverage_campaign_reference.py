@@ -176,7 +176,7 @@ def test_reference_codec_refuses_a_nested_v4_campaign_as_an_older_booley_record(
     tmp_path: Path,
 ) -> None:
     """Booley 0.3.0 wrote v4: it is too old, not an invalid storage contract."""
-    from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
+    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
 
     target = tmp_path / "targets" / _TARGET_SELECTOR
     value = _reference(target, _nested_campaign(target))
@@ -190,7 +190,7 @@ def test_reference_codec_refuses_a_nested_v4_campaign_as_an_older_booley_record(
 def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a_directory(
     tmp_path: Path,
 ) -> None:
-    from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
+    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
 
     target = tmp_path / "targets" / _TARGET_SELECTOR
     value = _reference(target, _nested_campaign(target))

@@ -374,13 +374,13 @@ Goal-bound run with one evaluated Criterion, `criterion_met` is `false`.
 
 Nothing runs this cleanup on its own. User docs tell people to delete finished
 run folders directly ([Cleaning up reports](../user/FLOW_REFERENCE.md#cleaning-up-reports));
-`python -m booley.flows.sim.campaign_retention` is the guarded version, for
+`python -m booley.flows.sim.record_retention` is the guarded version, for
 tooling and for a run that others depend on. It removes the evidence of one
 exact run:
 
 ```bash
-python -m booley.flows.sim.campaign_retention --reports-root <root> --invocation <N> --native-target <target>
-python -m booley.flows.sim.campaign_retention --reports-root <root> --invocation <N> --full
+python -m booley.flows.sim.record_retention --reports-root <root> --invocation <N> --native-target <target>
+python -m booley.flows.sim.record_retention --reports-root <root> --invocation <N> --full
 ```
 
 - **`--native-target`** removes the `native/` directory (raw and merged

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any, TypeVar
 
 import pytest
-from tests.flows.sim.test_endpoint_campaign_lifecycle import _native_cycle_campaign
+from tests.flows.sim.test_endpoint_record_lifecycle import _native_cycle_campaign
 from tests.target_test_support import make_target_handle
 
 from booley.flows.base import BooleyFlow
@@ -20,10 +20,10 @@ from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
 from booley.flows.mutation.flow import MutationFlow
 from booley.flows.sim.build import BuildOutcome
-from booley.flows.sim.campaign_presentation import _campaign_report_lines
 from booley.flows.sim.coverage_campaign import CoverageRollup
 from booley.flows.sim.elab_only import ElabOnlyTargetResult
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record_presentation import _campaign_report_lines
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

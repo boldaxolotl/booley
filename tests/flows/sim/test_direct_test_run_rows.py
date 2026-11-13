@@ -12,7 +12,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.test_runs import DEFAULT_SEED, build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_FAILURE, EXIT_SUCCESS
-from tests.flows.sim.campaign_boundary import CampaignSimRun, Launch, run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import CampaignSimRun, Launch, run_campaign_sim
 from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
 from tests.flows.sim.test_flow import _ticket_state
 
@@ -152,8 +152,8 @@ def _coverage_run(test_run, verdict: str, **attributes):
 
 
 def test_coverage_rows_and_rerun_commands():
-    from booley.flows.sim.campaign.test_run_report import informative_test_run_lines
     from booley.flows.sim.coverage_acceptance import coverage_test_run_rows
+    from booley.flows.sim.record.test_run_report import informative_test_run_lines
 
     runs = [
         _coverage_run(_SHORT, "pass"),
@@ -189,8 +189,8 @@ def test_coverage_rows_come_from_the_frozen_test_runs_only():
 
 def test_rows_are_informative_relative_to_the_targets_own_default_seed():
     """A Target with ``default_seed = 7``: ``@7`` is its plain run, ``@1`` is not."""
-    from booley.flows.sim.campaign.test_run_report import informative_test_run_lines
-    from booley.flows.sim.campaign_presentation import (
+    from booley.flows.sim.record.test_run_report import informative_test_run_lines
+    from booley.flows.sim.record_presentation import (
         _campaign_test_run_lines,
         _effective_default_seed,
     )
@@ -266,7 +266,7 @@ def _card_path(text: str, label: str) -> Path:
 def test_campaign_report_and_rows_carry_each_test_runs_evidence_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    from booley.flows.sim.campaign.projection import decode_simulation_projection
+    from booley.flows.sim.record.projection import decode_simulation_projection
 
     run, report = _run(tmp_path, monkeypatch, "stress", "stress+soak@7", failing="iters=900")
     target = tmp_path / "reports/sim/1/targets/lite"

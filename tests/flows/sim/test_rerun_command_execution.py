@@ -21,7 +21,7 @@ from booley.flows.base import SubprocessResult
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_FAILURE
-from tests.flows.sim.campaign_boundary import Launch, run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import Launch, run_campaign_sim
 from tests.flows.sim.test_cocotb import _cocotb_output
 from tests.flows.sim.test_flow import (
     SimulateFlow,

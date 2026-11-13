@@ -23,12 +23,12 @@ _CAMPAIGN_STORAGE_TYPES = frozenset(
 )
 _CAMPAIGN_STORAGE_OWNERS = frozenset(
     {
-        "booley.flows.sim.campaign.store",
-        "booley.flows.sim.campaign.coordinator",
-        "booley.flows.sim.campaign.inspection",
+        "booley.flows.sim.record.store",
+        "booley.flows.sim.record.coordinator",
+        "booley.flows.sim.record.inspection",
     }
 )
-_CAMPAIGN_PREFIX = "booley.flows.sim.campaign"
+_CAMPAIGN_PREFIX = "booley.flows.sim.record"
 _CAMPAIGN_SCAN = "campaign-storage-types"
 _TARGET_SCAN = "target-mechanics"
 
@@ -168,18 +168,18 @@ def _resolved_import_from(module: str, is_package: bool, node: ast.ImportFrom) -
 @pytest.mark.parametrize(
     "source",
     [
-        "from booley.flows.sim.campaign.coordinator import CampaignStore\n",
-        "from booley.flows.sim.campaign.coordinator import CampaignStore as Store\n",
-        "import booley.flows.sim.campaign.coordinator\n"
-        "booley.flows.sim.campaign.coordinator.CampaignRecovery\n",
-        "import booley.flows.sim.campaign.coordinator as coordinator\n"
+        "from booley.flows.sim.record.coordinator import CampaignStore\n",
+        "from booley.flows.sim.record.coordinator import CampaignStore as Store\n",
+        "import booley.flows.sim.record.coordinator\n"
+        "booley.flows.sim.record.coordinator.CampaignRecovery\n",
+        "import booley.flows.sim.record.coordinator as coordinator\n"
         "coordinator.WorkItemRecovery\n",
-        "from booley.flows.sim.campaign import coordinator\ncoordinator.SharedBuildRecovery\n",
-        "def deferred():\n    from booley.flows.sim.campaign.coordinator import CampaignStore\n",
-        "if enabled:\n    from booley.flows.sim.campaign.coordinator import CampaignRecovery\n",
+        "from booley.flows.sim.record import coordinator\ncoordinator.SharedBuildRecovery\n",
+        "def deferred():\n    from booley.flows.sim.record.coordinator import CampaignStore\n",
+        "if enabled:\n    from booley.flows.sim.record.coordinator import CampaignRecovery\n",
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    from booley.flows.sim.campaign.coordinator import WorkItemRecovery\n",
+        "    from booley.flows.sim.record.coordinator import WorkItemRecovery\n",
     ],
 )
 def test_campaign_storage_type_gate_resolves_static_escape_forms(source: str) -> None:
@@ -187,7 +187,7 @@ def test_campaign_storage_type_gate_resolves_static_escape_forms(source: str) ->
 
 
 def test_campaign_storage_type_gate_resolves_package_relative_imports() -> None:
-    tree = ast.parse("from .campaign.coordinator import CampaignStore\n")
+    tree = ast.parse("from .record.coordinator import CampaignStore\n")
 
     assert _campaign_storage_type_violations(tree, "booley.flows.sim", True)
     assert not _campaign_storage_type_violations(tree, "booley.flows.sim", False)
@@ -195,7 +195,7 @@ def test_campaign_storage_type_gate_resolves_package_relative_imports() -> None:
 
 @pytest.mark.parametrize("owner", sorted(_CAMPAIGN_STORAGE_OWNERS))
 def test_campaign_storage_type_gate_allows_exact_owners(owner: str) -> None:
-    tree = ast.parse("from booley.flows.sim.campaign.store import CampaignStore\n")
+    tree = ast.parse("from booley.flows.sim.record.store import CampaignStore\n")
 
     violations = _campaign_storage_violations_for_source(tree, owner, False)
 

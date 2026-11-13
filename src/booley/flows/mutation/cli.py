@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 
 from booley.flows.cli_arguments import BuiltinArguments
 from booley.flows.cli_help import HelpGroup, HelpOption
@@ -13,6 +14,25 @@ def _count_type(value: str) -> int | str:
     return value if value.strip().lower() == "auto" else int(value)
 
 
+class _AccumulateScope(argparse.Action):
+    """Join every ``--scope`` into one comma-separated list.
+
+    ``--scope a.sv --scope b.sv`` equals ``--scope a.sv,b.sv``.  The value stays one string
+    (the MCP ``scope`` property is a comma-separated string), so an empty flag next to a
+    non-empty one adds no entry.
+    """
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[str] | None,
+        option_string: str | None = None,
+    ) -> None:
+        previous = getattr(namespace, self.dest, None)
+        setattr(namespace, self.dest, values if previous is None else f"{previous},{values}")
+
+
 class MutationArguments(BuiltinArguments):
     help_groups = (
         HelpGroup(
@@ -21,8 +41,9 @@ class MutationArguments(BuiltinArguments):
                 HelpOption(
                     "scope",
                     "When omitted, mutate the Target's own RTL.",
-                    "Comma-separated RTL files eligible for mutation, excluding "
-                    "testbench, vendored and generated files by default",
+                    "Comma-separated RTL files eligible for mutation; repeat the flag "
+                    "to add more. Testbench files are refused; vendored and generated "
+                    "files may be named explicitly",
                 ),
                 HelpOption(
                     "count",
@@ -50,6 +71,7 @@ class MutationArguments(BuiltinArguments):
     def add_args(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "--scope",
+            action=_AccumulateScope,
             default=None,
             help=(
                 "Comma-separated RTL files eligible for mutation "
