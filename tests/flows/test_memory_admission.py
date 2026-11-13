@@ -85,6 +85,23 @@ def test_jobs_whose_reservations_fit_run_together_and_a_third_queues(tmp_path: P
     assert store.refresh(third).state == HOLDING
 
 
+def test_job_threads_at_start_skips_only_the_items_own_flow_token(tmp_path: Path) -> None:
+    world = FakeWorld()
+    store = make_store(tmp_path / "slots", world)
+    records = _history(("a", 40), ("b", 40), ("c", 40))
+    own_flow, other_flow, sized = (
+        _join(store, world, 101 + index, _plan(_synth(target), records))
+        for index, target in enumerate("abc")
+    )
+    assert all(store.refresh(token).state == HOLDING for token in (own_flow, other_flow, sized))
+    job_threads_at_start = _admission().job_threads_at_start
+
+    # Every holder counts for another Job: three holders on six cores.
+    assert job_threads_at_start(store, 6) == 2
+    # An item leaves out its own Flow's token only: two holders remain.
+    assert job_threads_at_start(store, 6, own_flow=own_flow) == 3
+
+
 def test_unknown_job_waits_for_an_empty_budget_runs_alone_and_blocks(tmp_path: Path) -> None:
     world = FakeWorld()
     store = make_store(tmp_path / "slots", world)
