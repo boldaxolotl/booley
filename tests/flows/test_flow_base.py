@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import logging
 import os
 import signal
 import subprocess
@@ -544,7 +545,7 @@ class TestTimeoutKillsTheWholeTree:
             self._reap_escaped_grandchild(pid_file)
 
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
-    def test_ctrl_c_kills_the_whole_tree(self, tmp_path: Path):
+    def test_ctrl_c_kills_the_whole_tree(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
         """Ctrl-C is the OTHER orphan path, and it needs the same teardown.
 
         ``start_new_session`` takes the child out of the terminal's foreground
@@ -567,10 +568,17 @@ class TestTimeoutKillsTheWholeTree:
             raise KeyboardInterrupt
 
         with (
+            caplog.at_level(logging.INFO, logger="booley.flows.base"),
             patch.object(subprocess.Popen, "communicate", _interrupt),
             pytest.raises(KeyboardInterrupt),
         ):
             flow._execute(flow._build_command())
+
+        # Never WARNING: a bare CLI would print it as a second interrupted line.
+        records = [r for r in caplog.records if r.name == "booley.flows.base"]
+        assert not [r for r in records if r.levelno >= logging.WARNING]
+        (killed,) = [r for r in records if r.getMessage().startswith("Interrupted; killing")]
+        assert killed.levelno == logging.INFO
 
         grandchild = int(pid_file.read_text(encoding="utf-8"))
         deadline = time.monotonic() + 10
