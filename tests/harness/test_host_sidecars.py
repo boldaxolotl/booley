@@ -1342,29 +1342,24 @@ def test_check_only_unproxied_reports_leftover_proxy_and_network(
     assert docker.mutations() == []
 
 
-@pytest.mark.parametrize(
-    ("intent", "lead"),
-    [
-        (Intent.ENSURE, "Bootstrap's recovery left it in place; rename it back"),
-        (Intent.CHECK, "run `booley bootstrap` to recover it; if it remains, rename it back"),
-    ],
-    ids=["mutating", "check-only"],
-)
-def test_parked_predecessor_remedy_reflects_whether_recovery_ran(
-    monkeypatch: pytest.MonkeyPatch, intent: Intent, lead: str
-) -> None:
+def test_parked_predecessor_remedy_leads_with_rename(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Check-only and mutating Bootstrap give the same remedy; neither says Bootstrap recovers it."""
     docker = _egress_docker(monkeypatch)
     _leftover_egress(docker)
     docker.add_session("booley-session-a-pre-refresh", running=False)
 
-    if intent is Intent.CHECK:
-        result = sidecars.inspect_sidecars(_UNPROXIED)
-    else:
-        result = sidecars.reconcile_sidecars(_UNPROXIED, intent)
+    for intent in (Intent.CHECK, Intent.ENSURE):
+        if intent is Intent.CHECK:
+            result = sidecars.inspect_sidecars(_UNPROXIED)
+        else:
+            result = sidecars.reconcile_sidecars(_UNPROXIED, intent)
 
-    proxy = next(finding for finding in result.findings if finding.resource == "proxy")
-    assert proxy.state is sidecars.SidecarState.ERROR
-    assert lead in proxy.detail, "mutating Bootstrap already ran recovery; never re-prescribe it"
+        proxy = next(finding for finding in result.findings if finding.resource == "proxy")
+        assert proxy.state is sidecars.SidecarState.ERROR
+        assert "rename it back with `docker rename booley-session-a-pre-refresh" in proxy.detail
+        assert "or remove it after inspection" in proxy.detail
+        assert "booley bootstrap` to recover" not in proxy.detail
+        assert "recovery left it in place" not in proxy.detail
 
 
 def test_restarting_predecessor_is_listed_once(monkeypatch: pytest.MonkeyPatch) -> None:

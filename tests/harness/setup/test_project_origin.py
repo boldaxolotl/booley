@@ -39,11 +39,11 @@ def test_early_check_recovery_and_migration_verdicts(tmp_path, monkeypatch, caps
     import argparse
 
     from booley.harness import init_cmd
-    from booley.runtime import session_refresh
+    from booley.runtime import issuance_invalidation
 
     for recovery, migration in ((True, None), (False, object()), (True, object())):
         monkeypatch.setattr(
-            session_refresh,
+            issuance_invalidation,
             "shared_recovery_blocks_command",
             lambda current=recovery, **_k: current,
         )
