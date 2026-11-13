@@ -73,8 +73,9 @@ class PhasePlan:
 class ReservationShrinker:
     """Lowers one Job's held claim as its Flow reports phase ends.
 
-    A memory-admitted Job has one lane, so reports arrive one at a time and no
-    lock is needed.
+    It takes no lock. Until the Flow's reservation drops to zero a Campaign runs
+    one item at a time, so reports arrive one at a time; after it the store
+    refuses every shrink of a zero reservation, so concurrent reports change nothing.
     """
 
     def __init__(self, plan: PhasePlan, store: SlotStore, token: SlotToken) -> None:

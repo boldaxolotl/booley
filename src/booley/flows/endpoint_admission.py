@@ -60,7 +60,8 @@ class AdmissionContext:
 
     ``max_heavy`` is the store's heavy cap, used by Simulation Campaign
     capacity; other endpoints ignore it. A Job admitted by Memory Reservation
-    has one lane: its Campaign runs work items in series. ``memory_warning`` is
+    has ``max_heavy`` of one: its Campaign takes its lane count from the
+    container's cores and admits each work item by its own claim. ``memory_warning`` is
     the warning that Job's result carries (it ran alone because its estimate
     exceeded the Memory Budget, or the budget was unavailable). ``memory_sizing``
     lets its Campaign give each work item its own claim, and is set only then.
