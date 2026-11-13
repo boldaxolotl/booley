@@ -1010,6 +1010,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "test_verilator_release_matrix.py" in coverage["run"]
     assert "test_verilator_coverage_collector_smoke.py" in coverage["run"]
     assert "test_verilator_compiler_cache_smoke.py" in coverage["run"]
+    assert "test_mutation_equivalence_smoke.py" in coverage["run"]
     assert "assert_junit.py" in coverage["run"]
     assert "--min-tests 1 --max-skips 0" in coverage["run"]
     upload = next(

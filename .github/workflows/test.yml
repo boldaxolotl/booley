@@ -1543,6 +1543,7 @@ jobs:
               /work/tests/smoke/test_verilator_release_matrix.py
               /work/tests/smoke/test_verilator_coverage_collector_smoke.py
               /work/tests/smoke/test_verilator_compiler_cache_smoke.py
+              /work/tests/smoke/test_mutation_equivalence_smoke.py
               --timeout=900 -q -rs --durations=30 --junitxml=/validation-tmp/coverage-release.xml
               -o cache_dir=/validation-tmp/pytest-cache &&
               python /work/.github/scripts/assert_junit.py

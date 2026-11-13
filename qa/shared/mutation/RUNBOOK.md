@@ -93,3 +93,10 @@ hangs and ends in the simulation timeout on both Targets; an edit to `bump`
 fails the build on both Targets (Icarus reports `ERROR`, Verilator under
 `-Werror-USERERROR` reports `FAIL`). The Mutation Flow must still call such a
 Mutant `invalid` on both Targets.
+
+On `sim_cocotb`, a Verilator Target, the Flow also compares each Mutant's
+generated C++ with the baseline's and replaces an identical one with the next
+candidate (see the user doc's section on equivalent Mutants). The fixture's
+equivalent Mutant (`rtl/counter.sv:11`) is not one of them: Verilator 5.052
+writes different C++ for it, so it still runs and survives, and
+`equivalent_dropped` stays empty. On `sim_icarus` nothing is compared.

@@ -161,6 +161,11 @@ _OPERAND_DROPS = {
 }
 _SHIFT_FLIPS = {"ArithmeticShiftRightExpression": ">>", "LogicalShiftRightExpression": ">>>"}
 _SHIFT_OPERATORS = _names("ArithmeticShiftRight LogicalShiftRight")
+_ADD_SUBTRACT_OPERATORS = _names("Add Subtract")
+# Syntax that lets another file elaborate a module differently from this file alone: a
+# `parameter` (overridable by an instance or `defparam`) or an interface port.
+_OVERRIDE_SYNTAX = _names("InterfacePortHeader")
+_PARAMETER_SYNTAX = _names("ParameterDeclaration TypeParameterDeclaration")
 # Text that ends in an escaped identifier needs a space before the next token.
 _ESCAPED_TAIL = re.compile(r"\\\S*$")
 
@@ -316,6 +321,8 @@ class _Facts:
     ranges: Mapping[int, tuple[int, int]]  # declared bounds of a literal select, by first literal
     signed_shifts: frozenset[int]  # operator offsets of right shifts of a signed operand
     enums: Mapping[tuple[int, int], _EnumRef]  # (start, end) of each enum member reference
+    # Operator offsets of `+`/`-` whose swap gives the same value at the expression's width.
+    modular_add_sub: frozenset[int]
 
 
 # Syntax nodes that open a scope: an enum declared directly in a package is reachable as
@@ -338,12 +345,40 @@ def _declaring_package(symbol: Any) -> str:
     return ""
 
 
+def _add_subtract_fact(pyslang: Any, expression: Any, buffer: Any) -> tuple[int, bool] | None:
+    """The (operator offset, swap is equal) of a `+` or `-` written in ``buffer``, else None."""
+    token = getattr(expression.syntax, "operatorToken", None)
+    if token is None or token.location.buffer != buffer:
+        return None  # a compound assignment, or an operator from a macro or include
+    return int(token.location.offset), _swap_is_equal(pyslang, expression)
+
+
+def _swap_is_equal(pyslang: Any, expression: Any) -> bool:
+    """True if ``a + b`` and ``a - b`` always agree at the width the parser gives ``expression``.
+
+    That holds at width 1, or where the right operand is a known integer constant ``c`` with
+    ``2 * c`` a multiple of ``2**width``.  Any other operand (a real, an unknown value, an
+    expression the parser cannot fold) never qualifies.
+    """
+    width = int(expression.type.bitWidth)
+    if width == 1:
+        return True
+    constant = expression.right.constant
+    if constant is None or constant.hasUnknown():
+        return False
+    value = constant.value
+    if not isinstance(value, pyslang.SVInt) or value.hasUnknown:
+        return False
+    return (2 * int(value)) % (1 << width) == 0
+
+
 def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
     """Elaborate ``tree`` (the one the sites come from) and record what syntax cannot tell.
 
     These are the declared bounds of each literal select, the right shifts whose left
     operand is signed in at least one instance (elsewhere ``>>`` and ``>>>`` are the same),
-    and each reference to an enum member.  Diagnostics, such as modules or packages
+    each reference to an enum member, and the ``+``/``-`` operators whose swap is equal at
+    the expression's width in every instance.  Diagnostics, such as modules or packages
     defined in other files, are ignored: an enum that cannot be resolved has no member
     symbol, so it yields no reference.  Only locations in ``buffer`` are kept.
     """
@@ -352,6 +387,7 @@ def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
     ranges: dict[int, tuple[int, int]] = {}
     signed_shifts: set[int] = set()
     enums: dict[tuple[int, int], _EnumRef] = {}
+    modular: dict[int, bool] = {}  # operator offset -> equal in every instance seen so far
 
     def record(expression: Any) -> None:
         kind = expression.kind.name
@@ -364,6 +400,9 @@ def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
                 and expression.left.type.isSigned
             ):
                 signed_shifts.add(int(token.location.offset))
+        elif kind == "BinaryOp" and expression.op.name in _ADD_SUBTRACT_OPERATORS:
+            if (fact := _add_subtract_fact(pyslang, expression, buffer)) is not None:
+                modular[fact[0]] = modular.get(fact[0], True) and fact[1]
         elif kind == "NamedValue" and expression.symbol.kind.name == "EnumValue":
             span = expression.sourceRange
             if span.start.buffer == buffer:
@@ -384,7 +423,8 @@ def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
             ranges[int(location.offset)] = limits
 
     compilation.getRoot().visit(record)
-    return _Facts(ranges, frozenset(signed_shifts), enums)
+    equal_swaps = frozenset(offset for offset, equal in modular.items() if equal)
+    return _Facts(ranges, frozenset(signed_shifts), enums, equal_swaps)
 
 
 def find_sites(
@@ -447,9 +487,28 @@ class _SiteCollector:
             first = member.getFirstToken()
             # A unit that starts inside a macro has no file offset: use 0.
             self._units[id(member)] = (f"{kind}:{name}#{ordinal}", self._offset(first) or 0)
+        # Units another file may elaborate with other parameters or through an interface.
+        self._overridable = {id(member) for member in self._members if self._can_differ(member)}
         # An instance of a checker or program parses like a module instance but is not design.
         self._checkers: set[str] = set()
         root.visit(self._note_checker)
+
+    def _can_differ(self, member: Any) -> bool:
+        """True if ``member`` declares a parameter or has an interface port."""
+        found: list[bool] = []
+
+        def check(item: Any) -> None:
+            if isinstance(item, self._node_type) and (
+                item.kind.name in _OVERRIDE_SYNTAX
+                or (
+                    item.kind.name in _PARAMETER_SYNTAX
+                    and getattr(item.keyword, "rawText", "") == "parameter"
+                )
+            ):
+                found.append(True)
+
+        member.visit(check)
+        return bool(found)
 
     def _note_checker(self, node: Any) -> None:
         if isinstance(node, self._node_type) and node.kind.name in _NON_DESIGN_UNITS:
@@ -499,10 +558,26 @@ class _SiteCollector:
         """Operators 1 and 2: swap the operator; for operator 2, also its other mutations."""
         operator, replacement = _BINARY[kind]
         token = node.operatorToken
-        self._add(node, operator, token, token, (replacement,))
+        if not self._is_equal_swap(node, kind, token):
+            self._add(node, operator, token, token, (replacement,))
         if operator == ARITHMETIC_LOGICAL:
             self._add_operand_drops(node, kind)
             self._add_shift_signedness(node, kind)
+
+    def _is_equal_swap(self, node: Any, kind: str, token: Any) -> bool:
+        """True for a ``+``/``-`` swap that changes nothing, in every way the unit may elaborate.
+
+        The file is elaborated alone, so a unit with a parameter or an interface port may be
+        elaborated at another width elsewhere: its swaps are kept.
+        """
+        if kind not in ("AddExpression", "SubtractExpression"):
+            return False
+        if self._offset(token) not in self._facts.modular_add_sub:
+            return False
+        child, ancestor = node, node.parent
+        while ancestor.parent is not None:
+            child, ancestor = ancestor, ancestor.parent
+        return id(child) not in self._overridable
 
     def _add_guarded(
         self,

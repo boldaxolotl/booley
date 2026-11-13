@@ -4,8 +4,9 @@
 the RTL, runs the Target's tests against each one, and reports how many Mutants
 the tests detected. A passing simulation only shows the tests accept the
 design; a high mutation score shows they would notice if it were wrong. No LLM
-is involved: the same RTL, `--count`, and `--seed` always give the same
-Mutants, so scores are reproducible and comparable across runs. For what all
+is involved: the same RTL, `--count`, and `--seed` give the same Mutants (on a
+Verilator Target, with the same Verilator version), so scores are reproducible
+and comparable across runs. For what all
 Flows share (choosing Targets, common options, logs, exit codes), see
 [Running Flows](FLOW_REFERENCE.md).
 
@@ -65,6 +66,24 @@ Every run rebuilds the baseline and every Mutant, so a result never depends on
 stale builds. Some survivors may be equivalent Mutants that change no
 observable behavior, which is why the default threshold is 80 %, not all.
 
+### Equivalent Mutants on Verilator Targets
+
+On a Target simulated with Verilator, a Mutant is built before its tests run,
+and the C++ Verilator generated for it is compared with the C++ generated for
+the baseline. Where the Mutant's private source copy lives does not count as a
+difference. If nothing else differs, the Mutant builds the same simulator as
+the original, so no test could tell them apart: Booley does not run its tests,
+does not score it, and takes the next candidate in the selection order
+instead. The run still scores `--count` Mutants unless the candidates run out;
+then it scores the ones it has and the report says how many exist.
+
+The check misses an equivalent Mutant whenever the generated C++ differs in any
+other way; it never drops a Mutant whose C++ differs. A Mutant that does not
+build is `invalid`, as before, and is not replaced. The report does not list
+the dropped Mutants; the Record's `equivalent_dropped` field holds their IDs.
+On a Target not simulated with Verilator, such as Icarus, nothing is compared
+and every selected Mutant runs.
+
 ## Which Mutants it plants
 
 Booley parses each scope file (Verilog or SystemVerilog) and finds every spot
@@ -89,7 +108,12 @@ yields one candidate Mutant per change.
 | `bit-select` | Swaps two neighbouring operands of a concatenation. | `{hi, lo}` -> `{lo, hi}` |
 | `deletion` | Removes one assignment, net initializer, or `case` item. | `q <= d;` removed, `case` branch removed |
 
-`/`, `%`, and `**` are never swapped, so Mutants do not divide by zero.
+`/`, `%`, and `**` are never swapped, so Mutants do not divide by zero. A `+`
+is not swapped for `-` (or the reverse) where both give the same result at the
+expression's width: a one-bit sum, or a constant `c` where `2 * c` is a multiple
+of `2` to the power of the width (`x + 4'd8` in four bits). Where Booley cannot
+tell the width, or where the module declares a `parameter` or has an interface
+port (another file may build it at another width), the swap stays.
 
 Mutations also reach the arguments of `$signed` and `$unsigned` and the
 expressions in the port connections of module and interface instances.
@@ -136,7 +160,9 @@ Only design code is mutated. Booley skips:
 If fewer candidates exist than `--count`, all of them run and the report
 says so. The knobs are `--scope` (where to look), `--count` (how many), and
 `--seed` (which sample); there is no filter by operator. The same RTL, scope,
-count, and seed always choose the same Mutants.
+count, and seed choose the same Mutants. On a Verilator Target the Mutants that
+run also depend on the Verilator version, because the build decides which
+candidates are equivalent; the manifest records the version.
 
 ## Reading results
 
@@ -144,7 +170,7 @@ The report starts with what reproduces the run, then the tally and the
 verdict:
 
 ```text
-[mutation_test] 10 Mutants (seed 0, count 10, generator 3, pyslang 9.0.0)
+[mutation_test] 10 Mutants (seed 0, count 10, generator 4, pyslang 9.0.0, Verilator 5.052 2025-02-01 rev v5.052)
 [mutation_test] sim sweep: 10/10 tested              4m
   8 detected (1 timeout), 0 invalid, 2 not detected
   detected: 8/10 (required: 8/10, default 80% of --count)
@@ -170,7 +196,7 @@ the Booley Directory or `--report-dir`
 |---|---|
 | `mutation/<N>/campaign/mutation-results.md` | The Mutants and the outcome of each. |
 | `mutation/<N>/campaign/mutation-specs.md` | Every Mutant: operator, file and line, original and mutated code. |
-| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, scope hashes) and each Mutant's status. |
+| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, scope hashes) and each Mutant's status. |
 | `mutation/<N>/campaign/variants/` | The mutated source of each Mutant. |
 | `mutation/<N>/campaign/baseline.log`, `mutant-logs/` | The simulator output of the baseline and of each Mutant. |
 

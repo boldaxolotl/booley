@@ -164,3 +164,64 @@ Bit-select moves and deletions never apply in a connection. A connection that
 is a bare name, and a parameter override, a gate primitive, a `bind` directive,
 a checker instance, or a program instance, yield no site. No new mutation applies inside a `while`,
 `do`-`while`, `forever`, procedural `for`, or a `case` label.
+
+## Amendments (2026-11-13, #3635)
+
+Recorded while implementing
+[#3635](https://github.com/boldaxolotl/booley/issues/3635). "There are no
+waivers and no SAT equivalence filter" still holds. Two checks now keep
+provably equivalent Mutants from counting against the threshold.
+
+**Build-identity check, on Targets simulated with Verilator only.** After a
+Mutant builds, the C++ Verilator generated for it is compared with the C++
+generated for the baseline. Only the generated `.cpp` and `.h` files are
+compared, by relative path and content, never object code, dependency or
+makefile output, or simulation output. The one difference that is ignored is
+where the Mutant's private source copy lives: every spelling of that directory
+(absolute, resolved, and relative to the Project Root) is replaced by one
+token before the comparison. This matters because a design that calls `$error`
+or `$stop` carries the absolute path of its sources into the C++. Any other
+difference keeps the Mutant, so the check may miss an equivalent Mutant and
+never drops another one. A build whose layout is not Verilator's (no
+`*__ver.d` in its root) is not compared.
+
+- A Mutant that matches is not tested or scored, and its build directory is
+  removed. Candidates are taken in the selection order, so the next one takes
+  its number and build directory; the kept Mutants are numbered 1 to the count
+  without gaps. When the candidates run out, the run scores the Mutants it has
+  and reports the shortfall with the same text as a generator shortfall (the
+  report must not mention what was dropped); an unset `--min-detected` follows
+  the number scored.
+- A Mutant that does not build stays `invalid` and is not replaced.
+- The report and `mutation-results.md` never list a dropped Mutant. The
+  Record's detail lists their IDs, in drop order, under `equivalent_dropped`
+  (an empty list when none were dropped or the Target is not simulated with
+  Verilator).
+- On a Target that is not simulated with Verilator, such as Icarus, no
+  comparison runs and every selected Mutant is simulated.
+
+**Reproducibility identity.** The identity gains the Verilator version (the
+first line of `verilator --version`, read in the baseline build's own
+environment, `unknown` if it cannot be read), on Verilator Targets only, so
+two runs that differ only in that version do not have the same identity. The
+Result Cache keys Mutation Flow results on this identity once #2937 builds
+that; nothing caches Mutation Flow results today. Target build options (the
+`.core`'s defines, tool options and flags) stay outside the identity, as the
+scope hashes already leave them out; a change to them can change which
+Mutants are dropped, so the same Mutants are guaranteed only for the same
+Verilator version and the same build settings.
+
+**Generator filter.** The `+`/`-` swap of the `arithmetic-logical` operator
+yields no Mutant where both results are equal at the width the parser reports
+for the expression: the width is 1, or the right operand is a known constant
+`c` with `2c` a multiple of `2` to the power of the width. An expression whose
+width the parser does not report keeps its Mutant. The file is elaborated
+alone, so a module that another file instantiates with a parameter override,
+or reaches through an interface port, is elaborated here with defaults and
+another width elsewhere: the swap is kept in any top-level unit that declares
+a `parameter` or a type parameter or has an interface port. A width set by a
+macro defined only in another file that is not included is the known blind
+spot, the same single-file limit the select-range facts have; it can drop a
+Mutant that is not equivalent in the full design. Every other Mutant keeps its
+ID. The generator version is 4: the same inputs give the same Mutants only for
+the same version.

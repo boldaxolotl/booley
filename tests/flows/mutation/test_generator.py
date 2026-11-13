@@ -933,7 +933,9 @@ def test_version_2_mutant_ids_are_kept(tmp_path: Path) -> None:
     ``v2_mutant_ids.txt`` lists, per fixture that existed then, the IDs of version 2.
     """
     version = importlib.import_module(_GENERATOR).GENERATOR_VERSION
-    assert version != "2", "the generator version is still the one of v2_mutant_ids.txt"
+    # Version 3 and version 4 changed the rules after v2_mutant_ids.txt was recorded (version 4
+    # drops `+`/`-` swaps that are equal at width; no recorded fixture has one).
+    assert version not in ("2", "3"), "the generator version is still one of v2 or v3"
     recorded: dict[str, set[str]] = {}
     for line in (_FIXTURES / "v2_mutant_ids.txt").read_text(encoding="utf-8").splitlines():
         if line and not line.startswith("#"):
@@ -951,6 +953,69 @@ def test_version_2_mutant_ids_are_kept(tmp_path: Path) -> None:
         grown += len(new_ids)
     assert kept == 325  # the IDs recorded at version 2
     assert grown > kept  # some fixtures gain nothing, e.g. relational.v, but the union does
+
+
+def _add_subtract_swaps(tmp_path: Path, name: str, source: str) -> list[str]:
+    """The original text (`+` or `-`) of every `+`/`-` swap Mutant of ``source``."""
+    _write(tmp_path, name, source)
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+    return [
+        m.original_code
+        for m in selection.mutants
+        if m.operator == "arithmetic-logical" and m.original_code in ("+", "-")
+    ]
+
+
+def test_add_subtract_swap_skipped_where_equal_at_width(tmp_path: Path) -> None:
+    """`a + b` and `a - b` agree on one bit and where `2c` is a multiple of `2**width`."""
+    one_bit = "module m(input a, input b, output y);\n  assign y = a + b;\nendmodule\n"
+    wraps = "module m(input [3:0] x, output [3:0] y);\n  assign y = x + 4'd8;\nendmodule\n"
+    two_bits = "module m(input [1:0] x, output [1:0] y);\n  assign y = x - 2'd2;\nendmodule\n"
+    differs = "module m(input [3:0] x, output [3:0] y);\n  assign y = x + 4'd3;\nendmodule\n"
+    # The context widens the sum to 8 bits, where `x + 8` and `x - 8` differ.
+    widened = "module m(input [3:0] x, output [7:0] y);\n  assign y = x + 4'd8;\nendmodule\n"
+    # Elaboration alone cannot size `w`'s type: no width, so the swap stays.
+    unknown = "module m(input pkg::t_w w, output [3:0] y);\n  assign y = w + 4'd8;\nendmodule\n"
+    unknown_value = "module m(input [3:0] x, output [3:0] y);\n  assign y = x + 4'bx;\nendmodule\n"
+    real = "module m(input real r, output real y);\n  assign y = r + 2.0;\nendmodule\n"
+    # A negated literal is no constant to the parser, so the swap stays.
+    signed_negative = (
+        "module m(input [3:0] x, output [3:0] y);\n  assign y = x + -4'sd8;\nendmodule\n"
+    )
+
+    assert _add_subtract_swaps(tmp_path, "one.sv", one_bit) == []
+    assert _add_subtract_swaps(tmp_path, "wraps.sv", wraps) == []
+    assert _add_subtract_swaps(tmp_path, "two.sv", two_bits) == []
+    assert _add_subtract_swaps(tmp_path, "differs.sv", differs) == ["+"]
+    assert _add_subtract_swaps(tmp_path, "widened.sv", widened) == ["+"]
+    assert _add_subtract_swaps(tmp_path, "unknown.sv", unknown) == ["+"]
+    assert _add_subtract_swaps(tmp_path, "neg.sv", signed_negative) == ["+"]
+    # An unknown value or a real operand is no integer constant to reason about.
+    assert _add_subtract_swaps(tmp_path, "unk.sv", unknown_value) == ["+"]
+    assert _add_subtract_swaps(tmp_path, "real.sv", real) == ["+"]
+
+
+def test_add_subtract_swap_kept_where_elaboration_can_differ(tmp_path: Path) -> None:
+    """A unit another file may instantiate with other parameters or an interface keeps its swap."""
+    body = "  assign y = x + 4'd8;\nendmodule\n"
+    ports = "(input [3:0] x, output [3:0] y);\n"
+    parameter = f"module m #(parameter int W = 4) {ports}{body}"
+    body_parameter = f"module m {ports}  parameter int W = 4;\n{body}"
+    type_parameter = f"module m #(parameter type T = logic) {ports}{body}"
+    interface_port = f"module m (input [3:0] x, output [3:0] y, bus_if.mp i);\n{body}"
+    localparam = f"module m {ports}  localparam int W = 4;\n{body}"
+    other_unit = (
+        "module p #(parameter int W = 4) (input [3:0] a, output [3:0] b);\n"
+        "  assign b = a;\nendmodule\n" + f"module m {ports}{body}"
+    )
+
+    assert _add_subtract_swaps(tmp_path, "par.sv", parameter) == ["+"]
+    assert _add_subtract_swaps(tmp_path, "bodypar.sv", body_parameter) == ["+"]
+    assert _add_subtract_swaps(tmp_path, "typepar.sv", type_parameter) == ["+"]
+    assert _add_subtract_swaps(tmp_path, "iface.sv", interface_port) == ["+"]
+    # A localparam cannot be overridden, and another unit's parameter does not matter.
+    assert _add_subtract_swaps(tmp_path, "local.sv", localparam) == []
+    assert _add_subtract_swaps(tmp_path, "other.sv", other_unit) == []
 
 
 # AC3: every Mutant applies through the existing text-replacement applier.
