@@ -5,6 +5,7 @@ from argparse import ArgumentParser, Namespace
 import pytest
 
 from booley.feedback import cli as feedback_cli
+from booley.feedback import storage as feedback_storage
 from booley.feedback.findings import Finding, append
 from booley.harness import booley, feedback_environment
 from booley.runtime import booley_dir as booley_dir_mod
@@ -37,17 +38,12 @@ def test_resolve_feedback_environment_is_fail_soft_for_corrupt_stamp(tmp_path):
     assert feedback_environment.resolve_feedback_environment(tmp_path).doctor_deep_clean is None
 
 
-@pytest.mark.parametrize(
-    ("command", "reads_stamp"), [("report", True), ("export", True), ("list", False)]
-)
-def test_feedback_dispatch_reads_stamp_only_for_rendering_commands(
-    monkeypatch, tmp_path, command, reads_stamp
-):
+def test_feedback_dispatch_reads_stamp_only_for_rendering_commands(monkeypatch, tmp_path):
     environment = object()
     reads: list[object] = []
-    monkeypatch.setattr(booley, "feedback_storage_dir", lambda _root: tmp_path / "state")
+    monkeypatch.setattr(feedback_storage, "feedback_storage_dir", lambda _root: tmp_path / "state")
     monkeypatch.setattr(
-        booley,
+        feedback_environment,
         "resolve_feedback_environment",
         lambda path: reads.append(path) or environment,
     )
@@ -55,10 +51,13 @@ def test_feedback_dispatch_reads_stamp_only_for_rendering_commands(
         booley.feedback_cli, "run", lambda _args, _root, *, env, list_view: int(env is None)
     )
 
-    result = booley._cmd_feedback(Namespace(feedback_command=command), tmp_path)
+    for command, reads_stamp in (("report", True), ("export", True), ("list", False)):
+        reads.clear()
 
-    assert bool(reads) is reads_stamp
-    assert result == int(not reads_stamp)
+        result = booley._cmd_feedback(Namespace(feedback_command=command), tmp_path)
+
+        assert bool(reads) is reads_stamp, command
+        assert result == int(not reads_stamp), command
 
 
 def test_feedback_report_renders_real_doctor_stamp(tmp_path, monkeypatch):
