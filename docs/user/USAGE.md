@@ -256,9 +256,10 @@ The Dashboard has three windows; press `←` or `→` to switch:
   connected session come first, the main checkout last.
 
 The **Run** item in the top bar starts a built-in Booley Flow, or the `reviewer`
-Specialist (below), as a Standalone Job. Pick the worktree and the Flow, then fill in the form the Dashboard
-builds from that Flow's options (the Project comes from the worktree, so `-C`,
-`--project`, and `--work-dir` are never offered). Each Common and Flow option is
+Specialist, as a Standalone Job. Pick the worktree and the Flow, then fill in
+the form the Dashboard builds from that Flow's options (the Project comes from
+the worktree, so `-C`, `--project`, and `--work-dir` are never offered). Each
+Common and Flow option is
 a field: `Enter` flips an on/off flag, opens a short list for an option with
 choices or a default/on/off pair, or opens a text editor. The Target field picks
 one Target of the worktree that the Flow can drive, or `automatic`; put more
@@ -281,17 +282,6 @@ nothing until queued work drains. **Copy command** asks your terminal to copy th
 command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a
 Finished filter switches to Running, which keeps the Job listed after it
 finishes. `Esc` returns to where you started.
-
-Run also starts the `reviewer` Specialist. After the Flows, the step lists the
-worktree's enabled built-in Specialists; every other enabled Specialist shows "form not built yet" and
-cannot be chosen, and a worktree whose settings cannot be read says why instead.
-The reviewer form asks for a category (`rtl` or `tb`), a focus that follows the
-category, and a scope, which is required. The spec focus also asks for a spec
-path, filled in from the worktree's active spec-review Goal when it has one.
-Instruction, max turns, and timeout are optional, the last two under **More**.
-For other options, such as `--base` or `--fail-on`, run `booley specialist
-reviewer` in a terminal ([SPECIALISTS.md](SPECIALISTS.md)). **Review the command** shows `cd … && booley specialist
-reviewer …`, and Submit starts that command as a Standalone Job.
 
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
 the first row to reach the top bar with the tabs, filters, Run, and Help; the
