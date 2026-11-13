@@ -204,9 +204,13 @@ def test_goal_worktree_shell_run_leaves_goal_evidence_unchanged(goal_mode, monke
 
 
 CHILD = """
-import sys, time
+import signal, sys, time
 from pathlib import Path
 from booley.harness.standalone_job import StandaloneJob
+
+# A runner that started pytest under nohup passes SIGHUP ignored down; the job
+# keeps a signal's existing handler, so start from the default disposition.
+signal.signal(signal.SIGHUP, signal.SIG_DFL)
 
 def block():
     Path(sys.argv[2]).write_text("ready")  # the handler is installed before the run starts
