@@ -28,7 +28,9 @@ inputs and returns a complete typed report:
 | `flows.target_test_plan_inspection` | `inspect_target_test_plans(TargetTestPlanInspectionRequest)` | `tests.toml` load and validation, section-key-to-Target matching (dead and duplicate keys), per-Target Test Run plan applicability and the seeding line each passing Target gets. |
 | `audit.core_tree_inspection` | `inspect_core_tree(CoreTreeInspectionRequest)`; `inspect_core_security(CoreSecurityInspectionRequest)`; `owned_core_files(project_root, seed_targets)`; `fusesoc_rejected_cores(project_root)`; `rejected_target_core(project_root, target, rejected_cores)` | `.core` ownership (a core hosting a Doctor-selected Target, in the state zone, or with a misplaced `booley:` marker FAILs; a vendored core is a NOTE), FuseSoC's rejection verdict and the duplicate-row suppression, the provider-block rule over the dependency closure, recursive-symlink grouping with its verbose-only link paths, and the severity of each security violation (Scope-dependent kinds are advisory WARNs with a check ID). The request's `seed_targets` and `write_scope` are raw inputs Doctor derives. |
 | `runtime.core_repository_hygiene` | `inspect_core_repository_hygiene(CoreRepositoryHygieneRequest)` | Which `.core`-referenced files must be tracked by Git, a Versioned Booley Directory judged by its own repository, symlink- and submodule-aware tracking, literal `$readmemh`/`$readmemb` target resolution, the build-artifact suffix and sibling-source rule with the `tags: [vendored]` exemption, and the check IDs (`project.core-file-untracked`, `project.memory-image-untracked`, `project.committed-build-artifact`) and sorted comma-joined subjects of their WARNs. |
+| `runtime.core_resolution` | `inspect_core_resolution(CoreResolutionRequest)` | Selecting each Doctor-selected Target through the catalog (a selection failure is that Target's FAIL), the in-Sandbox resolver snippet and its payload, verdict grading (exactly one bounded verdict per selected Target; missing, incomplete, duplicate or malformed evidence fails), Sandbox start-failure grading, the unavailable-runtime skip, and the always-shown error excerpt. |
 | `runtime.project_image` | `inspect_native_dependencies(NativeDependencyRequest)` | The curated header-to-Debian-package table, the C-family source scan and its file cap, and the rule for what counts as a Dockerfile `apt install` declaration. The request's `sources` are the selected Targets' compile inputs; the owner scans the C-family ones. |
+| `audit.output_excerpt` | `output_excerpt_lines(text, max_lines)` | Which lines of failing command output are informative: the error-marker span plus the trailing reason line, capped, with a hidden-line note. |
 | `audit.host_environment` | `inspect_agent_installation(provider)` | The shared configuration-directory-or-executable installation heuristic. |
 | `runtime.interactive_docker` | `image_exists(name, executable=..., timeout=...)` | The image observation shared by Doctor and Project Initialization. |
 | `audit.diagnostic_results` | `DiagnosticFinding`, `DiagnosticReport`, `HealthAssessment` | Ordered severity/message/remediation/ID/subject/deduplication values, uncounted details (verbose-only unless an owner marks one always shown), and the active FAIL/WARN interpretation. |
@@ -59,6 +61,7 @@ deduplication, and interleaves details (verbose-only unless marked) without chan
 | Test Run plan inspection | Reads `tests.toml` and the Project's `.core` files through `TargetCatalog`; runs no subprocess and writes nothing. |
 | Core-tree inspection | Reads `.core` files and walks the Project tree for directory links; runs no subprocess and writes nothing. |
 | Core repository hygiene | Reads `.core` files and the referenced HDL; runs bounded read-only `git ls-files` (15-second timeout) in the Project Root and a Versioned Booley Directory; writes nothing. |
+| Deep core resolution | Builds `TargetCatalog` from the Project's `.core` files; runs one `python3 -c` resolver through the request's Sandbox command builder (600-second timeout), which may start the Project's Sandbox; the resolver writes FuseSoC build trees under the checkout's Booley Directory at `runtime/doctor/core-resolve/<key>`. |
 | Native-dependency inspection | Reads the listed source files and the Project Dockerfile; starts no subprocess and writes nothing. |
 | Project RECONCILE | Uses the guidance-link and core-projection owners to repair generated artifacts. It does not run Init or issue a Runtime. |
 
@@ -82,7 +85,7 @@ convention:
   [Source Dependency Contract](SOURCE-DEPENDENCY-CONTRACT.md#direction-rules).
   D26 covers owners that take a request and return a report; the single-fact
   helpers in the table (`audit.host_environment`,
-  `runtime.interactive_docker`) and the value module
+  `runtime.interactive_docker`, `audit.output_excerpt`) and the value module
   `audit.diagnostic_results` stay outside it.
 - Doctor builds the request, calls the owner, and renders each report with
   `_Reporter.diagnostics` at its check's position. Moving a check this way

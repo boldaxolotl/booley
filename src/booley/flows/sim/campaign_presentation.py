@@ -374,7 +374,7 @@ def _pre_sim_integrity_failure(
         result.report_text = "\n".join(
             line for line in result.report_text.splitlines() if not _is_pre_sim_card_line(line)
         )
-    result.detail["campaign_integrity_error"] = str(error)
+    result.detail["record_integrity_error"] = str(error)
     line = f"Simulation Campaign integrity failure: {error}"
     if line not in result.report_text.splitlines():
         result.report_text += f"\n{line}"
@@ -549,10 +549,10 @@ def _campaign_report_detail(
         report_invocation
     )
     detail: dict[str, object] = {
-        "campaign_id": owner,
+        "simulation_record_id": owner,
         "manifest_sha256": facts.get("manifest_sha256"),
         "origin_invocation_id": origin.get("invocation_id"),
-        "dependency": "local_campaign" if local else "external_origin_campaign",
+        "dependency": "local_record" if local else "external_origin_record",
         "dependency_available": "manifest" in artifacts,
         "artifacts": artifacts,
         "grade": outcome.aggregate_grade,
@@ -582,7 +582,7 @@ def _diagnostic_test_runs(
     Both as ``target: test run``. *names* gives every name of a campaign's
     Target (selector and identity): a Goal may be written with either.
     """
-    campaigns = detail.get("campaigns")
+    campaigns = detail.get("records")
     if not isinstance(campaigns, Mapping):
         return [], []
     diagnostic: list[str] = []
@@ -613,7 +613,7 @@ def _with_frozen_runs_of_a_diagnostic_run(
     when what ran is exactly what a Goal is judged by. The report names each
     Goal as *goal_name* presents its key; ``detail`` keeps the keys.
     """
-    campaigns = result.detail.get("campaigns")
+    campaigns = result.detail.get("records")
     ran: dict[str, list[str]] = {}
     failed: dict[str, list[str]] = {}
     for selector, campaign in campaigns.items() if isinstance(campaigns, Mapping) else ():
@@ -807,7 +807,7 @@ def _campaign_preview_outcome(previews: Sequence[dict[str, object]]) -> Endpoint
     """Build the successful, non-mutating dry-run outcome for *previews*."""
     return EndpointOutcome(
         exit_code=EXIT_SUCCESS,
-        detail={"campaign_preview": list(previews), "mutated": False},
+        detail={"record_preview": list(previews), "mutated": False},
         report_text="\n".join(
             f"{cast(Mapping[str, object], item['target'])['selector']}: "
             f"{item['work_items']} pending work item(s)"
@@ -946,7 +946,7 @@ def _coverage_compatibility_targets(
             str(outcome.acceptance_facts.document["campaign_id"]),
         )
         if reference is not None:
-            target["coverage_campaign"] = reference
+            target["coverage_record"] = reference
         targets[selector] = target
     return targets
 
@@ -980,7 +980,7 @@ def _attach_failure_reference(
     except (OSError, ValueError):
         return
     if reference is not None:
-        detail["coverage_campaign"] = reference
+        detail["coverage_record"] = reference
 
 
 class _CoverageTargetError(RuntimeError):
@@ -1060,7 +1060,7 @@ def _unmatched_coverage_failure(
         exit_code=EXIT_ERROR,
         detail={
             "coverage": True,
-            "campaigns": _campaign_structured_details(outcomes),
+            "records": _campaign_structured_details(outcomes),
             "targets": dict(targets),
         },
         report_text="\n".join(
@@ -1084,7 +1084,7 @@ def _coverage_failure_outcome(
         exit_code=EXIT_ERROR,
         detail={
             "coverage": True,
-            "campaigns": _campaign_structured_details(outcomes, report_invocation),
+            "records": _campaign_structured_details(outcomes, report_invocation),
             "targets": dict(targets),
             "pending_targets": pending,
         },

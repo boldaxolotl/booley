@@ -1470,7 +1470,7 @@ async def _result_pilot(report, expected, code=0, compact=False):
     from tests.harness.test_dashboard_results import campaign
 
     if report == "passing":
-        report = {"flow": "sim", "detail": {"campaigns": {"top": campaign()}}}
+        report = {"flow": "sim", "detail": {"records": {"top": campaign()}}}
     item = _compact_result_job(report, code)
     current = replace(snapshot(1), jobs=JobSnapshot((item,)))
     app = DashboardApp(lambda: current)
@@ -1511,7 +1511,7 @@ async def test_pilot_failing_result_names():
     from tests.harness.test_dashboard_results import campaign
 
     await _result_pilot(
-        {"flow": "sim", "detail": {"campaigns": {"top": campaign(1, 1)}}}, "test_bad", 1
+        {"flow": "sim", "detail": {"records": {"top": campaign(1, 1)}}}, "test_bad", 1
     )
 
 

@@ -436,7 +436,7 @@ def test_coverage_provider_preserves_minimum_and_rounding(tmp_path):
     from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 
     endpoint = CoverageAnalystSpecialist()
-    endpoint.parse_args(["--campaign", "coverage.json", "--timeout-ms", "1001"])
+    endpoint.parse_args(["--record", "coverage.json", "--timeout-ms", "1001"])
     params = endpoint._coverage_agent_params(
         "fixture", tmp_path, tmp_path / "coverage.json", tmp_path / "audit.json"
     )
@@ -454,7 +454,7 @@ def test_builtin_specialist_defaults_stay_seconds_for_watchdogs():
 
     for cls, argv in [
         (ReviewerSpecialist, ["--category", "rtl", "--focus", "bugs", "--scope", "rtl"]),
-        (CoverageAnalystSpecialist, ["--campaign", "coverage.json"]),
+        (CoverageAnalystSpecialist, ["--record", "coverage.json"]),
     ]:
         endpoint = cls()
         endpoint.parse_args(argv)

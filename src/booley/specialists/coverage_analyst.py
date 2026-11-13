@@ -88,7 +88,7 @@ class CoverageAnalystSpecialist(Specialist):
         ),
         example=(
             "booley specialist coverage_analyst "
-            "--campaign reports/sim/12/targets/sim_soc/coverage.json"
+            "--record reports/sim/12/targets/sim_soc/coverage.json"
         ),
     )
     code_modifying: bool = False
@@ -110,7 +110,7 @@ class CoverageAnalystSpecialist(Specialist):
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
-            "--campaign", type=Path, required=True, help="Exact canonical coverage.json path"
+            "--record", type=Path, required=True, help="Exact canonical coverage.json path"
         )
 
     def coverage_analyst(self, campaign: Path, instruction: str = "") -> CoverageAnalysisReport:
@@ -250,7 +250,7 @@ class CoverageAnalystSpecialist(Specialist):
         self, directory: Path, campaign: Path, audit_path: Path
     ) -> dict[str, str]:
         environment = {
-            "BOOLEY_COVERAGE_CAMPAIGN": str(campaign),
+            "BOOLEY_COVERAGE_RECORD": str(campaign),
             "BOOLEY_COVERAGE_PROJECT": str(self.args.work_dir.absolute()),
             "BOOLEY_COVERAGE_AUDIT": str(audit_path),
         }
@@ -305,9 +305,7 @@ class CoverageAnalystSpecialist(Specialist):
 
     def _run(self) -> McpToolResult:
         try:
-            report, loaded, campaign = self._analyze_path(
-                self.args.campaign, self.args.instruction
-            )
+            report, loaded, campaign = self._analyze_path(self.args.record, self.args.instruction)
         except ContextExhaustedError as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -352,7 +350,7 @@ def coverage_analyst(campaign: Path, instruction: str = "") -> CoverageAnalysisR
 
     specialist = CoverageAnalystSpecialist()
     specialist._cli_invocation = CliInvocation(transport=True)
-    specialist.parse_args(["--campaign", str(campaign)])
+    specialist.parse_args(["--record", str(campaign)])
     return specialist.coverage_analyst(campaign, instruction)
 
 
@@ -365,7 +363,7 @@ def analyze_coverage_campaign(
     invocation_id = str(campaign.invocation["id"])
     if not invocation_id.isdecimal():
         raise CoverageAnalysisError("Campaign invocation id must be numeric")
-    with owned_tempdir("booley-coverage-campaign-") as directory:
+    with owned_tempdir("booley-coverage-record-") as directory:
         root = Path(directory)
         invocation_dir = root / "reports" / "sim" / invocation_id
         target_dir = target_report_directory(invocation_dir, campaign.target.selector)
@@ -388,7 +386,7 @@ def analyze_coverage_campaign(
         from booley.flows.cli_selection import CliInvocation
 
         specialist._cli_invocation = CliInvocation(transport=True)
-        specialist.parse_args(["--work-dir", str(root), "--campaign", str(paths.campaign)])
+        specialist.parse_args(["--work-dir", str(root), "--record", str(paths.campaign)])
         return specialist._analyze_bound(
             loaded.campaign,
             sources,

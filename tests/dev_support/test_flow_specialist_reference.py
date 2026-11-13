@@ -187,7 +187,7 @@ def test_specialist_examples_use_connected_session_arguments_without_cli_flags()
         assert f"Call the `{name}` Specialist from your Developer Agent session" in rendered
     assert "booley specialist <name> --help" in rendered
     assert 'steer=["<context>"]' in rendered
-    assert 'campaign="<exact-coverage.json>"' in rendered
+    assert 'record="<exact-coverage.json>"' in rendered
 
 
 def test_shipped_documentation_never_dispatches_a_specialist_as_a_flow() -> None:

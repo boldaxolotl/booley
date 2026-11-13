@@ -405,7 +405,7 @@ class TestDescription:
 
 def test_coverage_analyst_accepts_only_exact_campaign_and_instruction():
     schema = flow_schema(CoverageAnalystSpecialist())
-    assert "campaign" in schema["required"]
+    assert "record" in schema["required"]
     assert "instruction" in schema["properties"]
     assert {"target", "scope", "steer", "criteria", "reset_waivers", "tb_top"}.isdisjoint(
         schema["properties"]

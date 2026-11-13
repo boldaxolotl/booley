@@ -198,7 +198,7 @@ def test_nested_analyst_prompt_names_match_bound_catalog(monkeypatch, tmp_path):
 
     names = {t.name for t in _tools(monkeypatch, "Analyst")}
     endpoint = CoverageAnalystSpecialist()
-    endpoint.parse_args(["--campaign", "coverage.json", "--work-dir", str(tmp_path)])
+    endpoint.parse_args(["--record", "coverage.json", "--work-dir", str(tmp_path)])
     params = endpoint._coverage_agent_params(
         "fixture", tmp_path, tmp_path / "coverage.json", tmp_path / "audit.json"
     )

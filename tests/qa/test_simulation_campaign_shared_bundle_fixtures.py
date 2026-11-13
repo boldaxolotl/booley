@@ -225,7 +225,7 @@ def test_owned_targets_and_policy_fragments_are_explicit() -> None:
         "vectors/beta.hex": "inputs/beta.hex",
     }
     assert (
-        'run_cwd = ".booley-qa/campaign/{campaign}/{test}/{attempt}"'
+        'run_cwd = ".booley-qa/campaign/{record}/{test}/{attempt}"'
         in (UART / "runtime-inputs.toml").read_text()
     )
     assert 'pre_sim_build_access = "immutable"' in (UART / "immutable-presim.toml").read_text()

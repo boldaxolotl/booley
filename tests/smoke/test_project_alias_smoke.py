@@ -50,7 +50,7 @@ def _assert_trace_reference(root: Path, alias: Path) -> None:
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
-    campaign = result.outcome.detail["campaigns"]["sim"]
+    campaign = result.outcome.detail["records"]["sim"]
     manifest = root / ".booley/trace-reports/sim/1" / campaign["artifacts"]["manifest"]["path"]
     receipt = next(manifest.parent.glob("work-items/*/result.json"))
     document = json.loads(receipt.read_text())
@@ -86,7 +86,7 @@ def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
             )
         )
         assert result.exit_code == expected, result.outcome.report_text
-        campaign = result.outcome.detail["campaigns"]["sim"]
+        campaign = result.outcome.detail["records"]["sim"]
         assert campaign["artifacts"]["manifest"]["path"]
         assert campaign["artifacts"]["simulation"]["path"]
         assert campaign["artifacts"]["coverage"]["path"]

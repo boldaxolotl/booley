@@ -34,7 +34,7 @@ from booley.audit.diagnostic_results import (
     Severity,
 )
 from booley.audit.doctor_waivers import load_doctor_waivers
-from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
+from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import developer_probe, doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
 from booley.presentation import colors
@@ -384,7 +384,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             }
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
         if "CORE_RESOLVE_JSON" in " ".join(str(part) for part in cmd):
-            # The deep .core-resolvability snippet (docker-wrapped): report the
+            # The deep .core-resolvability snippet (Sandbox command): report the
             # selected Targets as resolvable via the marker line it scrapes.
             selected = json.loads(cmd[-1])
             verdicts = json.dumps(
@@ -1000,7 +1000,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     _healthy_doctor_backend(monkeypatch)
     _set_venue(monkeypatch, True)
     monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
-    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *a, **k: None)
+    monkeypatch.setattr(doctor, "_run_core_resolution", lambda *a, **k: None)
     rss_calls, model_calls = [], []
 
     def measure(root):
@@ -1165,48 +1165,6 @@ def test_deep_check_routing_truth_table(
     assert cmd[:3] == ["doc" + "ker", "exec", "-e"]
     assert "booley-session-test" in cmd
     assert "booley.flows.sim" in cmd
-    assert doctor._SANDBOX_GUARD_SCRIPT not in cmd
-
-
-def test_sandbox_guard_execs_inside_and_refuses_outside(tmp_path):
-    """Run the P3 guard through a real ``sh`` both ways.
-
-    Inside (env injected by _docker_wrap): exec's the inner argv untouched.
-    Outside (no env, no container markers): refuses with the reserved exit
-    code + stderr marker that _sandbox_guard_failed() recognizes.
-    """
-    argv = [
-        "sh",
-        "-c",
-        doctor._SANDBOX_GUARD_SCRIPT,
-        "booley-sandbox-guard",
-        "echo",
-        "inner ran",
-    ]
-
-    inside = subprocess.run(
-        argv,
-        env={**os.environ, "BOOLEY_IN_SANDBOX": "1"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert inside.returncode == 0
-    assert inside.stdout.strip() == "inner ran"
-    assert not doctor._sandbox_guard_failed(inside)
-
-    if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
-        pytest.skip("test host is itself a container; guard would rightly pass")
-    outside = subprocess.run(
-        argv,
-        env={k: v for k, v in os.environ.items() if k != "BOOLEY_IN_SANDBOX"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert outside.returncode == doctor._SANDBOX_GUARD_EXIT
-    assert doctor._SANDBOX_GUARD_MARKER in outside.stderr
-    assert doctor._sandbox_guard_failed(outside)
 
 
 def test_session_runtime_startup_failure_fails_loudly(tmp_path, monkeypatch):
@@ -1248,255 +1206,6 @@ def test_session_capacity_refusal_keeps_capacity_remedy(tmp_path, monkeypatch):
     assert [finding.fix for finding in outcome.report.findings] == [
         "free Sandbox capacity using the command in the refusal, then retry"
     ]
-
-
-def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
-    """A Flow exiting 97 for its own reasons must NOT be reported as
-    misrouting — the guard verdict requires the stderr marker too."""
-    project, _calls = _tool_check_harness(
-        tmp_path,
-        monkeypatch,
-        lambda cmd: subprocess.CompletedProcess(
-            cmd,
-            doctor._SANDBOX_GUARD_EXIT,
-            stdout="",
-            stderr="boom",
-        ),
-    )
-
-    outcome = _run_flow_check(project, dry_run=False)
-
-    [finding] = outcome.report.findings
-    assert finding.severity is Severity.FAIL
-    assert "failed with exit 97" in finding.message
-    assert "OUTSIDE" not in finding.message
-
-
-def test_core_resolve_misroute_fails_loudly(tmp_path, monkeypatch):
-    """P3 at the second _docker_wrap call site: the in-container .core
-    resolver refusing the guard is a misroute FAIL, not a 'no verdict'."""
-    refusal = f"{doctor._SANDBOX_GUARD_MARKER} refusing to run: not inside the sandbox"
-    monkeypatch.setattr(
-        doctor.subprocess,
-        "run",
-        lambda cmd, **kw: subprocess.CompletedProcess(
-            cmd,
-            doctor._SANDBOX_GUARD_EXIT,
-            stdout="",
-            stderr=refusal,
-        ),
-    )
-    project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        booley_dir=tmp_path / ".booley",
-        booley_toml={},
-        configs_toml={"fast": {"defines": []}},
-        first_target="fast",
-    )
-    rec = _Rec()
-
-    doctor._run_core_resolve_in_docker(
-        project,
-        "doc" + "ker",
-        "img",
-        {
-            "sim": fusesoc_registry.TargetRef(
-                name="sim",
-                vlnv="::sim:0",
-                core_file=tmp_path / "sim.core",
-            )
-        },
-        rec.p,
-        rec.f,
-    )
-
-    assert rec.kinds() == {"fail"}
-    assert "executed OUTSIDE it" in rec.fails()[0]
-
-
-def test_deep_core_resolution_only_runs_doctor_selected_targets(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    targets = [
-        "  sim_selected:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        "  fpga_selected:\n"
-        "    flow: generic\n"
-        "    flow_options: {tool: vivado, booley: {doctor: [fpga]}}\n",
-    ]
-    targets.extend(
-        f"  vendored_{index:03d}:\n    flow: sim\n    flow_options: {{tool: verilator}}\n"
-        for index in range(200)
-    )
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\nname: ::design:0\ntargets:\n" + "".join(targets),
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
-    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
-    monkeypatch.setattr(
-        doctor.fusesoc_registry,
-        "resolve_target_handle",
-        lambda handle, **_kwargs: calls.append((handle.name, handle.vlnv)),
-    )
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(
-        project,
-        None,
-        rec.p,
-        rec.s,
-        rec.f,
-    )
-
-    assert calls == [("fpga_selected", "::design:0"), ("sim_selected", "::design:0")]
-    assert rec.kinds() == {"pass"}
-    assert len(rec.events) == 2
-
-
-def test_sandbox_core_resolution_receives_only_canonical_selected_targets(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "first.core").write_text(
-        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "second.core").write_text(
-        "CAPI=2:\nname: acme:ip:second:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: generic\n"
-        "    flow_options: {tool: yosys, booley: {doctor: [synth]}}\n"
-        "  unused:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    seen: list[dict[str, str]] = []
-
-    def fake_run(cmd, **_kwargs):
-        payload = json.loads(cmd[-1]) if len(cmd) == 4 else []
-        seen.extend(payload)
-        verdict = [{"selector": item["selector"], "ok": True} for item in payload]
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            stdout=f"[[CORE_RESOLVE_JSON]]{json.dumps(verdict)}\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
-    monkeypatch.setattr(doctor, "_docker_wrap", lambda _exe, _image, _root, inner: inner)
-    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
-
-    assert [(item["selector"], item["name"], item["vlnv"]) for item in seen] == [
-        ("first#smoke", "smoke", "acme:ip:first:1"),
-        ("second#smoke", "smoke", "acme:ip:second:1"),
-    ]
-    assert rec.kinds() == {"pass"}
-
-
-def test_core_resolve_announces_before_container_run(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "first.core").write_text(
-        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    printed_before_run: list[str] = []
-
-    def fake_run(cmd, **_kwargs):
-        printed_before_run.append(capsys.readouterr().out)
-        payload = json.loads(cmd[-1])
-        verdict = [{"selector": item["selector"], "ok": True} for item in payload]
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{json.dumps(verdict)}\n", stderr=""
-        )
-
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
-    monkeypatch.setattr(doctor, "_docker_wrap", lambda _exe, _image, _root, inner: inner)
-    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
-
-    assert (
-        "  ▸  .core resolvability of 1 Target(s) in the Sandbox "
-        "(FuseSoC configure; timeout 10m 00s)" in colors.strip_ansi(printed_before_run[0])
-    )
-
-
-def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\nname: acme:ip:top:1\nfilesets:\n"
-        "  rtl: {depend: [acme:ip:missing]}\n"
-        "targets:\n"
-        "  sim_top:\n"
-        "    flow: sim\n"
-        "    filesets: [rtl]\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
-    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
-
-    def fail_resolution(name, **kwargs):
-        assert (name, kwargs["vlnv"]) == ("sim_top", "acme:ip:top:1")
-        raise fusesoc_registry.TargetResolutionError("missing dependency acme:ip:missing")
-
-    monkeypatch.setattr(doctor.fusesoc_registry, "_resolve_target", fail_resolution)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
-
-    assert rec.kinds() == {"fail"}
-    assert "sim_top" in rec.fails()[0]
-
-
-def test_selected_target_that_no_longer_resolves_fails_before_dispatch(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    matrix = MagicMock(seed_targets=("removed_target",))
-    monkeypatch.setattr(doctor, "_project_target_matrix", lambda _project: matrix)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
-
-    assert rec.kinds() == {"fail"}
-    assert "removed_target" in rec.fails()[0]
 
 
 def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
@@ -5426,7 +5135,7 @@ class TestDeveloperProbe:
         """Issue #885: RUN line precedes the agent call; summary reports spend."""
         _set_venue(monkeypatch, True)
         monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
-        monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *a, **k: None)
+        monkeypatch.setattr(doctor, "_run_core_resolution", lambda *a, **k: None)
         seen_before_call: list[str] = []
 
         def fake_measure(_root):
@@ -5444,9 +5153,7 @@ class TestDeveloperProbe:
         project = _adr28_project(tmp_path)
         reporter = doctor._Reporter.create(profile=doctor._DoctorProfile(deep=True))
 
-        doctor._run_deep_phase(
-            project, None, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
-        )
+        doctor._run_deep_phase(project, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter)
         reporter.finish()
 
         assert (
@@ -7269,28 +6976,6 @@ def test_agent_usage_summary_edge_cases(calls, expected) -> None:
     assert doctor._agent_usage_summary(calls) == expected
 
 
-def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch, capsys) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "first.core").write_text(
-        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
-
-    assert (
-        "  ▸  .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
-        in colors.strip_ansi(capsys.readouterr().out)
-    )
-
-
 class _FixCollector(_Collector):
     """Collector that keeps each WARN's ``fix`` hint next to its message."""
 
@@ -8787,9 +8472,7 @@ def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
     audit = doctor.ProjectAudit(root, project, {}, {}, "sim")
 
     probe = doctor._mcp_probe_command(audit, "docker", "booley:test")
-    wrapped = doctor._docker_wrap("docker", "booley:test", root, ["true"])
     assert "BOOLEY_DIR=/work/tools/booley" in probe
-    assert "BOOLEY_DIR=/work/tools/booley" in wrapped
 
     # In-Sandbox Doctor sees the relocated directory at /work/tools/booley.
     sandbox_dir = Path("/work/tools/booley")
