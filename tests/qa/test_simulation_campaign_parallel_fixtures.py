@@ -27,7 +27,7 @@ ATTEMPTS = (
     "1c607269-6641-4ec2-9b60-13691c3c63dd",
     "046164a5-a8a8-46c9-8f96-cd6d10052e3b",
 )
-# The first lane runs on the outer Job's own slot, so it has no child claim.
+# The first lane runs on the outer Job's own claim, so it has no child claim.
 CHILDREN = (None, "8571ca69e04c4c1cbe47e53ef1f541c9", "201201777b614ea6a45854b41e047143")
 WORK_ITEMS = (
     "item:0000:1e5af83dabf589f3",
@@ -174,37 +174,12 @@ def _result(index: int, identity: dict[str, str], log: bytes) -> dict[str, objec
     }
 
 
-def _sample(at_ns: int, holders: list[str], waiters: list[str]) -> dict[str, object]:
-    return {"at_ns": at_ns, "heavy_holders": holders, "heavy_waiters": waiters}
-
-
 def _write_timeline(timeline: Path) -> None:
     """Write the operator's measurement of the Campaign written by ``_write_campaign``."""
-    first, second = CHILDREN[1], CHILDREN[2]
     _write_json(
         timeline,
         {
             "outer_execution_id": OUTER,
-            "slot_samples": [
-                _sample(0, [], []),
-                _sample(1, [OUTER], []),
-                _sample(2, [OUTER], [first]),
-                _sample(3, [OUTER, first], [second]),
-                _sample(4, [OUTER, first, second], []),
-                _sample(7, [OUTER, first, second], []),
-                _sample(9, [OUTER, second], []),
-                _sample(10, [OUTER], []),
-                _sample(11, [], []),
-            ],
-            "final_slot_state": {"heavy_holders": [], "heavy_waiters": []},
-            "claim_transitions": [
-                {"at_ns": 2, "child_execution_id": first, "state": "submitted"},
-                {"at_ns": 3, "child_execution_id": first, "state": "promoted"},
-                {"at_ns": 3, "child_execution_id": second, "state": "submitted"},
-                {"at_ns": 4, "child_execution_id": second, "state": "promoted"},
-                {"at_ns": 9, "child_execution_id": first, "state": "released"},
-                {"at_ns": 10, "child_execution_id": second, "state": "released"},
-            ],
             "intervals": [_interval(timeline.parent, index) for index in range(len(TESTS))],
         },
     )
@@ -247,20 +222,12 @@ def validator():
 
 def test_taxi_parallel_validator_accepts_published_campaign_shape(validator, evidence) -> None:
     timeline, campaign = evidence
-    assert validator.validate_heavy_cap(timeline, 3) == {"max_heavy": 3, "peak_simulators": 3}
     validator.validate_attempt_isolation(timeline, campaign)
     validator.validate_continue_after_failure(
         campaign / "manifest.json",
         campaign / "summary.json",
         [_work_item_directory(campaign, index) / "result.json" for index in range(3)],
     )
-
-
-def test_taxi_heavy_cap_accepts_captured_run(validator) -> None:
-    assert validator.validate_heavy_cap(CAPTURED / "timeline.json", 3) == {
-        "max_heavy": 3,
-        "peak_simulators": 3,
-    }
 
 
 def test_taxi_attempt_isolation_accepts_captured_run(validator) -> None:
@@ -274,121 +241,6 @@ def test_taxi_continuation_accepts_captured_run(validator) -> None:
         campaign / "summary.json",
         sorted(campaign.glob("work-items/*/result.json")),
     )
-
-
-def test_taxi_heavy_cap_rejects_overshoot_between_samples(validator, tmp_path: Path) -> None:
-    """Two child claims overlap in [5, 7) while no sample looks: three slots under a cap of two."""
-    intervals = [(None, 1, 3), ("child-a", 2, 4), ("child-b", 6, 8)]
-    timeline = tmp_path / "timeline.json"
-    _write_json(
-        timeline,
-        {
-            "outer_execution_id": OUTER,
-            "slot_samples": [
-                _sample(2, [OUTER, "child-a"], []),
-                _sample(8, [OUTER, "child-b"], []),
-            ],
-            "final_slot_state": {"heavy_holders": [], "heavy_waiters": []},
-            "claim_transitions": [
-                {"at_ns": 2, "child_execution_id": "child-a", "state": "submitted"},
-                {"at_ns": 2, "child_execution_id": "child-a", "state": "promoted"},
-                {"at_ns": 5, "child_execution_id": "child-b", "state": "submitted"},
-                {"at_ns": 5, "child_execution_id": "child-b", "state": "promoted"},
-                {"at_ns": 7, "child_execution_id": "child-a", "state": "released"},
-                {"at_ns": 9, "child_execution_id": "child-b", "state": "released"},
-            ],
-            "intervals": [
-                {
-                    "attempt_id": f"attempt-{index}",
-                    "child_execution_id": child,
-                    "start_ns": start,
-                    "end_ns": end,
-                }
-                for index, (child, start, end) in enumerate(intervals)
-            ],
-        },
-    )
-    with pytest.raises(ValueError, match="claim transitions exceed max_heavy"):
-        validator.validate_heavy_cap(timeline, 2)
-    assert validator.validate_heavy_cap(timeline, 3) == {"max_heavy": 3, "peak_simulators": 2}
-
-
-def _unobserved_process(document) -> None:
-    document["slot_samples"] = [
-        sample for sample in document["slot_samples"] if sample["at_ns"] not in (9, 10)
-    ]
-    document["intervals"][2].update(start_ns=8, end_ns=10)
-
-
-def _drop_promotion(document) -> None:
-    document["claim_transitions"] = [
-        item
-        for item in document["claim_transitions"]
-        if not (item["child_execution_id"] == CHILDREN[1] and item["state"] == "promoted")
-    ]
-
-
-def _claim_for_borrowed_lane(document) -> None:
-    document["intervals"][0]["child_execution_id"] = "0" * 32
-
-
-def _unclaimed_child_lane(document) -> None:
-    document["intervals"][1]["child_execution_id"] = None
-
-
-def _outer_absent_while_running(document) -> None:
-    document["slot_samples"][5]["heavy_holders"].remove(OUTER)
-
-
-def _early_child_process(document) -> None:
-    document["intervals"][2]["start_ns"] = 3
-
-
-@pytest.mark.parametrize(
-    ("mutation", "message"),
-    [
-        (_drop_promotion, "exact release"),
-        (
-            lambda document: document["slot_samples"][4]["heavy_holders"].append("over-cap"),
-            "exceed max_heavy",
-        ),
-        (_claim_for_borrowed_lane, "bind every exact child"),
-        (_unclaimed_child_lane, "bind every exact child"),
-        (_outer_absent_while_running, "omits the borrowed outer Job"),
-        (_early_child_process, "started before promotion"),
-        (_unobserved_process, "no SlotStore sample observed a simulator process"),
-        (
-            lambda document: document["final_slot_state"]["heavy_holders"].append(OUTER),
-            "final SlotStore inspection",
-        ),
-        (lambda document: document["slot_samples"][6].update(at_ns=8), "contradicts transitions"),
-    ],
-)
-def test_taxi_heavy_cap_rejects_corrupt_slot_accounting(
-    validator, evidence, mutation, message
-) -> None:
-    timeline, _campaign = evidence
-    _rewrite(timeline, mutation)
-    with pytest.raises(ValueError, match=message):
-        validator.validate_heavy_cap(timeline, 3)
-
-
-def test_taxi_heavy_cap_rejects_two_processes_on_the_borrowed_slot(validator, evidence) -> None:
-    timeline, _campaign = evidence
-
-    def share_outer_slot(document) -> None:
-        child = document["intervals"][1]["child_execution_id"]
-        document["intervals"][1]["child_execution_id"] = None
-        document["claim_transitions"] = [
-            item for item in document["claim_transitions"] if item["child_execution_id"] != child
-        ]
-        for sample in document["slot_samples"]:
-            for key in ("heavy_holders", "heavy_waiters"):
-                sample[key] = [value for value in sample[key] if value != child]
-
-    _rewrite(timeline, share_outer_slot)
-    with pytest.raises(ValueError, match="overlap on the borrowed outer slot"):
-        validator.validate_heavy_cap(timeline, 3)
 
 
 def test_taxi_attempt_isolation_rejects_tampered_evidence(validator, evidence) -> None:

@@ -1,14 +1,11 @@
-"""Memory admission of heavy, lint and Custom Flow Jobs behind a development switch (ADR 0087).
+"""Memory admission of sim, synth, fpga, lint and Custom Flow Jobs (ADR 0087).
 
-With ``BOOLEY_DEV_MEMORY_ADMISSION=1`` such a Job is admitted in the ``memory``
-Job Class: it holds a Memory Reservation estimated from the Resource History
+Such a Job is admitted in the ``memory`` Job Class: it holds a Memory Reservation estimated from the Resource History
 and runs beside other Jobs while the reservations fit the Memory Budget. A Job
 that cannot be sized runs alone. A Job is never refused, except one that uses a
 licensed tool with no Seat Cap (``[jobs.seats]``).
 
-The switch is undocumented and temporary: the cutover that makes memory
-admission the only admission removes it (ADR 0087, Rollout). Every number here
-is in MiB, the unit of the Resource History's ``peak_memory_mb``.
+Every number here is in MiB, the unit of the Resource History's ``peak_memory_mb``.
 """
 
 from __future__ import annotations
@@ -35,9 +32,6 @@ from booley.runtime.resource_history import HistoryKey, load_records
 
 logger = logging.getLogger(__name__)
 
-#: The development switch; only the exact value ``"1"`` turns memory admission on.
-MEMORY_ADMISSION_ENV = "BOOLEY_DEV_MEMORY_ADMISSION"
-
 #: Carries a Job's thread count into a child process that runs under its parent's claim.
 JOB_THREADS_ENV = "BOOLEY_INTERNAL_JOB_THREADS"
 
@@ -47,11 +41,6 @@ _job_threads: ContextVar[int | None] = ContextVar("booley_job_threads", default=
 
 #: Flows whose Jobs report phase ends, so their reservation can shrink.
 _SHRINKING_FLOWS = frozenset({"sim", "synth", "fpga"})
-
-
-def memory_admission_enabled() -> bool:
-    """Whether memory-admitted Jobs (heavy, lint, Custom Flow) take a Memory Reservation."""
-    return os.environ.get(MEMORY_ADMISSION_ENV) == "1"
 
 
 @dataclass(frozen=True)

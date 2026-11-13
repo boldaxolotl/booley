@@ -389,12 +389,15 @@ def test_malformed_link_journal_refuses_before_any_rename(tmp_path, monkeypatch)
 def test_live_job_without_session_registry_refuses_unchanged(tmp_path):
     import os
 
-    from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
+    from booley.runtime.job_slots import CLASS_LIGHT, RETIRED_JOB_CLASSES, SlotStore
 
     _repository(tmp_path)
     directory = tmp_path / NEW
-    store = SlotStore(directory / "runtime/jobs/slots")
-    store.submit(CLASS_HEAVY, pid=os.getpid(), argv=["independent-job"])
+    slots = directory / "runtime/jobs/slots"
+    store = SlotStore(slots)
+    store.submit(CLASS_LIGHT, pid=os.getpid(), argv=["independent-job"])
+    # A holder an older version left in a retired class directory still counts as live.
+    (slots / CLASS_LIGHT).rename(slots / RETIRED_JOB_CLASSES[0])
     directory.rename(tmp_path / OLD)
     before = _snapshot(tmp_path)
     with pytest.raises(BooleyLayoutError, match="live/unknown Job"):

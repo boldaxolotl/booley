@@ -16,7 +16,7 @@ from booley.runtime import oom_priority
 from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, job_attempt
 from booley.runtime.supervised_execution import supervised_execution_scope
 
-from .capacity import ChildHeavyPermit, HeavyCapacity, LeaseLostError
+from .capacity import CampaignCapacity, ChildPermit, LeaseLostError
 
 _TURN_POLL_SECONDS = 0.05
 
@@ -101,7 +101,7 @@ class BoundedCampaignScheduler:
 
     def __init__(
         self,
-        capacity: HeavyCapacity,
+        capacity: CampaignCapacity,
         *,
         allocate: Callable[[Mapping[str, object]], ScheduledAttempt],
         execute: Callable[[ScheduledAttempt, str | None], bool | None],
@@ -159,17 +159,16 @@ class BoundedCampaignScheduler:
     ) -> list[threading.Thread]:
         """Start the outer lane and the child lanes.
 
-        In heavy mode the outer lane starts with the first item in manifest order; under
-        memory admission every lane takes its items through the start turn.
+        Under memory admission every lane takes its items through the start turn;
+        otherwise the outer lane runs them one at a time.
         """
-        first = ready.get_nowait() if child_count and self._turn is None else None
-        specs = [("outer", True, first)]
-        specs.extend((f"child-{index + 1}", False, None) for index in range(child_count))
+        specs = [("outer", True)]
+        specs.extend((f"child-{index + 1}", False) for index in range(child_count))
         self._live = len(specs)
         lanes: list[threading.Thread] = []
         try:
-            for suffix, outer, first_item in specs:
-                lane = self._thread(self._lane, (ready, outer, first_item), suffix)
+            for suffix, outer in specs:
+                lane = self._thread(self._lane, (ready, outer), suffix)
                 lane.start()
                 lanes.append(lane)
         except BaseException:
@@ -233,26 +232,20 @@ class BoundedCampaignScheduler:
         self,
         ready: queue.Queue[Mapping[str, object]],
         outer: bool,
-        first: Mapping[str, object] | None,
     ) -> None:
-        """Run ``first`` then ready items until the queue drains or the campaign stops."""
+        """Run ready items until the queue drains or the campaign stops."""
         try:
             if self._turn is not None:
                 while self._run_turn(ready, outer):
                     pass
                 return
-            item = first
-            while True:
-                if item is None:
-                    if self._stopped():
-                        return
-                    try:
-                        item = ready.get_nowait()
-                    except queue.Empty:
-                        return
+            while not self._stopped():
+                try:
+                    item = ready.get_nowait()
+                except queue.Empty:
+                    return
                 if not self._run_lane_item(item, outer, ready):
                     return
-                item = None
         finally:
             self._lane_exited()
 
@@ -291,7 +284,7 @@ class BoundedCampaignScheduler:
         lane goes on even when every other lane already left.
         """
         try:
-            if self._run_item(item, outer, hold):
+            if self._run_item(item, hold):
                 with self._requeued_gate:
                     self._requeued.add(str(item["work_item_id"]))
                 ready.put(item)
@@ -314,30 +307,20 @@ class BoundedCampaignScheduler:
         self._capacity.cancel_waiters(_worker_failure_cause(exc))
         self._stop.set()
 
-    def _run_item(
-        self, item: Mapping[str, object], outer: bool, hold: _TurnHold | None = None
-    ) -> bool:
+    def _run_item(self, item: Mapping[str, object], hold: _TurnHold | None = None) -> bool:
         """Run one item; ``True`` when its attempt was OOM-killed and must run again.
 
-        Under memory admission (*hold* is the start turn) any lane asks for the
-        item's claim and passes the turn on once it is admitted.
+        Under memory admission (*hold* is the start turn) the item's claim is
+        admitted before the turn passes on.
         """
         with self._requeued_gate:
             requeued = item.get("work_item_id") in self._requeued
         with self._allocation_gate:
             attempt = self._allocate(item)
         with self._collision_permit(attempt.collision_key), self._lane_scope(attempt):
-            # The outer lane (and every lane under memory admission) runs under the
-            # Flow's claim, unless the item takes its own.
-            asks = outer or hold is not None
-            memory = None
-            if asks:
-                memory = (
-                    self._capacity.work_item_claim(item, alone=True)
-                    if requeued
-                    else self._capacity.work_item_claim(item)
-                )
-            if asks and memory is None:
+            # An item with no claim of its own runs under the Flow's claim.
+            memory = self._capacity.work_item_claim(item, alone=requeued)
+            if memory is None:
                 with supervised_execution_scope(self._capacity.outer_scope(self._stop.is_set)):
                     self._execute(attempt, None)
                 return False
@@ -356,10 +339,7 @@ class BoundedCampaignScheduler:
             ):
                 if hold is not None:
                     hold.pass_on()
-                if memory is None:
-                    self._execute(attempt, str(permit.child_execution_id))
-                else:
-                    killed = self._run_own_claim_item(attempt, permit, requeued=requeued)
+                killed = self._run_own_claim_item(attempt, permit, requeued=requeued)
         if killed:
             # The claim is released: the item queues again and takes the whole budget.
             print(
@@ -369,7 +349,7 @@ class BoundedCampaignScheduler:
         return killed
 
     def _run_own_claim_item(
-        self, attempt: ScheduledAttempt, permit: ChildHeavyPermit, *, requeued: bool
+        self, attempt: ScheduledAttempt, permit: ChildPermit, *, requeued: bool
     ) -> bool:
         """Run an item holding its own claim as its own Job attempt; ``True`` to run it again.
 

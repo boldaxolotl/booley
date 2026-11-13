@@ -39,7 +39,7 @@ RUNTIME_PATHS = (
     ".managed/.project-git-hooks.pyz.interrupted.tmp",
     "runtime/doctor_stamp.json",
     "runtime/sessions/thread.json",
-    "runtime/jobs/slots/heavy/token.json",
+    "runtime/jobs/slots/light/token.json",
     ".interactive_logs/session.log",
     "goals/g1/record.json",
     "goals/g1/.record.json.tmp",
@@ -383,16 +383,10 @@ def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project
     assert_clean(repo)
 
 
-def test_doctor_probe_and_upgrade_publications_keep_project_clean(versioned_project):
-    from booley.harness import developer_probe, synth_probe, upgrade_review
+def test_upgrade_publication_keeps_project_clean(versioned_project):
+    from booley.harness import upgrade_review
 
     _root, data, repo = versioned_project
-    for path in (
-        developer_probe.record_measurement(data, 1024),
-        synth_probe.record_measurement(data, "synth", 1.0),
-    ):
-        assert path.is_file()
-        assert_clean(repo)
     upgrade_review.observe(data, current_version="0.3.0", now="2026-10-10T00:00:00Z")
     assert upgrade_review.state_path(data).is_file()
     assert_clean(repo)

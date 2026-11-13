@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from pathlib import Path
 from typing import Any, Final
 
 from booley.audit.config_common import (
@@ -400,7 +401,7 @@ def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 
 def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate the undocumented ``[jobs].memory_budget`` override and ``[jobs.seats]``."""
+    """Validate the ``[jobs].memory_budget`` override and ``[jobs.seats]``."""
     from booley.audit.resource_policy import configured_memory_budget
     from booley.config.jobs import SeatCapError, parse_seat_caps
 
@@ -425,6 +426,21 @@ def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             ).findings
         )
     return ConfigTableAudit(tuple(findings))
+
+
+def audit_retired_jobs_keys(path: Path) -> ConfigTableAudit:
+    """One FAIL per retired ``[jobs]`` key the ``booley.toml`` at *path* still sets."""
+    from booley.config.jobs import retired_jobs_keys, retired_jobs_keys_fix
+
+    return ConfigTableAudit(
+        tuple(
+            fail_finding(
+                f"booley.toml sets retired [jobs] key {found.key} (line {found.line})",
+                retired_jobs_keys_fix(found),
+            )
+            for found in retired_jobs_keys(path)
+        )
+    )
 
 
 def audit_goals_table(data: Mapping[str, Any]) -> ConfigTableAudit:

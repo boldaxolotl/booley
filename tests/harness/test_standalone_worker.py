@@ -69,7 +69,10 @@ from booley.runtime.endpoint_execution import EndpointOutcome
 class StubFlow(BooleyFlow):
     name = "stub_flow"
     description = "Detached worker fixture"
-    JOB_CLASS = "heavy"
+    JOB_CLASS = "light"
+
+    def _memory_admitted(self):
+        return False  # counted light slot: the test queues behind a plain slot holder
     target_required = False
 
     def _add_args(self, parser):
@@ -151,7 +154,7 @@ while marker and not Path(marker).exists() and time.monotonic() < deadline:
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """A Project whose Booley Directory has one Flow, one Specialist and one heavy slot."""
+    """A Project whose Booley Directory has one Flow, one Specialist and one light slot."""
     for name in ("BOOLEY_DIR", "BOOLEY_SLOTS_DIR", *GOAL_AND_SESSION_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
@@ -161,7 +164,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     tools.mkdir(parents=True)
     # The default CLI is named so a Specialist resolves one inside a container too.
     (root / ".booley" / "booley.toml").write_text(
-        '[agent]\ndefault = "claude"\n\n[jobs]\nmax_heavy = 1\n', encoding="utf-8"
+        '[agent]\ndefault = "claude"\n\n[jobs]\nmax_light = 1\n', encoding="utf-8"
     )
     (tools / "stub_flow.py").write_text(STUB_FLOW, encoding="utf-8")
     (tools / "stub_specialist.py").write_text(STUB_SPECIALIST, encoding="utf-8")
@@ -541,10 +544,10 @@ def test_worker_without_a_record_reports_it(
 @linux_only
 def test_worker_job_queues_in_the_shell_slot_store(project: Path, ctl: Path) -> None:
     slots_root = booley_dir_of(project) / "runtime" / "jobs" / "slots"
-    store = job_slots.SlotStore(slots_root, SlotCaps(max_heavy=1))
-    # A shell run holds the only heavy slot.
+    store = job_slots.SlotStore(slots_root, SlotCaps(max_light=1))
+    # A shell run holds the only light slot.
     holder = store.acquire(
-        job_slots.CLASS_HEAVY, pid=os.getpid(), argv=_proc_cmdline(os.getpid()) or []
+        job_slots.CLASS_LIGHT, pid=os.getpid(), argv=_proc_cmdline(os.getpid()) or []
     )
     try:
         (ctl / "release").write_text("1", encoding="utf-8")

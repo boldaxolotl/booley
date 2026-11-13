@@ -29,7 +29,7 @@ def world() -> FakeWorld:
 
 @pytest.fixture
 def store(tmp_path: Path, world: FakeWorld) -> job_slots.SlotStore:
-    return make_store(tmp_path / "slots", world, SlotCaps(max_heavy=3))
+    return make_store(tmp_path / "slots", world, SlotCaps(max_light=3))
 
 
 @pytest.fixture
@@ -232,8 +232,8 @@ def test_a_slot_claim_has_no_admission_ordinal(
     store: job_slots.SlotStore, world: FakeWorld
 ) -> None:
     world.alive[101] = ["coordinator"]
-    token = store.acquire(job_slots.CLASS_HEAVY, pid=101)
-    (holder,), _waiters = store.observe(job_slots.CLASS_HEAVY)
+    token = store.acquire(job_slots.CLASS_LIGHT, pid=101)
+    (holder,), _waiters = store.observe(job_slots.CLASS_LIGHT)
     assert (token.admitted, holder.admitted) == (None, None)
 
 
@@ -362,15 +362,15 @@ class TestJobOomRankingLifecycle:
         self, store: job_slots.SlotStore, world: FakeWorld
     ) -> None:
         world.alive[101] = ["coordinator"]
-        heavy = store.acquire(job_slots.CLASS_HEAVY, pid=101)
+        holder = store.acquire(job_slots.CLASS_LIGHT, pid=101)
         assert not isinstance(
-            oom_priority.job_oom_priority(store, heavy), oom_priority.JobOomRanking
+            oom_priority.job_oom_priority(store, holder), oom_priority.JobOomRanking
         )
         assert not isinstance(
             oom_priority.job_oom_priority(store, None), oom_priority.JobOomRanking
         )
         assert not isinstance(
-            oom_priority.job_oom_priority(None, heavy), oom_priority.JobOomRanking
+            oom_priority.job_oom_priority(None, holder), oom_priority.JobOomRanking
         )
 
 

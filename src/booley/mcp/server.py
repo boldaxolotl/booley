@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
+from booley.config.jobs import RetiredJobsKeyError, refuse_retired_jobs_keys
 from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
@@ -1921,6 +1922,12 @@ async def _dispatch_application_tool(
     bwave_result = await _dispatch_bwave(name, arguments, request_context)
     if bwave_result is not None:
         return _prepend_changed_health_alert(bwave_result)
+    # Status, poll, cancel and report tools were dispatched above and stay open, so
+    # an agent can still inspect and cancel; running a Flow or Specialist refuses.
+    try:
+        refuse_retired_jobs_keys(None)
+    except RetiredJobsKeyError as exc:
+        return _error_result(f"ERROR: {exc}")
     args = (name, arguments, dict(mcp_tool_def), mcp_tool_call_counts, jobs)
     result = (
         await _dispatch_booley_mcp_tool(*args, caller=caller)

@@ -575,6 +575,9 @@ def _check_project_setup(
         return None
 
     valid = _validate_booley_toml(booley_toml, booley_dir, report)
+    # Nothing reads the retired keys any more, so they fail without invalidating
+    # the rest of the Project (Doctor keeps checking).
+    _add_config_audit(project_schema.audit_retired_jobs_keys(booley_dir / "booley.toml"), report)
     from booley.targets.flow_names import canonicalize_config
 
     booley_toml = canonicalize_config(booley_toml)

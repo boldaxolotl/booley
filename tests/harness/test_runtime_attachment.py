@@ -337,19 +337,19 @@ def test_sigint_during_slot_queue_wait_withdraws_waiter(tmp_path: Path, monkeypa
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
     slots = data / "runtime" / "jobs" / "slots"
-    holder_store = job_slots.SlotStore(slots)
-    holder = holder_store.acquire(job_slots.CLASS_HEAVY, pid=os.getpid())
+    holder_store = job_slots.SlotStore(slots, job_slots.SlotCaps(max_light=1))
+    holder = holder_store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid())
     command = (
         "import os\n"
         "from booley.runtime import job_slots\n"
         "from booley.runtime.booley_dir import resolve_booley_dir\n"
         "root=resolve_booley_dir()/'runtime'/'jobs'/'slots'\n"
-        "store=job_slots.SlotStore(root)\n"
-        "store.acquire(job_slots.CLASS_HEAVY,pid=os.getpid(),poll_interval=0.02)\n"
+        "store=job_slots.SlotStore(root,job_slots.SlotCaps(max_light=1))\n"
+        "store.acquire(job_slots.CLASS_LIGHT,pid=os.getpid(),poll_interval=0.02)\n"
     )
     interrupter = threading.Thread(
         target=lambda: _interrupt_when(
-            lambda: bool(holder_store.snapshot(job_slots.CLASS_HEAVY)[1])
+            lambda: bool(holder_store.snapshot(job_slots.CLASS_LIGHT)[1])
         ),
         daemon=True,
     )
@@ -359,7 +359,7 @@ def test_sigint_during_slot_queue_wait_withdraws_waiter(tmp_path: Path, monkeypa
             root, "session-name", [sys.executable, "-c", command], tty=False
         )
         assert result.exit_code == 130
-        assert holder_store.snapshot(job_slots.CLASS_HEAVY)[1] == []
+        assert holder_store.snapshot(job_slots.CLASS_LIGHT)[1] == []
     finally:
         holder_store.release(holder)
 
@@ -376,7 +376,7 @@ def test_sigint_after_promotion_allows_repeated_slot_cleanup(tmp_path: Path, mon
         "from booley.runtime.booley_dir import resolve_booley_dir\n"
         "root=resolve_booley_dir()/'runtime'/'jobs'/'slots'\n"
         "store=job_slots.SlotStore(root)\n"
-        "store.acquire(job_slots.CLASS_HEAVY,pid=os.getpid(),poll_interval=0.02)\n"
+        "store.acquire(job_slots.CLASS_LIGHT,pid=os.getpid(),poll_interval=0.02)\n"
         f"open({str(promoted)!r},'w').close()\n"
         "time.sleep(120)\n"
     )
@@ -391,8 +391,8 @@ def test_sigint_after_promotion_allows_repeated_slot_cleanup(tmp_path: Path, mon
     store = job_slots.SlotStore(data / "runtime" / "jobs" / "slots")
 
     assert result.exit_code == 130
-    assert len(store.reap(job_slots.CLASS_HEAVY)) == 1
-    assert store.reap(job_slots.CLASS_HEAVY) == []
+    assert len(store.reap(job_slots.CLASS_LIGHT)) == 1
+    assert store.reap(job_slots.CLASS_LIGHT) == []
 
 
 def test_missing_container_protocol_fails_fast_with_actionable_message(

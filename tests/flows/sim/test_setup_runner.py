@@ -71,8 +71,7 @@ def test_timeout_and_oom_are_named_in_stderr(
     assert timed_out.returncode == -9
     assert timed_out.stderr == "partial\nFuseSoC setup timed out after 90 s"
 
-    # Under memory admission only the command's own OOM kill is blamed.
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    # Only the command's own OOM kill is blamed.
     killed = _run(
         _Invoker(SubprocessResult(returncode=-9, oom_killed=True, peak_rss_mb=812.4)), tmp_path
     )

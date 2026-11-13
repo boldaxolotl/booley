@@ -100,14 +100,13 @@ Doctor runs every Target whose `flow_options.booley.doctor` contains `synth`.
 Mark the complete supported synthesis matrix; do not finish setup while an
 intended matrix member is unmarked.
 
-The run must reach a terminal, completed PPA report. After it passes, Doctor
-records each synthesis boundary's process-tree peak RSS, retains the largest,
-and adds 15% rounded-up headroom to the HEAVY
-job reservation. Re-run plain Doctor and use its memory-invariant arithmetic to
-settle both `[jobs].heavy_memory` and `[sandbox].memory`, then recreate the
+The run must reach a terminal, completed PPA report. After it passes, read the
+largest synthesis peak memory from `booley resources`, add 15% rounded-up
+headroom, and set `[sandbox].memory` to cover it plus the agents. Re-run plain
+Doctor, which warns while `[sandbox].memory` is unset, then recreate the
 Sandbox if the container limit changed and repeat the heaviest synthesis.
 
-- `termination = "oom"`: increase the container limit and HEAVY reservation
+- `termination = "oom"`: increase the container limit
   when the host has capacity, recreate the Sandbox, and rerun. If the
   host cannot provide the required memory, stop and report setup blocked; do
   not waive a target that the project claims to support.

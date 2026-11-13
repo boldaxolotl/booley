@@ -1,6 +1,7 @@
 """``[jobs]`` cap parsing."""
 
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,7 @@ def test_parse_caps_accepts_memory_budget_without_unknown_key_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     with caplog.at_level(logging.WARNING, logger="booley.config.jobs"):
-        parse_caps({"jobs": {"memory_budget": "24g", "max_heavy": 2}})
+        parse_caps({"jobs": {"memory_budget": "24g", "max_light": 2}})
 
     assert "unknown key" not in caplog.text
     assert "memory_budget" not in caplog.text
@@ -22,7 +23,7 @@ def test_parse_caps_accepts_the_seats_table_without_warning(
 ) -> None:
     from booley.config.jobs import parse_seat_caps
 
-    data = {"jobs": {"seats": {"vivado": 2}, "max_heavy": 2}}
+    data = {"jobs": {"seats": {"vivado": 2}, "max_light": 2}}
     with caplog.at_level(logging.WARNING, logger="booley.config.jobs"):
         parse_caps(data)
 
@@ -61,7 +62,7 @@ def test_absent_or_unreadable_jobs_table_has_no_seat_caps() -> None:
     from booley.config.jobs import parse_seat_caps
 
     assert parse_seat_caps({}) == {}
-    assert parse_seat_caps({"jobs": {"max_heavy": 2}}) == {}
+    assert parse_seat_caps({"jobs": {"max_light": 2}}) == {}
     # parse_caps already warns about a non-table [jobs]; the seats parser stays quiet.
     assert parse_seat_caps({"jobs": "many"}) == {}
 
@@ -77,3 +78,70 @@ def test_required_seats_pairs_each_tool_with_its_cap_or_names_the_fix() -> None:
         required_seats(("vivado",), {})
     assert seat_cap_fix("vivado") in str(raised.value)
     assert seat_cap_fix("vivado") == "[jobs.seats] vivado = <seats you own>"
+
+
+def test_retired_jobs_keys_are_named_with_their_lines(tmp_path: Path) -> None:
+    from booley.config.jobs import (
+        RetiredKey,
+        retired_jobs_keys,
+        retired_jobs_keys_fix,
+        retired_jobs_keys_message,
+    )
+
+    forms = {
+        "table": ('[jobs]\nmax_light = 2\nmax_heavy = 2\nheavy_memory = "8g"\n', (3, 4)),
+        "dotted": ('jobs.max_heavy = 2\njobs.heavy_memory = "8g"\n', (1, 2)),
+        "quoted": ('[ "jobs" ]\n"max_heavy" = 2\n\'heavy_memory\' = "8g"  # note\n', (2, 3)),
+        "inline": ('title = 1\njobs = { max_heavy = 2, heavy_memory = "8g" }\n', (2, 2)),
+    }
+    for name, (text, lines) in forms.items():
+        path = tmp_path / f"{name}.toml"
+        path.write_bytes(text.encode())
+        assert retired_jobs_keys(path) == (
+            RetiredKey("max_heavy", lines[0]),
+            RetiredKey("heavy_memory", lines[1]),
+        ), name
+
+    # Other tables, multi-line strings and clean, missing or broken files are no hit.
+    quiet = {
+        "other-table": "[sandbox]\nmax_heavy = 2\n",
+        "multi-line-string": '[jobs]\nnote = """\nmax_heavy = 2\n"""\nmax_light = 1\n',
+        "clean": '[jobs]\nmemory_budget = "8g"\n',
+        "broken": "[jobs\nmax_heavy = 2\n",
+    }
+    for name, text in quiet.items():
+        path = tmp_path / f"{name}.toml"
+        path.write_bytes(text.encode())
+        assert retired_jobs_keys(path) == (), name
+    assert retired_jobs_keys(tmp_path / "missing.toml") == ()
+
+    found = (RetiredKey("max_heavy", 12), RetiredKey("heavy_memory", 13))
+    message = retired_jobs_keys_message(tmp_path / "booley.toml", found)
+    assert "max_heavy (line 12), heavy_memory (line 13)" in message
+    assert "booley-heal" in message
+    assert retired_jobs_keys_fix(found[0]) == (
+        "delete [jobs].max_heavy (line 12); memory admission replaced it"
+    )
+
+
+def test_refuse_retired_jobs_keys_reads_the_main_booley_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.config.jobs import refuse_retired_jobs_keys
+    from booley.runtime import booley_dir as booley_dir_module
+
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    booley_dir_module.reset_cache()
+    (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 1\n")
+
+    with pytest.raises(ValueError, match=r"max_heavy \(line 2\)"):
+        refuse_retired_jobs_keys(tmp_path)
+
+    (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_light = 1\n")
+    refuse_retired_jobs_keys(tmp_path)
+    # A Project that cannot be resolved has nothing to refuse.
+    monkeypatch.delenv("BOOLEY_DIR")
+    booley_dir_module.reset_cache()
+    refuse_retired_jobs_keys(tmp_path / "nowhere")

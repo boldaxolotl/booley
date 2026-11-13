@@ -103,8 +103,8 @@ with a `--test` that already names a seed, with an elaboration check, or with
 `--resume-from`.
 
 Tests run in the order you name them; with `--coverage`, in order of Test name.
-They run one at a time unless you raise `max_heavy` in
-[`[jobs]`](CONFIG.md#jobs--concurrency-jobs).
+They run in parallel while their memory reservations fit the Memory Budget
+(see [`[jobs]`](CONFIG.md#jobs--concurrency-jobs)).
 
 ## Reading results
 
@@ -578,10 +578,10 @@ Verilator turns the design into C++ that has to be compiled, which is often
 the slowest part of a run. Booley speeds that up in two ways.
 
 **Parallel compilation.** Booley compiles the model with several jobs at once.
-It splits the Sandbox's CPUs between the `max_heavy` builds that may run at
-the same time, and allows about one compile job per GiB of `heavy_memory`
-(both in [`[jobs]`](CONFIG.md#jobs--concurrency-jobs)). A `-j` in the
-Target's `make_options` overrides this.
+It gives the build the Job's share of the Sandbox's CPU cores: every core when
+the Job runs alone, fewer when other Jobs run beside it
+([`[jobs]`](CONFIG.md#jobs--concurrency-jobs)). A `-j` in the Target's
+`make_options` overrides this.
 
 **Compiler cache.** The C++ compilation uses ccache, so a rebuild after a
 small change is quicker. The cache is kept in the Project's Booley Directory,

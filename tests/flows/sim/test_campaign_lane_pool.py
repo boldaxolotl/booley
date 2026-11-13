@@ -9,8 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.config.jobs import SlotCaps
-from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
+from booley.flows.sim.campaign.capacity import CampaignCapacity, CampaignCapacityError
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.scheduler import (
     BoundedCampaignScheduler,
@@ -23,7 +22,7 @@ from booley.runtime.execution_records import (
     read_json,
 )
 from booley.runtime.job_slots import (
-    CLASS_HEAVY,
+    CLASS_MEMORY,
     QUEUED,
     ROLE_INTERACTIVE,
     ClaimAbortedError,
@@ -36,9 +35,12 @@ from booley.runtime.supervised_execution import (
 from tests.flows.sim.campaign_test_support import (
     _PARALLEL_SYNC_TIMEOUT_S,
     _capacity,
+    _holder_claim,
+    _item_capacity,
     _lane_registry,
     _managed,
     _named_manifest,
+    _outer_claim,
     _scheduled_attempt,
     _wait_until,
 )
@@ -51,7 +53,7 @@ _UNRELATED_THREAD_PREFIXES = ("booley-lease-", "booley-campaign-process-cancella
 class _Campaign:
     """One real manifest, registry, slot store and held outer token."""
 
-    def __init__(self, tmp_path: Path, names: tuple[str, ...], max_heavy: int) -> None:
+    def __init__(self, tmp_path: Path, names: tuple[str, ...], lanes: int) -> None:
         self.manifest = _named_manifest(names)
         self.store = CampaignStore(tmp_path / "record")
         self.store.publish_manifest(self.manifest)
@@ -66,23 +68,21 @@ class _Campaign:
                 ExecutionId(execution_id)
             )
         )
-        self.slots = SlotStore(
-            tmp_path / "slots", SlotCaps(max_heavy=max_heavy), recovery=terminal
-        )
-        self.outer = self.slots.acquire(
-            CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
-        )
-        self.max_heavy = max_heavy
+        self.slots = SlotStore(tmp_path / "slots", recovery=terminal)
+        self.outer = _outer_claim(self.slots)
+        self.lanes = lanes
 
     def scheduler(
         self, execute, *, timeout_seconds: float, cancellation=lambda: False, prepare_child=None
     ):
         admission = replace(
-            _managed(self.slots, self.outer, max_heavy=self.max_heavy),
+            _managed(self.slots, self.outer, holders=self.lanes),
             timeout_seconds=timeout_seconds,
             cancellation=cancellation,
         )
-        self.capacity = HeavyCapacity(admission, self.manifest, self.registry.project_data)
+        self.capacity = _item_capacity(
+            admission, self.manifest, self.registry.project_data, lanes=self.lanes
+        )
         return BoundedCampaignScheduler(
             self.capacity,
             allocate=lambda item: _scheduled_attempt(self.store, item),
@@ -102,7 +102,7 @@ def _test_name(attempt) -> str:
 def test_parallel_campaign_runs_only_bounded_lane_threads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    campaign = _Campaign(tmp_path, ("alpha", "beta", "gamma", "delta"), max_heavy=3)
+    campaign = _Campaign(tmp_path, ("alpha", "beta", "gamma", "delta"), lanes=3)
     all_lanes_running = threading.Barrier(3, timeout=_PARALLEL_SYNC_TIMEOUT_S)
     arrivals = iter(range(3))
     arrival_gate = threading.Lock()
@@ -132,7 +132,7 @@ def test_parallel_campaign_runs_only_bounded_lane_threads(
 
 def _delete_own_token(slots: SlotStore, child_id: str) -> None:
     """Make the lease of exactly this child disappear, like a reaper reclaiming it."""
-    for token in slots.snapshot(CLASS_HEAVY)[0]:
+    for token in slots.snapshot(CLASS_MEMORY)[0]:
         if str(token.execution_id) == child_id:
             with slots._lease_gate(token) as acquired:
                 assert acquired
@@ -151,8 +151,7 @@ def _delete_own_token(slots: SlotStore, child_id: str) -> None:
 )
 def test_child_lane_terminal_cause(tmp_path: Path, failure: str, cause: str) -> None:
     """A child lane has its identity before its work starts and a terminal record after."""
-    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
-    lane_ready = threading.Event()
+    campaign = _Campaign(tmp_path, ("alpha",), lanes=1)
     lanes: list[ExecutionId] = []
 
     def lane_paths(child_id):
@@ -162,16 +161,10 @@ def test_child_lane_terminal_cause(tmp_path: Path, failure: str, cause: str) -> 
         lanes.append(child_id)
         assert lane_paths(child_id).context.is_file()
         if failure == "publish_failed":
-            lane_ready.set()
             raise RuntimeError("publish boom")
 
     def execute(_attempt, child_id) -> None:
-        if child_id is None:
-            # The outer lane waits so the child lane takes the second item.
-            assert lane_ready.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            return
         assert read_json(lane_paths(child_id).record)["state"] == "waiting"
-        lane_ready.set()
         if failure == "work_failed":
             raise RuntimeError("work boom")
 
@@ -193,7 +186,7 @@ def test_child_lane_terminal_cause(tmp_path: Path, failure: str, cause: str) -> 
 def test_child_token_left_after_terminal_proof_fails_the_campaign(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), lanes=2)
     child_done = threading.Event()
     # Report every token still present, as if the child's release never landed.
     monkeypatch.setattr(campaign.slots, "token_absent", lambda _token: False)
@@ -205,7 +198,9 @@ def test_child_token_left_after_terminal_proof_fails_the_campaign(
         child_done.set()
 
     try:
-        with pytest.raises(HeavyCapacityError, match="child token remained after terminal proof"):
+        with pytest.raises(
+            CampaignCapacityError, match="child token remained after terminal proof"
+        ):
             campaign.scheduler(execute, timeout_seconds=30.0).run(campaign.items)
     finally:
         campaign.slots.release(campaign.outer)
@@ -217,21 +212,22 @@ def test_lost_child_lease_interrupts_only_that_lane_item(
     from booley.flows.sim.campaign.coordinator import raise_if_cancelled_before_publication
 
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
-    campaign = _Campaign(tmp_path, ("alpha", "beta", "gamma"), max_heavy=2)
+    campaign = _Campaign(tmp_path, ("alpha", "beta", "gamma"), lanes=2)
     child_interrupted = threading.Event()
     completed: list[str] = []
-    outer_scope_cancelled: list[bool] = []
+    other_scope_cancelled: list[bool] = []
 
     def execute(attempt, child_id) -> None:
         scope = current_supervised_execution()
         assert scope is not None
-        if child_id is None:
-            # The outer lane keeps working until the child lane lost its lease.
+        if _test_name(attempt) != "beta":
+            # The other lane keeps working until beta's lane lost its lease.
             assert child_interrupted.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            outer_scope_cancelled.append(scope.cancelled())
+            other_scope_cancelled.append(scope.cancelled())
             completed.append(_test_name(attempt))
             return
-        _wait_until(lambda: len(campaign.slots.snapshot(CLASS_HEAVY)[0]) == 2)
+        # The Flow's claim and both lanes' item claims.
+        _wait_until(lambda: len(campaign.slots.snapshot(CLASS_MEMORY)[0]) == 3)
         _delete_own_token(campaign.slots, child_id)
         _wait_until(scope.cancelled, _PARALLEL_SYNC_TIMEOUT_S)
         # Exact recovery of this child starts while its work is still running.
@@ -244,45 +240,39 @@ def test_lost_child_lease_interrupts_only_that_lane_item(
 
     scheduler = campaign.scheduler(execute, timeout_seconds=30.0)
     try:
-        with pytest.raises(HeavyCapacityError, match="lease lost"):
+        with pytest.raises(CampaignCapacityError, match="lease lost"):
             scheduler.run(campaign.items)
     finally:
         campaign.slots.release(campaign.outer)
     assert sorted(completed) == ["alpha", "gamma"]
     assert campaign.capacity.cancellation_cause() is None
-    assert outer_scope_cancelled == [False, False]
-    assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
+    assert other_scope_cancelled == [False, False]
+    assert campaign.slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def test_reaping_a_terminal_child_token_is_not_a_lost_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Every running lane's cancellation watcher reaps the heavy class every 10 ms, so
+    # Every running lane's cancellation watcher reaps the memory class every 10 ms, so
     # another lane can reclaim a child token right after its terminal record lands.
-    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
-    child_done = threading.Event()
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), lanes=2)
     reaped: list[str] = []
     publish_terminal = ChildExecutionRegistry.mark_terminal
 
     def mark_terminal_then_reap(registry, prepared, terminal_cause: str) -> None:
         publish_terminal(registry, prepared, terminal_cause)
-        reaped.extend(campaign.slots.reap(CLASS_HEAVY))
+        reaped.extend(campaign.slots.reap(CLASS_MEMORY))
 
     monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", mark_terminal_then_reap)
 
-    def execute(_attempt, child_id) -> None:
-        if child_id is None:
-            # The outer lane waits so the child lane takes the second item.
-            assert child_done.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            return
-        child_done.set()
-
     try:
-        campaign.scheduler(execute, timeout_seconds=30.0).run(campaign.items)
+        campaign.scheduler(lambda _attempt, _child_id: None, timeout_seconds=30.0).run(
+            campaign.items
+        )
     finally:
         campaign.slots.release(campaign.outer)
-    assert len(reaped) == 1
-    assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
+    assert len(reaped) == 2  # each item's own token
+    assert campaign.slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def test_lease_tick_after_terminal_reap_starts_no_recovery(
@@ -291,24 +281,17 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
     # After the reap, a renewal tick marks the reaped lease lost. The await loop must
     # not then cancel the already-terminal child (no stray cancel file).
 
-    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
-    child_done = threading.Event()
+    campaign = _Campaign(tmp_path, ("alpha",), lanes=1)
     confirmed: list = []
     cancelled: list[ExecutionId] = []
     publish_terminal = ChildExecutionRegistry.mark_terminal
 
     def mark_terminal_then_reap_and_tick(registry, prepared, terminal_cause: str) -> None:
         publish_terminal(registry, prepared, terminal_cause)
-        assert len(campaign.slots.reap(CLASS_HEAVY)) == 1
+        assert len(campaign.slots.reap(CLASS_MEMORY)) == 1
         (permit,) = confirmed
         assert not campaign.slots.renew(permit.token)  # the tick sees the lease gone
         campaign.capacity.recover_lost_children()
-
-    def execute(_attempt, child_id) -> None:
-        if child_id is None:
-            assert child_done.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            return
-        child_done.set()
 
     monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", mark_terminal_then_reap_and_tick)
     monkeypatch.setattr(
@@ -316,14 +299,14 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
         "cancel",
         lambda _registry, execution_id: cancelled.append(execution_id),
     )
-    scheduler = campaign.scheduler(execute, timeout_seconds=30.0)
-    confirm = HeavyCapacity._confirm_lease
+    scheduler = campaign.scheduler(lambda _attempt, _child_id: None, timeout_seconds=30.0)
+    confirm = CampaignCapacity._confirm_lease
 
     def recording_confirm(capacity, permit) -> bool:
         confirmed.append(permit)
         return confirm(capacity, permit)
 
-    monkeypatch.setattr(HeavyCapacity, "_confirm_lease", recording_confirm)
+    monkeypatch.setattr(CampaignCapacity, "_confirm_lease", recording_confirm)
     try:
         scheduler.run(campaign.items)
     finally:
@@ -334,25 +317,25 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
         permit.child_execution_id, booley_dir=campaign.registry.project_data
     )
     assert not child_paths.cancel.exists()
-    assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
+    assert campaign.slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
-def test_lane_past_cancel_deadline_holds_outer_slot_within_max_heavy(tmp_path: Path) -> None:
-    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
+def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path) -> None:
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), lanes=2)
     cancelled = threading.Event()
     child_running = threading.Event()
     release_child = threading.Event()
 
     holder_counts: list[int] = []
 
-    def execute(_attempt, child_id) -> None:
-        if child_id is None:
+    def execute(attempt, _child_id) -> None:
+        if _test_name(attempt) == "alpha":
             assert cancelled.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            # Sampled while the child lane is still running past the cancel.
-            holder_counts.append(len(campaign.slots.snapshot(CLASS_HEAVY)[0]))
+            # Sampled while the other lane is still running past the cancel.
+            holder_counts.append(len(campaign.slots.snapshot(CLASS_MEMORY)[0]))
             return
         child_running.set()
-        holder_counts.append(len(campaign.slots.snapshot(CLASS_HEAVY)[0]))
+        holder_counts.append(len(campaign.slots.snapshot(CLASS_MEMORY)[0]))
         # This lane ignores cancellation until the test releases it.
         assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
 
@@ -368,55 +351,49 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_max_heavy(tmp_path: P
         with pytest.raises(CampaignSchedulingError, match="bounded shutdown"):
             scheduler.run(campaign.items)
         campaign.slots.release(campaign.outer)  # the endpoint's admission finally
-        # Cancellation already recovered the stuck child's token, so one slot is
-        # free for a competitor; the outer slot must still be held, which leaves
-        # the second competitor queued and the holders within max_heavy.
+        # Cancellation already recovered the stuck item's claim, so memory is
+        # free for a competitor; the Flow's claim must still be held, which leaves
+        # the second competitor queued and the holders within the Flow plus its lanes.
         for ordinal in range(2):
             competitors.append(
                 campaign.slots.submit(
-                    CLASS_HEAVY,
+                    CLASS_MEMORY,
                     pid=os.getpid(),
                     role=ROLE_INTERACTIVE,
                     execution_id=ExecutionId(str(ordinal + 1) * 32),
+                    memory=_holder_claim(1),
                 )
             )
-        holders, _waiters = campaign.slots.snapshot(CLASS_HEAVY)
+        holders, _waiters = campaign.slots.snapshot(CLASS_MEMORY)
         assert campaign.outer.lease_id in {token.lease_id for token in holders}
         holder_counts.append(len(holders))
-        assert holder_counts and max(holder_counts) <= campaign.max_heavy
+        assert holder_counts and max(holder_counts) <= campaign.lanes + 1
         assert campaign.slots.refresh(competitors[1]).state == QUEUED
-        # The finished outer lane leaves; only the stuck child lane (and its scope's
+        # The lane that finished leaves; only the stuck lane (and its scope's
         # process killer) remain: retention lives inside the pool, not in a thread.
-        _wait_until(lambda: "booley-campaign-outer" not in _campaign_thread_names(earlier_threads))
-        assert _campaign_thread_names(earlier_threads) == {
-            "booley-campaign-child-1",
-            "booley-campaign-process-cancellation",
-        }
+        _wait_until(lambda: len(_lane_thread_names(earlier_threads)) == 1)
+        assert "booley-campaign-process-cancellation" in _campaign_thread_names(earlier_threads)
     finally:
         release_child.set()
         trigger.join(timeout=_PARALLEL_SYNC_TIMEOUT_S)
     _wait_until(lambda: campaign.slots.token_absent(campaign.outer), _PARALLEL_SYNC_TIMEOUT_S)
+    campaign.slots.release(competitors[0])
     _wait_until(
         lambda: campaign.slots.refresh(competitors[1]).state != QUEUED, _PARALLEL_SYNC_TIMEOUT_S
     )
     for competitor in competitors:
         campaign.slots.release(competitor)
-    assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
+    assert campaign.slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), lanes=2)
     child_running = threading.Event()
     release_child = threading.Event()
 
-    def execute(_attempt, child_id) -> None:
-        if child_id is None:
-            # The outer lane stays busy until the child lane has taken the second
-            # item; otherwise the outer lane could drain both items itself.
-            assert child_running.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            return
+    def execute(_attempt, _child_id) -> None:
         child_running.set()
         assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
 
@@ -432,12 +409,21 @@ def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
         with pytest.raises(CampaignSchedulingError, match="bounded shutdown"):
             scheduler.run(campaign.items)
         campaign.slots.release(campaign.outer)  # the endpoint's admission finally
-        holders, _waiters = campaign.slots.snapshot(CLASS_HEAVY)
+        holders, _waiters = campaign.slots.snapshot(CLASS_MEMORY)
         assert campaign.outer.lease_id in {token.lease_id for token in holders}
     finally:
         release_child.set()
     _wait_until(lambda: campaign.slots.token_absent(campaign.outer), _PARALLEL_SYNC_TIMEOUT_S)
-    assert campaign.slots.snapshot(CLASS_HEAVY) == ([], [])
+    assert campaign.slots.snapshot(CLASS_MEMORY) == ([], [])
+
+
+def _lane_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
+    """Names of lane threads (outer or child) started after ``earlier_threads`` was captured."""
+    return {
+        name
+        for name in _campaign_thread_names(earlier_threads)
+        if name.startswith(("booley-campaign-outer", "booley-campaign-child"))
+    }
 
 
 def _campaign_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
@@ -453,15 +439,15 @@ def _campaign_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
     ("when", "error", "match", "cause"),
     [
         ("before_slot", ClaimAbortedError, "shutdown requested", "record_error"),
-        ("in_work", HeavyCapacityError, "plain capacity failure", "orphan_recovered"),
+        ("in_work", CampaignCapacityError, "plain capacity failure", "orphan_recovered"),
         ("after_work", ClaimAbortedError, "cancellation requested", "completed"),
     ],
 )
 def test_child_permit_retires_the_lane_on_every_exit(
     tmp_path: Path, when: str, error: type[Exception], match: str, cause: str
 ) -> None:
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    store = SlotStore(tmp_path / "slots")  # 2-holder budget
+    outer = _outer_claim(store)
     cancelled = threading.Event()
     admission = replace(_managed(store, outer), cancellation=cancelled.is_set)
     capacity = _capacity(admission, tmp_path)
@@ -482,10 +468,11 @@ def test_child_permit_retires_the_lane_on_every_exit(
                 attempt_ordinal=1,
                 attempt_directory=Path("attempt"),
                 publish=publish,
+                memory=capacity.work_item_claim({}),
             ),
         ):
             if when == "in_work":
-                raise HeavyCapacityError("plain capacity failure")
+                raise CampaignCapacityError("plain capacity failure")
             cancelled.set()
     finally:
         store.release(outer)

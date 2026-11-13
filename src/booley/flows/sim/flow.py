@@ -355,10 +355,10 @@ class SimulateFlow(
     )
     code_modifying: bool = False
 
-    # Simulation is always admitted as a heavy Sandbox job.
+    # Simulation is memory-admitted as a Sandbox job.
     def _resolve_job_class(self) -> str:
-        """Simulation is a heavy Sandbox workload."""
-        return job_slots.CLASS_HEAVY
+        """Simulation is a memory-admitted Sandbox workload."""
+        return job_slots.CLASS_MEMORY
 
     def _next_invocation_dir(self, report_dir: Path) -> Path:
         """Acquire the Simulation producer lock before publishing its directory."""

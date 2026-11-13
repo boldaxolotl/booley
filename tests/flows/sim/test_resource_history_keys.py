@@ -187,7 +187,6 @@ def test_oom_killed_fusesoc_setup_requeues_the_job(
     inside the attempt scope that arms a requeue (``tests/runtime`` covers the
     requeue itself: an own OOM kill plus a failed result).
     """
-    from booley.flows.memory_admission import MEMORY_ADMISSION_ENV
     from booley.flows.sim.build import SimulationBuildPreparationError
     from booley.flows.sim.execution.contract import SimulationOptions
     from booley.flows.sim.execution.engine import SimulationExecution
@@ -197,7 +196,6 @@ def test_oom_killed_fusesoc_setup_requeues_the_job(
 
     booley_dir = flow_project / ".booley"
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-    monkeypatch.setenv(MEMORY_ADMISSION_ENV, "1")
     _fusesoc_killed_by_sigkill(tmp_path, monkeypatch)
     # The container's OOM counter rises over every command, so each kill is blamed.
     counter = itertools.count()
@@ -250,7 +248,7 @@ def test_coverage_request_maps_to_recorded_keys(tmp_path: Path, monkeypatch) -> 
     )
     job_resources.clear_label()
 
-    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0)
+    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0, oom_killed=False)
     measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
     recorded: list = []
     for label in labels:

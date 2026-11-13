@@ -442,11 +442,11 @@ class TestUnknownTestSelector:
 
 
 class TestExecutionValidation:
-    def test_job_class_is_heavy(self, tmp_path: Path):
+    def test_job_class_is_memory(self, tmp_path: Path):
         from booley.runtime import job_slots
 
         flow = _make_flow(tmp_path, config="lite")
-        assert flow._resolve_job_class() == job_slots.CLASS_HEAVY
+        assert flow._resolve_job_class() == job_slots.CLASS_MEMORY
 
 
 # ---------------------------------------------------------------------------

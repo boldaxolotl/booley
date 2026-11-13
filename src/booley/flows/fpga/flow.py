@@ -256,10 +256,10 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     conventional_families: ClassVar[frozenset[str]] = frozenset({"fpga_impl_ok"})
     _PAIR_CRITERION_PREFIX = "fpga_impl_ok_"
 
-    # FPGA implementation is always admitted as a heavy Sandbox job.
+    # FPGA implementation is memory-admitted as a Sandbox job.
     def _resolve_job_class(self) -> str:
-        """FPGA implementation is a heavy Sandbox workload."""
-        return job_slots.CLASS_HEAVY
+        """FPGA implementation is a memory-admitted Sandbox workload."""
+        return job_slots.CLASS_MEMORY
 
     def _licensed_tools(self) -> tuple[str, ...]:
         """One Job runs its Vivado work units in series: one Vivado seat.

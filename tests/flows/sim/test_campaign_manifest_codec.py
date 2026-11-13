@@ -881,7 +881,7 @@ def _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directo
         producer_invocation_id=1,
         policy=CampaignPolicy(),
         admission=AdmissionContext(
-            "unmanaged", None, None, 1, "interactive", "", None, lambda: False
+            "unmanaged", None, None, "interactive", "", None, lambda: False
         ),
         project_root=tmp_path,
     )

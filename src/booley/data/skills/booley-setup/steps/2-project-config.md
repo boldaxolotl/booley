@@ -765,10 +765,12 @@ What goes here:
   setup must validate with `booley: {doctor: [synth]}`. Deep Doctor runs all of
   them and retains the largest measured memory peak; there is no separately
   configured calibration Target.
-- **Reserve memory for one HEAVY job.** Write `[jobs].heavy_memory` when row 13
-  has an evidence-backed value. It is an admission/Doctor budget, not a hard
-  per-process limiter; `[sandbox].memory` remains the one container cgroup
-  limit. Step 4 calibrates both from the real heaviest-target synthesis.
+- **Size the Memory Budget.** Booley admits each EDA Job against a Memory
+  Budget taken from `[sandbox].memory`, the one container cgroup limit; do not
+  write `[jobs].heavy_memory` or `[jobs].max_heavy`: memory admission
+  replaced them and `booley.toml` refuses them. Step 4 sizes `[sandbox].memory` from the real heaviest-target
+  synthesis. For a Project that uses Vivado, write `[jobs.seats] vivado = <seats>`
+  from the license; Doctor fails without it.
 - **Author fail-path self-tests now, before Step 4.** Every enabled verification
   Flow needs a conventional deliberately bad fixture that the Flow grades as a
   design failure; Doctor infers each known-good case from the Flow's configured

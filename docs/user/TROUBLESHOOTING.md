@@ -215,6 +215,36 @@ Docker ran out of disk mid-build, even though Booley checked free space first.
 Free Docker space, for example with `docker builder prune`, and retry. Pruning
 means the next build rebuilds the layers it removed.
 
+## Jobs and memory
+
+### Deleted `[jobs]` keys
+
+`booley.toml` sets `max_heavy` or `heavy_memory`. Every command except
+`booley doctor` and `booley upgrade` stops with a message that names each key
+and its line, for example `max_heavy (line 12)`. Memory admission replaced both
+keys. Delete the named lines from the Project's
+`booley.toml`, or type `/booley-heal` in the Developer Agent chat to have them
+removed. Then set `[sandbox].memory` if you want to choose the Memory Budget;
+see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
+
+### Job killed out of memory
+
+A Flow reports the Job killed out of memory: the kernel killed its processes because the Sandbox ran out of memory.
+Booley runs the Job once more, alone, so nothing else competes for memory. If
+that run is killed too, the Job fails. Raise `[sandbox].memory`, then rebuild
+the Sandbox. `booley resources` shows each Target's peak memory.
+
+### Missing Seat Cap
+
+A Flow is refused for a missing Seat Cap. Vivado and other licensed tools need a Seat Cap: the number of license seats
+Booley may use at once. Without one, `booley doctor` fails and the Flow is
+refused. Add the cap to `booley.toml`, with the seats your license provides:
+
+```toml
+[jobs.seats]
+vivado = 1
+```
+
 ## Sandbox, Git, and worktrees
 
 ### Developer Agents and Specialists turn into "Not logged in" partway through an unattended run

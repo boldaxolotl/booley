@@ -87,7 +87,7 @@ class SimulationTestSelectionMixin:
     def _validate_prepared_selection(
         self, targets: list[str], test_names_map: dict[str, list[str]]
     ) -> EndpointOutcome | None:
-        """Reject all selection/configuration errors before heavy admission."""
+        """Reject all selection/configuration errors before admission."""
         if (error := self._validate_test_selector(targets, test_names_map)) is not None:
             return error
         if (error := self._validate_cocotb_targets(targets)) is not None:

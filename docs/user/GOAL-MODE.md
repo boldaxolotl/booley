@@ -282,7 +282,7 @@ abandons a Goal Mode on its own. The branch and worktree remain.
 For parallel work, use one linked worktree and Goal Branch per session. Start
 another Developer Agent in another container terminal and follow the same three
 steps there. `/booley-goal start` asks which Goal Mode to work on.
-Jobs share the Project's [admission caps](CONFIG.md#jobs--concurrency-jobs).
+Jobs share the Project's [Memory Budget](CONFIG.md#jobs--concurrency-jobs).
 
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
 or every active Goal Mode in the Project when this worktree hosts none. In a

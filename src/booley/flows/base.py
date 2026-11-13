@@ -38,7 +38,6 @@ from booley.flows.implementation_comparison import (
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.job_estimates import JobRequest
 from booley.flows.job_resources import JobResourceMonitor
-from booley.flows.memory_admission import memory_admission_enabled
 from booley.flows.prepared_invocation import (
     OrdinaryRunInvocation,
     PreparedInvocation,
@@ -84,7 +83,7 @@ class SubprocessResult:
     # cgroup v2 OOM-kill counter delta observed across this command.  It is
     # container-wide evidence: another Job's kill moves it too.
     oom_kill_delta: int = 0
-    # Under memory admission: a process of this command's own tree was killed by
+    # A process of this command's own tree was killed by
     # the OOM killer (``job_resources.own_oom_kill``). Set by ``_execute_local``.
     oom_killed: bool = False
 
@@ -92,12 +91,10 @@ class SubprocessResult:
     def oom_blamed(self) -> bool:
         """Whether to classify this command's failure as an OOM kill.
 
-        With memory admission on, only the command's own kill counts; otherwise
-        any container OOM kill observed while it ran does (ADR 0087).
+        Only the command's own kill counts, not another Job's in the same
+        container (ADR 0087).
         """
-        if memory_admission_enabled():
-            return self.oom_killed
-        return self.oom_kill_delta > 0
+        return self.oom_killed
 
 
 def _blame_own_oom_kill(
@@ -105,12 +102,10 @@ def _blame_own_oom_kill(
     result: SubprocessResult,
     scope: Any,
 ) -> None:
-    """Under memory admission, mark a command whose own process the OOM killer took.
+    """Mark a command whose own process the OOM killer took.
 
     A kill also counts for the whole Job, which the requeue reads (ADR 0087).
     """
-    if not memory_admission_enabled():
-        return
     cancelled = scope is not None and scope.cancelled()
     result.oom_killed = job_resources.own_oom_kill(measurement, result, cancelled=cancelled)
     if result.oom_killed:
@@ -469,7 +464,7 @@ class BooleyFlow(FlowMechanics, EndpointContext):
     """Source-compatible Custom Flow extension with its historical CLI hooks."""
 
     def _memory_admitted(self) -> bool:
-        """A Custom Flow runs commands in the Sandbox, so the switch admits it (ADR 0087)."""
+        """A Custom Flow runs commands in the Sandbox, so memory admission covers it (ADR 0087)."""
         return True
 
     def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
