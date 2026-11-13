@@ -88,7 +88,9 @@ def forget_project(
     with _locked_roots() as roots:
         if allow_forgotten and project_root.is_absolute():
             # Never follow symlinks: the path may now point at another Project.
-            identity = os.path.normpath(str(project_root))
+            identity = _stored_spelling(
+                os.path.normpath(str(project_root)), roots | _grant_roots()
+            )
         else:
             identity = _remembered_identity(project_root, roots)
         if any(grant.project_root == identity for grant in _authority_grants()):
@@ -99,6 +101,11 @@ def forget_project(
             before_forget(Path(identity))
         roots.discard(identity)
     return Path(identity)
+
+
+def known_roots() -> frozenset[str]:
+    """Return remembered and Grant roots without probing any Project's status."""
+    return frozenset(_load_roots() | _grant_roots())
 
 
 def project_inventory() -> tuple[ProjectInventoryEntry, ...]:
@@ -276,6 +283,16 @@ def _decode_roots(raw: object) -> set[str]:
     if len(roots) != len(set(roots)):
         raise BoundaryError("Project Inventory contains a duplicate root")
     return set(roots)
+
+
+def _grant_roots() -> set[str]:
+    return {grant.project_root for grant in _authority_grants()}
+
+
+def _stored_spelling(identity: str, known: set[str]) -> str:
+    """Map a case variant to the stored root where the OS folds case (a no-op on POSIX)."""
+    folded = os.path.normcase(identity)
+    return next((root for root in sorted(known) if os.path.normcase(root) == folded), identity)
 
 
 def _authority_grants() -> tuple[authority.ProjectGrant, ...]:

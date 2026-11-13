@@ -302,3 +302,74 @@ def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
 
     assert not [f for f in findings if f.severity is Severity.FAIL]
     assert any(f"Session stores: {len(stores)} per-Project file(s)" in f.message for f in findings)
+
+
+def _remembered_project(root: Path) -> str:
+    """Remember an initialized Project and return its stored root."""
+    from booley.projects import inventory
+
+    (root / ".booley").mkdir(parents=True)
+    inventory.remember_project(root)
+    return str(root.resolve())
+
+
+def _forgotten_stamp_findings(findings) -> list:
+    return [f for f in findings if f.check_id == "host.forgotten-project-stamps"]
+
+
+def test_host_doctor_warns_once_for_stamps_of_deleted_forgotten_projects(
+    monkeypatch, tmp_path: Path
+):
+    """Only stamps of deleted roots outside the Project Inventory raise the WARN."""
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    remembered = _remembered_project(tmp_path / "remembered")
+    seeded = tmp_path / "seeded-worktree"
+    seeded.mkdir()
+    deleted = [str(tmp_path / "gone-a"), str(tmp_path / "gone-b")]
+    stamps = session_issuance.stamp_store()
+    for root in (remembered, str(seeded), *deleted):
+        stamps.write(root, json.dumps({"project_root": root}))
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host().report.findings
+
+    warnings = _forgotten_stamp_findings(findings)
+    assert len(warnings) == 1
+    warning = warnings[0]
+    assert warning.severity is Severity.WARN
+    assert warning.message.startswith("2 ")
+    for root in deleted:
+        assert f"booley projects forget --purge {root}" in warning.fix
+    assert remembered not in warning.fix and str(seeded) not in warning.fix
+
+    for root in deleted:
+        stamps.private.root.joinpath(stamps.filename(root)).unlink()
+    findings = host_diagnostics.inspect_host().report.findings
+    assert not _forgotten_stamp_findings(findings)
+    assert not [f for f in findings if f.severity is Severity.FAIL]
+
+
+def test_host_doctor_skips_forgotten_stamp_check_when_inventory_is_unreadable(
+    monkeypatch, tmp_path: Path
+):
+    """A corrupt Project Inventory skips the check instead of failing or crashing Doctor."""
+    from booley.projects import inventory
+
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    gone = str(tmp_path / "gone")
+    session_issuance.stamp_store().write(gone, json.dumps({"project_root": gone}))
+    inventory.state_path().parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    inventory.state_path().write_bytes(b"not json")
+    inventory.state_path().chmod(0o600)
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host().report.findings
+
+    assert not _forgotten_stamp_findings(findings)
+    skips = [f for f in findings if f.severity is Severity.SKIP]
+    assert any("forgotten-Project stamp check skipped" in f.message for f in skips)
+    assert any("Project Inventory is unreadable" in f.message for f in skips)
