@@ -2,9 +2,9 @@
 
 Every assertion reads the returned ``DiagnosticReport``: severity, message, fix,
 check ID and the details with their verbosity. The owner module is imported inside
-a helper so this file collects, and each test fails on its own, before the owner
-exists. ``subprocess.run`` is replaced on the owner module's own binding; no
-container is ever started.
+a helper, as the sibling owner tests do. ``subprocess.run`` is replaced on the
+stdlib ``subprocess`` module the owner calls at run time, so the patch is
+process-wide for the test; no container is ever started.
 """
 
 from __future__ import annotations

@@ -4734,7 +4734,7 @@ class TestHostAgentSession:
 
 
 class TestAdvisoryMcpTools:
-    """Specialists are expected unless their own ``enabled`` flag is false."""
+    """Doctor's note about Specialist endpoints that are explicitly disabled."""
 
     def _project(self, tmp_path, endpoint_config):
         pd = tmp_path / ".booley"
