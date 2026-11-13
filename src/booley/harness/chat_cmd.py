@@ -6,7 +6,6 @@ import argparse
 import contextlib
 import functools
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -39,19 +38,6 @@ def _names_session(agent_args: list[str]) -> bool:
         if token in ("-n", "--name") or token.startswith("--name="):
             return True
     return False
-
-
-_SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}")
-
-
-def session_name(value: str) -> str:
-    """Validate a `--name` label (argparse ``type=``): the trimmed text, or a usage error."""
-    name = value.strip()
-    if _SESSION_NAME.fullmatch(name) is None:
-        raise argparse.ArgumentTypeError(
-            "use 1-32 letters, digits, spaces, '.', '_' or '-', starting with a letter or digit"
-        )
-    return name
 
 
 # How long the launch waits for the Session writer lock while reserving its handle.

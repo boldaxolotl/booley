@@ -5,6 +5,7 @@ from argparse import ArgumentParser, Namespace
 import pytest
 
 from booley.feedback import cli as feedback_cli
+from booley.feedback import storage as feedback_storage
 from booley.feedback.findings import Finding, append
 from booley.harness import booley, feedback_environment
 from booley.runtime import booley_dir as booley_dir_mod
@@ -45,9 +46,9 @@ def test_feedback_dispatch_reads_stamp_only_for_rendering_commands(
 ):
     environment = object()
     reads: list[object] = []
-    monkeypatch.setattr(booley, "feedback_storage_dir", lambda _root: tmp_path / "state")
+    monkeypatch.setattr(feedback_storage, "feedback_storage_dir", lambda _root: tmp_path / "state")
     monkeypatch.setattr(
-        booley,
+        feedback_environment,
         "resolve_feedback_environment",
         lambda path: reads.append(path) or environment,
     )
