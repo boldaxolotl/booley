@@ -103,6 +103,36 @@ def test_baseline_memory_claim_names_its_job_flow_and_target(memory_scene):
     assert holder.job == job_slots.JobLabel(scene.request["job_id"], "sim", "top")
 
 
+def test_waiting_baseline_narrates_its_memory_wait(tmp_path, capsys):
+    store = job_slots.SlotStore(tmp_path / "slots")
+    narrate = execution._slot_narrator(store, job_slots.CLASS_MEMORY)
+
+    narrate(0)  # no claim of this process: promoted since the tick, nothing to say
+    assert capsys.readouterr().err == ""
+
+    holder = store.submit(
+        job_slots.CLASS_MEMORY,
+        pid=os.getpid(),
+        memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=900.0),
+        job=job_slots.JobLabel("run-1", "synth", "a"),
+    )
+    assert store.refresh(holder).state == job_slots.HOLDING
+    # A second claim by the same live process queues: 900 + 400 MiB do not fit 1,000 MiB.
+    waiter = store.submit(
+        job_slots.CLASS_MEMORY,
+        pid=os.getpid(),
+        memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=400.0),
+    )
+    assert store.refresh(waiter).state == job_slots.QUEUED
+
+    narrate(0)
+
+    assert capsys.readouterr().err == (
+        "[slot] baseline waiting for memory (position 1): needs 400 MiB; 100 MiB free "
+        "of the 1,000 MiB Memory Budget; largest holders: run-1 (synth, a) 900 MiB\n"
+    )
+
+
 def test_waiting_interactive_memory_claim_overtakes_a_waiting_baseline(
     memory_scene, foreign_owner
 ):

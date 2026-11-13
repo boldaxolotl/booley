@@ -847,6 +847,21 @@ def test_memory_claim_names_its_run_flow_and_target(
         assert holder.job == job_slots.JobLabel("run-7", "synth", "a")
 
 
+def test_memory_claim_of_a_job_without_requests_names_the_selected_target(
+    memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.prepared_invocation import OrdinaryRunInvocation
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "run-8")
+    flow, _prepared = _custom_flow("echo")
+    # An invocation that lists no requests (its memory estimate is unknown) still has --target.
+    prepared = _prepared_for(OrdinaryRunInvocation(flow._run))
+
+    with AdmissionGate(flow, prepared).enter():
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.job == job_slots.JobLabel("run-8", "echo_flow", "echo")
+
+
 def test_unparseable_holder_timeout_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BOOLEY_SLOT_TIMEOUT_S", "soon")
     assert endpoint_admission._holder_deadline_seconds() is None

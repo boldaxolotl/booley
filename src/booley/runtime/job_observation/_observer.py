@@ -240,7 +240,7 @@ def _queue_detail(
     for waiter in waiters:
         if waiter.owner_identity == identity:
             wait = job_slots.memory_wait(waiter, holders, waiters, time.time())
-            return "" if wait is None else wait.describe()
+            return "" if wait is None else f"position {wait.position}: {wait.describe()}"
     return ""
 
 

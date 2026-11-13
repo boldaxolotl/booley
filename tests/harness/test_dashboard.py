@@ -1521,7 +1521,7 @@ async def test_pilot_no_report_result():
 
 
 def test_queued_job_detail_shows_its_memory_wait():
-    wait = "needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget"
+    wait = "position 2: needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget"
     record = JobRecord("one", "synth", STAMP, 60, status="running")
     queued = JobView(Path("/jobs"), record, "queued", queue=wait)
 
