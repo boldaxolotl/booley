@@ -46,7 +46,7 @@ def test_pending_revoke_invalidates_stamp_then_cleans_resources(
     monkeypatch.setattr(
         flexnet_docker,
         "cleanup_project_resources_for_identity",
-        lambda root: (events.append(("resources", root)), ())[1],
+        lambda root, **_kwargs: (events.append(("resources", root)), ())[1],
     )
 
     assert issuance_invalidation.recover_project_locked(project_identity)
@@ -76,7 +76,7 @@ def test_legacy_journal_keys_still_recover_with_cleanup(
     monkeypatch.setattr(
         flexnet_docker,
         "cleanup_project_resources_for_identity",
-        lambda root: (events.append(("resources", root)), ())[1],
+        lambda root, **_kwargs: (events.append(("resources", root)), ())[1],
     )
 
     assert issuance_invalidation.shared_recovery_blocks_command(read_only=False)
@@ -95,7 +95,7 @@ def test_interrupted_cleanup_remains_pending_until_a_later_recovery(
     monkeypatch.setattr(
         flexnet_docker,
         "cleanup_project_resources_for_identity",
-        lambda _root: ("container:stale",),
+        lambda _root, **_kwargs: ("container:stale",),
     )
 
     with pytest.raises(issuance_invalidation.InvalidationError, match="residual objects"):
@@ -105,7 +105,7 @@ def test_interrupted_cleanup_remains_pending_until_a_later_recovery(
     monkeypatch.setattr(
         flexnet_docker,
         "cleanup_project_resources_for_identity",
-        lambda _root: (),
+        lambda _root, **_kwargs: (),
     )
     assert issuance_invalidation.recover_all_locked() == (project_identity,)
     assert issuance_invalidation.pending_invalidations() == ()
@@ -190,7 +190,9 @@ def test_shared_recovery_reacts_only_to_invalidations(
     identity = str((tmp_path / "project").resolve())
     leftover = _leftover_refresh_journal("old-refresh-journal")
     monkeypatch.setattr(session_issuance, "invalidate_project", lambda _root: None)
-    monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", lambda _root: ())
+    monkeypatch.setattr(
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _root, **_kwargs: ()
+    )
     blocks = issuance_invalidation.shared_recovery_blocks_command
 
     # A leftover refresh journal is neither read nor reported.
@@ -305,7 +307,7 @@ def _start_grant_mutation(project, mutation, monkeypatch, done, errors) -> threa
         authority, "_prepare_revoke_grant", lambda identity, _kind: mutation(identity)
     )
     monkeypatch.setattr(
-        flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity: ()
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity, **_kwargs: ()
     )
 
     def run_grant() -> None:
