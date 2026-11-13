@@ -5307,25 +5307,20 @@ def _headless_state(workspace: Path, **label_overrides: str | None) -> dict:
     return state
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"booley.project-id": "someone-else"},
-        {"booley.role": None},
-        {"devcontainer.local_folder": "vscode-folder"},
-    ],
-    ids=["other-project", "missing-role", "vscode-folder"],
-)
-def test_remove_refresh_predecessor_refuses_unproven_container(workspace, monkeypatch, overrides):
+def test_remove_refresh_predecessor_refuses_unproven_container(workspace, monkeypatch):
     docker = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
     monkeypatch.setattr(sr, "_run", docker)
-    state = _headless_state(workspace, **overrides)
-    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: state)
-
-    with pytest.raises(sr.SessionError, match="not this Project's headless Sandbox"):
-        sr.remove_refresh_predecessor(workspace)
-
-    docker.assert_not_called()
+    cases = {
+        "other project": {"booley.project-id": "someone-else"},
+        "missing role": {"booley.role": None},
+        "vscode folder": {"devcontainer.local_folder": str(workspace)},
+    }
+    for label, overrides in cases.items():
+        state = _headless_state(workspace, **overrides)
+        monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name, s=state: s)
+        with pytest.raises(sr.SessionError, match="not this Project's headless Sandbox"):
+            sr.remove_refresh_predecessor(workspace)
+        assert docker.call_count == 0, label
 
 
 def test_remove_refresh_predecessor_refuses_container_without_identity(workspace, monkeypatch):
