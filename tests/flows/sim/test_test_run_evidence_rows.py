@@ -71,7 +71,7 @@ def test_projection_v3_carries_a_row_per_test_run_and_decodes(tmp_path: Path):
     outcome = _outcome(tmp_path, _RESET, _COUNT)
     projection = _campaign_projection(_OutcomeEvidence(outcome))
 
-    assert projection["$schema"] == "booley.simulation-projection/v3"
+    assert projection["$schema"] == "booley.simulation-projection/v4"
     assert projection["test_runs"] == _rows(_RESET, _COUNT, classified=False)
     assert [
         (row["name"], row["test_run"], row["variant"], row["seed"], row["fingerprint"])

@@ -105,19 +105,20 @@ def _campaign_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     summary = manifest.parent / "summary.json"
     canonical = "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
     summary.write_text(
-        json.dumps({"campaign_id": "campaign-1", "manifest_sha256": canonical}) + "\n"
+        json.dumps({"simulation_record_id": "campaign-1", "manifest_sha256": canonical}) + "\n"
     )
     projection = target / "simulation.json"
     reference = {
         "path_base": "origin_target",
         "path": "record/manifest.json",
-        "kind": "simulation_campaign_manifest",
+        "kind": "simulation_record_manifest",
         "owner": "campaign-1",
         "bytes": len(raw),
         "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
     }
     projection.write_text(
-        json.dumps({"campaign_id": "campaign-1", "campaign_manifest": reference}) + "\n"
+        json.dumps({"simulation_record_id": "campaign-1", "simulation_record_manifest": reference})
+        + "\n"
     )
     return manifest, summary, projection
 
@@ -131,7 +132,7 @@ def test_validator_authenticates_manifest_backlinks(tmp_path: Path) -> None:
         "manifest_sha256": digest,
     }
     summary.write_text(
-        json.dumps({"campaign_id": "campaign-1", "manifest_sha256": "sha256:bad"}) + "\n"
+        json.dumps({"simulation_record_id": "campaign-1", "manifest_sha256": "sha256:bad"}) + "\n"
     )
     with pytest.raises(ValueError, match="summary manifest digest differs"):
         _validator().validate_backlinks(manifest, summary, projection)
@@ -140,12 +141,12 @@ def test_validator_authenticates_manifest_backlinks(tmp_path: Path) -> None:
 def test_validator_rejects_stale_projection_manifest_reference(tmp_path: Path) -> None:
     manifest, summary, projection = _campaign_tree(tmp_path)
     document = json.loads(projection.read_text())
-    document["campaign_manifest"]["sha256"] = "sha256:" + "0" * 64
+    document["simulation_record_manifest"]["sha256"] = "sha256:" + "0" * 64
     projection.write_text(json.dumps(document) + "\n")
     with pytest.raises(ValueError, match="manifest backlink digest differs"):
         _validator().validate_backlinks(manifest, summary, projection)
     # The pre-v2 string form is no longer a valid backlink.
-    document["campaign_manifest"] = str(manifest)
+    document["simulation_record_manifest"] = str(manifest)
     projection.write_text(json.dumps(document) + "\n")
     with pytest.raises(ValueError, match="not an artifact reference"):
         _validator().validate_backlinks(manifest, summary, projection)

@@ -65,16 +65,16 @@ def validate_backlinks(
     campaign_id = manifest.get("simulation_record_id")
     digest = _manifest_digest(manifest_raw)
     _need(
-        summary.get("campaign_id") == campaign_id,
+        summary.get("simulation_record_id") == campaign_id,
         "summary identifies a different Simulation Campaign",
     )
     _need(summary.get("manifest_sha256") == digest, "summary manifest digest differs")
     _need(
-        projection.get("campaign_id") == campaign_id,
+        projection.get("simulation_record_id") == campaign_id,
         "projection identifies a different Simulation Campaign",
     )
     validate_manifest_reference(
-        projection.get("campaign_manifest"),
+        projection.get("simulation_record_manifest"),
         projection_path=projection_path,
         manifest_path=manifest_path,
         manifest_raw=manifest_raw,

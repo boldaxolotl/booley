@@ -205,8 +205,8 @@ def test_sim_report_fields_stay_documented(
     _assert_documented("sim", projection)
     _assert_documented("sim", projection["tests"][0])
     _assert_documented("sim", projection["test_runs"][0])
-    _assert_documented("sim", projection["campaign_manifest"])
-    _assert_documented("sim", projection["coverage_campaign"])
+    _assert_documented("sim", projection["simulation_record_manifest"])
+    _assert_documented("sim", projection["coverage_record"])
 
 
 def test_sim_elab_only_report_fields_stay_documented(tmp_path: Path) -> None:

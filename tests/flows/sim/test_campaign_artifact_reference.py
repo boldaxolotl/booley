@@ -23,7 +23,7 @@ def _reference(tmp_path):
         artifact,
         base_name="origin_target",
         base=base,
-        kind="simulation_campaign_manifest",
+        kind="simulation_record_manifest",
         owner="campaign-id",
         maximum=1024,
     )
@@ -38,7 +38,7 @@ def test_reference_resolves_after_complete_base_copy(tmp_path):
         reference,
         bases={"origin_target": copied},
         allowed_bases={"origin_target"},
-        expected_kind="simulation_campaign_manifest",
+        expected_kind="simulation_record_manifest",
         expected_owner="campaign-id",
         maximum=1024,
     )
@@ -70,7 +70,7 @@ def test_reference_rejects_wrong_profile_or_identity(tmp_path, field, value):
             hostile,
             bases={"origin_target": base},
             allowed_bases={"origin_target"},
-            expected_kind="simulation_campaign_manifest",
+            expected_kind="simulation_record_manifest",
             expected_owner="campaign-id",
             maximum=1024,
         )
@@ -89,7 +89,7 @@ def test_reference_rejects_link_below_base(tmp_path):
             reference,
             bases={"origin_target": base},
             allowed_bases={"origin_target"},
-            expected_kind="simulation_campaign_manifest",
+            expected_kind="simulation_record_manifest",
             expected_owner="campaign-id",
             maximum=1024,
         )
@@ -108,7 +108,7 @@ def test_reference_encoder_rejects_link_below_base(tmp_path):
             base / "campaign/manifest.json",
             base_name="origin_target",
             base=base,
-            kind="simulation_campaign_manifest",
+            kind="simulation_record_manifest",
             owner="campaign-id",
             maximum=1024,
         )
@@ -126,7 +126,7 @@ def test_report_reference_uses_the_containing_document_after_reports_root_copy(t
         origin,
         base_name="reports_root",
         base=reports,
-        kind="simulation_campaign_manifest",
+        kind="simulation_record_manifest",
         owner="campaign-id",
         maximum=1024,
     )
@@ -136,7 +136,7 @@ def test_report_reference_uses_the_containing_document_after_reports_root_copy(t
     resolved = resolve_report_artifact_reference(
         copied / "sim/2/report.json",
         reference,
-        expected_kind="simulation_campaign_manifest",
+        expected_kind="simulation_record_manifest",
         expected_owner="campaign-id",
         maximum=1024,
     )
@@ -156,7 +156,7 @@ def test_report_reference_accepts_explicit_external_origin_target(tmp_path):
         artifact,
         base_name="external_origin_target",
         base=origin,
-        kind="simulation_campaign_manifest",
+        kind="simulation_record_manifest",
         owner="campaign-id",
         maximum=1024,
     )
@@ -164,7 +164,7 @@ def test_report_reference_accepts_explicit_external_origin_target(tmp_path):
     resolved = resolve_report_artifact_reference(
         report,
         reference,
-        expected_kind="simulation_campaign_manifest",
+        expected_kind="simulation_record_manifest",
         expected_owner="campaign-id",
         maximum=1024,
         external_origin_target=origin,
@@ -184,7 +184,7 @@ def test_reference_builder_rejects_artifact_outside_declared_base(tmp_path):
             outside,
             base_name="origin_target",
             base=base,
-            kind="simulation_campaign_manifest",
+            kind="simulation_record_manifest",
             owner="campaign-id",
             maximum=1024,
         )
@@ -195,7 +195,7 @@ def _resolve_origin(reference, bases, *, maximum=1024):
         reference,
         bases=bases,
         allowed_bases={"origin_target"},
-        expected_kind="simulation_campaign_manifest",
+        expected_kind="simulation_record_manifest",
         expected_owner="campaign-id",
         maximum=maximum,
     )
@@ -241,7 +241,7 @@ def test_report_reference_requires_numbered_invocation_report(tmp_path):
         resolve_report_artifact_reference(
             tmp_path / "reports/sim/latest/report.json",
             reference,
-            expected_kind="simulation_campaign_manifest",
+            expected_kind="simulation_record_manifest",
             expected_owner="campaign-id",
             maximum=1024,
         )
@@ -267,7 +267,7 @@ def test_reference_follows_only_the_booley_dir_entry(tmp_path, layout):
     report = reports / "sim/2/report.json"
     report.parent.mkdir(parents=True)
     report.write_text("{}")
-    fields = {"kind": "simulation_campaign_manifest", "owner": "campaign-id", "maximum": 1024}
+    fields = {"kind": "simulation_record_manifest", "owner": "campaign-id", "maximum": 1024}
 
     def follow() -> None:
         reference = build_artifact_reference(
@@ -309,7 +309,7 @@ def test_artifact_reference_accepts_a_hard_linked_artifact(tmp_path):
         reference,
         bases={"origin_target": base},
         allowed_bases={"origin_target"},
-        expected_kind="simulation_campaign_manifest",
+        expected_kind="simulation_record_manifest",
         expected_owner="campaign-id",
         maximum=1024,
     )

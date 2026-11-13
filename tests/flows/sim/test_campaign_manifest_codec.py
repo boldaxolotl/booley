@@ -367,7 +367,7 @@ def _linked_campaign_stores(tmp_path: Path, *, topology_revisions=None):
                 "path": baseline_store.manifest_path.relative_to(invocation).as_posix(),
                 "bytes": len(raw),
                 "sha256": manifest_digest(baseline),
-                "kind": "simulation_campaign_manifest",
+                "kind": "simulation_record_manifest",
                 "owner": baseline_json["simulation_record_id"],
             },
             "simulation_record_id": baseline_json["simulation_record_id"],
@@ -1219,7 +1219,7 @@ def test_independent_container_additions_preserve_raw_fallback(region):
                     "path": "targets/baseline/record/manifest.json",
                     "bytes": 1,
                     "sha256": "sha256:" + "a" * 64,
-                    "kind": "simulation_campaign_manifest",
+                    "kind": "simulation_record_manifest",
                     "owner": "550e8400-e29b-41d4-a716-446655440000",
                 },
             }
