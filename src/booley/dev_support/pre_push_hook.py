@@ -88,7 +88,7 @@ class _Update:
     remote_ref: str
 
 
-def _run_git(args, *, cwd=None, env=None, data=None, timeout=60):
+def _run_git(args, *, cwd=None, env=None, data=None, timeout: float = 60):
     try:
         result = subprocess.run(
             ["git", *args],

@@ -554,12 +554,17 @@ def present_report(report: Mapping[str, object]) -> ReportPresentation:
     """Project producer-owned report fields without IO, UI objects, or inference."""
     headline, rows = _report_rows(report)
     code = as_int(report.get("exit_code"))
-    word, semantic = {
-        EXIT_SUCCESS: ("PASSED", "pass"),
-        EXIT_FAILURE: ("FAILED", "fail"),
-        EXIT_ERROR: ("ERROR", "attention"),
-        EXIT_CANCELLED: ("CANCELLED", "unknown"),
-    }.get(code, ("unavailable", "unknown"))
+    unavailable = ("unavailable", "unknown")
+    word, semantic = (
+        {
+            EXIT_SUCCESS: ("PASSED", "pass"),
+            EXIT_FAILURE: ("FAILED", "fail"),
+            EXIT_ERROR: ("ERROR", "attention"),
+            EXIT_CANCELLED: ("CANCELLED", "unknown"),
+        }.get(code, unavailable)
+        if code is not None
+        else unavailable
+    )
     if code == EXIT_SUCCESS:
         word, semantic = _success_result(report)
     raw_key = report.get("criterion_key")
