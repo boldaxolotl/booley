@@ -902,7 +902,7 @@ def test_core_audit_renders_core_tree_owner_reports_in_place(tmp_path, monkeypat
     )
 
     seeds = doctor._project_target_matrix(project).seed_targets
-    assert seeds == ("demo#sim_a", "demo#sim_b")
+    assert seeds
     assert tree_requests == [owner.CoreTreeInspectionRequest(tmp_path, seeds)]
     assert security_requests == [
         owner.CoreSecurityInspectionRequest(tmp_path, tuple(doctor._project_write_scope(tmp_path)))

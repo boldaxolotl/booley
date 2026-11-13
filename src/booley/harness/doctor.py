@@ -33,6 +33,7 @@ import booley
 from booley.agent_workspace.isolation import get_category_dirs
 from booley.agent_workspace.legacy_stashes import legacy_stash_manifests
 from booley.audit import (
+    core_tree_inspection,
     design_size,
     eda_environment,
     host_environment,
@@ -93,11 +94,10 @@ from booley.flows.sim.config import (
 from booley.flows.target_test_plan_inspection import TargetTestPlanInspectionRequest
 from booley.flows.test_runs import parse_test_selector
 from booley.fusesoc import (
-    core_security,
     fusesoc_registry,
     selftest_overlay,
 )
-from booley.fusesoc.core_projection import STATE_CORES_SUBDIR, lexical_stealth_path
+from booley.fusesoc.core_projection import STATE_CORES_SUBDIR
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
@@ -853,7 +853,7 @@ def run_doctor_result(
     docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
     flow_runtime = _DoctorFlowRuntime(project_root, docker_exe) if project is not None else None
     _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
-    _run_flow_and_core_phase(project, flow_runtime, verbose, reporter, report_progress)
+    _run_flow_and_core_phase(project, flow_runtime, reporter, report_progress)
 
     summary = None
     if deep:
@@ -1353,7 +1353,6 @@ def _run_runtime_phase(
 def _run_flow_and_core_phase(
     project: ProjectAudit | None,
     flow_runtime: _DoctorFlowRuntime | None,
-    verbose: bool,
     reporter: _Reporter,
     progress: Check,
 ) -> None:
@@ -1387,7 +1386,6 @@ def _run_flow_and_core_phase(
             reporter.fail_,
             _diagnostics=reporter.diagnostics,
             _note=reporter.note_,
-            _detail=info if verbose else None,
         )
 
 
@@ -1462,14 +1460,6 @@ def _deep_identity_reasons(image_id: str | None, sandbox_version: str | None) ->
     elif sandbox_version != booley.__version__:
         reasons.append("booley-version-mismatch")
     return tuple(reasons)
-
-
-#: ``.core`` security violations whose verdict depends on the agent's write
-#: Scope. doctor only has a synthetic project-wide Scope, so these are
-#: advisory there; the execution Scope check at commit time is the real gate.
-#: Everything else (``fpga_hook``, ``expr_param``) is a property of the
-#: ``.core`` itself and stays a hard FAIL.
-_SCOPE_DEPENDENT_VIOLATIONS = frozenset({"in_scope_script", "unconfinable_script"})
 
 
 def _sandbox_image(project: ProjectAudit | None) -> str:
@@ -4227,7 +4217,7 @@ def _run_flow_audit(
 ) -> None:
     """Validate enabled Flows and run Sandbox dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
-    rejected_cores = _fusesoc_rejected_cores(project.project_root)
+    rejected_cores = core_tree_inspection.fusesoc_rejected_cores(project.project_root)
     for flow_name in _PLAIN_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} disabled in booley.toml")
@@ -4272,7 +4262,9 @@ def _run_flow_audit(
             _fail=_fail,
         )
         for target in targets:
-            rejected_core = _rejected_target_core(project, target, rejected_cores)
+            rejected_core = core_tree_inspection.rejected_target_core(
+                project.project_root, target, rejected_cores
+            )
             if rejected_core is not None:
                 _skip(
                     f"{flow_name} dry-run [{target}] skipped - FuseSoC rejects "
@@ -4289,22 +4281,6 @@ def _run_flow_audit(
                 timeout_s=_configured_timeout_s(project, flow_name, _DRY_RUN_TIMEOUT_S),
             )
             _diagnostics(outcome.report)
-
-
-def _rejected_target_core(
-    project: ProjectAudit,
-    target: str,
-    rejected_cores: Mapping[Path, fusesoc_registry.FuseSocCoreRejection],
-) -> Path | None:
-    """Return the FuseSoC-rejected core hosting Doctor Target *target*, if any."""
-    if not rejected_cores:
-        return None
-    try:
-        core_file = TargetCatalog.build(project.project_root).select(target).core_file
-    except FuseSocError:
-        return None  # target-resolution diagnostics report this elsewhere
-    core_file = lexical_stealth_path(project.project_root, core_file)
-    return core_file if core_file in rejected_cores else None
 
 
 def _check_flow_runtime_reality(
@@ -4473,32 +4449,6 @@ def _check_vivado_startup(
     _fail(f"{label}: {cause}", "verify Vivado runtime dependencies in the Sandbox Image")
 
 
-def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
-    """The ``.core`` files whose findings the project can act on (ADR 0036).
-
-    A core is "owned" when it hosts a Target selected by Doctor metadata (the
-    project drives it, so its defects are the project's problem) or lives in the
-    state zone (``.booley/cores/`` is always Booley-authored). Everything
-    else is vendored upstream content — advice like "fix the .core" is
-    unfollowable for a repo that must stay byte-identical to upstream.
-    """
-    owned: set[Path] = set()
-    try:
-        catalog = TargetCatalog.build(root)
-    except FuseSocError:
-        catalog = None
-    if catalog is not None:
-        for token in _project_target_matrix(project).seed_targets:
-            try:
-                owned.add(lexical_stealth_path(root, catalog.select(token).core_file))
-            except FuseSocError:
-                continue  # unresolvable config tokens are their own doctor finding
-    for core_file in fusesoc_registry.discover_cores(root):
-        if fusesoc_registry.is_stealth_core(root, core_file):
-            owned.add(core_file)
-    return owned
-
-
 def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path, str]]:
     """Return the exact ``(core_file, Target)`` pairs selected by Doctor metadata.
 
@@ -4521,210 +4471,6 @@ def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path,
             continue  # target-resolution diagnostics report this elsewhere
         selected.add((handle.core_file, handle.name))
     return selected
-
-
-def _check_core_schema(
-    project: ProjectAudit,
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-    *,
-    _note: Check | None = None,
-) -> None:
-    """Flag CAPI2 schema violations in any discovered ``.core``.
-
-    Booley's tolerant ``yaml.safe_load`` accepts a scalar — or a bare ``depend:``
-    that parses to ``None`` — where FuseSoC's schema demands an array, and an
-    unknown property (a ``booley:`` mapping beside ``flow_options``); cheap
-    enumeration then greenlights a ``.core`` the deep resolve later rejects.
-    Reproduce FuseSoC's verdict host-side (no subprocess): Booley's array-field
-    subset plus FuseSoC's own parser.
-
-    Severity follows ownership. A violation FAILs when the core is one the
-    project actually drives — it hosts a Doctor-selected Target — or
-    lives in the state zone (``.booley/cores/``, always Booley-authored,
-    ADR 0036). A vendored upstream core the project never selects (the pristine
-    YosysHQ ``picorv32.core`` ships a bare ``depend:``) is a WARN instead:
-    FuseSoC drops such a core at resolve time, so only *its own* targets are
-    unusable — the configured flows are unaffected, and "fix the .core" is
-    unfollowable advice for a repo that must stay byte-identical to upstream.
-    """
-    note_sink = _note or _pass
-    owned_cores = _owned_core_files(project, root)
-    schema_clean = True
-    for core_file in fusesoc_registry.discover_cores(root):
-        findings, rejection = _core_schema_findings(core_file)
-        if not findings:
-            continue
-        schema_clean = False
-        # A misplaced ``booley:`` marker is the project's own Doctor intent that
-        # FuseSoC's rejection hides from Booley's reader, so the core is driven.
-        owned = core_file in owned_cores or (rejection is not None and rejection.misplaced_booley)
-        for msg, fix in findings:
-            if owned:
-                _fail(f".core schema {core_file.name}: {msg}", fix)
-            else:
-                note_sink(
-                    f".core schema {core_file.name}: {msg} — vendored core, no "
-                    "Doctor Target selects it; FuseSoC skips it at resolve, "
-                    "so only that core's own Targets are unusable"
-                )
-    if schema_clean:
-        _pass(".core CAPI2 schema valid")
-
-
-_CORE_SCHEMA_FIX = (
-    "fix the .core — FuseSoC's CAPI2 schema requires this "
-    "(caught here so it does not only surface under --deep)"
-)
-
-
-def _core_schema_findings(
-    core_file: Path,
-) -> tuple[list[tuple[str, str]], fusesoc_registry.FuseSocCoreRejection | None]:
-    """Return ``([(message, fix), ...], FuseSoC's rejection)`` for one ``.core``.
-
-    Booley's host-side subset runs first; FuseSoC's own verdict follows as one
-    more row unless a FuseSoC-class subset row (array fields, per-file keys)
-    already describes the same CAPI2 entry. Booley-only metadata rows never
-    suppress it: they do not say why FuseSoC ignores the file.
-    """
-    findings = [(msg, _CORE_SCHEMA_FIX) for msg in fusesoc_registry.core_schema_errors(core_file)]
-    rejection = _fusesoc_core_rejection(core_file)
-    if rejection is None:
-        return findings, None
-    entry = rejection.entry
-    if entry is not None and any(
-        msg == entry or msg.startswith((f"{entry}.", f"{entry} "))
-        for msg, _ in findings
-        if ".flow_options.booley" not in msg
-    ):
-        return findings, rejection
-    fix = _CORE_SCHEMA_FIX
-    if rejection.misplaced_booley:
-        fix = f"move the booley: mapping under targets.{rejection.target}.flow_options"
-    findings.append(
-        (
-            f"{rejection.message} — FuseSoC ignores this whole .core, "
-            "so none of its Targets resolve",
-            fix,
-        )
-    )
-    return findings, rejection
-
-
-def _fusesoc_core_rejection(
-    core_file: Path,
-) -> fusesoc_registry.FuseSocCoreRejection | None:
-    """FuseSoC's verdict on a readable ``.core``; unreadable files have their own row."""
-    try:
-        fusesoc_registry.read_core(core_file)
-    except FuseSocError:
-        return None
-    return fusesoc_registry.fusesoc_core_rejection(core_file)
-
-
-def _fusesoc_rejected_cores(root: Path) -> dict[Path, fusesoc_registry.FuseSocCoreRejection]:
-    """Map every discovered ``.core`` FuseSoC ignores to its rejection."""
-    rejected: dict[Path, fusesoc_registry.FuseSocCoreRejection] = {}
-    for core_file in fusesoc_registry.discover_cores(root):
-        rejection = _fusesoc_core_rejection(core_file)
-        if rejection is not None:
-            rejected[core_file] = rejection
-    return rejected
-
-
-_RECURSIVE_SYMLINK_FIX = (
-    "add a FUSESOC_IGNORE marker in each link's containing directory or an enclosing "
-    "subtree (excludes all cores there); ensure markers are present in worktrees too, "
-    "or remove the links"
-)
-
-
-def _report_recursive_symlink_group(
-    root: Path,
-    target: Path,
-    paths: list[Path],
-    _fail: Fail,
-    _detail: Check | None,
-) -> None:
-    """Summarize one ancestor and expose every link in the verbose report."""
-    relative = sorted(path.relative_to(root).as_posix() for path in paths)
-    shown = ", ".join(relative[:3])
-    if len(relative) > 3:
-        shown += f", +{len(relative) - 3} more; run booley doctor --verbose for all link paths"
-    noun = "link" if len(relative) == 1 else "links"
-    verb = "resolves" if len(relative) == 1 else "resolve"
-    _fail(
-        f"FuseSoC recursive symlinks: {len(relative)} {noun} {verb} "
-        f"to ancestor {target} ({shown})",
-        _RECURSIVE_SYMLINK_FIX,
-    )
-    if _detail is not None:
-        for path in relative:
-            _detail(f"  recursive symlink {path}: directory link resolves to ancestor {target}")
-
-
-def _report_recursive_symlink_hazards(
-    root: Path,
-    hazards: list[fusesoc_registry.CoreSetupHazard],
-    _fail: Fail,
-    _detail: Check | None,
-) -> None:
-    """Group resolved ancestors without conflating unresolved chain cycles."""
-    groups: dict[Path, list[Path]] = {}
-    for hazard in hazards:
-        if hazard.kind != "recursive-symlink":
-            continue
-        if hazard.target is None:
-            rel = hazard.path.relative_to(root).as_posix()
-            _fail(f"FuseSoC recursive symlink {rel}: {hazard.detail}", _RECURSIVE_SYMLINK_FIX)
-        else:
-            groups.setdefault(hazard.target, []).append(hazard.path)
-    for target in sorted(groups, key=str):
-        _report_recursive_symlink_group(root, target, groups[target], _fail, _detail)
-
-
-def _check_core_setup_hazards(
-    project: ProjectAudit,
-    root: Path,
-    _pass: Check,
-    _fail: Fail,
-    *,
-    _note: Check | None = None,
-    _detail: Check | None = None,
-) -> None:
-    """Catch offline-provider and recursive-symlink failures before FuseSoC."""
-    note_sink = _note or _pass
-    owned_cores = _owned_core_files(project, root)
-    catalog = TargetCatalog.build(root)
-    selected_handles = []
-    for selector in _project_target_matrix(project).seed_targets:
-        try:
-            selected_handles.append(catalog.select(selector))
-        except FuseSocError:
-            continue
-    selected_closure = catalog.core_closure(selected_handles)
-    required_cores = owned_cores | set(selected_closure or ())
-    hazards = fusesoc_registry.core_setup_hazards(root)
-    if not hazards:
-        _pass(".core tree has no provider or recursive-symlink setup hazards")
-        return
-    for hazard in hazards:
-        if hazard.kind == "recursive-symlink":
-            continue
-        rel = hazard.path.relative_to(root)
-        if hazard.path in required_cores:
-            _fail(
-                f"in-tree .core {rel} has a provider block that requests a remote fetch",
-                "remove provider: from the in-tree core",
-            )
-        else:
-            note_sink(
-                f"vendored .core {rel} has a provider block, but no Doctor Target selects it"
-            )
-    _report_recursive_symlink_hazards(root, hazards, _fail, _detail)
 
 
 def _doctor_target_incompatibility(
@@ -4815,6 +4561,8 @@ def _enumerate_core_audit_targets(
     except FuseSocError as exc:
         _fail(f".core enumeration failed: {exc}", "fix the malformed .core")
         return None
+    # The first handle per name; ``core_tree_inspection.inspect_core_security``
+    # keeps the same rule over the same cached TargetCatalog snapshot.
     refs: dict[str, TargetHandle] = {}
     for handle in handles:
         refs.setdefault(handle.name, handle)
@@ -5003,41 +4751,6 @@ def _check_core_repository_hygiene(audit: _CoreAuditContext) -> None:
     _check_committed_build_artifacts(audit.root, audit.pass_, audit.warn)
 
 
-def _run_core_security_audit(
-    audit: _CoreAuditContext,
-    refs: dict[str, TargetHandle],
-) -> None:
-    """Report authored-core provenance and confinement violations."""
-    catalog = TargetCatalog.build(audit.root)
-    violations = core_security.validate_project_cores(
-        audit.root,
-        scope=_project_write_scope(audit.root),
-        audit_scope=catalog.core_closure(tuple(refs.values())),
-    )
-    for violation in violations:
-        target = f" target '{violation.target}'" if violation.target else ""
-        line = (
-            f".core security [{violation.kind}] {violation.core_file.name}"
-            f"{target}: {violation.message}"
-        )
-        if violation.kind in _SCOPE_DEPENDENT_VIOLATIONS:
-            _warning_sink(
-                audit.warn,
-                "core.security-scope-advisory",
-                subject=f"{violation.core_file.name}:{violation.target or '-'}",
-            )(
-                f"{line} (advisory: doctor audits the union of writable "
-                "category dirs, without a change-specific scope — the binding "
-                "check runs at commit time)"
-            )
-        else:
-            audit.fail(line, "ADR 0022 decision 21")
-    if not violations and refs:
-        audit.pass_(
-            ".core security validation passed (no fpga hooks / expr-params / in-scope scripts)"
-        )
-
-
 def _run_core_audit(
     project: ProjectAudit,
     _pass: Check,
@@ -5047,12 +4760,16 @@ def _run_core_audit(
     *,
     _diagnostics: Diagnostics,
     _note: Check | None = None,
-    _detail: Check | None = None,
 ) -> None:
     """Coordinate the structural, security, and metadata core audits."""
     audit = _CoreAuditContext(project, _pass, _warn, _skip, _fail, _note or _pass)
-    _check_core_setup_hazards(project, audit.root, _pass, _fail, _note=audit.note, _detail=_detail)
-    _check_core_schema(project, audit.root, _pass, _warn, _fail, _note=audit.note)
+    _diagnostics(
+        core_tree_inspection.inspect_core_tree(
+            core_tree_inspection.CoreTreeInspectionRequest(
+                project.project_root, _project_target_matrix(project).seed_targets
+            )
+        )
+    )
     catalog_and_refs = _enumerate_core_audit_targets(audit.root, _pass, _fail)
     if catalog_and_refs is None:
         return
@@ -5062,7 +4779,13 @@ def _run_core_audit(
         _check_target_metadata(audit, refs, _diagnostics)
         _check_target_sources(audit, refs, inputs)
         _check_core_repository_hygiene(audit)
-    _run_core_security_audit(audit, refs)
+    _diagnostics(
+        core_tree_inspection.inspect_core_security(
+            core_tree_inspection.CoreSecurityInspectionRequest(
+                project.project_root, tuple(_project_write_scope(project.project_root))
+            )
+        )
+    )
     _diagnostics(
         target_test_plan_inspection.inspect_target_test_plans(
             TargetTestPlanInspectionRequest(project.project_root, project.booley_dir)
@@ -5289,7 +5012,7 @@ def _check_target_naming(
     reads in ``--target``, ``sim_pass_<target>``, and ``tests.toml`` keys. See
     :mod:`booley.targets.target_naming` for the rule.
 
-    A note, never a failure, and only for owned cores (:func:`_owned_core_files`): a
+    A note, never a failure, and only for owned cores (:func:`core_tree_inspection.owned_core_files`): a
     non-conforming name still runs, and renaming a vendored upstream Target is
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
@@ -5350,7 +5073,9 @@ def _check_stray_default_targets(
     """
     _warn = _warning_sink(_warn, "core.stray-default-target")
     note_sink = _note or _pass
-    owned_cores = _owned_core_files(project, root)
+    owned_cores = core_tree_inspection.owned_core_files(
+        root, _project_target_matrix(project).seed_targets
+    )
     if not owned_cores:
         return
     depended = fusesoc_registry.depended_on_core_keys(root)

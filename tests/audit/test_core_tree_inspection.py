@@ -399,7 +399,7 @@ def test_recursive_group_does_not_hide_selected_provider(tmp_path):
 
 def test_no_recursive_links_keeps_the_hazard_pass(tmp_path):
     report = _tree_report(tmp_path)
-    assert _rows(report, Severity.PASS) == [_NO_HAZARDS]
+    assert _rows(report, Severity.PASS) == [_NO_HAZARDS, ".core CAPI2 schema valid"]
     assert not report.active_findings
     assert report.details == ()
 
@@ -469,7 +469,7 @@ def test_expression_parameter_fails_security(tmp_path):
     _write_core(tmp_path, _EXPRESSION_PARAMETER_CORE)
     (failure,) = _security_report(tmp_path).active_findings
     assert failure.severity is Severity.FAIL
-    assert failure.message.startswith(".core security [expr_param] design.core target 'sim'")
+    assert failure.message.startswith(".core security [expr_param] design.core:")
     assert failure.fix == "ADR 0022 decision 21"
     assert failure.check_id is None
 
