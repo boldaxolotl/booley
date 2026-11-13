@@ -346,11 +346,11 @@ def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
         part for part in (str(source_root), os.environ.get("PYTHONPATH", "")) if part
     )
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> SubprocessResult:
         started = time.monotonic()
         result = subprocess.run(
             command,
-            cwd=root,
+            cwd=cwd or root,
             env={**os.environ, "PYTHONPATH": python_path},
             capture_output=True,
             text=True,
@@ -547,7 +547,7 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=True)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         assert command[:2] == ["sh", "-c"]
         assert timeout == 5
         _write_transport(
@@ -1599,8 +1599,8 @@ def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
     observed: list[str] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        result = base_invoke(command, timeout=timeout)
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
+        result = base_invoke(command, timeout=timeout, **kwargs)
         if "booley.flows.sim.backends.icarus" in command[-1]:
             observed.append(result.stdout)
         return result
@@ -1634,9 +1634,9 @@ def test_matching_closed_icarus_inputs_reuse_verified_image(
     commands: list[list[str]] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         commands.append(command)
-        return base_invoke(command, timeout=timeout)
+        return base_invoke(command, timeout=timeout, **kwargs)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     first = run_prepared_group(execution, handle, ("first",))
@@ -1666,9 +1666,9 @@ def test_isolated_icarus_identical_build_reuses_and_source_edit_rebuilds(
     launched: list[str] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         commands.append(command)
-        result = base_invoke(command, timeout=timeout)
+        result = base_invoke(command, timeout=timeout, **kwargs)
         if "booley.flows.sim.backends.icarus" in command[-1]:
             launched.append(result.stdout)
         return result
@@ -1711,8 +1711,8 @@ def test_changed_input_with_failed_rebuild_never_launches_prior_image(
     observed: list[str] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        result = base_invoke(command, timeout=timeout)
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
+        result = base_invoke(command, timeout=timeout, **kwargs)
         if "booley.flows.sim.backends.icarus" in command[-1]:
             observed.append(result.stdout)
         return result
@@ -1743,9 +1743,9 @@ def test_corrupt_cache_forces_fresh_build(
     commands: list[list[str]] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         commands.append(command)
-        return base_invoke(command, timeout=timeout)
+        return base_invoke(command, timeout=timeout, **kwargs)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     assert run_prepared_group(execution, handle, ("smoke",)).passed
@@ -1778,9 +1778,9 @@ def test_corrupt_retained_record_is_missing_provenance_and_rebuilds(
     commands: list[list[str]] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         commands.append(command)
-        return base_invoke(command, timeout=timeout)
+        return base_invoke(command, timeout=timeout, **kwargs)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     assert run_prepared_group(execution, handle, ("smoke",)).passed
@@ -1816,9 +1816,9 @@ def test_missing_new_image_refuses_the_build_and_never_launches(
     launched = False
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         nonlocal launched
-        result = base_invoke(command, timeout=timeout)
+        result = base_invoke(command, timeout=timeout, **kwargs)
         if "BOOLEY_BUILD_STAGE" in command[-1]:
             for script in (project / ".booley" / ".runtime").rglob("*.scr"):
                 script.with_suffix("").unlink(missing_ok=True)
@@ -1949,9 +1949,9 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
     commands: list[list[str]] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         commands.append(command)
-        return base_invoke(command, timeout=timeout)
+        return base_invoke(command, timeout=timeout, **kwargs)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(trace=True))
     for _ in range(2):
@@ -1976,9 +1976,9 @@ def test_hook_editing_project_source_after_setup_cannot_launch_staged_old_copy(
     commands: list[list[str]] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         commands.append(command)
-        return base_invoke(command, timeout=timeout)
+        return base_invoke(command, timeout=timeout, **kwargs)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     with execution.ordinary_group(handle, ("smoke",)) as group:
@@ -1991,7 +1991,8 @@ def test_hook_editing_project_source_after_setup_cannot_launch_staged_old_copy(
             SimulationBuildSlotError, match="changed during setup or Pre-Sim Commands"
         ):
             group.compile()
-    assert not commands
+    # Only FuseSoC setup ran: no build or launch.
+    assert [command for command in commands if command[0] != "fusesoc"] == []
 
 
 def test_hook_editing_staged_source_cannot_launch_image(
@@ -2026,9 +2027,9 @@ def test_hook_editing_authored_core_cannot_launch_image(
     calls: list[list[str]] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         calls.append(command)
-        return base_invoke(command, timeout=timeout)
+        return base_invoke(command, timeout=timeout, **kwargs)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     with execution.ordinary_group(handle, ("smoke",)) as group:
@@ -2040,7 +2041,8 @@ def test_hook_editing_authored_core_cannot_launch_image(
             match="compile inputs changed during setup or Pre-Sim Commands",
         ):
             group.compile()
-    assert not calls
+    # Only FuseSoC setup ran: no build or launch.
+    assert [command for command in calls if command[0] != "fusesoc"] == []
 
 
 def test_hook_editing_generated_isolated_core_cannot_launch_image(
@@ -2063,9 +2065,9 @@ def test_hook_editing_generated_isolated_core_cannot_launch_image(
     calls: list[list[str]] = []
     base_invoke = _subprocess_invoker(project)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         calls.append(command)
-        return base_invoke(command, timeout=timeout)
+        return base_invoke(command, timeout=timeout, **kwargs)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     with execution.ordinary_group(handle, ("smoke",)) as group:
@@ -2087,7 +2089,8 @@ def test_hook_editing_generated_isolated_core_cannot_launch_image(
             SimulationBuildSlotError, match="compile inputs changed during Pre-Sim Commands"
         ):
             group.compile()
-    assert not calls
+    # Only FuseSoC setup ran: no build or launch.
+    assert [command for command in calls if command[0] != "fusesoc"] == []
 
 
 class _StopBeforeBuildError(Exception):
@@ -2765,7 +2768,7 @@ def test_traced_attempt_deadline_adds_conversion_budget(tmp_path: Path) -> None:
     commands: list[str] = []
     timeouts: list[int] = []
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         timeouts.append(timeout)
         commands.append(command[-1])
         return _traced_smoke_launch(handle, tmp_path / "first" / "wave.fst")
@@ -2815,7 +2818,7 @@ def test_trace_declarations_are_frozen_at_planning(tmp_path: Path) -> None:
     launches: list[str] = []
     launch_timeouts: list[int] = []
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         if "BOOLEY_BUILD_STAGE" in command[-1]:
             config.write_text(
                 "[flows.sim]\n"
@@ -2894,7 +2897,7 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     timeouts: list[int] = []
     snapshot_invoke = _snapshot_invoke(commands, eda_tool, handle, snapshot)
 
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         timeouts.append(timeout)
         return snapshot_invoke(command, timeout=timeout)
 
@@ -2941,7 +2944,7 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
 
 
 def _snapshot_invoke(commands, eda_tool, handle, snapshot):
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+    def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         del timeout
         commands.append(command)
         if "BOOLEY_BUILD_STAGE" in command[-1]:

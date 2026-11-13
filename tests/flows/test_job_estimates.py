@@ -76,6 +76,8 @@ def _borrow_records() -> list[dict[str, Any]]:
         _record("t2", "sim_run", memory=9000, test_run="x"),
         # Another phase of the same Target: never borrowed for sim_run.
         _record("t1", "sim_build", memory=20000),
+        # FuseSoC setup is a measured phase of every sim request (#3787).
+        _record("t1", "sim_prepare", memory=500),
     ]
 
 
@@ -161,6 +163,7 @@ def test_wall_clock_unknown_and_independent_of_memory() -> None:
 def test_own_wall_clock_needs_own_history_for_every_phase() -> None:
     estimates = _estimates()
     records = [
+        _record("t1", "sim_prepare", memory=100, wall=4.0),
         _record("t1", "sim_build", memory=100, wall=8.0),
         _record("t1", "sim_run", memory=100, wall=12.0, test_run="a"),
         _record("t2", "sim_run", memory=100, wall=2.0, test_run="b"),
@@ -171,8 +174,8 @@ def test_own_wall_clock_needs_own_history_for_every_phase() -> None:
     borrowed = estimator.estimate([_sim("t1", "a"), _sim("t1", "new")])
     unknown = estimator.estimate([_sim("t3", "a")])
 
-    # Both phases have their own history: (8 + 12) x 1.25.
-    assert own.own_wall_s == 25.0
+    # Every phase has its own history: (4 + 8 + 12) x 1.25.
+    assert own.own_wall_s == 30.0
     assert borrowed.own_wall_s is None  # the second Test Run borrows its wall-clock
     assert unknown.own_wall_s is None
     assert estimator.estimate([]).own_wall_s is None  # no phases
@@ -184,3 +187,27 @@ def test_own_wall_clock_needs_own_history_for_every_phase() -> None:
         [_record("t1", "sim_run", memory=1, wall=-5.0, test_run="a")]
     )
     assert corrupt.estimate([_sim("t1", "a")]).own_wall_s is None
+
+
+def test_every_sim_request_starts_with_sim_prepare() -> None:
+    """FuseSoC setup is a measured phase of every Simulation Job, not only coverage (#3787)."""
+    estimates = _estimates()
+    ordinary = _sim("t", "a", "b")
+    elab_only = _sim("t")
+    coverage = _sim("t", "a", flags=("coverage",))
+
+    for request in (ordinary, elab_only, coverage):
+        keys = estimates.phase_keys(request)
+        assert keys[0] == estimates.HistoryKey(
+            "t", "sim_prepare", tuple(sorted(request.flags)), ""
+        ), request
+    assert [key.phase for key in estimates.phase_keys(ordinary)] == [
+        "sim_prepare",
+        "sim_build",
+        "sim_run",
+        "sim_run",
+    ]
+    assert [key.phase for key in estimates.phase_keys(elab_only)] == ["sim_prepare", "sim_build"]
+    # Only coverage post-processes.
+    assert [key.phase for key in estimates.phase_keys(coverage)][-1] == "sim_postprocess"
+    assert "sim_postprocess" not in {key.phase for key in estimates.phase_keys(ordinary)}
