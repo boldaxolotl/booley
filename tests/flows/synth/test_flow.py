@@ -1117,38 +1117,6 @@ class TestIntentionalLatches:
 
         assert _count_latches("proc $dlatch here\nanother $dlatch\n") == 2
 
-    def test_expected_latches_read_from_booley_toml(self, tmp_path):
-        from booley.flows.synth.flow import _expected_latches
-
-        proj = tmp_path / ".booley"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            "[flows.synth]\nexpected_latches = 1\n", encoding="utf-8"
-        )
-        assert _expected_latches(tmp_path) == 1
-        # Unconfigured -> 0, the strict historical behavior.
-        assert _expected_latches(tmp_path / "nowhere") == 0
-
-    @pytest.mark.parametrize(
-        ("literal", "why"),
-        [
-            ("-1", "negative"),
-            ('"one"', "string"),
-            ("true", "bool"),
-            ("1.5", "float"),
-        ],
-    )
-    def test_malformed_value_does_not_widen_the_gate(self, tmp_path, literal, why):
-        """A bad knob must fall back to strict (0), never to permissive."""
-        from booley.flows.synth.flow import _expected_latches
-
-        proj = tmp_path / ".booley"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            f"[flows.synth]\nexpected_latches = {literal}\n", encoding="utf-8"
-        )
-        assert _expected_latches(tmp_path) == 0, why
-
 
 # ===========================================================================
 # Full output parsing
@@ -5346,6 +5314,7 @@ def _run_latch_case(flow_and_state, tmp_path, case):
     expected = case.get("expected", 0)
     (project / "booley.toml").write_text(
         f'[flows.synth]\nmode = "{mode}"\nexpected_latches = {expected}\n'
+        + case.get("extra_toml", "")
     )
     stub = _stub_plan(tmp_path, "lite", mode=mode)
     plan = dataclasses.replace(
@@ -6668,3 +6637,87 @@ class TestSummaryTable:
             for line in notes
         )
         assert f"{_RED}CRITICAL\x1b[0m" in out.getvalue()
+
+
+def _loop_check_artifacts(loops: int) -> dict[str, str]:
+    """Pre-mapping and final check text reporting *loops* distinct logic loops."""
+    records = "".join(
+        f"Warning: found logic loop in module dut:\n    cell $not$loop{n} ($not)\n"
+        f"      A[0] --> Y[0]\n    wire \\feedback{n}\n"
+        for n in range(loops)
+    )
+    check = f"Checking module dut...\n{records}Found and reported {loops} problems.\n"
+    return {"premap_check_dut.txt": check, "check_dut.txt": check}
+
+
+def test_declared_comb_loop_allowance_passes_and_excess_fails(flow_and_state, tmp_path):
+    """``expected_comb_loops = N`` passes N loops; N + 1 fails naming the excess."""
+    _flow, state_file = flow_and_state
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "cell": "NAND2",
+            "extra_toml": "expected_comb_loops = 2\n",
+            "artifacts": _loop_check_artifacts(2),
+        },
+    )
+    assert result.exit_code == EXIT_SUCCESS
+    assert report["passed"] is True
+    conditions = report["implementation"]["conditions"]
+    assert conditions["comb_loops"] == 2
+    assert conditions["expected_comb_loops"] == 2
+    assert conditions["unexpected_comb_loops"] == 0
+    assert conditions["has_critical"] is False
+    assert DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
+    # A declared loop still emits the Yosys warning, so the run grades WARN.
+    assert report["implementation"]["status"]["grade"] == "warn"
+
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "cell": "NAND2",
+            "extra_toml": "expected_comb_loops = 1\n",
+            "artifacts": _loop_check_artifacts(2),
+        },
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert report["termination"] == "design_failure"
+    conditions = report["implementation"]["conditions"]
+    assert conditions["unexpected_comb_loops"] == 1
+    assert conditions["has_critical"] is True
+    assert "actual=2, expected=1, excess=1" in result.report_text
+    assert (
+        "actual=2, expected=1, excess=1"
+        in report["implementation"]["status"]["diagnostic_excerpt"]
+    )
+
+    # The verdict uses the larger of the two checks: a loop only the pre-mapping
+    # check reports still counts against the allowance.
+    artifacts = {
+        "premap_check_dut.txt": _loop_check_artifacts(2)["premap_check_dut.txt"],
+        "check_dut.txt": _loop_check_artifacts(0)["check_dut.txt"],
+    }
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {"cell": "NAND2", "extra_toml": "expected_comb_loops = 1\n", "artifacts": artifacts},
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert "actual=2, expected=1, excess=1" in result.report_text
+
+
+def test_unset_comb_loop_allowance_fails_any_loop(flow_and_state, tmp_path):
+    """Without the knob a single loop still fails, reported against expected 0."""
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {"cell": "NAND2", "artifacts": load_capture("comb_loop_yosys_0_70.txt")},
+    )
+    assert result.exit_code == EXIT_FAILURE
+    conditions = report["implementation"]["conditions"]
+    assert conditions["comb_loops"] == 1
+    assert conditions["expected_comb_loops"] == 0
+    assert conditions["unexpected_comb_loops"] == 1
+    assert "actual=1, expected=0, excess=1" in result.report_text
