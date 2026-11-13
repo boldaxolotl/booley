@@ -13,6 +13,7 @@ on:
       - ".github/ci/requirements-build.txt"
       - ".github/ci/constraints.txt"
       - ".github/contracts/picorv32-demo.toml"
+      - ".github/contracts/session-runtime.toml"
       - ".github/scripts/docker_base_contract.py"
       - ".github/scripts/export_demo_contract.py"
       - ".github/scripts/goal_mode_driver.py"
@@ -35,6 +36,7 @@ on:
       - "src/booley/core/**"
       - "src/booley/criteria/**"
       - "src/booley/data/docker/**"
+      - "src/booley/data/edalize/**"
       - "src/booley/data/__init__.py"
       - "src/booley/data/criteria.toml"
       - "src/booley/dev_support/__init__.py"
@@ -189,7 +191,7 @@ jobs:
         run: |
           pip install -r .github/ci/requirements-build.txt
           PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.DEVELOPMENT_WHEEL)'
-          trap 'rm -f src/booley/_build_commit.py src/booley/data/development-build-context.tar.gz' EXIT
+          trap 'rm -rf build src/*.egg-info; rm -f src/booley/_build_commit.py src/booley/data/development-build-context.tar.gz' EXIT
           python -m build --wheel
 
       # ADR 0070: the published RISC-V tooling stage, or a local build.
@@ -311,12 +313,12 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Retain RISC-V Sandbox identity
-        if: always() && steps.image-identity.outcome == 'success'
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: picorv32-image-identity-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/picorv32-image-evidence/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Prepare bind-mount ownership

@@ -1879,8 +1879,7 @@ jobs:
         run: df -h /
 
       # Release CI remains the publication gate, not the first place RISC-V
-      # behavior is exercised. The substrate exports as zstd level 1: BuildKit
-      # gzips single-threaded, which took 1-2 min for the tooling layer.
+      # behavior is exercised.
       - name: Run RISC-V candidate image contract
         env:
           TOOLING_SOURCE: ${{ steps.riscv-tooling.outputs.source }}

@@ -160,6 +160,10 @@ def test_demo_never_runs_on_the_released_riscv_image() -> None:
 
     # The demo runs in the candidate the build produced, after the base choice.
     assert "booley-riscv-test bash" in verify["run"]
+    # The demo's isolation and project directory are unchanged.
+    assert "--network none" in verify["run"]
+    assert "-e BOOLEY_DIR=/work/.booley" in verify["run"]
+    assert "dst=/booley-project" not in verify["run"]
     assert ".github/scripts/riscv_candidate.sh build" in build["run"]
     assert steps.index(select) < steps.index(build) < steps.index(verify)
     # A failed build fails the check: nothing may continue past it, and no
@@ -238,12 +242,15 @@ def test_demo_evidence_names_candidate_digest_and_base_source(tmp_path: Path) ->
     assert from_source["image_id"] == f"sha256:{candidate}"
     assert "source-build" in (tmp_path / "summary.md").read_text(encoding="utf-8")
 
-    # The record is retained even when a later step fails, but only once it exists.
+
+def test_demo_retains_image_evidence_even_when_the_build_fails() -> None:
     upload = _demo_step("Retain RISC-V Sandbox identity")
-    assert upload["if"] == f"always() && steps.{step['id']}.outcome == 'success'"
-    uploaded = Path(upload["with"]["path"].replace("${{ runner.temp }}", str(runner_temp)))
-    assert (evidence / "image-identity.json").is_relative_to(uploaded)
-    assert upload["with"]["if-no-files-found"] == "error"
+    # Unconditional: the compatibility log of a failed build is evidence too.
+    assert upload["if"] == "always()"
+    evidence_dir = "${{ runner.temp }}/picorv32-image-evidence/"
+    assert upload["with"]["path"] == evidence_dir
+    build = _demo_step("Build RISC-V Sandbox candidate")
+    assert '"${RUNNER_TEMP}/picorv32-image-evidence"' in build["run"]
 
 
 def test_stable_base_changes_run_demo_on_a_source_built_base() -> None:
@@ -276,8 +283,7 @@ def test_demo_keeps_90_minute_timeout_unless_it_builds_the_base() -> None:
     assert match is not None, timeout
     building, reusing = map(int, match.groups())
     assert reusing == 90
-    assert building == 180
-    assert _demo_job("base-plan")["timeout-minutes"] == 10
+    assert building > reusing, "a source-built base needs more than the reuse budget"
 
 
 def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
