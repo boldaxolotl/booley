@@ -380,7 +380,7 @@ class RunWizard(ModalScreen[str | None]):
 
     def _fill_entries(self) -> None:
         """The step's rows: the Flows, then the Specialists (or why there are none), keeping the highlight."""
-        rows = [
+        rows: list[tuple[Option, tuple[str, str] | None]] = [
             (Option(f"{flow.name} — {flow.blurb}"), ("flow", flow.name)) for flow in self._flows
         ]
         listing = self._specialists
@@ -408,7 +408,7 @@ class RunWizard(ModalScreen[str | None]):
         if event.worker is not self._specialists_worker:
             return  # a read for a worktree the human has since replaced
         if event.state is WorkerState.ERROR:
-            error = event.worker.error
+            error = event.worker.error or RuntimeError("the read failed")
             self._specialists = SpecialistListing(
                 (), f"{type(error).__name__}: {first_line(error)}"
             )
@@ -524,7 +524,8 @@ class RunWizard(ModalScreen[str | None]):
         if row == len(fields) + int(self._has_extra()):
             self._run_check()
         elif row == len(fields):
-            self._edit(self._extra, (self._form or NO_FORM).extra_hint())
+            form = self._form if isinstance(self._form, RunForm) else NO_FORM
+            self._edit(self._extra, form.extra_hint())
         else:
             field = fields[row]
             value = self._values.get(field.dest, "")

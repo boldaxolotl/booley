@@ -22,9 +22,9 @@ from booley.runtime import detached_job
 
 if TYPE_CHECKING:
     from booley.flows.base import BuiltinFlow
+    from booley.flows.endpoint_state import EndpointState
     from booley.harness.dashboard.run_form import RunForm
     from booley.harness.dashboard.specialist_form import ReviewerForm
-    from booley.mcp.base import McpTool
     from booley.runtime.job_slots import AdmissionOutlook
 
 # The child parses and builds a request only; a minute covers a cold import on a slow host.
@@ -33,7 +33,7 @@ _ERROR_MARKER = ": error: "
 NO_FACTS = "argument check gave no run facts"
 # Flows whose default per-work-unit timeout reaches this get a timeout line on the review screen.
 _LONG_TIMEOUT_MS = 30 * 60_000
-_Endpoint = TypeVar("_Endpoint", bound="McpTool")
+_Endpoint = TypeVar("_Endpoint", bound="EndpointState")
 
 
 class ArgumentsError(ValueError):
