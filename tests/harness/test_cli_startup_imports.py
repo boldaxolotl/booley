@@ -17,8 +17,6 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-import pytest
-
 from booley.harness import booley as cli
 from tests.architecture.sandbox_reach import load_source_graph, reachable_harness_functions
 from tests.subprocess_budget import run_bounded_child
@@ -66,20 +64,16 @@ def _probe(argv: list[str], tmp_path: Path) -> tuple[int, str, set[str]]:
     return code, result.stdout, set(modules)
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [["--help"], ["--version"], ["doctor", "--help"]],
-    ids=["help", "version", "doctor-help"],
-)
-def test_help_and_version_skip_handler_modules(argv, tmp_path):
+def test_help_and_version_skip_handler_modules(tmp_path):
     # Bug caught: the entry module importing every handler (Doctor, FuseSoC, pydantic, ...)
     # at load time, so informational calls pay for commands they never run.
-    code, stdout, modules = _probe(argv, tmp_path)
+    for argv in (["--help"], ["--version"], ["doctor", "--help"]):
+        code, stdout, modules = _probe(argv, tmp_path)
 
-    assert code == 0
-    assert stdout.strip()
-    loaded = [name for name in FORBIDDEN_AT_STARTUP if name in modules]
-    assert not loaded, f"`booley {' '.join(argv)}` imported handler-only modules: {loaded}"
+        assert code == 0
+        assert stdout.strip()
+        loaded = [name for name in FORBIDDEN_AT_STARTUP if name in modules]
+        assert not loaded, f"`booley {' '.join(argv)}` imported handler-only modules: {loaded}"
 
 
 # --- AC2: generic, fail-closed check over the dispatch table ---------------------------
@@ -253,33 +247,31 @@ def test_help_loads_no_dispatch_handler_module(tmp_path):
 # --- AC3: lazy entries still reach the real handler ------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("command", "module_name", "attribute"),
-    [
-        ("chat", "booley.harness.chat_cmd", "run"),
-        ("doctor", "booley.harness.doctor", "run_doctor"),
-        ("init", "booley.harness.init_cmd", "run_init"),
-        ("auth", "booley.harness.auth_cmd", "run_auth"),
-    ],
+LAZY_HANDLERS = (
+    ("chat", "booley.harness.chat_cmd", "run"),
+    ("doctor", "booley.harness.doctor", "run_doctor"),
+    ("init", "booley.harness.init_cmd", "run_init"),
+    ("auth", "booley.harness.auth_cmd", "run_auth"),
 )
-def test_lazy_dispatch_reaches_real_handler(
-    monkeypatch, tmp_path, command, module_name, attribute
-):
+
+
+def test_lazy_dispatch_reaches_real_handler(monkeypatch, tmp_path):
     # Bug caught: a lazy wrapper that drops an argument, returns the wrong exit code, or
     # resolves a different function than the command's real handler.
-    module: ModuleType = importlib.import_module(module_name)
-    seen: list[tuple[object, object]] = []
+    for command, module_name, attribute in LAZY_HANDLERS:
+        module: ModuleType = importlib.import_module(module_name)
+        seen: list[tuple[object, object]] = []
 
-    def recorder(args, project_root):
-        seen.append((args, project_root))
-        return 37
+        def recorder(args, project_root, seen=seen):
+            seen.append((args, project_root))
+            return 37
 
-    monkeypatch.setattr(module, attribute, recorder)
-    args = cli.argparse.Namespace(command=command, agent_args=[], session_name=None, cli=None)
+        monkeypatch.setattr(module, attribute, recorder)
+        args = cli.argparse.Namespace(command=command, agent_args=[], session_name=None, cli=None)
 
-    code = cli._EARLY_COMMANDS[command](args, tmp_path)
+        code = cli._EARLY_COMMANDS[command](args, tmp_path)
 
-    assert code == 37
-    assert len(seen) == 1
-    assert seen[0][0] is args
-    assert seen[0][1] is tmp_path
+        assert code == 37, command
+        assert len(seen) == 1, command
+        assert seen[0][0] is args, command
+        assert seen[0][1] is tmp_path, command
