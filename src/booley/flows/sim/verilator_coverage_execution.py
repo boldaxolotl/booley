@@ -28,7 +28,9 @@ from booley.flows.sim.build import (
     SimulationBuildPreparationError,
     build_failure_report,
     classify_build_outcome,
+    measured_setup_runner,
     prepare_simulation_build,
+    setup_timeout_s,
     simulation_build_script,
 )
 from booley.flows.sim.build_session import (
@@ -243,6 +245,11 @@ class VerilatorCoverageExecution:
                 build_root=build_root,
                 resolution_vlnv=overlay.vlnv,
                 environment=simulation_target_environment(self._handle),
+                setup_runner=measured_setup_runner(
+                    self._invoke,
+                    target=self._handle.selector,
+                    timeout_s=setup_timeout_s(self._build_timeout_s()),
+                ),
             )
             if prepared.resolved.cocotb_module and request.variant.trace:
                 trace_overlay.validate_cocotb_trace_mode(
@@ -257,6 +264,10 @@ class VerilatorCoverageExecution:
                 overlay.cleanup()
         return prepared
 
+    def _build_timeout_s(self) -> int:
+        timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
+        return max(1, timeout_ms // 1000)
+
     def _execute_build(
         self,
         prepared: PreparedSimulationBuild,
@@ -265,8 +276,7 @@ class VerilatorCoverageExecution:
         token = new_attempt_token()
         script = simulation_build_script(prepared, token)
         script = _in_directory_script(self._handle.project_root, script)
-        timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
-        timeout_s = max(1, timeout_ms // 1000)
+        timeout_s = self._build_timeout_s()
         observe_stage(
             self._handle.selector,
             "building",

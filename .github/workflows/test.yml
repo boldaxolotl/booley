@@ -283,7 +283,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install pinned CI quality tools
-        run: pip install -e ".[quality]" -c .github/ci/constraints.txt
+        run: pip install -e ".[quality,hdl-parser]" -c .github/ci/constraints.txt
 
       - name: Install actionlint v1.7.12
         shell: bash
@@ -311,70 +311,29 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
-      # Put a deliberate error inside an included package and run Pyright with
-      # no path arguments. Seeing the probe fail proves pyproject's include
-      # configuration is active rather than accidentally analyzing zero files.
-      - name: Prove Pyright include scope is active
+      # One run proves the scope and strict mode behind the plain `pyright` step
+      # below are live. A basic-mode error in a module at the package root fails
+      # only if `include` still reaches the whole package; a missing annotation
+      # in `targets` fails only if strict mode still covers it. Both probe files
+      # must be named in the output, so analyzing nothing cannot pass.
+      - name: Prove Pyright scope and strict mode are active
         shell: bash
         run: |
-          probe=src/booley/core/_pyright_scope_probe.py
-          trap 'rm -f "${probe}"' EXIT
-          echo 'scope_probe: int = "must fail"' > "${probe}"
+          scope_probe=src/booley/_pyright_scope_probe.py
+          strict_probe=src/booley/targets/_pyright_strict_probe.py
+          trap 'rm -f "${scope_probe}" "${strict_probe}"' EXIT
+          echo 'scope_probe: int = "must fail"' > "${scope_probe}"
+          echo 'def strict_probe(value): return value' > "${strict_probe}"
           if pyright --outputjson > "${RUNNER_TEMP}/pyright-probe.json"; then
-            echo "Pyright accepted the deliberate include-scope error" >&2
+            echo "Pyright accepted the deliberate scope and strictness errors" >&2
             exit 1
           fi
           grep -Fq "_pyright_scope_probe.py" "${RUNNER_TEMP}/pyright-probe.json"
-          rm -f "${probe}"
+          grep -Fq "_pyright_strict_probe.py" "${RUNNER_TEMP}/pyright-probe.json"
+          rm -f "${scope_probe}" "${strict_probe}"
           trap - EXIT
-          test ! -e "${probe}"
-
-      - name: Prove Target package is strict
-        shell: bash
-        run: |
-          probe=src/booley/targets/_pyright_strict_probe.py
-          trap 'rm -f "${probe}"' EXIT
-          echo 'def strict_probe(value): return value' > "${probe}"
-          if pyright --outputjson > "${RUNNER_TEMP}/pyright-target-strict-probe.json"; then
-            echo "Pyright accepted the deliberate Target strictness error" >&2
-            exit 1
-          fi
-          grep -Fq "_pyright_strict_probe.py" "${RUNNER_TEMP}/pyright-target-strict-probe.json"
-          rm -f "${probe}"
-          trap - EXIT
-          test ! -e "${probe}"
-
-      - name: Prove exact Flow modules are included
-        shell: bash
-        run: |
-          probe_file() (
-            target=$1
-            label=$(echo "${target}" | tr '/.' '__')
-            backup=$(mktemp "${RUNNER_TEMP}/pyright-probe.XXXXXX")
-            cp "${target}" "${backup}"
-            trap 'cp "${backup}" "${target}"' EXIT
-            echo '__pyright_include_probe: int = "must fail"' >> "${target}"
-            if pyright --outputjson > "${RUNNER_TEMP}/pyright-${label}-include-probe.json"; then
-              echo "Pyright accepted the deliberate include error in ${target}" >&2
-              exit 1
-            fi
-            grep -Fq "${target}" "${RUNNER_TEMP}/pyright-${label}-include-probe.json"
-            cp "${backup}" "${target}"
-            trap - EXIT
-            git diff --exit-code -- "${target}"
-          )
-          for target in \
-            src/booley/flows/lint/flow.py \
-            src/booley/flows/sim/build.py \
-            src/booley/flows/sim/flow.py \
-            src/booley/flows/synth/flow.py \
-            src/booley/flows/fpga/flow.py \
-            src/booley/flows/implementation_comparison.py \
-            src/booley/flows/implementation_report.py \
-            src/booley/flows/synth/implementation_report.py \
-            src/booley/flows/fpga/implementation_report.py; do
-            probe_file "${target}"
-          done
+          test ! -e "${scope_probe}"
+          test ! -e "${strict_probe}"
 
       - name: Pyright strict boundary checks
         run: pyright
@@ -1543,6 +1502,7 @@ jobs:
               /work/tests/smoke/test_verilator_release_matrix.py
               /work/tests/smoke/test_verilator_coverage_collector_smoke.py
               /work/tests/smoke/test_verilator_compiler_cache_smoke.py
+              /work/tests/smoke/test_mutation_equivalence_smoke.py
               --timeout=900 -q -rs --durations=30 --junitxml=/validation-tmp/coverage-release.xml
               -o cache_dir=/validation-tmp/pytest-cache &&
               python /work/.github/scripts/assert_junit.py

@@ -580,22 +580,23 @@ def _isolate_directory_layout_metadata(tmp_path: Path, monkeypatch: pytest.Monke
 def _isolate_bwave_sessions(
     request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A traced sim run registers bwave sessions; keep them out of the real temp store.
+    """Keep the real temporary-directory bwave store out of tests.
 
-    Without this a serial run would write the developer's own
-    ``<tmp>/bwave/bwave_sessions.json`` and leave ``@<target>`` behind for later
-    tests. Tests under ``tests/bwave`` exercise the default store on purpose
-    (their child processes read it) and clean it themselves.
+    A traced sim run registers into its checkout's store, but a run outside any
+    Project (and any ``bwave`` call from the Booley source checkout) falls back
+    to ``<tmp>/bwave/bwave_sessions.json``; without this a serial run would
+    write the developer's own and leave ``@<target>`` behind for later tests.
+    Tests under ``tests/bwave`` exercise that store on purpose (their child
+    processes read it) and isolate it themselves.
     """
     if "tests/bwave/" in request.node.nodeid.replace("\\", "/"):
         return
     try:
-        from booley.bwave import cli as bwave_cli
+        from booley.bwave import sessions
     except ModuleNotFoundError:  # minimal CI images lack optional dependencies
         return
-    monkeypatch.setattr(
-        bwave_cli, "SESSION_FILE", tmp_path / "bwave-sessions" / "bwave_sessions.json"
-    )
+    store = sessions.SessionStore(tmp_path / "bwave-sessions" / "bwave_sessions.json", None)
+    monkeypatch.setattr(sessions, "_temporary_store", lambda: store)
 
 
 @pytest.fixture(autouse=True)

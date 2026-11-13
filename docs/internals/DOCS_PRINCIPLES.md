@@ -214,10 +214,10 @@ drop the rest.
 ### 26. Variants go in collapsed callouts
 
 The main text describes one baseline setup: Stealth Mode off, an HDL
-testbench, Linux, and the EDA tools in the Sandbox Image. A user on that setup
-never has to skip a sentence. When a variant changes what the user sees or
-does, put the difference in a collapsed callout right after the baseline text
-it modifies:
+testbench, Linux, the EDA tools in the Sandbox Image, and the open 45 nm cell
+library. A user on that setup never has to skip a sentence. When a variant
+changes what the user sees or does, put the difference in a collapsed callout
+right after the baseline text it modifies:
 
 ```markdown
 <details markdown>
@@ -254,6 +254,12 @@ is added.
   Target recipe in `TARGETS.md`; the Flow doc links it.
 - Hard limits stay in the main text. So does example output, labeled with
   the tool that produced it: "Example (Verilator):".
+
+**Cell libraries are variants too.** ASIC synthesis maps to one cell library
+today, but the same rule keeps its docs true when a PDK is added. Say "the
+cell library" and name the 45 nm library only where the reader needs its
+value, such as a reference table. When a library changes what the user sees
+or does, put the difference in a `With the <name> library` callout.
 
 ### 27. Mirror parallel variants
 

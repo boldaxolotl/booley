@@ -99,7 +99,7 @@ def test_application_dispatch_routes_bwave_and_python_tools(monkeypatch) -> None
     async def no_special(*_args, caller=None):
         return None
 
-    async def bwave(name, _arguments):
+    async def bwave(name, _arguments, _request_context=None):
         return [TextContent(type="text", text="wave")] if name == "bwave" else None
 
     async def python_tool(name, arguments, definition, counts, jobs, *, caller=None):

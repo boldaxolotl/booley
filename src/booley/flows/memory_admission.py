@@ -29,7 +29,7 @@ from booley.flows.job_estimates import (
     ResourceEstimator,
     phase_occurrences,
 )
-from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore
+from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore, SlotToken
 from booley.runtime.memory_budget import compute_memory_budget
 from booley.runtime.resource_history import HistoryKey, load_records
 
@@ -219,15 +219,24 @@ class MemorySizing:
         return claim
 
 
-def job_threads_at_start(store: SlotStore, cores: int) -> int:
+def job_threads_at_start(
+    store: SlotStore, cores: int, *, own_flow: SlotToken | None = None
+) -> int:
     """The thread count one memory-admitted Job gets: its share of *cores*, rounded down.
 
     The cores are divided by the Jobs holding a Memory Reservation. Call this
     once, right after the Job's own claim is admitted, so the holders include
     the Job itself; the result is fixed for the Job's run and later Jobs never
     shrink it. It is never above *cores* and never below one.
+
+    A Campaign work item that took its own claim passes its Flow's token as
+    *own_flow*: the Flow's reservation is zero by then (an item takes a claim
+    only after the Flow dropped to zero), so it holds no share of the cores and
+    is left out. Every other caller passes nothing and counts every holder.
     """
     holders, _waiters = store.snapshot(CLASS_MEMORY)
+    if own_flow is not None:
+        holders = [token for token in holders if token.lease_id != own_flow.lease_id]
     return max(1, cores // max(1, len(holders)))
 
 

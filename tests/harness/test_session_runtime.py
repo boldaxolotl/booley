@@ -3879,6 +3879,7 @@ class TestSessionRefresh:
     def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
         from booley.harness import booley, session_refresh
         from booley.harness.booley import _build_parser
+        from booley.harness.setup import common as setup_common
 
         args = _build_parser().parse_args(["session", "refresh"])
         from booley.runtime.session_refresh import RefreshImage, RefreshResult
@@ -3889,10 +3890,9 @@ class TestSessionRefresh:
         events: list[str] = []
         with (
             patch.object(
-                booley,
+                setup_common,
                 "configure_progress_output",
                 side_effect=lambda: events.append("configure"),
-                create=True,
             ),
             patch.object(
                 session_refresh,

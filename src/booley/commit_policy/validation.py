@@ -15,12 +15,12 @@ try:
         find_banned as _find_banned,
     )
 except ImportError:
-    from booley_commit_policy import (
+    from booley_commit_policy import (  # pyright: ignore[reportMissingImports]
         enforce_convention,
         max_body_lines,
         stealth_enabled,
     )
-    from booley_commit_policy import (
+    from booley_commit_policy import (  # pyright: ignore[reportMissingImports]
         find_banned as _find_banned,
     )
 

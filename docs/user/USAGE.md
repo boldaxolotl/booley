@@ -162,7 +162,7 @@ kind of run that Project Setup configured, so ask the agent which ones you have.
 | `synth` | Quick ASIC area and timing estimate while you iterate on RTL | *"Compare synth area between these two commits: ..."* | [FLOW-SYNTH.md](FLOW-SYNTH.md) |
 | `fpga` | Implements the design for an FPGA and reports resources and timing; needs AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
 | `mutation` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [FLOW-MUTATION.md](FLOW-MUTATION.md) |
-| `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) |
+| `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [REVIEWER.md](REVIEWER.md) |
 | `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md), [CLI-REFERENCE.md](CLI-REFERENCE.md#coverage_analyst) |
 
 You don't need to know Flow names, flags, or where reports go. Give the agent
