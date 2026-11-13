@@ -12,7 +12,7 @@ from types import ModuleType
 import pytest
 
 from booley.runtime.mcp_config import _warning_preference, generate_codex_config
-from tests.conftest import tomlkit_copy
+from tests.codex_config_support import tomlkit_copy
 from tests.subprocess_budget import run_bounded_child
 
 WARNING_KEY = "suppress_unstable_features_warning"

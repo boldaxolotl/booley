@@ -20,7 +20,8 @@ from booley.mcp import (
     catalog,
 )
 from booley.runtime import incontainer_setup as reg
-from tests.conftest import count_parses, require_symlinks, tomlkit_copy
+from tests.codex_config_support import count_parses, tomlkit_copy
+from tests.conftest import require_symlinks
 
 
 def _stub_codex_effects(monkeypatch):

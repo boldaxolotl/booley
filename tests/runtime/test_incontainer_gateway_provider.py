@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from tests.conftest import count_parses
+from tests.codex_config_support import count_parses
 from tests.gateway_command_support import count_runs, write_token_command
 from tests.subprocess_budget import run_bounded_child
 
