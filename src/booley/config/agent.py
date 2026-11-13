@@ -18,7 +18,7 @@ from booley.config.gateway import (
 )
 from booley.config.jobs import SlotCaps, parse_caps
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
-from booley.core.booley_dir import own_booley_dir
+from booley.core.booley_dir import own_booley_dir, resolve_checkout_booley_dir
 from booley.core.config_paths import resolve_toml
 
 if TYPE_CHECKING:
@@ -543,6 +543,22 @@ def get_agent_settings() -> AgentSettings:
     return _agent_settings
 
 
+def worktree_agent_settings(worktree: Path) -> AgentSettings:
+    """The settings a Specialist run in *worktree* resolves, without installing them.
+
+    Reads the checkout's own ``booley.toml`` (``[agent]``, ``[models]``) plus the
+    Sandbox's recorded per-CLI policies and auth hand-off, like a Specialist
+    subprocess. Never touches the cached settings. Validation errors raise
+    (``BackendConfigError``, layout ``RuntimeError``, ``FileNotFoundError``); a
+    ``booley.toml`` that does not parse is skipped with a warning and gives defaults.
+
+    Limit: a checkout without a local Booley Directory resolves through
+    ``resolve_booley_dir``, which may read or fill the process-wide Booley Directory
+    cache (the agent settings cache is never touched).
+    """
+    return settings_from_data(_project_toml_in(resolve_checkout_booley_dir(worktree)), lazy=True)
+
+
 def set_agent_settings(settings: AgentSettings | None) -> None:
     """Replace or clear cached settings for deterministic tests and composition."""
     global _agent_settings
@@ -555,9 +571,11 @@ def _project_toml_from_env() -> dict[str, Any]:
     Container layout: the toml mounted flat in ``BOOLEY_DIR``; host: ``<repo>/.booley``.
     """
     booley_dir = os.environ.get("BOOLEY_DIR")
-    if not booley_dir:
-        return {}
-    base = Path(booley_dir)
+    return _project_toml_in(Path(booley_dir)) if booley_dir else {}
+
+
+def _project_toml_in(base: Path) -> dict[str, Any]:
+    """The parsed ``booley.toml`` in Booley Directory *base* (flat or ``.booley``), else ``{}``."""
     candidates = (base / "booley.toml", base / ".booley" / "booley.toml")
     return next((data for path in candidates if (data := _read_toml(path)) is not None), {})
 

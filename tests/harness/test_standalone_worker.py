@@ -23,6 +23,7 @@ from booley.harness.dashboard.jobs import JobReader
 from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
+    standalone_request_path,
 )
 from booley.mcp import sim_baseline_jobs
 from booley.runtime import job_records, job_slots
@@ -87,6 +88,7 @@ class StubFlow(BooleyFlow):
 STUB_SPECIALIST = (
     STUB_WAIT
     + """
+import json
 from booley.specialists.specialist import Specialist, parent_death_watchdog
 
 class StubSpecialist(Specialist):
@@ -100,7 +102,22 @@ class StubSpecialist(Specialist):
         return None
 
     def main(self, argv, **kwargs):
+        from booley.config.settings import get_agent_settings
+
         ctl = Path(argv[argv.index("--ctl") + 1])
+        settings = get_agent_settings()
+        (ctl / "seen.json").write_text(
+            json.dumps(
+                {
+                    "argv": list(argv),
+                    "model": settings.model_for_specialist("reviewer"),
+                    "default_cli": settings.default_cli,
+                    "claude_auth": settings.auth_for("claude"),
+                    "codex_auth": settings.auth_for("codex"),
+                }
+            ),
+            encoding="utf-8",
+        )
         with parent_death_watchdog(self.name, interval=0.02):
             parent = os.getppid()
             (ctl / "armed").write_text("1", encoding="utf-8")
@@ -142,7 +159,10 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     root = tmp_path / "proj"
     tools = root / ".booley" / "mcp_tools"
     tools.mkdir(parents=True)
-    (root / ".booley" / "booley.toml").write_text("[jobs]\nmax_heavy = 1\n", encoding="utf-8")
+    # The default CLI is named so a Specialist resolves one inside a container too.
+    (root / ".booley" / "booley.toml").write_text(
+        '[agent]\ndefault = "claude"\n\n[jobs]\nmax_heavy = 1\n', encoding="utf-8"
+    )
     (tools / "stub_flow.py").write_text(STUB_FLOW, encoding="utf-8")
     (tools / "stub_specialist.py").write_text(STUB_SPECIALIST, encoding="utf-8")
     yield root
@@ -277,6 +297,78 @@ def test_specialist_survives_submitter_exit(project: Path, ctl: Path) -> None:
     assert (final.status, final.exit_code) == ("done", 0)
 
 
+# Sandbox hand-off variables a worker inherits; the tests set only what they assert.
+AGENT_ENV_RESET = dict.fromkeys(
+    ("BOOLEY_PRIMARY_PROVIDER", "BOOLEY_PRIMARY_AUTH", "BOOLEY_AGENT_APP", "BOOLEY_AGENT_CLIS"), ""
+)
+
+
+def run_stub_specialist(
+    project: Path, ctl: Path, *, worktree: Path | None = None, env: dict[str, str] | None = None
+) -> tuple[str, dict[str, object]]:
+    """Run the stub Specialist to its end; return the run id and what it saw."""
+    (ctl / "release").write_text("1", encoding="utf-8")
+    run_id = submit_and_exit(
+        project,
+        "specialist",
+        "stub_specialist",
+        ("--ctl", str(ctl)),
+        wait_for=ctl / "armed",  # the stub arms its watchdog while the submitter is alive
+        env=AGENT_ENV_RESET | (env or {}),
+        worktree=worktree,
+    )
+    final = terminal_record(project, run_id)
+    assert (final.status, final.exit_code) == ("done", 0), job_log(project, run_id)
+    return run_id, json.loads((ctl / "seen.json").read_text(encoding="utf-8"))
+
+
+@linux_only
+def test_specialist_job_uses_worktree_agent_settings(project: Path, ctl: Path) -> None:
+    # The Project pins conflicting values: only the worktree's toml may decide.
+    (booley_dir_of(project) / "booley.toml").write_text(
+        '[agent]\ndefault = "claude"\n[agent.auth]\nclaude = "api_key"\n'
+        '[models]\nreviewer = "claude-project-pin"\n',
+        encoding="utf-8",
+    )
+    worktree = project.parent / "worktree"
+    tools = worktree / ".booley" / "mcp_tools"
+    tools.mkdir(parents=True)
+    (tools / "stub_specialist.py").write_text(STUB_SPECIALIST, encoding="utf-8")
+    (worktree / ".booley" / "booley.toml").write_text(
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
+        '[agent.auth]\nclaude = "subscription"\n[models]\nreviewer = "claude-pinned-test"\n',
+        encoding="utf-8",
+    )
+
+    _, seen = run_stub_specialist(
+        project, ctl, worktree=worktree, env={"BOOLEY_AGENT_CLIS": "codex=api_key"}
+    )
+
+    assert seen["model"] == "claude-pinned-test"
+    assert seen["default_cli"] == "claude"
+    assert seen["claude_auth"] == "subscription"
+    assert seen["codex_auth"] == "api_key"
+
+
+@linux_only
+def test_specialist_job_gets_a_transcript_dir_and_keeps_its_command(
+    project: Path, ctl: Path
+) -> None:
+    run_id, seen = run_stub_specialist(project, ctl)
+
+    transcripts = (
+        booley_dir_of(project) / ".interactive_logs" / "standalone" / run_id / "transcripts"
+    )
+    assert seen["argv"] == ["--ctl", str(ctl), "--transcript-dir", str(transcripts)]
+    record = job_records.read_record(run_id, jobs_root_of(project))
+    assert record is not None
+    assert record.argv == ["booley", "specialist", "stub_specialist", "--ctl", str(ctl)]
+    request = json.loads(
+        standalone_request_path(booley_dir_of(project), run_id).read_text(encoding="utf-8")
+    )
+    assert request["argv"] == ["--ctl", str(ctl)]
+
+
 @linux_only
 def test_worker_environment_has_no_goal_or_session_identity(project: Path, ctl: Path) -> None:
     (ctl / "release").write_text("1", encoding="utf-8")
@@ -297,7 +389,18 @@ START_FAILURE_REASONS = {
     "missing-worktree": "worktree is not a directory",
     "bad-kind": "kind must be one of",
     "bad-name": "bad name",
+    "bad-models": "names no known Agent CLI",
 }
+
+
+def bad_models_worktree(project: Path) -> Path:
+    """A checkout whose ``[models]`` pins a model no Agent CLI owns."""
+    worktree = project.parent / "bad-models"
+    (worktree / ".booley").mkdir(parents=True)
+    (worktree / ".booley" / "booley.toml").write_text(
+        '[agent]\ndefault = "claude"\n\n[models]\nreviewer = "bogus"\n', encoding="utf-8"
+    )
+    return worktree
 
 
 @linux_only
@@ -308,6 +411,7 @@ def test_start_failure_leaves_failed_record(project: Path, case: str) -> None:
         "missing-worktree": ("flow", "stub_flow", project / "gone"),
         "bad-kind": ("bogus", "stub_flow", project),
         "bad-name": ("flow", "bad name", project),
+        "bad-models": ("specialist", "stub_specialist", bad_models_worktree(project)),
     }[case]
     run_id = submit_and_exit(project, kind, name, worktree=worktree)
     final = terminal_record(project, run_id)
