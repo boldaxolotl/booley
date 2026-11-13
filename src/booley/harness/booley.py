@@ -2365,6 +2365,21 @@ def _selected_project_root(
     return _command_project_root(command)
 
 
+def _deleted_session_down_root(command: str, args: argparse.Namespace) -> Path | None:
+    """Return the Project Root a `session down` names when that directory is gone.
+
+    Only an absolute, nonexistent selector qualifies: a relative one is still a typo
+    and keeps the existing-directory error, and an existing path keeps discovery.
+    """
+    selection = getattr(args, "_cli_selection", None)
+    if command != "session" or getattr(args, "session_command", None) != "down":
+        return None
+    if selection is None or not Path(selection.value).is_absolute():
+        return None
+    root = Path(selection.value).resolve()
+    return None if root.exists() else root
+
+
 def _host_session_selection(
     command: str, args: argparse.Namespace, selected: Path | None
 ) -> Path | None:
@@ -2410,6 +2425,11 @@ def _dispatch_main() -> int:
     default_chat = getattr(args, "default_chat", False)
     if default_chat:
         _enforce_runtime_location(command)
+
+    if deleted_root := _deleted_session_down_root(command, args):
+        # A deleted Project has no checkout to discover or guard; INDEPENDENT skips
+        # only those checks, while the host-only and host-install gates still run.
+        return _dispatch_selected(args, command, deleted_root, ProjectBinding.INDEPENDENT)
 
     binding = _command_project_binding(command, args)
     project_root = _selected_project_root(command, args, binding)
