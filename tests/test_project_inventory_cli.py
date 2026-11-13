@@ -903,7 +903,7 @@ def test_human_keeper_outcomes_identify_image_and_retained_tags(
 
 
 @pytest.mark.parametrize("operation", ["forget", "prune-keepers"])
-@pytest.mark.parametrize("journal_kind", ["refresh", "invalidation", "malformed-refresh"])
+@pytest.mark.parametrize("journal_kind", ["invalidation", "malformed-invalidation"])
 def test_real_pending_journal_preserves_keeper_and_inventory(
     tmp_path: Path,
     keeper_host: FakeDocker,
@@ -912,7 +912,6 @@ def test_real_pending_journal_preserves_keeper_and_inventory(
     journal_kind: str,
 ) -> None:
     from booley.runtime import issuance_invalidation
-    from tests.harness.test_session_refresh_recovery import _write_restore_journal
 
     project = _remember(tmp_path)
     tag = keeper_image(project)
@@ -920,13 +919,10 @@ def test_real_pending_journal_preserves_keeper_and_inventory(
     if operation == "prune-keepers":
         project_inventory.forget_project(project)
         _, preview = _prune(capsys)
-    if journal_kind == "invalidation":
-        issuance_invalidation.prepare(str(project))
-        journal = issuance_invalidation.journal_store().path(str(project))
-    else:
-        journal = _write_restore_journal(tmp_path / "config", project)
-        if journal_kind == "malformed-refresh":
-            journal.write_text("{invalid")
+    issuance_invalidation.prepare(str(project))
+    journal = issuance_invalidation.journal_store().path(str(project))
+    if journal_kind == "malformed-invalidation":
+        journal.write_text("{invalid")
     before_journal = journal.read_bytes()
     before_inventory = project_inventory.state_path().read_bytes()
     keeper_host.calls.clear()
@@ -946,12 +942,13 @@ def test_real_pending_journal_preserves_keeper_and_inventory(
 def test_missing_keeper_adapter_refuses_before_observation(
     tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str], action: str
 ) -> None:
-    from tests.harness.test_session_refresh_recovery import _write_restore_journal
+    from booley.runtime import issuance_invalidation
 
     project = _remember(tmp_path)
     tag = keeper_image(project)
     keeper_host.tags[tag] = "sha256:" + "a" * 64
-    journal = _write_restore_journal(tmp_path / "config", project)
+    issuance_invalidation.prepare(str(project))
+    journal = issuance_invalidation.journal_store().path(str(project))
     before = (project_inventory.state_path().read_bytes(), journal.read_bytes())
     flags = (
         ["projects", "forget", str(project)]

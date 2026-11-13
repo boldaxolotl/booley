@@ -29,7 +29,7 @@ def _plain_server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "BOOLEY_NESTED_AGENT",
         "BOOLEY_MCP_TOOLS",
         "BOOLEY_MCP_MODE",
-        "BOOLEY_COVERAGE_CAMPAIGN",
+        "BOOLEY_COVERAGE_RECORD",
     ):
         monkeypatch.delenv(name, raising=False)
     project = tmp_path / ".booley"

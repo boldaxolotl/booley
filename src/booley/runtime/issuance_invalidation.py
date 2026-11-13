@@ -65,6 +65,13 @@ def recover_all_locked() -> tuple[str, ...]:
     return tuple(root for root in pending_invalidations() if recover_project_locked(root))
 
 
+def shared_recovery_blocks_command(*, read_only: bool) -> bool:
+    """Check or complete host-wide invalidations; report whether the command must stop."""
+    if read_only:
+        return bool(pending_invalidations())
+    return bool(recover_all_locked())
+
+
 def pending_invalidations() -> tuple[str, ...]:
     """Return validated pending Project identities without changing host state."""
     return tuple(_decode(entry.document) for entry in journal_store().scan())

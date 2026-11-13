@@ -31,7 +31,10 @@ import math
 import re
 import uuid
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from typing import TypeGuard
 
 __all__ = [
     "BoundaryError",
@@ -165,7 +168,7 @@ def require_uuid4(value: Any, *, field: str = "value") -> str:
     return parsed_value
 
 
-def is_str_list(value: Any) -> bool:
+def is_str_list(value: Any) -> TypeGuard[list[str]]:
     """Return True iff *value* is a list whose every element is a ``str``.
 
     Strict predicate (the duplicated ``_is_string_list`` shape): a bare string

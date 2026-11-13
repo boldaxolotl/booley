@@ -52,7 +52,7 @@ def validate_document(text: str) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("generate").add_argument("--output", type=Path, required=True)
     commands.add_parser("validate").add_argument("path", type=Path)

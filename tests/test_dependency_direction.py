@@ -14,11 +14,7 @@ def test_session_issuance_is_one_deep_boundary_for_independent_callers() -> None
         "harness/setup/interactive.py": {"preview", "issue_prepared"},
         "runtime/inspection.py": {"validate", "requested_license", "keeper_image"},
         "runtime/session_runtime.py": {"validate", "labels"},
-        "runtime/session_refresh.py": {
-            "load_issued_snapshot",
-            "load_recovery_snapshot",
-            "issuance_from_document",
-        },
+        "runtime/session_refresh.py": {"authorized_project_data_source"},
     }
     for relative, capabilities in consumers.items():
         source = (_PACKAGE / relative).read_text(encoding="utf-8")

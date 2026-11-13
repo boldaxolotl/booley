@@ -418,7 +418,7 @@ class Exposure:
             explicit=names("BOOLEY_MCP_TOOLS") if "BOOLEY_MCP_TOOLS" in values else None,
             debug=values.get("BOOLEY_MCP_DEBUG_TOOLS", "").strip().lower()
             not in {"", "0", "false", "no"},
-            campaign=bool(values.get("BOOLEY_COVERAGE_CAMPAIGN")),
+            campaign=bool(values.get("BOOLEY_COVERAGE_RECORD")),
             project=bool(values.get("BOOLEY_COVERAGE_PROJECT")),
         )
 

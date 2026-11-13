@@ -114,10 +114,10 @@ def test_a_coverage_run_writes_record_names_in_its_projection_and_report(
     assert {"simulation_record_manifest", "coverage_record_reference"} <= kinds
     assert not kinds & set(_OLD_KINDS)
     report = _json(invocation / "report.json")
-    artifacts = report["detail"]["campaigns"]["sim_0"]["artifacts"]
+    artifacts = report["detail"]["records"]["sim_0"]["artifacts"]
     assert artifacts["manifest"]["kind"] == "simulation_record_manifest"
     assert artifacts["coverage"]["kind"] == "coverage_record_reference"
-    assert report["detail"]["targets"]["sim_0"]["coverage_campaign"]["kind"] == (
+    assert report["detail"]["targets"]["sim_0"]["coverage_record"]["kind"] == (
         "coverage_record_reference"
     )
 
@@ -220,8 +220,8 @@ def test_retention_reports_a_0_4_0_resume_receipt_as_older(reports: Path) -> Non
         prune_invocation(reports, 2)
 
     text = str(pruned.value)
-    assert "simulation_campaign_manifest" in text
-    _assert_refused(text, "simulation_campaign_manifest", receipt)
+    assert "detail.campaigns" in text
+    _assert_refused(text, "detail.campaigns", receipt)
     assert "unresolved completed Target" not in text
     assert _tree(receipt) == before
 

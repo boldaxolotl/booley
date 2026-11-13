@@ -85,9 +85,6 @@ class _UnreadableDependencyError(CampaignRetentionError):
 # one held by this very prune) locks the sentinel byte, other handles cannot read it.
 _MANDATORY_FILE_LOCKS = sys.platform == "win32"
 _BATCH_SCHEMA = "booley.simulation-prune-batch/v1"
-# The manifest artifact kind Booley 0.4.0 wrote into report.json, which keeps its schema
-# until the report rename: recognised only to refuse a 0.4.0 resume receipt, never an alias.
-_OLDER_MANIFEST_KIND = "simulation_campaign_manifest"
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,7 +672,7 @@ def _report_references_campaign(
     try:
         report = _read_object(report_path)
         detail = require_dict(report.get("detail"), field="report detail")
-        campaigns = require_dict(detail.get("campaigns"), field="report campaigns")
+        campaigns = require_dict(detail.get("records"), field="report records")
     except OSError as error:
         _fail_closed_on_sharing_error(error, report_path)
         return False
@@ -687,7 +684,7 @@ def _report_references_campaign(
             artifacts = require_dict(campaign.get("artifacts"), field="campaign artifacts")
         except BoundaryError:
             continue
-        if campaign.get("campaign_id") != campaign_id:
+        if campaign.get("simulation_record_id") != campaign_id:
             continue
         if _manifest_reference_matches(
             report_path,
@@ -1281,32 +1278,24 @@ def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> 
     except (OSError, ValueError, json.JSONDecodeError):
         return False
     detail = report.get("detail")
-    campaigns = detail.get("campaigns") if isinstance(detail, dict) else None
-    receipt = (
-        report.get("flow") == "sim"
-        and report.get("exit_code") in {0, 1, 2}
-        and isinstance(campaigns, dict)
-        and set(campaigns) == set(completed)
-    )
-    if receipt:
-        _refuse_older_receipt(root, cast(dict[str, object], campaigns))
-    return receipt
-
-
-def _refuse_older_receipt(root: Path, campaigns: Mapping[str, object]) -> None:
-    """Refuse a receipt whose manifest reference carries the kind Booley 0.4.0 wrote."""
-    for campaign in campaigns.values():
-        artifacts = campaign.get("artifacts") if isinstance(campaign, dict) else None
-        manifest = artifacts.get("manifest") if isinstance(artifacts, dict) else None
-        kind = manifest.get("kind") if isinstance(manifest, dict) else None
-        if kind == _OLDER_MANIFEST_KIND:
-            raise CampaignRetentionError(
-                str(
-                    UnsupportedSimulationCampaignFormatError(
-                        "Simulation Campaign manifest reference", kind, root
-                    )
+    if not isinstance(detail, dict):
+        return False
+    if report.get("flow") == "sim" and isinstance(detail.get("campaigns"), dict):
+        # Booley 0.4.0 named the field ``campaigns``; no current Booley writes it.
+        raise CampaignRetentionError(
+            str(
+                UnsupportedSimulationCampaignFormatError(
+                    "Simulation report field", "detail.campaigns", root
                 )
             )
+        )
+    records = detail.get("records")
+    return (
+        report.get("flow") == "sim"
+        and report.get("exit_code") in {0, 1, 2}
+        and isinstance(records, dict)
+        and set(records) == set(completed)
+    )
 
 
 def main() -> None:

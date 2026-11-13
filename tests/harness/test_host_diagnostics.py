@@ -17,7 +17,6 @@ from booley.runtime import (
     runtime_context,
     session_admission,
     session_issuance,
-    session_refresh,
 )
 from booley.runtime.host_install import HostInstallationIdentity
 
@@ -264,7 +263,6 @@ def test_host_doctor_reports_session_store_file_named_for_another_root(
     for module, attribute in (
         (session_issuance, "stamp_store"),
         (session_admission, "claim_store"),
-        (session_refresh, "journal_store"),
         (issuance_invalidation, "journal_store"),
     ):
         store = getattr(module, attribute)()
@@ -294,7 +292,6 @@ def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
     stores = (
         session_issuance.stamp_store(),
         session_admission.claim_store(),
-        session_refresh.journal_store(),
         issuance_invalidation.journal_store(),
     )
     for store in stores:

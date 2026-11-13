@@ -77,8 +77,10 @@ _ALLOWED: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"criteria"}),
         "evidence and staleness #3512",
     ),
+    "booley.flows.sim.elab_only": (frozenset({"criteria"}), "evidence and staleness #3512"),
     "booley.flows.sim.flow": (frozenset({"criteria"}), "evidence and staleness #3512"),
     "booley.flows.sim.flow_resume": (frozenset({"criteria"}), "evidence and staleness #3512"),
+    "booley.flows.sim.standalone": (frozenset({"criteria"}), "evidence and staleness #3512"),
     "booley.flows.sim.workload": (frozenset({"criteria"}), "evidence and staleness #3512"),
     "booley.harness.booley": (
         frozenset({"criteria", "goals"}),
@@ -88,6 +90,10 @@ _ALLOWED: dict[str, tuple[frozenset[str], str]] = {
     "booley.harness.dashboard.app": (frozenset({"goals"}), "Goal-only #3511"),
     "booley.harness.dashboard.doctor": (frozenset({"goals"}), "Goal-only #3511"),
     "booley.harness.dashboard.jobs": (frozenset({"goals"}), "Goal-only #3511"),
+    "booley.harness.dashboard.specialist_form": (
+        frozenset({"goals"}),
+        "Goal-only #3511; spec prefill and review focuses read the Goal model and store",
+    ),
     "booley.harness.dashboard.model": (frozenset({"criteria", "goals"}), "Goal-only #3511"),
     "booley.harness.goal_status_view": (frozenset({"goals"}), "Goal-only #3511"),
     "booley.harness.init_cmd": (frozenset({"goals"}), "Goal-only #3511"),

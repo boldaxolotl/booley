@@ -366,7 +366,7 @@ def _simulation_projection(
         "test_runs": coverage_test_run_rows(plan.test_runs, result.runs),
         "collection": _public_collection_status(campaign, result),
         "evaluation": campaign.evaluation["status"],
-        "coverage_campaign": "coverage.json",
+        "coverage_record": "coverage.json",
         "coverage_metrics": coverage_metrics(campaign),
     }
     infrastructure_error = next(

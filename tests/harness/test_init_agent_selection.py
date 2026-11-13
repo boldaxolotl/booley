@@ -174,11 +174,11 @@ def _stub_nested_init_services(tmp_path, monkeypatch):
     monkeypatch.setattr(init_cmd, "_step_project_inventory", lambda _ctx: None)
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
 
-    from booley.runtime import lifecycle_lock, session_refresh
+    from booley.runtime import issuance_invalidation, lifecycle_lock
 
     monkeypatch.setattr(lifecycle_lock, "host_lifecycle_lock", lambda _purpose: nullcontext())
     monkeypatch.setattr(
-        session_refresh,
+        issuance_invalidation,
         "shared_recovery_blocks_command",
         lambda *, read_only: False,
     )

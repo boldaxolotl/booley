@@ -17,7 +17,7 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.config.host_config import SandboxHostPolicy
 from booley.config.project_config import normalize_tests_toml
-from booley.harness import doctor, host_diagnostics
+from booley.harness import doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import doctor_stamp, inspection, platform_paths, session_admission, vaporview
 from booley.targets.catalog import TargetCatalog
@@ -1161,3 +1161,60 @@ def test_core_audit_skips_core_repository_hygiene_without_targets(tmp_path, monk
         failure = "project has no .core" if case == "no-core" else ".core enumeration failed"
         assert any(failure in message for level, message in rec.events if level == "fail"), case
         assert not calls, case
+
+
+_CORE_RESOLUTION_OUTPUT = (
+    "  ✗  .core Target 'sim_bad' fails to resolve\n"
+    "     → fix the .core / depends graph\n"
+    "      Parse error. Ignoring file /work/unit.core:\n"
+    "      filesets.tb.depend must be array\n"
+    "      second line\n"
+    "  ✓  .core Target 'sim_ok' resolves\n"
+)
+
+
+def test_core_resolution_deep_output_is_pinned(tmp_path, monkeypatch, capsys):
+    """The deep ``.core`` resolution rows keep their text, order, excerpt and counts.
+
+    The literal was captured from Doctor's own resolution before it moved to its
+    owner and is unchanged by the move; the rows now reach the reporter as the
+    owner's one typed report, and the excerpt is shown without ``--verbose``.
+    """
+    from tests.harness.test_doctor_deep_execution import _core_resolution_project
+
+    owner = importlib.import_module("booley.runtime.core_resolution")
+    project = _core_resolution_project(tmp_path)
+    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    err = "Parse error. Ignoring file /work/unit.core:\nfilesets.tb.depend must be array\nsecond line"
+
+    def run(argv, **_kwargs):
+        verdicts = [
+            {"selector": item["selector"], "ok": item["selector"] == "sim_ok", "err": err}
+            for item in json.loads(argv[-1])
+        ]
+        return subprocess.CompletedProcess(
+            argv, 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(verdicts), ""
+        )
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    results = []
+    real_inspect = owner.inspect_core_resolution
+
+    def spy(request):
+        results.append(real_inspect(request))
+        return results[-1]
+
+    monkeypatch.setattr(owner, "inspect_core_resolution", spy)
+    reporter = doctor._Reporter.create()
+
+    doctor._run_core_resolution(
+        project,
+        doctor._DoctorFlowRuntime(tmp_path, None),
+        reporter,
+        doctor_deep.DeepCheckTracker(),
+    )
+
+    assert capsys.readouterr().out == _CORE_RESOLUTION_OUTPUT
+    assert len(results) == 1, "the rows must reach Doctor as one owner report"
+    assert (reporter.counts["pass"], reporter.counts["fail"]) == (1, 1)
+    assert not reporter.result(1).clean

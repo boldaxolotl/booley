@@ -1727,7 +1727,7 @@ def _own_attempt_run_directory(
     project_root = tmp_path / "checkout"
     project_root.mkdir(exist_ok=True)
     run = expand_run_directory(
-        "work/{campaign}/{test}/{attempt}",
+        "work/{record}/{test}/{attempt}",
         project_root=project_root,
         campaign_id=document["simulation_record_id"],
         target_key="sim",
@@ -1736,7 +1736,7 @@ def _own_attempt_run_directory(
     )
     document["run_directory"] = {
         "kind": "templated",
-        "configured": "work/{campaign}/{test}/{attempt}",
+        "configured": "work/{record}/{test}/{attempt}",
         "resolved": str(run.path),
         "collision_key": run.collision_key,
         "owned": True,

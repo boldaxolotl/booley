@@ -33,7 +33,7 @@ from booley.audit.diagnostic_results import (
     Severity,
 )
 from booley.audit.doctor_waivers import load_doctor_waivers
-from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
+from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import developer_probe, doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
 from booley.presentation import colors
@@ -58,6 +58,8 @@ from tests.diagnostic_helpers import (
     _require_doctor_warning,
 )
 from tests.docker_cli_guard import (
+    assert_docker_processes_unused,
+    forbid_docker_processes,
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
@@ -388,7 +390,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             }
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
         if "CORE_RESOLVE_JSON" in " ".join(str(part) for part in cmd):
-            # The deep .core-resolvability snippet (docker-wrapped): report the
+            # The deep .core-resolvability snippet (Sandbox command): report the
             # selected Targets as resolvable via the marker line it scrapes.
             selected = json.loads(cmd[-1])
             verdicts = json.dumps(
@@ -404,6 +406,8 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             )
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
 
+    # ``doctor.subprocess`` is the stdlib module, so this one fake also answers the MCP
+    # server inspection owner's probe (``booley.mcp.server_inspection``).
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
     return calls
 
@@ -662,67 +666,98 @@ def test_doctor_fails_when_devcontainer_tracked(tmp_path, monkeypatch, capsys):
     assert ".devcontainer/ is tracked by git" in output
 
 
-def test_doctor_fails_when_mcp_probe_misses_required_tool(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
+_MCP_PASS_ROW = "  ✓  MCP server exposes 5 MCP tool(s)"
+_MCP_ADVISORY_ROW = (
+    "  !  MCP missing documented interactive endpoint(s): mutation"
+    "  interactive.mcp-tool-advisory-missing"
+)
+_MCP_TOOL_LIST_ROW = "      bwave, lint, sim, synth, reviewer"
+_MCP_PROBE_TOOLS = ["bwave", "lint", "sim", "synth", "reviewer"]
+
+
+def _full_run_rows_from(
+    tmp_path: Path, monkeypatch, capsys, start_row: str, *, verbose: bool, probe_exit: int = 0
+) -> tuple[int, list[str]]:
+    """Run full Doctor in a fresh project; return its rc and the rows from *start_row* on."""
+    tmp_path.mkdir()
     booley_dir = _write_project(tmp_path)
-    _patch_environment(
-        monkeypatch,
-        tmp_path,
-        booley_dir,
-        mcp_tools=["bwave", "lint", "sim"],
+    _patch_environment(monkeypatch, tmp_path, booley_dir, mcp_tools=_MCP_PROBE_TOOLS)
+    if probe_exit:
+        answer_other_commands = doctor.subprocess.run
+
+        def failing_probe(cmd, **kwargs):
+            if cmd[-3:] == ["python", "-m", "booley.mcp.probe"]:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    probe_exit,
+                    stdout="",
+                    stderr="Traceback (most recent call last):\n"
+                    "ImportError: cannot import name x\nfinal line\n",
+                )
+            return answer_other_commands(cmd, **kwargs)
+
+        monkeypatch.setattr(doctor.subprocess, "run", failing_probe)
+    rc = doctor.run_doctor(argparse.Namespace(verbose=verbose, deep=False), tmp_path)
+    lines = colors.strip_ansi(capsys.readouterr().out).splitlines()
+    first = lines.index(start_row)
+    return rc, lines[first : lines.index("Project checks") + 1]
+
+
+def test_doctor_mcp_probe_rows_and_exit_are_pinned(tmp_path, monkeypatch, capsys):
+    """Rows and exit code of the MCP probe, captured from Doctor before the owner existed."""
+    # Verbose: PASS, advisory WARN with its check ID, the tool list, then the next section.
+    rc, rows = _full_run_rows_from(
+        tmp_path / "v", monkeypatch, capsys, _MCP_PASS_ROW, verbose=True
+    )
+    assert (rc, rows) == (
+        0,
+        [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, _MCP_TOOL_LIST_ROW, "", "Project checks"],
+    )
+    # Not verbose: the tool list is hidden.
+    rc, rows = _full_run_rows_from(
+        tmp_path / "q", monkeypatch, capsys, _MCP_PASS_ROW, verbose=False
+    )
+    assert (rc, rows) == (0, [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, "", "Project checks"])
+    # A failed probe: FAIL row, fix hint and the excerpt (always shown) in that order, exit 1.
+    failed_row = "  ✗  MCP server probe failed with exit 3"
+    rc, rows = _full_run_rows_from(
+        tmp_path / "f", monkeypatch, capsys, failed_row, verbose=False, probe_exit=3
+    )
+    assert (rc, rows) == (
+        1,
+        [
+            failed_row,
+            "     → rebuild sandbox image",
+            "      Traceback (most recent call last):",
+            "      ImportError: cannot import name x",
+            "      final line",
+            "",
+            "Project checks",
+        ],
     )
 
-    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
-    output = capsys.readouterr().out
-    assert rc == 1
-    assert "MCP missing required endpoint(s): synth" in output
-
-
-def test_doctor_runs_supported_mcp_probe_entrypoint(tmp_path: Path) -> None:
-    booley_dir = tmp_path / ".booley"
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
-
-    command = doctor._mcp_probe_command(project, "docker", "booley:test")
-
-    assert command[-3:] == ["python", "-m", "booley.mcp.probe"]
-    assert "-c" not in command
-
-
-def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
-    tmp_path,
-    monkeypatch,
-    capsys,
+def test_full_run_doctor_answers_mcp_probe_through_owner_without_real_container(
+    tmp_path, monkeypatch
 ):
+    """Full Doctor reaches the probe only through the owner, answered by the fake."""
     booley_dir = _write_project(tmp_path)
-    _patch_environment(
-        monkeypatch,
-        tmp_path,
-        booley_dir,
-        mcp_payload={
-            "tools": [
-                "synth",
-                "bwave",
-                "coverage_analyst",
-                "lint",
-                "mutation",
-                "reviewer",
-                "sim",
-            ],
-            "errors": [],
-            "logs_dir": "/tmp/booley",
-            "logs_dir_ok": False,
-        },
-    )
+    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
+    forbid_docker_processes(monkeypatch)
+    inspected: list[object] = []
+    real_inspect = doctor.server_inspection.inspect_mcp_server
 
-    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+    def spy(request):
+        inspected.append(request)
+        return real_inspect(request)
 
-    output = capsys.readouterr().out
-    assert rc == 1
-    assert "MCP interactive log setup failed" in output
+    monkeypatch.setattr(doctor.server_inspection, "inspect_mcp_server", spy)
+
+    doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    assert len(inspected) == 1
+    assert [call for call in calls if call[-3:] == ["python", "-m", "booley.mcp.probe"]]
+    assert_docker_processes_unused()
 
 
 def _gitignore_probe(booley_dir: Path) -> list[DiagnosticFinding]:
@@ -1005,7 +1040,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     _healthy_doctor_backend(monkeypatch)
     _set_venue(monkeypatch, True)
     monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
-    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *a, **k: None)
+    monkeypatch.setattr(doctor, "_run_core_resolution", lambda *a, **k: None)
     rss_calls, model_calls = [], []
 
     def measure(root):
@@ -1170,48 +1205,6 @@ def test_deep_check_routing_truth_table(
     assert cmd[:3] == ["doc" + "ker", "exec", "-e"]
     assert "booley-session-test" in cmd
     assert "booley.flows.sim" in cmd
-    assert doctor._SANDBOX_GUARD_SCRIPT not in cmd
-
-
-def test_sandbox_guard_execs_inside_and_refuses_outside(tmp_path):
-    """Run the P3 guard through a real ``sh`` both ways.
-
-    Inside (env injected by _docker_wrap): exec's the inner argv untouched.
-    Outside (no env, no container markers): refuses with the reserved exit
-    code + stderr marker that _sandbox_guard_failed() recognizes.
-    """
-    argv = [
-        "sh",
-        "-c",
-        doctor._SANDBOX_GUARD_SCRIPT,
-        "booley-sandbox-guard",
-        "echo",
-        "inner ran",
-    ]
-
-    inside = subprocess.run(
-        argv,
-        env={**os.environ, "BOOLEY_IN_SANDBOX": "1"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert inside.returncode == 0
-    assert inside.stdout.strip() == "inner ran"
-    assert not doctor._sandbox_guard_failed(inside)
-
-    if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
-        pytest.skip("test host is itself a container; guard would rightly pass")
-    outside = subprocess.run(
-        argv,
-        env={k: v for k, v in os.environ.items() if k != "BOOLEY_IN_SANDBOX"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert outside.returncode == doctor._SANDBOX_GUARD_EXIT
-    assert doctor._SANDBOX_GUARD_MARKER in outside.stderr
-    assert doctor._sandbox_guard_failed(outside)
 
 
 def test_session_runtime_startup_failure_fails_loudly(tmp_path, monkeypatch):
@@ -1253,255 +1246,6 @@ def test_session_capacity_refusal_keeps_capacity_remedy(tmp_path, monkeypatch):
     assert [finding.fix for finding in outcome.report.findings] == [
         "free Sandbox capacity using the command in the refusal, then retry"
     ]
-
-
-def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
-    """A Flow exiting 97 for its own reasons must NOT be reported as
-    misrouting — the guard verdict requires the stderr marker too."""
-    project, _calls = _tool_check_harness(
-        tmp_path,
-        monkeypatch,
-        lambda cmd: subprocess.CompletedProcess(
-            cmd,
-            doctor._SANDBOX_GUARD_EXIT,
-            stdout="",
-            stderr="boom",
-        ),
-    )
-
-    outcome = _run_flow_check(project, dry_run=False)
-
-    [finding] = outcome.report.findings
-    assert finding.severity is Severity.FAIL
-    assert "failed with exit 97" in finding.message
-    assert "OUTSIDE" not in finding.message
-
-
-def test_core_resolve_misroute_fails_loudly(tmp_path, monkeypatch):
-    """P3 at the second _docker_wrap call site: the in-container .core
-    resolver refusing the guard is a misroute FAIL, not a 'no verdict'."""
-    refusal = f"{doctor._SANDBOX_GUARD_MARKER} refusing to run: not inside the sandbox"
-    monkeypatch.setattr(
-        doctor.subprocess,
-        "run",
-        lambda cmd, **kw: subprocess.CompletedProcess(
-            cmd,
-            doctor._SANDBOX_GUARD_EXIT,
-            stdout="",
-            stderr=refusal,
-        ),
-    )
-    project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        booley_dir=tmp_path / ".booley",
-        booley_toml={},
-        configs_toml={"fast": {"defines": []}},
-        first_target="fast",
-    )
-    rec = _Rec()
-
-    doctor._run_core_resolve_in_docker(
-        project,
-        "doc" + "ker",
-        "img",
-        {
-            "sim": fusesoc_registry.TargetRef(
-                name="sim",
-                vlnv="::sim:0",
-                core_file=tmp_path / "sim.core",
-            )
-        },
-        rec.p,
-        rec.f,
-    )
-
-    assert rec.kinds() == {"fail"}
-    assert "executed OUTSIDE it" in rec.fails()[0]
-
-
-def test_deep_core_resolution_only_runs_doctor_selected_targets(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    targets = [
-        "  sim_selected:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        "  fpga_selected:\n"
-        "    flow: generic\n"
-        "    flow_options: {tool: vivado, booley: {doctor: [fpga]}}\n",
-    ]
-    targets.extend(
-        f"  vendored_{index:03d}:\n    flow: sim\n    flow_options: {{tool: verilator}}\n"
-        for index in range(200)
-    )
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\nname: ::design:0\ntargets:\n" + "".join(targets),
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
-    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
-    monkeypatch.setattr(
-        doctor.fusesoc_registry,
-        "resolve_target_handle",
-        lambda handle, **_kwargs: calls.append((handle.name, handle.vlnv)),
-    )
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(
-        project,
-        None,
-        rec.p,
-        rec.s,
-        rec.f,
-    )
-
-    assert calls == [("fpga_selected", "::design:0"), ("sim_selected", "::design:0")]
-    assert rec.kinds() == {"pass"}
-    assert len(rec.events) == 2
-
-
-def test_sandbox_core_resolution_receives_only_canonical_selected_targets(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "first.core").write_text(
-        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "second.core").write_text(
-        "CAPI=2:\nname: acme:ip:second:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: generic\n"
-        "    flow_options: {tool: yosys, booley: {doctor: [synth]}}\n"
-        "  unused:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    seen: list[dict[str, str]] = []
-
-    def fake_run(cmd, **_kwargs):
-        payload = json.loads(cmd[-1]) if len(cmd) == 4 else []
-        seen.extend(payload)
-        verdict = [{"selector": item["selector"], "ok": True} for item in payload]
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            stdout=f"[[CORE_RESOLVE_JSON]]{json.dumps(verdict)}\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
-    monkeypatch.setattr(doctor, "_docker_wrap", lambda _exe, _image, _root, inner: inner)
-    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
-
-    assert [(item["selector"], item["name"], item["vlnv"]) for item in seen] == [
-        ("first#smoke", "smoke", "acme:ip:first:1"),
-        ("second#smoke", "smoke", "acme:ip:second:1"),
-    ]
-    assert rec.kinds() == {"pass"}
-
-
-def test_core_resolve_announces_before_container_run(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "first.core").write_text(
-        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    printed_before_run: list[str] = []
-
-    def fake_run(cmd, **_kwargs):
-        printed_before_run.append(capsys.readouterr().out)
-        payload = json.loads(cmd[-1])
-        verdict = [{"selector": item["selector"], "ok": True} for item in payload]
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{json.dumps(verdict)}\n", stderr=""
-        )
-
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
-    monkeypatch.setattr(doctor, "_docker_wrap", lambda _exe, _image, _root, inner: inner)
-    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
-
-    assert (
-        "  ▸  .core resolvability of 1 Target(s) in the Sandbox "
-        "(FuseSoC configure; timeout 10m 00s)" in colors.strip_ansi(printed_before_run[0])
-    )
-
-
-def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\nname: acme:ip:top:1\nfilesets:\n"
-        "  rtl: {depend: [acme:ip:missing]}\n"
-        "targets:\n"
-        "  sim_top:\n"
-        "    flow: sim\n"
-        "    filesets: [rtl]\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
-    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
-
-    def fail_resolution(name, **kwargs):
-        assert (name, kwargs["vlnv"]) == ("sim_top", "acme:ip:top:1")
-        raise fusesoc_registry.TargetResolutionError("missing dependency acme:ip:missing")
-
-    monkeypatch.setattr(doctor.fusesoc_registry, "_resolve_target", fail_resolution)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
-
-    assert rec.kinds() == {"fail"}
-    assert "sim_top" in rec.fails()[0]
-
-
-def test_selected_target_that_no_longer_resolves_fails_before_dispatch(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    matrix = MagicMock(seed_targets=("removed_target",))
-    monkeypatch.setattr(doctor, "_project_target_matrix", lambda _project: matrix)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
-
-    assert rec.kinds() == {"fail"}
-    assert "removed_target" in rec.fails()[0]
 
 
 def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
@@ -3539,16 +3283,34 @@ def test_fpga_deep_notice_names_marked_target_and_manual_command(tmp_path):
     ]
 
 
-def test_marked_fpga_axis_requires_fpga_mcp_endpoint(tmp_path):
+def _mcp_findings_without_fpga_endpoint(monkeypatch, project) -> list[tuple[str, str]]:
+    """Grade, through the owner, a probe payload that lacks the ``fpga`` endpoint."""
+    payload = {
+        "tools": ["bwave", "lint", "mutation", "reviewer", "sim", "synth"],
+        "errors": [],
+        "logs_dir_ok": True,
+    }
+    answer = subprocess.CompletedProcess(["docker"], 0, stdout=json.dumps(payload), stderr="")
+    monkeypatch.setattr(doctor.server_inspection.subprocess, "run", lambda *_a, **_kw: answer)
+    request = doctor._mcp_server_inspection_request(project, "docker", "booley:test")
+    report = doctor.server_inspection.inspect_mcp_server(request)
+    return [(finding.severity, finding.message) for finding in report.findings]
+
+
+def test_marked_fpga_axis_requires_fpga_mcp_endpoint(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=True)
 
-    assert "fpga" in doctor._required_mcp_tools(project)
+    assert _mcp_findings_without_fpga_endpoint(monkeypatch, project) == [
+        (Severity.FAIL, "MCP missing required endpoint(s): fpga")
+    ]
 
 
-def test_disabled_fpga_axis_does_not_require_fpga_mcp_endpoint(tmp_path):
+def test_disabled_fpga_axis_does_not_require_fpga_mcp_endpoint(tmp_path, monkeypatch):
     project = _fpga_doctor_project(tmp_path, marked=True, fpga_table={"enabled": False})
 
-    assert "fpga" not in doctor._required_mcp_tools(project)
+    findings = _mcp_findings_without_fpga_endpoint(monkeypatch, project)
+
+    assert [severity for severity, _message in findings] == [Severity.PASS]
 
 
 def test_marked_fpga_target_with_non_fpga_axis_fails_compatibility(tmp_path):
@@ -4974,14 +4736,7 @@ class TestHostAgentSession:
 
 
 class TestAdvisoryMcpTools:
-    """Specialists are expected unless their own ``enabled`` flag is false."""
-
-    _SKILL_DEFAULT_BUILTIN = (
-        "sim",
-        "lint",
-        "synth",
-        "submit_run_report",
-    )
+    """Doctor's note about Specialist endpoints that are explicitly disabled."""
 
     def _project(self, tmp_path, endpoint_config):
         pd = tmp_path / ".booley"
@@ -5054,46 +4809,6 @@ class TestAdvisoryMcpTools:
         doctor._check_disabled_endpoints(audit, notes.append)
 
         assert notes == []
-
-    def test_default_expects_all_specialists(self, tmp_path):
-        p = self._project(tmp_path, {})
-        assert doctor._advisory_mcp_tools(p) == {"mutation", "reviewer"}
-
-    def test_explicitly_disabled_specialist_is_not_expected(self, tmp_path):
-        p = self._project(tmp_path, {"reviewer": {"enabled": False}})
-        assert doctor._advisory_mcp_tools(p) == {"mutation"}
-
-    def _skill_default_endpoint_config(self, *, reviewer=False):
-        """Every flow and optional specialist explicitly disabled."""
-        endpoint_config = {}
-        for name in ("sim", "lint", "synth"):
-            endpoint_config[name] = {"enabled": False}
-        endpoint_config["reviewer"] = {"enabled": reviewer}
-        endpoint_config["mutation"] = {"enabled": False}
-        return endpoint_config
-
-    def _payload(self, mcp_tool_names):
-        return {"tools": list(mcp_tool_names), "errors": [], "logs_dir_ok": True}
-
-    def test_payload_check_is_clean_on_the_skill_default(self, tmp_path):
-        # End to end through _check_mcp_tool_payload: a first-run project whose
-        # MCP surface (correctly) lacks the specialists must not WARN.
-        p = self._project(tmp_path, self._skill_default_endpoint_config())
-        rec = _Rec()
-        doctor._check_mcp_tool_payload(
-            p, self._payload([*self._SKILL_DEFAULT_BUILTIN, "bwave"]), False, rec.p, rec.w, rec.f
-        )
-        assert rec.kinds() == {"pass"}
-
-    def test_payload_check_warns_on_enabled_but_absent_specialist(self, tmp_path):
-        p = self._project(tmp_path, self._skill_default_endpoint_config(reviewer=True))
-        rec = _Rec()
-        doctor._check_mcp_tool_payload(
-            p, self._payload([*self._SKILL_DEFAULT_BUILTIN, "bwave"]), False, rec.p, rec.w, rec.f
-        )
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("reviewer" in m for m in warns)
-        assert not any("mutation" in m for m in warns)
 
 
 class TestFailPathSelfTest:
@@ -5431,7 +5146,7 @@ class TestDeveloperProbe:
         """Issue #885: RUN line precedes the agent call; summary reports spend."""
         _set_venue(monkeypatch, True)
         monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
-        monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *a, **k: None)
+        monkeypatch.setattr(doctor, "_run_core_resolution", lambda *a, **k: None)
         seen_before_call: list[str] = []
 
         def fake_measure(_root):
@@ -5449,9 +5164,7 @@ class TestDeveloperProbe:
         project = _adr28_project(tmp_path)
         reporter = doctor._Reporter.create(profile=doctor._DoctorProfile(deep=True))
 
-        doctor._run_deep_phase(
-            project, None, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
-        )
+        doctor._run_deep_phase(project, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter)
         reporter.finish()
 
         assert (
@@ -7279,28 +6992,6 @@ def test_agent_usage_summary_edge_cases(calls, expected) -> None:
     assert doctor._agent_usage_summary(calls) == expected
 
 
-def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch, capsys) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "first.core").write_text(
-        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
-
-    assert (
-        "  ▸  .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
-        in colors.strip_ansi(capsys.readouterr().out)
-    )
-
-
 class _FixCollector(_Collector):
     """Collector that keeps each WARN's ``fix`` hint next to its message."""
 
@@ -8796,13 +8487,7 @@ def test_stealth_exclude_check_requires_relocated_entry(tmp_path):
 def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    root, project = _relocated_project(tmp_path)
-    audit = doctor.ProjectAudit(root, project, {}, {}, "sim")
-
-    probe = doctor._mcp_probe_command(audit, "docker", "booley:test")
-    wrapped = doctor._docker_wrap("docker", "booley:test", root, ["true"])
-    assert "BOOLEY_DIR=/work/tools/booley" in probe
-    assert "BOOLEY_DIR=/work/tools/booley" in wrapped
+    root, _project = _relocated_project(tmp_path)
 
     # In-Sandbox Doctor sees the relocated directory at /work/tools/booley.
     sandbox_dir = Path("/work/tools/booley")
@@ -8813,12 +8498,6 @@ def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "contains", lambda path, booley_dir: Path(path).resolve())
     hint = doctor._display_report_dir(in_sandbox, sandbox_dir / "tmp" / "r")
     assert hint == "tools/booley/tmp/r (under the Project Root)"
-
-    # The default spelling is unchanged.
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    default_audit = doctor.ProjectAudit(plain, plain / ".booley", {}, {}, "sim")
-    assert "BOOLEY_DIR=/work/.booley" in doctor._mcp_probe_command(default_audit, "docker", "i")
 
 
 # ---------------------------------------------------------------------------

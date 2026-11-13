@@ -22,7 +22,7 @@ def project(tmp_path, monkeypatch):
     directory.mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
-    for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_CAMPAIGN"):
+    for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_RECORD"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     monkeypatch.setattr(server, "_reconcile_orphaned_jobs", lambda: None)

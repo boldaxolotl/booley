@@ -545,7 +545,7 @@ class TestDryRun:
         assert result.exit_code == EXIT_SUCCESS, outcome.report_text
         assert {
             preview["target"]["selector"]: preview["work_items"]
-            for preview in outcome.detail["campaign_preview"]
+            for preview in outcome.detail["record_preview"]
         } == expected
         assert outcome.detail["mutated"] is False
         # A dry run reserves no invocation directory and takes no lock.
@@ -687,7 +687,7 @@ def test_campaign_verdict_sets_exit_code(
     run = run_campaign_sim(tmp_path, monkeypatch, targets, process, target=target)
     outcome = run.result.outcome
     assert run.result.exit_code == exit_code, outcome.report_text
-    assert {name: row["grade"] for name, row in outcome.detail["campaigns"].items()} == grades
+    assert {name: row["grade"] for name, row in outcome.detail["records"].items()} == grades
     report = (tmp_path / "reports/sim/1/report.json").resolve()
     assert f"report: {report}" in outcome.report_text
     assert report.is_file()
