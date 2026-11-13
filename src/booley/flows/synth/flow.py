@@ -1630,7 +1630,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             openroad_reuse.collect_openroad_inputs(plan, identity)
         )
         slot = self._openroad_slot(target)
-        entry = slot.lookup(key) if key is not None and not self.args.fresh_openroad else None
+        entry = slot.lookup(key) if key is not None and not self.args.no_cache else None
         if entry is not None:
             from booley.flows.terminal_progress import announce_unit
 
