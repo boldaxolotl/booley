@@ -293,7 +293,7 @@ async def test_esc_from_a_target_launched_form_returns_to_the_target_detail(chec
         await pilot.press("down", "enter")
         await settle_form(app, pilot)
         wizard = app.screen
-        assert isinstance(wizard, RunWizard)
+        assert isinstance(wizard, RunWizard), "the Flow list did not open the Run wizard"
         await goto_row(pilot, wizard, "Extra arguments")
         await pilot.press("enter")  # the editor
         assert wizard.query_one("#run-edit").display
