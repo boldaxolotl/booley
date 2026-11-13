@@ -1178,6 +1178,7 @@ def _prepare_unlocked(workspace: Path) -> str:
                 _relay_profile(profile),
                 issuance_labels=issuance_labels,
                 image=issuance.relay_image_id or "",
+                runner=idk.relay_docker,
             )
         else:
             _provision_license_relay(
@@ -2085,6 +2086,7 @@ def _provision_license_relay(
             str(workspace.resolve()),
             image=relay_image_id,
             issuance_labels=labels,
+            runner=idk.relay_docker,
         )
     except RelayDockerError as exc:
         raise SessionError(f"could not start licensed Sandbox: {exc}") from exc
@@ -2107,6 +2109,7 @@ def _connect_and_validate_license_relay(
             _relay_profile(profile),
             issuance_labels=labels,
             image=relay_image_id,
+            runner=idk.relay_docker,
         )
     except RelayDockerError as exc:
         raise SessionError(f"licensed Sandbox topology failed: {exc}") from exc
@@ -2129,6 +2132,7 @@ def _validate_license_relay(
             _relay_profile(profile),
             issuance_labels=labels,
             image=relay_image_id,
+            runner=idk.relay_docker,
         )
     except RelayDockerError as exc:
         raise SessionError(f"licensed Sandbox topology is invalid: {exc}") from exc
@@ -2139,7 +2143,7 @@ def _remove_license_relay(relay) -> None:
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, remove_relay
 
     try:
-        remove_relay(relay)
+        remove_relay(relay, runner=idk.relay_docker)
     except RelayDockerError as exc:
         raise SessionError(f"could not clean up license relay: {exc}") from exc
 

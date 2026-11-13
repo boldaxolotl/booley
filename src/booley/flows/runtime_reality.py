@@ -24,6 +24,7 @@ from pathlib import Path
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.runtime import session_runtime
+from booley.runtime.platform_paths import run_captured_bounded
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import LINT_EDA_TOOL_FAMILIES, FuseSocError
 
@@ -103,13 +104,7 @@ def _check_session_binary(
         return
     try:
         command = request.sandbox_command(["sh", "-c", f"command -v {binary}"])
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        result = run_captured_bounded(command, timeout=30)
     except (session_runtime.SessionError, subprocess.SubprocessError, FileNotFoundError) as exc:
         findings.fail(
             f"{label} (runtime/probe error: {exc})", "run 'booley init --seed' and retry"

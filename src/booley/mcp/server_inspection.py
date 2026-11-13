@@ -33,7 +33,7 @@ from booley.audit.output_excerpt import output_excerpt_lines
 from booley.config.flow_enablement import flow_enabled_from_config
 from booley.core.boundary import is_str_list
 from booley.runtime.booley_dir import sandbox_booley_dir
-from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.platform_paths import docker_mount_path, run_captured_bounded
 from booley.targets.flow_names import config_section
 
 __all__ = ["McpServerInspectionRequest", "inspect_mcp_server"]
@@ -72,14 +72,11 @@ def inspect_mcp_server(request: McpServerInspectionRequest) -> DiagnosticReport:
     env["BOOLEY_DIR"] = str(request.booley_dir)
     env["BOOLEY_MCP_MODE"] = "interactive"
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             _probe_command(request),
+            timeout=_MCP_PROBE_TIMEOUT_S,
             cwd=request.project_root,
             env=env,
-            capture_output=True,
-            text=True,
-            timeout=_MCP_PROBE_TIMEOUT_S,
-            check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         findings.fail(f"MCP server probe failed to start: {exc}", _REBUILD_FIX)

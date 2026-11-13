@@ -24,6 +24,14 @@ from booley.runtime.booley_dir import (
     resolve_common_booley_dir,
 )
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+
+
+@pytest.fixture(autouse=True)
+def _doctor_probes_use_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module fakes the doctor probes through ``subprocess.run``."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, doctor)
+
 
 IMAGE = "sha256:" + "a" * 64
 OTHER_IMAGE = "sha256:" + "b" * 64
