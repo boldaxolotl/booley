@@ -317,6 +317,13 @@ made-up output is provisional at best.
   read under `## Unreleased`. Never edit `CHANGELOG.md` or its packaged mirror
   for an ordinary change; the release assembles the fragments. The format rules
   are in [changelog.d/README.md](../../changelog.d/README.md).
+- **Keep the Pyright exclusion list shrinking.** Pyright checks all of
+  `src/booley` except the modules in `[tool.pyright] exclude` in
+  `pyproject.toml`, which still fail basic mode. To remove a module from the
+  list, fix its type errors and lower `EXCLUDE_CEILING` in
+  `tests/ci/test_pyright_scope.py` in the same change. When you rename an
+  excluded module, rename its entry. Never add a module: new code is checked by
+  default, so fix its errors instead (tracker #3653).
 - **Register tests of Sandbox-only code.** Windows CI skips the test modules
   listed in `tests/sandbox_only.py`, because their code never runs on a
   Windows host. See [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests)

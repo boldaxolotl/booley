@@ -867,8 +867,8 @@ def test_full_cartesian_matrix_remains_scheduled_and_manual() -> None:
     )
 
 
-def test_lint_job_uses_quality_only_dependencies() -> None:
-    """The fast lint job does not install test dependencies."""
+def test_lint_job_installs_quality_tools_and_parser() -> None:
+    """Lint installs the quality tools and the HDL parser Pyright resolves, but no test extra."""
     workflow = _test_workflow()
     install_step = next(
         step
@@ -876,7 +876,28 @@ def test_lint_job_uses_quality_only_dependencies() -> None:
         if step.get("name") == "Install pinned CI quality tools"
     )
 
-    assert install_step["run"] == 'pip install -e ".[quality]" -c .github/ci/constraints.txt'
+    assert install_step["run"] == (
+        'pip install -e ".[quality,hdl-parser]" -c .github/ci/constraints.txt'
+    )
+
+
+def test_lint_job_runs_pyright_at_most_twice() -> None:
+    """The lint job checks the package once and probes once, never in a loop."""
+    pyright_command = re.compile(r"(?<![\w./-])pyright(?=\s|$)")
+    invocations = 0
+    for step in _test_workflow()["jobs"]["lint"]["steps"]:
+        script = str(step.get("run", ""))
+        count = len(pyright_command.findall(script))
+        invocations += count
+        if count:
+            looping = [
+                line
+                for line in script.splitlines()
+                if line.lstrip().startswith(("for ", "while "))
+            ]
+            assert not looping, f"step {step.get('name')!r} runs Pyright inside a loop"
+
+    assert invocations <= 2
 
 
 def test_actionlint_download_retries_and_still_verifies_its_checksum() -> None:
