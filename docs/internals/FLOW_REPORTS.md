@@ -509,17 +509,17 @@ Job report `detail` fields:
 | `min_detected`, `total_requested`, `total_valid` | The pass threshold, the requested count, and `detected + not_detected` (invalid Mutants excluded). |
 | `identity` | What reproduces the run: `scope_hashes` (file to digest), `generator_version`, `pyslang_version`, `seed`, `count`, and on a Verilator Target `verilator_version` (the first line of `verilator --version`, `unknown` if it cannot be read). |
 | `classified` | Per Mutant: `index`, `id`, `category`, `file`, `line`, `status` (`detected`, `not_detected`, `invalid`, `untested`), `timed_out`, `sim_output_snippet`, `log`, `first_killing_test`. |
-| `auto`, `formula_count`, `budget_capped`, `source_size_budget` | `--count auto` only: how the count was derived. |
+| `auto`, `formula_count`, `budget_capped`, `source_size_budget` | `--count auto` only: how the count was derived. `budget_capped` is true when fewer Mutants were scored than `formula_count`, whatever the cause (the time-limit cap, a generator shortfall, or dropped equivalents). |
 | `shortfall` | Present when fewer Mutants were scored than requested: the generator found fewer candidates, or dropping equivalent Mutants used them up. |
 | `equivalent_dropped` | IDs, in drop order, of the Mutants not run because their Verilator build equals the baseline's. An empty list when none were or the Target is not simulated with Verilator. The report never lists them. |
 | `coverage_gap`, `diagnosis` | Present when the scope is not exercised by the Target's tests. |
 | `variant_files`, `artifacts` | The mutated sources and the campaign file references. |
 
 `manifest.json` has `schema_version`, `run_id`, `target`, `eda_tool`,
-`source_fingerprint`, `scope_hashes`, `identity`, on a `--count auto` run `auto`,
-`formula_count` and `budget_capped` as in the detail (outside `identity`),
-`baseline` (`status`, `log`),
+`source_fingerprint`, `scope_hashes`, `identity`, `baseline` (`status`, `log`),
 `mutants` (the `classified` rows, with `log` and `variant` relative to
-`campaign/`), and `artifacts`. A run without a report directory keeps the
+`campaign/`), and `artifacts`. A `--count auto` run also has `auto`,
+`formula_count` and `budget_capped`, the same values as in the detail, beside
+`identity`. A run without a report directory keeps the
 variants only under the Booley Directory's `.runtime/mutation/` scratch tree.
 The `mutation_score` Criterion is satisfied by `detected >= min_detected`.

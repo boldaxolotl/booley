@@ -1682,7 +1682,6 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
     markdown = _results_markdown(tmp_path, result)
     for line in (
         "- Seed: 5",
-        "- Count: 2",
         f"- Generator version: {GENERATOR_VERSION}",
         f"- pyslang version: {expected['pyslang_version']}",
         f"- Verilator version: {_VERILATOR_VERSION}",
@@ -1781,6 +1780,11 @@ def test_auto_count_publishes_source_size_budget(tmp_path: Path, monkeypatch) ->
 
     budget = result.detail["source_size_budget"]
     assert budget["method"] == "language_neutral_source_size"
+    # The default timeout caps at 12, above the formula count of 6: the cap did not bind.
+    assert (result.detail["formula_count"], result.detail["budget_capped"]) == (6, False)
+    assert f"count auto -> 6 (formula 6, budget cap {budget['budget_cap']}), generator" in (
+        result.report_text
+    )
     manifest_path = tmp_path / result.detail["artifacts"]["manifest"]
     assert (manifest_path.parent / "source-size-budget.json").is_file()
 
@@ -1804,6 +1808,29 @@ def test_a_run_without_a_verdict_publishes_a_complete_manifest(
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
     assert [row["status"] for row in manifest["mutants"]] == ["invalid", "detected"]
     assert manifest["identity"]["count"] == 2
+    assert not {"auto", "formula_count", "budget_capped"} & manifest.keys()
+
+
+def test_an_auto_run_without_a_verdict_keeps_the_auto_fields_in_detail_and_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def first_mutant_has_no_observation(index: int | None) -> subprocess.CompletedProcess:
+        if index == 1:
+            return _fake_proc(rc=1, stdout="[SIM_INFRA_ERROR] the harness broke\n")
+        return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count="auto", min_detected=0, run=first_mutant_has_no_observation
+    )
+
+    assert result.exit_code == EXIT_ERROR
+    manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
+    for fields in (result.detail, manifest):
+        assert (fields["auto"], fields["formula_count"], fields["budget_capped"]) == (
+            True,
+            6,
+            False,
+        )
 
 
 class TestResidueWarning:

@@ -1336,6 +1336,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             count=plan.count,
         )
         detail["equivalent_dropped"] = inputs.equivalent_dropped
+        detail.update(plan.auto_count_fields(inputs.count))
         self._attach_campaign_artifacts(plan, inputs, detail)
         report_text = f"mutation campaign produced no trustworthy verdict: {reason}"
         artifact_lines = self._artifact_display_lines(detail)
@@ -2448,7 +2449,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if inputs.coverage_gap:
             base += " [coverage gap: Target's tests never exercise this scope]"
         suffix = f" [seed {plan.seed}]"
-        if plan.auto_mode and inputs.count < plan.formula_count:
+        if plan.auto_count_fields(inputs.count).get("budget_capped"):
             suffix += f" [auto: {plan.formula_count} requested, {inputs.count} budget-capped]"
         return base + suffix
 
