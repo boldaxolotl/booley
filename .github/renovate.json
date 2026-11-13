@@ -197,15 +197,6 @@
       "depNameTemplate": "YosysHQ/yosys"
     },
     {
-      "description": "Copy of the Yosys pin without its v: the slang frontend note.",
-      "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
-      "matchStrings": ["the standard image has (?<currentValue>\\d+\\.\\d+)\\."],
-      "datasourceTemplate": "github-tags",
-      "depNameTemplate": "YosysHQ/yosys",
-      "extractVersionTemplate": "^v(?<version>.+)$"
-    },
-    {
       "description": "Copy of the Icarus Verilog pin: the supported-tools row.",
       "customType": "regex",
       "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],

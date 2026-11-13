@@ -39,7 +39,7 @@ booley flow synth --target synth_core --baseline main
 | `--baseline <git-ref>` | Also synthesize the Target at that revision and add the change in percent to every row. Its timing reports are kept beside the current run's; the JSON report names both. Shared rules: [Running Flows](FLOW_REFERENCE.md#common-options). |
 | `--ppa-profile <compact\|balanced\|max_frequency>` | Use this [optimization profile](#optimization-profiles) for this run. Default: the Target's `ppa_profile`, else `balanced`. |
 | `--flatten` / `--no-flatten` | Flatten the hierarchy before mapping, or keep it. Default: flatten. |
-| `--frontend <sv2v\|slang>` | Pick how SystemVerilog is read; switch only when the default fails. See [synth RTL frontend](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang). |
+| `--frontend <sv2v\|slang>` | Pick how SystemVerilog is read; switch only when the default fails. See [RTL frontend](#rtl-frontend-sv2v-vs-slang). |
 | `--fresh-openroad` | Run OpenROAD even when [its results could be reused](#reusing-openroad-results), and store the new results instead. MCP: `fresh_openroad`. |
 
 ## Reading results
@@ -221,6 +221,34 @@ Project Setup checks each surrogate with a no-pruning probe against
 synthesis with the memory left out. Results then exclude the memory's own
 area, contents and internal timing; add the macro's figures from its
 datasheet when you need a total.
+
+## RTL frontend (sv2v vs slang)
+
+Yosys reads the RTL through one of two frontends. Set it on the synthesis
+Target as `flow_options.frontend`, or override it for one run with
+`--frontend`:
+
+- **`sv2v`** (default): converts SystemVerilog to plain Verilog first, then
+  Yosys reads that.
+- **`slang`**: Yosys reads SystemVerilog directly. It needs Yosys 0.67 or
+  newer, which the standard image meets; see
+  [the image versions](SUPPORTED-EDA-TOOLS.md#versions-in-the-sandbox-image).
+
+Stay on `sv2v` unless it fails. Use `slang` when the design puts
+parameterized interfaces on module ports, or reads an interface's parameters
+hierarchically (`localparam KEEP_W = s_axis_tx.KEEP_W`); sv2v cannot convert
+either. Both frontends feed the same mapping and timing steps, so the choice
+does not change how area and timing are measured.
+
+Neither frontend handles everything, so when one rejects the design, try the
+other. Known failures and workarounds:
+[under `slang`](TROUBLESHOOTING.md#rtl-simulates-cleanly-but-synth-rejects-it-under-slang)
+and [after `sv2v`](TROUBLESHOOTING.md#yosys-rejects-transpiled-verilog-after-sv2v-succeeds).
+
+Assertions: `sv2v` drops SVA, and `slang` reads it but Booley removes it before
+mapping, so neither puts assertions into the netlist. If the design can switch
+its assertions off with a define (such as `NO_ASSERTIONS`), set that define on
+the synthesis Target anyway; it keeps the frontend's work small.
 
 ## Configuration (`[flows.synth]`)
 

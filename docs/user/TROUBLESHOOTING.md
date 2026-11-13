@@ -450,8 +450,7 @@ once. See [Windows](https://booley.dev/docs/windows/).
 
 Removing a pending invalidation file skips its cleanup of the Project's FlexNet
 relay containers and networks, which then need removing by hand in Docker. See
-[Commercial EDA provisioning](https://booley.dev/docs/sandbox/#commercial-eda-provisioning)
-and the [Vivado host-provisioning policy](https://booley.dev/docs/supported-eda-tools/#vivado-host-provisioning-policy).
+[Commercial EDA provisioning](https://booley.dev/docs/sandbox/#commercial-eda-provisioning).
 
 </details>
 
@@ -747,7 +746,7 @@ wrong thing. Known case: `$size()` on an array of interface instances
 `<file>:<line>: ERROR: 'stat_if' cannot be used in an expression`. Put the
 count in a `localparam` and use it in both the declaration and the
 instantiation. If you don't need `slang`, stay on the default `sv2v` frontend; see
-[the frontends](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
+[the frontends](https://booley.dev/docs/flow-synth/#rtl-frontend-sv2v-vs-slang).
 
 ### Yosys rejects transpiled Verilog after `sv2v` succeeds
 
