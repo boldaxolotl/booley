@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -13,12 +12,10 @@ from pathlib import Path
 
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
-    RUNTIME_EXECUTION_ENV,
     ExecutionId,
     atomic_write_json,
     execution_paths,
     read_json,
-    write_attachment_heartbeat,
 )
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.platform_paths import kill_process_tree
@@ -48,7 +45,7 @@ class SupervisedProcessSet:
                 kill_process_tree(process)
         if self._execution_id is not None and not cancelled and not self._cancelled():
             identity = capture_process_identity(process.pid)
-            self._write_record("running", identity, tree_terminal=False)
+            self._write_record(self._execution_id, "running", identity, tree_terminal=False)
 
     def unregister(self, process: subprocess.Popen) -> None:
         with self._gate:
@@ -58,7 +55,7 @@ class SupervisedProcessSet:
             paths = execution_paths(self._execution_id, booley_dir=self._project_data)
             current = read_json(paths.record)
             if current is not None and current.get("state") == "running":
-                self._write_record("waiting", None, tree_terminal=False)
+                self._write_record(self._execution_id, "waiting", None, tree_terminal=False)
 
     def terminate_all(self) -> None:
         with self._gate:
@@ -66,8 +63,10 @@ class SupervisedProcessSet:
         for process in processes:
             kill_process_tree(process)
 
-    def _write_record(self, state: str, leader, *, tree_terminal: bool) -> None:
-        paths = execution_paths(self._execution_id, booley_dir=self._project_data)
+    def _write_record(
+        self, execution_id: ExecutionId, state: str, leader, *, tree_terminal: bool
+    ) -> None:
+        paths = execution_paths(execution_id, booley_dir=self._project_data)
         atomic_write_json(
             paths.record,
             {
@@ -149,52 +148,8 @@ def current_supervised_execution() -> SupervisedExecutionScope | None:
     return _SCOPE.get()
 
 
-class SupervisedCommandHeartbeat:
-    """Advance the attachment heartbeat while one wrapped command runs."""
-
-    def __init__(self, scope: SupervisedExecutionScope) -> None:
-        self._paths = execution_paths(scope.execution_id, booley_dir=scope.project_data)
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self) -> None:
-        write_attachment_heartbeat(self._paths, generation=1)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1)
-
-    def _run(self) -> None:
-        generation = 1
-        while not self._stop.wait(0.25):
-            generation += 1
-            write_attachment_heartbeat(self._paths, generation=generation)
-
-
-def wrap_supervised_command(
-    command: list[str], scope: SupervisedExecutionScope
-) -> tuple[list[str], dict[str, str], SupervisedCommandHeartbeat]:
-    """Wrap a local command in the exact-ID process-tree supervisor."""
-    wrapped = [
-        sys.executable,
-        "-m",
-        "booley.runtime.execution_supervisor",
-        "run",
-        "--execution-id",
-        str(scope.execution_id),
-        "--attachment-timeout-seconds",
-        "2.0",
-        "--",
-        *command,
-    ]
-    heartbeat = SupervisedCommandHeartbeat(scope)
-    return wrapped, {RUNTIME_EXECUTION_ENV: str(scope.execution_id)}, heartbeat
-
-
 __all__ = [
     "SupervisedExecutionScope",
     "current_supervised_execution",
     "supervised_execution_scope",
-    "wrap_supervised_command",
 ]

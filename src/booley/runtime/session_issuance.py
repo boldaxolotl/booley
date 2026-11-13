@@ -1136,6 +1136,7 @@ def _validate_issued_mounts(
     mounts = spec.get("mounts")
     if not isinstance(mounts, list) or any(not isinstance(item, str) for item in mounts):
         raise RuntimeSpecError("devcontainer.json mounts must be a list of strings")
+    project_data = _require_project_data_source(issuance.project_data_source)
     project_data_workspace_target = _require_project_data_mount(
         mounts, issuance.project_data_source, project, layout=issuance.project_data_layout
     )
@@ -1146,7 +1147,7 @@ def _validate_issued_mounts(
             "issued image no longer proves the canonical Booley Directory alias"
         )
     record = _spec_cli_record(spec)
-    _validate_credential_policy(spec, project, Path(issuance.project_data_source), app, record)
+    _validate_credential_policy(spec, project, project_data, app, record)
     _validate_state_volume(mounts, record, project)
     _require_exact_readonly_mount(mounts, expected_devcontainer_mount(project), last=True)
     vivado_mounts = [item for item in mounts if _mount_target(item) == CONTAINER_TARGET]
@@ -1333,7 +1334,7 @@ def _validate_gateway_environment(remote: dict[str, Any], record: dict[str, str]
         )
 
 
-def _format_cli_record(record: dict[str, str]) -> str:
+def _format_cli_record(record: Mapping[str, str]) -> str:
     return ", ".join(f"{cli}={policy}" for cli, policy in record.items()) or "none"
 
 
@@ -1412,7 +1413,7 @@ def _validate_credential_seed_sources(spec: dict[str, Any], record: dict[str, st
         fields = _mount_fields(raw)
         # Spec sources use Docker's bind format (``/c/...`` on Windows): map back to a host path.
         source = host_path_from_docker_mount(fields.get("source", "")) or Path()
-        cli = login_targets.get(fields.get("target"))
+        cli = login_targets.get(fields.get("target", ""))
         if (
             cli
             and record[cli] != "auto"
@@ -1906,6 +1907,13 @@ def _private_primary_group(group_id: int, user_id: int) -> bool:
     )
 
 
+def _require_project_data_source(source: str | None) -> Path:
+    """Return the host-authorized Booley Directory mount source, or refuse its absence."""
+    if not source:
+        raise RuntimeSpecError("host issuance lacks an authorized Booley Directory mount source")
+    return Path(source)
+
+
 def _require_project_data_mount(
     mounts: list[str],
     source: str | None,
@@ -1913,9 +1921,7 @@ def _require_project_data_mount(
     *,
     layout: str = "legacy",
 ) -> str | None:
-    if not source:
-        raise RuntimeSpecError("host issuance lacks an authorized Booley Directory mount source")
-    project = Path(source)
+    project = _require_project_data_source(source)
     canonical = _validate_project_data_bind_source(project_root, project)
     if canonical != project:
         raise RuntimeSpecError("issued Booley Directory mount source is no longer canonical")

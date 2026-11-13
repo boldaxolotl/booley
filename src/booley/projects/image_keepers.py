@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+LeftoverKind = Literal["image", "volume", "container", "network"]
+LeftoverReason = Literal["unused", "in-use", "shared", "unrecorded", "labelled"]
+
 
 @dataclass(frozen=True, slots=True)
 class KeeperRelease:
@@ -41,9 +44,9 @@ class PruneResult:
 class Leftover:
     """One Docker resource a forgotten Project still leaves on the host."""
 
-    kind: Literal["image", "volume", "container", "network"]
+    kind: LeftoverKind
     name: str
-    reason: Literal["unused", "in-use", "shared", "unrecorded", "labelled"]
+    reason: LeftoverReason
     size: str | None = None
     tags: tuple[str, ...] = ()
 
