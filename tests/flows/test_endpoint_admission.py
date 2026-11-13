@@ -20,12 +20,12 @@ from typing import Any
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import (
     AdmissionContext,
     AdmissionGate,
     AdmissionIdentityError,
+    _Claim,
 )
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.endpoint_state import EndpointState
@@ -47,7 +47,6 @@ from tests.oom_priority_support import (
 )
 
 FLOW_TYPES = {"sim": SimulateFlow, "synth": AsicSynthesizeFlow}
-MAX_HEAVY = 3
 
 
 @pytest.fixture
@@ -73,7 +72,6 @@ class _FakeStore:
     """A slot store that records which claims were released."""
 
     def __init__(self) -> None:
-        self.caps = SlotCaps(max_heavy=MAX_HEAVY)
         self.released: list[object] = []
 
     def release(self, token: object) -> None:
@@ -110,7 +108,7 @@ class _Harness:
 def harness(
     request: pytest.FixtureRequest, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> _Harness:
-    """Simulation and a heavy non-Simulation Flow, reduced to their invocation body.
+    """Simulation and a non-Simulation Flow, reduced to their invocation body.
 
     Both run their real prepared-invocation kind: the Simulation Campaign (which
     borrows admission) and Target selection (which does not).
@@ -182,14 +180,19 @@ def _build_harness(kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def _use_slot(monkeypatch: pytest.MonkeyPatch, store: _FakeStore, claim: object) -> None:
-    monkeypatch.setattr(EndpointState, "_acquire_job_slot", lambda _self: (store, claim))
+    """Admit every Flow Job with *claim*, as if its Memory Reservation were granted."""
+    monkeypatch.setattr(
+        endpoint_admission,
+        "_acquire_memory_reservation",
+        lambda _endpoint, _prepared, *, requeued=False: _Claim(store, claim),  # type: ignore[arg-type]
+    )
 
 
 def _refuse_slot(monkeypatch: pytest.MonkeyPatch, failure: Exception) -> None:
-    def refuse(_self: EndpointState) -> object:
+    def refuse(_endpoint: EndpointState, _prepared: object, *, requeued: bool = False) -> object:
         raise failure
 
-    monkeypatch.setattr(EndpointState, "_acquire_job_slot", refuse)
+    monkeypatch.setattr(endpoint_admission, "_acquire_memory_reservation", refuse)
 
 
 def test_withdrawn_queued_run_reports_cancelled(
@@ -220,17 +223,16 @@ def test_admitted_endpoint_borrows_admission_context(
     assert isinstance(borrowed, AdmissionContext)
     assert borrowed.mode == "managed"
     assert borrowed.outer_token is claim
-    assert borrowed.max_heavy == MAX_HEAVY
 
 
 def test_full_queue_reports_blocked(harness: _Harness, monkeypatch: pytest.MonkeyPatch) -> None:
-    _refuse_slot(monkeypatch, job_slots.QueueFullError("heavy queue is full (2 waiting)"))
+    _refuse_slot(monkeypatch, job_slots.QueueFullError("memory queue is full (2 waiting)"))
 
     result = harness.execute()
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text == (
-        "BLOCKED: heavy queue is full (2 waiting). Retry when queued work drains."
+        "BLOCKED: memory queue is full (2 waiting). Retry when queued work drains."
     )
     assert harness.invocations == []
 
@@ -395,9 +397,9 @@ class _StubEndpoint:
 @pytest.mark.usefixtures("runtime")
 @pytest.mark.parametrize("case", ("unclassed", "inherited", "no_runtime"))
 def test_no_slot_cases_admit_unmanaged(case: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    endpoint = _StubEndpoint("custom", None if case == "unclassed" else job_slots.CLASS_HEAVY)
+    endpoint = _StubEndpoint("custom", None if case == "unclassed" else job_slots.CLASS_LIGHT)
     if case == "inherited":
-        monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "heavy/slot")
+        monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "light/slot")
     if case == "no_runtime":
         monkeypatch.setattr(job_slots, "slots_dir", lambda _project=None: None)
     monkeypatch.setattr(
@@ -411,7 +413,6 @@ def test_no_slot_cases_admit_unmanaged(case: str, monkeypatch: pytest.MonkeyPatc
         assert borrowed.mode == "unmanaged"
         assert borrowed.slot_store is None
         assert borrowed.outer_token is None
-        assert borrowed.max_heavy == 1
     assert endpoint.acquisitions == 1
 
 
@@ -419,18 +420,14 @@ def test_no_slot_cases_admit_unmanaged(case: str, monkeypatch: pytest.MonkeyPatc
 @pytest.mark.parametrize("name", ("sim", "other"))
 def test_admission_ignores_endpoint_name(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """A Simulation payload on a differently named endpoint is admitted identically."""
-    endpoint = _StubEndpoint(name, job_slots.CLASS_HEAVY)
+    endpoint = _StubEndpoint(name, job_slots.CLASS_LIGHT)
     store, claim = _FakeStore(), object()
     monkeypatch.setattr(endpoint, "_acquire_job_slot", lambda: (store, claim))
     prepared = _prepared(borrowing=True)
 
     with endpoint_admission.admission(endpoint, prepared) as borrowed:  # type: ignore[arg-type]
         assert isinstance(borrowed, AdmissionContext)
-        assert (borrowed.mode, borrowed.outer_token, borrowed.max_heavy) == (
-            "managed",
-            claim,
-            MAX_HEAVY,
-        )
+        assert (borrowed.mode, borrowed.outer_token) == ("managed", claim)
     assert store.released == [claim]
 
     def withdrawn() -> object:
@@ -451,7 +448,7 @@ def test_admission_ignores_endpoint_name(name: str, monkeypatch: pytest.MonkeyPa
 def test_binding_gate_rejects_before_slot_for_non_flow_endpoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    endpoint = _StubEndpoint("custom", job_slots.CLASS_HEAVY)
+    endpoint = _StubEndpoint("custom", job_slots.CLASS_LIGHT)
     endpoint.endpoint_kind = "specialist"
     rejection = EndpointOutcome(exit_code=EXIT_ERROR, report_text="no authorized binding")
     monkeypatch.setattr(endpoint, "_criterion_binding_gate", lambda: rejection)
@@ -481,7 +478,7 @@ def test_body_failures_are_not_remapped_to_admission_rejections(
     failure: Exception, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Only entering admission is mapped; the invocation body's errors pass through."""
-    endpoint = _StubEndpoint("sim", job_slots.CLASS_HEAVY)
+    endpoint = _StubEndpoint("sim", job_slots.CLASS_LIGHT)
     store, claim = _FakeStore(), object()
     monkeypatch.setattr(endpoint, "_acquire_job_slot", lambda: (store, claim))
 
@@ -596,7 +593,7 @@ def test_target_authorization_precedes_job_admission(
     assert refusal.report_text == result.outcome.report_text
 
 
-# --- memory admission behind BOOLEY_DEV_MEMORY_ADMISSION (#3701) ---------------------
+# --- memory admission (#3701) ---------------------
 
 
 def _seed_records(booley_dir: Path, *peaks: tuple[str, str, float]) -> None:
@@ -627,11 +624,10 @@ def memory_runtime(
     monkeypatch: pytest.MonkeyPatch,
     inert_oom_proc: FakeProc,  # noqa: F811  (keeps the worker's own OOM priority out of reach)
 ) -> Path:
-    """The runtime with the switch set, a real slots root and a 1,000 MiB Memory Budget."""
+    """The runtime with a real slots root and a 1,000 MiB Memory Budget."""
     booley_dir = runtime / ".booley"
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
     return booley_dir
@@ -656,7 +652,7 @@ def _selection_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExe
 
 
 def _held(booley_dir: Path, job_class: str) -> list[job_slots.SlotToken]:
-    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=MAX_HEAVY))
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
     return store.observe(job_class)[0]
 
 
@@ -672,11 +668,8 @@ def test_memory_admission_claims_the_estimated_reservation(
         assert holder.memory == job_slots.MemoryClaim(
             budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25
         )
-        assert _held(memory_runtime, job_slots.CLASS_HEAVY) == []
         assert context.mode == "managed"
         assert context.memory_warning is None
-        # A memory-admitted Job has one lane, whatever the heavy cap says.
-        assert context.max_heavy == 1
 
     assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
@@ -698,23 +691,6 @@ def test_memory_admitted_job_ranks_its_processes(
         assert proc.values[coordinator] == 1000 - oom_priority.COORDINATOR_GAP
 
     assert proc.values[coordinator] == 0
-
-
-def test_no_oom_priority_change_without_the_switch(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
-    proc = FakeProc()
-    coordinator = proc.add(os.getpid(), value=0)
-    tool = proc.add(coordinator + 1_000_000, parent=coordinator)
-    monkeypatch.setattr(PROC_PATH, proc)
-    flow = AsicSynthesizeFlow()
-
-    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
-        assert _held(memory_runtime, job_slots.CLASS_HEAVY) != []
-
-    assert (proc.reads, proc.writes) == ([], [])
-    assert (proc.values[coordinator], proc.values[tool]) == (0, 0)
 
 
 @pytest.mark.parametrize("case", ("unknown_invocation", "inherited"))
@@ -814,12 +790,6 @@ def test_only_a_memory_admitted_job_lends_work_item_sizing(
     monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "memory/entry")
     with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
         assert context.memory_sizing is None
-    # Switch unset: a heavy slot.
-    monkeypatch.delenv(job_slots.INHERITED_SLOT_ENV)
-    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
-    with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
-        assert context.memory_sizing is None
-        assert len(_held(memory_runtime, job_slots.CLASS_HEAVY)) == 1
 
 
 def test_specialist_keeps_its_light_slot_under_memory_admission(
@@ -899,14 +869,14 @@ def test_slot_queue_narration_is_unchanged(
     narrate = endpoint_admission._queue_narrator(
         endpoint,  # type: ignore[arg-type]
         Store(),  # type: ignore[arg-type]
-        job_slots.CLASS_HEAVY,
-        "heavy slot",
+        job_slots.CLASS_LIGHT,
+        "light slot",
     )
 
     narrate(0)
 
     assert capsys.readouterr().err == (
-        "[slot] sim: waiting for heavy slot (position 1); held by pid 7 (heavy)\n"
+        "[slot] sim: waiting for light slot (position 1); held by pid 7 (light)\n"
     )
 
 
@@ -946,7 +916,7 @@ def test_unparseable_holder_timeout_is_ignored(monkeypatch: pytest.MonkeyPatch) 
     assert endpoint_admission._holder_deadline_seconds() is None
 
 
-# --- lint and Custom Flow Jobs under the switch (#3703) ------------------------------
+# --- lint and Custom Flow Jobs (#3703) ------------------------------
 
 
 def _prepared_for(invocation: Any) -> PreparedExecution:
@@ -1018,7 +988,6 @@ def test_lint_job_reserves_its_largest_target_estimate(
         assert holder.memory == job_slots.MemoryClaim(
             budget_mb=1000.0, reservation_mb=750.0, wall_s=2.5
         )
-        assert _held(memory_runtime, job_slots.CLASS_HEAVY) == []
         assert _held(memory_runtime, job_slots.CLASS_LIGHT) == []
         assert context.mode == "managed"
 
@@ -1037,7 +1006,6 @@ def test_custom_flow_job_reserves_its_flow_phase(memory_runtime: Path) -> None:
             (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
             expected = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25)
             assert holder.memory == expected, target
-            assert _held(memory_runtime, job_slots.CLASS_HEAVY) == [], target
 
         assert _held(memory_runtime, job_slots.CLASS_MEMORY) == [], target
 
@@ -1060,7 +1028,7 @@ def _assert_queues_behind_run_alone_job(
     import os
 
     flow, prepared = _admitted_job(kind, runtime, memory_runtime)
-    store = job_slots.SlotStore(job_slots.slots_dir(memory_runtime), SlotCaps(max_heavy=MAX_HEAVY))
+    store = job_slots.SlotStore(job_slots.slots_dir(memory_runtime))
     pid = os.getpid()
     first = store.acquire(
         job_slots.CLASS_MEMORY,
@@ -1091,34 +1059,7 @@ def _assert_queues_behind_run_alone_job(
         store.release(first)
 
 
-def test_switch_unset_leaves_lint_and_custom_flow_jobs_unadmitted(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    for kind in ("lint", "custom"):
-        _assert_unadmitted_without_switch(kind, memory_runtime, runtime, monkeypatch)
-
-
-def _assert_unadmitted_without_switch(
-    kind: str, memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A *kind* Job takes no admission without the switch, and a Reservation with it."""
-    flow, prepared = _admitted_job(kind, runtime, memory_runtime)
-    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
-
-    with AdmissionGate(flow, prepared).enter() as context:
-        assert context.mode == "unmanaged"
-        assert context.outer_token is None
-        for job_class in job_slots.JOB_CLASSES:
-            assert _held(memory_runtime, job_class) == []
-
-    # The contrast: the same Job under the switch holds a Memory Reservation.
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
-    flow, prepared = _admitted_job(kind, runtime, memory_runtime)
-    with AdmissionGate(flow, prepared).enter():
-        assert len(_held(memory_runtime, job_slots.CLASS_MEMORY)) == 1
-
-
-# --- Seat Caps for licensed EDA tools under the switch (#3244) -----------------------
+# --- Seat Caps for licensed EDA tools (#3244) -----------------------
 
 
 def _fpga_prepared(work_dir: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: bool = True):
@@ -1149,7 +1090,7 @@ def _hold_vivado_seat(booley_dir: Path, cap: int) -> tuple[job_slots.SlotStore, 
     """A running Job that holds one Vivado seat and 100 MiB, as another process would."""
     import os
 
-    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=MAX_HEAVY))
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
     pid = os.getpid()
     token = store.acquire(
         job_slots.CLASS_MEMORY,
@@ -1258,19 +1199,6 @@ def test_fpga_job_with_a_non_positive_vivado_seat_cap_is_refused_before_admissio
     assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
-def test_switch_unset_fpga_job_takes_a_heavy_slot_without_a_seat_cap(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_jobs(memory_runtime, None)
-    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
-    flow, prepared = _fpga_prepared(runtime, monkeypatch)
-
-    with AdmissionGate(flow, prepared).enter() as context:
-        assert context.mode == "managed"
-        assert len(_held(memory_runtime, job_slots.CLASS_HEAVY)) == 1
-        assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
-
-
 def test_jobs_owing_no_seat_ignore_seat_caps(
     memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1331,27 +1259,6 @@ def test_memory_admitted_job_shrinks_when_a_phase_ends(
     from booley.flows import reservation_phases
 
     assert reservation_phases._active.get() is None
-
-
-def test_switch_unset_phase_ends_change_no_claim(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Without the switch the real Target-end report runs inside the gate and changes nothing."""
-    from booley.flows import reservation_phases
-
-    _seed_history(memory_runtime, ("a", 400), ("b", 200))
-    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
-    flow = AsicSynthesizeFlow()
-    monkeypatch.setattr(flow, "_synthesize_target", lambda _target: (None, ""))
-
-    with AdmissionGate(flow, _two_target_synth_prepared(flow, runtime)).enter():
-        # Heavy Jobs still take a heavy slot; the memory class is untouched.
-        (heavy,) = _held(memory_runtime, job_slots.CLASS_HEAVY)
-        before = heavy.path.read_bytes()
-        flow._run_single_config("a")
-        assert reservation_phases._active.get() is None
-        assert heavy.path.read_bytes() == before
-        assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
 # --- requeue of an OOM-killed Job (#3762, ADR 0087) ---------------------------------
@@ -1471,7 +1378,7 @@ def test_requeue_never_waits_behind_its_own_claim(memory_runtime: Path, runtime:
 
     flow = AsicSynthesizeFlow()
     prepared = _selection_prepared(flow, runtime)
-    store = job_slots.SlotStore(job_slots.slots_dir(memory_runtime), SlotCaps(max_heavy=MAX_HEAVY))
+    store = job_slots.SlotStore(job_slots.slots_dir(memory_runtime))
     pid = os.getpid()
     leftover = store.acquire(
         job_slots.CLASS_MEMORY,
@@ -1843,7 +1750,7 @@ def test_only_a_failed_oom_killed_job_is_requeued(
         assert _attempts_of(harness, memory_runtime, attempt) == 1, attempt.__name__
 
     # Under a parent's claim the Job holds none of its own: nothing to requeue.
-    monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "heavy/1")
+    monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "light/1")
     harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
     harness.behavior = _killed
     harness.execute()
@@ -1855,30 +1762,6 @@ def test_only_a_failed_oom_killed_job_is_requeued(
     assert _attempts_of(harness, memory_runtime, _killed) == 2
 
 
-def test_switch_unset_never_requeues_an_oom_killed_job(
-    memory_runtime: Path,
-    runtime: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
-    harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    harness.behavior = _killed
-
-    result = harness.execute()
-
-    # A heavy slot, no Memory Reservation: the Job runs once, as before.
-    assert len(harness.invocations) == 1
-    assert result.exit_code == 1
-    assert "oom_requeue" not in result.outcome.detail
-    assert REQUEUE_MARKER not in capsys.readouterr().out
-
-    # The contrast: with the switch set the same Job runs twice.
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
-    switched = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    assert _attempts_of(switched, memory_runtime, _killed) == 2
-
-
 # --- Verilator -j from the container's cores and the running Jobs (#3246) ------------
 
 
@@ -1887,7 +1770,7 @@ def _running_memory_jobs(booley_dir: Path, count: int) -> Iterator[None]:
     """Hold *count* other Jobs' Memory Reservations (50 MiB each) in the memory Job Class."""
     import os
 
-    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=MAX_HEAVY))
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
     pid = os.getpid()
     tokens = [
         store.acquire(
@@ -1907,12 +1790,10 @@ def _running_memory_jobs(booley_dir: Path, count: int) -> Iterator[None]:
 
 @pytest.fixture
 def eight_cores(monkeypatch: pytest.MonkeyPatch) -> None:
-    """8 available cores, and the old per-lane rule pinned to ``-j1`` (1 GiB heavy lane)."""
+    """8 available cores, as admission and the build's ``-j`` read them."""
     import importlib
 
-    from booley.flows.sim import build_parallelism
-
-    # Admission reads the cores from cpu_budget; the lane rule from build_parallelism.
+    # Admission reads the cores from cpu_budget; the build from build_parallelism.
     # Resolved by name so a tree without cpu_budget still reaches its assertions.
     for name in ("booley.runtime.cpu_budget", "booley.flows.sim.build_parallelism"):
         try:
@@ -1921,11 +1802,6 @@ def eight_cores(monkeypatch: pytest.MonkeyPatch) -> None:
             continue
         monkeypatch.setattr(module, "_affinity_cpu_count", lambda: 8)
         monkeypatch.setattr(module, "_read_text", lambda _path: None)
-    monkeypatch.setattr(
-        build_parallelism,
-        "_load_common_job_budget",
-        lambda _root: {"jobs": {"heavy_memory": "1g"}},
-    )
 
 
 def _verilator_inspection(*make_options: str) -> Any:

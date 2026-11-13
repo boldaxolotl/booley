@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from booley.config.agent import AGENT_CLIS
+from booley.config.jobs import RetiredJobsKeyError, refuse_retired_jobs_keys
 from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
 from booley.harness import (
@@ -2422,6 +2423,10 @@ def _dispatch_main() -> int:
 
     if binding is ProjectBinding.REQUIRED:
         _require_command_project(command, project_root)
+    # Doctor reports the retired keys as a FAIL; upgrade is booley-heal's first step.
+    exempt = command in {"doctor", "upgrade"} or binding is ProjectBinding.INDEPENDENT
+    if project_root is not None and not exempt:
+        refuse_retired_jobs_keys(project_root)
 
     return _dispatch_selected(args, command, project_root, binding)
 
@@ -2507,6 +2512,7 @@ def main() -> int:
         ProjectRootDiscoveryError,
         EndpointConfigError,
         ProjectRequiredError,
+        RetiredJobsKeyError,
         SourceCheckoutProjectError,
         runtime_context.EgressModeError,
     ) as exc:

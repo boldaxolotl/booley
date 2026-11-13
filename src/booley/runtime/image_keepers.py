@@ -19,9 +19,9 @@ from booley.projects.image_keepers import (
 )
 from booley.runtime import interactive_docker as docker
 from booley.runtime import project_resources
+from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.session_issuance import keeper_image_for_identity
-from booley.runtime.session_refresh import shared_recovery_blocks_command
 
 logger = logging.getLogger(__name__)
 

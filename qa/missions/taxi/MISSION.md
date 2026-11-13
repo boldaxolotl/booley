@@ -269,15 +269,17 @@ by a call that takes it, auto-abandon or a protected-input edit silently
 accepted.
 
 ### 12. campaign — Simulation Campaigns (~25 min)
-Intent: one shared build, capped heavy jobs, isolated attempts, resumable batches.
+Intent: one shared build, memory-admitted parallel attempts, isolated attempts, resumable batches.
 Try:
 - Copy `fixtures/simulation-campaign/` in, register `campaign.core`, merge `tests.toml` into the
   test catalog. `first` + `second` in one campaign → exactly one ready `shared_variant` bundle for
   both attempts, bytes unchanged (cross-check `validate_bundle.py`).
-- Apply `parallel.toml` with `max_heavy = 3`; run `slow-first`, `slow-fail`, `slow-last` while
-  sampling the SlotStore: overlap >1 and ≤3 counting the outer job, each `qa-shared-name.txt` in its
-  own attempt, pass/fail/pass in manifest order with strict `fail`. Cross-check with
-  `validate_parallel.py`; record the sampled timeline in the format its module docstring defines.
+- Run each slow item once first: an item with no Resource History runs alone. Apply
+  `parallel.toml` with a `[jobs] memory_budget` that admits three items; run `slow-first`,
+  `slow-fail`, `slow-last` and measure the simulator processes: they overlap, each
+  `qa-shared-name.txt` is in its own attempt, pass/fail/pass in manifest order with strict `fail`.
+  Cross-check with `validate_parallel.py`; record the timeline in the format its module docstring
+  defines.
 - Kill the owned producer mid Taxi Cocotb multi-test batch and copy the interrupted attempt's
   `attempt.json`; resume from the manifest → one new attempt rerunning the whole batch
   (cross-check `validate_phase5.py` with the Campaign directory and that copy). The same ordered

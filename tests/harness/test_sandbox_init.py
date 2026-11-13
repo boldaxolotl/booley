@@ -376,6 +376,5 @@ def test_sandbox_init_applies_the_line_ending_policy(
 
     for repository in (project, project / ".booley"):
         assert _local_config(repository, "core.autocrlf") == "false"
-    assert "* text=auto eol=lf" in (project / ".git" / "info" / "attributes").read_text(
-        encoding="utf-8"
-    )
+    assert not (project / ".git" / "info" / "attributes").exists()
+    assert not (project / ".gitattributes").exists()

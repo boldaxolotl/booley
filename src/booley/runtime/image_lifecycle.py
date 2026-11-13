@@ -63,6 +63,7 @@ from booley.runtime.image_provenance import (
     resolve_recipe_fingerprint,
 )
 from booley.runtime.paths import docker_data_dir
+from booley.runtime.platform_paths import run_captured_bounded
 
 BASE_IMAGE = "booley-sandbox"
 STABLE_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
@@ -2122,12 +2123,8 @@ class _DockerCli:
     def repo_digests(self, image: str) -> tuple[str, ...]:
         """Return normalized registry identities attached to a local image."""
         try:
-            result = subprocess.run(
-                ["docker", "image", "inspect", "-f", "{{json .RepoDigests}}", image],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
+            result = run_captured_bounded(
+                ["docker", "image", "inspect", "-f", "{{json .RepoDigests}}", image], timeout=15
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not inspect Docker RepoDigests: {exc}") from exc
@@ -2156,12 +2153,8 @@ class _DockerCli:
 
     def image_ids(self) -> frozenset[str]:
         try:
-            result = subprocess.run(
-                ["docker", "image", "ls", "--all", "--quiet", "--no-trunc"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+            result = run_captured_bounded(
+                ["docker", "image", "ls", "--all", "--quiet", "--no-trunc"], timeout=30
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"cannot inventory immutable image IDs: {exc}") from exc
@@ -2172,12 +2165,8 @@ class _DockerCli:
 
     def image_references(self) -> tuple[ImageReference, ...]:
         try:
-            result = subprocess.run(
-                ["docker", "image", "ls", "--no-trunc", "--format", "{{json .}}"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+            result = run_captured_bounded(
+                ["docker", "image", "ls", "--no-trunc", "--format", "{{json .}}"], timeout=30
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(
@@ -2193,12 +2182,8 @@ class _DockerCli:
 
     def container_image_ids(self) -> frozenset[str]:
         try:
-            result = subprocess.run(
-                ["docker", "container", "ls", "--all", "--quiet", "--no-trunc"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+            result = run_captured_bounded(
+                ["docker", "container", "ls", "--all", "--quiet", "--no-trunc"], timeout=30
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not inventory Docker containers: {exc}") from exc
@@ -2273,12 +2258,9 @@ def _inspect_container_image_ids(container_ids: list[str]) -> frozenset[str]:
     image_ids = set()
     for container_id in container_ids:
         try:
-            result = subprocess.run(
+            result = run_captured_bounded(
                 ["docker", "container", "inspect", "--format", "{{.Image}}", container_id],
-                capture_output=True,
-                text=True,
                 timeout=15,
-                check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(

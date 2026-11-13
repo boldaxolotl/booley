@@ -20,7 +20,6 @@ from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
-from booley.flows.memory_admission import MEMORY_ADMISSION_ENV
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.synth.flow import AsicSynthesizeFlow
@@ -229,8 +228,8 @@ def test_unmeasurable_values_are_absent_not_zero(flow, tmp_path, monkeypatch):
     assert record["peak_tmp_mb"] == 0
 
 
-@pytest.mark.parametrize(("code", "outcome"), [(0, "exit_zero"), (1, "oom_kill")])
-def test_container_oom_kill_is_blamed_only_on_a_failed_command(
+@pytest.mark.parametrize(("code", "outcome"), [(0, "exit_zero"), (1, "exit_nonzero")])
+def test_another_jobs_oom_kill_is_not_blamed_on_the_command(
     flow, tmp_path, monkeypatch, code, outcome
 ):
     counts = iter([0, 1])
@@ -242,15 +241,14 @@ def test_container_oom_kill_is_blamed_only_on_a_failed_command(
     assert (record["outcome"], record["oom_kill_delta"]) == (outcome, 1)
 
 
-def _admission_on(monkeypatch, counts) -> None:
-    """Memory admission on; the container OOM counter reads *counts* in turn."""
-    monkeypatch.setenv(MEMORY_ADMISSION_ENV, "1")
+def _oom_counter(monkeypatch, counts) -> None:
+    """The container OOM counter reads *counts* in turn."""
     monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
 
 
 @posix_only
 def test_command_killed_by_sigkill_during_an_oom_kill_is_oom_killed(flow, tmp_path, monkeypatch):
-    _admission_on(monkeypatch, iter([0, 1]))
+    _oom_counter(monkeypatch, iter([0, 1]))
 
     result = flow._execute_local(_python(SELF_SIGKILL))
 
@@ -260,7 +258,7 @@ def test_command_killed_by_sigkill_during_an_oom_kill_is_oom_killed(flow, tmp_pa
 
 
 def test_make_reported_kill_during_an_oom_kill_is_oom_killed(flow, tmp_path, monkeypatch):
-    _admission_on(monkeypatch, iter([0, 1]))
+    _oom_counter(monkeypatch, iter([0, 1]))
     code = "import sys; sys.stderr.write('make: *** [Makefile:3: all] Killed\\n'); raise SystemExit(2)"
 
     result = flow._execute_local(_python(code))
@@ -271,7 +269,7 @@ def test_make_reported_kill_during_an_oom_kill_is_oom_killed(flow, tmp_path, mon
 
 
 def test_compiler_reported_kill_during_an_oom_kill_is_oom_killed(flow, tmp_path, monkeypatch):
-    _admission_on(monkeypatch, iter([0, 1]))
+    _oom_counter(monkeypatch, iter([0, 1]))
     code = (
         "print('g++: fatal error: Killed signal terminated program cc1plus')\n"
         "print('make: *** [obj.o] Error 1')\n"
@@ -286,7 +284,7 @@ def test_compiler_reported_kill_during_an_oom_kill_is_oom_killed(flow, tmp_path,
 
 
 def test_own_failure_during_another_jobs_oom_kill_is_not_oom_killed(flow, tmp_path, monkeypatch):
-    _admission_on(monkeypatch, iter([0, 1]))
+    _oom_counter(monkeypatch, iter([0, 1]))
 
     result = flow._execute_local(_python("raise SystemExit(1)"))
 
@@ -298,11 +296,11 @@ def test_own_failure_during_another_jobs_oom_kill_is_not_oom_killed(flow, tmp_pa
 @posix_only
 def test_unreadable_counter_or_timeout_is_never_oom_killed(flow, monkeypatch):
     # An unreadable counter proves nothing, even for a command that killed itself.
-    _admission_on(monkeypatch, iter([None, None]))
+    _oom_counter(monkeypatch, iter([None, None]))
     assert not flow._execute_local(_python(SELF_SIGKILL)).oom_killed
 
     # Booley's own timeout kill is not the OOM killer's.
-    _admission_on(monkeypatch, iter([0, 1]))
+    _oom_counter(monkeypatch, iter([0, 1]))
     timed_out = flow._execute_local(_python("import time; time.sleep(30)"), timeout=1)
     assert timed_out.timed_out and not timed_out.oom_killed
 
@@ -353,7 +351,7 @@ def test_own_oom_kill_evidence_rules(result, kills, expected):
 
 @posix_only
 def test_command_killed_by_a_cancelled_scope_is_not_oom_killed(flow, tmp_path, monkeypatch):
-    _admission_on(monkeypatch, iter([0, 1]))
+    _oom_counter(monkeypatch, iter([0, 1]))
     started, cancelled = tmp_path / "started", threading.Event()
     scope = SupervisedExecutionScope(None, tmp_path / ".booley", cancelled.is_set)
 
@@ -384,7 +382,7 @@ def test_command_killed_by_a_cancelled_scope_is_not_oom_killed(flow, tmp_path, m
 
 @linux_only
 def test_oom_killed_simulator_counts_as_its_commands_oom_kill(flow, tmp_path, monkeypatch):
-    _admission_on(monkeypatch, iter([0, 1]))
+    _oom_counter(monkeypatch, iter([0, 1]))
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text("", encoding="utf-8")
@@ -412,19 +410,6 @@ raise SystemExit(1)
     result = flow._execute_local(_python(adapter))
 
     assert result.returncode == 1 and result.oom_killed
-
-
-def test_switch_unset_keeps_container_wide_oom_blame(flow, tmp_path, monkeypatch):
-    monkeypatch.delenv(MEMORY_ADMISSION_ENV, raising=False)
-    counts = iter([0, 1])
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
-
-    result = flow._execute_local(_python("raise SystemExit(1)"))
-
-    assert result.oom_killed is False and result.oom_blamed
-    (record,) = _history(tmp_path)
-    assert record["outcome"] == "oom_kill"
-    assert job_resources.KILL_REPORT_ENV not in job_resources.JobResourceMonitor().temp_env()
 
 
 @linux_only
@@ -477,7 +462,7 @@ def test_other_jobs_are_holders_from_another_process(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "slots"))
     store = job_slots.SlotStore(tmp_path / "slots")
     assert job_resources._other_jobs_hold_slots() is False
-    token = store.acquire(job_slots.CLASS_HEAVY, pid=os.getpid(), argv=_proc_argv())
+    token = store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=_proc_argv())
     assert token.is_holder
     assert job_resources._other_jobs_hold_slots() is False, "this process's own slot"
     monkeypatch.setattr(job_resources.os, "getpid", lambda: token.pid + 1)
@@ -529,7 +514,7 @@ def _recorded_keys(
     from booley.runtime.resource_history import history_key
 
     assert label is not None
-    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0)
+    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0, oom_killed=False)
     measurement = job_resources.JobMeasurement(
         0.25, job_resources.Usage(), phases or {}, None, None, None
     )
@@ -768,7 +753,7 @@ def test_history_written_before_source_bytes_still_loads(tmp_path):
     path.write_bytes(json.dumps(document).encode("utf-8"))
 
     label = job_resources.ResourceLabel("core", "sim_run", ("smoke",), source_bytes=77)
-    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0)
+    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0, oom_killed=False)
     measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
     (new_record,) = job_resources.history_records("simulate", label, (), measurement, result)
     assert new_record["source_bytes"] == 77 and new_record["key"] == old_key

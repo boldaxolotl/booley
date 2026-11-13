@@ -21,10 +21,17 @@ from booley.runtime.docker_capacity import (
 )
 from booley.runtime.image_identity import ImageMetadata
 from tests.conftest import symlink_or_skip
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.subprocess_budget import run_bounded_child
 
 _ACTUAL_ALIAS_PROBE = lifecycle.project_image.project_data_alias_capable
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of lifecycle, project_image."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, lifecycle, project_image)
 
 
 @pytest.fixture(autouse=True)
@@ -3958,6 +3965,7 @@ def test_runtime_image_stamp_recovery_reaches_consumers(
     tmp_path, monkeypatch, capsys, consumer, runtime_image_stamp_environment
 ):
     from booley.harness import bootstrap, bootstrap_cli, init_cmd
+    from booley.harness import session_refresh as harness_refresh
 
     docker, plan = runtime_image_stamp_environment
     if consumer == "init":
@@ -3991,7 +3999,15 @@ def test_runtime_image_stamp_recovery_reaches_consumers(
             if consumer == "host":
                 harness_lifecycle.reconcile(lifecycle.Intent.ENSURE)
             elif consumer == "refresh":
-                init_cmd.prepare_runtime_image(tmp_path)
+                monkeypatch.setattr(
+                    harness_lifecycle,
+                    "reconcile_planned",
+                    lambda *_a, **_kw: harness_lifecycle.prepare(plan),
+                )
+                monkeypatch.setattr(
+                    init_cmd, "_report_project_requirements", lambda *_a, **_k: None
+                )
+                harness_refresh._RuntimeImages().converge(tmp_path, verbose=False)
             else:
                 harness_lifecycle.prepare(plan)
         message = str(caught.value)
@@ -4115,12 +4131,11 @@ def test_owned_gc_retries_record_in_fresh_process(tmp_path, monkeypatch):
     lifecycle.OwnedImages(tmp_path).record({}, (second,))  # a later refresh adds, never replaces
     code = """
 from pathlib import Path
-from booley.runtime import image_lifecycle as lifecycle, session_refresh
+from booley.runtime import image_lifecycle as lifecycle
 class Docker:  # only the two inventories and exact-ID removal exist
     def image_ids(self): return frozenset({IMAGE, SECOND})
     def image_references(self): return ()
     def remove_tag(self, image): print("deleted", image)
-assert session_refresh.pending_refresh_projects() == ()
 assert lifecycle.cleanup_owned_images(Path(PROJECT), docker=Docker()) == ()
 """
     code = f"IMAGE={image!r}\nSECOND={second!r}\nPROJECT={str(tmp_path)!r}\n" + code

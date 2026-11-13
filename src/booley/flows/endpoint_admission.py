@@ -26,7 +26,6 @@ from booley.flows.memory_admission import (
     fixed_job_threads,
     job_threads_at_start,
     measure_memory_claim,
-    memory_admission_enabled,
 )
 from booley.flows.reservation_phases import PhasePlan, ReservationShrinker, shrinking
 from booley.runtime import job_slots, oom_priority
@@ -59,10 +58,8 @@ class AdmissionIdentityError(ValueError):
 class AdmissionContext:
     """Borrowed outer admission facts for one admitted endpoint invocation.
 
-    ``max_heavy`` is the store's heavy cap, used by Simulation Campaign
-    capacity; other endpoints ignore it. A Job admitted by Memory Reservation
-    has a ``max_heavy`` of one. Its Campaign sizes lanes from the container's cores
-    and admits each work item by its own claim, once ``memory_sizing`` is set.
+    A Simulation Campaign sizes lanes from the container's cores and admits
+    each work item by its own claim, once ``memory_sizing`` is set.
     ``memory_warning`` is the warning that Job's result carries (it ran alone
     because its estimate exceeded the Memory Budget, or the budget was
     unavailable). ``memory_sizing`` lets its Campaign give each work item its
@@ -72,7 +69,6 @@ class AdmissionContext:
     mode: str
     slot_store: job_slots.SlotStore | None
     outer_token: object | None
-    max_heavy: int
     role: str
     execution_id: ExecutionId | None
     timeout_seconds: float | None
@@ -85,13 +81,9 @@ class AdmissionContext:
     def __post_init__(self) -> None:
         if self.mode not in {"managed", "unmanaged"}:
             raise ValueError("admission mode must be managed or unmanaged")
-        if self.max_heavy < 1:
-            raise ValueError("admission max_heavy must be positive")
         managed = self.mode == "managed"
         if managed != (self.slot_store is not None and self.outer_token is not None):
             raise ValueError("managed admission requires a store and outer token")
-        if not managed and self.max_heavy != 1:
-            raise ValueError("unmanaged admission has exactly one logical lane")
         execution_id = _coerce_execution_id(self.execution_id)
         object.__setattr__(self, "execution_id", execution_id)
         object.__setattr__(
@@ -135,13 +127,13 @@ class AdmissionGate:
         self._entered = False
 
     def _claim(self) -> _Claim:
-        """Claim the Job's admission: a Memory Reservation under the switch, else a slot.
+        """Claim the Job's admission: a Memory Reservation, else a light slot.
 
-        Under the switch heavy Jobs, lint and Custom Flows are memory-admitted;
-        the claim carries the plan that sized it (``None`` for a slot).
+        Sim, synth, fpga, lint and Custom Flow Jobs are memory-admitted; the
+        claim carries the plan that sized it (``None`` for a slot).
         """
         endpoint = self._endpoint
-        if memory_admission_enabled() and endpoint._memory_admitted():
+        if endpoint._memory_admitted():
             return _acquire_memory_reservation(endpoint, self._prepared, requeued=self._requeued)
         store, token = endpoint._acquire_job_slot()
         return _Claim(store, token)
@@ -164,7 +156,6 @@ class AdmissionGate:
                 )
             role = job_slots.ROLE_INTERACTIVE
             timeout = _slot_timeout_seconds()
-            max_heavy = _heavy_lanes(store, token)
             cause = _admission_cancellation_cause(store, token)
             with ExitStack() as scope:
                 # Phase ends lower the claim only while the Job holds it.
@@ -185,7 +176,6 @@ class AdmissionGate:
                     mode="managed" if store is not None else "unmanaged",
                     slot_store=store,
                     outer_token=token,
-                    max_heavy=max_heavy,
                     role=role,
                     execution_id=execution_id,
                     timeout_seconds=timeout,
@@ -197,15 +187,6 @@ class AdmissionGate:
         finally:
             if store is not None and token is not None:
                 store.release(token)
-
-
-def _heavy_lanes(store: job_slots.SlotStore | None, token: object | None) -> int:
-    """How many heavy lanes the admitted Job may use: the heavy cap, or one under memory."""
-    if store is None:
-        return 1
-    if isinstance(token, job_slots.SlotToken) and token.job_class == job_slots.CLASS_MEMORY:
-        return 1
-    return store.caps.max_heavy
 
 
 def authorize_targets(

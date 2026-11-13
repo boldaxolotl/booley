@@ -180,14 +180,6 @@ done. `booley upgrade status` shows where the review stands.
 If Doctor instead warns `upgrade.runtime-stale`, the Sandbox still runs an
 older Booley. Run `booley session refresh` on the host first.
 
-## Unknown Git attributes policy
-
-`git.attributes-policy-unknown` means Doctor couldn't read the Git attributes
-of another worktree of this repository, or Git couldn't report where its
-system attributes file is. It isn't a confirmed conflict. Check that worktree
-from somewhere that can reach it, such as the host, or waive the warning.
-Don't delete working attribute rules or prune worktrees just to silence it.
-
 ## Doctor waivers (`doctor-waivers.toml`)
 
 Some warnings describe a deliberate choice, such as a testbench that can't

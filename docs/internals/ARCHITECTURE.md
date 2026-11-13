@@ -94,8 +94,9 @@ and the managed images it is built from, for init, refresh, and Doctor alike.
 Callers get an immutable image identity and typed diagnostics, so none of them
 reimplements Docker freshness rules
 ([ADR 0053](../adr/0053-authoritative-session-image-lifecycle.md)). Replacing a
-running Sandbox is a separate, journaled step (`runtime/session_refresh.py`),
-so a failed replacement can restore the previous container.
+running Sandbox is a separate roll-forward step (`runtime/session_refresh.py`):
+it keeps no journal and never restores the previous container, so a failure
+names its step and rerunning refresh converges.
 
 ### Why Docker
 
@@ -133,24 +134,35 @@ container shares one trust domain.
 
 ### Job admission
 
-Every Flow or Specialist run is a Job in one of two classes:
-`heavy` for EDA work, `light` for model-bound Specialist work. Each class has
-its own cap under [`[jobs]`](../user/CONFIG.md#jobs--concurrency-jobs). Excess
-work queues, a full queue refuses new work, and a running Job is never
+Every Flow or Specialist run is a Job in one of two classes: `memory` for EDA
+work (simulation, synthesis, FPGA implementation, lint, Custom Flows) and
+`light` for model-bound work (Specialists and the Mutation Flow). Light Jobs are capped by count
+(`max_light`). A memory Job holds a reservation, estimated from the Resource
+History, and runs while the reservations fit the Memory Budget
+(`runtime/memory_budget.py`, [`[jobs]`](../user/CONFIG.md#jobs--concurrency-jobs)).
+Excess work queues, a full queue refuses new work, and a running Job is never
 preempted. Queue order comes from the requester role, not the class:
 `interactive` requests sort ahead of `background` ones, so a human waiting at
 the prompt isn't stuck behind unattended work.
 
-The fixed `heavy` cap is temporary.
-[ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md) replaces
-it with admission against a measured Memory Budget; `runtime/memory_budget.py`
-already computes that budget, but nothing admits Jobs with it yet.
+Memory admission follows
+[ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md):
 
-Slot claims are files under `<runtime>/jobs/slots/` (`runtime/job_slots.py`;
-see [Why plain files](#why-plain-files)). The rule the recovery code protects:
-a slot becomes free only when the processes that used it are provably gone.
-Otherwise a Job whose root process died could free its slot while its EDA
-child processes still run, and the next heavy Job would start on top of them.
+- A Job that cannot be sized runs alone, and a Job larger than the budget runs
+  alone rather than never.
+- A waiting Job may start ahead of the front one when it fits now and does not
+  delay the front Job's earliest start. Seat Caps (`[jobs.seats]`) count as a
+  resource in that walk, and a licensed tool with no Seat Cap is refused.
+- A reservation shrinks to the next phase's estimate when a Job's phase ends.
+- A Job killed out of memory is requeued once to run alone; a second kill
+  fails it.
+- A Job's build thread count is its share of the cores, from the claim.
+
+Claims are files under `<runtime>/jobs/slots/` (`runtime/job_slots.py`; see
+[Why plain files](#why-plain-files)). The rule the recovery code protects:
+a claim becomes free only when the processes that used it are provably gone.
+Otherwise a Job whose root process died could free its claim while its EDA
+child processes still run, and the next Job would start on top of them.
 
 - Each admitted holder renews a recovery lease, separate from its work
   timeout. When the owner disappears or the lease expires, recovery marks the
@@ -170,10 +182,12 @@ child processes still run, and the next heavy Job would start on top of them.
   at one.
 
 A Simulation Record (code: `flows/sim/campaign/`) runs its first test on the
-Simulation Job's own heavy slot and may take extra child slots up to the same
-`heavy` cap. Items whose resolved run directory is the same still run one at a
-time. Losing a child slot's lease stops only that test; losing the Job's own
-slot cancels the run.
+Simulation Job's own claim. Each further parallel item takes its own child
+memory claim, sized from the item's history, while the reservations fit the
+Memory Budget; the number of parallel items never exceeds the cores. Items
+whose resolved run directory is the same still run one at a time. Losing a
+child claim's lease stops only that test; losing the Job's own claim cancels
+the run.
 
 ## Booley Flows and Specialists
 
@@ -391,7 +405,7 @@ in [SETUP.md](../user/SETUP.md#sign-in-and-billing).
 ## Why plain files
 
 Booley keeps all state in files: Goal Records and their Change Logs, evidence
-state as JSON, Job slot claims, and Job records. A Goal's durable result is a
+state as JSON, Job claims, and Job records. A Goal's durable result is a
 git branch. There is no database or state daemon, so nothing needs installing
 or keeping alive, and any state can be read with `ls` and `cat`. The cost is
 that atomic renames and lock files are the concurrency primitives, and they

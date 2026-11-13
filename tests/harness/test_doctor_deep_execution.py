@@ -446,10 +446,7 @@ def test_session_up_reports_deep_once_through_all_health_branches(
     observe.assert_called_once_with(tmp_path, container="sandbox")
 
 
-@pytest.mark.parametrize("storage_fails", [False, True])
-def test_probe_cost_accounting_and_completeness_are_independent(
-    tmp_path, monkeypatch, storage_fails
-):
+def test_probe_cost_accounting_and_completeness_are_independent(tmp_path, monkeypatch):
     from booley.harness import developer_probe
 
     project = _project(tmp_path)
@@ -461,15 +458,11 @@ def test_probe_cost_accounting_and_completeness_are_independent(
         lambda _: developer_probe.ProbeMeasurement(1024, True, usage),
     )
     monkeypatch.setattr(developer_probe, "probe_model_access", lambda *_args, **_kw: usage)
-    if storage_fails:
-        monkeypatch.setattr(
-            developer_probe, "record_measurement", Mock(side_effect=OSError("unwritable"))
-        )
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._track_developer_probe(project, reporter, tracker)
     assert reporter.agent_calls[0] == doctor._AgentCallRecord("agent probe", usage)
     assert {call.label for call in reporter.agent_calls[1:]} <= {"model probe"}
-    assert tracker.missing == (("developer-probe",) if storage_fails else ())
+    assert tracker.missing == ()
 
 
 _MODEL_CONFIG = """
@@ -490,7 +483,6 @@ def _model_probe_world(tmp_path, monkeypatch, *, gateway=False, config_body=_MOD
     (claude-opus-5-5); the internal model (claude-sonnet-5-5) is the memory probe's own.
     """
     from booley.config import agent as agent_config
-    from booley.harness import developer_probe
 
     project = _project(tmp_path)
     config = project.booley_dir / "booley.toml"
@@ -510,7 +502,6 @@ def _model_probe_world(tmp_path, monkeypatch, *, gateway=False, config_body=_MOD
     monkeypatch.setattr(agent_config, "_agent_settings", None)
     agent_config.load_agent_settings(project.project_root, booley_dir=project.booley_dir)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(developer_probe, "record_measurement", lambda *_args: tmp_path / "p.json")
     return project
 
 
@@ -789,7 +780,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
     monkeypatch.setattr(doctor, "_run_flow_and_core_phase", health)
     for name in (
         "_check_runtime_location",
-        "_check_memory_invariant",
+        "_check_sandbox_memory",
         "_run_container_checks",
         "_run_mcp_checks",
         "_run_project_checks",

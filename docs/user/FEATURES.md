@@ -134,8 +134,8 @@ Booley's MCP surface is designed for extension. The built-in Booley Flows and Sp
 ## Parallel Sessions
 
 Run each Goal session in a separate linked worktree and Goal Branch inside the
-Sandbox. The Dashboard shows concurrent sessions, Goals, and Jobs. Per-Job-Class
-admission caps in `[jobs]` limit resource use; excess work queues and running
+Sandbox. The Dashboard shows concurrent sessions, Goals, and Jobs. The Memory
+Budget in `[jobs]` limits resource use; excess work queues and running
 Jobs are never preempted. See [Jobs](CONFIG.md#jobs--concurrency-jobs).
 
 ## Windows Support

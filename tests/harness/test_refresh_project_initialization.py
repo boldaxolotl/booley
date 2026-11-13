@@ -29,7 +29,7 @@ def _git(root: Path, *args: str) -> str:
 
 def _refresh(root: Path) -> runtime_refresh.RefreshResult:
     """Run Session refresh with the runtime (Docker) half replaced by a fixed outcome."""
-    image = runtime_refresh.RefreshImage("booley-sandbox", "sha256:fresh", "payload")
+    image = runtime_refresh.RefreshImage("sha256:fresh", "payload", None, False)
     outcome = runtime_refresh.RefreshResult(image, "kept", None, "container-1")
     with patch.object(harness_refresh.runtime_refresh, "refresh", return_value=outcome):
         return harness_refresh.refresh(root)
@@ -99,14 +99,12 @@ def test_refresh_reports_crlf_without_rewriting_tracked_file(
     crlf_bytes = b"line one\r\nline two\r\n"
     _commit_crlf_checkout(root, "notes.txt", crlf_bytes)
     _git(root, "config", "--unset", "core.autocrlf")
-    inner_attributes = (root / ".booley" / ".gitattributes").read_bytes()
     capsys.readouterr()
 
     _refresh(root)
 
     assert (root / "notes.txt").read_bytes() == crlf_bytes
     assert not (root / ".gitattributes").exists()
-    assert (root / ".booley" / ".gitattributes").read_bytes() == inner_attributes
     assert "1 tracked file(s) are checked out with CRLF" in capsys.readouterr().out
     # Pinning autocrlf=false over a CRLF checkout would only add phantom diffs.
     unpinned = run_bounded_child(

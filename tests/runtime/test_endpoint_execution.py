@@ -254,7 +254,6 @@ def test_job_outcome_records_only_its_own_oom_kill(
     flow = EchoFlow()
     with patch.dict(os.environ, _env_with_state(state_file)):
         flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
     # The container's OOM-kill counter moves during both Jobs' commands.
     counts = iter([0, 1, 1, 2])
     monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))

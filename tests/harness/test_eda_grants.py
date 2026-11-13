@@ -12,7 +12,7 @@ import pytest
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.licensing import flexnet_docker
 from booley.harness import eda_grants
-from booley.runtime import issuance_invalidation, lifecycle_lock, session_issuance, session_refresh
+from booley.runtime import issuance_invalidation, lifecycle_lock, session_issuance
 from tests import eda_grant_support
 
 
@@ -43,7 +43,7 @@ def _patch_revoke(
     real_prepare = issuance_invalidation.prepare
     monkeypatch.setattr(lifecycle_lock, "host_lifecycle_lock", locked)
     monkeypatch.setattr(
-        session_refresh,
+        issuance_invalidation,
         "shared_recovery_blocks_command",
         lambda **_kwargs: events.append("recover-old") or False,
     )
@@ -117,7 +117,7 @@ def test_failed_add_commits_nothing_and_writes_no_journal(
     profile = eda_grant_support.register_license("site")
     order: list[str] = []
     monkeypatch.setattr(
-        session_refresh,
+        issuance_invalidation,
         "shared_recovery_blocks_command",
         lambda **_kw: order.append("recover") or False,
     )
@@ -157,7 +157,7 @@ def test_raw_grant_mutations_are_not_public() -> None:
 
 def test_pending_recovery_probe_translates_runtime_failure(monkeypatch) -> None:
     monkeypatch.setattr(
-        session_refresh,
+        issuance_invalidation,
         "shared_recovery_blocks_command",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("corrupt journal")),
     )
@@ -179,7 +179,6 @@ def test_pending_recovery_probe_preserves_private_store_diagnostic(
     issuance_invalidation.cancel(str(project.resolve()))
     booley_config = config_root / "booley"
     booley_config.chmod(0o755)
-    monkeypatch.setattr(session_refresh, "pending_refresh_projects", lambda: ())
 
     with pytest.raises(authority.AuthorityError) as raised:
         eda_grants.GrantCoordinator().recovery_pending()

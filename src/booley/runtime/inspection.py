@@ -41,6 +41,7 @@ from booley.eda.provisioning.policies.vivado import (
 from booley.runtime import (
     auth_token,
     image_identity,
+    platform_paths,
     runtime_context,
     sandbox_layout,
     session_runtime,
@@ -52,7 +53,7 @@ from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.git import _git_common_dir, stealth_exclude_names
-from booley.runtime.platform_paths import same_host_path
+from booley.runtime.platform_paths import run_captured_bounded, same_host_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,13 +136,11 @@ def inspect_retained_resources(project_root: Path, docker_exe: str | None) -> Di
 
 def _devcontainer_tracked(project_root: Path) -> bool:
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", "ls-files", "--", ".devcontainer"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
+            cwd=project_root,
+            errors="strict",
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return False
@@ -518,7 +517,7 @@ def _list_issued_containers(
     identity = next(
         label for label in runtime_spec.labels(issuance) if label.startswith("booley.project-id=")
     )
-    return subprocess.run(
+    return run_captured_bounded(
         [
             docker_exe,
             "ps",
@@ -530,10 +529,7 @@ def _list_issued_containers(
             "--format",
             "{{.Names}}",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
-        check=False,
     )
 
 
@@ -911,13 +907,11 @@ def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
     check alone does not catch an already-poisoned repository.
     """
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", "ls-files", "--", ".interactive_logs"],
-            cwd=booley_dir,
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
+            cwd=booley_dir,
+            errors="strict",
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return

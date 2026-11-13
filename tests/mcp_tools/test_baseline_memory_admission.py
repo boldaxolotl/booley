@@ -1,5 +1,5 @@
 # ruff: noqa: F811  (the scene fixtures are imported, then named as test arguments)
-"""A Goal baseline Job holds a background Memory Reservation under the switch (#3701).
+"""A Goal baseline Job holds a background Memory Reservation (#3701).
 
 Lives beside the Booley code it exercises rather than in ``tests/goals``, which the
 broad suite does not collect. It reuses that directory's scene and helpers.
@@ -45,7 +45,7 @@ from tests.oom_priority_support import (
 
 pytestmark = pytest.mark.timeout(180)
 
-# --- memory admission behind BOOLEY_DEV_MEMORY_ADMISSION (#3701) ---------------------
+# --- memory admission (#3701) ---------------------
 
 #: Every phase of ``top`` peaked at 400 MiB, so its estimate is 500 MiB (x1.25 margin).
 _RESERVATION_MB = 500.0
@@ -54,10 +54,9 @@ _BUDGET_MB = 1000.0
 
 @pytest.fixture
 def memory_scene(scene, monkeypatch, inert_oom_proc):
-    """The scene with the switch set, a 1,000 MiB Memory Budget and a history for ``top``."""
+    """The scene with a 1,000 MiB Memory Budget and a history for ``top``."""
     from booley.runtime.resource_history import SCHEMA
 
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
     # No process is known to the fake /proc, so ranking never touches the worker's real one.
     scene.proc = inert_oom_proc
     with (scene.control / "booley.toml").open("a", encoding="utf-8") as config:
@@ -87,14 +86,14 @@ def _memory_entries(scene):
     return scene.store.observe(job_slots.CLASS_MEMORY)
 
 
-def test_baseline_holds_a_background_memory_reservation_under_the_switch(memory_scene):
+def test_baseline_holds_a_background_memory_reservation(memory_scene):
     scene = memory_scene
     seen = []
-    scene.on_popen = lambda: seen.append((_memory_entries(scene), _entries(scene)))
+    scene.on_popen = lambda: seen.append(_memory_entries(scene))
 
     _execute(scene)
 
-    (((holders, waiters), heavy),) = seen
+    ((holders, waiters),) = seen
     assert [(token.role, token.job_class, token.pid) for token in holders] == [
         ("background", job_slots.CLASS_MEMORY, os.getpid())
     ]
@@ -104,8 +103,6 @@ def test_baseline_holds_a_background_memory_reservation_under_the_switch(memory_
         wall_s=3.75,  # sim_prepare + sim_build + sim_run
     )
     assert waiters == []
-    # It is not a heavy Job Slot.
-    assert heavy == ([], [])
     assert _memory_entries(scene) == ([], [])
 
 
@@ -765,31 +762,6 @@ def test_non_oom_baseline_failure_is_not_requeued(memory_scene):
     assert seen[0].child_request["armed"] is True
     assert len(scene.popen_envs) == 1
     assert result["rows"] == [row] and "oom_requeue" not in result
-
-
-def test_baseline_oom_kill_is_not_requeued_with_the_switch_unset(memory_scene, monkeypatch):
-    scene = memory_scene
-    seen = []
-    _script_attempts(
-        scene,
-        _attempt_result(oom_killed=True),
-        _attempt_result(oom_killed=True),
-        _attempt_result(),
-        seen=seen,
-    )
-
-    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
-    result = _execute(scene)
-
-    # The child claims an OOM kill, but without the switch it holds no Memory Reservation.
-    assert len(scene.popen_envs) == 1
-    assert "armed" not in seen[0].child_request
-    assert result["oom_killed"] is True and "oom_requeue" not in result
-    assert _entries(scene) == ([], [])
-    # The switch alone decides: the same child result is requeued once it is set.
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
-    assert _execute(scene)["oom_requeue"] == OOM_REQUEUE_REASON
-    assert len(scene.popen_envs) == 3
 
 
 def test_restarting_the_budget_of_a_job_without_a_record_is_refused(scene):

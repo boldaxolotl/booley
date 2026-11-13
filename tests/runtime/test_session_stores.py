@@ -18,7 +18,6 @@ from booley.runtime import (
     issuance_invalidation,
     session_admission,
     session_issuance,
-    session_refresh,
 )
 
 if TYPE_CHECKING:
@@ -29,7 +28,6 @@ if TYPE_CHECKING:
 _FACTORIES = {
     "issuance": (session_issuance, "stamp_store"),
     "admission": (session_admission, "claim_store"),
-    "refresh": (session_refresh, "journal_store"),
     "invalidation": (issuance_invalidation, "journal_store"),
 }
 STORE_NAMES = list(_FACTORIES)
@@ -57,7 +55,6 @@ def _scan_through_entry_point(name: str, project: Path) -> Callable[[], object]:
     entry_points: dict[str, Callable[[], object]] = {
         "issuance": lambda: _store("issuance").scan(),
         "admission": lambda: session_admission.has_pending_claim(project),
-        "refresh": session_refresh.pending_refresh_projects,
         "invalidation": issuance_invalidation.pending_invalidations,
     }
     return entry_points[name]
@@ -125,8 +122,7 @@ def test_old_windows_rule_file_fails_closed_naming_file_and_repair(
     monkeypatch.setattr(private_store.os.path, "normcase", ntpath.normcase)
     root = str(project)
     reads: dict[str, Callable[[], object]] = {
-        "issuance": lambda: session_issuance.recovery_stamp_path(project),
-        "refresh": lambda: session_refresh.has_pending_refresh(project),
+        "issuance": lambda: session_issuance.stamp_store().locate(root),
         "invalidation": lambda: issuance_invalidation.has_pending(project),
     }
     for name, read in reads.items():

@@ -34,6 +34,7 @@ from collections.abc import Collection, Iterable, Iterator
 from enum import Enum
 from pathlib import Path, PurePosixPath
 
+from booley.runtime import platform_paths
 from booley.runtime.packaged_docs import (
     PACKAGED_DOCS_RELATIVE_DIR,
     SHIPPED_DOCS,
@@ -131,12 +132,8 @@ def _git_output(booley_root: Path, *args: str) -> str:
     is otherwise fine, so they collapse to the empty string.
     """
     try:
-        result = subprocess.run(
-            ["git", "-C", str(booley_root), *args],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT_S,
-            check=False,
+        result = platform_paths.run_captured_bounded(
+            ["git", "-C", str(booley_root), *args], timeout=_GIT_TIMEOUT_S, errors="strict"
         )
     except (subprocess.SubprocessError, OSError):
         return ""

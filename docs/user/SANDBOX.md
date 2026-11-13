@@ -70,32 +70,22 @@ how long it has run. `down` does not ask or wait. If it cannot read the Job
 records, it says the check was skipped and still stops the Sandbox.
 
 `session refresh` rebuilds only what changed and keeps the current Sandbox if
-nothing did. If the Sandbox replacement fails or you interrupt it, Booley
-restores the previous Sandbox. The Sandbox is unavailable while the new
-container starts. Afterwards it re-applies Project Initialization (Git hooks,
-Git settings, guidance links, exclude entries and the
+nothing did. It replaces the Sandbox without a rollback: the current Sandbox keeps
+running until the new one is ready to start, and the Sandbox is unavailable only
+while the new container starts. If a step fails, the message names it and says
+what is left running; fix the cause and run `booley session refresh` again, which
+continues from that state. After a successful replacement it re-applies Project
+Initialization (Git hooks, Git settings, guidance links, exclude entries and the
 Dashboard task). It never rewrites tracked files: CRLF files and pending
 `.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
 applies them. If that step fails, you keep the new Sandbox and the command
 exits non-zero.
 
-<details markdown>
-<summary>With host-installed licensed tools</summary>
-
-A Sandbox using a
-[floating license](#commercial-eda-provisioning)
-can't be refreshed in place; see
-[Applying Sandbox changes](#applying-sandbox-changes) and
-[Commercial EDA provisioning](#commercial-eda-provisioning).
-
-</details>
-
 ## Applying Sandbox changes
 
 Booley fixes a Sandbox's settings, `[agent]` CLIs and logins, EDA requests and
 Grants, and image when it issues the Sandbox. A running Sandbox keeps its
-previous values until you apply the change. Use the first case that applies
-(with host-installed licensed tools, read the callout below the list first):
+previous values until you apply the change. Use the first case that applies:
 
 - **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
   then **Dev Containers: Rebuild Container**.
@@ -103,25 +93,20 @@ previous values until you apply the change. Use the first case that applies
   `booley session down`, `booley init --seed`, and `booley session up`.
 - **Otherwise (headless Sandbox):** run `booley session refresh`.
 
+When `booley init` or Sandbox validation refuses a running Sandbox, its message
+names the case that applies.
+
 <details markdown>
 <summary>With host-installed licensed tools</summary>
 
-Two more cases apply. Check **After an EDA Grant change** before every case
-above, and **Floating license** before the headless case. See
+After an EDA Grant change (`booley eda grant add` or `revoke`), Booley withdraws
+the Sandbox's issuance. A headless Sandbox refreshes directly. For a VS Code-owned
+or self-managed one, stop a VS Code Sandbox in VS Code and rebuild or pull a
+self-managed image, then run `booley session down`, `booley init --seed`, and
+`booley session up`. See
 [Commercial EDA provisioning](#commercial-eda-provisioning).
 
-- **After an EDA Grant change** (`booley eda grant add` or `revoke`): Booley
-  withdraws the Sandbox's issuance, so the running Sandbox can't be refreshed. Stop
-  any VS Code Sandbox through its owning app. If you manage the image yourself,
-  rebuild or pull it. Then on the host run `booley session down`,
-  `booley init --seed`, and `booley session up`.
-- **Floating license:** run `booley session down`, then
-  `booley session refresh`.
-
 </details>
-
-When `booley init` or Sandbox validation refuses a running Sandbox, its message
-names the case that applies.
 
 ## Agent CLI logins in the Sandbox
 
@@ -267,8 +252,8 @@ memory = "8g"                                  # container memory limit; unset =
 # mask_paths = ["private/notes"]               # directories the agent must not see
 ```
 
-`booley doctor` warns when `memory` looks too small for the
-[`[jobs]`](CONFIG.md#jobs--concurrency-jobs) limits. `[sandbox] dashboard` is
+`memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
+admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
 covered in [CONFIG.md](CONFIG.md#dashboard-and-quiet-goal-presence-goals).
 
 Changes to `mount_host_skills`, `mask_paths`, `image` and `pip_requirements`
@@ -498,7 +483,7 @@ Run these commands on the host, outside the Sandbox:
     ```
 
 5. Apply the change as [Applying Sandbox changes](#applying-sandbox-changes)
-   describes after a Grant change, so the Sandbox gets the mount.
+   describes.
 
 `booley projects` lists every Project on this machine with its Grants. If
 Vivado will not start, see

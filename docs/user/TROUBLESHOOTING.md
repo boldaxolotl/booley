@@ -215,6 +215,36 @@ Docker ran out of disk mid-build, even though Booley checked free space first.
 Free Docker space, for example with `docker builder prune`, and retry. Pruning
 means the next build rebuilds the layers it removed.
 
+## Jobs and memory
+
+### Deleted `[jobs]` keys
+
+`booley.toml` sets `max_heavy` or `heavy_memory`. Flow and Specialist runs and
+every command that works on a Project stop with a message that names each key,
+its line and the file, for example `max_heavy (line 12)`; `booley doctor` and
+`booley upgrade` still run. Memory admission replaced both keys. Delete the
+named lines from that file. In a Developer Agent chat that is already open,
+`/booley-heal` removes them for you. Then set `[sandbox].memory` if you want to choose the Memory Budget;
+see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
+
+### Job killed out of memory
+
+A Flow reports the Job killed out of memory: the kernel killed its processes because the Sandbox ran out of memory.
+Booley runs the Job once more, alone, so nothing else competes for memory. If
+that run is killed too, the Job fails. Raise `[sandbox].memory`, then rebuild
+the Sandbox. `booley resources` shows each Target's peak memory.
+
+### Missing Seat Cap
+
+A Flow is refused for a missing Seat Cap. Vivado and other licensed tools need a Seat Cap: the number of license seats
+Booley may use at once. Without one, `booley doctor` fails and the Flow is
+refused. Add the cap to `booley.toml`, with the seats your license provides:
+
+```toml
+[jobs.seats]
+vivado = 1
+```
+
 ## Sandbox, Git, and worktrees
 
 ### Developer Agents and Specialists turn into "Not logged in" partway through an unattended run
@@ -423,18 +453,17 @@ Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waiver
 Doctor fails with `Session store check: ... identity mismatch: <file> is not
 named for the Project Root it holds (<root>)`, and `booley session` commands
 refuse with the same message. Booley keeps one private file per Project for
-Sandbox issuance, pending editor starts, pending refreshes, and pending
-invalidations, and it names each file after its Project Root. A file with the
-wrong name is never trusted. Remove the file the message names, then reissue
-the Sandbox spec on the host:
+Sandbox issuance, pending editor starts, and pending invalidations, and it
+names each file after its Project Root. A file with the wrong name is never
+trusted. Remove the file the message names, then reissue the Sandbox spec on
+the host:
 
 ```bash
 booley init --seed --project <root>
 ```
 
-Doctor names one file per store, so rerun it until it passes. Removing a
-pending refresh file drops its rollback snapshot and its parked prior Sandbox.
-`init --seed` regenerates the spec.
+Doctor names one file per store, so rerun it until it passes. `init --seed`
+regenerates the spec.
 
 <details markdown>
 <summary>On Windows</summary>

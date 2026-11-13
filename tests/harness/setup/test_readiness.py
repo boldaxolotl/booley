@@ -9,6 +9,7 @@ import pytest
 from booley.harness.setup import readiness
 from booley.harness.setup.project_origin import record_scaffold_origin
 from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
+from booley.runtime import platform_paths
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from tests.diagnostic_helpers import (
     _Rec,
@@ -274,6 +275,8 @@ class TestScaffoldRootCoresTracked:
             raise FileNotFoundError("git")
 
         monkeypatch.setattr(readiness.subprocess, "run", _missing_git)
+        # The Git common-dir lookup goes through the bounded helper instead.
+        monkeypatch.setattr(platform_paths, "run_captured_bounded", _missing_git)
 
         assert _scaffold_core_findings(tmp_path) == []
 

@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import shlex
 import shutil
 import socket
@@ -64,7 +63,7 @@ from booley.config.gateway import (
     gateway_model_pin_from_env,
     gateway_settings_from_env,
 )
-from booley.config.jobs import SeatCapError, parse_caps, parse_seat_caps, seat_cap_fix
+from booley.config.jobs import SeatCapError, parse_seat_caps, seat_cap_fix
 from booley.config.project_config import (
     lookup_target_section,
     normalize_tests_toml,
@@ -72,15 +71,14 @@ from booley.config.project_config import (
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
-    is_str_list,
     require_dict,
     require_int,
     require_list,
     require_str,
 )
-from booley.flows import execution, target_test_plan_inspection
+from booley.flows import execution, runtime_reality, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
-from booley.flows.memory_admission import memory_admission_enabled
+from booley.flows.fpga import vivado_startup
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -113,6 +111,7 @@ from booley.harness.setup import readiness
 from booley.harness.setup.common import info
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
 from booley.harness.setup.readiness import ProjectAudit
+from booley.mcp import server_inspection
 from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
 from booley.presentation.terminal_table import render_table
 from booley.runtime import (
@@ -142,12 +141,12 @@ from booley.runtime.booley_dir import (
     own_booley_dir_repo_path,
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
+    sandbox_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
 from booley.runtime.image_provenance import is_local_image_id
-from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
@@ -246,13 +245,6 @@ _TOOL_EXIT_DESIGN_FAIL = 1
 # source classification in :mod:`booley.audit.design_size`.
 _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 _CONTAINER_CLI = "doc" + "ker"
-# B-Wave is unconditionally required; enabled deterministic Flows are added below.
-_BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
-# MCP tools worth a heads-up when expected-but-absent from the MCP surface. An explicit
-# ``[specialists.<name>].enabled = false`` (or ``[flows.<name>].enabled = false``) opts out.
-_ADVISORY_SPECIALIST_TOOLS = frozenset({"reviewer"})
-_ADVISORY_FLOW_TOOLS = frozenset({"mutation"})
-_MCP_PROBE_TIMEOUT_S = 60
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
 Warn = Callable[..., None]
@@ -1325,7 +1317,7 @@ def _run_runtime_phase(
         reporter.skip_,
         reporter.fail_,
     )
-    _check_memory_invariant(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_sandbox_memory(project, reporter.pass_, reporter.warn_, reporter.skip_)
     _check_seat_caps(project, reporter.pass_, reporter.fail_)
     _run_container_checks(
         project,
@@ -1341,7 +1333,6 @@ def _run_runtime_phase(
         project,
         docker_exe,
         sandbox_image,
-        verbose,
         reporter,
     )
     progress("Project checks")
@@ -1658,7 +1649,7 @@ def _worktree_core_directory(booley_dir: Path, project_root: Path | None) -> Pat
 
 
 # ---------------------------------------------------------------------------
-# ADR 0028 Decision 12: container memory invariant + runtime detection health
+# ADR 0087 Sandbox memory + ADR 0028 runtime detection health
 # ---------------------------------------------------------------------------
 
 # Actionable fix shared by both runtime-marker failures: the marker is baked by
@@ -1668,42 +1659,6 @@ _RUNTIME_MARKER_FIX = (
     "rebuild the base AND derived sandbox images (booley init --force) — "
     "the image predates the ADR 0028 runtime marker"
 )
-
-
-def _developer_mem_bytes(booley_dir: Path) -> tuple[int, bool]:
-    """(agent memory term, measured?) for the invariant arithmetic.
-
-    Uses the peak RSS ``doctor --deep`` recorded into runtime state when
-    present, else the ADR 0028 1 GiB fallback.
-    """
-    from booley.harness import developer_probe
-
-    measured = developer_probe.load_measurement(booley_dir)
-    if measured is not None:
-        return (measured, True)
-    return (developer_probe.FALLBACK_BYTES, False)
-
-
-def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMemoryReservation:
-    """Load project evidence and apply the extracted HEAVY-memory policy."""
-    jobs = project.booley_toml.get("jobs", {})
-    raw = jobs.get("heavy_memory") if isinstance(jobs, dict) else None
-    from booley.harness import synth_probe
-
-    measurement = synth_probe.load_measurement(project.common_booley_dir)
-    calibration = (
-        resource_policy.SynthesisMemoryCalibration(
-            target=str(measurement["target"]),
-            peak_rss_bytes=int(measurement["peak_rss_bytes"]),
-        )
-        if measurement is not None
-        else None
-    )
-    return resource_policy.heavy_memory_reservation(
-        raw,
-        calibration,
-        target_matrix.doctor_targets(project.project_root, "synth"),
-    )
 
 
 def _licensed_tools_in_use(project: ProjectAudit) -> tuple[str, ...]:
@@ -1720,14 +1675,13 @@ def _licensed_tools_in_use(project: ProjectAudit) -> tuple[str, ...]:
 
 
 def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) -> None:
-    """ADR 0087: memory admission needs a Seat Cap for every licensed EDA tool in use.
+    """ADR 0087: every licensed EDA tool in use needs a Seat Cap.
 
     Only the user knows how many licence seats they own, so this never writes a
-    value: a missing Seat Cap FAILs with the entry to add. Silent unless the
-    development switch is set; a malformed ``[jobs.seats]`` is the schema
-    audit's finding, not a second one here.
+    value: a missing Seat Cap FAILs with the entry to add. A malformed
+    ``[jobs.seats]`` is the schema audit's finding, not a second one here.
     """
-    if project is None or not memory_admission_enabled():
+    if project is None:
         return
     try:
         caps = parse_seat_caps(project.booley_toml)
@@ -1738,88 +1692,44 @@ def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) ->
             _pass(f"Seat Cap: {tool} = {caps[tool]}")
         else:
             _fail(
-                f"{tool} has no Seat Cap: memory admission needs one for every "
-                "licensed EDA tool the Project uses",
+                f"{tool} has no Seat Cap: every licensed EDA tool the Project uses needs one",
                 f"add {seat_cap_fix(tool)} to booley.toml; only you know how many seats you own",
             )
 
 
-def _check_memory_invariant(
+def _check_sandbox_memory(
     project: ProjectAudit | None,
     _pass: Check,
     _warn: Check,
     _skip: Check,
 ) -> None:
-    """ADR 0028 Decision 12 (advisory): the one container fits its caps.
+    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
 
-    Agent calls and every HEAVY EDA job
-    share one cgroup — a limit sized below what the ``[jobs]`` caps admit is
-    an OOM waiting to take the whole session down. WARN, never FAIL: the
-    budget terms are estimates, and an over-committed container still works
-    until the jobs actually coincide.
+    Unset, the budget falls back to the installed memory, which an agent and the
+    Jobs then share, so Doctor WARNs. Reads configuration only, so it runs
+    inside and outside the Sandbox.
     """
-    _warn = _warning_sink(_warn, "sandbox.memory-overcommit")
-
+    _warn = _warning_sink(_warn, "sandbox.memory-unset")
     if project is None:
-        _skip("memory invariant skipped - no valid project config")
+        _skip("sandbox memory skipped - no valid project config")
         return
-
-    if runtime_context.inside_session_runtime():
-        limit = resource_policy.cgroup_memory_limit_bytes()
-        if limit is None:
-            _pass(
-                "memory invariant: container memory is unlimited "
-                "(no cgroup limit) — nothing to enforce"
-            )
-            return
-        source = "container memory"
-    else:
-        mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
-        if not mem_str:
-            _skip("memory invariant: no [sandbox] memory limit configured — nothing to check")
-            return
-        limit = resource_policy.parse_memory_limit(mem_str)
-        if limit is None:
-            _warn(
-                f"[sandbox] memory = {mem_str!r} is unparseable — "
-                "cannot check the memory invariant"
-            )
-            return
-        source = "[sandbox] memory"
-
-    caps = parse_caps(project.booley_toml)
-    reservation = _heavy_memory_reservation(project)
-    if reservation.error:
-        _warn(reservation.error)
-        return
-    orch, measured = _developer_mem_bytes(project.common_booley_dir)
-    requirement = resource_policy.memory_requirement(
-        max_heavy=caps.max_heavy,
-        heavy_job_bytes=reservation.bytes,
-        agent_count=1,
-        agent_bytes=orch,
-    )
-    fmt = resource_policy.format_memory
-    arithmetic = (
-        f"{caps.max_heavy}x{fmt(reservation.bytes)} + 1x{fmt(orch)} "
-        f"+ 2g = {fmt(requirement.required_bytes)}"
-    )
-    orch_note = (
-        "measured agent RSS per Sandbox session"
-        if measured
-        else "1g agent fallback per Sandbox session — doctor --deep measures it"
-    )
-    if limit >= requirement.required_bytes:
-        _pass(
-            f"memory invariant holds: {source} {fmt(limit)} ≥ {arithmetic} "
-            f"({reservation.evidence}; {orch_note})"
-        )
-    else:
+    mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
+    if not mem_str:
         _warn(
-            f"{source} {fmt(limit)} < {arithmetic} — raise the "
-            "devcontainer memory or lower [jobs] caps; set [jobs].heavy_memory "
-            f"to record the calibrated reservation ({reservation.evidence}; {orch_note})"
+            "[sandbox].memory is unset: the Memory Budget falls back to installed memory "
+            "unless [jobs].memory_budget is set",
+            'set [sandbox] memory = "<size>" (booley resources shows Job peaks)',
         )
+        return
+    limit = resource_policy.parse_memory_limit(mem_str)
+    if limit is None:
+        _warn(
+            f"[sandbox] memory = {mem_str!r} is unparseable: the Memory Budget "
+            "falls back to installed memory",
+            'set [sandbox] memory to a size such as "16g"',
+        )
+        return
+    _pass(f"[sandbox].memory = {resource_policy.format_memory(limit)}: the Memory Budget limit")
 
 
 def _check_runtime_location(
@@ -1981,12 +1891,11 @@ def _run_developer_probe(
     *,
     completeness: doctor_deep.DeepCheckTracker | None = None,
 ) -> _AgentCallRecord | None:
-    """ADR 0028 Decision 12: measure the invariant's developer term.
+    """ADR 0028 Decision 12: measure the provider CLI's peak RSS.
 
     ``--deep``-only and in-container-only: the number that matters is the
     agent CLI's footprint *inside* the Sandbox. Fail-soft for probe LIMITATIONS (no process accounting, no RSS
-    reading, hit usage cap) — those degrade to a SKIP and the invariant keeps
-    its 1 GiB fallback. But a failure of the agent CALL itself (auth, dead
+    reading, hit usage cap) — those degrade to a SKIP. But a failure of the agent CALL itself (auth, dead
     backend) is a real project defect — other agent calls would fail
     for the same reason — and is reported as a FAIL, not hidden in a SKIP
     (the 2026-07-23 expired-creds incident sailed through a green doctor
@@ -2030,25 +1939,13 @@ def _run_developer_probe(
                     "container recreate); see the harness log for the provider's error",
                 )
             return record
-        _skip(
-            f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
-        )
+        _skip(f"Specialist provider memory probe skipped - {exc}")
         return record
     record = _AgentCallRecord("agent probe", measurement.usage)
-    try:
-        path = developer_probe.record_measurement(
-            project.common_booley_dir, measurement.peak_rss_bytes
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft by contract; the paid call is still accounted
-        _skip(
-            f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
-        )
-        return record
     bound = "" if measurement.exact else " (upper bound)"
     _pass(
         "provider CLI peak RSS measured: "
-        f"{resource_policy.format_memory(measurement.peak_rss_bytes)}{bound} — "
-        f"recorded to {path}"
+        f"{resource_policy.format_memory(measurement.peak_rss_bytes)}{bound}"
     )
     _pass("Specialist provider live authorization check completed successfully")
     if completeness is not None:
@@ -2839,7 +2736,6 @@ def _run_mcp_checks(
     project: ProjectAudit | None,
     docker_exe: str | None,
     image: str,
-    verbose: bool,
     reporter: _Reporter,
 ) -> None:
     """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
@@ -2880,8 +2776,24 @@ def _run_mcp_checks(
     if not _docker_image_exists_by_name(image):
         reporter.skip_("MCP server probe skipped - sandbox image unavailable")
         return
-    _run_mcp_probe(
-        project, docker_exe, image, verbose, reporter.pass_, reporter.warn_, reporter.fail_
+    reporter.diagnostics(
+        server_inspection.inspect_mcp_server(
+            _mcp_server_inspection_request(project, docker_exe, image)
+        )
+    )
+
+
+def _mcp_server_inspection_request(
+    project: ProjectAudit, docker_exe: str, image: str
+) -> server_inspection.McpServerInspectionRequest:
+    """Describe the MCP probe; Doctor alone knows whether it covers the FPGA axis."""
+    return server_inspection.McpServerInspectionRequest(
+        project_root=project.project_root,
+        booley_dir=project.booley_dir,
+        docker_exe=docker_exe,
+        image=image,
+        booley_toml=project.booley_toml,
+        fpga_covered=_fpga_doctor_applicable(project),
     )
 
 
@@ -3552,157 +3464,6 @@ def _check_subscription_creds_health(
         )
 
 
-def _run_mcp_probe(
-    project: ProjectAudit,
-    docker_exe: str,
-    image: str,
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    cmd = _mcp_probe_command(project, docker_exe, image)
-    env = os.environ.copy()
-    env["BOOLEY_DIR"] = str(project.booley_dir)
-    env["BOOLEY_MCP_MODE"] = "interactive"
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=project.project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=_MCP_PROBE_TIMEOUT_S,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        _fail(f"MCP server probe failed to start: {exc}", "rebuild sandbox image")
-        return
-    _check_mcp_probe_result(project, result, verbose, _pass, _warn, _fail)
-
-
-def _sandbox_booley_dir(project_root: Path) -> str:
-    """Return the in-Sandbox ``BOOLEY_DIR`` for the repo mounted at ``/work``.
-
-    The Project's own Booley Directory (``.booley`` by default, or the
-    checkout's relocated ``[project].dir``) under the ``/work`` bind mount.
-    """
-    return f"/work/{own_booley_dir_repo_path(project_root).as_posix()}"
-
-
-def _mcp_probe_command(project: ProjectAudit, docker_exe: str, image: str) -> list[str]:
-    return [
-        docker_exe,
-        "run",
-        "--init",
-        "--rm",
-        "-v",
-        f"{docker_mount_path(project.project_root)}:/work",
-        "-w",
-        "/work",
-        "-e",
-        f"BOOLEY_DIR={_sandbox_booley_dir(project.project_root)}",
-        "-e",
-        "BOOLEY_MCP_MODE=interactive",
-        image,
-        "python",
-        "-m",
-        "booley.mcp.probe",
-    ]
-
-
-def _check_mcp_probe_result(
-    project: ProjectAudit,
-    result: subprocess.CompletedProcess[str],
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    if result.returncode != 0:
-        _fail(f"MCP server probe failed with exit {result.returncode}", "rebuild sandbox image")
-        _print_output_excerpt(result)
-        return
-    payload = _parse_mcp_probe_stdout(result.stdout)
-    if payload is None:
-        _fail("MCP server probe did not return valid JSON", "rebuild sandbox image")
-        _print_output_excerpt(result)
-        return
-    _check_mcp_tool_payload(project, payload, verbose, _pass, _warn, _fail)
-
-
-def _parse_mcp_probe_stdout(stdout: str) -> dict[str, Any] | None:
-    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
-    if not lines:
-        return None
-    try:
-        payload = json.loads(lines[-1])
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def _check_mcp_tool_payload(
-    project: ProjectAudit,
-    payload: dict[str, Any],
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    _warn = _warning_sink(_warn, "interactive.mcp-tool-advisory-missing")
-    mcp_tools = payload.get("tools")
-    errors = payload.get("errors", [])
-    if not is_str_list(mcp_tools) or not is_str_list(errors):
-        _fail("MCP server probe returned malformed payload", "rebuild sandbox image")
-        return
-    if errors:
-        _fail(f"MCP tool discovery reported {len(errors)} error(s)", errors[0])
-        return
-    if payload.get("logs_dir_ok") is not True:
-        _fail("MCP interactive log setup failed", "check .booley mount and permissions")
-        return
-    missing = _required_mcp_tools(project) - set(mcp_tools)
-    if missing:
-        _fail(
-            f"MCP missing required endpoint(s): {', '.join(sorted(missing))}",
-            "fix [flows.<name>].enabled or reinstall Booley",
-        )
-        return
-    _pass(f"MCP server exposes {len(mcp_tools)} MCP tool(s)")
-    advisory_missing = _advisory_mcp_tools(project) - set(mcp_tools)
-    if advisory_missing:
-        _warn(
-            f"MCP missing documented interactive endpoint(s): {', '.join(sorted(advisory_missing))}",
-        )
-    if verbose:
-        info(f"    {', '.join(mcp_tools)}")
-
-
-def _required_mcp_tools(project: ProjectAudit) -> set[str]:
-    required = set(_BASE_REQUIRED_MCP_TOOLS)
-    for flow_name in _REQUIRED_FLOW_TABLES:
-        if _flow_enabled(project, flow_name):
-            required.add(flow_name)
-    if _fpga_doctor_applicable(project) and _flow_enabled(project, "fpga"):
-        required.add("fpga")
-    return required
-
-
-def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
-    """Advisory interactive MCP tools that have not been explicitly disabled."""
-    specialists_cfg = project.booley_toml.get("specialists", {})
-    if not isinstance(specialists_cfg, dict):
-        specialists_cfg = {}
-    tools = {
-        name
-        for name in _ADVISORY_SPECIALIST_TOOLS
-        if config_section(specialists_cfg, name).get("enabled") is not False
-    }
-    tools.update(name for name in _ADVISORY_FLOW_TOOLS if _flow_enabled(project, name))
-    return tools
-
-
 def _run_project_checks(
     project: ProjectAudit | None,
     reporter: _Reporter,
@@ -4257,14 +4018,12 @@ def _run_flow_audit(
         )
         if not targets:
             continue
-        _check_flow_runtime_reality(
+        _run_flow_runtime_inspection(
             project,
             flow_name,
             targets,
             flow_runtime=flow_runtime,
-            _pass=_pass,
-            _skip=_skip,
-            _fail=_fail,
+            _diagnostics=_diagnostics,
         )
         for target in targets:
             rejected_core = core_tree_inspection.rejected_target_core(
@@ -4288,170 +4047,27 @@ def _run_flow_audit(
             _diagnostics(outcome.report)
 
 
-def _check_flow_runtime_reality(
+def _run_flow_runtime_inspection(
     project: ProjectAudit,
     flow_name: str,
     targets: list[str],
     *,
     flow_runtime: _DoctorFlowRuntime,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
+    _diagnostics: Diagnostics,
 ) -> None:
-    """Probe every selected Target's EDA binary in the Sandbox."""
-    for binary in _runtime_probe_binaries(project, targets, flow_name=flow_name):
-        _check_session_binary(
-            flow_name,
-            binary,
-            flow_runtime=flow_runtime,
-            _pass=_pass,
-            _skip=_skip,
-            _fail=_fail,
-        )
-
-
-_EDA_TOOL_BINARIES = {
-    "verilator": "verilator",
-    "icarus": "iverilog",
-    "yosys": "yosys",
-    "vivado": "vivado",
-    "verible": "verible-verilog-lint",
-}
-
-
-def _runtime_probe_binaries(
-    project: ProjectAudit,
-    targets: list[str],
-    *,
-    flow_name: str | None = None,
-) -> list[str]:
-    """Return the distinct runtime executables required by selected Targets."""
-    if flow_name == "fpga":
-        return ["vivado"]
-    binaries: list[str] = []
-    try:
-        catalog = TargetCatalog.build(project.project_root)
-    except FuseSocError:
-        return binaries
-    for target in targets:
-        try:
-            handle = catalog.select(target)
-        except FuseSocError:
-            continue
-        eda_tool = handle.eda_tool or ""
-        family = LINT_EDA_TOOL_FAMILIES.get(eda_tool, eda_tool)
-        binary = _EDA_TOOL_BINARIES.get(family.lower())
-        if binary and binary not in binaries:
-            binaries.append(binary)
-    return binaries
-
-
-def _check_session_binary(
-    flow_name: str,
-    binary: str,
-    *,
-    flow_runtime: _DoctorFlowRuntime,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """PASS/FAIL on *binary* being on the Sandbox PATH."""
-    if flow_name == "fpga" and binary == "vivado":
-        _check_vivado_startup(flow_runtime, _pass=_pass, _skip=_skip, _fail=_fail)
-        return
-    label = f"{flow_name}: '{binary}' on the Sandbox PATH"
-    if flow_runtime.inside:
-        if shutil.which(binary):
-            _pass(label)
-        else:
-            _fail(
-                f"{flow_name}: '{binary}' is not on this container's PATH",
-                f"bake {binary} into the Sandbox Image and rebuild (booley init --force)",
-            )
-        return
-    if not flow_runtime.available:
-        _skip(f"{label} - container runtime unavailable")
-        return
-    try:
-        command = flow_runtime.command(["sh", "-c", f"command -v {binary}"])
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (session_runtime.SessionError, subprocess.SubprocessError, FileNotFoundError) as exc:
-        _fail(f"{label} (runtime/probe error: {exc})", "run 'booley init --seed' and retry")
-        return
-    if result.returncode == 0:
-        _pass(label)
-    else:
-        _fail(
-            f"{flow_name}: '{binary}' is not on the issued Sandbox PATH",
-            f"bake {binary} into the Sandbox Image and rebuild (booley init --force)",
-        )
-
-
-def _vivado_startup_command(marker: str) -> list[str]:
-    """Keep the Tcl probe, side files and tool process group Sandbox-local."""
-    script = (
-        "command -v timeout >/dev/null 2>&1 || { echo 'Vivado startup probe requires GNU timeout'; exit 127; }; "
-        "probe_dir=$(mktemp -d) || exit 1; "
-        "trap 'rm -rf -- \"$probe_dir\"' EXIT HUP INT TERM; "
-        'cd "$probe_dir" || exit 1; '
-        f"printf '%s\\n' 'puts {marker}' 'exit 0' > startup.tcl; "
-        "timeout --kill-after=2s 27s vivado -mode batch -nolog -nojournal -source startup.tcl"
+    """Render the Flow's runtime probe: Vivado startup for FPGA, else per-binary checks."""
+    request = runtime_reality.FlowRuntimeInspectionRequest(
+        flow_name=flow_name,
+        targets=tuple(targets),
+        project_root=project.project_root,
+        runtime_available=flow_runtime.available,
+        inside_sandbox=flow_runtime.inside,
+        sandbox_command=flow_runtime.command,
     )
-    return ["sh", "-c", script]
-
-
-def _check_vivado_startup(
-    flow_runtime: _DoctorFlowRuntime, *, _pass: Check, _skip: Check, _fail: Fail
-) -> None:
-    """Require this attempt's Tcl marker from a bounded actual batch startup."""
-    label = "fpga: Vivado batch startup"
-    if not flow_runtime.inside and not flow_runtime.available:
-        _skip(f"{label} - container runtime unavailable")
-        return
-    marker = "BOOLEY_VIVADO_STARTUP_" + secrets.token_hex(16)
-    try:
-        result = subprocess.run(
-            flow_runtime.command(_vivado_startup_command(marker)),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        _fail(
-            f"{label}: runtime did not complete within 30s",
-            "check Sandbox transport and Vivado startup",
-        )
-        return
-    except (session_runtime.SessionError, subprocess.SubprocessError, OSError) as exc:
-        _fail(
-            f"{label}: runtime/probe error: {str(exc)[:500]}", "run 'booley init --seed' and retry"
-        )
-        return
-    if result.returncode == 0 and marker in result.stdout.splitlines():
-        _pass(label)
-        return
-    if result.returncode in (124, 137):
-        cause = "Vivado did not start within 27s"
+    if flow_name == "fpga":
+        _diagnostics(vivado_startup.inspect_vivado_startup(request))
     else:
-        lines = (result.stdout + "\n" + result.stderr).splitlines()
-        cause = next(
-            (
-                line.strip()[:500]
-                for line in lines
-                if re.search(
-                    r"error|fatal|failed|cannot|missing|requires|not found", line, re.IGNORECASE
-                )
-            ),
-            f"current Tcl startup marker missing (exit {result.returncode})",
-        )
-    _fail(f"{label}: {cause}", "verify Vivado runtime dependencies in the Sandbox Image")
+        _diagnostics(runtime_reality.inspect_flow_runtime_reality(request))
 
 
 def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path, str]]:
@@ -5717,10 +5333,6 @@ def _run_deep_checks(
                 timeout_s=timeout_s,
             )
             _diagnostics(outcome.report)
-            if flow_name == "synth" and outcome.process is not None:
-                _record_synth_memory_calibration(
-                    project, target, _flow_report_dir(project), _pass, _warn
-                )
             tracker.completed(identifier, outcome.completed)
     _run_fpga_impl_deep_notice(project, _skip)
     _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail, completeness=tracker)
@@ -6240,7 +5852,7 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     """
     if project.booley_dir.as_posix() not in {
         dc.BOOLEY_DIR_TARGET,
-        _sandbox_booley_dir(project.project_root),
+        sandbox_booley_dir(project.project_root),
     }:
         return str(report_dir)
     own_dir = own_booley_dir_repo_path(project.project_root)
@@ -6531,50 +6143,6 @@ def _run_flow_check(
         result,
         completed=not _is_simulate_tb_top_skip(project, flow_name, dry_run, result),
     )
-
-
-def _record_synth_memory_calibration(
-    project: ProjectAudit,
-    target: str,
-    report_dir: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Record boundary-process peak RSS from a completed Doctor synthesis."""
-    from booley.flows.implementation_publication import target_report_path
-
-    path = target_report_path("synth", target, report_dir)
-    try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return  # the Flow failure above owns the missing-report diagnostic
-    if not isinstance(report, dict) or not report.get("ppa_complete"):
-        return
-    peak = report.get("peak_rss_mb")
-    if isinstance(peak, bool) or not isinstance(peak, (int, float)) or peak <= 0:
-        _warning_sink(_warn, "synth.memory-calibration-unavailable", subject=target)(
-            f"synthesis Target {target} completed, but its process-tree "
-            "peak RSS could not be measured; [jobs].heavy_memory remains uncalibrated"
-        )
-        return
-    from booley.harness import synth_probe
-
-    synth_probe.record_measurement(
-        project.common_booley_dir,
-        target,
-        float(peak),
-        selected_targets=_doctor_targets(project, "synth"),
-    )
-    reservation = _heavy_memory_reservation(project)
-    _pass(
-        f"synth memory calibrated: {target} peaked at {float(peak) / 1024:.1f}g; "
-        f"HEAVY reservation {resource_policy.format_memory(reservation.bytes)} "
-        f"({reservation.evidence})"
-    )
-    # The runtime-phase invariant ran before the deep synthesis created this
-    # measurement. Re-evaluate now so the same Doctor invocation cannot finish
-    # green on the stale 4 GiB fallback.
-    _check_memory_invariant(project, _pass, _warn, lambda _message: None)
 
 
 def _is_simulate_tb_top_skip(

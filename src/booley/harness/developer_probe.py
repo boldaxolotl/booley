@@ -1,33 +1,23 @@
 """Doctor's developer memory probe (ADR 0028 Decision 12).
 
-The container memory invariant needs a real number for "how much memory does
-an agent call cost?" — hardcoding it would drift with every agent
-CLI/SDK release. ``booley doctor --deep`` therefore spawns the cheapest real
-agent call (the internal model, one turn, no Booley MCP server and no tools) and
-records the child process's peak RSS into project runtime state at
-``<booley_dir>/runtime/developer_probe.json``. The invariant check reads
-that file on every subsequent doctor run and multiplies it by the
-model-call admission cap; until a measurement exists it uses a conservative
-1 GiB fallback.
+``booley doctor --deep`` spawns the cheapest real agent call (the internal
+model, one turn, no Booley MCP server and no tools), reports the child
+process's peak RSS, and so proves the provider is reachable and authorized.
 
 The probe is fail-soft by contract: no agent backend, no auth, or a timeout
-must degrade doctor to the fallback (a SKIP), never crash it — every failure
-mode surfaces as :class:`ProbeError` for the caller to report.
+must degrade doctor to a SKIP, never crash it — every failure mode surfaces as
+:class:`ProbeError` for the caller to report.
 """
 
 from __future__ import annotations
 
-import json
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from booley.core.boundary import as_positive_int
 from booley.runtime.agent_execution import configure_agent_call
 from booley.runtime.owned_scratch import owned_tempdir
-from booley.runtime.timefmt import utc_now_rfc3339
 
 if TYPE_CHECKING:
     from booley.config.agent import AgentSettings
@@ -41,12 +31,6 @@ except ImportError:  # pragma: no cover — Windows host
 # Opaque token passed to getrusage(); resolved here so an injected getrusage
 # works even where the resource module is absent.
 _RUSAGE_CHILDREN = resource.RUSAGE_CHILDREN if resource is not None else -1
-
-PROBE_FILENAME = "developer_probe.json"
-
-# Agent memory estimate used until `doctor --deep` has measured (ADR 0028
-# Decision 12: "1g fallback until measured").
-FALLBACK_BYTES = 1024**3
 
 # Public: Doctor quotes the budget in its start-of-check announcement.
 PROBE_TIMEOUT_S = 300
@@ -110,45 +94,6 @@ class ProbeError(RuntimeError):
         self.usage = usage
 
 
-def probe_path(booley_dir: Path) -> Path:
-    """Location of the recorded measurement inside project runtime state.
-
-    Lives beside the slot store (``runtime/jobs/slots``) — both are
-    container-lifetime bookkeeping for the ADR 0028 admission story.
-    """
-    return booley_dir / "runtime" / PROBE_FILENAME
-
-
-def load_measurement(booley_dir: Path) -> int | None:
-    """Recorded developer peak RSS in bytes, or None when absent/invalid."""
-    try:
-        data = json.loads(probe_path(booley_dir).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    value = data.get("developer_peak_rss_bytes")
-    # as_positive_int already rejects the bool trap and non-positive ints;
-    # 0 is not a value it would ever return for genuinely-positive input, so
-    # it doubles as the "invalid" sentinel here.
-    return as_positive_int(value, 0) or None
-
-
-def record_measurement(booley_dir: Path, peak_rss_bytes: int) -> Path:
-    """Atomically record a measurement; returns the file written."""
-    path = probe_path(booley_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "developer_peak_rss_bytes": int(peak_rss_bytes),
-        "measured_at": utc_now_rfc3339(),
-    }
-    # tmp + rename so a concurrent reader never sees a partial file.
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    tmp.replace(path)
-    return path
-
-
 def measure_developer_rss(
     project_root: Path,
     *,
@@ -167,8 +112,7 @@ def measure_developer_rss(
     accounting.
 
     Raises :class:`ProbeError` on any failure (backend unresolvable, no auth,
-    agent error, timeout, or no child RSS observed) — the caller degrades to
-    :data:`FALLBACK_BYTES`.
+    agent error, timeout, or no child RSS observed) — the caller reports a SKIP.
     """
     # A scratch cwd keeps the text-only Codex home (with its auth link) out of the Project.
     try:
