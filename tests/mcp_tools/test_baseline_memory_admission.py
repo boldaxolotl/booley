@@ -68,7 +68,7 @@ def memory_scene(scene, monkeypatch, inert_oom_proc):
             "peak_memory_mb": 400.0,
             "wall_s": 1.0,
         }
-        for phase, test_run in (("sim_build", ""), ("sim_run", "smoke"))
+        for phase, test_run in (("sim_prepare", ""), ("sim_build", ""), ("sim_run", "smoke"))
     ]
     history = scene.control / "runtime" / "resources" / "history.json"
     history.parent.mkdir(parents=True)
@@ -101,7 +101,7 @@ def test_baseline_holds_a_background_memory_reservation_under_the_switch(memory_
     assert holders[0].memory == job_slots.MemoryClaim(
         budget_mb=_BUDGET_MB,
         reservation_mb=_RESERVATION_MB,
-        wall_s=2.5,  # sim_build + sim_run
+        wall_s=3.75,  # sim_prepare + sim_build + sim_run
     )
     assert waiters == []
     # It is not a heavy Job Slot.
@@ -359,7 +359,7 @@ def test_oom_killed_baseline_is_requeued_once_to_run_alone(memory_scene):
     assert "armed" not in second.child_request
     ((requeued,),) = [second.holders]
     assert requeued.memory == job_slots.MemoryClaim(
-        budget_mb=_BUDGET_MB, run_alone=True, wall_s=2.5
+        budget_mb=_BUDGET_MB, run_alone=True, wall_s=3.75
     )
     assert requeued.queue_reason == OOM_REQUEUE_REASON
     assert requeued.role == job_slots.ROLE_BACKGROUND

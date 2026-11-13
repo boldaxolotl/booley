@@ -520,7 +520,7 @@ class SimulateFlow(
         return SimulationCampaignInvocation(self, prepared)
 
     def memory_job_requests(self, handles: tuple[TargetHandle, ...]) -> tuple[JobRequest, ...]:
-        """An elaboration-only Job runs no simulator process: only its build is sized."""
+        """An elaboration-only Job runs no simulator process: its preparation and build are sized."""
         flags = self._resource_flags()
         return tuple(
             JobRequest("sim", handle.selector, test_runs=(), flags=flags) for handle in handles
