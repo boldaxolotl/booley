@@ -72,6 +72,7 @@ from booley.flows.plan import (
     normalize_plan_path,
     stable_unit_id,
 )
+from booley.flows.reservation_phases import report_phase_end
 from booley.flows.result_table import (
     MISSING,
     TARGET_WIDTH,
@@ -1482,6 +1483,22 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     # -- Single-target run ----------------------------------------------------
 
     def _run_single_config(
+        self,
+        target: str,
+    ) -> tuple[SynthMetrics, str]:
+        """Run synthesis for one target and report its ``synth`` phase ended.
+
+        A phase that is skipped (a setup failure) ends at once. A baseline run
+        reports nothing: its Target may be the candidate's, whose phase it must
+        not count out of the Job's Memory Reservation.
+        """
+        try:
+            return self._synthesize_target(target)
+        finally:
+            if getattr(self, "_execution_role", "candidate") != "baseline":
+                report_phase_end(target, "synth")
+
+    def _synthesize_target(
         self,
         target: str,
     ) -> tuple[SynthMetrics, str]:

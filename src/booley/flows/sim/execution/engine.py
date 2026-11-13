@@ -73,7 +73,12 @@ from booley.flows.sim.config import (
     resolve_trace_args,
     resolve_trace_files,
 )
-from booley.flows.sim.live_progress import attempt_scope, observe_stage, prepare_attempt_log
+from booley.flows.sim.live_progress import (
+    attempt_scope,
+    end_phase,
+    observe_stage,
+    prepare_attempt_log,
+)
 from booley.flows.sim.runtime_inputs import (
     declared_runtime_inputs,
     preview_runtime_inputs,
@@ -923,6 +928,7 @@ class SimulationExecution:
         try:
             return execute_adapter_attempt(self._invoke, request)
         finally:
+            end_phase(handle.selector, "sim_run", tests=attempt.history_tests)
             observe_stage(
                 handle.selector,
                 "postprocessing",
