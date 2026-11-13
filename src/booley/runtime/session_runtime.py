@@ -536,7 +536,8 @@ def _run(
     A captured call with a *timeout* is bounded: on timeout the whole process
     tree is killed and ``subprocess.TimeoutExpired`` is raised within a bounded
     margin even if a descendant still holds the output pipes. A call without a
-    *timeout* (or without capture) waits for the command.
+    *timeout* waits for the command; an uncaptured call with a *timeout* uses
+    ``subprocess.run``'s timeout, which kills only the direct child.
     """
     logger.debug("running: %s", " ".join(argv))
     env = argv.environment if isinstance(argv, DockerRunArgv) else None

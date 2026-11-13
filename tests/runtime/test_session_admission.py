@@ -975,10 +975,19 @@ def test_default_runner_keeps_its_result_contract() -> None:
         session_admission._run(["booley-no-such-program-3858"])
 
 
+def test_default_runner_decodes_utf8_output_whatever_the_locale() -> None:
+    """Admission reads child output as UTF-8, so non-ASCII Sandbox labels survive on Windows."""
+    text = "Zo\u00eb \u0141"
+    script = f"import sys; sys.stdout.buffer.write({text.encode()!r})"
+    result = session_admission._run([sys.executable, "-c", script])
+    assert result.stdout == text
+
+
 def _hung_docker(timeouts: list[float | None], hung: list[str]):
     """The session runtime's own runner with ``docker ps`` replaced by a hanging child.
 
-    Records each call's ``timeout`` and, like production, passes it on unchanged.
+    Records each call's ``timeout`` and runs the hung child with a 1 s timeout when
+    the listing gave one.
     """
 
     def run(argv: list[str], *, timeout: float | None = None, **_kwargs):
