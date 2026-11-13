@@ -261,13 +261,20 @@ class TestSameHostPath:
         assert platform_paths.same_host_path(str(tmp_path) + os.sep, tmp_path)
 
 
+_EMIT_INVALID_UTF8 = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff')"]
+
+
+def test_run_captured_bounded_replaces_undecodable_bytes_by_default():
+    assert "�" in platform_paths.run_captured_bounded(_EMIT_INVALID_UTF8, timeout=30).stdout
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Popen.communicate decodes in reader threads on Windows, which swallow the error",
+)
 def test_run_captured_bounded_decodes_strictly_on_request():
     """``errors`` selects the decoding mode; strict never turns a timeout into a decode error."""
-    emit = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff')"]
-    assert "�" in platform_paths.run_captured_bounded(emit, timeout=30).stdout
-    if sys.platform == "win32":
-        # Popen.communicate decodes in reader threads there, which swallow the error.
-        return
+    emit = _EMIT_INVALID_UTF8
     with pytest.raises(UnicodeDecodeError):
         platform_paths.run_captured_bounded(emit, timeout=30, errors="strict")
     truncated = [

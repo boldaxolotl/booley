@@ -232,9 +232,10 @@ def run_captured_bounded(
             stdout, stderr = proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
         except (subprocess.TimeoutExpired, UnicodeDecodeError):
             # A descendant escaped the group and still holds a pipe, or the
-            # partial output no longer decodes: give up on its output. On POSIX communicate() reads on this thread, so the
-            # pipes can be closed here; on Windows daemon reader threads own
-            # them (closing a buffered pipe a reader is blocked on would block).
+            # partial output no longer decodes: give up on its output. On POSIX
+            # communicate() reads on this thread, so the pipes can be closed
+            # here; on Windows daemon reader threads own them (closing a
+            # buffered pipe a reader is blocked on would block).
             stdout = stderr = None
             if not IS_WINDOWS:
                 for pipe in (proc.stdout, proc.stderr):

@@ -86,8 +86,9 @@ def list_worktrees(repository: Path) -> tuple[WorktreeEntry, ...]:
     """Run ``git -C <repository> worktree list --porcelain`` and parse it.
 
     The call is bounded by ``platform_paths.run_captured_bounded``. Git failures
-    propagate: :class:`subprocess.CalledProcessError` for a non-zero exit, :class:`subprocess.TimeoutExpired` after
-    ``_LIST_TIMEOUT_S`` seconds, and :class:`OSError` when Git cannot be started.
+    propagate: :class:`subprocess.CalledProcessError` for a non-zero exit,
+    :class:`subprocess.TimeoutExpired` after ``_LIST_TIMEOUT_S`` seconds, and
+    :class:`OSError` when Git cannot be started.
     """
     result = platform_paths.run_captured_bounded(
         ["git", "-C", str(repository), "worktree", "list", "--porcelain"],

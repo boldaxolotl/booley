@@ -13,7 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 # Parent script: starts a heartbeat grandchild that inherits stdout/stderr, then
-# either sleeps (parent still alive at the timeout; ``live-until-stop`` ends at the stop file) or exits at once (the Docker
+# either sleeps (parent still alive at the timeout; ``live-until-stop`` ends at
+# the stop file) or exits at once (the Docker
 # CLI is gone but a descendant still holds the output pipe).  Mode ``escape``
 # also puts the grandchild in its own session (POSIX), out of reach of the
 # process-group kill, so only abandoning the pipes can bound the call.  The grandchild

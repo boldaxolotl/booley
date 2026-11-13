@@ -63,8 +63,22 @@ def _calls_with_scope(node: ast.AST, scope: ast.AST) -> Iterator[tuple[ast.Call,
         yield from _calls_with_scope(child, child_scope)
 
 
+def _is_text_mode(call: ast.Call) -> bool:
+    """Whether the call decodes output: ``text``/``universal_newlines`` or an explicit codec."""
+    keywords = {keyword.arg for keyword in call.keywords}
+    return (
+        _keyword_is_true(call, "text")
+        or _keyword_is_true(call, "universal_newlines")
+        or bool(keywords & {"encoding", "errors"})
+    )
+
+
 def _unbounded_git_captures(source: str) -> list[int]:
-    """Line numbers of timeout-bound, text-captured ``subprocess.run`` Git calls."""
+    """Line numbers of timeout-bound, text-captured ``subprocess.run`` Git calls.
+
+    Scope: ``subprocess.run`` with ``capture_output=True`` (``check_output`` and
+    ``Popen`` pipes are not matched; none exists in the runtime today).
+    """
     tree = ast.parse(source)
     lines: list[int] = []
     for call, scope in _calls_with_scope(tree, tree):
@@ -74,7 +88,7 @@ def _unbounded_git_captures(source: str) -> list[int]:
         if (
             "timeout" in keywords
             and _keyword_is_true(call, "capture_output")
-            and _keyword_is_true(call, "text")
+            and _is_text_mode(call)
             and not keywords & _NON_CAPTURE_KEYWORDS
             and call.args
             and _is_git_argv(call.args[0], scope)
@@ -92,11 +106,16 @@ def test_host_runtime_git_captures_use_the_bounded_helper() -> None:
             "    cmd = ['git', 'status']\n"
             "    return subprocess.run(cmd, capture_output=True, text=True, timeout=5)\n"
         ),
+        "encoding": (
+            'subprocess.run(["git", "x"], capture_output=True, encoding="utf-8", timeout=5)'
+        ),
     }
     for shape, source in flagged.items():
         assert _unbounded_git_captures(source), f"detector missed the {shape} argv shape"
     ignored = {
-        "stdin": 'subprocess.run(["git", "x"], capture_output=True, text=True, timeout=5, input="")',
+        "stdin": (
+            'subprocess.run(["git", "x"], capture_output=True, text=True, timeout=5, input="")'
+        ),
         "no timeout": 'subprocess.run(["git", "x"], capture_output=True, text=True)',
         "bytes": 'subprocess.run(["git", "x"], capture_output=True, timeout=5)',
         "not git": 'subprocess.run(["docker", "x"], capture_output=True, text=True, timeout=5)',
