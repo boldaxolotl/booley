@@ -1,3 +1,6 @@
+# pyright: reportIncompatibleMethodOverride=true, reportIncompatibleVariableOverride=true
+# The directive makes a mismatch between SimulateFlow and the host declarations in
+# elab_only.py, standalone.py and test_selection.py a type error; keep it.
 """SimulateFlow — BooleyFlow for running RTL simulation.
 
 Runs RTL simulation for one or more configs via the Edalize sim flow + a
@@ -273,7 +276,7 @@ class SimulateFlow(
     CampaignResumeMixin,
     SimulationTestSelectionMixin,
     StandaloneMixin,
-    BuiltinFlow,
+    BuiltinFlow[SimRequest],
 ):
     """Run RTL simulation for one or more Targets."""
 

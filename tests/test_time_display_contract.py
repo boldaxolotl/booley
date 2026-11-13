@@ -70,7 +70,7 @@ def test_human_sinks_use_adaptive_durations():
         "top", FpgaMetrics(elapsed_s=61), None, human=True
     )
     standalone = object.__new__(StandaloneMixin)
-    standalone.args = SimpleNamespace(mode=SimpleNamespace(value="elab-only"))
+    standalone._mode = SimpleNamespace(value="elab-only")
     standalone.set_criterion = lambda *_a, **_k: None
     assert standalone._standalone_verdict(_one_probe_recipe(), [], [], None, 61).display.endswith(
         "1m 01s"
@@ -107,7 +107,7 @@ def _protected_outputs(root, monkeypatch):
             outputs.append(_lint_result_parts(["top"], [], elapsed))
             outputs.append(LintFlow._build_summary([]))
     standalone = object.__new__(StandaloneMixin)
-    standalone.args = SimpleNamespace(mode=SimpleNamespace(value="elab-only"))
+    standalone._mode = SimpleNamespace(value="elab-only")
     standalone.set_criterion = lambda *_a, **_k: None
     outcome = standalone._standalone_verdict(_one_probe_recipe(), [], [], None, 3661)
     outputs.append(outcome.lines)
