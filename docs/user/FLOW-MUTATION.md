@@ -75,12 +75,15 @@ difference. If nothing else differs, the Mutant builds the same simulator as
 the original, so no test could tell them apart: Booley does not run its tests,
 does not score it, and takes the next candidate in the selection order
 instead. The run still scores `--count` Mutants unless the candidates run out;
-then it scores the ones it has and the report says how many exist.
+then it scores the ones it has and the report says how many that is. If every
+candidate builds the baseline's simulator, no Mutant is left to score and the
+run ends with `ERROR`.
 
 The check misses an equivalent Mutant whenever the generated C++ differs in any
 other way; it never drops a Mutant whose C++ differs. A Mutant that does not
-build is `invalid`, as before, and is not replaced. The report does not list
-the dropped Mutants; the Record's `equivalent_dropped` field holds their IDs.
+build is `invalid` and is not replaced. The report does not list the dropped
+Mutants; the run's machine-readable result holds their IDs in its
+`equivalent_dropped` field.
 On a Target not simulated with Verilator, such as Icarus, nothing is compared
 and every selected Mutant runs.
 
@@ -110,10 +113,11 @@ yields one candidate Mutant per change.
 
 `/`, `%`, and `**` are never swapped, so Mutants do not divide by zero. A `+`
 is not swapped for `-` (or the reverse) where both give the same result at the
-expression's width: a one-bit sum, or a constant `c` where `2 * c` is a multiple
-of `2` to the power of the width (`x + 4'd8` in four bits). Where Booley cannot
-tell the width, or where the module declares a `parameter` or has an interface
-port (another file may build it at another width), the swap stays.
+expression's width: a one-bit sum, or a constant that wraps to zero when added
+twice at that width (`x + 4'd8` in four bits). Where Booley cannot
+tell the width, or where the module declares a parameter or has an interface
+port or a port of a named type (another file may build it at another width),
+the swap stays.
 
 Mutations also reach the arguments of `$signed` and `$unsigned` and the
 expressions in the port connections of module and interface instances.
@@ -157,8 +161,9 @@ Only design code is mutated. Booley skips:
    small `--count` therefore covers different kinds of bugs instead of many of
    one kind.
 
-If fewer candidates exist than `--count`, all of them run and the report
-says so. The knobs are `--scope` (where to look), `--count` (how many), and
+If fewer candidates exist than `--count`, the run scores all that remain
+(on a Verilator Target, those not dropped as equivalent) and the report says
+so. The knobs are `--scope` (where to look), `--count` (how many), and
 `--seed` (which sample); there is no filter by operator. The same RTL, scope,
 count, and seed choose the same Mutants. On a Verilator Target the Mutants that
 run also depend on the Verilator version, because the build decides which

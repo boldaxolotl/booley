@@ -106,6 +106,15 @@ def test_unrecognized_layout_skips_the_check(tmp_path: Path) -> None:
     assert _generated_cpp(root, root, work_dir) is None
 
 
+def test_a_layout_without_generated_cpp_skips_the_check(tmp_path: Path) -> None:
+    work_dir = _work_dir(tmp_path)
+    root = work_dir / "builds" / "baseline"
+    root.mkdir(parents=True)
+    (root / "Vtb__ver.d").write_text("Vtb.cpp: dut.sv\n")  # Verilator's marker, no C++
+
+    assert _generated_cpp(root, root, work_dir) is None
+
+
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["verilator", "--version"], returncode, stdout, "")
 

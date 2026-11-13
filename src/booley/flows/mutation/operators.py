@@ -163,7 +163,8 @@ _SHIFT_FLIPS = {"ArithmeticShiftRightExpression": ">>", "LogicalShiftRightExpres
 _SHIFT_OPERATORS = _names("ArithmeticShiftRight LogicalShiftRight")
 _ADD_SUBTRACT_OPERATORS = _names("Add Subtract")
 # Syntax that lets another file elaborate a module differently from this file alone: a
-# `parameter` (overridable by an instance or `defparam`) or an interface port.
+# parameter that is not `localparam` (overridable by an instance or `defparam`), or an
+# interface or named-type port.
 _OVERRIDE_SYNTAX = _names("InterfacePortHeader")
 _PARAMETER_SYNTAX = _names("ParameterDeclaration TypeParameterDeclaration")
 # Text that ends in an escaped identifier needs a space before the next token.
@@ -372,6 +373,15 @@ def _swap_is_equal(pyslang: Any, expression: Any) -> bool:
     return (2 * int(value)) % (1 << width) == 0
 
 
+def _signed_shift_offset(expression: Any, buffer: Any) -> int | None:
+    """The operator offset of a right shift in ``buffer`` whose left operand is signed, else None."""
+    # A compound assignment (`x >>>= 1`) is a shift without an operator expression.
+    token = getattr(expression.syntax, "operatorToken", None)
+    if token is None or token.location.buffer != buffer or not expression.left.type.isSigned:
+        return None
+    return int(token.location.offset)
+
+
 def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
     """Elaborate ``tree`` (the one the sites come from) and record what syntax cannot tell.
 
@@ -392,14 +402,8 @@ def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
     def record(expression: Any) -> None:
         kind = expression.kind.name
         if kind == "BinaryOp" and expression.op.name in _SHIFT_OPERATORS:
-            # A compound assignment (`x >>>= 1`) is a shift without an operator expression.
-            token = getattr(expression.syntax, "operatorToken", None)
-            if (
-                token is not None
-                and token.location.buffer == buffer
-                and expression.left.type.isSigned
-            ):
-                signed_shifts.add(int(token.location.offset))
+            if (offset := _signed_shift_offset(expression, buffer)) is not None:
+                signed_shifts.add(offset)
         elif kind == "BinaryOp" and expression.op.name in _ADD_SUBTRACT_OPERATORS:
             if (fact := _add_subtract_fact(pyslang, expression, buffer)) is not None:
                 modular[fact[0]] = modular.get(fact[0], True) and fact[1]
@@ -494,15 +498,22 @@ class _SiteCollector:
         root.visit(self._note_checker)
 
     def _can_differ(self, member: Any) -> bool:
-        """True if ``member`` declares a parameter or has an interface port."""
+        """True if ``member`` declares a parameter or has an interface or named-type port."""
         found: list[bool] = []
 
         def check(item: Any) -> None:
             if isinstance(item, self._node_type) and (
                 item.kind.name in _OVERRIDE_SYNTAX
+                # A parameter port list may omit the keyword; only `localparam` is fixed.
                 or (
                     item.kind.name in _PARAMETER_SYNTAX
-                    and getattr(item.keyword, "rawText", "") == "parameter"
+                    and getattr(item.keyword, "rawText", "") != "localparam"
+                )
+                # A port of a named type may be an interface (without a modport) or a type
+                # parameter's alias: elaborated elsewhere it can have another width.
+                or (
+                    item.kind.name == "VariablePortHeader"
+                    and item.dataType.kind.name == "NamedType"
                 )
             ):
                 found.append(True)

@@ -219,7 +219,9 @@ width the parser does not report keeps its Mutant. The file is elaborated
 alone, so a module that another file instantiates with a parameter override,
 or reaches through an interface port, is elaborated here with defaults and
 another width elsewhere: the swap is kept in any top-level unit that declares
-a `parameter` or a type parameter or has an interface port. A width set by a
+a parameter (any form but `localparam`, with or without the keyword in a port
+list) or a type parameter, or has an interface port or a port of a named type
+(a bare interface name is one). A width set by a
 macro defined only in another file that is not included is the known blind
 spot, the same single-file limit the select-range facts have; it can drop a
 Mutant that is not equivalent in the full design. Every other Mutant keeps its

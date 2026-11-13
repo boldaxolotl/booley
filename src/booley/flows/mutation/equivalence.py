@@ -32,8 +32,9 @@ def generated_cpp(
 
     Each file is read with the spellings of ``private_root`` (the build's private source
     copy) replaced by one token, so two builds that differ only in where their copy lives
-    give equal digests.  Returns ``None`` when ``generated_dir`` holds no ``*__ver.d``: the
-    layout is not Verilator's, and the caller must not compare.
+    give equal digests.  Returns ``None`` when ``generated_dir`` holds no ``*__ver.d`` or no
+    C++ file: the layout is not Verilator's, and the caller must not compare (two empty
+    digests would otherwise be equal).
     """
     if not any(generated_dir.glob(f"*{_DEPENDENCY_SUFFIX}")):
         return None
@@ -47,7 +48,7 @@ def generated_cpp(
             digests[path.relative_to(generated_dir).as_posix()] = (
                 f"sha256:{hashlib.sha256(content).hexdigest()}"
             )
-    return digests
+    return digests or None
 
 
 def _root_spellings(private_root: Path, work_dir: Path) -> list[bytes]:

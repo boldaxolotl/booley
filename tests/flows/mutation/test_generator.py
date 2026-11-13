@@ -1004,6 +1004,11 @@ def test_add_subtract_swap_kept_where_elaboration_can_differ(tmp_path: Path) -> 
     type_parameter = f"module m #(parameter type T = logic) {ports}{body}"
     interface_port = f"module m (input [3:0] x, output [3:0] y, bus_if.mp i);\n{body}"
     localparam = f"module m {ports}  localparam int W = 4;\n{body}"
+    # A parameter port list may omit the `parameter` keyword; `localparam` stays fixed.
+    bare_parameter = f"module m #(int W = 4) {ports}{body}"
+    bare_type_parameter = f"module m #(type T = logic) {ports}{body}"
+    local_port_parameter = f"module m #(localparam int W = 4) {ports}{body}"
+    bare_interface_port = f"module m (input [3:0] x, output [3:0] y, bus_if i);\n{body}"
     other_unit = (
         "module p #(parameter int W = 4) (input [3:0] a, output [3:0] b);\n"
         "  assign b = a;\nendmodule\n" + f"module m {ports}{body}"
@@ -1014,7 +1019,11 @@ def test_add_subtract_swap_kept_where_elaboration_can_differ(tmp_path: Path) -> 
     assert _add_subtract_swaps(tmp_path, "typepar.sv", type_parameter) == ["+"]
     assert _add_subtract_swaps(tmp_path, "iface.sv", interface_port) == ["+"]
     # A localparam cannot be overridden, and another unit's parameter does not matter.
+    assert _add_subtract_swaps(tmp_path, "barepar.sv", bare_parameter) == ["+"]
+    assert _add_subtract_swaps(tmp_path, "baretype.sv", bare_type_parameter) == ["+"]
+    assert _add_subtract_swaps(tmp_path, "bareif.sv", bare_interface_port) == ["+"]
     assert _add_subtract_swaps(tmp_path, "local.sv", localparam) == []
+    assert _add_subtract_swaps(tmp_path, "localport.sv", local_port_parameter) == []
     assert _add_subtract_swaps(tmp_path, "other.sv", other_unit) == []
 
 
