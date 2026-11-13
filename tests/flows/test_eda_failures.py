@@ -238,3 +238,27 @@ def test_wrapped_spawn_failure_still_names_the_tool(text: str, tool: str) -> Non
     from booley.flows.eda_failures import find_missing_executable
 
     assert find_missing_executable(text) == tool
+
+
+def test_ordinary_failure_during_another_jobs_oom_kill_keeps_its_own_failure(monkeypatch) -> None:
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    # The container's OOM counter moved, but this command's own process was not killed.
+    failure = classify_eda_failure(
+        SubprocessResult(returncode=1, oom_kill_delta=1),
+        expected_stage="yosys",
+        expected_executable="yosys",
+    )
+
+    assert failure is None or failure.failure_kind != "abnormal_termination"
+
+
+def test_switch_unset_classifies_any_container_oom_kill_as_abnormal(monkeypatch) -> None:
+    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION", raising=False)
+
+    failure = classify_eda_failure(
+        SubprocessResult(returncode=1, oom_kill_delta=1, oom_killed=False),
+        expected_stage="yosys",
+        expected_executable="yosys",
+    )
+
+    assert failure is not None and failure.failure_kind == "abnormal_termination"

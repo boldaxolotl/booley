@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from contextlib import AbstractContextManager, ExitStack
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeVar
 
@@ -47,6 +49,9 @@ class EndpointOutcome:
     display_label: str | None = None
     summary: str = ""
     cycle_report_json: str = "{}"
+    # Whether the OOM killer took a process of one of this Job's own commands.
+    # Set by ``execute_endpoint``; an endpoint never sets it itself.
+    oom_killed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +177,35 @@ def _record_and_finish(
     )
 
 
+class _JobOomVerdict:
+    """Whether one Job's own command was OOM-killed; shared by the Job's threads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._killed = False
+
+    def mark(self) -> None:
+        with self._lock:
+            self._killed = True
+
+    @property
+    def killed(self) -> bool:
+        with self._lock:
+            return self._killed
+
+
+_JOB_OOM_VERDICT: ContextVar[_JobOomVerdict | None] = ContextVar(
+    "booley_job_oom_verdict", default=None
+)
+
+
+def note_job_oom_kill() -> None:
+    """Record that a command of the current Job was OOM-killed; nothing outside a Job."""
+    verdict = _JOB_OOM_VERDICT.get()
+    if verdict is not None:
+        verdict.mark()
+
+
 def execute_endpoint(
     endpoint: ExecutableEndpoint[Prepared_contra],
     request: Prepared_contra,
@@ -190,5 +224,11 @@ def execute_endpoint(
         return _record_and_finish(endpoint, request, exc.outcome, started=None)
     with admission:
         started = time.monotonic()
-        outcome = endpoint.invoke_endpoint(request, admission=borrowed, started=started)
+        verdict = _JobOomVerdict()
+        token = _JOB_OOM_VERDICT.set(verdict)
+        try:
+            outcome = endpoint.invoke_endpoint(request, admission=borrowed, started=started)
+        finally:
+            _JOB_OOM_VERDICT.reset(token)
+        outcome.oom_killed = verdict.killed
         return _record_and_finish(endpoint, request, outcome, started=started)

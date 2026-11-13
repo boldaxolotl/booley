@@ -4980,6 +4980,23 @@ class TestIncompleteResourceResults:
         assert _termination_reason(ambiguous, ambiguous.stderr) == "resource_killed"
         assert _termination_reason(corroborated, corroborated.stderr) == "oom"
 
+    def test_own_oom_kill_classifies_as_oom_under_memory_admission(self, monkeypatch):
+        from booley.flows.synth.flow import _termination_reason
+
+        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+        process = SubprocessResult(returncode=2, oom_kill_delta=1, oom_killed=True)
+
+        assert _termination_reason(process, process.stderr) == "oom"
+
+    def test_ordinary_failure_during_another_jobs_oom_kill_is_tool_failure(self, monkeypatch):
+        from booley.flows.synth.flow import _termination_reason
+
+        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+        # The container's OOM counter moved, but this command's own process was not killed.
+        process = SubprocessResult(returncode=1, oom_kill_delta=1)
+
+        assert _termination_reason(process, process.stderr) == "eda_tool_failure"
+
     def test_baseline_failure_returns_before_current_matrix(self, tmp_path: Path):
         flow = AsicSynthesizeFlow()
         flow.parse_args(

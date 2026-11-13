@@ -948,7 +948,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         """Apply design-vs-infrastructure ownership to a failed Vivado run."""
         abnormal = (
             result.timed_out
-            or result.oom_kill_delta > 0
+            or result.oom_blamed
             or result.returncode < 0
             or result.returncode >= 128
         )
@@ -1154,6 +1154,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             stderr=result.stderr,
             timed_out=result.timed_out,
             oom_kill_delta=result.oom_kill_delta,
+            oom_killed=result.oom_killed,
         )
         infrastructure = classify_eda_failure(
             combined,

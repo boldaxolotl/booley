@@ -202,6 +202,7 @@ def _merge_stage_results(yosys: SubprocessResult, openroad: SubprocessResult) ->
         dispatched_unix=yosys.dispatched_unix,
         peak_rss_mb=max(peaks) if peaks else None,
         oom_kill_delta=openroad.oom_kill_delta,
+        oom_killed=openroad.oom_killed,
     )
 
 
@@ -767,7 +768,7 @@ def _termination_reason(result: SubprocessResult, output: str) -> str:
         return "timeout"
     if result.returncode == 0:
         return "completed"
-    if result.oom_kill_delta > 0:
+    if result.oom_blamed:
         return "oom"
     if result.returncode in {-9, 137} or _RESOURCE_KILL_RE.search(output):
         return "resource_killed"

@@ -195,7 +195,7 @@ def _termination_failure(
     """Classify terminal states that preclude any design verdict."""
     if result.timed_out:
         return EdaFailure("infrastructure", "timeout", stage, "", "EDA execution timed out", text)
-    if result.oom_kill_delta <= 0 and 0 <= result.returncode < 128:
+    if not result.oom_blamed and 0 <= result.returncode < 128:
         return None
     if result.returncode == -1 and boundary_executable:
         subject = Path(boundary_executable).name

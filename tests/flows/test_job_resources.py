@@ -6,6 +6,8 @@ import json
 import multiprocessing
 import os
 import sys
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,16 +20,24 @@ from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
+from booley.flows.memory_admission import MEMORY_ADMISSION_ENV
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.runtime import resource_history
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+from booley.runtime.supervised_execution import (
+    SupervisedExecutionScope,
+    supervised_execution_scope,
+)
 from booley.runtime.timefmt import rfc3339_from_datetime, utc_now_rfc3339
 from tests.flows.test_flow_base import EchoFlow, _env_with_state
 from tests.subprocess_budget import run_bounded_child
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+
+SELF_SIGKILL = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
 
 RECORD_FIELDS = {
     "key",
@@ -230,6 +240,147 @@ def test_container_oom_kill_is_blamed_only_on_a_failed_command(
 
     (record,) = _history(tmp_path)
     assert (record["outcome"], record["oom_kill_delta"]) == (outcome, 1)
+
+
+def _admission_on(monkeypatch, counts) -> None:
+    """Memory admission on; the container OOM counter reads *counts* in turn."""
+    monkeypatch.setenv(MEMORY_ADMISSION_ENV, "1")
+    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
+
+
+@posix_only
+def test_command_killed_by_sigkill_during_an_oom_kill_is_oom_killed(flow, tmp_path, monkeypatch):
+    _admission_on(monkeypatch, iter([0, 1]))
+
+    result = flow._execute_local(_python(SELF_SIGKILL))
+
+    assert result.oom_killed and result.oom_blamed
+    (record,) = _history(tmp_path)
+    assert record["outcome"] == "oom_kill"
+
+
+def test_make_reported_kill_during_an_oom_kill_is_oom_killed(flow, tmp_path, monkeypatch):
+    _admission_on(monkeypatch, iter([0, 1]))
+    code = "import sys; sys.stderr.write('make: *** [Makefile:3: all] Killed\\n'); raise SystemExit(2)"
+
+    result = flow._execute_local(_python(code))
+
+    assert result.returncode == 2 and result.oom_killed
+    (record,) = _history(tmp_path)
+    assert record["outcome"] == "oom_kill"
+
+
+def test_compiler_reported_kill_during_an_oom_kill_is_oom_killed(flow, tmp_path, monkeypatch):
+    _admission_on(monkeypatch, iter([0, 1]))
+    code = (
+        "print('g++: fatal error: Killed signal terminated program cc1plus')\n"
+        "print('make: *** [obj.o] Error 1')\n"
+        "raise SystemExit(2)"
+    )
+
+    result = flow._execute_local(_python(code))
+
+    assert result.oom_killed
+    (record,) = _history(tmp_path)
+    assert record["outcome"] == "oom_kill"
+
+
+def test_own_failure_during_another_jobs_oom_kill_is_not_oom_killed(flow, tmp_path, monkeypatch):
+    _admission_on(monkeypatch, iter([0, 1]))
+
+    result = flow._execute_local(_python("raise SystemExit(1)"))
+
+    assert not result.oom_killed and not result.oom_blamed
+    (record,) = _history(tmp_path)
+    assert (record["outcome"], record["oom_kill_delta"]) == ("exit_nonzero", 1)
+
+
+@posix_only
+def test_unreadable_counter_or_timeout_is_never_oom_killed(flow, monkeypatch):
+    # An unreadable counter proves nothing, even for a command that killed itself.
+    _admission_on(monkeypatch, iter([None, None]))
+    assert not flow._execute_local(_python(SELF_SIGKILL)).oom_killed
+
+    # Booley's own timeout kill is not the OOM killer's.
+    _admission_on(monkeypatch, iter([0, 1]))
+    timed_out = flow._execute_local(_python("import time; time.sleep(30)"), timeout=1)
+    assert timed_out.timed_out and not timed_out.oom_killed
+
+
+@posix_only
+def test_command_killed_by_a_cancelled_scope_is_not_oom_killed(flow, tmp_path, monkeypatch):
+    _admission_on(monkeypatch, iter([0, 1]))
+    started, cancelled = tmp_path / "started", threading.Event()
+    scope = SupervisedExecutionScope(None, tmp_path / ".booley", cancelled.is_set)
+
+    def cancel_once_running() -> None:
+        deadline = time.monotonic() + 30
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cancelled.set()
+
+    canceller = threading.Thread(target=cancel_once_running)
+    canceller.start()
+    try:
+        with supervised_execution_scope(scope):
+            result = flow._execute_local(
+                # Ignores SIGTERM, so the cancellation ends in SIGKILL, sent by Booley.
+                _python(
+                    "import pathlib, signal, time\n"
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                    f"pathlib.Path({str(started)!r}).touch()\n"
+                    "time.sleep(30)"
+                )
+            )
+    finally:
+        canceller.join()
+
+    assert result.returncode != 0 and not result.oom_killed
+
+
+@linux_only
+def test_oom_killed_simulator_counts_as_its_commands_oom_kill(flow, tmp_path, monkeypatch):
+    _admission_on(monkeypatch, iter([0, 1]))
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    monkeypatch.setenv("PYTHONPATH", str(Path(job_resources.__file__).parents[2]))
+    # What a simulator adapter does: supervise the simulator, then exit by verdict.
+    adapter = f"""
+import os, sys
+from pathlib import Path
+from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
+
+run_cwd = Path({str(tmp_path / "run")!r})
+run_cwd.mkdir()
+launch = SimulatorLaunch(
+    label="fake",
+    command=[sys.executable, "-c", {SELF_SIGKILL!r}],
+    run_cwd=run_cwd,
+    env=dict(os.environ),
+    timeout_s=30,
+)
+run_supervised(launch)
+raise SystemExit(1)
+"""
+
+    result = flow._execute_local(_python(adapter))
+
+    assert result.returncode == 1 and result.oom_killed
+
+
+def test_switch_unset_keeps_container_wide_oom_blame(flow, tmp_path, monkeypatch):
+    monkeypatch.delenv(MEMORY_ADMISSION_ENV, raising=False)
+    counts = iter([0, 1])
+    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
+
+    result = flow._execute_local(_python("raise SystemExit(1)"))
+
+    assert result.oom_killed is False and result.oom_blamed
+    (record,) = _history(tmp_path)
+    assert record["outcome"] == "oom_kill"
+    assert job_resources.KILL_REPORT_ENV not in job_resources.JobResourceMonitor().temp_env()
 
 
 @linux_only
