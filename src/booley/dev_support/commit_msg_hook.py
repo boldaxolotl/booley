@@ -35,7 +35,7 @@ _DEV_SUPPORT_DIR = str(Path(__file__).resolve().parent)
 if _DEV_SUPPORT_DIR not in sys.path:
     sys.path.insert(0, _DEV_SUPPORT_DIR)
 
-from commit_msg_utils import find_banned, stealth_enabled
+from commit_msg_utils import find_banned, stealth_enabled  # pyright: ignore[reportMissingImports]
 
 # These existing structural forms are unambiguous attribution markers and are
 # rejected regardless of Project vocabulary, and the raw message is kept so the
@@ -87,7 +87,7 @@ def _has_machine_attribution(body: str, project_root: Path | None = None) -> boo
 
 def _git_output(project_root: Path | None, *args: str) -> tuple[bool, str]:
     """Run ``git`` in *project_root* and return (succeeded, stdout)."""
-    from validate_commit_msg import run_command
+    from validate_commit_msg import run_command  # pyright: ignore[reportMissingImports]
 
     argv = ["git", *(["-C", str(project_root)] if project_root else []), *args]
     run = run_command(argv)
@@ -207,7 +207,7 @@ def _print_banned_rejection(
 
 def _check_message(msg_file: Path, raw: str, project_root: Path | None) -> int:
     """Return the hook exit code for one message, printing any rejection."""
-    from validate_commit_msg import convention_errors
+    from validate_commit_msg import convention_errors  # pyright: ignore[reportMissingImports]
 
     lines = message_lines(raw, _comment_prefixes(project_root))
     subject_index = _subject_index(lines)
@@ -251,7 +251,7 @@ def main() -> int:
         print("commit-msg hook: no message file", file=sys.stderr)
         return 1
 
-    from validate_commit_msg import _current_repo_root
+    from validate_commit_msg import _current_repo_root  # pyright: ignore[reportMissingImports]
 
     project_root = _current_repo_root()
 
