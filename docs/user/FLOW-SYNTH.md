@@ -163,13 +163,13 @@ and replaces them.
 A profile states what to optimize for. Set it on the Target as
 `ppa_profile`, or try one for a single run with `--ppa-profile`:
 
-| Profile | Intent | Placement utilization / density |
-|---|---|---|
-| `compact` | Smaller area. | 40% / 0.65 |
-| `balanced` | Default trade-off. | 50% / 0.80 |
-| `max_frequency` | Higher Fmax. | 50% / 0.80 |
+| Profile | Intent | Mapping recipe (`--abc-recipe`) | Placement utilization / density |
+|---|---|---|---|
+| `compact` | Smaller area. | `default` | 40% / 0.65 |
+| `balanced` | Default trade-off. | `balanced` | 50% / 0.80 |
+| `max_frequency` | Higher Fmax. | `fast` | 50% / 0.80 |
 
-Each profile also uses its own logic-optimization script during mapping. A
+`balanced` and `max_frequency` differ only in the mapping recipe. A
 profile states intent, not a guaranteed result; compare runs to see which
 suits your design. Name the profile on the Target so results stay comparable over
 time. `--ppa-profile` replaces any expert settings on the Target for that run,
