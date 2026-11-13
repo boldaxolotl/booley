@@ -9,7 +9,6 @@ from typing import Any
 
 import pytest
 
-from booley.measurement.report import markdown_report, terminal_report, write_markdown_report
 from booley.measurement.run_document import RunStatus, Verdict
 from booley.measurement.run_store import FlowReport, MeasurementStore, StoredRun
 from booley.presentation import colors
@@ -30,6 +29,25 @@ from tests.measurement.test_run_view import (
     view_of,
 )
 from tests.runtime.test_commit_export import add_gitlink, commit_all, git, write
+
+
+# Imported on use: red/green evidence needs the failure in a test body, not a collection error.
+def markdown_report(view: dict[str, Any]) -> str:
+    from booley.measurement.report import markdown_report as render
+
+    return render(view)
+
+
+def terminal_report(view: dict[str, Any], *, width: int | None = None) -> str:
+    from booley.measurement.report import terminal_report as render
+
+    return render(view, width=width)
+
+
+def write_markdown_report(view: dict[str, Any]) -> Path:
+    from booley.measurement.report import write_markdown_report as write_report
+
+    return write_report(view)
 
 
 @pytest.fixture(autouse=True)
