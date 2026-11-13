@@ -2070,7 +2070,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 run, timeout_is_inconclusive=True
             ).inconclusive_reason
             if inconclusive:
-                why = inconclusive.removeprefix(f"{run.test_name}: ")
+                why = " ".join(inconclusive.removeprefix(f"{run.test_name}: ").split())
                 problems.append(f"test '{run.test_name}' inconclusive: {why}")
             elif not MutationFlow._baseline_run_passed(run):
                 parsed = parse_results_line(run.output)
@@ -2668,9 +2668,10 @@ def _error_outcome(
 
     *report_text* is the run's explanation (hints, log tail, artifacts); the verdict
     line follows it.  Only the first line of *reason* is used, without a leading
-    ``mutation: ``, since many reasons are exception texts the Flow does not shape.
+    ``mutation: ``, since many reasons are exception texts the Flow does not shape;
+    an exception raised without a message gives ``no detail``.
     """
-    first_line = reason.splitlines()[0].removeprefix("mutation: ")
+    first_line = (reason.strip().splitlines() or ["no detail"])[0].removeprefix("mutation: ")
     return EndpointOutcome(
         exit_code=EXIT_ERROR,
         report_text=f"{report_text}\n\nRESULT: ERROR ({phase}: {first_line})",

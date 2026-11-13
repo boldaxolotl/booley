@@ -1722,6 +1722,29 @@ def test_baseline_failure_result_names_each_failing_test(tmp_path: Path, monkeyp
         assert "'ok'" not in last_line
 
 
+def test_error_result_line_survives_blank_and_multiline_reasons(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A blank reason says ``no detail``; a multi-line run error stays on one line, others kept."""
+    from booley.flows.mutation.flow import _error_outcome
+
+    blank = _error_outcome("generation", "  \n", report_text="mutation: cannot generate Mutants")
+    assert blank.report_text.splitlines()[-1] == "RESULT: ERROR (generation: no detail)"
+
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    plan = SimpleNamespace(target="sim", work_dir=tmp_path, tb_top="tb")
+    broken = MutationTestRun("broken", error="launch failed\nsecond line")
+    fail = MutationTestRun("fail", process=_fake_proc(rc=1), output="[sim] failed")
+
+    result = _baseline_runs(broken, fail)._run_pristine_baseline(plan)  # type: ignore[arg-type]
+
+    assert isinstance(result, EndpointOutcome)
+    assert result.report_text.splitlines()[-1] == (
+        "RESULT: ERROR (baseline: test 'broken' inconclusive: launch failed second line; "
+        "test 'fail' failed on pristine source)"
+    )
+
+
 def test_baseline_that_times_out_is_inconclusive(tmp_path: Path, monkeypatch) -> None:
     def baseline_times_out(index: int | None) -> subprocess.CompletedProcess:
         return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (295s)\n")
