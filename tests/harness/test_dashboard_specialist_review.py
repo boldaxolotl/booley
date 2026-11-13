@@ -194,7 +194,15 @@ async def test_form_note_shows_the_model_and_agent_cli(checkout, empty_home):
 
 
 def test_malformed_specialist_facts_are_no_facts():
-    good = {"model": "m", "cli": "claude", "policy": "auto", "timeout_ms": 5, "asked_ms": 5}
+    good = {
+        "model": "m",
+        "cli": "claude",
+        "policy": "auto",
+        "timeout_ms": 5,
+        "asked_ms": 5,
+        "refusal": "",
+        "warning": "",
+    }
     base = {"job_class": "light", "dry_run": False}
 
     def parsed(specialist: object) -> object:
