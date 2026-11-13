@@ -1000,7 +1000,10 @@ def test_two_items_building_in_parallel_each_get_half_the_cores(
             # t01 is admitted alone; t02 is then admitted beside it, and t03 (which would
             # not fit beside both) only after t01 returns its claim.
             _jobs_option(scenario, "t01")()
-            _wait_until(lambda: len(scenario.store.observe(CLASS_MEMORY)[0]) >= 3)
+            _wait_until(
+                lambda: len(scenario.store.observe(CLASS_MEMORY)[0]) >= 3,
+                _PARALLEL_SYNC_TIMEOUT_S,
+            )
 
         scenario.hooks["t01"] = first_waits_for_a_sibling
         together = _barrier(2)
@@ -1079,6 +1082,7 @@ def test_another_job_counts_the_flow_token_and_the_item_claims(
         outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
 
     assert outcome.complete is True
+    assert scenario.holds_own["t01"]
     # The Flow's zero token, the running item's claim and the Job itself: three holders.
     assert seen["count"] == EIGHT_CORES // 3
 
@@ -1097,7 +1101,7 @@ def test_item_thread_count_stays_fixed_while_holders_change(
     ) as scenario:
         counts: list[int | None] = []
 
-        def holders_come_and_go() -> None:
+        def release_the_early_holder() -> None:
             for token in scenario.early_holders:
                 scenario.store.release(token)
 
@@ -1113,7 +1117,7 @@ def test_item_thread_count_stays_fixed_while_holders_change(
             scenario.store.release(foreign)
             counts.append(job_thread_count())
 
-        scenario.hooks["t00"] = holders_come_and_go
+        scenario.hooks["t00"] = release_the_early_holder
         scenario.hooks["t01"] = watch_the_count
         outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
 

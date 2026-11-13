@@ -21,6 +21,7 @@ from booley.runtime.job_slots import (
     ClaimAbortedError,
     LeaseHealth,
     MemoryClaim,
+    SlotStore,
     SlotToken,
 )
 from booley.runtime.supervised_execution import SupervisedExecutionScope
@@ -185,7 +186,7 @@ class HeavyCapacity:
         if not store.token_absent(token):
             raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
 
-    def _item_thread_count(self, store) -> int:
+    def _item_thread_count(self, store: SlotStore) -> int:
         """The item's share of the cores, counted now that its own claim is admitted.
 
         The item's Flow holds a zero reservation by now, so its token is left out.
