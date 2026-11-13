@@ -36,6 +36,7 @@ class FakeProc:
     def __init__(self) -> None:
         self.values: dict[int, int] = {}
         self.children: dict[int, list[int]] = {}
+        self.parents: dict[int, int] = {}
         self.reads: list[int] = []
         self.writes: list[tuple[int, int]] = []
 
@@ -46,6 +47,7 @@ class FakeProc:
         self.values[pid] = value
         if parent is not None:
             self.children.setdefault(parent, []).append(pid)
+            self.parents[pid] = parent
         return pid
 
     def read(self, pid: int) -> int | None:
@@ -68,6 +70,14 @@ class FakeProc:
                     found.append(child)
                     frontier.append(child)
         return found
+
+    def nested_in(self, pid: int, others: Collection[int]) -> bool:
+        parent = self.parents.get(pid)
+        while parent is not None:
+            if parent in others:
+                return True
+            parent = self.parents.get(parent)
+        return False
 
 
 @pytest.fixture

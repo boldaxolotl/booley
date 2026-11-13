@@ -39,7 +39,8 @@ logger = logging.getLogger(__name__)
 TOOL_ADJ: tuple[int, ...] = (1000, 500, 450, 400, 350, 300)
 
 #: The coordinator ranks this far below its Job's tools: half the smallest step
-#: between levels, so it stays above every older Job's processes.
+#: between levels, so it stays above the processes of an older Job that has a
+#: lower level (every older Job until the levels bottom out at five newer Jobs).
 COORDINATOR_GAP = 25
 
 #: How often the ranking is re-applied to the Job's process tree.
@@ -80,6 +81,10 @@ class ProcOom:
         """*pid*'s descendants, skipping the subtrees rooted at *exclude*."""
         return process_tree.descendant_pids(pid, exclude=exclude)
 
+    def nested_in(self, pid: int, others: Collection[int]) -> bool:
+        """Whether *pid* descends from one of the *others* (a Job inside another Job)."""
+        return any(process_tree.has_ancestor(pid, other) for other in others if other != pid)
+
 
 PROC = ProcOom()
 
@@ -99,12 +104,37 @@ class JobOomRanking:
 
     def __enter__(self) -> None:
         previous = self._proc.read(self._token.pid)
-        if previous is None or previous >= LOWEST_COORDINATOR_ADJ:
-            return  # no /proc, or the process already ranks at least as high as we would
+        if previous is None:
+            return  # no /proc: nothing can be ranked
+        try:
+            if previous >= LOWEST_COORDINATOR_ADJ and not self._nested_in_another_job():
+                return  # the process already ranks at least as high as we would
+            self.apply()
+        except OSError as exc:
+            logger.debug("OOM ranking not started: %s", exc)
+            return
         self._previous = previous
-        self.apply()
-        self._thread = threading.Thread(target=self._loop, name="oom-priority", daemon=True)
-        self._thread.start()
+        try:
+            thread = threading.Thread(target=self._loop, name="oom-priority", daemon=True)
+            thread.start()
+        except RuntimeError as exc:  # no thread to be had, for example under memory pressure
+            logger.debug("OOM ranking thread not started: %s", exc)
+            self._proc.write(self._token.pid, previous)
+            self._previous = None
+            return
+        self._thread = thread
+
+    def _nested_in_another_job(self) -> bool:
+        """Whether a Custom Flow command runs this Job inside another Job's tree.
+
+        Such a coordinator inherited its value from the outer Job's ranking
+        (at or above the lowest level), and the outer Job leaves its subtree to
+        it, so it must rank itself.
+        """
+        holders, _waiters = self._store.observe(job_slots.CLASS_MEMORY)
+        return self._proc.nested_in(
+            self._token.pid, {holder.pid for holder in holders if holder.pid != self._token.pid}
+        )
 
     def __exit__(
         self,
@@ -151,6 +181,8 @@ class JobOomRanking:
             self._set(pid, level)
 
     def _set(self, pid: int, value: int) -> None:
+        if self._stop.is_set():
+            return  # the exit restored the coordinator; a late pass must not undo that
         if self._proc.read(pid) not in (None, value):
             self._proc.write(pid, value)
 

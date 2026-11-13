@@ -120,21 +120,26 @@ def test_campaign_item_claims_rank_with_their_job(
     assert proc.values[flow_tool] == 500
 
 
-def test_a_nested_job_ranks_its_own_tree_not_its_parents(
+def test_a_nested_job_ranks_its_own_tree_and_restores_what_it_inherited(
     store: job_slots.SlotStore, world: FakeWorld, proc: FakeProc
 ) -> None:
     outer, outer_tool = _admit(store, world, proc, 101)
     inner, _unused = _admit(store, world, proc, 102, add_process=False)
-    # A Custom Flow command ran a ``booley`` endpoint: it is the inner coordinator.
-    proc.add(102, parent=outer_tool, value=7)
-    nested_tool = proc.add(103, parent=102, value=7)
-
     _rank(store, outer, proc)
+    # A Custom Flow command ran a ``booley`` endpoint: its coordinator forked from
+    # the outer Job's tool and inherited that Job's level.
+    proc.add(102, parent=outer_tool)
+    nested_tool = proc.add(103, parent=102)
+    assert proc.values[102] == proc.values[outer_tool] == 500
 
-    assert proc.values[outer_tool] == 500
-    assert (proc.values[102], proc.values[nested_tool]) == (7, 7)
-    _rank(store, inner, proc)
-    assert proc.values[nested_tool] == 1000
+    with oom_priority.JobOomRanking(store, inner, proc):  # type: ignore[arg-type]
+        assert proc.values[nested_tool] == 1000
+        assert proc.values[102] == 1000 - oom_priority.COORDINATOR_GAP
+        _rank(store, outer, proc)  # the outer Job leaves the nested subtree alone
+        assert proc.values[outer_tool] == 500
+        assert proc.values[nested_tool] == 1000
+
+    assert proc.values[102] == 500  # back to what it inherited
 
 
 def test_apply_without_the_claim_writes_nothing(
@@ -214,12 +219,61 @@ class TestJobOomRankingLifecycle:
 
         with oom_priority.JobOomRanking(store, token, proc):  # type: ignore[arg-type]
             monkeypatch.setattr(store, "observe", flaky)
-            proc.values[tool] = 0
             deadline = time.monotonic() + 30
+            while failures and time.monotonic() < deadline:
+                time.sleep(0.01)  # a pass has hit the failure
+            assert failures == []
+            proc.values[tool] = 0
             while proc.values[tool] != 1000 and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert proc.values[tool] == 1000
-        assert failures == []
+
+    def test_unreadable_slots_leave_the_job_unranked(
+        self,
+        store: job_slots.SlotStore,
+        world: FakeWorld,
+        proc: FakeProc,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token, tool = _admit(store, world, proc, 101)
+
+        def unreadable(job_class: str):
+            raise OSError("unreadable slots directory")
+
+        monkeypatch.setattr(store, "observe", unreadable)
+        with oom_priority.JobOomRanking(store, token, proc):  # type: ignore[arg-type]
+            pass
+
+        assert proc.writes == []
+        assert proc.values[tool] == 0
+
+    def test_no_thread_to_be_had_restores_the_coordinator(
+        self,
+        store: job_slots.SlotStore,
+        world: FakeWorld,
+        proc: FakeProc,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token, _tool = _admit(store, world, proc, 101)
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr("threading.Thread.start", refuse)
+        with oom_priority.JobOomRanking(store, token, proc):  # type: ignore[arg-type]
+            assert proc.values[101] == 0
+
+    def test_a_pass_after_the_exit_writes_nothing(
+        self, store: job_slots.SlotStore, world: FakeWorld, proc: FakeProc
+    ) -> None:
+        token, tool = _admit(store, world, proc, 101)
+        ranking = oom_priority.JobOomRanking(store, token, proc)  # type: ignore[arg-type]
+        ranking._stop.set()
+
+        ranking.apply()
+
+        assert proc.writes == []
+        assert proc.values[tool] == 0
 
     def test_a_process_without_proc_is_left_alone(
         self, store: job_slots.SlotStore, world: FakeWorld
@@ -262,6 +316,13 @@ class TestJobOomRankingLifecycle:
 
 
 class TestProcOom:
+    @pytest.mark.skipif(sys.platform != "linux", reason="needs the Linux /proc tree")
+    def test_a_process_is_nested_in_its_own_ancestors_only(self) -> None:
+        accessor = oom_priority.ProcOom()
+        assert accessor.nested_in(os.getpid(), {os.getppid()})
+        assert not accessor.nested_in(os.getpid(), {os.getpid()})
+        assert not accessor.nested_in(os.getpid(), {2**31 - 2})
+
     def test_an_absent_process_reads_none_and_refuses_writes(self) -> None:
         absent = 2**31 - 2
         assert oom_priority.ProcOom().read(absent) is None
@@ -273,10 +334,6 @@ class TestProcOom:
         value = accessor.read(os.getpid())
         assert value is not None
         assert accessor.write(os.getpid(), value)  # writing the current value always works
-
-    def test_descendants_skip_excluded_subtrees(self) -> None:
-        accessor = oom_priority.ProcOom()
-        assert accessor.descendants(2**31 - 2, exclude=()) == []
 
 
 def test_values_hold_newest_first_and_never_the_agent_at_adr_reference_sizes() -> None:
@@ -357,5 +414,7 @@ print(json.dumps({"start": start, "end": adj(os.getpid()), **seen}))
     )
     assert completed.returncode == 0, completed.stderr
     seen = json.loads(completed.stdout.strip().splitlines()[-1])
+    if seen["start"] > 1000 - oom_priority.COORDINATOR_GAP:
+        pytest.skip("the runner starts processes above the coordinator level")
     assert seen["tool"] > seen["coordinator"] >= seen["start"]
     assert seen["end"] == seen["start"]
