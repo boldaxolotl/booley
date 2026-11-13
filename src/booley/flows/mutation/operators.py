@@ -137,39 +137,6 @@ _CONDITION_VARIANTS = ("!({})", "1'b1", "1'b0")
 _LOOP_VARIANTS = ("1'b0",)
 
 
-def _identifier_names(node_type: type, node: Any, *, skip_selects: bool) -> frozenset[str]:
-    """The names of the variables ``node`` mentions, in a plain or a scoped name.
-
-    With ``skip_selects``, names inside a select are left out: ``a[v]`` writes ``a``, not ``v``.
-    A name is keyed by its token's location, since the parser hands out a new wrapper per visit.
-    """
-    named: dict[tuple[Any, int], str] = {}  # token location -> name text
-    selected: set[tuple[Any, int]] = set()  # the names inside a select
-
-    def is_name(current: Any) -> bool:
-        return isinstance(current, node_type) and current.kind.name in (
-            "IdentifierName",
-            "IdentifierSelectName",
-        )
-
-    def location(current: Any) -> tuple[Any, int]:
-        token = current.identifier
-        return token.location.buffer, int(token.location.offset)
-
-    def collect_selected(inner: Any) -> None:
-        if is_name(inner):
-            selected.add(location(inner))
-
-    def collect(current: Any) -> None:
-        if is_name(current):
-            named[location(current)] = str(current.identifier.rawText)
-        elif isinstance(current, node_type) and current.kind.name == "ElementSelect":
-            current.visit(collect_selected)
-
-    node.visit(collect)
-    return frozenset(text for key, text in named.items() if not (skip_selects and key in selected))
-
-
 # Operator 2 (beyond the swaps): unary removal and reduction swaps by syntax kind.  Every
 # replacement is parenthesized so that it cannot glue to a preceding operator (`a|!b`).
 # `!x` becomes `x != 0`: a truth value that, like `!x`, is one bit wide.
@@ -621,6 +588,40 @@ class _SiteCollector:
             return node.stopExpr
         return None
 
+    def _identifier_names(self, node: Any, *, skip_selects: bool) -> frozenset[str]:
+        """The names of the variables ``node`` mentions, in any identifier name node.
+
+        With ``skip_selects``, names inside a select are left out: ``a[v]`` writes ``a``, not ``v``.
+        A name is keyed by its token's location, since the parser hands out a new wrapper per visit.
+        """
+        named: dict[tuple[Any, int], str] = {}  # token location -> name text
+        selected: set[tuple[Any, int]] = set()  # the names inside a select
+
+        def is_name(current: Any) -> bool:
+            return isinstance(current, self._node_type) and current.kind.name in (
+                "IdentifierName",
+                "IdentifierSelectName",
+            )
+
+        def location(current: Any) -> tuple[Any, int]:
+            token = current.identifier
+            return token.location.buffer, int(token.location.offset)
+
+        def collect_selected(inner: Any) -> None:
+            if is_name(inner):
+                selected.add(location(inner))
+
+        def collect(current: Any) -> None:
+            if is_name(current):
+                named[location(current)] = str(current.identifier.rawText)
+            elif isinstance(current, self._node_type) and current.kind.name == "ElementSelect":
+                current.visit(collect_selected)
+
+        node.visit(collect)
+        return frozenset(
+            text for key, text in named.items() if not (skip_selects and key in selected)
+        )
+
     def _in_loop_control(self, node: Any) -> bool:
         """True if ``node`` is in a loop's condition or in a write to a variable it reads.
 
@@ -633,11 +634,11 @@ class _SiteCollector:
         child, ancestor = node, node.parent
         while ancestor is not None:
             if ancestor.kind.name.endswith("AssignmentExpression") and child is ancestor.right:
-                written |= _identifier_names(self._node_type, ancestor.left, skip_selects=True)
+                written |= self._identifier_names(ancestor.left, skip_selects=True)
             condition = self._loop_condition(ancestor)
             if condition is not None and (
                 child is condition
-                or written & _identifier_names(self._node_type, condition, skip_selects=False)
+                or written & self._identifier_names(condition, skip_selects=False)
             ):
                 return True
             child, ancestor = ancestor, ancestor.parent

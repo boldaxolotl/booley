@@ -126,14 +126,15 @@ Only design code is mutated. Booley skips:
   mutated assertion fires and would count as a detection;
 - parameter defaults and overrides, widths, delays, and attributes;
 - a loop's condition (`for` stop expression, `while`, `do`-`while`) and any
-  assignment inside the loop to a variable that condition reads: they get no
-  operator swap, and the `condition` operator only forces the condition to
-  `1'b0`; a `for` loop's initializer and step get no Mutants;
+  assignment inside the loop to a variable that condition reads, from every
+  `relational` and `arithmetic-logical` operator swap, because a swapped
+  condition or counter can keep the loop from ending; other swaps in the loop
+  body, such as an accumulator, are still planted;
+- the initializer and step of a `for` loop;
 - everything inside a `while`, `do`-`while`, `forever`, or procedural `for`
   loop, body included, for constants, enum members, bit-select moves,
-  concatenation swaps, and deletions, and for every `arithmetic-logical`
-  mutation except an operator swap (`repeat` and `foreach` loops are not
-  skipped);
+  concatenation swaps, deletions, and every `arithmetic-logical` mutation
+  except an operator swap (`repeat` and `foreach` loops are not skipped);
 - the arguments of system calls other than `$signed` and `$unsigned`;
 - port connections of gate primitives, `bind` directives, and checker and
   program instances, connections that are a bare name, and every bit-select
@@ -168,7 +169,7 @@ The report starts with what reproduces the run, then the tally and the
 verdict:
 
 ```text
-[mutation_test] 10 Mutants (seed 0, count 10, generator 4, pyslang 9.0.0, Verilator 5.052 2025-02-01 rev v5.052)
+[mutation_test] 10 Mutants (seed 0, count 10, generator 5, pyslang 9.0.0, Verilator 5.052 2025-02-01 rev v5.052)
 [mutation_test] sim sweep: 10/10 tested              4m
   8 detected (1 timeout), 0 invalid, 2 not detected
   detected: 8/10 (required: 8/10, default 80% of --count)

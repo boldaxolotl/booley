@@ -1039,6 +1039,17 @@ def test_loop_variable_update_keeps_accumulator_swap(tmp_path: Path) -> None:
     assert [(m.line, m.original_code, m.mutated_code) for m in swaps] == [(9, "^", "&")]
 
 
+def test_compound_and_nonblocking_loop_variable_writes_get_no_swaps(tmp_path: Path) -> None:
+    """`v -= w - 1` and `v <= v - 1` write the loop variable, like `v = v - 1` does."""
+    for name, update in (("compound.v", "v -= w - 4'd1;"), ("nonblocking.v", "v <= v - 4'd1;")):
+        source = _loop_module(
+            f"    while (v != 0) begin\n      o = o ^ x;\n      {update}\n    end\n"
+        )
+        _write(tmp_path, name, source)
+        selection = generate_mutants(tmp_path, [name], _ALL, 1)
+        assert _sites(selection, ("relational", "arithmetic-logical")) == [(7, "^", "&")], name
+
+
 def test_select_index_is_not_a_written_variable(tmp_path: Path) -> None:
     """`a[v] = a[v] ^ en` writes `a`, not its index `v`, so a `while (v ...)` keeps that swap.
 
