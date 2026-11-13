@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.request import SimRequest
+    from booley.targets.domain import TargetHandle
+
 import logging
 import math
 import os
@@ -302,6 +310,31 @@ class StandaloneMixin:
 
     # Planned at work-unit time, reused by the run; restarts with each invocation.
     _standalone_plan_recipe: _StandalonePlanRecipe | None
+
+    if TYPE_CHECKING:
+
+        @property
+        def args(self) -> SimRequest: ...
+        @property
+        def state(self) -> DevelopmentState: ...
+        def _target_handle(self, target: str) -> TargetHandle: ...
+        @property
+        def _mode(self) -> SimulationMode: ...
+        def _effective_timeout_ms(self) -> int: ...
+        def _get_timeout(self) -> int: ...
+        def _execute(
+            self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
+        ) -> SubprocessResult: ...
+        def _open_run_log(self, target: str, log_dir: Path) -> None: ...
+        def set_criterion(
+            self,
+            key: str,
+            met: bool,
+            *,
+            detail: dict[str, Any] | None = None,
+            source_target: str | None = None,
+        ) -> None: ...
+        def _persist_elab_only_log(self, target: str, output: str) -> str: ...
 
     def _standalone_requested(self) -> bool:
         """Whether the caller explicitly requested the standalone sweep."""
@@ -684,7 +717,7 @@ class StandaloneMixin:
         if unparsed:
             lines.extend(self._standalone_ungraded_lines(unparsed, log_pointer))
         detail = self._standalone_detail(recipe, failures, unparsed, log_pointer)
-        detail["mode"] = self.args.mode.value
+        detail["mode"] = self._mode.value
         self.set_criterion(_STANDALONE_CRITERION, passed, detail=detail)
         # `passed` implies no unparsed modules (a gap-only sweep returned above).
         ungraded = f" ({len(unparsed)} ungraded)" if unparsed else ""

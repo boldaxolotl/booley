@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from booley.flows.execution_persistence import FlowExecutionAdapter
+    from booley.flows.sim.request import SimRequest
+    from booley.flows.sim.test_run_invocation import TestRunInvocation
+    from booley.targets.domain import TargetHandle
+
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -83,6 +91,16 @@ def _filter_tests(tests: list[str], exact_names: str | Sequence[str]) -> list[st
 
 class SimulationTestSelectionMixin:
     """Test-selection validation and resolution for `SimulateFlow`."""
+
+    if TYPE_CHECKING:
+        execution_adapter: FlowExecutionAdapter
+        _test_runs: TestRunInvocation
+
+        @property
+        def args(self) -> SimRequest: ...
+        def is_cocotb_target(self, target: str) -> bool: ...
+        def _target_identity(self, target: str) -> str: ...
+        def _target_handle(self, target: str) -> TargetHandle: ...
 
     def _validate_prepared_selection(
         self, targets: list[str], test_names_map: dict[str, list[str]]
