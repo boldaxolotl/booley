@@ -51,7 +51,7 @@ _HOOK_DIR = str(Path(__file__).resolve().parent)
 if _HOOK_DIR not in sys.path:
     sys.path.insert(0, _HOOK_DIR)
 
-from commit_msg_utils import (
+from commit_msg_utils import (  # pyright: ignore[reportMissingImports]
     allowed_authors,
     identity_allowed,
     stealth_enabled,
