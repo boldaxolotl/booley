@@ -173,14 +173,14 @@ Three cases add to this layout:
 Campaign files reference each other by size and SHA-256, in two forms. Durable
 records (`summary.json`, work-item results) carry the canonical manifest
 digest: the SHA-256 of `manifest.json` without its trailing newline. Typed
-artifact references, such as `simulation.json`'s `campaign_manifest`, carry the
+artifact references, such as `simulation.json`'s `simulation_record_manifest`, carry the
 SHA-256 of the file's exact bytes. Compare each against its own form. Resume
 checks the whole chain, plus the Target's current sources and test suite,
 before it runs anything, and refuses when the suite or sources changed.
 
 ### Report schemas and references
 
-- `simulation.json`: `booley.simulation-projection/v3`.
+- `simulation.json`: `booley.simulation-projection/v4`.
 - Target-level `coverage.json`: `booley.coverage-campaign-reference/v1`.
 - Nested Coverage Campaign `coverage.json`: `booley.coverage-campaign/v5`.
 - Existing files are never migrated to a newer schema.
@@ -224,8 +224,8 @@ instead; the verdict and Criteria are unaffected.
 | `complete` | `true` once the results are also recorded against the Target's Criteria (or it has none); `false` means the run stopped in between. |
 | `tests[]` | One entry per test (see below). |
 | `test_runs[]` | One row per Test Run: `name`, `test`, `variant`, `seed`, `args`, `env`, `fingerprint`, and `grade` (`pass`, `fail`, `error`, or `inconclusive`). `test` is null for the unnamed test; `variant` and `seed` are null when the run has none. |
-| `campaign_id`, `campaign_manifest` | The Campaign and a reference to its `manifest.json`: `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). |
-| `coverage_campaign`, `collection`, `evaluation` | Coverage runs only: a reference of the same shape to the Target's `coverage.json`, and the collection and evaluation statuses. |
+| `simulation_record_id`, `simulation_record_manifest` | The Campaign and a reference to its `manifest.json`: `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). |
+| `coverage_record`, `collection`, `evaluation` | Coverage runs only: a reference of the same shape to the Target's `coverage.json`, and the collection and evaluation statuses. |
 
 Each `tests[]` entry has `name` (`default` for the unnamed test), `passed`,
 nullable `cycles`, `sva_errors`, `timed_out`, `execution`, `failure_kind`, and

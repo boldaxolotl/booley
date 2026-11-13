@@ -16,6 +16,8 @@ from booley.runtime.supervised_execution import supervised_execution_scope
 
 from .capacity import HeavyCapacity, LeaseLostError
 
+_TURN_POLL_SECONDS = 0.05
+
 
 @dataclass(frozen=True, slots=True)
 class ScheduledAttempt:
@@ -42,8 +44,53 @@ class CampaignSchedulingError(RuntimeError):
     """A campaign-fatal worker failure stopped further admission."""
 
 
+class _TurnHold:
+    """One lane's turn to start an item; ``pass_on`` hands it over, once."""
+
+    def __init__(self, lock: threading.Lock) -> None:
+        self._lock = lock
+        self._passed = False
+
+    def pass_on(self) -> None:
+        """Hand the turn to the next lane; a second call does nothing."""
+        if not self._passed:
+            self._passed = True
+            self._lock.release()
+
+
+class _StartTurn:
+    """Lets one lane at a time take the next item and get its claim admitted.
+
+    Items then start in manifest order, and the Campaign has at most one item
+    claim waiting in the slot store at any time (a queued claim counts against
+    every other Job's queue bound).
+    """
+
+    def __init__(self, stop: threading.Event) -> None:
+        self._lock = threading.Lock()
+        self._stop = stop
+
+    def take(self) -> _TurnHold | None:
+        """Wait for the turn; ``None`` once the campaign stops.
+
+        Waiters check only the stop event, which the supervisor sets within moments of
+        any shutdown: a full cancellation check would rescan the slot store per lane.
+        """
+        while not self._lock.acquire(timeout=_TURN_POLL_SECONDS):
+            if self._stop.is_set():
+                return None
+        return _TurnHold(self._lock)
+
+
 class BoundedCampaignScheduler:
-    """Run ready items through one borrowed lane and bounded child lanes."""
+    """Run ready items through one borrowed lane and bounded child lanes.
+
+    Under memory admission (``capacity.items_admitted``) every lane, the outer
+    one included, takes the start turn, then the next item and its claim: an
+    item whose claim is ``None`` runs under the Flow's reservation and keeps the
+    turn until it ends; otherwise the turn passes on once the claim is admitted,
+    so the claims decide how many items run at once.
+    """
 
     def __init__(
         self,
@@ -69,6 +116,10 @@ class BoundedCampaignScheduler:
         self._active_collisions: set[str] = set()
         # Terminal progress is lane-scoped only while items really overlap.
         self._lanes_concurrent = False
+        self._turn: _StartTurn | None = None
+
+    def _stopped(self) -> bool:
+        return self._stop.is_set() or self._capacity.shutdown_requested
 
     def run(self, items: Sequence[Mapping[str, object]]) -> None:
         if not items:
@@ -82,6 +133,7 @@ class BoundedCampaignScheduler:
             else 0
         )
         self._lanes_concurrent = child_count > 0
+        self._turn = _StartTurn(self._stop) if self._capacity.items_admitted else None
         self._lanes_exited.clear()
         with self._capacity.outer_permit():
             lanes = self._start_lanes(ready, child_count)
@@ -95,8 +147,12 @@ class BoundedCampaignScheduler:
     def _start_lanes(
         self, ready: queue.Queue[Mapping[str, object]], child_count: int
     ) -> list[threading.Thread]:
-        """Start the outer lane (first item taken in manifest order) and the child lanes."""
-        first = ready.get_nowait() if child_count else None
+        """Start the outer lane and the child lanes.
+
+        In heavy mode the outer lane starts with the first item in manifest order; under
+        memory admission every lane takes its items through the start turn.
+        """
+        first = ready.get_nowait() if child_count and self._turn is None else None
         specs = [("outer", True, first)]
         specs.extend((f"child-{index + 1}", False, None) for index in range(child_count))
         self._live = len(specs)
@@ -171,10 +227,14 @@ class BoundedCampaignScheduler:
     ) -> None:
         """Run ``first`` then ready items until the queue drains or the campaign stops."""
         try:
+            if self._turn is not None:
+                while self._run_turn(ready, outer):
+                    pass
+                return
             item = first
             while True:
                 if item is None:
-                    if self._stop.is_set() or self._capacity.shutdown_requested:
+                    if self._stopped():
                         return
                     try:
                         item = ready.get_nowait()
@@ -186,14 +246,36 @@ class BoundedCampaignScheduler:
         finally:
             self._lane_exited()
 
-    def _run_lane_item(self, item: Mapping[str, object], outer: bool) -> bool:
+    def _run_turn(self, ready: queue.Queue[Mapping[str, object]], outer: bool) -> bool:
+        """Take the start turn, then the next item.
+
+        ``False`` ends the lane: the campaign stopped, the queue drained or the item failed.
+        """
+        assert self._turn is not None
+        hold = self._turn.take()
+        if hold is None:
+            return False  # stopped while waiting: the recorded error stays the real cause
+        try:
+            if self._stopped():
+                return False
+            try:
+                item = ready.get_nowait()
+            except queue.Empty:
+                return False
+            return self._run_lane_item(item, outer, hold)
+        finally:
+            hold.pass_on()
+
+    def _run_lane_item(
+        self, item: Mapping[str, object], outer: bool, hold: _TurnHold | None = None
+    ) -> bool:
         """Run one item; ``False`` retires the lane because the item failed.
 
         A lost lease ends only its item. The outer lane takes the next item (its
         permit is a fresh claim, or the Flow's own); a child lane retires.
         """
         try:
-            self._run_item(item, outer)
+            self._run_item(item, outer, hold)
         except LeaseLostError as exc:
             if self._capacity.shutdown_requested:
                 self._fail_campaign(exc)
@@ -213,13 +295,19 @@ class BoundedCampaignScheduler:
         self._capacity.cancel_waiters(_worker_failure_cause(exc))
         self._stop.set()
 
-    def _run_item(self, item: Mapping[str, object], outer: bool) -> None:
+    def _run_item(
+        self, item: Mapping[str, object], outer: bool, hold: _TurnHold | None = None
+    ) -> None:
+        """Run one item. Under memory admission (*hold* is the start turn) any lane asks
+        for the item's claim and passes the turn on once it is admitted."""
         with self._allocation_gate:
             attempt = self._allocate(item)
         with self._collision_permit(attempt.collision_key), self._lane_scope(attempt):
-            # The outer lane runs under the Flow's claim, unless the item takes its own.
-            memory = self._capacity.work_item_claim(item) if outer else None
-            if outer and memory is None:
+            # The outer lane (and every lane under memory admission) runs under the
+            # Flow's claim, unless the item takes its own.
+            asks = outer or hold is not None
+            memory = self._capacity.work_item_claim(item) if asks else None
+            if asks and memory is None:
                 with supervised_execution_scope(self._capacity.outer_scope(self._stop.is_set)):
                     self._execute(attempt, None)
                 return
@@ -234,6 +322,8 @@ class BoundedCampaignScheduler:
                 ) as permit,
                 supervised_execution_scope(permit.scope),
             ):
+                if hold is not None:
+                    hold.pass_on()
                 self._execute(attempt, str(permit.child_execution_id))
 
     def _lane_scope(self, attempt: ScheduledAttempt) -> AbstractContextManager[None]:

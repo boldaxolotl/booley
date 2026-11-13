@@ -85,6 +85,9 @@ class _UnreadableDependencyError(CampaignRetentionError):
 # one held by this very prune) locks the sentinel byte, other handles cannot read it.
 _MANDATORY_FILE_LOCKS = sys.platform == "win32"
 _BATCH_SCHEMA = "booley.simulation-prune-batch/v1"
+# The manifest artifact kind Booley 0.4.0 wrote into report.json, which keeps its schema
+# until the report rename: recognised only to refuse a 0.4.0 resume receipt, never an alias.
+_OLDER_MANIFEST_KIND = "simulation_campaign_manifest"
 
 
 @dataclass(frozen=True, slots=True)
@@ -604,6 +607,9 @@ def _projection_references_origin(projection: Path, manifests: tuple[Path, ...])
     except OSError as error:
         _fail_closed_on_sharing_error(error, projection)
         return False
+    except UnsupportedSimulationCampaignFormatError as exc:
+        # A sibling an older Booley wrote cannot be told apart from a dependent.
+        raise CampaignRetentionError(str(exc.located(projection.parents[2]))) from exc
     except (ValueError, json.JSONDecodeError):
         return False
     try:
@@ -707,7 +713,7 @@ def _manifest_reference_matches(
         base = external_origin_target
     if (
         decoded.owner != campaign_id
-        or decoded.kind != "simulation_campaign_manifest"
+        or decoded.kind != "simulation_record_manifest"
         or base is None
     ):
         return False
@@ -722,7 +728,7 @@ def _manifest_reference_matches(
         resolved = resolve_report_artifact_reference(
             report_path,
             reference,
-            expected_kind="simulation_campaign_manifest",
+            expected_kind="simulation_record_manifest",
             expected_owner=campaign_id,
             maximum=MANIFEST_MAX_BYTES,
             external_origin_target=external_origin_target,
@@ -1217,14 +1223,14 @@ def _validate_projection_identity(
 def _validate_authenticated_projection(
     target: Path, status: RetainedCampaignStatus, document: Mapping[str, object]
 ) -> None:
-    if document.get("campaign_id") != status.campaign_id:
+    if document.get("simulation_record_id") != status.campaign_id:
         raise CampaignRetentionError("Simulation Campaign projection owner disagrees")
     booley_dir = invocation_booley_dir(target.parents[1])
     artifact = resolve_artifact_reference(
-        document.get("campaign_manifest"),
+        document.get("simulation_record_manifest"),
         bases={"origin_target": target},
         allowed_bases={"origin_target"},
-        expected_kind="simulation_campaign_manifest",
+        expected_kind="simulation_record_manifest",
         expected_owner=status.campaign_id,
         maximum=MANIFEST_MAX_BYTES,
         booley_dir=booley_dir,
@@ -1234,10 +1240,10 @@ def _validate_authenticated_projection(
     if not (target / "coverage.json").is_file():
         return
     coverage = resolve_artifact_reference(
-        document.get("coverage_campaign"),
+        document.get("coverage_record"),
         bases={"origin_target": target},
         allowed_bases={"origin_target"},
-        expected_kind="coverage_campaign_reference",
+        expected_kind="coverage_record_reference",
         expected_owner=status.campaign_id,
         maximum=MAX_REFERENCE_BYTES,
         booley_dir=booley_dir,
@@ -1249,7 +1255,10 @@ def _validate_authenticated_projection(
 
 
 def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> bool:
-    """Recognize a complete report-only resume without granting storage authority."""
+    """Recognize a complete report-only resume without granting storage authority.
+
+    Raises ``CampaignRetentionError`` for a receipt Booley 0.4.0 wrote.
+    """
     if pending or not completed or (root / "targets").exists():
         return False
     try:
@@ -1258,12 +1267,31 @@ def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> 
         return False
     detail = report.get("detail")
     campaigns = detail.get("campaigns") if isinstance(detail, dict) else None
-    return (
+    receipt = (
         report.get("flow") == "sim"
         and report.get("exit_code") in {0, 1, 2}
         and isinstance(campaigns, dict)
         and set(campaigns) == set(completed)
     )
+    if receipt:
+        _refuse_older_receipt(root, cast(dict[str, object], campaigns))
+    return receipt
+
+
+def _refuse_older_receipt(root: Path, campaigns: Mapping[str, object]) -> None:
+    """Refuse a receipt whose manifest reference carries the kind Booley 0.4.0 wrote."""
+    for campaign in campaigns.values():
+        artifacts = campaign.get("artifacts") if isinstance(campaign, dict) else None
+        manifest = artifacts.get("manifest") if isinstance(artifacts, dict) else None
+        kind = manifest.get("kind") if isinstance(manifest, dict) else None
+        if kind == _OLDER_MANIFEST_KIND:
+            raise CampaignRetentionError(
+                str(
+                    UnsupportedSimulationCampaignFormatError(
+                        "Simulation Campaign manifest reference", kind, root
+                    )
+                )
+            )
 
 
 def main() -> None:

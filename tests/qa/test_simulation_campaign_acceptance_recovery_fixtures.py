@@ -291,10 +291,10 @@ def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> Recove
         tmp_path / "simulation.json",
         {
             "complete": True,
-            "campaign_manifest": {
+            "simulation_record_manifest": {
                 "path_base": "origin_target",
                 "path": manifest.name,
-                "kind": "simulation_campaign_manifest",
+                "kind": "simulation_record_manifest",
                 "owner": campaign_id,
                 "bytes": len(manifest.read_bytes()),
                 "sha256": _sha256(manifest.read_bytes()),
@@ -495,7 +495,7 @@ def test_acceptance_recovery_rejects_invalid_manifest_reference(
     evidence = _acceptance_evidence(tmp_path)
     _mutate_json(
         evidence.simulation,
-        lambda document: document["campaign_manifest"].update({field: value}),
+        lambda document: document["simulation_record_manifest"].update({field: value}),
     )
     with pytest.raises(ValueError, match=message):
         _module().validate_acceptance_recovery(*_acceptance_args(evidence))

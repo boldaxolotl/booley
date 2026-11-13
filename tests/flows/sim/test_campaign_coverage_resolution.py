@@ -86,5 +86,5 @@ def test_one_outcome_resolves_its_coverage_reference_once_for_every_coverage_goa
     for key in keys:
         reference = persisted.criteria[key].detail["coverage_campaign_reference"]
         assert (reference["bytes"], reference["sha256"]) == (len(raw), _sha(raw))
-    assert "coverage_campaign" in json.loads((public.parent / "simulation.json").read_bytes())
+    assert "coverage_record" in json.loads((public.parent / "simulation.json").read_bytes())
     assert calls == {"resolve": 1, "encode": 1, "hash": 1, "owner": 1}

@@ -13,8 +13,10 @@ from booley.flows.test_runs import test_run_from_document
 from .codec import raise_if_retired
 from .test_run_report import TEST_RUN_GRADES
 
-#: Written today: one ``test_runs`` row per observed Test Run (ADR 0072).
-SIMULATION_PROJECTION_SCHEMA = "booley.simulation-projection/v3"
+#: Written today: one ``test_runs`` row per observed Test Run (ADR 0072); v4 names the
+#: Simulation Record (``simulation_record_id``, ``simulation_record_manifest``,
+#: ``coverage_record``).
+SIMULATION_PROJECTION_SCHEMA = "booley.simulation-projection/v4"
 
 
 class ProjectionTrust(StrEnum):
@@ -59,21 +61,21 @@ def decode_simulation_projection(
         "passed",
         "inconclusive",
         "tests",
-        "campaign_id",
-        "campaign_manifest",
+        "simulation_record_id",
+        "simulation_record_manifest",
         "complete",
         "test_runs",
     }
     if coverage_expected:
-        fields.update({"coverage_campaign", "collection", "evaluation"})
+        fields.update({"coverage_record", "collection", "evaluation"})
     if set(value) != fields:
         raise ValueError("Simulation projection fields are not exact")
     _validate_test_runs(value["test_runs"])
     try:
-        campaign_id = uuid.UUID(str(value["campaign_id"]))
+        record_id = uuid.UUID(str(value["simulation_record_id"]))
     except ValueError as exc:
         raise ValueError("Simulation projection Campaign identity is invalid") from exc
-    if campaign_id.version != 4 or str(campaign_id) != value["campaign_id"]:
+    if record_id.version != 4 or str(record_id) != value["simulation_record_id"]:
         raise ValueError("Simulation projection Campaign identity is invalid")
     return SimulationProjection(value, ProjectionTrust.AUTHENTICATED)
 
