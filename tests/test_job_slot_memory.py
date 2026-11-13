@@ -473,6 +473,7 @@ def test_shrink_keeps_the_claims_seats_and_wall_clock_estimate(root, world):
     store.release(holder)
     assert store.refresh(waiter).state == HOLDING
 
+
 # ------------------------------------------------------------- jumping ahead
 
 
