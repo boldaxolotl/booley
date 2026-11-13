@@ -289,12 +289,12 @@ def test_clean_host_deep_probe_is_incomplete_and_omitted_agents_are_named(
         doctor, "_observe_sandbox_identity", lambda *_args: (IMAGE, booley.__version__)
     )
     monkeypatch.setattr(doctor, "_run_deep_checks", lambda *_args, **_kw: None)
-    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *_args, **_kw: None)
+    _stub_core_resolution_owner(monkeypatch)
     reporter = doctor._Reporter.create(
         profile=doctor._DoctorProfile.from_args(argparse.Namespace(skip_agent_checks=skip_agents))
     )
     summary = doctor._run_deep_phase(
-        project, "docker", doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
+        project, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
     )
     assert reporter.result(0).clean
     assert not summary.complete
@@ -314,85 +314,106 @@ def test_start_identity_controls_qualification(tmp_path, monkeypatch, identity, 
     observe = Mock(return_value=identity)
     monkeypatch.setattr(doctor, "_observe_sandbox_identity", observe)
     monkeypatch.setattr(doctor, "_run_deep_checks", lambda *_args, **_kw: None)
-    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *_args, **_kw: None)
+    _stub_core_resolution_owner(monkeypatch)
     runtime = doctor._DoctorFlowRuntime(tmp_path, "docker", "sandbox")
-    summary = doctor._run_deep_phase(
-        _project(tmp_path), "docker", runtime, doctor._Reporter.create()
-    )
+    summary = doctor._run_deep_phase(_project(tmp_path), runtime, doctor._Reporter.create())
     assert summary.identity_reasons == (reason,)
     assert not summary.complete
     observe.assert_called_once_with(tmp_path, "sandbox")
 
 
-def test_inside_local_core_resolution_completes_without_docker(tmp_path, monkeypatch):
-    project = _project(tmp_path)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+def _stub_core_resolution_owner(monkeypatch):
+    """Replace the owner with a stand-in that reports every selector resolved."""
+    from booley.runtime import core_resolution
+
     monkeypatch.setattr(
-        doctor, "_project_target_matrix", lambda _: SimpleNamespace(seed_targets=("sim_fast",))
+        core_resolution,
+        "inspect_core_resolution",
+        lambda request: core_resolution.CoreResolutionResult(
+            DiagnosticReport(), request.selectors
+        ),
     )
-    commands = []
+
+
+# sha256(selector)[:16], the stable completeness identifier Doctor requires per Target.
+_SIM_OK_ID = "core.resolve.1527659c7ec1081d"
+_SIM_BAD_ID = "core.resolve.6febf8d38b2fe65d"
+
+
+def _core_resolution_project(root):
+    """A Project whose Doctor selects ``sim_ok`` and ``sim_bad`` but not ``sim_vendor``."""
+    project = _project(root)
+    selected = "flow: sim\n    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n"
+    unselected = "flow: sim\n    flow_options: {tool: verilator}\n"
+    shape = "    filesets: [rtl, tb]\n    toplevel: tb\n"
+    (root / "unit.core").write_bytes(
+        (
+            "CAPI=2:\nname: ::unit:0\nfilesets:\n"
+            "  rtl:\n    files:\n      - rtl/dut.sv: {file_type: systemVerilogSource}\n"
+            "  tb:\n    files:\n      - tb/tb.sv: {file_type: systemVerilogSource}\n"
+            "    tags: [tb]\ntargets:\n"
+            f"  sim_ok:\n    {selected}{shape}"
+            f"  sim_bad:\n    {selected}{shape}"
+            f"  sim_vendor:\n    {unselected}{shape}"
+        ).encode()
+    )
+    return project
+
+
+def test_core_resolution_requires_and_completes_one_identifier_per_selected_target(
+    tmp_path, monkeypatch
+):
+    """Deep completeness names exactly the selected Targets and completes each verdict."""
+    project = _core_resolution_project(tmp_path)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    payloads = []
 
     def run(argv, **_kwargs):
-        commands.append(argv)
+        payload = json.loads(argv[-1])
+        payloads.append([item["selector"] for item in payload])
+        verdicts = [
+            {"selector": item["selector"], "ok": item["selector"] == "sim_ok", "err": "no"}
+            for item in payload
+        ]
         return subprocess.CompletedProcess(
-            argv,
-            0,
-            "[[CORE_RESOLVE_JSON]]" + json.dumps([{"selector": "sim_fast", "ok": True}]),
-            "",
+            argv, 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(verdicts), ""
         )
 
     monkeypatch.setattr(doctor.subprocess, "run", run)
-    reporter = doctor._Reporter.create()
-    tracker = deep.DeepCheckTracker()
-    doctor._run_core_resolve_checks(
-        project,
-        None,
-        reporter.pass_,
-        reporter.skip_,
-        reporter.fail_,
-        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, None),
-        completeness=tracker,
-    )
-    assert tracker.missing == ()
-    assert commands[0][:2] == ["python3", "-c"]
-    assert reporter.result(0).clean
+    required, completed = set(), {}
+    real_require, real_completed = deep.DeepCheckTracker.require, deep.DeepCheckTracker.completed
 
+    def require(tracker, identifier):
+        required.add(identifier)
+        real_require(tracker, identifier)
 
-def test_host_fusesoc_fallback_cannot_certify_a_sandbox(tmp_path, monkeypatch):
-    project = _project(tmp_path)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(
-        doctor, "_project_target_matrix", lambda _: SimpleNamespace(seed_targets=("sim_fast",))
-    )
-    monkeypatch.setattr(doctor.shutil, "which", lambda _: "/usr/bin/fusesoc")
-    monkeypatch.setattr(
-        doctor.subprocess, "run", Mock(side_effect=AssertionError("host resolution"))
-    )
+    def complete(tracker, identifier, value):
+        completed[identifier] = value
+        real_completed(tracker, identifier, value)
+
+    monkeypatch.setattr(deep.DeepCheckTracker, "require", require)
+    monkeypatch.setattr(deep.DeepCheckTracker, "completed", complete)
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
-    doctor._run_core_resolve_checks(
-        project,
-        None,
-        reporter.pass_,
-        reporter.skip_,
-        reporter.fail_,
-        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, None),
-        completeness=tracker,
-    )
-    assert tracker.missing
-    assert reporter.result(0).clean
 
-
-@pytest.mark.parametrize(
-    "entries", [[], [{"selector": "other", "ok": True}], [{"selector": "selected", "ok": "yes"}]]
-)
-def test_core_completion_requires_all_selected_verdicts(entries):
-    reporter = doctor._Reporter.create()
-    proc = subprocess.CompletedProcess([], 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(entries), "")
-    assert (
-        doctor._grade_core_resolution(proc, {"selected": None}, reporter.pass_, reporter.fail_)
-        == ()
+    doctor._run_core_resolution(
+        project, doctor._DoctorFlowRuntime(tmp_path, None), reporter, tracker
     )
-    assert not reporter.result(1).clean
+
+    assert payloads == [["sim_bad", "sim_ok"]], "the unselected Target is never resolved"
+    assert required == {_SIM_OK_ID, _SIM_BAD_ID}
+    assert completed == {_SIM_OK_ID: True, _SIM_BAD_ID: True}
+    assert tracker.missing == ()
+    assert (reporter.counts["pass"], reporter.counts["fail"]) == (1, 1)
+
+    # No runtime to enter: both identifiers stay required and incomplete, with one SKIP.
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    skipped, unfinished = doctor._Reporter.create(), deep.DeepCheckTracker()
+    doctor._run_core_resolution(
+        project, doctor._DoctorFlowRuntime(tmp_path, None), skipped, unfinished
+    )
+    assert unfinished.missing == (_SIM_OK_ID, _SIM_BAD_ID)
+    assert skipped.counts["skip"] == 1
+    assert payloads == [["sim_bad", "sim_ok"]], "an unavailable runtime dispatches nothing"
 
 
 @pytest.mark.parametrize("early", ["scheduled", "changed", "quiet"])
@@ -967,6 +988,7 @@ def test_core_resolve_snippet_builds_in_the_checkout_from_a_worktree(
 ):
     """The in-Sandbox snippet keeps per-checkout build roots even when ``BOOLEY_DIR`` names main."""
     from booley.fusesoc import fusesoc_registry
+    from booley.runtime import core_resolution
     from booley.targets.catalog import TargetCatalog
 
     _main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime="sandbox")
@@ -983,6 +1005,6 @@ def test_core_resolve_snippet_builds_in_the_checkout_from_a_worktree(
     payload = json.dumps([{"selector": "sim_fast", "build_key": "key"}])
     monkeypatch.setattr("sys.argv", ["-c", payload])
 
-    exec(compile(doctor._CORE_RESOLVE_SNIPPET, "<snippet>", "exec"), {})
+    exec(compile(core_resolution._CORE_RESOLVE_SNIPPET, "<snippet>", "exec"), {})
 
     assert build_roots == [worktree / ".booley" / "runtime/doctor/core-resolve" / "key"]
