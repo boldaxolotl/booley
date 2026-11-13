@@ -11,9 +11,9 @@ from booley.flows.endpoint_admission import (
     _admission_cancellation_cause,
     admission,
 )
-from booley.flows.sim.campaign.model import _freeze_json
 from booley.flows.sim.config import parse_run_cwd_template
 from booley.flows.sim.mode import SimulationMode
+from booley.flows.sim.record.model import _freeze_json
 from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import ExecutionResult, execute_endpoint
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId

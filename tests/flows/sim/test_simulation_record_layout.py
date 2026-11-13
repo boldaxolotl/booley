@@ -20,35 +20,35 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.campaign import collect_pre_sim_firings, read_durable_results
-from booley.flows.sim.campaign.codec import (
-    SimulationCampaignIntegrityError,
-    linked_manifest_path,
-)
-from booley.flows.sim.campaign.dependency import read_campaign_dependencies
-from booley.flows.sim.campaign.resume import validate_resume_manifest
-from booley.flows.sim.campaign_reports import write_campaign_json
-from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_reference import (
     CoverageCampaignReferenceError,
     resolve_persisted_coverage_campaign_reference,
 )
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record import collect_pre_sim_firings, read_durable_results
+from booley.flows.sim.record.codec import (
+    SimulationCampaignIntegrityError,
+    linked_manifest_path,
+)
+from booley.flows.sim.record.dependency import read_campaign_dependencies
+from booley.flows.sim.record.resume import validate_resume_manifest
+from booley.flows.sim.record_reports import write_campaign_json
+from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
 from booley.flows.sim.request import SimRequest
 from booley.goals.entry import EntryEnvironment
 from booley.goals.finish import finish_goal
 from booley.goals.lifecycle import LifecycleError
 from booley.mcp.goal_completion import completion_environment
-from tests.flows.sim.campaign_test_support import coverage_invocation
-from tests.flows.sim.test_campaign_resume_diagnostics import _interrupted_campaign
-from tests.flows.sim.test_campaign_retention import _run_retention_cli
-from tests.flows.sim.test_campaign_unsupported_formats import (
+from tests.flows.sim.simulation_record_test_support import coverage_invocation
+from tests.flows.sim.test_simulation_record_resume_diagnostics import _interrupted_campaign
+from tests.flows.sim.test_simulation_record_retention import _run_retention_cli
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
     copy_older_invocation,
 )
-from tests.flows.sim.test_campaign_unsupported_formats import (
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
     reports as _reports_fixture,
 )
 from tests.goals.conftest import layout as _layout_fixture

@@ -21,12 +21,12 @@ from booley.flows.metric_declarations import (
     MetricValue,
     metric_values,
 )
-from booley.flows.sim.campaign.coordinator import CampaignOutcome
-from booley.flows.sim.campaign.test_run_report import observation_grade
 from booley.flows.sim.coverage_reference import (
     CoverageCampaignReferenceError,
     resolve_coverage_campaign_reference,
 )
+from booley.flows.sim.record.coordinator import CampaignOutcome
+from booley.flows.sim.record.test_run_report import observation_grade
 
 # Coverage Campaign metric key (``coverage_policy``) -> declared metric name.
 COVERAGE_METRIC_NAMES = {

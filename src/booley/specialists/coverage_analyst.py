@@ -19,7 +19,6 @@ from booley.core.boundary import require_dict
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
 from booley.flows.cli_help import CliHelp
-from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.coverage_analysis_input import (
     CoverageAnalysisError,
     CoverageSourceClosure,
@@ -34,6 +33,7 @@ from booley.flows.sim.coverage_campaign_store import (
     publish_coverage_campaign,
 )
 from booley.flows.sim.coverage_evidence import decode_coverage_evidence_audit
+from booley.flows.sim.record_reports import target_report_directory
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.runtime.agent_errors import (
     AgentProviderError,
