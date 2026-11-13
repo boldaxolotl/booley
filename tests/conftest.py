@@ -608,6 +608,31 @@ def _isolate_booley_dir_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.fixture(autouse=True)
+def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admission tests must not depend on the host exposing ``/proc/meminfo``.
+
+    Windows has no ``/proc``, so the real Memory Budget is unavailable there and
+    every Job would run alone with an extra "Memory Budget unavailable" note in
+    its reports and refusals. Fall back to a fixed override when measuring fails;
+    tests of the unavailable path patch ``compute_memory_budget`` themselves.
+    """
+    from booley.flows import memory_admission
+    from booley.runtime import memory_budget
+
+    real_compute = memory_budget.compute_memory_budget
+
+    def compute_or_fixed(config: Mapping[str, object], **kwargs: Any) -> memory_budget.MemoryBudget:
+        try:
+            return real_compute(config, **kwargs)
+        except OSError:
+            return memory_budget.resolve_memory_budget(
+                override_bytes=64 * 1024**3, limit_bytes=None, installed_bytes=None, processes=()
+            )
+
+    monkeypatch.setattr(memory_admission, "compute_memory_budget", compute_or_fixed)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_agent_session_markers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The suite may run from a Claude or Codex shell; start every test outside one.
 
