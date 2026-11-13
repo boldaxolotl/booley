@@ -278,6 +278,17 @@ command instead and always works. The Jobs window then opens on All sessions wit
 Finished filter switches to Running, which keeps the Job listed after it
 finishes. `Esc` returns to where you started.
 
+Run also starts the `reviewer` Specialist. After the Flows, the step lists the
+worktree's enabled built-in Specialists; the others show "form not built yet" and
+cannot be chosen, and a worktree whose settings cannot be read says why instead.
+The reviewer form asks for a category (`rtl` or `tb`), a focus that follows the
+category, and a scope, which is required. The spec focus also asks for a spec
+path, filled in from the worktree's active spec-review Goal when it has one.
+Instruction, max turns, and timeout are optional, the last two under **More**.
+The form has no **Extra arguments**, and `--verify`, `--waive`, and `--dry-run`
+are not offered. **Review the command** shows `cd … && booley specialist
+reviewer …`, and Submit starts that command as a Standalone Job.
+
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
 the first row to reach the top bar with the tabs, filters, Run, and Help; the
 footer shows the keys you can use.

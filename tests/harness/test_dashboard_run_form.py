@@ -22,11 +22,12 @@ HIDDEN_ALIASES = {"--work-dir", "--timeout-ms", "--elab-only", "--build-only", "
 
 def parser_for(flow: str) -> argparse.ArgumentParser:
     """The human parser ``booley flow <flow>`` builds, as the form reads it."""
+    from booley.flows.base import BuiltinFlow
     from booley.flows.builtin_cli import build_cli_parser
     from booley.flows.cli_selection import CliInvocation
-    from booley.harness.dashboard.launch import _load_flow
+    from booley.harness.dashboard.launch import _load_endpoint
 
-    return build_cli_parser(_load_flow(flow), CliInvocation())
+    return build_cli_parser(_load_endpoint(BuiltinFlow, flow), CliInvocation())
 
 
 # --- AC2: the drift tests -------------------------------------------------------
