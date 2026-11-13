@@ -139,19 +139,24 @@ class FakeLauncher:
         self.facts = facts or (None, False)
         self.outlook_result, self.uncommitted_result = outlook, uncommitted
         self.outlook_reads = 0
-        self.submitted: list[tuple[Path, str, tuple[str, ...]]] = []
+        self.submitted: list[tuple[Path, str, str, tuple[str, ...]]] = []
 
     def flows(self):
         from booley.harness.dashboard.launch import builtin_flows
 
         return builtin_flows()
 
-    def form(self, flow):
+    def specialists(self, worktree):
+        from booley.harness.dashboard.launch import SpecialistListing
+
+        return SpecialistListing(())
+
+    def form(self, kind, name, worktree):
         from booley.harness.dashboard import launch
 
-        return launch.form(flow)
+        return launch.form(name)
 
-    def check(self, worktree, flow, argv):
+    def check(self, worktree, kind, name, argv):
         from booley.harness.dashboard.launch import CheckResult, RunFacts
 
         return CheckResult(facts=RunFacts(*self.facts))
@@ -170,10 +175,10 @@ class FakeLauncher:
             raise self.uncommitted_result
         return self.uncommitted_result
 
-    def submit(self, worktree, flow, argv):
+    def submit(self, worktree, kind, name, argv):
         if self.error is not None:
             raise self.error
-        self.submitted.append((worktree, flow, argv))
+        self.submitted.append((worktree, kind, name, argv))
         return self.key
 
 
@@ -513,14 +518,15 @@ async def test_flow_step_lists_every_builtin_flow_with_its_blurb(checkout):
         await pilot.press("enter")
         options = wizard.query_one("#run-flows", OptionList)
         lines = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
-        assert [line.split(" — ")[0] for line in lines] == [
+        flows = lines[: len(FLOW_NAMES)]
+        assert [line.split(" — ")[0] for line in flows] == [
             "fpga",
             "lint",
             "mutation",
             "sim",
             "synth",
         ]
-        assert all(len(line.split(" — ", 1)[1]) > 10 for line in lines)
+        assert all(len(line.split(" — ", 1)[1]) > 10 for line in flows)
         assert lines[3].startswith("sim — Run RTL simulation")
 
 
@@ -582,8 +588,10 @@ def test_check_resolves_relative_paths_in_the_worktree(tmp_path, monkeypatch):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    assert launch.check(worktree, "sim", ("--tests-file", "tests.txt")).error == ""
-    assert "tests.txt" in launch.check(elsewhere, "sim", ("--tests-file", "tests.txt")).error
+    assert launch.check(worktree, "flow", "sim", ("--tests-file", "tests.txt")).error == ""
+    assert (
+        "tests.txt" in launch.check(elsewhere, "flow", "sim", ("--tests-file", "tests.txt")).error
+    )
 
 
 def test_check_changes_no_environment_and_writes_nothing(tmp_path, capfd):
@@ -598,7 +606,7 @@ def test_check_changes_no_environment_and_writes_nothing(tmp_path, capfd):
 
     environment = dict(os.environ)
     # --timeout-ms is a deprecated alias: an in-process parse would warn here and set the environment.
-    assert launch.check(worktree, "lint", ("--timeout-ms", "1000")).error == ""
+    assert launch.check(worktree, "flow", "lint", ("--timeout-ms", "1000")).error == ""
     assert dict(os.environ) == environment
     assert listing() == []
     captured = capfd.readouterr()
@@ -609,8 +617,10 @@ def test_check_reports_a_timeout_and_a_worktree_that_cannot_start_it(tmp_path, m
     from booley.harness.dashboard import launch
 
     monkeypatch.setattr(launch, "CHECK_TIMEOUT_S", 0.001)
-    assert launch.check(tmp_path, "lint", ()).error == "argument check timed out after 0.001s"
-    message = launch.check(tmp_path / "missing", "lint", ()).error
+    assert (
+        launch.check(tmp_path, "flow", "lint", ()).error == "argument check timed out after 0.001s"
+    )
+    message = launch.check(tmp_path / "missing", "flow", "lint", ()).error
     assert "No such file or directory" in message or "cannot find" in message.lower()
     assert "\n" not in message
 
@@ -619,8 +629,8 @@ def test_child_main_rejects_selector_and_help(tmp_path, monkeypatch, capsys):
     from booley.harness.dashboard import launch
 
     monkeypatch.chdir(tmp_path)
-    assert launch.main(["lint", "--", "--target", "t"]) == 0
-    assert launch.main(["lint", "--", "--", "--target", "t"]) == 0
+    assert launch.main(["flow", "lint", "--", "--target", "t"]) == 0
+    assert launch.main(["flow", "lint", "--", "--", "--target", "t"]) == 0
     for typed, message in (
         (["-C", "x"], "the worktree chooses the Project"),
         (["--project", "x"], "the worktree chooses the Project"),
@@ -629,7 +639,7 @@ def test_child_main_rejects_selector_and_help(tmp_path, monkeypatch, capsys):
     ):
         capsys.readouterr()
         with pytest.raises(SystemExit) as exit_info:
-            launch.main(["lint", "--", *typed])
+            launch.main(["flow", "lint", "--", *typed])
         assert exit_info.value.code == 2
         assert message in capsys.readouterr().err
 
@@ -863,12 +873,12 @@ class FormGate(FakeLauncher):
         self.failures = list(failures)
         self.built: list[str] = []
 
-    def form(self, flow):
+    def form(self, kind, name, worktree):
         assert self.release.wait(timeout=60)
-        self.built.append(flow)
+        self.built.append(name)
         if self.failures:
             raise self.failures.pop(0)
-        return super().form(flow)
+        return super().form(kind, name, worktree)
 
 
 @pytest.mark.asyncio
@@ -961,7 +971,7 @@ async def test_a_form_that_cannot_be_built_says_why_and_still_takes_extra_argume
         assert shown(wizard, "#run-command") == f"cd {checkout} && booley flow lint --target t"
         await pilot.press("enter")  # Submit
         await pilot.pause()
-        assert launcher.submitted == [(checkout, "lint", ("--target", "t"))]
+        assert launcher.submitted == [(checkout, "flow", "lint", ("--target", "t"))]
 
 
 @pytest.mark.asyncio
@@ -1106,10 +1116,10 @@ class GatedLauncher(FakeLauncher):
         super().__init__()
         self.started, self.release = threading.Event(), threading.Event()
 
-    def check(self, worktree, flow, argv):
+    def check(self, worktree, kind, name, argv):
         self.started.set()
         assert self.release.wait(timeout=60)
-        return super().check(worktree, flow, argv)
+        return super().check(worktree, kind, name, argv)
 
 
 @pytest.mark.asyncio
@@ -1307,7 +1317,7 @@ def test_check_reports_run_facts(tmp_path, flow, argv, config, expected):
     from booley.harness.dashboard import launch
 
     write_config(tmp_path, config)
-    result = launch.check(tmp_path, flow, ("--target", "t", *argv))
+    result = launch.check(tmp_path, "flow", flow, ("--target", "t", *argv))
     facts = result.facts
     assert result.error == ""
     assert (facts.job_class, facts.dry_run, facts.timeout_ms) == expected
@@ -1317,7 +1327,7 @@ def test_check_reports_a_configured_timeout_the_flow_rejects(tmp_path):
     from booley.harness.dashboard import launch
 
     write_config(tmp_path, "[flows.synth]\ntimeout_ms = -5\n")
-    facts = launch.check(tmp_path, "synth", ("--target", "t")).facts
+    facts = launch.check(tmp_path, "flow", "synth", ("--target", "t")).facts
     assert facts is not None
     assert facts.timeout_ms is None
     assert "must be a positive integer" in facts.timeout_problem
@@ -1546,7 +1556,7 @@ async def test_stepping_back_to_the_form_and_on_again_highlights_submit(checkout
 @pytest.mark.asyncio
 async def test_a_crashed_check_is_reported_in_the_form(checkout):
     class Crashing(FakeLauncher):
-        def check(self, worktree, flow, argv):
+        def check(self, worktree, kind, name, argv):
             raise ValueError("embedded null byte")
 
     app = make_app(checkout, Crashing())
@@ -1562,7 +1572,7 @@ async def test_a_check_that_crashes_after_the_human_moved_on_is_not_shown(checko
     gate = threading.Event()
 
     class SlowCrash(FakeLauncher):
-        def check(self, worktree, flow, argv):
+        def check(self, worktree, kind, name, argv):
             assert gate.wait(timeout=60)
             raise ValueError("embedded null byte")
 
