@@ -2,10 +2,10 @@
 
 Rule 26 of docs/internals/DOCS_PRINCIPLES.md keeps text that applies to one
 variant (stealth mode, Windows, a cocotb testbench, host-installed licensed
-tools) out of the main flow, in a ``<details markdown>`` callout. This guard
-checks the shape of every callout: the label is one of four fixed strings, the
-body links the variant's page, and the block formatting survives the site's
-Python-Markdown renderer. Which passages belong in a callout stays an editorial
+tools, one EDA tool of a Flow) out of the main flow, in a ``<details markdown>``
+callout. This guard checks the shape of every callout: the label is one of four
+fixed strings or ``With <EDA tool>``, a fixed-variant body links the variant's
+page, and the block formatting survives the site's Python-Markdown renderer. Which passages belong in a callout stays an editorial
 judgment; no test can decide that.
 """
 
@@ -31,6 +31,15 @@ _VARIANTS: dict[str, tuple[str, str | None]] = {
     "With a cocotb testbench": ("TARGETS.md", "cocotb-targets-python-testbenches"),
     "With host-installed licensed tools": ("SANDBOX.md", "commercial-eda-provisioning"),
 }
+
+# EDA tools that may label a ``With <Tool>`` callout: the tools of Flows that
+# support more than one tool (sim and lint; see docs/user/SUPPORTED-EDA-TOOLS.md).
+# A one-tool Flow keeps its tool facts visible, so Yosys, OpenROAD, and Vivado
+# are absent; "vivado" also stays mapped to the host-installed variant below.
+# Tool callouts need no fixed link: their body links the tool's Target recipe
+# when it has one.
+_EDA_TOOLS: frozenset[str] = frozenset({"Icarus", "Verible", "Verilator"})
+_TOOL_LABELS: frozenset[str] = frozenset(f"With {tool}" for tool in _EDA_TOOLS)
 
 # Non-variant ``<summary>`` labels allowed in docs/user/. Add a label here to
 # use a collapsible block that is not a variant callout; it skips the link and
@@ -142,13 +151,13 @@ def callout_problems(
             continue
         label = summary.group(1).strip()
         where = f"docs/user/{doc}:{index + 1}"
-        if label not in _VARIANTS:
+        if label not in _VARIANTS and label not in _TOOL_LABELS:
             if label not in other_labels:
                 expected = _expected_label(label)
                 hint = (
                     f"use '{expected}'"
                     if expected
-                    else "use one of the four variant labels or add it to OTHER_LABELS"
+                    else "use a variant label, 'With <EDA tool>', or add it to OTHER_LABELS"
                 )
                 problems.append(f"{where}: summary '{label}' is not a fixed variant label; {hint}")
             continue
@@ -160,6 +169,8 @@ def callout_problems(
             continue
         for problem in _formatting_problems(lines, index, end):
             problems.append(f"{where}: '{label}' callout: {problem}")
+        if label in _TOOL_LABELS:
+            continue
         target_doc, anchor = _VARIANTS[label]
         links = _link_targets("\n".join(lines[index + 1 : end]), doc)
         if not any(
@@ -230,8 +241,26 @@ def test_non_canonical_variant_label_fails(label: str, expected: str) -> None:
 def test_unknown_label_fails_unless_allowlisted() -> None:
     text = _callout("Reproduce", "Steps.")
     [problem] = callout_problems(text, "X.md")
-    assert "use one of the four variant labels or add it to OTHER_LABELS" in problem
+    assert "use a variant label, 'With <EDA tool>', or add it to OTHER_LABELS" in problem
     assert callout_problems(text, "X.md", other_labels={"Reproduce"}) == []
+
+
+@pytest.mark.parametrize("label", sorted(_TOOL_LABELS))
+def test_tool_callout_needs_no_fixed_link(label: str) -> None:
+    assert callout_problems(_callout(label, "Tool-specific text."), "X.md") == []
+
+
+def test_tool_callout_keeps_formatting_checks() -> None:
+    text = (
+        "Baseline.\n<details markdown>\n<summary>With Verilator</summary>\n\nText.\n\n</details>\n"
+    )
+    [problem] = callout_problems(text, "X.md")
+    assert "blank line before '<details markdown>'" in problem
+
+
+def test_tool_label_outside_the_multi_tool_set_fails() -> None:
+    [problem] = callout_problems(_callout("With Yosys", "Text."), "X.md")
+    assert "is not a fixed variant label" in problem
 
 
 def test_callout_without_variant_link_fails() -> None:

@@ -44,7 +44,8 @@ booley flow synth --target synth_core --baseline main
 
 ## Reading results
 
-The run prints one row per Target, for example with `--baseline main`:
+The run prints one row per Target. Example (Yosys and OpenROAD), with
+`--baseline main`:
 
 ```text
 baseline: main
@@ -194,7 +195,7 @@ otherwise the comparison mixes two recipes.
 Synthesizing a large RAM as flip-flops makes area and timing meaningless, and
 leaving it out lets synthesis delete the logic around it. Instead, a synthesis
 Target can swap in a Memory Timing Surrogate: a small standard-cell stand-in
-that keeps the memory's latency, reset behaviour and data dependence but not
+that keeps the memory's latency, reset behavior and data dependence but not
 its capacity. The Target selects it with a define and a synthesis-only
 fileset, so simulation and lint keep the real memory:
 
