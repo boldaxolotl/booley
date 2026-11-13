@@ -37,7 +37,11 @@ fits now and is estimated to finish before the front can start. The front's
 earliest start comes from the running claims' estimated finishes; an unknown
 finish makes it unknown, so nothing jumps. An entry whose claim cannot be read
 counts as not fitting and ends jumping. A holder may lower its own reservation
-as its phases finish (``shrink_reservation``), never raise it.
+as its phases finish (``shrink_reservation``), never raise it. A claim may also hold
+a **seat** of a licensed EDA tool, judged against the tool's Seat Cap: it
+starts only while fewer seats of that tool are held than the cap, and keeps the
+cap it was created with, so a cap changed while Jobs wait applies to new claims
+only. A seat is held exactly as long as the entry (and so the reservation) is.
 
 Pure + stdlib-only, like ``runtime.job_records`` (whose deadline/identity
 guards it reuses): PID liveness, ``/proc`` reads, the clock, and sleep are
@@ -57,6 +61,7 @@ import os
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -237,6 +242,8 @@ class MemoryClaim:
     a reloaded token equals its owner's). Exactly one of ``reservation_mb`` and
     ``run_alone`` is given. A reservation above the budget could never start
     and would block the queue forever, so the caller must mark it run-alone.
+    ``seats`` lists the licensed EDA tools the Job holds one seat of, each with
+    the Seat Cap it is judged against (persisted like ``budget_mb``).
     ``wall_s`` is the Job's own wall-clock estimate in seconds (``None`` when it
     has no history of its own); only such a claim may jump ahead of the queue.
     """
@@ -244,11 +251,15 @@ class MemoryClaim:
     budget_mb: float
     reservation_mb: float | None = None
     run_alone: bool = False
+    seats: tuple[tuple[str, int], ...] = ()
     wall_s: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_alone, bool):
             raise ValueError(f"run_alone must be a bool, got {self.run_alone!r}")
+        for tool, cap in self.seats:
+            if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+                raise ValueError(f"Seat Cap of {tool!r} must be a whole number >= 1, got {cap!r}")
         if require_finite_number(self.budget_mb, field="budget_mb") < 0:
             raise ValueError(f"budget_mb must be >= 0, got {self.budget_mb!r}")
         if self.wall_s is not None and require_finite_number(self.wall_s, field="wall_s") < 0:
@@ -267,11 +278,12 @@ class MemoryClaim:
                 "mark the claim run_alone"
             )
 
-    def to_payload(self) -> dict[str, float | bool | None]:
+    def to_payload(self) -> dict[str, object]:
         return {
             "budget_mb": self.budget_mb,
             "reservation_mb": self.reservation_mb,
             "run_alone": self.run_alone,
+            "seats": dict(self.seats),
             "wall_s": self.wall_s,
         }
 
@@ -280,11 +292,15 @@ class MemoryClaim:
         """The claim an entry persisted, or None when absent or malformed."""
         if not isinstance(value, dict):
             return None
+        seats = value.get("seats", {})  # an entry written before seats existed holds none
         try:
+            if not isinstance(seats, dict):
+                raise ValueError(f"seats must be a table, got {seats!r}")
             return MemoryClaim(
                 budget_mb=value["budget_mb"],
                 reservation_mb=value.get("reservation_mb"),
                 run_alone=value.get("run_alone") is True,
+                seats=tuple(seats.items()),
                 wall_s=value.get("wall_s"),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
@@ -293,6 +309,9 @@ class MemoryClaim:
 
 def _fits_among(claim: MemoryClaim, running: list[MemoryClaim], budget_mb: float) -> bool:
     """True when *claim* can start beside the *running* claims under *budget_mb*."""
+    seats_held = Counter(tool for other in running for tool, _cap in other.seats)
+    if any(seats_held[tool] >= cap for tool, cap in claim.seats):
+        return False
     if claim.run_alone:
         return not running
     if any(other.run_alone for other in running):
@@ -315,6 +334,7 @@ class _MemoryLoad:
     running: int = 0
     alone: bool = False
     stopped: bool = False  # an earlier claim could not start: only a short claim may jump it
+    seats_used: dict[str, int] = field(default_factory=dict[str, int])
     # Each running claim with its estimated finish (epoch seconds; inf = unknown).
     finishes: list[tuple[float, MemoryClaim]] = field(default_factory=list)
     # When the front (first blocked) claim can start; None = unknown, nothing jumps.
@@ -341,9 +361,14 @@ class _MemoryLoad:
         self.running += 1
         self.alone = self.alone or claim.run_alone
         self.used_mb += claim.reservation_mb or 0.0
+        for tool, _cap in claim.seats:
+            self.seats_used[tool] = self.seats_used.get(tool, 0) + 1
         self.finishes.append((finish, claim))
 
     def _fits(self, claim: MemoryClaim) -> bool:
+        """True when *claim* fits the memory budget and a seat of each tool it holds is free."""
+        if any(self.seats_used.get(tool, 0) >= cap for tool, cap in claim.seats):
+            return False
         if claim.run_alone:
             return self.running == 0
         return not self.alone and self.used_mb + (claim.reservation_mb or 0.0) <= self.budget_mb
@@ -389,9 +414,12 @@ def _memory_queue(
     ``(starts_now, position, blocked)``. The walk starts each claim in order
     against *claim*'s budget: a run-alone claim starts only when nothing runs,
     any other claim only when nothing run-alone runs and its reservation still
-    fits. The first claim that does not start (the front) blocks the claims
-    behind it, except a claim with its own wall-clock estimate that fits now and
-    is estimated to finish before the front can start: it jumps ahead. A holder's
+    fits. A claim holding a seat of a licensed tool also needs a free seat
+    under its own Seat Cap, which each claim carries (a cap changed while Jobs
+    wait applies to new claims only). The first claim that does not start (the
+    front) blocks the claims behind it, except a claim with its own wall-clock
+    estimate that fits now and is estimated to finish before the front can
+    start: it jumps ahead. A holder's
     finish is its start plus its estimate, unknown without either; an unknown
     finish the front waits for means nothing jumps. ``None`` (an unreadable
     claim) never fits and ends jumping, so an unknown reservation cannot

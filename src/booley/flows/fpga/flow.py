@@ -261,6 +261,14 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         """FPGA implementation is a heavy Sandbox workload."""
         return job_slots.CLASS_HEAVY
 
+    def _licensed_tools(self) -> tuple[str, ...]:
+        """One Job runs its Vivado work units in series: one Vivado seat.
+
+        A disabled Flow runs no Vivado; it reaches its own refusal in ``_run``
+        instead of being refused for a missing Seat Cap.
+        """
+        return ("vivado",) if self._flow_enabled() else ()
+
     def _build_command(self) -> list[str]:
         return []
 
