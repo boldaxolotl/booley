@@ -224,6 +224,11 @@ def test_resolver_integrity_failure_fails_the_step(tmp_path: Path) -> None:
 def _lane(tmp_path: Path, **env: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     scripts = tmp_path / ".github/scripts"
     scripts.mkdir(parents=True)
+    # The build is the real shared script; only its collaborators are fakes.
+    (scripts / "riscv_candidate.sh").write_bytes(
+        (_ROOT / ".github/scripts/riscv_candidate.sh").read_bytes()
+    )
+    (scripts / "riscv_candidate.sh").chmod(0o755)
     for name, status in (
         ("verify_riscv_image_contract.sh", "IMAGE_CONTRACT_STATUS"),
         ("run_picorv32_ci_demo.sh", "DEMO_STATUS"),

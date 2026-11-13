@@ -10,7 +10,7 @@ PICORV32_INPUT_FILES = frozenset(
         ".github/scripts/goal_mode_driver.py",
         ".github/scripts/picorv32_ci_inputs.py",
         ".github/scripts/picorv32_demo_contract.py",
-        ".github/scripts/pull_image_identity.py",
+        ".github/scripts/riscv_candidate.sh",
         ".github/scripts/verify_picorv32_demo.sh",
         ".github/scripts/run_picorv32_ci_demo.sh",
         ".github/scripts/release_validation/goal_readiness.py",
