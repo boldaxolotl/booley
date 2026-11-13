@@ -584,3 +584,17 @@ def test_history_written_before_source_bytes_still_loads(tmp_path):
     (summary,) = resource_history.summarize(records)
     assert summary["key"] == old_key and summary["runs"] == 2
     assert "core sim_run tests=smoke: 2 runs" in resource_history.render_report([summary])
+
+
+def test_records_carry_the_job_thread_count_only_when_set(flow, tmp_path):
+    from booley.flows.memory_admission import fixed_job_threads
+
+    job_resources.label_commands("core", "sim_build")
+    with fixed_job_threads(4):
+        assert flow._execute_local(_python("pass")).returncode == 0
+    assert flow._execute_local(_python("pass")).returncode == 0
+
+    counted, uncounted = _history(tmp_path)
+    assert counted["threads"] == 4
+    # No count is absent, never zero.
+    assert set(uncounted) == RECORD_FIELDS

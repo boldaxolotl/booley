@@ -19,7 +19,13 @@ from booley.flows.endpoint_events import (
     _write_display_event,
 )
 from booley.flows.endpoint_session import PreparedExecution
-from booley.flows.memory_admission import measure_memory_claim, memory_admission_enabled
+from booley.flows.memory_admission import (
+    fixed_job_threads,
+    job_threads_at_start,
+    measure_memory_claim,
+    memory_admission_enabled,
+)
+from booley.flows.sim.build_parallelism import available_cpu_count
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.endpoint_execution import (
@@ -87,6 +93,20 @@ class AdmissionContext:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _Claim:
+    """What one Job's admission claimed; all ``None`` when nothing was claimed.
+
+    ``threads`` is the Job's share of the cores, fixed when its Memory
+    Reservation is admitted; only a memory-admitted Job has one.
+    """
+
+    store: job_slots.SlotStore | None
+    token: object | None
+    warning: str | None = None
+    threads: int | None = None
+
+
 class AdmissionGate:
     """Lazy admission entered once, after Target authorization and the binding gate."""
 
@@ -96,7 +116,7 @@ class AdmissionGate:
         self._prepared = prepared
         self._entered = False
 
-    def _claim(self) -> tuple[job_slots.SlotStore | None, object | None, str | None]:
+    def _claim(self) -> _Claim:
         """Claim the Job's admission: a Memory Reservation under the switch, else a slot.
 
         Under the switch heavy Jobs, lint and Custom Flows are memory-admitted.
@@ -105,7 +125,7 @@ class AdmissionGate:
         if memory_admission_enabled() and endpoint._memory_admitted():
             return _acquire_memory_reservation(endpoint, self._prepared)
         store, token = endpoint._acquire_job_slot()
-        return store, token, None
+        return _Claim(store, token)
 
     @contextmanager
     def enter(self) -> Iterator[AdmissionContext]:
@@ -116,7 +136,8 @@ class AdmissionGate:
         token: object | None = None
         try:
             execution_id = _runtime_execution_id()
-            store, token, memory_warning = self._claim()
+            claim = self._claim()
+            store, token = claim.store, claim.token
             token_execution_id = getattr(token, "execution_id", None)
             if token_execution_id is not None and token_execution_id != execution_id:
                 raise AdmissionIdentityError(
@@ -126,7 +147,7 @@ class AdmissionGate:
             timeout = _slot_timeout_seconds()
             max_heavy = _heavy_lanes(store, token)
             cause = _admission_cancellation_cause(store, token)
-            yield AdmissionContext(
+            context = AdmissionContext(
                 mode="managed" if store is not None else "unmanaged",
                 slot_store=store,
                 outer_token=token,
@@ -136,8 +157,10 @@ class AdmissionGate:
                 timeout_seconds=timeout,
                 cancellation=lambda: cause() is not None,
                 cancellation_cause=cause,
-                memory_warning=memory_warning,
+                memory_warning=claim.warning,
             )
+            with fixed_job_threads(claim.threads):
+                yield context
         finally:
             if store is not None and token is not None:
                 store.release(token)
@@ -382,16 +405,16 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
 
 def _acquire_memory_reservation(
     endpoint: EndpointState, prepared: PreparedExecution | None
-) -> tuple[job_slots.SlotStore | None, object | None, str | None]:
+) -> _Claim:
     """Claim this memory-admitted Job's Memory Reservation, waiting in queue order if needed.
 
-    Returns ``(store, token, warning)``; ``(None, None, None)`` when nothing is
-    claimed, as for :func:`_acquire_job_slot`. That check comes before any
+    Returns the claim with the Job's thread count; an empty claim when nothing
+    is claimed, as for :func:`_acquire_job_slot`. That check comes before any
     sizing, so a child under its parent's claim does no estimate work.
     """
     found = _admission_root(endpoint)
     if found is None:
-        return (None, None, None)
+        return _Claim(None, None)
     project, root = found
     config = load_job_budget_config(booley_dir=project)
     store = job_slots.SlotStore(root, parse_caps(config))
@@ -409,4 +432,5 @@ def _acquire_memory_reservation(
         ),
         memory=plan.claim,
     )
-    return (store, token, plan.warning)
+    threads = job_threads_at_start(store, available_cpu_count())
+    return _Claim(store, token, plan.warning, threads)

@@ -389,3 +389,22 @@ def test_sim_campaign_that_cannot_resolve_its_test_runs_is_unknown(
     )
 
     assert flow.campaign_job_requests(_prepared()) is None
+
+
+def test_job_thread_count_prefers_the_admission_then_the_inherited_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = _admission()
+    monkeypatch.delenv(admission.JOB_THREADS_ENV, raising=False)
+    assert admission.job_thread_count() is None
+
+    monkeypatch.setenv(admission.JOB_THREADS_ENV, "3")
+    assert admission.job_thread_count() == 3
+    with admission.fixed_job_threads(5):
+        assert admission.job_thread_count() == 5
+    assert admission.job_thread_count() == 3
+
+    # Only Booley writes the variable: a malformed value is a defect, not ignored.
+    monkeypatch.setenv(admission.JOB_THREADS_ENV, "many")
+    with pytest.raises(ValueError, match="many"):
+        admission.job_thread_count()

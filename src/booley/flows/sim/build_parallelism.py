@@ -14,6 +14,7 @@ from typing import Literal
 from booley.audit.resource_policy import GIB_BYTES, heavy_memory_reservation
 from booley.config.jobs import parse_caps
 from booley.core.boundary import as_dict, as_int
+from booley.flows.memory_admission import job_thread_count, memory_admission_enabled
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.shared_infra import load_job_budget_config
 from booley.targets.domain import TargetInspection
@@ -154,9 +155,7 @@ def load_verilator_build_budget(
         config_loader() if config_loader is not None else _load_common_job_budget(project_root)
     )
     caps = parse_caps(config)
-    affinity = max(1, affinity_cpu_count())
-    quota = _cgroup_cpu_count(read_text)
-    effective_cpu = min(affinity, quota) if quota is not None else affinity
+    effective_cpu = available_cpu_count(affinity_cpu_count, read_text)
     jobs_section = as_dict(config.get("jobs"), default={}) or {}
     reservation = heavy_memory_reservation(
         jobs_section.get("heavy_memory"), calibration=None, selected_targets=()
@@ -174,6 +173,16 @@ def load_verilator_build_budget(
         heavy_lane_count=caps.max_heavy,
         make_jobs=max(1, jobs),
     )
+
+
+def available_cpu_count(
+    affinity_cpu_count: Callable[[], int] | None = None,
+    read_text: Callable[[Path], str | None] | None = None,
+) -> int:
+    """The CPUs this process may use: its affinity, bounded by the cgroup CPU quota."""
+    affinity = max(1, (affinity_cpu_count or _affinity_cpu_count)())
+    quota = _cgroup_cpu_count(read_text or _read_text)
+    return min(affinity, quota) if quota is not None else affinity
 
 
 def _make_options(inspection: TargetInspection) -> tuple[object, ...]:
@@ -209,5 +218,11 @@ def verilator_backend_arguments(
     """Return only Booley-owned backend options for one Verilator setup."""
     if inspection.eda_tool != "verilator" or _has_jobs_option(_make_options(inspection)):
         return ()
-    budget = load_verilator_build_budget(lane_kind, project_root=project_root)
-    return (f"-j{budget.make_jobs}", "VM_PARALLEL_BUILDS=1")
+    if lane_kind == "heavy" and memory_admission_enabled():
+        # Under memory admission the Job, not a heavy lane, shares the cores: its
+        # count was fixed at admission; without one nothing else is admitted.
+        threads = job_thread_count()
+        make_jobs = available_cpu_count() if threads is None else threads
+    else:
+        make_jobs = load_verilator_build_budget(lane_kind, project_root=project_root).make_jobs
+    return (f"-j{make_jobs}", "VM_PARALLEL_BUILDS=1")

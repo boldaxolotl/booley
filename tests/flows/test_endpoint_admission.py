@@ -994,7 +994,9 @@ def eight_cores(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
     monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
     monkeypatch.setattr(
-        build_parallelism, "_load_common_job_budget", lambda _root: {"jobs": {"heavy_memory": "1g"}}
+        build_parallelism,
+        "_load_common_job_budget",
+        lambda _root: {"jobs": {"heavy_memory": "1g"}},
     )
 
 
@@ -1025,13 +1027,15 @@ def test_memory_admitted_verilator_build_shares_cores_with_one_running_job(
 
     _seed_history(memory_runtime, ("a", 40))
     flow = AsicSynthesizeFlow()
-    with _running_memory_jobs(memory_runtime, 1):
-        with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
-            inspection = _verilator_inspection()
+    with (
+        _running_memory_jobs(memory_runtime, 1),
+        AdmissionGate(flow, _selection_prepared(flow, runtime)).enter(),
+    ):
+        inspection = _verilator_inspection()
+        assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
+        # The count is fixed at the Job's start: a Job that arrives later changes nothing.
+        with _running_memory_jobs(memory_runtime, 1):
             assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
-            # The count is fixed at the Job's start: a Job that arrives later changes nothing.
-            with _running_memory_jobs(memory_runtime, 1):
-                assert verilator_backend_arguments(inspection) == ("-j4", "VM_PARALLEL_BUILDS=1")
 
 
 @pytest.mark.usefixtures("eight_cores")

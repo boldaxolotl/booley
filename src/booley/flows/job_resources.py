@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.flows.memory_admission import job_thread_count
 from booley.runtime import job_slots
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.resource_history import DOCTOR_RUN_ENV, append_records
@@ -503,10 +504,14 @@ def history_records(
     tests = ",".join(label.tests)
     # Absent when unknown, never zero.
     size = {} if label.source_bytes is None else {"source_bytes": label.source_bytes}
+    # The Job's thread count, when it has one; absent otherwise.
+    job_threads = job_thread_count()
+    threads = {} if job_threads is None else {"threads": job_threads}
     return [
         {
             **common,
             **size,
+            **threads,
             "key": {
                 "target": label.target,
                 "phase": phase,
