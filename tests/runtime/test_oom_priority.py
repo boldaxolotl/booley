@@ -5,13 +5,13 @@ from __future__ import annotations
 import itertools
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
 from tests.oom_priority_support import FakeProc, oom_priority
+from tests.subprocess_budget import run_bounded_child
 from tests.test_job_slots import FakeWorld, make_store
 
 import booley
@@ -393,7 +393,7 @@ token = store.acquire(
 start = adj(os.getpid())
 with oom_priority.job_oom_priority(store, token):
     tool = subprocess.Popen(["sleep", "60"])
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 15
     while adj(tool.pid) <= adj(os.getpid()) and time.monotonic() < deadline:
         time.sleep(0.05)
     seen = {"coordinator": adj(os.getpid()), "tool": adj(tool.pid)}
@@ -404,13 +404,8 @@ print(json.dumps({"start": start, "end": adj(os.getpid()), **seen}))
 """
     source_root = str(Path(booley.__file__).resolve().parents[1])
     environment = os.environ | {"PYTHONPATH": source_root}
-    completed = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path / "slots")],
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
+    completed = run_bounded_child(
+        [sys.executable, "-c", script, str(tmp_path / "slots")], env=environment
     )
     assert completed.returncode == 0, completed.stderr
     seen = json.loads(completed.stdout.strip().splitlines()[-1])
