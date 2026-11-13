@@ -4997,6 +4997,17 @@ class TestIncompleteResourceResults:
 
         assert _termination_reason(process, process.stderr) == "eda_tool_failure"
 
+    def test_merged_stage_result_keeps_the_openroad_oom_kill(self, monkeypatch):
+        from booley.flows.synth.flow import _merge_stage_results, _termination_reason
+
+        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+        yosys = SubprocessResult(returncode=0)
+        openroad = SubprocessResult(returncode=2, oom_kill_delta=1, oom_killed=True)
+
+        merged = _merge_stage_results(yosys, openroad)
+
+        assert _termination_reason(merged, merged.stderr) == "oom"
+
     def test_baseline_failure_returns_before_current_matrix(self, tmp_path: Path):
         flow = AsicSynthesizeFlow()
         flow.parse_args(

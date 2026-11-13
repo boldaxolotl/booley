@@ -45,13 +45,15 @@ KILL_REPORT_ENV = "BOOLEY_JOB_KILL_REPORT"
 _KILL_REPORT_NAME = ".booley-kills"
 # What a launcher prints, in the command's own output, for a child a signal
 # killed: GNU make (the recipe's ``Killed`` or the shell's ``Error 137``), the
-# GCC driver (``g++`` reporting ``cc1plus``) and clang. Another Job cannot
-# write into this output. Anything else (the ``verilator`` driver script,
-# Vivado run scripts, a non-GNU or localized make) is not detected.
+# GCC driver (``g++`` reporting ``cc1plus``), clang and the ``verilator`` driver
+# (its front end ``verilator_bin`` killed by signal 9). Another Job cannot write
+# into this output. Anything else (Vivado run scripts, a project's own scripts,
+# a non-GNU or localized make) is not detected.
 _LAUNCHER_KILL_RE = re.compile(
     r"^(?:make(?:\[\d+\])?: \*\*\* (?:\[[^\]\n]*\] )?(?:Killed|Error 137)"
     r"|\S+: fatal error: Killed signal terminated program \S+"
-    r"|\S+: error: unable to execute command: Killed)[ \t\r]*$",
+    r"|\S+: error: unable to execute command: Killed"
+    r"|%Error: Verilator threw signal 9\b[^\n]*?)[ \t\r]*$",
     re.MULTILINE,
 )
 _CGROUP_MEMORY_EVENTS = Path("/sys/fs/cgroup/memory.events")
@@ -419,7 +421,7 @@ class JobResourceMonitor:
 
     def temp_env(self) -> dict[str, str]:
         """Point the command's temporary files into its private directory."""
-        env = dict.fromkeys(("TMPDIR", "TMP", "TEMP"), str(self.tmp_dir))
+        env: dict[str, str] = dict.fromkeys(("TMPDIR", "TMP", "TEMP"), str(self.tmp_dir))
         if memory_admission_enabled():
             env[KILL_REPORT_ENV] = str(self.tmp_dir / _KILL_REPORT_NAME)
         return env

@@ -249,7 +249,7 @@ def test_ordinary_failure_during_another_jobs_oom_kill_keeps_its_own_failure(mon
         expected_executable="yosys",
     )
 
-    assert failure is None or failure.failure_kind != "abnormal_termination"
+    assert failure is None
 
 
 def test_switch_unset_classifies_any_container_oom_kill_as_abnormal(monkeypatch) -> None:

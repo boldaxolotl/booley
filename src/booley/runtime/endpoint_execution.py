@@ -177,24 +177,8 @@ def _record_and_finish(
     )
 
 
-class _JobOomVerdict:
-    """Whether one Job's own command was OOM-killed; shared by the Job's threads."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._killed = False
-
-    def mark(self) -> None:
-        with self._lock:
-            self._killed = True
-
-    @property
-    def killed(self) -> bool:
-        with self._lock:
-            return self._killed
-
-
-_JOB_OOM_VERDICT: ContextVar[_JobOomVerdict | None] = ContextVar(
+# Set once any command of the current Job was OOM-killed; shared by the Job's threads.
+_JOB_OOM_VERDICT: ContextVar[threading.Event | None] = ContextVar(
     "booley_job_oom_verdict", default=None
 )
 
@@ -203,7 +187,7 @@ def note_job_oom_kill() -> None:
     """Record that a command of the current Job was OOM-killed; nothing outside a Job."""
     verdict = _JOB_OOM_VERDICT.get()
     if verdict is not None:
-        verdict.mark()
+        verdict.set()
 
 
 def execute_endpoint(
@@ -224,11 +208,11 @@ def execute_endpoint(
         return _record_and_finish(endpoint, request, exc.outcome, started=None)
     with admission:
         started = time.monotonic()
-        verdict = _JobOomVerdict()
+        verdict = threading.Event()
         token = _JOB_OOM_VERDICT.set(verdict)
         try:
             outcome = endpoint.invoke_endpoint(request, admission=borrowed, started=started)
         finally:
             _JOB_OOM_VERDICT.reset(token)
-        outcome.oom_killed = verdict.killed
+        outcome.oom_killed = verdict.is_set()
         return _record_and_finish(endpoint, request, outcome, started=started)

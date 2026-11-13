@@ -12,7 +12,6 @@ from functools import partial
 from pathlib import Path
 
 from booley.bwave.waveform_store import StreamingConversion
-from booley.flows.job_resources import report_descendant_kill
 from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams
 from booley.flows.sim.backends.shared import (
     ChildCpuSnapshot,
@@ -245,5 +244,8 @@ def _run(launch: SimulatorLaunch) -> tuple[deque[str], subprocess.Popen[str], Ru
     # A SIGKILL nobody in Booley sent is the OOM killer's mark: the Flow command
     # that ran this adapter exits by verdict, so say it in its Job (ADR 0087).
     if termination.kind == "completed" and proc.returncode == -_SIGKILL:
+        # Imported here: it pulls in the admission stack, which most runs never need.
+        from booley.flows.job_resources import report_descendant_kill
+
         report_descendant_kill()
     return supervisor.lines, proc, termination

@@ -156,7 +156,7 @@ def test_simulator_killed_by_booley_is_not_reported(tmp_path: Path, monkeypatch)
     )
     self_killed = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
 
-    _, proc, termination = run_supervised(_launch(tmp_path, booley_killed, timeout_s=1))
+    _, proc, termination = run_supervised(_launch(tmp_path, booley_killed, timeout_s=3))
     assert (proc.returncode, termination.kind) == (-signal.SIGKILL, "timeout")
     run_supervised(_launch(tmp_path, self_killed))
 

@@ -307,6 +307,50 @@ def test_unreadable_counter_or_timeout_is_never_oom_killed(flow, monkeypatch):
     assert timed_out.timed_out and not timed_out.oom_killed
 
 
+def _measurement(delta: int | None = 1, kills: int = 0) -> job_resources.JobMeasurement:
+    return job_resources.JobMeasurement(
+        interval_s=1.0,
+        overall=job_resources.Usage(),
+        phases={},
+        cpu_s=None,
+        oom_kill_delta=delta,
+        solo=None,
+        descendant_kills=kills,
+    )
+
+
+@pytest.mark.parametrize(
+    ("result", "kills", "expected"),
+    [
+        (SubprocessResult(returncode=137), 0, True),
+        (
+            SubprocessResult(
+                returncode=1, stderr="x\n%Error: Verilator threw signal 9.  Suggest\n"
+            ),
+            0,
+            True,
+        ),
+        (SubprocessResult(returncode=1), 1, True),
+        # A command that exited 0 is never blamed, whatever it reported or printed.
+        (SubprocessResult(returncode=0), 1, False),
+        (SubprocessResult(returncode=0, stderr="make: *** [x] Killed\n"), 0, False),
+        # A kill Booley's timeout sent is not the OOM killer's.
+        (SubprocessResult(returncode=-9, timed_out=True), 1, False),
+        (
+            SubprocessResult(returncode=1, timed_out=True, stdout="make: *** [x] Killed\n"),
+            0,
+            False,
+        ),
+        # The launcher's line starts its own line; a mention mid-line proves nothing.
+        (SubprocessResult(returncode=2, stdout="echo make: *** [x] Killed\n"), 0, False),
+    ],
+)
+def test_own_oom_kill_evidence_rules(result, kills, expected):
+    assert (
+        job_resources.own_oom_kill(_measurement(kills=kills), result, cancelled=False) is expected
+    )
+
+
 @posix_only
 def test_command_killed_by_a_cancelled_scope_is_not_oom_killed(flow, tmp_path, monkeypatch):
     _admission_on(monkeypatch, iter([0, 1]))

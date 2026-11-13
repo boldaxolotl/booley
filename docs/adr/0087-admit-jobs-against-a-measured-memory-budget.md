@@ -122,17 +122,23 @@ hardening), one budget per container, no licence budgets in v1.
   estimate raised to at least its observed peak. The caller sees it queued
   again with the reason. If it is OOM-killed again while alone, it fails with
   the OOM outcome. Results and Goal evidence come only from the final attempt.
-- A command counts as OOM-killed only when the container's OOM-kill count rose
-  while it ran and a process of its own tree died by a SIGKILL Booley did not
-  send. Booley sees that SIGKILL in the command's exit status (its own, or a
-  shell's 137), in the simulator adapter's report of its simulator, or in the
-  kill line GNU make, the GCC driver or clang prints for a killed child. A Job
-  is OOM-killed when one of its commands was. An unreadable counter, a timeout
-  or a cancellation blames nothing, and a command that fails for its own reason
-  while another Job is killed keeps that failure. A tool under a wrapper that
-  hides its death (the `verilator` driver script, Vivado run scripts, a
-  project's own scripts, a non-GNU or localized make) is not detected, so its
-  Job fails with its own failure and is not requeued.
+- The OOM-kill count is container-wide, so a rise alone cannot say which Job
+  was hit. With memory admission on, a command counts as OOM-killed only when
+  the count rose while it ran, it exited nonzero, and a process of its own
+  process tree died by a SIGKILL Booley did not send. Booley sees that SIGKILL
+  in the command's exit status (its own, or the 137 a shell reports), in the
+  simulator adapter's report of its simulator, or in the kill line a launcher
+  prints for a killed child: GNU make (`make: *** [...] Killed`), the GCC
+  driver (`Killed signal terminated program cc1plus`), clang and the
+  `verilator` driver (`Verilator threw signal 9`). A Job is OOM-killed when one
+  of its commands was.
+- A timeout, a cancellation or an unreadable counter never marks a command
+  OOM-killed, and a command that fails for its own reason while another Job is
+  killed keeps that failure. A kill is not detected when the tool runs under a
+  wrapper that exits with another status and prints none of those lines
+  (Vivado run scripts, a project's own scripts, a non-GNU or localized make,
+  colored compiler diagnostics). That Job fails with its own failure and is
+  not requeued.
 - A memory-pressure (PSI) watcher that kills before the OOM point is added
   only if OOM kills turn out to be common.
 

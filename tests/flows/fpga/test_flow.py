@@ -1946,6 +1946,15 @@ def test_ordinary_vivado_failure_during_another_jobs_oom_kill_is_not_abnormal(mo
     assert not metrics.infra_error
 
 
+def test_own_vivado_oom_kill_is_abnormal_termination_under_memory_admission(monkeypatch):
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    process = SubprocessResult(returncode=1, oom_kill_delta=1, oom_killed=True)
+
+    failure = FpgaImplFlow._classify_vivado_failure(process, "")
+
+    assert failure is not None and failure.failure_kind == "abnormal_termination"
+
+
 @pytest.mark.parametrize(
     "diagnostic",
     [

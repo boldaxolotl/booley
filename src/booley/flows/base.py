@@ -98,6 +98,23 @@ class SubprocessResult:
         return self.oom_kill_delta > 0
 
 
+def _blame_own_oom_kill(
+    measurement: job_resources.JobMeasurement,
+    result: SubprocessResult,
+    scope: Any,
+) -> None:
+    """Under memory admission, mark a command whose own process the OOM killer took.
+
+    A kill also counts for the whole Job, which the requeue reads (ADR 0087).
+    """
+    if not memory_admission_enabled():
+        return
+    cancelled = scope is not None and scope.cancelled()
+    result.oom_killed = job_resources.own_oom_kill(measurement, result, cancelled=cancelled)
+    if result.oom_killed:
+        note_job_oom_kill()
+
+
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
     from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
     from booley.runtime.supervised_execution import (
@@ -331,13 +348,7 @@ class FlowMechanics:
             return SubprocessResult(returncode=-1)
         result.peak_rss_mb = measurement.peak_rss_mb
         result.oom_kill_delta = measurement.oom_kill_delta or 0
-        if memory_admission_enabled():
-            cancelled = scope is not None and scope.cancelled()
-            result.oom_killed = job_resources.own_oom_kill(
-                measurement, result, cancelled=cancelled
-            )
-            if result.oom_killed:
-                note_job_oom_kill()
+        _blame_own_oom_kill(measurement, result, scope)
         job_resources.record_command(flow, label, self._resource_flags(), measurement, result)
         return result
 

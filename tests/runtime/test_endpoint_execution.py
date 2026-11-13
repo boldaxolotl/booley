@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.flows import job_resources
+from booley.flows.base import FlowMechanics
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_SUCCESS,
@@ -216,14 +217,14 @@ def test_gate_rejection_finishes_before_admission() -> None:
 class _CommandEndpoint(_Endpoint):
     """Endpoint whose Job runs one command through a Flow's local executor."""
 
-    def __init__(self, flow: object, code: str) -> None:
+    def __init__(self, flow: FlowMechanics, code: str) -> None:
         super().__init__()
         self.flow, self.code = flow, code
 
     def invoke_endpoint(
         self, prepared: object, *, admission: object, started: float
     ) -> EndpointOutcome:
-        self.flow._execute_local([sys.executable, "-c", self.code])  # type: ignore[attr-defined]
+        self.flow._execute_local([sys.executable, "-c", self.code])
         return EndpointOutcome(exit_code=EXIT_SUCCESS)
 
 
