@@ -468,7 +468,7 @@ def test_coverage_authentication_failure_returns_structured_failure(
     )
 
     assert result.exit_code == 2
-    assert result.detail["campaigns"] == {}
+    assert result.detail["records"] == {}
     assert result.detail["targets"] == {}
     assert "untrusted campaign" in result.report_text
     assert len(pending) == 1
@@ -598,7 +598,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     assert result.exit_code == 2
     for path in (invocation / "report.json", invocation.parent / "sim.json"):
         report = json.loads(path.read_bytes())
-        detail = report["detail"]["campaigns"]["sim"]
+        detail = report["detail"]["records"]["sim"]
         assert report["exit_code"] == 2
         assert detail["complete"] is True
         assert detail["grade"] == "error"
@@ -1271,7 +1271,7 @@ def test_public_cycle_metadata_preserves_durable_accepted_criterion(
         projection = json.loads(next(reports.glob("sim/*/targets/*/simulation.json")).read_text())
         assert projection["tests"][0]["cycles"] == 1234
     if failure not in {"render", "structured"}:
-        assert report["detail"]["campaigns"]["sim"]["observations"][0]["cycle_count"] == 1234
+        assert report["detail"]["records"]["sim"]["observations"][0]["cycle_count"] == 1234
         assert "smoke: cycles=1234" in result.outcome.report_text
 
 
@@ -1460,7 +1460,7 @@ def _assert_nullable_cycle_report(flow, result, tmp_path, unnamed):
     expected = [{"test": None if unnamed else "smoke", "cycle_count": None}]
     assert report["cycle_counts"]["sim"] == expected
     assert report == json.loads((tmp_path / "reports/sim.json").read_text())
-    preview = report["detail"]["campaigns"]["sim"]["observations"]
+    preview = report["detail"]["records"]["sim"]["observations"]
     assert preview[0]["cycle_count"] is None
     assert preview[0]["test"] == expected[0]["test"]
 

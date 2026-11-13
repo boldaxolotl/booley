@@ -272,7 +272,7 @@ def test_campaign_report_and_rows_carry_each_test_runs_evidence_paths(
     target = tmp_path / "reports/sim/1/targets/lite"
     text = run.result.outcome.report_text
     mcp = json.loads((tmp_path / "reports/sim/1/report.json").read_text(encoding="utf-8"))
-    observations = mcp["detail"]["campaigns"]["lite"]["observations"]
+    observations = mcp["detail"]["records"]["lite"]["observations"]
 
     # Card: the FAIL row names its log; the PASS row prints nothing.
     log = _card_path(text, "log")

@@ -90,7 +90,7 @@ def _endpoint_failure_detail(detail: Mapping[str, object]) -> Mapping[str, objec
         "collection": _endpoint_collection(detail.get("collection")),
         "abort_remaining": True,
     }
-    validated.pop("coverage_campaign", None)
+    validated.pop("coverage_record", None)
     return validated
 
 

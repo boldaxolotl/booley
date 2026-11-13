@@ -706,7 +706,7 @@ def test_report_dependency_scan_tolerates_malformed_report_shapes(tmp_path):
 
     report.write_text("{}", encoding="utf-8")
     assert not _report_references_campaign(report, manifest, campaign_id)
-    report.write_text(json.dumps({"detail": {"campaigns": {"sim_0": []}}}), encoding="utf-8")
+    report.write_text(json.dumps({"detail": {"records": {"sim_0": []}}}), encoding="utf-8")
     assert not _report_references_campaign(report, manifest, campaign_id)
 
 

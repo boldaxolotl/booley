@@ -18,7 +18,7 @@ from booley.flows.sim.campaign.run_directory import (
 )
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
-TEMPLATE = "work/{campaign}/{test}/{attempt}"
+TEMPLATE = "work/{record}/{test}/{attempt}"
 ATTEMPT_MARKER = ".booley-simulation-attempt.json"
 PARENT_MARKER = ".booley-simulation-parent.json"
 

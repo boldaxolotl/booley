@@ -6000,8 +6000,8 @@ def _read_selftest_campaign(project: ProjectAudit, case: _SelftestCase, rc: int)
         raise ValueError("report is not a Simulation Flow v3 report")
     if require_int(report.get("exit_code"), field="exit_code") != rc:
         raise ValueError("report exit code does not match this invocation")
-    campaigns = require_dict(require_dict(report.get("detail")).get("campaigns"))
-    campaign = require_dict(campaigns.get(case.target), field="selected campaign")
+    records = require_dict(require_dict(report.get("detail")).get("records"))
+    campaign = require_dict(records.get(case.target), field="selected campaign")
     if campaign.get("complete") is not True:
         raise ValueError("selected Simulation Campaign is incomplete")
     return campaign
