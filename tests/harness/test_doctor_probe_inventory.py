@@ -21,6 +21,7 @@ say exactly which name moved.
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -35,7 +36,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit), or a named public owner entry point.
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_viewer_bridge$|inspect_native_dependencies$|inspect_core_resolution$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_viewer_bridge$|inspect_native_dependencies$|inspect_core_resolution$|inspect_mcp_server$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -86,7 +87,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "inspect_interactive_git",
             "inspect_viewer_bridge",
             "_run_agent_credential_checks",
-            "_run_mcp_probe",
+            "inspect_mcp_server",
         }
     ),
     "_run_project_checks": frozenset(
@@ -422,3 +423,42 @@ def test_doctor_holds_no_core_resolution_rules() -> None:
     )
     attributes = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     assert "resolve_target_handle" not in attributes, "the host-FuseSoC fallback is gone"
+
+
+def test_doctor_holds_no_mcp_probe_rules() -> None:
+    """The MCP server probe, its grading rules and constants live in the owner."""
+    moved = {
+        "_run_mcp_probe",
+        "_sandbox_booley_dir",
+        "_mcp_probe_command",
+        "_check_mcp_probe_result",
+        "_parse_mcp_probe_stdout",
+        "_check_mcp_tool_payload",
+        "_required_mcp_tools",
+        "_advisory_mcp_tools",
+        "_BASE_REQUIRED_MCP_TOOLS",
+        "_ADVISORY_SPECIALIST_TOOLS",
+        "_ADVISORY_FLOW_TOOLS",
+        "_MCP_PROBE_TIMEOUT_S",
+    }
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+    assert not moved & defined, (
+        f"MCP probe rules moved back into Doctor: {sorted(moved & defined)}"
+    )
+    owner = importlib.import_module("booley.mcp.server_inspection")
+    assert callable(owner.inspect_mcp_server)
+
+
+def test_mcp_checks_inventory_names_the_mcp_server_owner_call() -> None:
+    """The MCP checks call the owner; no Doctor probe stands in for it."""
+    refs = _probe_refs("_run_mcp_checks")
+    assert "inspect_mcp_server" in refs
+    assert "_run_mcp_probe" not in refs

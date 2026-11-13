@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-import booley.runtime.version_attribution as attribution_module
+from booley.runtime import platform_paths
 from booley.runtime.version_attribution import (
     VersionAttribution,
     VersionOrigin,
@@ -176,7 +176,7 @@ def test_source_git_metadata_uses_only_attributed_root(tmp_path, monkeypatch) ->
             stdout = "2026-08-30T10:39:40Z\n"
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(attribution_module.subprocess, "run", run)
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", run)
     attribution = VersionAttribution(
         version="4.5.6",
         origin=VersionOrigin.SOURCE,
@@ -196,8 +196,8 @@ def test_source_git_metadata_does_not_search_enclosing_repository(tmp_path, monk
     source_root = outer / "unpacked-booley"
     source_root.mkdir()
     monkeypatch.setattr(
-        attribution_module.subprocess,
-        "run",
+        platform_paths,
+        "run_captured_bounded",
         lambda *_args, **_kwargs: pytest.fail("must not inspect an enclosing repository"),
     )
     attribution = VersionAttribution(

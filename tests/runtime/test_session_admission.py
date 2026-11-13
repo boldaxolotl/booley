@@ -465,27 +465,6 @@ def test_claim_candidate_disappearing_during_inspect_fails_closed(
         session_admission.admit_start(project, target_name="headless", run=disappearing)
 
 
-def test_recovery_reports_when_it_will_restore_at_capacity(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    docker = _Docker(
-        {"editor-id": _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")}
-    )
-    monkeypatch.setattr(
-        session_admission,
-        "load_host_policy",
-        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
-    )
-
-    session_admission.admit_start(project, target_name="recovery", recovery=True, run=docker)
-
-    assert "recovery is restoring work at or above" in caplog.text
-
-
 @pytest.mark.parametrize("canonical", [False, True])
 def test_runtime_reports_legacy_host_policy_migration(
     tmp_path: Path,

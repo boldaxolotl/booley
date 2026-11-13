@@ -72,7 +72,6 @@ from booley.config.project_config import (
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
-    is_str_list,
     require_dict,
     require_int,
     require_list,
@@ -112,6 +111,7 @@ from booley.harness.setup import readiness
 from booley.harness.setup.common import info
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
 from booley.harness.setup.readiness import ProjectAudit
+from booley.mcp import server_inspection
 from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
 from booley.presentation.terminal_table import render_table
 from booley.runtime import (
@@ -141,12 +141,12 @@ from booley.runtime.booley_dir import (
     own_booley_dir_repo_path,
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
+    sandbox_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
 from booley.runtime.image_provenance import is_local_image_id
-from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
@@ -245,13 +245,6 @@ _TOOL_EXIT_DESIGN_FAIL = 1
 # source classification in :mod:`booley.audit.design_size`.
 _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 _CONTAINER_CLI = "doc" + "ker"
-# B-Wave is unconditionally required; enabled deterministic Flows are added below.
-_BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
-# MCP tools worth a heads-up when expected-but-absent from the MCP surface. An explicit
-# ``[specialists.<name>].enabled = false`` (or ``[flows.<name>].enabled = false``) opts out.
-_ADVISORY_SPECIALIST_TOOLS = frozenset({"reviewer"})
-_ADVISORY_FLOW_TOOLS = frozenset({"mutation"})
-_MCP_PROBE_TIMEOUT_S = 60
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
 Warn = Callable[..., None]
@@ -1340,7 +1333,6 @@ def _run_runtime_phase(
         project,
         docker_exe,
         sandbox_image,
-        verbose,
         reporter,
     )
     progress("Project checks")
@@ -2744,7 +2736,6 @@ def _run_mcp_checks(
     project: ProjectAudit | None,
     docker_exe: str | None,
     image: str,
-    verbose: bool,
     reporter: _Reporter,
 ) -> None:
     """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
@@ -2785,8 +2776,24 @@ def _run_mcp_checks(
     if not _docker_image_exists_by_name(image):
         reporter.skip_("MCP server probe skipped - sandbox image unavailable")
         return
-    _run_mcp_probe(
-        project, docker_exe, image, verbose, reporter.pass_, reporter.warn_, reporter.fail_
+    reporter.diagnostics(
+        server_inspection.inspect_mcp_server(
+            _mcp_server_inspection_request(project, docker_exe, image)
+        )
+    )
+
+
+def _mcp_server_inspection_request(
+    project: ProjectAudit, docker_exe: str, image: str
+) -> server_inspection.McpServerInspectionRequest:
+    """Describe the MCP probe; Doctor alone knows whether it covers the FPGA axis."""
+    return server_inspection.McpServerInspectionRequest(
+        project_root=project.project_root,
+        booley_dir=project.booley_dir,
+        docker_exe=docker_exe,
+        image=image,
+        booley_toml=project.booley_toml,
+        fpga_covered=_fpga_doctor_applicable(project),
     )
 
 
@@ -3469,157 +3476,6 @@ def _check_subscription_creds_health(
             "recreate the container to re-bind the current host file — or store a "
             f"rotation-free credential: booley auth --cli {app}",
         )
-
-
-def _run_mcp_probe(
-    project: ProjectAudit,
-    docker_exe: str,
-    image: str,
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    cmd = _mcp_probe_command(project, docker_exe, image)
-    env = os.environ.copy()
-    env["BOOLEY_DIR"] = str(project.booley_dir)
-    env["BOOLEY_MCP_MODE"] = "interactive"
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=project.project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=_MCP_PROBE_TIMEOUT_S,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        _fail(f"MCP server probe failed to start: {exc}", "rebuild sandbox image")
-        return
-    _check_mcp_probe_result(project, result, verbose, _pass, _warn, _fail)
-
-
-def _sandbox_booley_dir(project_root: Path) -> str:
-    """Return the in-Sandbox ``BOOLEY_DIR`` for the repo mounted at ``/work``.
-
-    The Project's own Booley Directory (``.booley`` by default, or the
-    checkout's relocated ``[project].dir``) under the ``/work`` bind mount.
-    """
-    return f"/work/{own_booley_dir_repo_path(project_root).as_posix()}"
-
-
-def _mcp_probe_command(project: ProjectAudit, docker_exe: str, image: str) -> list[str]:
-    return [
-        docker_exe,
-        "run",
-        "--init",
-        "--rm",
-        "-v",
-        f"{docker_mount_path(project.project_root)}:/work",
-        "-w",
-        "/work",
-        "-e",
-        f"BOOLEY_DIR={_sandbox_booley_dir(project.project_root)}",
-        "-e",
-        "BOOLEY_MCP_MODE=interactive",
-        image,
-        "python",
-        "-m",
-        "booley.mcp.probe",
-    ]
-
-
-def _check_mcp_probe_result(
-    project: ProjectAudit,
-    result: subprocess.CompletedProcess[str],
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    if result.returncode != 0:
-        _fail(f"MCP server probe failed with exit {result.returncode}", "rebuild sandbox image")
-        _print_output_excerpt(result)
-        return
-    payload = _parse_mcp_probe_stdout(result.stdout)
-    if payload is None:
-        _fail("MCP server probe did not return valid JSON", "rebuild sandbox image")
-        _print_output_excerpt(result)
-        return
-    _check_mcp_tool_payload(project, payload, verbose, _pass, _warn, _fail)
-
-
-def _parse_mcp_probe_stdout(stdout: str) -> dict[str, Any] | None:
-    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
-    if not lines:
-        return None
-    try:
-        payload = json.loads(lines[-1])
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def _check_mcp_tool_payload(
-    project: ProjectAudit,
-    payload: dict[str, Any],
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    _warn = _warning_sink(_warn, "interactive.mcp-tool-advisory-missing")
-    mcp_tools = payload.get("tools")
-    errors = payload.get("errors", [])
-    if not is_str_list(mcp_tools) or not is_str_list(errors):
-        _fail("MCP server probe returned malformed payload", "rebuild sandbox image")
-        return
-    if errors:
-        _fail(f"MCP tool discovery reported {len(errors)} error(s)", errors[0])
-        return
-    if payload.get("logs_dir_ok") is not True:
-        _fail("MCP interactive log setup failed", "check .booley mount and permissions")
-        return
-    missing = _required_mcp_tools(project) - set(mcp_tools)
-    if missing:
-        _fail(
-            f"MCP missing required endpoint(s): {', '.join(sorted(missing))}",
-            "fix [flows.<name>].enabled or reinstall Booley",
-        )
-        return
-    _pass(f"MCP server exposes {len(mcp_tools)} MCP tool(s)")
-    advisory_missing = _advisory_mcp_tools(project) - set(mcp_tools)
-    if advisory_missing:
-        _warn(
-            f"MCP missing documented interactive endpoint(s): {', '.join(sorted(advisory_missing))}",
-        )
-    if verbose:
-        info(f"    {', '.join(mcp_tools)}")
-
-
-def _required_mcp_tools(project: ProjectAudit) -> set[str]:
-    required = set(_BASE_REQUIRED_MCP_TOOLS)
-    for flow_name in _REQUIRED_FLOW_TABLES:
-        if _flow_enabled(project, flow_name):
-            required.add(flow_name)
-    if _fpga_doctor_applicable(project) and _flow_enabled(project, "fpga"):
-        required.add("fpga")
-    return required
-
-
-def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
-    """Advisory interactive MCP tools that have not been explicitly disabled."""
-    specialists_cfg = project.booley_toml.get("specialists", {})
-    if not isinstance(specialists_cfg, dict):
-        specialists_cfg = {}
-    tools = {
-        name
-        for name in _ADVISORY_SPECIALIST_TOOLS
-        if config_section(specialists_cfg, name).get("enabled") is not False
-    }
-    tools.update(name for name in _ADVISORY_FLOW_TOOLS if _flow_enabled(project, name))
-    return tools
 
 
 def _run_project_checks(
@@ -6155,7 +6011,7 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     """
     if project.booley_dir.as_posix() not in {
         dc.BOOLEY_DIR_TARGET,
-        _sandbox_booley_dir(project.project_root),
+        sandbox_booley_dir(project.project_root),
     }:
         return str(report_dir)
     own_dir = own_booley_dir_repo_path(project.project_root)

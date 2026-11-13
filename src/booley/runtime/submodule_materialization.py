@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import NamedTuple
 
 from booley.config.settings import SubmoduleConfigError, load_submodule_config
+from booley.runtime import platform_paths
 from booley.runtime.booley_dir import checkout_booley_dir_relative_to, own_booley_dir
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_repositories import (
@@ -482,13 +483,8 @@ def _run_git(
     *args: str,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        _git_command(cwd, *args),
-        capture_output=True,
-        text=True,
-        env=_offline_env(),
-        timeout=_TIMEOUT_S,
-        check=False,
+    result = platform_paths.run_captured_bounded(
+        _git_command(cwd, *args), timeout=_TIMEOUT_S, env=_offline_env(), errors="strict"
     )
     if check and result.returncode != 0:
         _raise_git("running local Git command", result)

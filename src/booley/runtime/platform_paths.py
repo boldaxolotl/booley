@@ -191,6 +191,7 @@ def run_captured_bounded(
     timeout: float,
     cwd: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
+    errors: str = "replace",
 ) -> subprocess.CompletedProcess[str]:
     """Run *argv* capturing text output; never wait unboundedly on a timeout.
 
@@ -199,7 +200,10 @@ def run_captured_bounded(
     limit, this starts the child in its own process group, kills the whole tree
     on timeout and abandons pipes a surviving descendant still holds.
     *cwd* and *env* are the child's working directory and complete environment;
-    ``None`` inherits the caller's.
+    ``None`` inherits the caller's. Output is decoded as UTF-8 with the *errors*
+    handler (``"replace"`` by default; ``"strict"`` raises ``UnicodeDecodeError``
+    on an undecodable byte). A timeout is always reported as ``TimeoutExpired``,
+    even when the killed child's partial output no longer decodes.
 
     Returns the ``CompletedProcess`` for any exit status (never raises on a
     non-zero exit). Raises ``subprocess.TimeoutExpired`` after *timeout*
@@ -215,7 +219,7 @@ def run_captured_bounded(
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
-        errors="replace",
+        errors=errors,
         cwd=cwd,
         env=env,
         **popen_new_group_kwargs(),
@@ -226,11 +230,12 @@ def run_captured_bounded(
         kill_process_tree(proc)
         try:
             stdout, stderr = proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            # A descendant escaped the group and still holds a pipe: give up on
-            # its output. On POSIX communicate() reads on this thread, so the
-            # pipes can be closed here; on Windows daemon reader threads own
-            # them (closing a buffered pipe a reader is blocked on would block).
+        except (subprocess.TimeoutExpired, UnicodeDecodeError):
+            # A descendant escaped the group and still holds a pipe, or the
+            # partial output no longer decodes: give up on its output. On POSIX
+            # communicate() reads on this thread, so the pipes can be closed
+            # here; on Windows daemon reader threads own them (closing a
+            # buffered pipe a reader is blocked on would block).
             stdout = stderr = None
             if not IS_WINDOWS:
                 for pipe in (proc.stdout, proc.stderr):

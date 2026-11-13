@@ -249,6 +249,7 @@ DIRECTION_RULES = (
             exact("booley.runtime.core_repository_hygiene"),
             exact("booley.runtime.core_resolution"),
             exact("booley.runtime.project_image"),
+            exact("booley.mcp.server_inspection"),
         ),
         (
             exact("booley.harness.doctor"),

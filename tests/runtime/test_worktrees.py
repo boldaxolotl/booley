@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from tests.subprocess_budget import run_bounded_child
 
+from booley.runtime import platform_paths
 from booley.runtime.worktrees import WorktreeEntry, list_worktrees, parse_worktree_porcelain
 
 SHA = "f4350f4c37961587b52be96f4d1f8a0c131b3ef2"
@@ -116,14 +117,14 @@ def test_list_worktrees_propagates_timeout_and_oserror(
     def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
 
-    monkeypatch.setattr(subprocess, "run", timeout)
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", timeout)
     with pytest.raises(subprocess.TimeoutExpired):
         list_worktrees(tmp_path)
 
     def missing(*args, **kwargs):
         raise OSError("git not found")
 
-    monkeypatch.setattr(subprocess, "run", missing)
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", missing)
     with pytest.raises(OSError, match="git not found"):
         list_worktrees(tmp_path)
 

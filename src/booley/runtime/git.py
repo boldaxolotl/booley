@@ -13,6 +13,7 @@ from pathlib import Path
 from booley.commit_policy import validate_message
 from booley.core import scope_matching
 from booley.core.booley_dir import BOOLEY_DIR_NAME, own_booley_dir_repo_path
+from booley.runtime import platform_paths
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.git_facts import run_remembered
 from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
@@ -28,33 +29,20 @@ BOOLEY_EXCLUDE_HEADER = "# Booley (generated; local, uncommitted)"
 def git_run(wt: Path, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a git command in a working tree, returning CompletedProcess.
 
-    Centralizes the common pattern: subprocess.run(["git", ...], cwd=str(wt),
-    capture_output=True, text=True, encoding="utf-8", timeout=N).
+    Centralizes the common pattern of a text-captured, timeout-bound Git call.
+    On timeout the whole Git process tree is killed (see
+    ``platform_paths.run_captured_bounded``) and ``subprocess.TimeoutExpired`` is raised.
     """
-    result = subprocess.run(
-        ["git", *args],
-        cwd=str(wt),
-        env=inherited_git_environment(),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        check=False,
-    )
+
+    def run() -> subprocess.CompletedProcess[str]:
+        return platform_paths.run_captured_bounded(
+            ["git", *args], timeout=timeout, cwd=str(wt), env=inherited_git_environment()
+        )
+
+    result = run()
     if _is_index_lock_failure(result) and _remove_stale_index_lock(wt):
         logger.warning("Removed stale git index.lock for %s; retrying git %s", wt, " ".join(args))
-        result = subprocess.run(
-            ["git", *args],
-            cwd=str(wt),
-            env=inherited_git_environment(),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
+        result = run()
     return result
 
 
@@ -73,16 +61,11 @@ def _is_index_lock_failure(result: subprocess.CompletedProcess) -> bool:
 def _git_dir_for_worktree(wt: Path) -> Path | None:
     """Resolve the real git dir for a worktree without using git_run recursion."""
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", "rev-parse", "--git-dir"],
+            timeout=10,
             cwd=str(wt),
             env=inherited_git_environment(),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
@@ -118,16 +101,8 @@ def _git_common_dir(wt: Path) -> Path | None:
             environment,
             text=True,
             decoding="replace",
-            run=lambda: subprocess.run(
-                ["git", "rev-parse", "--git-common-dir"],
-                cwd=str(wt),
-                env=environment,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-                check=False,
+            run=lambda: platform_paths.run_captured_bounded(
+                ["git", "rev-parse", "--git-common-dir"], timeout=10, cwd=str(wt), env=environment
             ),
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):

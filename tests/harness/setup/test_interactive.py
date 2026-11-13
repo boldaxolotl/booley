@@ -119,9 +119,7 @@ def test_refresh_preview_does_not_plan_or_apply_stopped_runtime_cleanup(tmp_path
     from booley.harness.session_refresh import _RuntimeImages
     from booley.runtime.session_refresh import RefreshImage
 
-    forbidden = Mock(
-        side_effect=AssertionError("init cleanup must not run while refresh parks predecessor")
-    )
+    forbidden = Mock(side_effect=AssertionError("init cleanup must not run during refresh"))
     monkeypatch.setattr(interactive, "inspect", forbidden)
     monkeypatch.setattr(interactive, "apply", forbidden)
     sources = Mock()
@@ -130,7 +128,7 @@ def test_refresh_preview_does_not_plan_or_apply_stopped_runtime_cleanup(tmp_path
     monkeypatch.setattr(adapter, "_current_sources", lambda *_args: sources)
     preview = Mock(return_value=_prepared(tmp_path))
     monkeypatch.setattr(session_issuance, "preview", preview)
-    adapter.prepare_spec(tmp_path, RefreshImage("booley-sandbox", "sha256:prepared"))
+    adapter.prepare_spec(tmp_path, RefreshImage("sha256:prepared", None, None, True))
     preview.assert_called_once_with(tmp_path, sources.build, expected_image_id="sha256:prepared")
     forbidden.assert_not_called()
 

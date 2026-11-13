@@ -617,8 +617,9 @@ def run(
     # ``list`` prints through the view the harness injects: the palette and table
     # renderer live there, and this package may not import them.
     handlers = {**_HANDLERS, "list": lambda a, _root, pdir: _cmd_list(a, pdir, list_view)}
-    handler = handlers.get(command)
-    environment_handler = _ENVIRONMENT_HANDLERS.get(command)
+    # A bare ``booley feedback`` leaves ``feedback_command`` unset (None).
+    handler = handlers.get(command) if isinstance(command, str) else None
+    environment_handler = _ENVIRONMENT_HANDLERS.get(command) if isinstance(command, str) else None
     if handler is None and environment_handler is None:
         commands = [*handlers, *_ENVIRONMENT_HANDLERS]
         print(
