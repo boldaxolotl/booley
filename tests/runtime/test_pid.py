@@ -50,6 +50,7 @@ def test_windows_live_and_recently_exited_processes(
     monkeypatch: pytest.MonkeyPatch, exit_code: int, expected: bool
 ) -> None:
     kernel32 = _FakeKernel32(handle=12, exit_code=exit_code)
+    monkeypatch.setattr(runtime_pid.sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
 
     assert runtime_pid._windows_pid_alive(1234) is expected
@@ -57,10 +58,20 @@ def test_windows_live_and_recently_exited_processes(
 
 def test_windows_access_denied_is_conservatively_alive(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel32 = _FakeKernel32(handle=0)
+    monkeypatch.setattr(runtime_pid.sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
 
     assert runtime_pid._windows_pid_alive(1234) is True
+
+
+def test_windows_helpers_refuse_other_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runtime_pid.sys, "platform", "linux")
+
+    with pytest.raises(OSError, match="Windows-only"):
+        runtime_pid._windows_pid_alive(1234)
+    with pytest.raises(OSError, match="Windows-only"):
+        runtime_pid._windows_process_identity(1234)
 
 
 def test_posix_permission_denied_is_conservatively_alive(monkeypatch: pytest.MonkeyPatch) -> None:

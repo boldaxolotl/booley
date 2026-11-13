@@ -15,7 +15,7 @@ from typing import NamedTuple
 from booley.config.sandbox import project_image_name_for_identity
 from booley.core.boundary import require_dict, require_list, require_str
 from booley.core.project_identity import accepted_project_labels, project_name_id
-from booley.projects.image_keepers import Leftover, PurgeResult
+from booley.projects.image_keepers import Leftover, LeftoverKind, LeftoverReason, PurgeResult
 from booley.runtime import interactive_docker
 from booley.runtime.devcontainer import state_volume_names
 from booley.runtime.image_lifecycle import (
@@ -77,7 +77,7 @@ def _image_rows() -> list[_ImageRow]:
 
 def _image_reason(
     identity: str, image: str, refs: tuple[str, ...], owned: set[str], in_use: frozenset[str]
-) -> str:
+) -> LeftoverReason:
     if image in in_use:
         return "in-use"
     if any(not _owns_tag(identity, ref) for ref in refs):
@@ -145,11 +145,12 @@ def _volumes(identity: str) -> tuple[Leftover, ...]:
 
 def _labelled(identity: str) -> tuple[Leftover, ...]:
     """Containers and networks (including license topology) still labelled for the Project."""
-    result = []
-    for kind, args, name_field in (
+    result: list[Leftover] = []
+    kinds: tuple[tuple[LeftoverKind, list[str], str], ...] = (
         ("container", ["container", "ls", "--all"], "{{.Names}}"),
         ("network", ["network", "ls"], "{{.Name}}"),
-    ):
+    )
+    for kind, args, name_field in kinds:
         names = {
             name
             for label in accepted_project_labels(identity)

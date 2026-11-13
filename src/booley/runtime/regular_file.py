@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import sys
 from pathlib import Path
 
 from booley.core.booley_dir_links import is_booley_dir_entry, lexical_booley_path
@@ -12,6 +13,8 @@ from booley.core.booley_dir_links import is_booley_dir_entry, lexical_booley_pat
 
 def _windows_path_from_handle(descriptor: int) -> str:  # pragma: no cover
     """Resolve a Windows descriptor; exercised by the native Windows CI shards."""
+    if sys.platform != "win32":
+        raise OSError("_windows_path_from_handle is Windows-only")
     import ctypes
     import msvcrt
     from ctypes import wintypes

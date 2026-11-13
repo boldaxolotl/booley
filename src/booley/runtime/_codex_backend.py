@@ -781,6 +781,8 @@ async def _codex_run_subprocess(
         proc,
         timeout_seconds=params.timeout_seconds,
     )
+    # ``_stream_and_drain`` awaited ``proc.wait()``, so the exit status is set here.
+    assert proc.returncode is not None
     if not prompt_fed and proc.returncode == 0:
         # A success would answer a truncated prompt; a non-zero exit is
         # classified from Codex's own output by the caller.

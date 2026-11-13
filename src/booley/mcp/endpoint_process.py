@@ -381,7 +381,7 @@ async def _timeout_subprocess_result(
 
 def _async_process_group_kwargs() -> dict[str, Any]:
     """Popen kwargs for an asyncio child process group/session."""
-    return new_group_kwargs()
+    return dict(new_group_kwargs())
 
 
 async def _async_process_snapshot(pid: int) -> str:

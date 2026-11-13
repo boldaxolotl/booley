@@ -453,8 +453,12 @@ def _sandbox(
         state = require_dict(document.get("State"), field="State")
         labels = _labels(config.get("Labels"))
         running = require_bool_value(state.get("Running"), field="State.Running")
-        started = _docker_time(require_str(state, "StartedAt"), allow_zero=not running)
-        created = _docker_time(require_str(document, "Created"), allow_zero=False)
+        started_at = require_str(state, "StartedAt")
+        # A never-started container reports Docker's zero timestamp.
+        started = (
+            None if not running and _is_docker_zero_time(started_at) else _docker_time(started_at)
+        )
+        created = _docker_time(require_str(document, "Created"))
         name = require_str(document, "Name").removeprefix("/")
         root = _project_root(document, labels, listed_name)
         if exact_id and require_str(document, "Id") != container_id:
@@ -528,10 +532,12 @@ def _workspace_mount_root(document: dict[str, Any], name: str) -> str:
     return roots[0]
 
 
-def _docker_time(value: str, *, allow_zero: bool) -> datetime | None:
-    if value.startswith("0001-01-01"):
-        if allow_zero:
-            return None
+def _is_docker_zero_time(value: str) -> bool:
+    return value.startswith("0001-01-01")
+
+
+def _docker_time(value: str) -> datetime:
+    if _is_docker_zero_time(value):
         raise ValueError("Docker zero timestamp")
     parsed = parse_timestamp(value)
     return parsed.astimezone(UTC)

@@ -10,9 +10,20 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
+
+# ``subprocess.CREATE_NEW_PROCESS_GROUP`` exists only on Windows, so Pyright on other
+# platforms cannot see it; the Windows class is also exercised there with ``is_windows=True``.
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+
+class NewGroupKwargs(TypedDict, total=False):
+    """Keyword arguments that start a child in its own process group or session."""
+
+    start_new_session: bool
+    creationflags: int
 
 
 @dataclass(frozen=True)
@@ -29,7 +40,7 @@ def capture_process_group(
     return ProcessGroup(process.pid)
 
 
-def new_group_kwargs(*, is_windows: bool | None = None) -> dict[str, Any]:
+def new_group_kwargs(*, is_windows: bool | None = None) -> NewGroupKwargs:
     """Return subprocess kwargs that create a new process group/session."""
     return _platform(is_windows).new_group_kwargs()
 
@@ -118,7 +129,7 @@ class _PosixProcessGroups:
     """POSIX process-group operations."""
 
     @staticmethod
-    def new_group_kwargs() -> dict[str, Any]:
+    def new_group_kwargs() -> NewGroupKwargs:
         return {"start_new_session": True}
 
     @staticmethod
@@ -170,8 +181,8 @@ class _WindowsProcessGroups:
     """Windows process-tree operations."""
 
     @staticmethod
-    def new_group_kwargs() -> dict[str, Any]:
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    def new_group_kwargs() -> NewGroupKwargs:
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP}
 
     @staticmethod
     def request(group: ProcessGroup) -> None:

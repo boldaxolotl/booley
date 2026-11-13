@@ -57,6 +57,22 @@ def _raise_callback_error(_event):
     raise RuntimeError("console died")
 
 
+def test_claude_options_carry_allowed_capabilities(tmp_path) -> None:
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _claude_backend
+
+    params = AgentCallParams(
+        prompt="p",
+        model="m",
+        cwd=tmp_path,
+        allowed_agent_capabilities=["Read", "Grep"],
+    )
+
+    options = _claude_backend._build_sdk_options(params)
+
+    assert options.allowed_tools == ["Read", "Grep"]
+
+
 def test_unclassified_stream_exception_keeps_traceback_at_debug(caplog) -> None:
     from booley.runtime import _claude_backend as cb
 

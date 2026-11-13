@@ -161,10 +161,12 @@ def observe_process(
 
 def _windows_pid_alive(pid: int) -> bool:
     """Return whether a Windows PID is live, treating uncertainty as live."""
+    if sys.platform != "win32":
+        raise OSError("_windows_pid_alive is Windows-only")
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     process_query_limited_information = 0x1000
     error_invalid_parameter = 87
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -191,10 +193,12 @@ def _windows_pid_alive(pid: int) -> bool:
 
 def _windows_process_identity(pid: int) -> ProcessIdentity | None:
     """Capture a Windows PID's creation time as its durable identity."""
+    if sys.platform != "win32":
+        raise OSError("_windows_process_identity is Windows-only")
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     process_query_limited_information = 0x1000
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE

@@ -451,9 +451,10 @@ def _plan_actions(
     for key in sorted(desired.keys() | records.keys() | entries.keys()):
         wanted = desired.get(key)
         record = records.get(key)
+        named = record or wanted
         entry_name, entry = entries.get(
             key,
-            ((record or wanted).name if record or wanted else key, _Entry("missing")),
+            (named.name if named else key, _Entry("missing")),
         )
         action = (
             _plan_recorded(
