@@ -259,3 +259,28 @@ class TestSameHostPath:
 
     def test_same_directory_through_a_trailing_separator_is_equal(self, tmp_path: Path):
         assert platform_paths.same_host_path(str(tmp_path) + os.sep, tmp_path)
+
+
+_EMIT_INVALID_UTF8 = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff')"]
+
+
+def test_run_captured_bounded_replaces_undecodable_bytes_by_default():
+    assert "�" in platform_paths.run_captured_bounded(_EMIT_INVALID_UTF8, timeout=30).stdout
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Popen.communicate decodes in reader threads on Windows, which swallow the error",
+)
+def test_run_captured_bounded_decodes_strictly_on_request():
+    """``errors`` selects the decoding mode; strict never turns a timeout into a decode error."""
+    emit = _EMIT_INVALID_UTF8
+    with pytest.raises(UnicodeDecodeError):
+        platform_paths.run_captured_bounded(emit, timeout=30, errors="strict")
+    truncated = [
+        sys.executable,
+        "-c",
+        "import sys, time; sys.stdout.buffer.write(b'\\xc3'); sys.stdout.flush(); time.sleep(30)",
+    ]
+    with pytest.raises(subprocess.TimeoutExpired):
+        platform_paths.run_captured_bounded(truncated, timeout=2, errors="strict")

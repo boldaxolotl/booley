@@ -293,7 +293,7 @@ Setup: copy `fixtures/simulation-campaign/` to `qa-campaign/` in the Project, re
 Try:
 - `runtime-inputs.toml`, tests `alpha` and `beta`: distinct run directories and vectors, owned
   files cleaned after publication, one unchanged shared Simulator Bundle.
-- `literal-cwd.toml`, `max_heavy > 1`: attempts on the same literal directory don't overlap,
+- `literal-cwd.toml`, a `[jobs] memory_budget` that admits two items: attempts on the same literal directory don't overlap,
   but a separate templated campaign started then does (per-directory lock, not global).
 - `immutable-presim.toml`: the hook sees no `BOOLEY_BUILD_ROOT` and exits 73. Expect an
   attributed setup failure, no pass, and unchanged source, bundle and snapshot hashes.

@@ -1147,22 +1147,22 @@ async def test_a_value_changed_while_a_check_runs_keeps_review_closed(checkout):
 class Slots:
     """Real slot entries under a Booley Directory, owned by live or dead processes."""
 
-    def __init__(self, booley_dir: Path, *, max_heavy: int = 1, queue_max: int = 8) -> None:
+    def __init__(self, booley_dir: Path, *, max_light: int = 1, queue_max: int = 8) -> None:
         booley_dir.mkdir(parents=True, exist_ok=True)
         (booley_dir / "booley.toml").write_bytes(
-            f"[jobs]\nmax_heavy = {max_heavy}\nqueue_max = {queue_max}\n".encode()
+            f"[jobs]\nmax_light = {max_light}\nqueue_max = {queue_max}\n".encode()
         )
         from booley.config.jobs import SlotCaps
 
         root = slots_dir(booley_dir)
         assert root is not None
-        self._store = SlotStore(root, SlotCaps(max_heavy=max_heavy, queue_max=queue_max))
+        self._store = SlotStore(root, SlotCaps(max_light=max_light, queue_max=queue_max))
         self._tokens: list = []
 
     def occupy(self, count: int) -> None:
         """Add *count* claims by this live process: the first takes the slot, the rest queue."""
         for _ in range(count):
-            token = self._store.submit("heavy", pid=os.getpid())
+            token = self._store.submit("light", pid=os.getpid())
             self._store.refresh(token)
             self._tokens.append(token)
 
@@ -1172,7 +1172,7 @@ class Slots:
 
         child = subprocess.Popen([sys.executable, "-c", "pass"])
         child.wait()
-        self._tokens.append(self._store.submit("heavy", pid=child.pid))
+        self._tokens.append(self._store.submit("light", pid=child.pid))
 
     def release(self) -> None:
         for token in self._tokens:
@@ -1193,17 +1193,29 @@ def slots(tmp_path: Path):
         entry.release()
 
 
+LONG_TIMEOUT = "Timeout: 30m 00s per work unit"
+ADMITTED_BY_MEMORY = "Admitted by memory: waits while its estimate does not fit the Memory Budget"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("flow", "live", "dead", "queue", "timeout"),
     [
-        ("sim", 0, 0, "Runs now", None),
-        ("sim", 1, 0, "Queues behind 1 Job (position 1) for a heavy slot", None),
-        ("sim", 2, 0, "Queues behind 2 Jobs (position 2) for a heavy slot", None),
-        ("sim", 0, 1, "Runs now", None),
-        ("synth", 0, 0, "Runs now", "Timeout: 30m 00s per work unit"),
+        ("mutation", 0, 0, "Runs now", LONG_TIMEOUT),
+        ("mutation", 1, 0, "Queues behind 1 Job (position 1) for a light slot", LONG_TIMEOUT),
+        ("mutation", 2, 0, "Queues behind 2 Jobs (position 2) for a light slot", LONG_TIMEOUT),
+        ("mutation", 0, 1, "Runs now", LONG_TIMEOUT),
+        ("synth", 0, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
+        ("lint", 1, 0, ADMITTED_BY_MEMORY, None),
     ],
-    ids=["empty", "one-holder", "holder-and-waiter", "dead-owner-only", "synth-timeout"],
+    ids=[
+        "empty",
+        "one-holder",
+        "holder-and-waiter",
+        "dead-owner-only",
+        "synth-memory-timeout",
+        "lint-memory",
+    ],
 )
 async def test_review_shows_whether_the_job_runs_now_or_queues(
     checkout, tmp_path, slots, flow, live, dead, queue, timeout
@@ -1225,7 +1237,7 @@ async def test_review_shows_whether_the_job_runs_now_or_queues(
 
 FULL = (9, 1, 8)  # ahead, cap, queue_max: 9 >= 1 + 8
 ROOMY = (0, 1, 8)
-HEAVY = ("heavy", False)
+COUNTED = ("light", False)
 
 
 @pytest.mark.asyncio
@@ -1233,13 +1245,13 @@ HEAVY = ("heavy", False)
     ("opened", "entered"), [(FULL, ROOMY), (ROOMY, FULL)], ids=["drains", "fills"]
 )
 async def test_full_queue_refuses_submit_and_rereads_on_enter(checkout, opened, entered):
-    launcher = FakeLauncher("key", facts=HEAVY, outlook=opened)
+    launcher = FakeLauncher("key", facts=COUNTED, outlook=opened)
     app = make_app(checkout, launcher)
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "sim")
         await check_arguments(app, pilot, wizard, "")
         assert launcher.outlook_reads == 1  # read when the review screen opens
-        refused = "Refused: heavy queue is full (8 waiting). Retry when queued work drains"
+        refused = "Refused: light queue is full (8 waiting). Retry when queued work drains"
         assert shown(wizard, "#run-error").startswith(refused) == (opened is FULL)
         launcher.outlook_result = entered
         await pilot.press("enter")  # Submit
@@ -1261,11 +1273,26 @@ async def test_full_queue_refuses_submit_and_rereads_on_enter(checkout, opened, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("flow", "text"), [("lint", ""), ("sim", "--target t --dry-run")])
+async def test_memory_admitted_review_reads_no_queue_and_never_refuses_submit(checkout):
+    launcher = FakeLauncher("key", facts=("memory", False))
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_form(app, pilot, "sim")
+        await check_arguments(app, pilot, wizard, "")
+        assert shown(wizard, "#run-review").splitlines()[0] == ADMITTED_BY_MEMORY
+        assert shown(wizard, "#run-error") == ""
+        await pilot.press("enter")  # Submit
+        await pilot.pause()
+        assert launcher.outlook_reads == 0
+        assert len(launcher.submitted) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("flow", "text"), [("sim", "--target t --dry-run")])
 async def test_commands_without_a_slot_run_now_on_a_full_queue(
     checkout, tmp_path, slots, spawned, flow, text
 ):
-    slots(queue_max=0).occupy(1)  # the heavy class is full: one holder, no room to wait
+    slots(queue_max=0).occupy(1)  # the light class is full: one holder, no room to wait
     app = make_app(checkout, real_launcher(tmp_path / "booley"))
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, flow)
@@ -1286,24 +1313,24 @@ def write_config(worktree: Path, text: str) -> None:
 @pytest.mark.parametrize(
     ("flow", "argv", "config", "expected"),
     [
-        ("sim", (), "", ("heavy", False, None)),
-        ("lint", (), "", (None, False, None)),
-        ("sim", ("--dry-run",), "", ("heavy", True, None)),
-        ("synth", (), "", ("heavy", False, 1_800_000)),
-        ("fpga", (), "", ("heavy", False, 7_200_000)),
-        ("synth", ("--timeout-ms", "5000"), "", ("heavy", False, 5000)),
-        ("synth", (), "[flows.synth]\ntimeout_ms = 60000\n", ("heavy", False, 60_000)),
+        ("sim", (), "", ("memory", False, None)),
+        ("lint", (), "", ("memory", False, None)),
+        ("sim", ("--dry-run",), "", ("memory", True, None)),
+        ("synth", (), "", ("memory", False, 1_800_000)),
+        ("fpga", (), "", ("memory", False, 7_200_000)),
+        ("synth", ("--timeout-ms", "5000"), "", ("memory", False, 5000)),
+        ("synth", (), "[flows.synth]\ntimeout_ms = 60000\n", ("memory", False, 60_000)),
         (
             "synth",
             ("--dry-run",),
             "[flows.synth]\ntimeout_ms = 60000\n",
-            ("heavy", True, 60_000),
+            ("memory", True, 60_000),
         ),
-        ("sim", (), "[flows.sim]\ntimeout_ms = 60000\n", ("heavy", False, None)),
+        ("sim", (), "[flows.sim]\ntimeout_ms = 60000\n", ("memory", False, None)),
     ],
     ids=[
         "sim",
-        "lint-no-class",
+        "lint-memory",
         "sim-dry-run",
         "synth-default",
         "fpga-default",
@@ -1346,7 +1373,7 @@ def test_check_refuses_a_child_that_gives_no_run_facts(stdout):
 
 @pytest.mark.asyncio
 async def test_review_shows_a_timeout_problem_and_still_allows_submit(checkout):
-    facts = ("heavy", False, None, "[flows.synth].timeout_ms must be positive")
+    facts = ("light", False, None, "[flows.synth].timeout_ms must be positive")
     launcher = FakeLauncher("key", facts=facts, outlook=ROOMY)
     app = make_app(checkout, launcher)
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1380,7 +1407,7 @@ async def test_review_warns_about_sessions_running_jobs_and_changes(checkout, tm
         wizard = await to_form(app, pilot, "lint")
         await check_arguments(app, pilot, wizard, "")
         assert shown(wizard, "#run-review").splitlines() == [
-            "Runs now (takes no Job slot)",
+            ADMITTED_BY_MEMORY,
             "Warning: session S3 Interactive is connected to this worktree",
             "Warning: 2 running Jobs in this worktree (J-SIM25, J-SYN34)",
             "Warning: 1 uncommitted change in this worktree",
@@ -1408,7 +1435,7 @@ async def test_review_shows_no_warnings_for_a_quiet_worktree(checkout, tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "lint")
         await check_arguments(app, pilot, wizard, "")
-        assert shown(wizard, "#run-review") == "Runs now (takes no Job slot)"
+        assert shown(wizard, "#run-review") == ADMITTED_BY_MEMORY
 
 
 @pytest.mark.asyncio
@@ -1427,7 +1454,7 @@ async def test_review_shows_no_warnings_for_a_quiet_worktree(checkout, tmp_path)
         ),
         ({}, False, "Cannot check sessions and running Jobs: the Dashboard has not read them yet"),
         (
-            {"facts": HEAVY, "outlook": OSError("permission denied")},
+            {"facts": COUNTED, "outlook": OSError("permission denied")},
             True,
             "Cannot check the queue: permission denied",
         ),

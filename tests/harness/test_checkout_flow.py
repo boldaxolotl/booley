@@ -60,7 +60,10 @@ CTL = Path({ctl!r})
 class CheckoutStub(BooleyFlow):
     name = "checkout_stub"
     description = "Checkout Flow runner fixture"
-    JOB_CLASS = "heavy"
+    JOB_CLASS = "light"
+
+    def _memory_admitted(self):
+        return False  # counted light slot: the test queues behind a plain slot holder
     target_required = False
 
     def _add_args(self, parser):
@@ -223,8 +226,8 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
         ctl.mkdir()
         tools = live / ".booley" / "mcp_tools"
         tools.mkdir(parents=True)
-        settings = "[jobs]\nmax_heavy = HEAVY\n" + config.replace("{live}", str(live))
-        (live / ".booley" / "booley.toml").write_bytes(settings.replace("HEAVY", "4").encode())
+        settings = "[jobs]\nmax_light = SLOTS\n" + config.replace("{live}", str(live))
+        (live / ".booley" / "booley.toml").write_bytes(settings.replace("SLOTS", "4").encode())
         (tools / f"{FLOW}.py").write_bytes(STUB_FLOW.format(ctl=str(ctl)).encode())
         for relative, text in (files or {}).items():
             path = live / relative
@@ -238,7 +241,7 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
         git(live, "commit", "-q", "-m", "stub")
         commit = git(live, "rev-parse", "HEAD")
         # Main's settings now differ from the checkout's committed ones.
-        (live / ".booley" / "booley.toml").write_bytes(settings.replace("HEAVY", "1").encode())
+        (live / ".booley" / "booley.toml").write_bytes(settings.replace("SLOTS", "1").encode())
         checkout = tmp_path / "scratch" / "checkout"
         export_commit(live, commit, checkout)
         booley_dir.reset_cache()
@@ -589,10 +592,10 @@ def test_checkout_flow_queues_behind_live_flow_in_main_slot_store(
     monkeypatch.setenv("BOOLEY_INHERITED_SLOT", "caller-slot")
     monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(world.live / "elsewhere"))
     slots_root = world.main / "runtime" / "jobs" / "slots"
-    store = job_slots.SlotStore(slots_root, SlotCaps(max_heavy=1))
-    # A Flow of the session's own checkout holds Main's only heavy slot.
+    store = job_slots.SlotStore(slots_root, SlotCaps(max_light=1))
+    # A Flow of the session's own checkout holds Main's only light slot.
     holder = store.acquire(
-        job_slots.CLASS_HEAVY, pid=os.getpid(), argv=_proc_cmdline(os.getpid()) or []
+        job_slots.CLASS_LIGHT, pid=os.getpid(), argv=_proc_cmdline(os.getpid()) or []
     )
     reader = JobReader(world.main, slots_root=slots_root)
     released = False

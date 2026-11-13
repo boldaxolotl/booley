@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import logging
+import re
+import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from booley.config.eda import SUPPORTED_EDA_KINDS
+from booley.core.booley_dir import resolve_common_booley_dir
+from booley.core.config_paths import resolve_toml
 
 logger = logging.getLogger(__name__)
 
-_CLASS_HEAVY = "heavy"
 _CLASS_LIGHT = "light"
+
+#: ``[jobs]`` keys that memory admission replaced; ``booley.toml`` may no longer set them.
+RETIRED_JOBS_KEYS = ("max_heavy", "heavy_memory")
 
 #: The commercial EDA tools Booley provisions: the ones that take a licence seat.
 #: Open-source tools have no Seat Cap.
@@ -32,19 +39,14 @@ def seat_cap_fix(tool: str) -> str:
 class SlotCaps:
     """Per-class concurrency caps and the global queue bound."""
 
-    max_heavy: int = 1
     max_light: int = 3
     queue_max: int = 8
 
     def cap_for(self, job_class: str) -> int:
         """Return the validated cap for a Runtime job class."""
-        caps = {
-            _CLASS_HEAVY: self.max_heavy,
-            _CLASS_LIGHT: self.max_light,
-        }
-        if job_class not in caps:
+        if job_class != _CLASS_LIGHT:
             raise ValueError(f"Unknown job class: {job_class!r}")
-        cap = caps[job_class]
+        cap = self.max_light
         if cap < 1:
             logger.warning("Cap for %s is %r; clamping to 1", job_class, cap)
             return 1
@@ -59,11 +61,10 @@ def parse_caps(data: dict) -> SlotCaps:
         logger.warning("[jobs] is not a table; using defaults")
         return defaults
     values = {
-        "max_heavy": defaults.max_heavy,
         "max_light": defaults.max_light,
         "queue_max": defaults.queue_max,
     }
-    non_cap_keys = {"heavy_memory", "max_tickets", "memory_budget", "seats"}
+    non_cap_keys = {*RETIRED_JOBS_KEYS, "max_tickets", "memory_budget", "seats"}
     for key, default in tuple(values.items()):
         if key not in section:
             continue
@@ -135,3 +136,115 @@ def required_seats(tools: Iterable[str], data: Mapping[str, Any]) -> tuple[tuple
             "(only you know how many licence seats you own)"
         )
     return tuple((tool, caps[tool]) for tool in used)
+
+
+class RetiredJobsKeyError(ValueError):
+    """``booley.toml`` still sets a ``[jobs]`` key that memory admission replaced."""
+
+
+@dataclass(frozen=True, slots=True)
+class RetiredKey:
+    """A retired ``[jobs]`` key and the 1-based line it sits on."""
+
+    key: str
+    line: int
+
+
+_TABLE_HEADER = re.compile(r"^\s*\[\[?\s*([^\[\]]*?)\s*\]\]?\s*(?:#.*)?$")
+_JOBS_INLINE = re.compile(r"^\s*[\"']?jobs[\"']?\s*=")
+
+
+def _normalized_name(raw: str) -> str:
+    """A TOML table or key name without quotes or spaces around its dots."""
+    return re.sub(r"\s*\.\s*", ".", raw.replace('"', "").replace("'", "")).strip()
+
+
+def _opens_multiline_string(line: str) -> str | None:
+    """The delimiter of a multi-line string this line opens and leaves open, if any."""
+    _, _, value = line.partition("=")
+    for delimiter in ('"""', "'''"):
+        if delimiter in value and value.count(delimiter) % 2 == 1:
+            return delimiter
+    return None
+
+
+def _retired_key_lines(text: str) -> dict[str, int]:
+    """Line of each retired key's assignment, plus ``""`` for the ``jobs = {...}`` line.
+
+    A table-aware scan: only ``[jobs]`` keys and dotted ``jobs.<key>`` keys count,
+    and the text of a multi-line string never does.
+    """
+    lines: dict[str, int] = {}
+    table = ""
+    delimiter: str | None = None
+    for number, line in enumerate(text.splitlines(), start=1):
+        if delimiter is not None:
+            if delimiter in line:
+                delimiter = None
+            continue
+        header = _TABLE_HEADER.match(line)
+        if header is not None:
+            table = _normalized_name(header.group(1))
+            continue
+        name = _normalized_name(line.partition("=")[0])
+        if _JOBS_INLINE.match(line):
+            lines.setdefault("", number)
+        for key in RETIRED_JOBS_KEYS:
+            if (name == key and table == "jobs") or (name == f"jobs.{key}" and table == ""):
+                lines.setdefault(key, number)
+        delimiter = _opens_multiline_string(line)
+    return lines
+
+
+def retired_jobs_keys(path: Path) -> tuple[RetiredKey, ...]:
+    """The retired ``[jobs]`` keys the ``booley.toml`` at *path* sets, with their lines.
+
+    A missing or unparseable file reports none: its own error surfaces where the
+    file is loaded. An inline ``jobs = {...}`` table reports the line of ``jobs``.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = tomllib.loads(text)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return ()
+    section = data.get("jobs")
+    if not isinstance(section, dict):
+        return ()
+    lines = _retired_key_lines(text)
+    return tuple(
+        RetiredKey(key, lines.get(key, lines.get("", 1)))
+        for key in RETIRED_JOBS_KEYS
+        if key in section
+    )
+
+
+def retired_jobs_keys_fix(found: RetiredKey) -> str:
+    """The one-line repair for a retired key (the message, Doctor and ``booley-heal`` say it)."""
+    return f"delete [jobs].{found.key} (line {found.line}); memory admission replaced it"
+
+
+def retired_jobs_keys_message(path: Path, found: Iterable[RetiredKey]) -> str:
+    """The refusal text naming each retired key and its line, the edit, and ``booley-heal``."""
+    named = ", ".join(f"{item.key} (line {item.line})" for item in found)
+    return (
+        f"booley.toml sets retired [jobs] keys: {named}. "
+        f"Fix: delete these lines from {path}; memory admission replaced them "
+        "(or run booley-heal to remove them)."
+    )
+
+
+def refuse_retired_jobs_keys(project_root: Path | None) -> None:
+    """Raise :class:`RetiredJobsKeyError` while the live Project configuration sets a retired key.
+
+    Reads only the Main Booley Directory's ``booley.toml``, the file admission
+    reads: a linked worktree's or a measured commit's copy is never read, so
+    exported checkouts stay measurable. A Project that cannot be resolved has
+    nothing to refuse.
+    """
+    try:
+        path = resolve_toml(resolve_common_booley_dir(project_root))
+    except (FileNotFoundError, ValueError, RuntimeError):
+        return
+    found = retired_jobs_keys(path)
+    if found:
+        raise RetiredJobsKeyError(retired_jobs_keys_message(path, found))

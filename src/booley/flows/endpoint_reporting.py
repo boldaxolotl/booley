@@ -354,7 +354,7 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
     # Job identity (ADR 0027): the MCP dispatch layer exports the run_id
     # it handed the agent, so a poll can match this report to ITS run
     # instead of trusting the last-writer-wins flat copy — concurrent
-    # runs of the same endpoint (light-class specialists, heavy+host) would
+    # runs of the same endpoint (light-class specialists, memory-class Flows) would
     # otherwise cross-attribute results.
     run_id = os.environ.get("BOOLEY_RUN_ID", "")
     if run_id:

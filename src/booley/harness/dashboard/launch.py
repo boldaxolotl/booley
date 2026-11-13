@@ -313,6 +313,7 @@ def main(argv: list[str]) -> int:
     from booley.flows.builtin_cli import build_cli_parser, prepare_request
     from booley.flows.cli_selection import CliInvocation
     from booley.harness.endpoint_help import tail_project_selections
+    from booley.runtime.job_slots import CLASS_MEMORY
 
     kind, name, _separator, *typed = argv
     if typed[:1] == ["--"]:
@@ -331,7 +332,7 @@ def main(argv: list[str]) -> int:
             parser.error("--help shows help; it is not a run")
         raise
     facts = {
-        "job_class": flow._resolve_job_class(),
+        "job_class": CLASS_MEMORY if flow._memory_admitted() else flow._resolve_job_class(),
         "dry_run": bool(request.dry_run and flow.non_persisting_dry_run),
         "timeout": _timeout_facts(flow, request),
     }

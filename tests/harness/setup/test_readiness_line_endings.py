@@ -9,9 +9,7 @@ import pytest
 from booley.audit.diagnostic_results import Severity
 from booley.harness.setup import readiness
 from booley.harness.setup.line_endings import (
-    LineEndingActionKind,
     LineEndingActionResult,
-    LineEndingActionState,
     LineEndingObservation,
     LineEndingObservationCode,
     LineEndingReport,
@@ -34,7 +32,6 @@ _AUTOCRLF_UNSET = (
     "core.autocrlf is not set locally — the effective value is false today, but a "
     "global config change can re-create CRLF checkouts"
 )
-_POLICY_FIX = "inspect attributes policy, then re-run booley init"
 
 # (id, observations, actions, expected (severity, message, fix, check_id, subject) with
 # "{id}" standing for the repository identity). Literal text from the pre-move Doctor.
@@ -90,19 +87,6 @@ _CASES = [
             _ROLE,
         ),
     ),
-    *(
-        (
-            code.value,
-            (LineEndingObservation(code, detail="policy detail text"),),
-            (),
-            (Severity.WARN, "{id}: policy detail text", _POLICY_FIX, _UNREADABLE, _ROLE),
-        )
-        for code in (
-            Code.LOCAL_POLICY_MISSING,
-            Code.LEAKED_ROOT_POLICY,
-            Code.LOCAL_POLICY_CONFLICT,
-        )
-    ),
     (
         "autocrlf-unreadable",
         (LineEndingObservation(Code.AUTOCRLF_UNREADABLE),),
@@ -152,43 +136,14 @@ _CASES = [
         ),
     ),
     (
-        "candidate-unsafe-without-detail",
-        (LineEndingObservation(Code.CANDIDATE_UNSAFE),),
+        "status-unreadable-without-detail",
+        (LineEndingObservation(Code.STATUS_UNREADABLE),),
         (),
         (
             Severity.WARN,
             "line endings: {id}: inspection was incomplete",
             "",
             _UNREADABLE,
-            _ROLE,
-        ),
-    ),
-    (
-        "planned-attributes-migration",
-        (),
-        (
-            LineEndingActionResult(
-                LineEndingActionKind.MIGRATE_ATTRIBUTES, LineEndingActionState.PLANNED
-            ),
-        ),
-        (
-            Severity.WARN,
-            "{id}: repository-local line-ending default awaits Stealth opt-out migration",
-            "booley init   (migrates the local default to the root attributes policy)",
-            "git.line-ending-migration",
-            _ROLE,
-        ),
-    ),
-    (
-        "unknown-attributes-policy",
-        (LineEndingObservation(Code.ATTRIBUTES_POLICY_UNKNOWN, detail="source unreadable"),),
-        (),
-        (
-            Severity.WARN,
-            "{id}: attributes policy inspection incomplete: source unreadable",
-            "preserve existing attributes and worktree registrations; inspect the policy "
-            "at its source",
-            "git.attributes-policy-unknown",
             _ROLE,
         ),
     ),

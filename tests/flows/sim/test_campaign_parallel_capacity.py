@@ -18,7 +18,7 @@ import pytest
 from booley.config.jobs import SlotCaps
 from booley.flows.base import FlowMechanics
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
+from booley.flows.sim.campaign.capacity import CampaignCapacity, CampaignCapacityError
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.codec import (
     canonical_json_bytes,
@@ -50,7 +50,8 @@ from booley.runtime.execution_records import (
     read_json,
 )
 from booley.runtime.job_slots import (
-    CLASS_HEAVY,
+    CLASS_LIGHT,
+    CLASS_MEMORY,
     HOLDING,
     INHERITED_SLOT_ENV,
     QUEUED,
@@ -67,8 +68,11 @@ from tests.flows.sim.campaign_test_support import (
     _PARALLEL_SYNC_TIMEOUT_S,
     _admission,
     _capacity,
+    _holder_claim,
+    _item_capacity,
     _lane_registry,
     _managed,
+    _outer_claim,
     _parallel_environment,
     _ParallelExecution,
     _run_identity,
@@ -89,7 +93,7 @@ def _unique_execution_id() -> ExecutionId:
     return ExecutionId(uuid.uuid4().hex)
 
 
-def _child_permit(capacity: HeavyCapacity, work_item_id: str = "item"):
+def _child_permit(capacity: CampaignCapacity, work_item_id: str = "item"):
     """Enter a child lane for a dummy attempt."""
     return capacity.child_permit(
         work_item_id,
@@ -97,6 +101,7 @@ def _child_permit(capacity: HeavyCapacity, work_item_id: str = "item"):
         attempt_ordinal=1,
         attempt_directory=Path("attempt"),
         publish=lambda _child: None,
+        memory=capacity.work_item_claim({}),
     )
 
 
@@ -188,8 +193,8 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_data, _child_id, registry, _prepared, flow = _prepared_child(tmp_path, monkeypatch)
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
     capacity = _capacity(_managed(store, outer), tmp_path)
     lane_ids: list[ExecutionId] = []
     child_registered = threading.Event()
@@ -203,7 +208,7 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
     started = time.monotonic()
     try:
         with (
-            pytest.raises(HeavyCapacityError, match="lease lost"),
+            pytest.raises(CampaignCapacityError, match="lease lost"),
             capacity.outer_permit(),
             _child_permit(capacity) as permit,
         ):
@@ -233,13 +238,13 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
 
 
 def test_child_permit_checks_lease_loss_before_return(tmp_path: Path) -> None:
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
     capacity = _capacity(_managed(store, outer), tmp_path)
     try:
         with (
             capacity.outer_permit(),
-            pytest.raises(HeavyCapacityError, match="lease lost"),
+            pytest.raises(CampaignCapacityError, match="lease lost"),
             _child_permit(capacity) as permit,
         ):
             permit.token.path.unlink()
@@ -251,8 +256,8 @@ def test_child_permit_never_yields_a_claim_admitted_after_cancellation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A claim admitted in the same moment the campaign is cancelled never starts its item."""
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
     capacity = _capacity(_managed(store, outer), tmp_path)
     acquire_child = capacity._acquire_child
 
@@ -273,7 +278,7 @@ def test_child_permit_never_yields_a_claim_admitted_after_cancellation(
     finally:
         store.release(outer)
     assert started == []
-    assert store.snapshot(CLASS_HEAVY) == ([], [])
+    assert store.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child(tmp_path: Path) -> None:
@@ -283,10 +288,10 @@ def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child(tmp_path: 
         assert isinstance(capacity.parent_execution_id, ExecutionId)
         assert capacity.max_lanes == 1
         assert capacity.managed is False
-    with pytest.raises(HeavyCapacityError, match="exactly once"), capacity.outer_permit():
+    with pytest.raises(CampaignCapacityError, match="exactly once"), capacity.outer_permit():
         pass
     with (
-        pytest.raises(HeavyCapacityError, match="cannot acquire child"),
+        pytest.raises(CampaignCapacityError, match="cannot acquire child"),
         _child_permit(capacity),
     ):
         pass
@@ -295,38 +300,38 @@ def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child(tmp_path: 
 def test_managed_capacity_releases_and_reacquires_exact_child_tokens(
     tmp_path: Path,
 ) -> None:
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
     capacity = _capacity(_managed(store, outer), tmp_path)
     try:
         with capacity.outer_permit():
             for index in range(2):
                 with _child_permit(capacity, f"item-{index}") as permit:
-                    holders, waiters = store.snapshot(CLASS_HEAVY)
+                    holders, waiters = store.snapshot(CLASS_MEMORY)
                     assert waiters == []
                     assert {token.execution_id for token in holders} == {
                         ExecutionId("a" * 32),
                         permit.child_execution_id,
                     }
                     assert permit.token.execution_id == permit.child_execution_id
-                holders, waiters = store.snapshot(CLASS_HEAVY)
+                holders, waiters = store.snapshot(CLASS_MEMORY)
                 assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
                 assert waiters == []
     finally:
         store.release(outer)
-    assert store.snapshot(CLASS_HEAVY) == ([], [])
+    assert store.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def test_real_slot_store_preserves_interactive_priority_and_peer_fifo(
     tmp_path: Path,
 ) -> None:
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    holder = store.acquire(CLASS_HEAVY, pid=os.getpid())
-    first_ticket = store.submit(CLASS_HEAVY, pid=os.getpid(), role="background")
-    second_ticket = store.submit(CLASS_HEAVY, pid=os.getpid(), role="background")
-    interactive = store.submit(CLASS_HEAVY, pid=os.getpid(), role=ROLE_INTERACTIVE)
+    store = SlotStore(tmp_path / "slots", SlotCaps(max_light=1))
+    holder = store.acquire(CLASS_LIGHT, pid=os.getpid())
+    first_ticket = store.submit(CLASS_LIGHT, pid=os.getpid(), role="background")
+    second_ticket = store.submit(CLASS_LIGHT, pid=os.getpid(), role="background")
+    interactive = store.submit(CLASS_LIGHT, pid=os.getpid(), role=ROLE_INTERACTIVE)
     try:
-        holders, waiters = store.snapshot(CLASS_HEAVY)
+        holders, waiters = store.snapshot(CLASS_LIGHT)
         assert [token.lease_id for token in holders] == [holder.lease_id]
         assert [token.lease_id for token in waiters] == [
             interactive.lease_id,
@@ -342,13 +347,15 @@ def test_real_slot_store_preserves_interactive_priority_and_peer_fifo(
     finally:
         for token in (holder, interactive, first_ticket, second_ticket):
             store.release(token)
-    assert store.snapshot(CLASS_HEAVY) == ([], [])
+    assert store.snapshot(CLASS_LIGHT) == ([], [])
 
 
 def test_capacity_cancellation_withdraws_a_real_queued_child(tmp_path: Path) -> None:
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    capacity = _capacity(_managed(store, outer, max_heavy=1), tmp_path)
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
+    # Another Job's claim leaves no room for the child's.
+    blocker = store.acquire(CLASS_MEMORY, pid=os.getpid(), memory=_holder_claim(1))
+    capacity = _capacity(_managed(store, outer, holders=1), tmp_path, lanes=1)
     errors: list[BaseException] = []
 
     def wait_for_child() -> None:
@@ -361,19 +368,20 @@ def test_capacity_cancellation_withdraws_a_real_queued_child(tmp_path: Path) -> 
     worker = threading.Thread(target=wait_for_child)
     worker.start()
     try:
-        _wait_until(lambda: len(store.snapshot(CLASS_HEAVY)[1]) == 1)
+        _wait_until(lambda: len(store.snapshot(CLASS_MEMORY)[1]) == 1)
         capacity.cancel_waiters()
         worker.join(timeout=2)
         assert not worker.is_alive()
         assert len(errors) == 1
-        assert store.snapshot(CLASS_HEAVY)[1] == []
+        assert store.snapshot(CLASS_MEMORY)[1] == []
     finally:
+        store.release(blocker)
         store.release(outer)
 
 
 def test_capacity_exception_recovers_then_releases_exact_child(tmp_path: Path) -> None:
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
     capacity = _capacity(_managed(store, outer), tmp_path)
     try:
         with (
@@ -382,7 +390,7 @@ def test_capacity_exception_recovers_then_releases_exact_child(tmp_path: Path) -
             _child_permit(capacity) as permit,
         ):
             raise RuntimeError("injected worker failure")
-        holders, waiters = store.snapshot(CLASS_HEAVY)
+        holders, waiters = store.snapshot(CLASS_MEMORY)
         assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
         assert waiters == []
         assert _lane_registry(tmp_path).is_terminal(permit.child_execution_id)
@@ -393,17 +401,18 @@ def test_capacity_exception_recovers_then_releases_exact_child(tmp_path: Path) -
 def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
     tmp_path: Path,
 ) -> None:
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
     capacity = _capacity(_managed(store, outer), tmp_path)
     competitor = None
     try:
         with capacity.outer_permit(), _child_permit(capacity, "first"):
             competitor = store.submit(
-                CLASS_HEAVY,
+                CLASS_MEMORY,
                 pid=os.getpid(),
                 role=ROLE_INTERACTIVE,
                 execution_id=ExecutionId("c" * 32),
+                memory=_holder_claim(1),
             )
             assert store.refresh(competitor).state == QUEUED
         assert store.refresh(competitor).state == HOLDING
@@ -411,7 +420,7 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
         if competitor is not None:
             store.release(competitor)
         store.release(outer)
-    assert store.snapshot(CLASS_HEAVY) == ([], [])
+    assert store.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
@@ -422,8 +431,8 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
     project.mkdir()
     (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(manifest, project)
-    slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    slot_store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(slot_store)
     active = 0
     maximum_active = 0
     gate = threading.Lock()
@@ -444,7 +453,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
         with gate:
             active -= 1
 
-    capacity = HeavyCapacity(_managed(slot_store, outer), manifest, registry.project_data)
+    capacity = _item_capacity(_managed(slot_store, outer), manifest, registry.project_data)
     try:
         BoundedCampaignScheduler(capacity, allocate=allocate, execute=execute).run(
             manifest.document["work_items"]
@@ -453,7 +462,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
         slot_store.release(outer)
 
     assert maximum_active == 1
-    assert slot_store.snapshot(CLASS_HEAVY) == ([], [])
+    assert slot_store.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) -> None:
@@ -464,9 +473,9 @@ def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) ->
     project.mkdir()
     (project / ".booley").mkdir()
     admission = AdmissionContext(
-        "unmanaged", None, None, 1, "interactive", "a" * 32, 0.01, lambda: False
+        "unmanaged", None, None, "interactive", "a" * 32, 0.01, lambda: False
     )
-    capacity = HeavyCapacity(admission, manifest, project / ".booley")
+    capacity = CampaignCapacity(admission, manifest, project / ".booley")
 
     def allocate(item) -> ScheduledAttempt:
         attempt_id = os.urandom(16).hex()
@@ -493,15 +502,15 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    slots = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(slots)
     cancelled = threading.Event()
     release_worker = threading.Event()
     entered = threading.Event()
-    admission = AdmissionContext(
-        "managed", slots, outer, 1, "interactive", "a" * 32, 0.05, cancelled.is_set
+    admission = replace(
+        _managed(slots, outer, holders=1), timeout_seconds=0.05, cancellation=cancelled.is_set
     )
-    capacity = HeavyCapacity(admission, manifest, project / ".booley")
+    capacity = _item_capacity(admission, manifest, project / ".booley", lanes=1)
 
     def execute(*_args) -> None:
         entered.set()
@@ -519,7 +528,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
         scheduler.run(manifest.document["work_items"][:1])
     assert time.monotonic() - started < 0.5
     slots.release(outer)  # endpoint AdmissionGate finally must be deferred
-    assert [token.lease_id for token in slots.snapshot(CLASS_HEAVY)[0]] == [outer.lease_id]
+    assert [token.lease_id for token in slots.snapshot(CLASS_MEMORY)[0]] == [outer.lease_id]
     assert campaign_store.scan().interrupted == (
         str(manifest.document["work_items"][0]["work_item_id"]),
     )
@@ -560,7 +569,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     scheduler._await_lanes([], _ExitsDuringFinalWait())
 
 
-@pytest.mark.parametrize("first_finisher", ["alpha", "beta"])
+@pytest.mark.parametrize("first_finisher", ["beta", "gamma"])
 @pytest.mark.parametrize("schedule_seed", (0, 3))
 def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(
     tmp_path: Path,
@@ -589,10 +598,10 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(
 def _run_parallel_campaign(tmp_path, manifest, plan, project, executor):
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    slot_store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(slot_store)
     try:
-        outcome = SimulationCampaign(executor).run(
+        outcome = SimulationCampaign(executor, work_item_request=lambda *_args: None).run(
             NewCampaignRunRequest(
                 plan,
                 project,
@@ -602,7 +611,7 @@ def _run_parallel_campaign(tmp_path, manifest, plan, project, executor):
                 _managed(slot_store, outer),
             )
         )
-        holders, waiters = slot_store.snapshot(CLASS_HEAVY)
+        holders, waiters = slot_store.snapshot(CLASS_MEMORY)
         assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
         assert waiters == []
     finally:
@@ -615,10 +624,10 @@ def _assert_parallel_outcome(outcome, plan, state, first_finisher) -> None:
     assert outcome.aggregate_grade == "fail"
     assert state.compile_count == 1
     by_name = {name: (start, end) for name, start, end in state.intervals}
-    assert by_name["alpha"][0] <= by_name["beta"][1]
-    assert by_name["beta"][0] <= by_name["alpha"][1]
+    assert by_name["beta"][0] <= by_name["gamma"][1]
+    assert by_name["gamma"][0] <= by_name["beta"][1]
     assert state.completion_order.index(first_finisher) < state.completion_order.index(
-        "beta" if first_finisher == "alpha" else "alpha"
+        "gamma" if first_finisher == "beta" else "beta"
     )
 
 
@@ -641,7 +650,7 @@ def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) ->
         assert lane.context.is_file()
         record = read_json(lane.record)
         assert record["state"] == "terminal" and record["tree_terminal"] is True
-    assert slot_store.snapshot(CLASS_HEAVY) == ([], [])
+    assert slot_store.snapshot(CLASS_MEMORY) == ([], [])
 
 
 @pytest.mark.parametrize("scope_stop", [False, "coverage"])
@@ -656,8 +665,8 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     project.mkdir()
     (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(manifest, project)
-    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    slots = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(slots)
     child_finished = threading.Event()
     child_ids = []
 
@@ -665,7 +674,7 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
 
     # Recovery never completes, so the terminal cause comes from the lane itself.
     monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
-    capacity = HeavyCapacity(
+    capacity = _item_capacity(
         # Keep this cause test within the production shutdown budget.
         replace(_managed(slots, outer), timeout_seconds=30.0),
         manifest,
@@ -677,28 +686,31 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
         execute=execute,
     )
     try:
-        with pytest.raises(HeavyCapacityError):
+        with pytest.raises(CampaignCapacityError):
             scheduler.run(manifest.document["work_items"])
     finally:
         child_finished.set()
         slots.release(outer)
     _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_stop)
-    assert slots.snapshot(CLASS_HEAVY) == ([], [])
+    assert slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
     from booley.flows.sim.execution.contract import PreSimScopeStoppedError
     from booley.runtime.supervised_execution import current_supervised_execution
 
+    first_lane = threading.Lock()
+
     def execute(_attempt, child_id, *_entry_digest):
-        if child_id is None:
+        if not first_lane.acquire(blocking=False):
+            # The other lane works until the first one's lease is lost.
             assert child_finished.wait(_PARALLEL_SYNC_TIMEOUT_S)
             return
         child_ids.append(child_id)
         scope = current_supervised_execution()
         assert scope is not None
-        _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[0]) == 2)
-        for token in slots.snapshot(CLASS_HEAVY)[0]:
+        _wait_until(lambda: len(slots.snapshot(CLASS_MEMORY)[0]) == 3)
+        for token in slots.snapshot(CLASS_MEMORY)[0]:
             if str(token.execution_id) == child_id:
                 with slots._lease_gate(token) as acquired:
                     assert acquired
@@ -709,8 +721,8 @@ def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
             try:
                 _execute_pre_cancelled_coverage(tmp_path)
             except PreSimScopeStoppedError as exc:
-                raise HeavyCapacityError("scope stopped") from exc
-        raise HeavyCapacityError("unrelated publication failure")
+                raise CampaignCapacityError("scope stopped") from exc
+        raise CampaignCapacityError("unrelated publication failure")
 
     return execute
 
@@ -799,10 +811,10 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
     assert keys == [first.collision_key, first.collision_key]
 
 
-def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
+def test_unsized_memory_admitted_campaign_runs_work_items_without_child_lanes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Under the memory admission switch a heavy cap of 3 still gives one lane (#3701)."""
+    """A Flow admitted by memory whose Campaign sizes no items runs them in series (#3701)."""
     from booley.flows import endpoint_admission
     from booley.flows.endpoint_admission import AdmissionGate
     from booley.flows.synth.flow import AsicSynthesizeFlow
@@ -810,7 +822,7 @@ def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
 
     manifest = _three_item_manifest()
     plan = create_simulation_campaign_plan(manifest)
-    project, state = _parallel_environment(tmp_path, "alpha", 0)
+    project, state = _parallel_environment(tmp_path, "beta", 0)
     # One item at a time: nothing waits for a peer to overlap.
     state.barrier = threading.Barrier(1)
     monkeypatch.setattr(
@@ -822,10 +834,7 @@ def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
         execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
     )
     booley_dir = project / ".booley"
-    (booley_dir / "booley.toml").write_text(
-        '[jobs]\nmax_heavy = 3\nmemory_budget = "1000m"\n', encoding="utf-8"
-    )
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
     # A fake /proc with no process: ranking never touches the worker's real OOM priority.
     monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "a" * 32)
@@ -837,8 +846,6 @@ def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
 
     with AdmissionGate(AsicSynthesizeFlow()).enter() as admission:
         assert admission.slot_store is not None
-        assert admission.slot_store.caps.max_heavy == 3
-        assert admission.max_heavy == 1
         outcome = SimulationCampaign(executor).run(
             NewCampaignRunRequest(
                 plan, project, invocation.parent, CampaignPolicy(), invocation, admission
@@ -846,7 +853,6 @@ def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
         )
         (outer,) = admission.slot_store.snapshot(CLASS_MEMORY)[0]
         assert outer.job_class == CLASS_MEMORY
-        assert admission.slot_store.snapshot(CLASS_HEAVY) == ([], [])
 
     assert outcome.complete is True
     # The items ran in series: each ended before the next began.

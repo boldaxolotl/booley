@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from booley.flows.memory_admission import job_thread_count, memory_admission_enabled
+from booley.flows.memory_admission import job_thread_count
 from booley.runtime import job_slots
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.resource_history import DOCTOR_RUN_ENV, append_records
@@ -422,8 +422,7 @@ class JobResourceMonitor:
     def temp_env(self) -> dict[str, str]:
         """Point the command's temporary files into its private directory."""
         env: dict[str, str] = dict.fromkeys(("TMPDIR", "TMP", "TEMP"), str(self.tmp_dir))
-        if memory_admission_enabled():
-            env[KILL_REPORT_ENV] = str(self.tmp_dir / _KILL_REPORT_NAME)
+        env[KILL_REPORT_ENV] = str(self.tmp_dir / _KILL_REPORT_NAME)
         return env
 
     def start(self, pid: int) -> None:
@@ -556,13 +555,8 @@ def history_records(
 ) -> list[dict[str, Any]]:
     """One record for the command, plus one per phase it was split into."""
     outcome = "exit_zero" if result.returncode == 0 else "exit_nonzero"
-    # The OOM counter is container-wide. Memory admission blames only a command
-    # whose own process was killed; otherwise any failed command during a kill.
-    if memory_admission_enabled():
-        blamed = result.oom_killed
-    else:
-        blamed = bool(measurement.oom_kill_delta) and result.returncode != 0
-    if blamed:
+    # The OOM counter is container-wide: blame only a command whose own process was killed.
+    if result.oom_killed:
         outcome = "oom_kill"
     common = {
         "flow": flow,

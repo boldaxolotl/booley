@@ -39,7 +39,7 @@ from booley.runtime.execution_records import (
     ExecutionId,
 )
 from booley.runtime.job_slots import (
-    CLASS_HEAVY,
+    CLASS_MEMORY,
 )
 from tests.flows.sim.campaign_test_support import (
     _admission,
@@ -93,7 +93,7 @@ def test_interrupted_managed_campaign_exact_resume_preserves_parent_identity(
     assert case.store.load_manifest().document["origin"]["execution_id"] == (
         runtime_execution_id or ""
     )
-    assert case.slots.snapshot(CLASS_HEAVY) == ([], [])
+    assert case.slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def _resume_campaign_twice(case, runtime_execution_id):

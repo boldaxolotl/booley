@@ -2,6 +2,8 @@
 
 Status: superseded by [ADR 0092](0092-measure-commits-against-target-metrics.md) (2026-11-11; was proposed). Measurement Runs keyed by Git tree replace the Result Cache.
 
+Job slot wording below is superseded by [ADR 0087](0087-admit-jobs-against-a-measured-memory-budget.md): EDA Jobs are admitted by memory reservation.
+
 ## Context
 
 Booley repeats expensive EDA work it has already done.

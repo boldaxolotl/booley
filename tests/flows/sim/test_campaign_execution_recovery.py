@@ -9,16 +9,15 @@ import shlex
 import sys
 import threading
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.flows.base import DEFAULT_TIMEOUT_S
-from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
+from booley.flows.endpoint_admission import AdmissionGate
 from booley.flows.sim.campaign import collect_pre_sim_firings, serial_execution
-from booley.flows.sim.campaign.capacity import HeavyCapacity
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.codec import (
     RECORD_MAX_BYTES,
@@ -66,7 +65,7 @@ from booley.runtime.execution_records import (
     read_json,
 )
 from booley.runtime.job_slots import (
-    CLASS_HEAVY,
+    CLASS_MEMORY,
     ClaimAbortedError,
     ClaimLostError,
     SlotStore,
@@ -81,9 +80,12 @@ from tests.flows.sim.campaign_test_support import (
     _executor,
     _handle,
     _hook_publication_request,
+    _item_capacity,
     _legacy_disclosures,
+    _managed,
     _manifest_for,
     _NoEdaExecutor,
+    _outer_claim,
     _own_attempt_run_directory,
     _publish_request_hook,
     _read,
@@ -664,20 +666,15 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
     project.mkdir()
     (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(manifest, project)
-    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    slots = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(slots)
     cancelled = threading.Event()
-    admission = AdmissionContext(
-        "managed",
-        slots,
-        outer,
-        2,
-        "interactive",
-        "a" * 32,
-        _PARALLEL_SYNC_TIMEOUT_S,
-        cancelled.is_set,
+    admission = replace(
+        _managed(slots, outer, holders=1),
+        timeout_seconds=_PARALLEL_SYNC_TIMEOUT_S,
+        cancellation=cancelled.is_set,
     )
-    capacity = HeavyCapacity(admission, manifest, registry.project_data)
+    capacity = _item_capacity(admission, manifest, registry.project_data, lanes=2)
     attempts: list[Path] = []
 
     def allocate(item) -> ScheduledAttempt:
@@ -729,7 +726,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
     worker.start()
     try:
         _cancel_child_and_assert(slots, attempts, registry, campaign_store, cancelled, worker)
-        # Cancelling while the second item waits for a heavy slot legitimately
+        # Cancelling while the second item waits for its claim legitimately
         # aborts that claim; anything else (e.g. a spurious bounded-shutdown
         # CampaignSchedulingError, #977) is a failure.
         assert all(isinstance(e, (ClaimAbortedError, ClaimLostError)) for e in errors), errors
@@ -738,7 +735,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
 
 
 def _cancel_child_and_assert(slots, attempts, registry, campaign_store, cancelled, worker) -> None:
-    _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[1]) == 1)
+    _wait_until(lambda: len(slots.snapshot(CLASS_MEMORY)[1]) == 1)
     assert attempts and attempts[0].is_file()
     # The attempt names its lane execution, which already has a context and a waiting record.
     attempt = json.loads(attempts[0].read_bytes())
@@ -750,7 +747,7 @@ def _cancel_child_and_assert(slots, attempts, registry, campaign_store, cancelle
     worker.join(timeout=_PARALLEL_SYNC_TIMEOUT_S)
     assert not worker.is_alive()
     assert registry.is_terminal(ExecutionId(attempt["child_execution_id"]))
-    assert slots.snapshot(CLASS_HEAVY)[1] == []
+    assert slots.snapshot(CLASS_MEMORY)[1] == []
 
 
 def _capture_error(errors: list[BaseException], call, *args) -> None:

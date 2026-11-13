@@ -160,9 +160,6 @@ leaves all of this on a blank slate:
 - **no inner git repo** and no `/.booley` exclusion: the skeleton records no
   `[stealth] enabled`, and a missing key means Stealth Mode is off, so
   `.booley/` shows as untracked in the RTL repo until row 16 is executed;
-- the non-Stealth line-ending rule `* text=auto eol=lf` as the first line of
-  the root `.gitattributes` (a new untracked file when the repo had none),
-  unless the repo already sets a whole-tree line-ending policy;
 - `.git/hooks/commit-msg` + `pre-push` delegators (inactive until Stealth is
   enabled), and `.devcontainer/devcontainer.json`;
 - one generated block in `.git/info/exclude` under the header
@@ -724,8 +721,9 @@ separate columns (see "How a row resolves"). The standard checklist:
     suggests the defaults will not fit. Mark every supported synthesis
     configuration that Doctor must validate with `booley: {doctor: [synth]}`.
     Step 4 synthesizes the complete marked matrix end-to-end and retains the
-    largest measured boundary-command process-tree peak RSS to settle
-    `[jobs].heavy_memory` and `[sandbox].memory`. Record an execution-time check
+    largest measured boundary-command process-tree peak RSS to size
+    `[sandbox].memory`, which sets the Memory Budget. For Vivado, record the
+    license seats in `[jobs.seats]`. Record an execution-time check
     that every intended matrix member ran; do not guess one representative from
     filename or LOC.
 14. **Commercial EDA authority** — for host-provisioned Vivado: the registered

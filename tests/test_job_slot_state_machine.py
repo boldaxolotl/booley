@@ -41,10 +41,10 @@ EXPLORATORY_SETTINGS = settings(
     suppress_health_check=_LOAD_INDEPENDENT,
 )
 
-_CLASSES = (job_slots.CLASS_HEAVY, job_slots.CLASS_LIGHT)
+_CLASSES = (job_slots.CLASS_LIGHT,)
 _PIDS = (101, 102, 103, 104)
 _PRIORITY = {job_slots.ROLE_INTERACTIVE: 0, "background": 1}
-_CAPS = SlotCaps(max_heavy=1, max_light=2, queue_max=4)
+_CAPS = SlotCaps(max_light=2, queue_max=4)
 
 
 class FakeProcessWorld:

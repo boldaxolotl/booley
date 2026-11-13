@@ -850,6 +850,10 @@ def _booley_toml(c: ScaffoldChoices) -> str:
         "[stealth]",
         *_stealth_toml_lines(c),
         "",
+        "[sandbox]",
+        "# Sizes the Memory Budget that Jobs are admitted against (ADR 0087).",
+        'memory = "8g"',
+        "",
         "[flows]",
         "",
         "[flows.sim]",
@@ -878,6 +882,11 @@ def _booley_toml(c: ScaffoldChoices) -> str:
             "# Register and grant the built-in Vivado policy with `booley eda` before",
             "# running this Flow. The Target uses out_of_context because the scaffolded",
             "# XDC has no board pins yet — drop it once you add LOCs.",
+            "",
+            "[jobs.seats]",
+            "# How many Vivado licence seats you own; Booley never guesses it. Raise it",
+            "# if you own more than one.",
+            "vivado = 1",
         ]
 
     else:

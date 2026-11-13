@@ -153,7 +153,7 @@ def prepare_simulation_build(
     build_root: Path | None = None,
     resolution_vlnv: str | None = None,
     environment: Mapping[str, str] | None = None,
-    lane_kind: LaneKind = "heavy",
+    lane_kind: LaneKind = "admitted",
     core_library: fusesoc_registry.CoreLibraryPlan | None = None,
     setup_runner: SetupRunner | None = None,
 ) -> PreparedSimulationBuild:
@@ -272,7 +272,6 @@ def _simulation_recipe_inputs(
     backend_arguments = verilator_backend_arguments(
         selected,
         lane_kind=lane_kind,
-        project_root=root,
     )
     return root, selected, backend_arguments
 
@@ -282,7 +281,7 @@ def simulation_setup_command(
     *,
     build_root: Path,
     resolution_vlnv: str | None = None,
-    lane_kind: LaneKind = "heavy",
+    lane_kind: LaneKind = "admitted",
     inspection: TargetInspection | None = None,
 ) -> list[str]:
     """Preview the exact FuseSoC setup command used by Simulation preparation."""

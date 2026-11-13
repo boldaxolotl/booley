@@ -149,7 +149,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_runtime_phase": frozenset(
         {
-            "_check_memory_invariant",
+            "_check_sandbox_memory",
             "_check_seat_caps",
             "_check_runtime_location",
             "inspect_worktree_portability",

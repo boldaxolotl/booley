@@ -24,7 +24,6 @@ def _context(**overrides):
         "mode": "unmanaged",
         "slot_store": None,
         "outer_token": None,
-        "max_heavy": 1,
         "role": "interactive",
         "execution_id": "e" * 32,
         "timeout_seconds": None,
@@ -38,9 +37,7 @@ def _context(**overrides):
     "overrides",
     [
         {"mode": "invalid"},
-        {"max_heavy": 0},
         {"mode": "managed"},
-        {"max_heavy": 2},
     ],
 )
 def test_admission_context_rejects_incoherent_claims(overrides) -> None:
@@ -51,6 +48,10 @@ def test_admission_context_rejects_incoherent_claims(overrides) -> None:
 def test_admission_gate_can_only_be_entered_once() -> None:
     class Endpoint:
         _invocation_id = "e" * 32
+
+        @staticmethod
+        def _memory_admitted() -> bool:
+            return False
 
         @staticmethod
         def _acquire_job_slot():
@@ -74,6 +75,10 @@ def test_admission_gate_separates_runtime_and_parent_identity(
 
     class Endpoint:
         _invocation_id = "sim-20260925T153819Z-1"
+
+        @staticmethod
+        def _memory_admitted() -> bool:
+            return False
 
         @staticmethod
         def _acquire_job_slot():

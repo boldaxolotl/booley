@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
+from booley.config.jobs import RetiredJobsKeyError, refuse_retired_jobs_keys
 from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
@@ -96,6 +97,7 @@ from booley.mcp.call_context import (
 )
 from booley.mcp.flow_execution_selection import select_flow_execution
 from booley.mcp.goal_tools import (
+    BASELINE_GOAL_TOOL_NAMES,
     GOAL_TOOL_NAMES,
     dispatch_goal_tool,
 )
@@ -1903,6 +1905,12 @@ async def _dispatch_application_tool(
 ) -> McpToolContent | McpInputRequired:
     """Dispatch one validated application call to its concrete endpoint."""
     _stamp_worktree_use(arguments, request_context)
+    if name in BASELINE_GOAL_TOOL_NAMES:
+        # These Goal tools schedule baseline EDA Jobs, which the retired-key refusal covers.
+        try:
+            refuse_retired_jobs_keys(None)
+        except RetiredJobsKeyError as exc:
+            return _error_result(f"ERROR: {exc}")
     caller = (
         None
         if server_identity is None
@@ -1921,6 +1929,12 @@ async def _dispatch_application_tool(
     bwave_result = await _dispatch_bwave(name, arguments, request_context)
     if bwave_result is not None:
         return _prepend_changed_health_alert(bwave_result)
+    # Status, poll, cancel and report tools were dispatched above and stay open, so
+    # an agent can still inspect and cancel; running a Flow or Specialist refuses.
+    try:
+        refuse_retired_jobs_keys(None)
+    except RetiredJobsKeyError as exc:
+        return _error_result(f"ERROR: {exc}")
     args = (name, arguments, dict(mcp_tool_def), mcp_tool_call_counts, jobs)
     result = (
         await _dispatch_booley_mcp_tool(*args, caller=caller)
