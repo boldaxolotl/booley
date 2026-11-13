@@ -5,11 +5,10 @@ from __future__ import annotations
 import os
 import sys
 import tomllib
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-import tomli
+from tests.conftest import count_parses
 from tests.gateway_command_support import count_runs, write_token_command
 from tests.subprocess_budget import run_bounded_child
 
@@ -64,28 +63,6 @@ def _seed(home: Path, text: str) -> Path:
     path.parent.mkdir(parents=True)
     path.write_text(text, encoding="utf-8")
     return path
-
-
-@contextmanager
-def _count_parses(monkeypatch, source):
-    """Count every parse of exactly *source* by tomlkit (any path) or tomli."""
-    import tomlkit.parser
-
-    seen: list[str] = []
-    real_init = tomlkit.parser.Parser.__init__
-    real_loads = tomli.loads
-
-    def counted_init(self, string):
-        seen.append(string)
-        real_init(self, string)
-
-    def counted_loads(text, *args, **kwargs):
-        seen.append(text)
-        return real_loads(text, *args, **kwargs)
-
-    monkeypatch.setattr(tomlkit.parser.Parser, "__init__", counted_init)
-    monkeypatch.setattr(tomli, "loads", counted_loads)
-    yield lambda: seen.count(source)
 
 
 def test_gateway_registration_adds_selected_provider_to_unseeded_home(tmp_path, gateway_env):
@@ -274,7 +251,7 @@ def test_gateway_writers_parse_config_once(tmp_path, gateway_env, monkeypatch, w
     else:
         reg.register("codex", home=home)
         source = _read(reg.codex_config_path(home))
-    with _count_parses(monkeypatch, source) as parses:
+    with count_parses(monkeypatch, source) as parses:
         if writer == "add":
             assert reg._apply_codex_gateway(home) == "written"
         else:

@@ -8,8 +8,6 @@ import os
 import re
 import sys
 import tomllib
-import types
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -22,30 +20,7 @@ from booley.mcp import (
     catalog,
 )
 from booley.runtime import incontainer_setup as reg
-from tests.conftest import require_symlinks
-
-
-@contextmanager
-def _count_parses(monkeypatch, source):
-    """Count every parse of exactly *source* by tomlkit (any path) or tomli."""
-    import tomlkit.parser
-
-    seen: list[str] = []
-    real_init = tomlkit.parser.Parser.__init__
-
-    def counted_init(self, string):
-        seen.append(string)
-        real_init(self, string)
-
-    real_loads = tomli.loads
-
-    def counted_loads(text, *args, **kwargs):
-        seen.append(text)
-        return real_loads(text, *args, **kwargs)
-
-    monkeypatch.setattr(tomlkit.parser.Parser, "__init__", counted_init)
-    monkeypatch.setattr(tomli, "loads", counted_loads)
-    yield lambda: seen.count(source)
+from tests.conftest import count_parses, require_symlinks, tomlkit_copy
 
 
 def _stub_codex_effects(monkeypatch):
@@ -62,16 +37,6 @@ def _seed_codex(home, content):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content if isinstance(content, bytes) else content.encode())
     return path
-
-
-def _tomlkit_copy(version):
-    """A working stand-in for tomlkit that reports *version*."""
-    import tomlkit
-
-    module = types.ModuleType("tomlkit")
-    module.__dict__.update(tomlkit.__dict__)
-    module.__version__ = version
-    return module
 
 
 @pytest.mark.parametrize("existing", [None, 'model="existing"\n', "broken=["])
@@ -94,8 +59,8 @@ def test_codex_incompatible_editor_fails_before_any_write(
 
     editor = {
         "missing": None,
-        "too-old": _tomlkit_copy("0.13.2"),
-        "no-version": _tomlkit_copy("dev"),
+        "too-old": tomlkit_copy("0.13.2"),
+        "no-version": tomlkit_copy("dev"),
     }.get(failure)
     monkeypatch.setattr(builtins, "__import__", import_editor)
     monkeypatch.setitem(sys.modules, "tomlkit", editor)
@@ -111,7 +76,7 @@ def test_codex_incompatible_editor_fails_before_any_write(
 
 def test_codex_registration_accepts_a_suffixed_editor_version(tmp_path, monkeypatch):
     _stub_codex_effects(monkeypatch)
-    monkeypatch.setitem(sys.modules, "tomlkit", _tomlkit_copy("0.16.0rc1"))
+    monkeypatch.setitem(sys.modules, "tomlkit", tomlkit_copy("0.16.0rc1"))
 
     assert reg.register("codex", home=tmp_path).startswith("codex:written")
 
@@ -817,6 +782,8 @@ _CODEX_FORMS = {
         '[mcp_servers]\nbooley.command="old"\nother.url="http://other"\n',
         (),
     ),
+    "notice-subtable-only": ('[notice.model_migrations]\n"a" = "b"\n', ()),
+    "features-subtable-only": ("[features.sub]\nx = 1\n", ()),
     "old-current-entry": ("features.mcp_2026_07_28=true\nSECTION", ("SECTION",)),
     "preference-true": ('"suppress_unstable_features_warning" = true # keep\n', ()),
     "preference-false": ('"suppress_unstable_features_warning" = false # keep\n', ()),
@@ -916,7 +883,7 @@ def test_codex_registration_parses_config_once(tmp_path, monkeypatch):
     source = 'model="existing"\nnotice.other=true\nother={time=12:34, escaped="\\e\\x41"}\n'
     _seed_codex(tmp_path, source)
     seen = []
-    with _count_parses(monkeypatch, source) as parses:
+    with count_parses(monkeypatch, source) as parses:
         _stub_codex_effects(monkeypatch)
         monkeypatch.setattr(reg, "deploy_skills", lambda *args: seen.append(parses()) or 0)
         reg.register("codex", home=tmp_path)
@@ -1528,7 +1495,7 @@ def test_codex_inline_projects_table_never_breaks_registration(first_run):
 def test_codex_trust_parses_config_once(first_run, monkeypatch):
     source = 'model = "existing"\n'
     _trust_layout(first_run, source)
-    with _count_parses(monkeypatch, source) as parses:
+    with count_parses(monkeypatch, source) as parses:
         reg._apply_codex_trust(first_run.home, first_run.keys)
     assert parses() == 1
 
@@ -1579,7 +1546,7 @@ def test_main_reports_refused_registration_but_still_runs_the_hook(
 
 
 def test_codex_publish_refuses_invalid_text_by_default(tmp_path):
-    """Writers outside the permission path (trust, gateway, MCP) rely on this check."""
+    """The gateway removal path relies on this check; the other writers validate their own text."""
     path = reg.codex_config_path(tmp_path)
     path.parent.mkdir()
     path.write_text('model="existing"\n')

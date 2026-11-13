@@ -486,8 +486,14 @@ def _prepare_codex_registration(path: Path) -> tuple[str, str, str]:
         text: _parse_codex_config(path, text)[1] for text in {mcp_only, combined} - {existing}
     }
     if mcp_only in parsed:
-        entry = parsed[mcp_only].unwrap().get("mcp_servers", {}).get(MCP_SERVER_NAME)
-        if entry != {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}:
+        data = parsed[mcp_only].unwrap()
+        entry = data.get("mcp_servers", {}).get(MCP_SERVER_NAME)
+        current = (
+            entry == {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}
+            and "suppress_unstable_features_warning" in data
+            and data.get("features", {}).get("mcp_2026_07_28") is True
+        )
+        if not current:
             raise ValueError(f"Codex migration did not produce current settings: {path}")
     return existing, mcp_only, combined
 

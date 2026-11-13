@@ -12,6 +12,7 @@ from types import ModuleType
 import pytest
 
 from booley.runtime.mcp_config import _warning_preference, generate_codex_config
+from tests.conftest import tomlkit_copy
 from tests.subprocess_budget import run_bounded_child
 
 WARNING_KEY = "suppress_unstable_features_warning"
@@ -22,12 +23,7 @@ USER_SOURCES = (" ", "broken=[", f"{WARNING_KEY}=false\n")
 
 def _tomlkit_copy(monkeypatch, version):
     """Install a copy of the real tomlkit that reports ``version`` (parsing still works)."""
-    import tomlkit
-
-    fake = ModuleType("tomlkit")
-    fake.__dict__.update(vars(tomlkit))
-    fake.__version__ = version
-    monkeypatch.setitem(sys.modules, "tomlkit", fake)
+    monkeypatch.setitem(sys.modules, "tomlkit", tomlkit_copy(version))
 
 
 def _break_tomlkit(monkeypatch, failure):

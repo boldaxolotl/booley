@@ -91,7 +91,7 @@ def _codex_editor() -> ModuleType:
     try:
         import tomlkit
 
-        # The leading major.minor.patch against the pin in pyproject.toml; none is too old.
+        # The first three numbers against the pin in pyproject.toml; none is too old.
         if tuple(map(int, re.findall(r"\d+", tomlkit.__version__)[:3])) < (0, 15, 2):
             raise ValueError(f"tomlkit {tomlkit.__version__} is older than the pinned minimum")
     except Exception as exc:  # Installation failures only; user input is parsed elsewhere.
