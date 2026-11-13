@@ -30,6 +30,35 @@ class TestProcStatParsing:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix-only /proc walk")
 class TestDescendantPids:
+    def test_exclude_skips_a_subtree_with_its_descendants(self):
+        src = textwrap.dedent(
+            """
+            import subprocess, sys, time
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            print(child.pid, flush=True)
+            time.sleep(30)
+            """
+        )
+        # Kept on Popen: reads the grandchild pid from stdout while the tree is alive.
+        proc = subprocess.Popen([sys.executable, "-c", src], stdout=subprocess.PIPE, text=True)
+        grandchild: int | None = None
+        try:
+            assert proc.stdout is not None
+            grandchild = int(proc.stdout.readline().strip())
+            time.sleep(0.2)
+            assert {proc.pid, grandchild} <= set(process_tree.descendant_pids(os.getpid()))
+            skipped = process_tree.descendant_pids(os.getpid(), exclude={proc.pid})
+            assert proc.pid not in skipped
+            assert grandchild not in skipped
+        finally:
+            if grandchild is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(grandchild, signal.SIGKILL)
+            proc.kill()
+            proc.wait()
+            if proc.stdout is not None:
+                proc.stdout.close()
+
     def test_finds_a_grandchild_in_its_own_session(self):
         src = textwrap.dedent(
             """

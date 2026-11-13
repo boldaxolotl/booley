@@ -113,11 +113,55 @@ hardening), one budget per container, no licence budgets in v1.
 
 ### Out-of-memory guard and requeue
 
-- Each admitted Job's process tree raises its own OOM priority
-  (`oom_score_adj`), newer Jobs higher than older ones. The agent, MCP server
-  and Dashboard keep the default. When the container runs out of memory the
-  kernel kills the newest Job first, never the agent. Raising one's own
-  priority needs no privilege, so the Sandbox hardening is unchanged.
+- While a Job holds a Memory Reservation, Booley ranks its processes for the
+  kernel's OOM killer through `oom_score_adj`, by admission order. The kernel
+  kills the process with the highest score: its memory share times 1000, plus
+  `oom_score_adj`. The share is the process's memory over the container's
+  memory limit plus the swap its cgroup may use (the limit alone without swap).
+  The Job's **coordinator** is the process that holds its claim, and its
+  **tools** are every process the coordinator starts.
+- Tools get 1000 when the Job is the newest running Job, 500 when one newer Job
+  runs, then 450, 400, 350 and 300 (300 for five or more newer Jobs). The
+  newest Job is the one most likely to have tipped the container, so the first
+  gap is wide. The coordinator holds its tools' level minus 25, so an OOM kill
+  takes a tool and leaves the coordinator able to report the kill or requeue
+  the Job. At equal sizes it still outranks every older Job's processes, down
+  to the fifth newer Job (below that, levels tie and the coordinator at 275
+  ranks below an older Job's tools at 300). It returns to its previous value
+  when the claim ends. The agent, MCP server and Dashboard keep the default
+  (0). A level depends only on how many running Jobs were admitted later, so it
+  does not depend on how many Jobs ran earlier. Raising a process's
+  `oom_score_adj` needs no privilege, so the Sandbox hardening is unchanged.
+- The ranking is re-applied to the coordinator's process tree every 0.5 s: a
+  tool just started runs at its coordinator's value for up to that long, and a
+  re-rank after another Job starts or ends converges within one interval, so
+  newest-first may not hold inside that window. A Job whose holder died without
+  releasing counts as a newer Job until another claim reaps it, which can
+  leave a live Job one level lower.
+- The ranking assumes the Sandbox starts every process at 0 (Booley sets no
+  `--oom-score-adj`; a coordinator that starts at 275 or above is left
+  unranked, never lowered, unless it runs inside another Job's tree, which
+  happens when a Custom Flow command runs a `booley` endpoint: that nested Job
+  ranks its own tree and restores the value it inherited). It also assumes the
+  container does not set `memory.oom.group` (the kernel would then kill the
+  whole cgroup) and that tools stay in the coordinator's process tree (a tool
+  that detaches and is re-parented elsewhere is not ranked). Without `/proc`
+  nothing changes. A Campaign's work items share their Flow's process, so the
+  Flow and its items count as one Job; ranking items against each other is
+  future work (#3774).
+- The levels hold for these reference sizes, shares of the limit defined above,
+  for example 32 GiB. Each check is `1000 × share + adj`, the share written as
+  a fraction (0.001 is 0.1 %):
+
+  | Claim | Sizes | Check |
+  |---|---|---|
+  | Newest Job before the next older | newer process 0.1 % (33 MiB), older process 45 % (14.4 GiB) | 1000 + 1 > 500 + 450 |
+  | Newer before older among the older Jobs (tools, below saturation) | newer 0.1 %, older 4.5 % (1.4 GiB) | (older level + 50) + 1 > older level + 45 |
+  | Never the agent | agent process 12 % (3.8 GiB), Job process 0 % on the lowest level | tools 300 > 120, coordinator 275 > 120 |
+  | Coordinator below its own tools | coordinator 2 % (655 MiB), tool 0 % | 20 + (level − 25) < level |
+
+  `tests/runtime/test_oom_priority.py` checks these against the kernel's
+  formula; change a size there and here together.
 - A Job killed by the OOM killer is **requeued once**, to run alone, with its
   estimate raised to at least its observed peak. The caller sees it queued
   again with the reason. If it is OOM-killed again while alone, it fails with
@@ -148,8 +192,9 @@ hardening), one budget per container, no licence budgets in v1.
   with its own key. The Flow's reservation covers preparation and build, then
   drops to zero.
 - The lane count becomes min(items, the container's cores); admission decides
-  how many run at once. Each work item's simulator process gets its own OOM
-  priority by start order.
+  how many run at once. Ranking each work item's simulator process by start
+  order for the OOM killer is future work (#3774); until then they share their
+  Job's level.
 
 ### Licence seats
 

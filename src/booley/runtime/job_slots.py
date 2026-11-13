@@ -67,7 +67,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from booley.config.jobs import SlotCaps, parse_caps
-from booley.core.boundary import require_finite_number
+from booley.core.boundary import as_int, require_finite_number
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
@@ -631,6 +631,11 @@ class SlotToken:
     # (``None`` for a first claim); shown to the caller while the Job waits.
     queue_reason: str | None = None
     job: JobLabel | None = None  # who the entry belongs to, for queue reports only
+    # Memory-class holders only: the admission ordinal, one more than the
+    # largest among the class's holders when this entry was promoted. It orders
+    # overlapping Jobs by admission (entry names order by priority and
+    # submission, which an interactive claim can disagree with).
+    admitted: int | None = None
 
     @property
     def is_holder(self) -> bool:
@@ -1154,6 +1159,8 @@ class SlotStore:
 
     def _promote(self, token: SlotToken) -> TokenState:
         """Rename one eligible waiter while its class promotion gate is held."""
+        if token.memory is not None:
+            token.admitted = self._next_admission_ordinal()
         if not self._stamp_promoted(token):
             return TokenState(QUEUED, position=0)
         holder_path = token.path.with_name(
@@ -1165,6 +1172,11 @@ class SlotStore:
             return TokenState(QUEUED, position=0) if token.path.exists() else TokenState(LOST)
         token.path = holder_path
         return TokenState(HOLDING)
+
+    def _next_admission_ordinal(self) -> int:
+        """One more than the largest ordinal among memory holders (1 when none)."""
+        holders, _waiters = self.observe(CLASS_MEMORY)
+        return 1 + max((holder.admitted or 0 for holder in holders), default=0)
 
     @contextlib.contextmanager
     def _promotion_gate(self, token: SlotToken) -> Iterator[bool]:
@@ -1265,6 +1277,8 @@ class SlotStore:
             payload["queue_reason"] = token.queue_reason
         if token.job is not None:
             payload["job"] = token.job.to_payload()
+        if token.admitted is not None:
+            payload["admitted"] = token.admitted
         return payload
 
     def _rewrite_token(self, token: SlotToken) -> bool:
@@ -1672,6 +1686,7 @@ class SlotStore:
             memory=MemoryClaim.from_payload(payload.get("memory")),
             queue_reason=_optional_text(payload.get("queue_reason")),
             job=JobLabel.from_payload(payload.get("job")),
+            admitted=as_int(payload.get("admitted")),
         )
 
     def cancel_waiter(self, pid: int) -> bool:

@@ -76,6 +76,7 @@ from tests.flows.sim.campaign_test_support import (
     _two_item_manifest,
     _wait_until,
 )
+from tests.oom_priority_support import FakeProc
 
 
 def _unique_execution_id() -> ExecutionId:
@@ -795,6 +796,8 @@ def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
         '[jobs]\nmax_heavy = 3\nmemory_budget = "1000m"\n', encoding="utf-8"
     )
     monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    # A fake /proc with no process: ranking never touches the worker's real OOM priority.
+    monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "a" * 32)
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     monkeypatch.delenv(INHERITED_SLOT_ENV, raising=False)
