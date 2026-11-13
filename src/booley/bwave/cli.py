@@ -1380,7 +1380,8 @@ def _groups_from_layout(layout: list[dict], expected: list[_OpenGroup]) -> list[
     by_name = {group.name: group for group in expected}
     actual: list[_OpenGroup] = []
     for item in layout:
-        group = by_name.get(item.get("groupName"))
+        group_name = item.get("groupName")
+        group = by_name.get(group_name) if isinstance(group_name, str) else None
         children = item.get("children")
         if (
             group is None
@@ -1474,7 +1475,10 @@ def _row_matches(expected: dict, actual: object, target: _ViewTarget, strict: bo
     if kind != "netlist-variable":
         return True  # custom rows round-trip through VaporView's own format
     name = expected.get("name")
-    if actual.get("name") not in target.aliases.get(name, frozenset({name})):
+    known_aliases = target.aliases.get(name) if isinstance(name, str) else None
+    if actual.get("name") not in (
+        known_aliases if known_aliases is not None else frozenset({name})
+    ):
         return False
     if not strict:
         return True

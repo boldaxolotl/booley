@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -603,16 +604,21 @@ class TestVendoredStandaloneImport:
             shutil.copy2(core / "run_command.py", dst / "run_command.py")
 
     @staticmethod
-    def _run(dst, msg: str):
+    def _run(dst, msg: str, *, isolated: bool = False):
         import sys
 
         run_bounded_child(["git", "init", "-q", str(dst)], check=True)
         booley_dir = dst / ".booley"
         booley_dir.mkdir(exist_ok=True)
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        return run_bounded_child(
-            [sys.executable, str(dst / "validate_commit_msg.py"), msg], cwd=str(dst)
-        )
+        argv = [sys.executable, str(dst / "validate_commit_msg.py"), msg]
+        env = None
+        if isolated:
+            # No installed Booley and no checkout on PYTHONPATH (the conftest sets it):
+            # only the vendored files beside the script can resolve imports.
+            argv.insert(1, "-S")
+            env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        return run_bounded_child(argv, cwd=str(dst), env=env)
 
     def test_flat_run_tool_resolves(self, tmp_path):
         """init vendors run_command.py flat → imported by bare name, no crash."""
@@ -620,12 +626,13 @@ class TestVendoredStandaloneImport:
         proc = self._run(tmp_path, "feat(x): ok")
         assert proc.returncode == 0, proc.stderr
 
-    def test_shim_fallback_when_runner_absent(self, tmp_path):
-        """Stale vendored dir (no run_command.py) → subprocess shim, still no crash
-        (the original SETUP-9 symptom was ModuleNotFoundError here)."""
+    def test_missing_runner_fails_loudly(self, tmp_path):
+        """A vendored dir without run_command.py has no fallback: the hook stops with an
+        ImportError naming the modules it tried, not a silent half-working validation."""
         self._vendor(tmp_path, include_runner=False)
-        proc = self._run(tmp_path, "feat(x): ok")
-        assert proc.returncode == 0, proc.stderr
+        proc = self._run(tmp_path, "feat(x): ok", isolated=True)
+        assert proc.returncode != 0
+        assert "cannot import run_command" in proc.stderr
 
     def test_flat_run_tool_actually_scans_staged_diff(self, tmp_path):
         """Prove the resolved run_command runs the git-diff scan (not just that the
