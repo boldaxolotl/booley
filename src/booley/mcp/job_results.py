@@ -105,7 +105,7 @@ def _job_phase(run_id: str) -> str:
 
 
 def _phase_for_record(rec: jobrec.JobRecord | None) -> str:
-    """Admission phase of a detached job: "RUNNING" or "QUEUED (position N)".
+    """Admission phase of a detached job: "RUNNING", "RUNNING (<reason>)" or "QUEUED (position N)".
 
     A holder whose claim carries a requeue reason reads ``RUNNING (<reason>)``.
 

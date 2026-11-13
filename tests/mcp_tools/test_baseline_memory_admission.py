@@ -470,7 +470,7 @@ def test_armed_simulation_child_stops_reading_results_after_an_own_oom_kill(tmp_
         execution.simulate(_simulation_request(tmp_path))
 
 
-def _flow_report(report_dir: Path, *, oom_killed: bool):
+def _flow_report(*, oom_killed: bool):
     """An ``AsicSynthesizeFlow.execute`` fake that publishes a canonical report."""
 
     def execute(_flow, request, *, adapter):
@@ -486,14 +486,12 @@ def _flow_report(report_dir: Path, *, oom_killed: bool):
 
 def test_synthesis_child_reports_an_own_oom_kill(tmp_path, monkeypatch):
     reports = tmp_path / "reports"
-    monkeypatch.setattr(AsicSynthesizeFlow, "execute", _flow_report(reports, oom_killed=False))
+    monkeypatch.setattr(AsicSynthesizeFlow, "execute", _flow_report(oom_killed=False))
     assert synth_execution._synthesize(tmp_path, "top", reports, 1000) == (
         {"marker": "envelope"},
         False,
     )
-    monkeypatch.setattr(
-        AsicSynthesizeFlow, "execute", _flow_report(tmp_path / "b", oom_killed=True)
-    )
+    monkeypatch.setattr(AsicSynthesizeFlow, "execute", _flow_report(oom_killed=True))
     # Armed and killed: the report the kill may have left missing is never read.
     assert synth_execution._synthesize(tmp_path, "top", tmp_path / "b", 1000, armed=True) == (
         None,
@@ -596,9 +594,10 @@ def test_requeued_baseline_never_reads_the_killed_attempt_result(memory_scene):
 
     scene.on_popen = on_popen
 
-    with pytest.raises(OSError):
+    with pytest.raises(RuntimeError, match="requeued after out-of-memory") as raised:
         _execute(scene)
 
+    assert isinstance(raised.value.__cause__, OSError)
     assert len(scene.popen_envs) == 2
     assert not (output / "reports").exists()
     assert (output / "reports-killed" / "synth_top.json").exists()
@@ -677,6 +676,36 @@ def test_requeued_baseline_wait_to_run_alone_does_not_spend_its_budget(
         finished.set()
         driver.finish()
     assert len(scene.popen_envs) == 2 and result["rows"] == []
+
+
+def test_requeued_baseline_that_waits_too_long_to_run_alone_names_that_limit(
+    memory_scene, foreign_owner, monkeypatch
+):
+    scene = memory_scene
+    other = job_slots.MemoryClaim(budget_mb=_BUDGET_MB, reservation_mb=100.0)
+    holder = []
+    results = [_attempt_result(oom_killed=True), _attempt_result()]
+
+    def on_popen():
+        if len(scene.popen_envs) == 1:
+            # A small foreign Job fits beside attempt 1, then blocks the run-alone claim.
+            holder.append(_foreign_memory_claim(scene, foreign_owner, other))
+        write_document(
+            scene.path.parent / "simulation-result.json", results[len(scene.popen_envs) - 1]
+        )
+
+    scene.on_popen = on_popen
+    monkeypatch.setattr(execution, "QUEUE_WAIT_LIMIT_S", 0.5)
+    try:
+        with pytest.raises(RuntimeError, match="waited over .* to run alone") as raised:
+            _execute(scene)
+    finally:
+        scene.store.release(holder[0])
+
+    assert "requeued after out-of-memory" in str(raised.value)
+    assert isinstance(raised.value.__cause__, TimeoutError)
+    assert len(scene.popen_envs) == 1
+    assert _memory_entries(scene) == ([], [])
 
 
 def test_non_oom_baseline_failure_is_not_requeued(memory_scene):

@@ -542,9 +542,8 @@ def _publish_run(project, family, target, run, proof, cached, observed) -> dict[
             or observed.get("reason")
             or "baseline Test Run produced no graded result"
         )
-        result["reason"] = " ".join(str(reason).split())[:300]
-        if observed.get("oom_requeue"):
-            result["reason"] += f" ({observed['oom_requeue']})"
+        note = f" ({observed['oom_requeue']})" if observed.get("oom_requeue") else ""
+        result["reason"] = " ".join(str(reason).split())[: 300 - len(note)] + note
     else:
         key = family.result_key(target, run, proof["contents"], proof["protected_digest"])
         write_document(
@@ -684,6 +683,11 @@ def _background_slot(
             else job_slots.JobLabel(owner["job_id"], family_name, work[1]),
         )
     except job_slots.ClaimAbortedError as exc:
+        if requeued:
+            raise TimeoutError(
+                f"baseline requeued after out-of-memory waited over {QUEUE_WAIT_LIMIT_S // 3600} h "
+                "to run alone"
+            ) from exc
         raise TimeoutError(
             f"baseline Job exceeded its total execution budget while waiting for a {job_class} slot"
         ) from exc
@@ -785,7 +789,12 @@ def execute_child(
         return result
     family = family_for_schema(read_document(output / "request.json", None)["schema"])
     _begin_requeued_attempt(output, family)
-    final, _ = _run_child_attempt(checkout, target, runs, output, requeued=True)
+    try:
+        final, _ = _run_child_attempt(checkout, target, runs, output, requeued=True)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        # The final document is built from the in-memory request, so name the
+        # requeue in the reason the caller reads when the second attempt fails.
+        raise RuntimeError(f"{exc} ({OOM_REQUEUE_REASON})") from exc
     return final | {"oom_requeue": OOM_REQUEUE_REASON}
 
 
