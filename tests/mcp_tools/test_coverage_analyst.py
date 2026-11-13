@@ -778,8 +778,8 @@ def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
 
 
 def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import prune_invocation, prune_native_payload
-    from tests.flows.sim.campaign_test_support import coverage_invocation
+    from booley.flows.sim.record_retention import prune_invocation, prune_native_payload
+    from tests.flows.sim.simulation_record_test_support import coverage_invocation
 
     run = coverage_invocation(tmp_path, monkeypatch)
     analyst = CoverageAnalystSpecialist(model=Model())

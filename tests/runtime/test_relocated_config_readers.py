@@ -99,7 +99,7 @@ def test_configuration_readers_use_relocated_booley_dir(
     from booley.config import agent, settings
     from booley.config.flow_enablement import flow_enabled
     from booley.core.config_paths import resolve_booley_toml
-    from booley.flows.sim.campaign import flow_planning
+    from booley.flows.sim.record import flow_planning
     from booley.harness.booley import _discover_project_mcp_tools
     from booley.runtime import shared_infra
 
@@ -235,8 +235,8 @@ def test_inventory_ignores_booley_dir_outside_the_checkout(tmp_path: Path) -> No
 
 
 def test_required_suite_reports_booley_dir_outside_the_checkout(tmp_path: Path) -> None:
-    from booley.flows.sim.campaign import flow_planning
-    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.record import flow_planning
+    from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
 
     elsewhere = tmp_path / "elsewhere"
     _write(elsewhere / "tests.toml", "[tests]\n")

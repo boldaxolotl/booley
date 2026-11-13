@@ -23,7 +23,7 @@ from booley.bwave import cli as bwave_cli
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
 from booley.flows.endpoint_cli import human_endpoint_parser
-from booley.flows.sim import campaign_retention
+from booley.flows.sim import record_retention
 from booley.harness.booley import _build_parser, _load_mcp_tool_class
 from booley.mcp.registry import discover_mcp_tools
 
@@ -215,7 +215,7 @@ def cli_help() -> dict[str, str]:
         ) as parse,
         pytest.raises(RuntimeError, match="capture"),
     ):
-        campaign_retention.main()
+        record_retention.main()
     rendered.update(parser_help(parse.call_args.args[0], "campaign-retention"))
     return rendered
 
