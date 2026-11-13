@@ -46,7 +46,11 @@ from booley.runtime.session_admission import (
     vscode_sandboxes as real_vscode_sandboxes,
 )
 from tests.devcontainer_spec_support import build_spec
-from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
+from tests.docker_cli_guard import (
+    assert_docker_cli_unused,
+    forbid_docker_cli,
+    route_bounded_capture_through_subprocess_run,
+)
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
@@ -3945,6 +3949,9 @@ class TestSessionRefresh:
 
     def test_spec_snapshot_restores_issuance_and_keeper(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
+
+        # Fake the keeper tag through subprocess.run; the file's real-process tests keep the real helper.
+        route_bounded_capture_through_subprocess_run(monkeypatch, session_spec)
         from booley.runtime import session_issuance as runtime_spec
 
         spec_path = dc.devcontainer_path(tmp_path)
@@ -3975,6 +3982,9 @@ class TestSessionRefresh:
 
     def test_keeper_failure_still_restores_spec_and_stamp(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
+
+        # Fake the keeper tag through subprocess.run; the file's real-process tests keep the real helper.
+        route_bounded_capture_through_subprocess_run(monkeypatch, session_spec)
         from booley.runtime import session_issuance as runtime_spec
 
         spec_path = dc.devcontainer_path(tmp_path)
@@ -4004,6 +4014,9 @@ class TestSessionRefresh:
 
     def test_keeper_process_error_still_restores_snapshot_files(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
+
+        # Fake the keeper tag through subprocess.run; the file's real-process tests keep the real helper.
+        route_bounded_capture_through_subprocess_run(monkeypatch, session_spec)
 
         spec_path = tmp_path / "devcontainer.json"
         stamp_path = tmp_path / "stamp.json"

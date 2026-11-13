@@ -11,6 +11,7 @@ from pathlib import Path
 from booley.runtime import devcontainer
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.atomic_files import atomic_replace_bytes, durable_unlink
+from booley.runtime.platform_paths import run_captured_bounded
 
 
 @dataclass(frozen=True)
@@ -67,12 +68,9 @@ def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> N
     first_file_error: OSError | None = None
     if snapshot.image_id is not None:
         try:
-            result = subprocess.run(
+            result = run_captured_bounded(
                 ["docker", "tag", snapshot.image_id, runtime_spec.keeper_image(project_root)],
-                capture_output=True,
-                text=True,
                 timeout=30,
-                check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             errors.append(f"Sandbox Image keeper: {exc}")

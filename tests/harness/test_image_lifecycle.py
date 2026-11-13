@@ -21,10 +21,17 @@ from booley.runtime.docker_capacity import (
 )
 from booley.runtime.image_identity import ImageMetadata
 from tests.conftest import symlink_or_skip
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.subprocess_budget import run_bounded_child
 
 _ACTUAL_ALIAS_PROBE = lifecycle.project_image.project_data_alias_capable
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of lifecycle, project_image."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, lifecycle, project_image)
 
 
 @pytest.fixture(autouse=True)

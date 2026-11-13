@@ -16,17 +16,27 @@ import pytest
 
 from booley.harness import bootstrap_cli, init_cmd
 from booley.runtime import devcontainer as dc
-from booley.runtime import session_admission, session_refresh
+from booley.runtime import project_image, session_admission, session_refresh, session_spec
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 from tests.devcontainer_spec_support import build_spec
-from tests.docker_cli_guard import assert_docker_processes_unused, forbid_docker_processes
+from tests.docker_cli_guard import (
+    assert_docker_processes_unused,
+    forbid_docker_processes,
+    route_bounded_capture_through_subprocess_run,
+)
 from tests.session_issuance_support import issue_built
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "session_refresh"
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of session_spec, project_image."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, session_spec, project_image)
 
 
 @pytest.fixture(autouse=True)

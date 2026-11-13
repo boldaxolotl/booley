@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import uuid
 from pathlib import Path
 
 import pytest
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.goals.conftest import git
 from tests.subprocess_budget import run_bounded_child
 
@@ -21,6 +23,12 @@ from booley.runtime import booley_dir_migration as migration
 
 OLD = ".booley_project"
 NEW = ".booley"
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of migration."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, migration)
 
 
 @pytest.fixture(autouse=True)
@@ -472,7 +480,7 @@ def test_live_sandbox_label_refuses_without_local_spec_or_matching_mount(
             ),
         ]
     )
-    monkeypatch.setattr(migration.subprocess, "run", lambda *a, **kw: next(responses))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: next(responses))
     with pytest.raises(BooleyLayoutError, match="stop live Sandbox"):
         migration._refuse_live_sandboxes(tmp_path, [])
     assert _snapshot(tmp_path) == before
@@ -501,7 +509,7 @@ def test_unavailable_docker_refuses_without_local_spec_before_writes(
         migration.shutil, "which", lambda name: None if unavailable == "binary" else "/fake/docker"
     )
     monkeypatch.setattr(
-        migration.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=1, stdout="")
+        subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=1, stdout="")
     )
     with pytest.raises(BooleyLayoutError, match="cannot inventory live Sandboxes"):
         migration._refuse_live_sandboxes(tmp_path, [])
@@ -547,7 +555,7 @@ def test_incomplete_docker_inventory_refuses_before_any_move(
             SimpleNamespace(returncode=0, stdout=json.dumps([document])),
         ]
     )
-    monkeypatch.setattr(migration.subprocess, "run", lambda *a, **kw: next(responses))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: next(responses))
     with pytest.raises(BooleyLayoutError, match="invalid inventory"):
         migration._refuse_live_sandboxes(tmp_path, [])
     assert _snapshot(tmp_path) == before
