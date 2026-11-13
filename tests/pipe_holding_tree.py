@@ -2,7 +2,8 @@
 
 ``PARENT_SCRIPT`` starts a heartbeat grandchild that inherits the parent's
 stdout/stderr, so a captured-command helper that waits on the pipes cannot finish
-by itself.  Shared by the ``_run_docker``, session-runtime and admission tests.
+by itself.  Shared by the ``_run_docker``, session-runtime and admission tests, the
+``run_captured_bounded`` mode tests, the Windows Git process probe and the post-setup hook tests.
 """
 
 from __future__ import annotations

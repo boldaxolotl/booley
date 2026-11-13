@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.commit_policy import stealth_choice_unset
-from booley.runtime import runtime_context
+from booley.runtime import platform_paths, runtime_context
 from booley.runtime.booley_dir import own_booley_dir_repo_path, resolve_checkout_booley_dir
 from booley.runtime.git import stealth_exclude_names
 from booley.runtime.git_attributes_policy import has_managed_attributes
@@ -131,14 +131,13 @@ class TrackabilityInspection:
 
 def _git(root: Path, arguments: list[str], payload: bytes | None = None) -> bytes:
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", *arguments],
             cwd=root,
             env=inherited_git_environment(),
             input=payload,
-            capture_output=True,
             timeout=30,
-            check=False,
+            text=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise OSError(f"cannot inspect exclusions at {root}: {exc}") from exc
