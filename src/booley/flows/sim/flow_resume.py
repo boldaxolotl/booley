@@ -474,7 +474,9 @@ class CampaignResumeMixin:
         executor = self._resume_campaign_executor(coverage_plan)
         try:
             return SimulationCampaign(
-                executor, publication_checkpoint=self._campaign_publication_checkpoint
+                executor,
+                publication_checkpoint=self._campaign_publication_checkpoint,
+                work_item_request=self.work_item_job_request,
             ).run(
                 ResumeCampaignRunRequest(
                     validated,

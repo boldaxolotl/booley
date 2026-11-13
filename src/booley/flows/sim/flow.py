@@ -61,6 +61,7 @@ from booley.flows.sim.live_progress import (
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
+from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_suite import (
     resolve_target_test_suite,
 )
@@ -315,6 +316,7 @@ class SimulateFlow(
         self._resolved_build_timeout_ms: int | None = None
         self._resume_coverage_plan: CoverageTargetPlan | None = None
         self._target_handles: dict[str, TargetHandle] = {}
+        self._work_item_plans: dict[str, TargetTestPlan] = {}
         self._standalone_plan_recipe = None
 
     def begin_requeued_attempt(self) -> None:
@@ -548,6 +550,21 @@ class SimulateFlow(
                 )
                 for target in prepared.selected_targets
             )
+        except (fusesoc_registry.FuseSocError, OSError, ValueError):
+            return None
+
+    def work_item_job_request(
+        self, selector: str, runs: Sequence[TestRun], flags: tuple[str, ...]
+    ) -> JobRequest | None:
+        """What one Campaign work item runs, to size its own Memory Reservation.
+
+        *flags* come from the frozen manifest, never from ``args`` (a resume
+        reads them there). ``None`` when the Target does not resolve.
+        """
+        try:
+            if selector not in self._work_item_plans:
+                self._work_item_plans[selector] = self._target_test_plan(selector)
+            return sim_job_request(self._work_item_plans[selector], runs, flags=flags)
         except (fusesoc_registry.FuseSocError, OSError, ValueError):
             return None
 
@@ -1290,6 +1307,7 @@ class SimulateFlow(
             executor,
             publication_checkpoint=self._campaign_publication_checkpoint,
             manifest_published=manifest_published,
+            work_item_request=self.work_item_job_request,
         )
         execution_id = str(admission.execution_id or "")
         requests = [
@@ -1603,6 +1621,7 @@ class SimulateFlow(
                 OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
                 publication_checkpoint=self._campaign_publication_checkpoint,
                 manifest_published=manifest_published,
+                work_item_request=self.work_item_job_request,
             )
 
             def run() -> EndpointOutcome:

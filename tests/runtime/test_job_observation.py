@@ -314,6 +314,28 @@ def test_observer_reports_queued_memory_claim(tmp_path, monkeypatch):
     assert view.state == "queued"
 
 
+def test_child_lane_claims_under_the_jobs_pid_do_not_make_its_state_unavailable(
+    tmp_path, monkeypatch
+):
+    from booley.runtime.pid import ProcessObservation, ProcessState
+
+    identity = ProcessIdentity(99, "fixture", 101)
+    root = tmp_path / "jobs"
+    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
+    slots = tmp_path / "slots/memory"
+    slots.mkdir(parents=True)
+    owner = {"owner_identity": identity.to_payload()}
+    (slots / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(json.dumps(owner))
+    # A work item's own claim: same PID, but a child execution of the Job.
+    child = {**owner, "owner_kind": "execution"}
+    (slots / job_slots._entry_name("w", 1, 2, 99, 1)).write_text(json.dumps(child))
+    monkeypatch.setattr(
+        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
+    )
+    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
+    assert view.state == "running"
+
+
 def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path, monkeypatch):
     real = tmp_path / "real"
     project = real / "project"
