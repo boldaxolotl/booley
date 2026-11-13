@@ -35,7 +35,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit), or a named public owner entry point.
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_viewer_bridge$|inspect_native_dependencies$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_viewer_bridge$|inspect_native_dependencies$|inspect_core_resolution$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -112,10 +112,11 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_deep_phase": frozenset(
         {
-            "_run_core_resolve_checks",
+            "_run_core_resolution",
             "_run_deep_checks",
         }
     ),
+    "_run_core_resolution": frozenset({"inspect_core_resolution"}),
     "_run_project_phase": frozenset(
         {
             "inspect_host",
@@ -379,3 +380,45 @@ def test_doctor_holds_no_core_repository_hygiene_rules() -> None:
         elif isinstance(node, ast.Assign):
             defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
     assert not moved & defined, f"hygiene rules moved back into Doctor: {sorted(moved & defined)}"
+
+
+def test_deep_phase_inventory_names_the_core_resolution_owner_call() -> None:
+    """The deep phase calls the core resolution wrapper, which calls the owner."""
+    assert _probe_refs("_run_core_resolution") == {"inspect_core_resolution"}
+    refs = _probe_refs("_run_deep_phase")
+    assert "_run_core_resolution" in refs
+    assert "_run_core_resolve_checks" not in refs
+
+
+def test_doctor_holds_no_core_resolution_rules() -> None:
+    """Core resolution, its Sandbox snippet and the image-run/host fallbacks are gone."""
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    moved = {
+        "_run_core_resolve_checks",
+        "_resolve_deep_core_targets",
+        "_execute_core_resolution",
+        "_grade_core_resolution",
+        "_report_core_resolve",
+        "_core_resolve_payload",
+        "_CORE_RESOLVE_SNIPPET",
+        "_run_core_resolve_in_docker",
+        "_CORE_RESOLVE_TIMEOUT_S",
+        "_docker_wrap",
+        "_sandbox_guard_failed",
+        "_SANDBOX_GUARD_MARKER",
+        "_SANDBOX_GUARD_EXIT",
+        "_SANDBOX_GUARD_SCRIPT",
+        "_OUTPUT_ERROR_MARKERS",
+        "_output_excerpt_lines",
+    }
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    assert not moved & defined, (
+        f"core resolution rules moved back into Doctor: {sorted(moved & defined)}"
+    )
+    attributes = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert "resolve_target_handle" not in attributes, "the host-FuseSoC fallback is gone"

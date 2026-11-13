@@ -247,6 +247,7 @@ DIRECTION_RULES = (
             exact("booley.flows.target_test_plan_inspection"),
             exact("booley.audit.core_tree_inspection"),
             exact("booley.runtime.core_repository_hygiene"),
+            exact("booley.runtime.core_resolution"),
             exact("booley.runtime.project_image"),
         ),
         (
