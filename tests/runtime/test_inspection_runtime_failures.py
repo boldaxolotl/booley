@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from tests.diagnostic_helpers import _isolate_runtime_files
+from tests.docker_cli_guard import route_bounded_captures_through_subprocess_run
 from tests.harness import test_session_runtime as resolution_fixtures
 
 from booley.audit.diagnostic_results import Severity
@@ -92,6 +93,7 @@ def mounted_runtime(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(argv, state["returncode"], state["version"], "")
 
     monkeypatch.setattr(subprocess, "run", run)
+    route_bounded_captures_through_subprocess_run(monkeypatch)
     request = inspection.RuntimeInspectionRequest(
         tmp_path, "image", None, eda={"vivado": EdaConfig("vivado", "host")}, fpga_enabled=True
     )

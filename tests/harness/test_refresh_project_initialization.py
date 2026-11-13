@@ -29,7 +29,7 @@ def _git(root: Path, *args: str) -> str:
 
 def _refresh(root: Path) -> runtime_refresh.RefreshResult:
     """Run Session refresh with the runtime (Docker) half replaced by a fixed outcome."""
-    image = runtime_refresh.RefreshImage("booley-sandbox", "sha256:fresh", "payload")
+    image = runtime_refresh.RefreshImage("sha256:fresh", "payload", None, False)
     outcome = runtime_refresh.RefreshResult(image, "kept", None, "container-1")
     with patch.object(harness_refresh.runtime_refresh, "refresh", return_value=outcome):
         return harness_refresh.refresh(root)

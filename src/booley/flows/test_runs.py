@@ -414,7 +414,7 @@ def _record_args(value: object) -> tuple[str, ...]:
     items = list(cast("tuple[object, ...]", value)) if isinstance(value, tuple) else value
     if not is_str_list(items):
         raise TestRunNameError("Test Run record args must be a list of strings")
-    return tuple(cast("list[str]", items))
+    return tuple(items)
 
 
 def _record_env(value: object) -> dict[str, str]:

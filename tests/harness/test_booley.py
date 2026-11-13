@@ -1458,11 +1458,11 @@ def test_project_root_is_not_exposed_on_unrelated_session_commands(command):
         parser.parse_args(["session", command, "--project-root", "/tmp/project"])
 
 
-def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
+def test_session_refresh_capacity_refusal_precedes_spec_and_sandbox_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from booley.harness import init_cmd
-    from booley.runtime import session_refresh as refresh_runtime
+    from booley.harness import session_refresh as harness_refresh
     from booley.runtime import session_runtime
     from booley.runtime.docker_capacity import DockerCapacityError
 
@@ -1471,29 +1471,22 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     spec.write_text('{"image":"sha256:running"}\n')
     before = spec.read_bytes()
     (tmp_path / ".booley").mkdir()
-    monkeypatch.setattr(refresh_runtime, "_load_recovery_issuance", lambda *_: object())
-    monkeypatch.setattr(refresh_runtime, "shared_recovery_blocks_command", lambda **_kw: False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(
         session_runtime, "_run", lambda *_args, **_kwargs: pytest.fail("must not invoke Docker")
     )
     monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
     monkeypatch.setattr(
-        init_cmd,
-        "inspect_refreshable_runtime_image",
-        lambda *_args, **_kwargs: None,
+        init_cmd, "inspect_refreshable_runtime_image", lambda *_args, **_kwargs: None
     )
-    preparations = []
+    monkeypatch.setattr(init_cmd, "_report_project_requirements", lambda *_a, **_k: None)
+    reconciles = []
 
-    def refuse(project: Path, **_kwargs: object) -> None:
-        preparations.append(project)
+    def refuse(scope: object, *_args: object, **_kwargs: object) -> None:
+        reconciles.append(scope.project_root)
         raise DockerCapacityError("Project overlay needs 10 GiB; only 1 GiB available")
 
-    monkeypatch.setattr(init_cmd, "prepare_runtime_image", refuse)
-    monkeypatch.setattr(
-        session_runtime,
-        "plan_session_refresh",
-        lambda *_args, **_kwargs: pytest.fail("capacity failure must precede parking"),
-    )
+    monkeypatch.setattr(harness_refresh.image_lifecycle, "reconcile_planned", refuse)
     args = tlr._build_parser().parse_args(["session", "refresh"])
     assert tlr._cmd_session(args, tmp_path) == 2
     captured = capsys.readouterr()
@@ -1501,7 +1494,7 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
         "ERROR: image-capacity: Project overlay needs 10 GiB; only 1 GiB available\n"
     )
     assert "Refreshed Sandbox" not in captured.out
-    assert preparations == [tmp_path.resolve()]
+    assert reconciles == [tmp_path.resolve()]
     assert spec.read_bytes() == before
 
 
@@ -1875,7 +1868,7 @@ def test_refresh_cli_reports_verified_container_outcome(
     from booley.runtime.session_refresh import RefreshImage, RefreshResult
 
     result = RefreshResult(
-        RefreshImage("booley-sandbox", "sha256:image"),
+        RefreshImage("sha256:image", None, None, False),
         outcome,
         None if outcome == "created" else "old",
         "new",
