@@ -25,8 +25,8 @@ from pathlib import Path
 import pytest
 
 from booley.bwave import vaporview_bridge as bwave_bridge
-from booley.bwave.cli import SESSION_FILE
 from booley.runtime import vaporview
+from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import MINIMAL_FST_BYTES
 from tests.subprocess_budget import run_bounded_child
 
@@ -57,18 +57,17 @@ def _no_bridge(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _clean_session():
-    """Remove session file before and after each test."""
-    SESSION_FILE.unlink(missing_ok=True)
-    yield
-    SESSION_FILE.unlink(missing_ok=True)
+def _clean_session(monkeypatch, tmp_path):
+    """Start every test with an empty temporary-directory session store of its own."""
+    isolate_temporary_store(monkeypatch, tmp_path)
 
 
 def _write_sessions(entries: dict) -> None:
-    from booley.bwave import cli as bwave
+    from booley.bwave import sessions
 
-    bwave.SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    bwave.SESSION_FILE.write_text(json.dumps(entries, indent=2) + "\n")
+    session_file = sessions._temporary_store().path
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text(json.dumps(entries, indent=2) + "\n")
 
 
 def _make_entry(trace: str, markers: dict | None = None) -> dict:
