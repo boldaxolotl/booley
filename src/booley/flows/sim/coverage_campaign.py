@@ -43,7 +43,7 @@ CoverageCapabilityStatus: TypeAlias = Literal["reported", "absent", "unsupported
 SimulationVerdict: TypeAlias = Literal["pass", "fail", "elab_error", "timeout", "inconclusive"]
 CoverageRunCollectionState: TypeAlias = Literal["included", "collector_error"]
 
-_SCHEMA = "booley.coverage-campaign/v1"
+DOCUMENT_SCHEMA = "booley.coverage-record-document/v1"
 _SCORED_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
 _COLLECTION_STATUSES = frozenset({"complete", "collector_error", "incomplete", "incompatible"})
 SOURCE_ROLLUP_METRICS = ("line", "branch", "expression", "toggle")
@@ -59,7 +59,7 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 #: environment. It is what a run of a document older than storage v5 had.
 NO_DECLARED_INPUTS_FINGERPRINT = declared_inputs_fingerprint((), {})
 _TOP_LEVEL_FIELDS = (
-    ("campaign_id", "string"),
+    ("coverage_record_id", "string"),
     ("invocation", "object"),
     ("target", "object"),
     ("collector", "object"),
@@ -1430,7 +1430,7 @@ def _decode_valid_campaign(
     # points and never decoded from the stored array.
     rollups = derive_coverage_rollups(decoded_points) if collection["status"] == "complete" else ()
     return CoverageCampaign(
-        campaign_id=str(document["campaign_id"]),
+        campaign_id=str(document["coverage_record_id"]),
         invocation=_decode_invocation(invocation),
         target=CoverageTarget(identity=str(target["identity"]), selector=str(target["selector"])),
         collector=_decode_collector(collector),
@@ -1546,8 +1546,8 @@ def _encode_rollup(rollup: CoverageRollup) -> dict[str, object]:
 def encode_coverage_campaign(campaign: CoverageCampaign) -> dict[str, object]:
     """Encode *campaign* as a fresh canonical V1 JSON object."""
     return {
-        "$schema": _SCHEMA,
-        "campaign_id": campaign.campaign_id,
+        "$schema": DOCUMENT_SCHEMA,
+        "coverage_record_id": campaign.campaign_id,
         "invocation": coverage_mapping_document(campaign.invocation),
         "target": {
             "identity": campaign.target.identity,

@@ -2400,9 +2400,9 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(campaign)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     report = analyst.coverage_analyst(campaign).to_dict()
-    assert report["$schema"] == "booley.coverage-analysis/v2"
-    assert report["observed_evidence"]["campaign_manifest"]["$schema"] == (
-        "booley.coverage-campaign/v5"
+    assert report["$schema"] == "booley.coverage-analysis/v4"
+    assert report["observed_evidence"]["coverage_record_manifest"]["$schema"] == (
+        "booley.coverage-record/v1"
     )
     assert "points" not in report["observed_evidence"]
     assert report["observed_evidence"]["point_store_sha256"].startswith("sha256:")
@@ -2410,8 +2410,8 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     assert len(model.calls) == 1
     prompt = json.loads(model.calls[0].prompt)
     assert "campaign" not in prompt
-    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v5"
-    assert prompt["campaign_reference"]["point_count"] == 1
+    assert prompt["coverage_record_reference"]["storage_schema"] == "booley.coverage-record/v1"
+    assert prompt["coverage_record_reference"]["point_count"] == 1
     assert "points" not in prompt
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
@@ -3286,10 +3286,13 @@ def test_coverage_analysis_refuses_a_campaign_written_by_booley_0_3_0(tmp_path):
     with pytest.raises(CoverageAnalysisError) as error:
         read_coverage_campaign(campaign_path)
 
+    # An older Booley's record, not an unreadable one: the invocation to delete is named.
     message = str(error.value)
-    assert message.startswith(f"Cannot analyze Campaign at {campaign_path}")
-    assert "COV_SCHEMA_VERSION_UNSUPPORTED" in message
-    assert str(campaign_path.parent) in message
+    assert "was written by an older Booley and is no longer supported" in message
+    assert "booley.coverage-campaign/v4" in message
+    assert str(campaign_path.parents[2]) in message
+    assert "COV_SCHEMA_VERSION_UNSUPPORTED" not in message
+    assert not message.startswith("Cannot analyze Campaign")
 
 
 def _add_second_coverage_target(tmp_path: Path, state_path: Path) -> None:

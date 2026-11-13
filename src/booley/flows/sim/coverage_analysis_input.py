@@ -19,6 +19,7 @@ from booley.flows.sim.campaign import (
 from booley.flows.sim.campaign.codec import (
     MANIFEST_MAX_BYTES,
     UnsupportedSimulationCampaignFormatError,
+    raise_if_retired_schema,
 )
 from booley.flows.sim.campaign_reports import report_link_ancestor, target_report_directory
 from booley.flows.sim.coverage_campaign import CoverageCampaign
@@ -67,6 +68,11 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
                 "Campaign must belong to one numbered Simulation invocation"
             )
         schema = require_dict(json.loads(path.read_text(encoding="utf-8"))).get("$schema")
+        try:
+            raise_if_retired_schema(schema)
+        except UnsupportedSimulationCampaignFormatError as exc:
+            # An older Booley's reference or record: name the invocation to delete.
+            raise exc.located(invocation) from None
         resolved = (
             resolve_coverage_campaign_reference(path) if schema == REFERENCE_SCHEMA else None
         )
@@ -146,7 +152,7 @@ def _reference_projection(
     """
     expected_manifest = (public_path.parent / RECORD_DIRECTORY / "manifest.json").absolute()
     document = projection.document
-    owner = str(resolved.reference.document["simulation_campaign_id"])
+    owner = str(resolved.reference.document["simulation_record_id"])
     if document.get("simulation_record_id") != owner:
         raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
     entry = crossed_booley_dir_entry(public_path)
@@ -177,7 +183,7 @@ def _reference_projection(
     if not isinstance(target, Mapping):
         raise CoverageAnalysisError("Simulation Campaign Target is invalid")
     if (
-        manifest.document["simulation_record_id"] != reference["simulation_campaign_id"]
+        manifest.document["simulation_record_id"] != reference["simulation_record_id"]
         or authenticated.manifest_path != expected_manifest.absolute()
         or authenticated.manifest_sha256 != reference["simulation_manifest_sha256"]
         or target["selector"] != resolved.loaded.campaign.target.selector

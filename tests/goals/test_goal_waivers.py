@@ -276,7 +276,7 @@ def persist_campaign(paths, campaign):
         "path": public.relative_to(reports).as_posix(),
         "bytes": len(raw),
         "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-        "nested_campaign_sha256": reference.document["coverage_campaign"]["sha256"],
+        "nested_campaign_sha256": reference.document["coverage_record"]["sha256"],
     }
     return persisted, loaded
 
