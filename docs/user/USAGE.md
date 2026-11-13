@@ -251,8 +251,8 @@ The Dashboard has three windows; press `←` or `→` to switch:
   Variants, and constraints. The **Worktree** item in the top bar picks the
   worktree: those with a connected session come first, the main checkout last.
 
-The **Run** item in the top bar starts a built-in Booley Flow as a Standalone
-Job. Pick the worktree and the Flow, then fill in the form the Dashboard
+The **Run** item in the top bar starts a built-in Booley Flow, or the `reviewer`
+Specialist (below), as a Standalone Job. Pick the worktree and the Flow, then fill in the form the Dashboard
 builds from that Flow's options (the Project comes from the worktree, so `-C`,
 `--project`, and `--work-dir` are never offered). Each Common and Flow option is
 a field: `Enter` flips an on/off flag, opens a short list for an option with
@@ -279,14 +279,14 @@ Finished filter switches to Running, which keeps the Job listed after it
 finishes. `Esc` returns to where you started.
 
 Run also starts the `reviewer` Specialist. After the Flows, the step lists the
-worktree's enabled built-in Specialists; the others show "form not built yet" and
+worktree's enabled built-in Specialists; every other enabled Specialist shows "form not built yet" and
 cannot be chosen, and a worktree whose settings cannot be read says why instead.
 The reviewer form asks for a category (`rtl` or `tb`), a focus that follows the
 category, and a scope, which is required. The spec focus also asks for a spec
 path, filled in from the worktree's active spec-review Goal when it has one.
 Instruction, max turns, and timeout are optional, the last two under **More**.
-The form has no **Extra arguments**, and `--verify`, `--waive`, and `--dry-run`
-are not offered. **Review the command** shows `cd … && booley specialist
+For other options, such as `--base` or `--fail-on`, run `booley specialist
+reviewer` in a terminal ([SPECIALISTS.md](SPECIALISTS.md)). **Review the command** shows `cd … && booley specialist
 reviewer …`, and Submit starts that command as a Standalone Job.
 
 Click a report, artifact, or log path to open it in the editor. Press `↑` on

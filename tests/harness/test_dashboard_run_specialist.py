@@ -292,6 +292,85 @@ async def test_flows_are_choosable_while_the_specialists_load(checkout):
         launcher.release.set()
 
 
+class BrokenReviewerForm(ReviewerLauncher):
+    def form(self, kind, name, worktree):
+        if kind == "specialist":
+            raise ValueError("odd goal data")
+        return super().form(kind, name, worktree)
+
+
+@pytest.mark.asyncio
+async def test_a_reviewer_form_that_cannot_be_built_says_why_instead_of_crashing(checkout):
+    # The reviewer form has no Extra arguments row: only Review is left, and it still shows.
+    app = make_app(checkout, BrokenReviewerForm())
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_reviewer(app, pilot)
+        assert shown(wizard, "#run-note") == "The form cannot be built: ValueError: odd goal data"
+        assert form_rows(wizard) == ["Review the command"]
+
+
+class KeyedListing(ReviewerLauncher):
+    """A launcher whose Specialists read answers per worktree, or fails while ``broken``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.broken = True
+        self.reads: list[Path] = []
+        self.gates: dict[Path, threading.Event] = {}
+
+    def specialists(self, worktree):
+        from booley.harness.dashboard.launch import SpecialistChoice, SpecialistListing
+
+        self.reads.append(worktree)
+        assert self.gates.setdefault(worktree, threading.Event()).wait(timeout=60)
+        if self.broken:
+            return SpecialistListing((), "EndpointConfigError: bad toml")
+        return SpecialistListing((SpecialistChoice("reviewer", str(worktree), True),))
+
+
+@pytest.mark.asyncio
+async def test_a_failed_specialists_read_is_tried_again_on_choosing_the_worktree_again(checkout):
+    launcher = KeyedListing()
+    launcher.gates[checkout] = threading.Event()
+    launcher.gates[checkout].set()
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_step(app, pilot)
+        assert step_rows(wizard)[-1] == (
+            "Specialists unavailable: EndpointConfigError: bad toml",
+            True,
+        )
+        launcher.broken = False  # the human fixed booley.toml
+        await pilot.press("escape", "enter")
+        await settle(app, pilot)
+        assert launcher.reads == [checkout, checkout]
+        assert step_rows(wizard)[-1][0].startswith("reviewer")
+        await pilot.press("escape", "enter")  # a good listing is kept, not read again
+        await settle(app, pilot)
+        assert launcher.reads == [checkout, checkout]
+
+
+@pytest.mark.asyncio
+async def test_a_specialists_read_of_a_replaced_worktree_is_dropped(checkout, tmp_path):
+    launcher = KeyedListing()
+    launcher.broken = False
+    first, second = checkout, tmp_path / "other"
+    launcher.gates = {first: threading.Event(), second: threading.Event()}
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await start_run(app, pilot)
+        wizard._choose_worktree(first)
+        await pilot.pause()
+        wizard.action_back()
+        wizard._choose_worktree(second)
+        launcher.gates[second].set()  # the second read lands first
+        await pilot.pause(0.3)
+        launcher.gates[first].set()  # then the replaced one answers late
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert step_rows(wizard)[-1][0] == f"reviewer — {second}"
+
+
 # --- AC3 and AC4 -------------------------------------------------------------
 
 SPEC_GOAL = {

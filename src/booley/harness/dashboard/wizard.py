@@ -343,7 +343,9 @@ class RunWizard(ModalScreen[str | None]):
     def _choose_worktree(self, worktree: Path) -> None:
         """Remember the worktree and list its Flows at once; its Specialists follow from a worker."""
         self._worktree = worktree
-        if worktree != self._specialists_for:
+        listing = self._specialists
+        # A listing that failed is read again, so a fixed booley.toml shows on re-entry.
+        if worktree != self._specialists_for or (listing is not None and listing.problem):
             self._specialists_for, self._specialists = worktree, None
             self._specialists_worker = self.run_worker(
                 lambda: self._launcher.specialists(worktree),
@@ -386,7 +388,9 @@ class RunWizard(ModalScreen[str | None]):
             return  # a read for a worktree the human has since replaced
         if event.state is WorkerState.ERROR:
             error = event.worker.error
-            self._specialists = SpecialistListing((), f"{type(error).__name__}: {error}")
+            self._specialists = SpecialistListing(
+                (), f"{type(error).__name__}: {first_line(error)}"
+            )
         elif event.state is WorkerState.SUCCESS:
             assert isinstance(event.worker.result, SpecialistListing)
             self._specialists = event.worker.result
@@ -458,7 +462,7 @@ class RunWizard(ModalScreen[str | None]):
         """One row per field, then the extra arguments (Flows) and Review; the highlight is the last row used."""
         fields = self._fields()
         labels = [field.label for field in fields] + ([EXTRA_LABEL] if self._has_extra() else [])
-        width = max(len(label) for label in labels)
+        width = max((len(label) for label in labels), default=0)
         prompts = [f"{field.label:<{width}}  {self._shown(field)}" for field in fields]
         if self._has_extra():
             prompts.append(f"{EXTRA_LABEL:<{width}}  {self._extra}")
