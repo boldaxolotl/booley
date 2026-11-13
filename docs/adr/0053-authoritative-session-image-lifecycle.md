@@ -45,7 +45,7 @@ lifecycle provenance.
 Session Runtime replacement rolls forward. A refresh keeps no journal and never
 restores the previous runtime: a failed step names itself and what is left
 running, and running `booley session refresh` again converges from whatever
-state the failure left. Licensed Sandboxes, and Sandboxes whose issuance stamp
+state the failure left. Licensed Sandboxes, and headless Sandboxes whose issuance stamp
 an EDA Grant change withdrew, refresh directly, because there is no snapshot to
 keep consistent. Restore-on-failure was rejected: it needed a journal, a parked
 predecessor, and recovery on every later command, and it could leave nothing

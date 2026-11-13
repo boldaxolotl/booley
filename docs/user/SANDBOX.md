@@ -71,10 +71,10 @@ records, it says the check was skipped and still stops the Sandbox.
 
 `session refresh` rebuilds only what changed and keeps the current Sandbox if
 nothing did. It replaces the Sandbox without a rollback: the current Sandbox keeps
-running until the new one is ready to start, so the Sandbox is unavailable while
-the new container starts. If a step fails, the message names it and says what is
-still running (the previous Sandbox or none); fix the cause and run
-`booley session refresh` again, which continues from that state. Afterwards it re-applies Project
+running until the new one is ready to start, and the Sandbox is unavailable only
+while the new container starts. If a step fails, the message names it and says
+what is left running; fix the cause and run `booley session refresh` again, which
+continues from that state. After a successful replacement it re-applies Project
 Initialization (Git hooks, Git settings, guidance links, exclude entries and the
 Dashboard task). It never rewrites tracked files: CRLF files and pending
 `.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
