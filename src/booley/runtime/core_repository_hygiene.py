@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.core.booley_dir import in_checkout_booley_dir
 from booley.fusesoc import fusesoc_registry
+from booley.runtime import platform_paths
 
 __all__ = ["CoreRepositoryHygieneRequest", "inspect_core_repository_hygiene"]
 
@@ -109,13 +110,8 @@ def _check_committed_build_artifacts(root: Path, findings: Findings) -> None:
     if not suspects:
         return  # nothing that looks built-from-source; stay quiet (no pass noise)
     try:
-        result = subprocess.run(
-            ["git", "ls-files", "--", *suspects],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
+        result = platform_paths.run_captured_bounded(
+            ["git", "ls-files", "--", *suspects], timeout=15, cwd=root, errors="strict"
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return  # not a git repo / git missing — tracking is unknowable, stay quiet
@@ -177,13 +173,8 @@ def _check_core_files_tracked(root: Path, findings: Findings) -> None:
         """
         for cmd in (["git", "ls-files", "--recurse-submodules"], ["git", "ls-files"]):
             try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
+                result = platform_paths.run_captured_bounded(
+                    cmd, timeout=15, cwd=cwd, errors="strict"
                 )
             except (FileNotFoundError, subprocess.SubprocessError):
                 return None  # git missing — tracking is unknowable, stay quiet
@@ -279,13 +270,8 @@ def _check_readmemh_targets_tracked(root: Path, findings: Findings) -> None:
     if not targets:
         return
     try:
-        result = subprocess.run(
-            ["git", "ls-files", "--", *targets],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
+        result = platform_paths.run_captured_bounded(
+            ["git", "ls-files", "--", *targets], timeout=15, cwd=root, errors="strict"
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return  # not a git repo / git missing — tracking is unknowable, stay quiet

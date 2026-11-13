@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.runtime import dashboard_tasks as tasks
-from booley.runtime import devcontainer, runtime_context, session_issuance
+from booley.runtime import devcontainer, platform_paths, runtime_context, session_issuance
 from booley.runtime.jsonc import Document
 from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
@@ -740,7 +740,7 @@ def test_git_tracking_failure_refuses_task_mutation(project, monkeypatch, failur
         return failure
 
     monkeypatch.setattr(tasks, "_task_file_tracked", _REAL_TASK_FILE_TRACKED)
-    monkeypatch.setattr(tasks.subprocess, "run", ls_files)
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", ls_files)
     plan = tasks.inspect(project.root, project.data)
     assert not plan.pending
     assert "could not inspect Dashboard task Git tracking" in plan.diagnostics[0]

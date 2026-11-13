@@ -57,7 +57,10 @@ from tests.diagnostic_helpers import (
     _Rec,
     _require_doctor_warning,
 )
-from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+from tests.docker_cli_guard import (
+    route_bounded_captures_through_subprocess_run,
+    route_docker_helper_through_subprocess_run,
+)
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.subprocess_budget import run_bounded_child
@@ -256,6 +259,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     runtime_booley_version: str = __version__,
 ) -> list[list[str]]:
     reset_cache()
+    route_bounded_captures_through_subprocess_run(monkeypatch)
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     # Doctor tests exercise the host-side orchestration path deterministically,
     # whatever machine the suite itself runs on.

@@ -5,12 +5,12 @@ from __future__ import annotations
 import base64
 import os
 import stat
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from booley.core.booley_layout import BooleyLayoutError, git_common_directory
+from booley.runtime import platform_paths
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.worktrees import list_worktrees
 
@@ -18,14 +18,8 @@ from booley.runtime.worktrees import list_worktrees
 def git(root: Path, *args: str) -> str:
     """Run bounded, observational Git without index refresh or lazy fetch."""
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1"}
-    result = subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        env=env,
-        timeout=30,
-        check=False,
+    result = platform_paths.run_captured_bounded(
+        ["git", "-C", str(root), *args], timeout=30, env=env, errors="strict"
     )
     if result.returncode:
         raise BooleyLayoutError(f"git {' '.join(args)} in {root}: {result.stderr.strip()}")
@@ -53,13 +47,10 @@ def primary_checkout(repository: Path) -> Path:
     candidate = Path(raw.removeprefix("worktree ")).resolve()
     if git_common_directory(candidate) == common:
         return candidate
-    configured = subprocess.run(
+    configured = platform_paths.run_captured_bounded(
         ["git", "--git-dir", str(common), "config", "--get", "core.worktree"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
         timeout=30,
-        check=False,
+        errors="strict",
     )
     if configured.returncode == 0:
         candidate = (common / configured.stdout.strip()).resolve()
@@ -187,13 +178,8 @@ def _config_edits(
 def _map_config(
     config: Path, draft: Path, key: str, base: Path, moves: list[dict[str, Any]]
 ) -> None:
-    result = subprocess.run(
-        ["git", "config", "--file", str(config), "--get", key],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=30,
-        check=False,
+    result = platform_paths.run_captured_bounded(
+        ["git", "config", "--file", str(config), "--get", key], timeout=30, errors="strict"
     )
     if result.returncode == 1:
         return

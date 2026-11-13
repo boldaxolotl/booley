@@ -15,7 +15,7 @@ import subprocess
 
 import pytest
 
-from booley.runtime import interactive_docker, session_admission, session_runtime
+from booley.runtime import interactive_docker, platform_paths, session_admission, session_runtime
 
 #: Argument lists of every Docker CLI call attempted since the last install.
 DOCKER_CLI_CALLS: list[list[str]] = []
@@ -93,6 +93,31 @@ def route_session_helpers_through_subprocess_run(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(session_runtime, "run_captured_bounded", routed)
     monkeypatch.setattr(session_admission, "run_captured_bounded", routed)
+
+
+def route_bounded_captures_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run host-side Git captures (``platform_paths.run_captured_bounded``) through ``subprocess.run``.
+
+    Those callers look the helper up on ``platform_paths`` at call time, so one patch
+    reaches all of them.  Tests that fake ``subprocess.run`` for Git call this so the
+    fake still sees the command.  The stand-in keeps each caller's ``errors`` mode.
+    """
+
+    def routed(argv: list[str], *, timeout: float, cwd=None, env=None, errors: str = "replace"):
+        # Unbounded child: stands in for production run_captured_bounded; tests' subprocess.run fakes must intercept this call
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors=errors,
+            timeout=timeout,
+            cwd=cwd,
+            env=env,
+            check=False,
+        )
+
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", routed)
 
 
 #: Command lines of every ``docker`` process a guarded test tried to start.

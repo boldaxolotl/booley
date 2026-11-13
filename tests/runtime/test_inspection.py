@@ -17,7 +17,10 @@ from tests.diagnostic_helpers import (
     _record_report,
     _runtime_probe_subprocess,
 )
-from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+from tests.docker_cli_guard import (
+    route_bounded_captures_through_subprocess_run,
+    route_docker_helper_through_subprocess_run,
+)
 from tests.harness import test_session_runtime as resolution_fixtures
 
 from booley.harness import doctor
@@ -34,8 +37,9 @@ from booley.runtime import interactive_docker as idk
 
 @pytest.fixture(autouse=True)
 def _docker_helper_uses_subprocess_run(monkeypatch):
-    """This module fakes the Docker CLI through ``subprocess.run``."""
+    """This module fakes the Docker CLI and Git through ``subprocess.run``."""
     route_docker_helper_through_subprocess_run(monkeypatch)
+    route_bounded_captures_through_subprocess_run(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
