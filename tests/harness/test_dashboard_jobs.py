@@ -11,6 +11,7 @@ from booley.goals.store import GoalStore
 from booley.harness.dashboard.app import job_detail, job_paths
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
+from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_path
 from booley.mcp import (
     call_context,
 )
@@ -828,3 +829,34 @@ def test_symlinked_job_log_is_not_linked(tmp_path):
     assert view.log_path == ""
     assert "Log:" not in job_detail(view)
     assert str(root / "one" / "job.log") not in job_paths(view)
+
+
+def standalone_job_dirs(tmp_path):
+    """A done standalone record (under ``booley_dir``) and its ``job.log`` directory."""
+    booley_dir = tmp_path / ".booley"
+    job_records.write_record(rec(status="done", exit_code=0), standalone_jobs_dir(booley_dir))
+    run_dir = standalone_log_path(booley_dir, "one").parent
+    run_dir.mkdir(parents=True)
+    (run_dir / "job.log").write_bytes(b"full output\n")
+    return booley_dir, run_dir
+
+
+def test_job_detail_links_specialist_transcript_dir(tmp_path):
+    booley_dir, run_dir = standalone_job_dirs(tmp_path)
+    transcripts = run_dir / "transcripts"
+    transcripts.mkdir()
+    view = snapshot_jobs(booley_dir).jobs[0]
+    assert view.transcript_dir == str(transcripts)
+    assert f"Transcripts:\n{transcripts}" in job_detail(view)
+    assert job_paths(view) == (str(run_dir / "job.log"), str(transcripts))
+
+
+def test_symlinked_transcript_dir_is_not_linked(tmp_path):
+    booley_dir, run_dir = standalone_job_dirs(tmp_path)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    symlink_or_skip(run_dir / "transcripts", target, target_is_directory=True)
+    view = snapshot_jobs(booley_dir).jobs[0]
+    assert view.transcript_dir == ""
+    assert "Transcripts:" not in job_detail(view)
+    assert str(run_dir / "transcripts") not in job_paths(view)
