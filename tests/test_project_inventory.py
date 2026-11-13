@@ -260,3 +260,36 @@ def test_before_forget_receives_stored_identity_and_failure_keeps_root(
         project_inventory.forget_project(project, before_forget=fail)
     assert observed == [str(project)]
     assert project_inventory.project_inventory()[0].remembered
+
+
+def test_purge_uses_the_stored_spelling_of_a_case_folded_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a case-folding OS a case variant names the stored root, so the Grant guard sees it."""
+    import os
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    project = tmp_path / "Project"
+    (project / ".booley").mkdir(parents=True)
+    project_inventory.remember_project(project)
+    stored = str(project.resolve())
+    variant = Path(stored.swapcase())
+    monkeypatch.setattr(os.path, "normcase", str.lower)  # the Windows folding rule
+    observed: list[str] = []
+
+    forgotten = project_inventory.forget_project(
+        variant, before_forget=lambda root: observed.append(str(root)), allow_forgotten=True
+    )
+
+    assert str(forgotten) == stored and observed == [stored]
+    assert project_inventory.project_inventory() == ()
+
+    project_inventory.remember_project(project)
+    grant = SimpleNamespace(
+        project_root=stored, kind="vivado", installation=None, license_profile=None
+    )
+    monkeypatch.setattr(project_inventory, "_authority_grants", lambda: (grant,))
+    with pytest.raises(project_inventory.ProjectInventoryError, match="live Project Grant"):
+        project_inventory.forget_project(variant, allow_forgotten=True)
+    assert project_inventory.project_inventory()[0].remembered
