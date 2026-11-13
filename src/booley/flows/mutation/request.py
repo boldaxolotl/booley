@@ -9,11 +9,11 @@ from booley.flows.request import FlowRequest
 class MutationRequest(FlowRequest):
     """One mutation run.
 
-    The argument parser rejects a ``count`` that is neither a positive integer
-    nor ``auto`` (any case, normalized to ``"auto"``). Run validation still
-    covers criterion-supplied counts, ``seed`` (non-negative) and
-    ``min_detected`` (within ``count``), so a bad value yields the run's own
-    report and exit code 2 on every surface.
+    The command-line parser rejects a ``count`` that is neither a positive
+    integer nor ``auto`` (any case, normalized to ``"auto"``). Run validation
+    still checks a non-positive ``count`` from any source, ``seed``
+    (non-negative) and ``min_detected`` (within ``count``); a bad value there
+    yields the run's own report and exit code 2.
     """
 
     scope: str | None = None
