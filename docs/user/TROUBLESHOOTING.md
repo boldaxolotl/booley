@@ -433,9 +433,7 @@ booley init --seed --project <root>
 ```
 
 Doctor names one file per store, so rerun it until it passes. `init --seed`
-regenerates the spec. `booley session refresh` keeps no store of its own; a
-leftover `eda/session-refresh` directory in the Booley config directory, left
-by an older Booley, can be deleted.
+regenerates the spec.
 
 <details markdown>
 <summary>On Windows</summary>

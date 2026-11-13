@@ -590,9 +590,16 @@ def _refresh_container_labels(state: dict[str, Any]) -> dict[str, str]:
     return raw
 
 
+def _is_project_sandbox(labels: dict[str, str], project_id: str) -> bool:
+    """True when the labels name this Project's Sandbox, whichever app owns it."""
+    return (
+        labels.get("booley.role") == "interactive"
+        and labels.get("booley.project-id") == project_id
+    )
+
+
 def _assert_refresh_container_owned(name: str, state: dict[str, Any], project_id: str) -> None:
-    labels = _refresh_container_labels(state)
-    if labels.get("booley.role") != "interactive" or labels.get("booley.project-id") != project_id:
+    if not _is_project_sandbox(_refresh_container_labels(state), project_id):
         raise SessionError(
             f"container {name!r} is not the issued Sandbox for this Project; it was not modified"
         )
@@ -650,11 +657,11 @@ def _remove_session_candidate(name: str) -> None:
 
 
 def _park_session_for_rebuild(name: str) -> ParkedSession:
-    """Stop and rename an unlicensed Session so refresh can roll it back."""
+    """Stop and rename an unlicensed Session so a failed rebuild can restore it."""
     backup = f"{name}{idk.REFRESH_BACKUP_SUFFIX}"
     if idk.container_exists(backup):
         raise SessionError(
-            f"cannot refresh while recovery container {backup!r} exists; inspect it first"
+            f"cannot rebuild while recovery container {backup!r} exists; inspect it first"
         )
     parked = ParkedSession(name, backup, idk.container_running(name))
     _park_session_container(parked)
@@ -662,7 +669,7 @@ def _park_session_for_rebuild(name: str) -> ParkedSession:
 
 
 def _restore_parked_session(parked: ParkedSession) -> None:
-    """Restore the pre-refresh Session after replacement failed."""
+    """Restore the pre-rebuild Session after replacement failed."""
     if idk.container_exists(parked.name):
         _run(["docker", "rm", "-f", parked.name])
     _restore_parked_name(parked)
@@ -916,9 +923,10 @@ def _ensure_unlocked(
 def verified_headless_container(workspace: Path, image: RefreshImage) -> str | None:
     """Return the running canonical Sandbox's ID when it already matches *image*; else None.
 
-    Read-only. It compares the container with the issued spec, so the calling shell's
-    credential and gateway variables do not matter (the container holds its own), and a
-    licensed Sandbox also needs its relay running as issued.
+    Read-only. It compares the container with the issued spec. A credential or gateway
+    variable the calling shell does not export is skipped (the container holds its own);
+    an exported one must match, as for ``session up``. A licensed Sandbox also needs its
+    relay running as issued.
     """
     from booley.runtime import session_issuance as runtime_spec
 
@@ -991,15 +999,16 @@ def remove_refresh_predecessor(workspace: Path) -> str | None:
         return None
     labels = _refresh_container_labels(state)
     if (
-        labels.get("booley.role") != "interactive"
-        or labels.get("booley.project-id") != project_label_id(str(workspace.resolve()))
+        not _is_project_sandbox(labels, project_label_id(str(workspace.resolve())))
         or _DEVCONTAINER_FOLDER_LABEL in labels
     ):
         raise SessionError(
             f"container {name!r} is not this Project's headless Sandbox; it was not "
             "modified; inspect it, then remove or rename it"
         )
-    container_id = state["Id"]
+    container_id = state.get("Id")
+    if not isinstance(container_id, str) or not container_id:
+        raise SessionError(f"Sandbox {name!r} has no immutable container identity")
     for argv in (["docker", "stop", container_id], ["docker", "rm", "-f", container_id]):
         result = _run(argv)
         if result.returncode:
@@ -1712,7 +1721,8 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect 
     labels it compares the immutable image, user/workdir, mounts, environment,
     hardening, and networks against the spec and workspace.
     ``container_held_env`` leaves out the ``remoteEnv`` keys the spec fills from the
-    caller's shell (``${localEnv:KEY}``): the container holds its own values for them.
+    caller's shell (``${localEnv:KEY}``) only when the shell supplies nothing for them:
+    the container then holds its own values. An exported value is still compared.
     """
     import json
 
@@ -1798,7 +1808,9 @@ def _environment_matches(
     remote_env = spec.get("remoteEnv") or {}
     if container_held_env:
         remote_env = {
-            key: value for key, value in remote_env.items() if not _LOCAL_ENV_RE.search(str(value))
+            key: value
+            for key, value in remote_env.items()
+            if not (_LOCAL_ENV_RE.search(str(value)) and not substitute(str(value), workspace))
         }
     env_sections = (spec.get("containerEnv") or {},)
     if not is_devcontainer:
@@ -2476,6 +2488,8 @@ def refresh_container_id(workspace: Path) -> str:
     identity = state.get("Id") if state else None
     if not isinstance(identity, str) or not identity:
         raise SessionError("verified replacement Sandbox has no immutable container identity")
+    if state is not None and state["State"]["Running"] is not True:
+        raise SessionError("replacement Sandbox is not running after start")
     return identity
 
 
@@ -2529,7 +2543,7 @@ def sandbox_remedy(workspace: Path, *, runtime_only: bool = False) -> str:
             "then use Dev Containers: Rebuild Container"
         )
     if owner or external:
-        # Without a stamp there is nothing for refresh to build on.
+        # Refresh refuses a VS Code owner and an external image; both reseed instead.
         return _EXTERNAL_REMEDY if external and prior is not None else _RESEED_REMEDY
     return (
         "run `booley session down`, then `booley session up --rebuild` on the host"

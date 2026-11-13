@@ -1013,8 +1013,9 @@ def _parked_predecessor_summary(parked: tuple[_ActiveSession, ...]) -> str:
         original = sandbox.name.removesuffix(legacy.REFRESH_BACKUP_SUFFIX)
         rename = _shell_command(["docker", "rename", sandbox.name, original])
         descriptions.append(
-            f"{sandbox.name} (Project {sandbox.project_root}; parked by an interrupted refresh "
-            f"or rebuild: rename it back with `{rename}` or remove it after inspection)"
+            f"{sandbox.name} (Project {sandbox.project_root}; parked by an interrupted "
+            f"`booley session up --rebuild` or an older refresh: rename it back with `{rename}` when that name is "
+            "free, or remove it after inspection)"
         )
     return ", ".join(descriptions)
 
@@ -1059,7 +1060,7 @@ def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
 
 
 def _parked_refresh_predecessors(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
-    """Return stopped Sandboxes parked by refresh or rebuild; restore needs their network."""
+    """Return stopped Sandboxes parked by `session up --rebuild`; restore needs their network."""
     result = docker.run(
         [
             "ps",

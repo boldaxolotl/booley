@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 from booley.runtime import interactive_docker as idk
 from booley.runtime import issuance_invalidation
@@ -40,7 +40,7 @@ class RefreshResult:
     """Verified outcome, identified by immutable container IDs."""
 
     image: RefreshImage
-    outcome: str
+    outcome: Literal["kept", "created", "replaced"]
     previous_container_id: str | None
     container_id: str
 
@@ -129,8 +129,19 @@ def _replacement_state(project: Path) -> str:
         if running is not None and (running.vscode or running.name != canonical):
             return f"{prefix}Sandbox {running.name!r} is running and was not touched."
         if idk.container_exists(canonical):
-            return f"{prefix}the previous Sandbox {canonical!r} was left in place."
+            return f"{prefix}container {canonical!r} was left in place."
         return f"{prefix}no Sandbox is running."
+
+    return _state_after(project, describe)
+
+
+def _invalidation_state(project: Path) -> str:
+    """State after pending EDA Grant cleanup failed; that cleanup may remove Sandboxes."""
+
+    def describe(running: sr.Sandbox | None, _canonical: str) -> str:
+        if running is None:
+            return "No Sandbox is running; pending EDA Grant cleanup may have removed it."
+        return f"Sandbox {running.name!r} is running."
 
     return _state_after(project, describe)
 
@@ -176,7 +187,11 @@ def refresh(
     with host_lifecycle_lock("session refresh"):
         # A withdrawn stamp is what refresh repairs, so it completes pending invalidations
         # and continues instead of asking for a rerun.
-        _step("completing pending EDA Grant invalidations", _UNCHANGED, _complete_invalidations)
+        _step(
+            "completing pending EDA Grant invalidations",
+            lambda: _invalidation_state(project),
+            _complete_invalidations,
+        )
         _reject_existing_vscode(project)
         images.inspect(project)
         image = _step(
@@ -196,25 +211,32 @@ def refresh(
             _step("reconciling Project files", _UNCHANGED, lambda: images.finalize(project))
             return RefreshResult(image, "kept", current, current)
         _step("reissuing the Sandbox spec", _UNCHANGED, lambda: images.reissue(project))
-        request, previous = _step(
-            "removing the previous Sandbox",
-            lambda: _replacement_state(project),
-            lambda: _replace_sandbox(project),
-        )
-        _step(
-            "removing the license relay",
-            "No Sandbox is running.",
-            lambda: sr.remove_refresh_relay(project),
-        )
-        container_id = _step(
-            "starting the new Sandbox",
-            lambda: _start_state(project),
-            lambda: sr.start_refreshed_sandbox(project, request, image),
-        )
-        running = f"The new Sandbox {container_id} is running."
-        _step("checking for a VS Code Sandbox", running, lambda: _reject_vscode_started(project))
-        _step("reconciling Project files", running, lambda: images.finalize(project))
-        _cleanup_owned_images(project)
+        return _replace_and_start(project, image, images)
+
+
+def _replace_and_start(
+    project: Path, image: RefreshImage, images: RuntimeImageOperations
+) -> RefreshResult:
+    """Remove the previous Sandbox and relay, then start, verify and finalize the new one."""
+    request, previous = _step(
+        "removing the previous Sandbox",
+        lambda: _replacement_state(project),
+        lambda: _replace_sandbox(project),
+    )
+    _step(
+        "removing the license relay",
+        "No Sandbox is running.",
+        lambda: sr.remove_refresh_relay(project),
+    )
+    container_id = _step(
+        "starting the new Sandbox",
+        lambda: _start_state(project),
+        lambda: sr.start_refreshed_sandbox(project, request, image),
+    )
+    running = f"The new Sandbox {container_id} is running."
+    _step("checking for a VS Code Sandbox", running, lambda: _reject_vscode_started(project))
+    _step("reconciling Project files", running, lambda: images.finalize(project))
+    _cleanup_owned_images(project)
     return RefreshResult(image, "replaced" if previous else "created", previous, container_id)
 
 

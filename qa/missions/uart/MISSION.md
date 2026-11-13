@@ -225,7 +225,8 @@ Try:
   with an outdated Booley Directory layout is refused, never migrated: nothing stops or is
   removed, and the message names the removal and `booley init --seed` repair. Following that
   repair reopens cleanly. Headless, foreign, ambiguous and multiple candidates are refused.
-Look for: orphaned processes, a container stopped or removed, a failure that names no step or leaves a rerun unable to converge.
+Look for: orphaned processes, a container stopped or removed, a failure that
+names no step or leaves a rerun unable to converge.
 
 ### 11. doctor-upgrade — Doctor waivers and upgrade review (~20 min)
 Try:

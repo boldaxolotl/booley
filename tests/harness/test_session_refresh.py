@@ -43,6 +43,9 @@ NEW_IMAGE = "sha256:new"
 UNCHANGED = "The running Sandbox is unchanged."
 RERUN = "Run `booley session refresh` again once the cause is fixed."
 
+# The real primitive, captured before the `host` fixture replaces it with a fake.
+_REAL_START = sr.start_refreshed_sandbox
+
 
 def _image(
     selected_id: str = NEW_IMAGE, *, graph_changed: bool = True
@@ -83,9 +86,7 @@ class _Host:
     break_lookup_on_start_failure: bool = False
     lookup_broken: bool = False
     vscode_appears_after_removal: bool = False
-    real_start: bool = False
     docker_calls: list[list[str]] = field(default_factory=list)
-    original_start: Callable[..., str] | None = None
 
     @property
     def canonical(self) -> str:
@@ -175,22 +176,18 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
-    fake = _Host(project, original_start=getattr(sr, "start_refreshed_sandbox", None))
+    fake = _Host(project)
     monkeypatch.setattr(sr, "vscode_session_container", lambda _project: None)
     monkeypatch.setattr(
         session_admission, "has_pending_claim", lambda _project: fake.pending_claim
     )
     monkeypatch.setattr(sr, "resolve_running_sandbox", fake.resolve_running_sandbox)
     monkeypatch.setattr(sr.idk, "container_exists", fake.container_exists)
-    monkeypatch.setattr(
-        sr, "verified_headless_container", fake.verified_headless_container, raising=False
-    )
-    monkeypatch.setattr(sr, "check_refresh_start", fake.check_refresh_start, raising=False)
-    monkeypatch.setattr(
-        sr, "remove_refresh_predecessor", fake.remove_refresh_predecessor, raising=False
-    )
-    monkeypatch.setattr(sr, "remove_refresh_relay", fake.remove_refresh_relay, raising=False)
-    monkeypatch.setattr(sr, "start_refreshed_sandbox", fake.start_refreshed_sandbox, raising=False)
+    monkeypatch.setattr(sr, "verified_headless_container", fake.verified_headless_container)
+    monkeypatch.setattr(sr, "check_refresh_start", fake.check_refresh_start)
+    monkeypatch.setattr(sr, "remove_refresh_predecessor", fake.remove_refresh_predecessor)
+    monkeypatch.setattr(sr, "remove_refresh_relay", fake.remove_refresh_relay)
+    monkeypatch.setattr(sr, "start_refreshed_sandbox", fake.start_refreshed_sandbox)
     monkeypatch.setattr(sr, "_run", fake.docker)
     monkeypatch.setattr(
         session_refresh, "_cleanup_owned_images", lambda _project: fake.events.append("cleanup")
@@ -395,7 +392,7 @@ def project_local_booley_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     """Drop the harness-wide BOOLEY_DIR so ``issued`` uses its own Project data."""
     from booley.runtime.booley_dir import reset_cache
 
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR")
     reset_cache()
 
 
@@ -474,7 +471,7 @@ def test_missing_gateway_export_fails_before_removal(host: _Host) -> None:
     assert "session refresh failed while removing the previous Sandbox" in message
     assert "export BOOLEY_GATEWAY_KEY" in message
     assert "The Sandbox spec was reissued" in message
-    assert f"the previous Sandbox {host.canonical!r} was left in place" in message
+    assert f"container {host.canonical!r} was left in place" in message
     assert "remove_predecessor" not in host.events and "remove_relay" not in host.events
     assert host.running is not None and host.running.container_id == "old-id"
 
@@ -509,6 +506,33 @@ def test_missing_or_withdrawn_stamp_refreshes(
         assert runtime_spec.stamp_path(project).exists(), case
         assert not issuance_invalidation.has_pending(project), case
         host.run_old_sandbox()
+
+
+@pytest.mark.parametrize("sandbox_survives", [False, True])
+def test_invalidation_cleanup_failure_reports_the_state_it_left(
+    host: _Host, monkeypatch: pytest.MonkeyPatch, sandbox_survives: bool
+) -> None:
+    """Cleanup of a pending EDA Grant change can remove Sandboxes, so the message looks."""
+    if sandbox_survives:
+        host.run_old_sandbox()
+    monkeypatch.setattr(
+        issuance_invalidation,
+        "recover_all_locked",
+        Mock(side_effect=RuntimeError("could not remove network")),
+    )
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    message = str(caught.value)
+    assert "failed while completing pending EDA Grant invalidations" in message
+    assert "could not remove network" in message
+    if sandbox_survives:
+        assert f"Sandbox {host.canonical!r} is running." in message
+    else:
+        assert "No Sandbox is running; pending EDA Grant cleanup may have removed it." in message
+    assert RERUN in message
+    assert host.mutations() == []
 
 
 def test_licensed_sandbox_refreshes_with_relay_replaced(host: _Host) -> None:
@@ -626,8 +650,7 @@ def test_vscode_appearing_during_start_is_reported_untouched(
     host.run_old_sandbox()
     host.vscode_appears_after_removal = True
     # The real start refuses while any Sandbox runs, before it makes any Docker call.
-    assert host.original_start is not None
-    monkeypatch.setattr(sr, "start_refreshed_sandbox", host.original_start)
+    monkeypatch.setattr(sr, "start_refreshed_sandbox", _REAL_START)
 
     with pytest.raises(sr.SessionError) as caught:
         session_refresh.refresh(host.project, _images(host, _image()))

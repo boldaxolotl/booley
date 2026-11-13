@@ -4419,18 +4419,23 @@ def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize(
-    "state,expected",
-    [(None, None), ({"Id": ""}, None), ({"Id": "immutable-container"}, "immutable-container")],
+    "state,problem",
+    [
+        (None, "immutable container identity"),
+        ({"Id": "", "State": {"Running": True}}, "immutable container identity"),
+        ({"Id": "immutable", "State": {"Running": False}}, "not running"),
+        ({"Id": "immutable-container", "State": {"Running": True}}, None),
+    ],
 )
-def test_refresh_identity_requires_verified_immutable_container(
-    tmp_path, monkeypatch, state, expected
+def test_refresh_identity_requires_running_immutable_container(
+    tmp_path, monkeypatch, state, problem
 ):
     monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: state)
-    if expected is None:
-        with pytest.raises(sr.SessionError, match="immutable container identity"):
-            sr.refresh_container_id(tmp_path)
+    if problem is None:
+        assert sr.refresh_container_id(tmp_path) == "immutable-container"
     else:
-        assert sr.refresh_container_id(tmp_path) == expected
+        with pytest.raises(sr.SessionError, match=problem):
+            sr.refresh_container_id(tmp_path)
 
 
 @pytest.mark.parametrize("problem", ["changed-id", "malformed", "denied"])
@@ -5063,18 +5068,22 @@ def _as_headless_sandbox(workspace: Path, fixture: SimpleNamespace, monkeypatch)
     monkeypatch.setattr(sr, "_docker_stdout", stdout)
 
 
-def test_verified_headless_container_ignores_calling_shell_env(
+def test_verified_headless_container_compares_only_exported_shell_env(
     workspace, project_sandbox_resolution, monkeypatch
 ):
     fixture = project_sandbox_resolution
     _as_headless_sandbox(workspace, fixture, monkeypatch)
     container_id = fixture.state["Id"]
 
-    # The container is current whatever the calling shell exports for the key.
+    # A key the calling shell does not export is skipped: the container holds its own.
     monkeypatch.delenv(_CREDENTIAL_KEY, raising=False)
     assert sr.verified_headless_container(workspace, _refresh_image()) == container_id
-    monkeypatch.setenv(_CREDENTIAL_KEY, "a-different-shell-value")
+    # An exported value must match, as `session up` requires; a changed one is not current.
+    monkeypatch.setenv(_CREDENTIAL_KEY, "container-held-secret")
     assert sr.verified_headless_container(workspace, _refresh_image()) == container_id
+    monkeypatch.setenv(_CREDENTIAL_KEY, "a-different-shell-value")
+    assert sr.verified_headless_container(workspace, _refresh_image()) is None
+    monkeypatch.delenv(_CREDENTIAL_KEY)
 
     # A drifted non-`localEnv` key or another image is not current.
     fixture.state["Config"]["Env"][1] = "BOOLEY_DIR=/elsewhere"
@@ -5228,7 +5237,9 @@ def _prepare_refresh_start(wired, monkeypatch, *, licensed: bool):
     )
     monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
     monkeypatch.setattr(sr.idk, "container_running", lambda _name: False)
-    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: {"Id": "new-id"})
+    monkeypatch.setattr(
+        sr, "_strict_refresh_container", lambda _name: {"Id": "new-id", "State": {"Running": True}}
+    )
     relay = SimpleNamespace(relay_container="relay")
     recreate = Mock(side_effect=lambda *_a, **_k: events.append("recreate relay") or relay)
     validate = Mock(side_effect=lambda *_a, **_k: events.append("validate relay"))
@@ -5296,21 +5307,38 @@ def _headless_state(workspace: Path, **label_overrides: str | None) -> dict:
     return state
 
 
-def test_remove_refresh_predecessor_refuses_unproven_container(workspace, monkeypatch):
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"booley.project-id": "someone-else"},
+        {"booley.role": None},
+        {"devcontainer.local_folder": "vscode-folder"},
+    ],
+    ids=["other-project", "missing-role", "vscode-folder"],
+)
+def test_remove_refresh_predecessor_refuses_unproven_container(workspace, monkeypatch, overrides):
     docker = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
     monkeypatch.setattr(sr, "_run", docker)
-    cases = {
-        "other project": {"booley.project-id": "someone-else"},
-        "missing role": {"booley.role": None},
-        "vscode folder": {"devcontainer.local_folder": str(workspace)},
-    }
-    for label, overrides in cases.items():
-        state = _headless_state(workspace, **overrides)
-        monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name, s=state: s)
-        with pytest.raises(sr.SessionError, match="not this Project's headless Sandbox"):
-            sr.remove_refresh_predecessor(workspace)
-        docker.assert_not_called()
-        assert label
+    state = _headless_state(workspace, **overrides)
+    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: state)
+
+    with pytest.raises(sr.SessionError, match="not this Project's headless Sandbox"):
+        sr.remove_refresh_predecessor(workspace)
+
+    docker.assert_not_called()
+
+
+def test_remove_refresh_predecessor_refuses_container_without_identity(workspace, monkeypatch):
+    docker = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(sr, "_run", docker)
+    state = _headless_state(workspace)
+    del state["Id"]
+    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: state)
+
+    with pytest.raises(sr.SessionError, match="no immutable container identity"):
+        sr.remove_refresh_predecessor(workspace)
+
+    docker.assert_not_called()
 
 
 def test_remove_refresh_predecessor_stops_then_removes_by_immutable_id(workspace, monkeypatch):
