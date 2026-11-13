@@ -15,7 +15,7 @@ import subprocess
 
 import pytest
 
-from booley.runtime import interactive_docker, session_admission, session_runtime
+from booley.runtime import interactive_docker, platform_paths, session_admission, session_runtime
 
 #: Argument lists of every Docker CLI call attempted since the last install.
 DOCKER_CLI_CALLS: list[list[str]] = []
@@ -68,31 +68,44 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
     route_session_helpers_through_subprocess_run(monkeypatch)
 
 
-def route_session_helpers_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run the session runtime's and admission's timed captures through ``subprocess.run``.
+def _routed_bounded_capture(
+    argv: list[str], *, timeout: float, cwd=None, env=None, errors: str = "replace"
+):
+    """Stand in for ``platform_paths.run_captured_bounded`` using ``subprocess.run``.
 
-    Their timed, captured commands start with ``Popen`` (via
-    ``platform_paths.run_captured_bounded``) so they can kill the whole process tree on
-    timeout; tests that fake ``subprocess.run`` cannot see that.  This stand-in looks
-    ``subprocess.run`` up at call time and takes the same ``timeout``, ``cwd`` and ``env``.
+    Production starts the child with ``Popen`` so it can kill the whole process tree on
+    timeout; tests that fake ``subprocess.run`` cannot see that.  This looks
+    ``subprocess.run`` up at call time and takes the same ``timeout``, ``cwd``, ``env``
+    and ``errors`` (decoding mode).
     """
+    # Unbounded child on purpose: the tests' subprocess.run fakes must intercept this call.
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors=errors,
+        timeout=timeout,
+        cwd=cwd,
+        env=env,
+        check=False,
+    )
 
-    def routed(argv: list[str], *, timeout: float, cwd=None, env=None):
-        # Unbounded child: stands in for production run_captured_bounded; tests' subprocess.run fakes must intercept this call
-        return subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            cwd=cwd,
-            env=env,
-            check=False,
-        )
 
-    monkeypatch.setattr(session_runtime, "run_captured_bounded", routed)
-    monkeypatch.setattr(session_admission, "run_captured_bounded", routed)
+def route_session_helpers_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the session runtime's and admission's timed captures through ``subprocess.run``."""
+    monkeypatch.setattr(session_runtime, "run_captured_bounded", _routed_bounded_capture)
+    monkeypatch.setattr(session_admission, "run_captured_bounded", _routed_bounded_capture)
+
+
+def route_bounded_captures_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run host-side Git captures (``platform_paths.run_captured_bounded``) through ``subprocess.run``.
+
+    Those callers look the helper up on ``platform_paths`` at call time, so one patch
+    reaches all of them.  Tests that fake ``subprocess.run`` for Git call this so the
+    fake still sees the command.  The stand-in keeps each caller's ``errors`` mode.
+    """
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", _routed_bounded_capture)
 
 
 #: Command lines of every ``docker`` process a guarded test tried to start.

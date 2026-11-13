@@ -22,6 +22,7 @@ from pathlib import Path
 
 from booley.commit_policy import stealth_enabled
 from booley.core.booley_dir import owning_checkout
+from booley.runtime import platform_paths
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.safe_storage import refuse_symlinks
 
@@ -116,16 +117,11 @@ def _branch_names(repository: Path) -> set[str]:
     command = ["git", "for-each-ref", "--format=%(refname)"]
     command += [f"refs/heads/{prefix}" for prefix in _BRANCH_PREFIXES]
     try:
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             command,
+            timeout=_GIT_TIMEOUT_SECONDS,
             cwd=repository,
             env={**inherited_git_environment(), "GIT_OPTIONAL_LOCKS": "0"},
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",  # A branch name need not be UTF-8.
-            timeout=_GIT_TIMEOUT_SECONDS,
-            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("Git branch list unavailable in %s: %s", repository, exc)

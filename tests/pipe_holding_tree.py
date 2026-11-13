@@ -13,7 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 # Parent script: starts a heartbeat grandchild that inherits stdout/stderr, then
-# either sleeps (parent still alive at the timeout) or exits at once (the Docker
+# either sleeps (parent still alive at the timeout; ``live-until-stop`` ends at
+# the stop file) or exits at once (the Docker
 # CLI is gone but a descendant still holds the output pipe).  Mode ``escape``
 # also puts the grandchild in its own session (POSIX), out of reach of the
 # process-group kill, so only abandoning the pipes can bound the call.  The grandchild
@@ -21,7 +22,7 @@ from pathlib import Path
 # writes the done file, so the tests never kill a recorded PID (which could have
 # been reused) yet leave no process behind.
 PARENT_SCRIPT = """\
-import subprocess, sys, time
+import os, subprocess, sys, time
 heartbeat, stop, done, mode = sys.argv[1:5]
 child = (
     "import os, time\\n"
@@ -41,6 +42,12 @@ subprocess.Popen(
 )
 if mode == "live":
     time.sleep(40)
+if mode == "live-until-stop":
+    # Like ``live``, but also ends with the grandchild so a test that cannot kill
+    # the tree (the code under test is the bug) leaves no process behind.
+    end = time.monotonic() + 40
+    while time.monotonic() < end and not os.path.exists(stop):
+        time.sleep(0.05)
 """
 
 

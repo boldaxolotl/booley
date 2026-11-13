@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.runtime import worktree_relocation
+from booley.runtime import platform_paths, worktree_relocation
 from booley.runtime.worktree_relocation import (
     WorktreeMove,
     WorktreeRelocationError,
@@ -157,8 +157,8 @@ def test_refresh_relative_config_reports_git_config_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        worktree_relocation.subprocess,
-        "run",
+        platform_paths,
+        "run_captured_bounded",
         lambda *_args, **_kwargs: subprocess.CompletedProcess(
             ["git"], 1, stdout="", stderr="injected failure"
         ),

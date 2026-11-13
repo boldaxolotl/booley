@@ -22,9 +22,10 @@ exactly as Git printed them, quoted or not.
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from booley.runtime import platform_paths
 
 _LIST_TIMEOUT_S = 30
 _WORKTREE_PREFIX = "worktree "
@@ -84,19 +85,18 @@ def parse_worktree_porcelain(text: str) -> tuple[WorktreeEntry, ...]:
 def list_worktrees(repository: Path) -> tuple[WorktreeEntry, ...]:
     """Run ``git -C <repository> worktree list --porcelain`` and parse it.
 
-    Git failures propagate unchanged: :class:`subprocess.CalledProcessError`
-    for a non-zero exit, :class:`subprocess.TimeoutExpired` after
-    ``_LIST_TIMEOUT_S`` seconds, and :class:`OSError` when Git cannot be started.
+    The call is bounded by ``platform_paths.run_captured_bounded``. Git failures
+    propagate: :class:`subprocess.CalledProcessError` for a non-zero exit,
+    :class:`subprocess.TimeoutExpired` after ``_LIST_TIMEOUT_S`` seconds, and
+    :class:`OSError` when Git cannot be started.
     """
-    listing = subprocess.run(
+    result = platform_paths.run_captured_bounded(
         ["git", "-C", str(repository), "worktree", "list", "--porcelain"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=True,
         timeout=_LIST_TIMEOUT_S,
-    ).stdout
-    return parse_worktree_porcelain(listing)
+        errors="strict",
+    )
+    result.check_returncode()
+    return parse_worktree_porcelain(result.stdout)
 
 
 def _with_attribute(entry: WorktreeEntry, line: str) -> WorktreeEntry:

@@ -9,6 +9,7 @@ import pytest
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from booley.runtime import platform_paths
 from tests.harness.git_support import git_stdout as _git
 
 
@@ -107,6 +108,8 @@ def test_project_data_initialization_failure_remains_retryable(
         return subprocess.CompletedProcess(command, 0, "refs/heads/main\n", "")
 
     monkeypatch.setattr(init_cmd.subprocess, "run", fail_init)
+    # The branch lookup runs through the bounded helper; keep its canned answer.
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", fail_init)
 
     init_cmd._init_project_git_repo(booley_dir, InitContext(project_root=root))
 

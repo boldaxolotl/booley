@@ -13,7 +13,7 @@ import pytest
 
 from booley.mcp import server
 from booley.mcp.session_registry import Attribution, SessionRegistry
-from booley.runtime import handles, job_records
+from booley.runtime import handles, job_records, platform_paths
 from booley.runtime.chat_sessions import reserve_codex_chat
 from booley.runtime.pid import (
     ProcessIdentity,
@@ -367,7 +367,7 @@ def test_allocation_without_usable_git_skips_only_worktree_directories(
             if failure == "git-missing":
                 patch.setenv("PATH", "")
             elif failure == "timeout":
-                patch.setattr(subprocess, "run", timeout)
+                patch.setattr(platform_paths, "run_captured_bounded", timeout)
             assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2", failure
         assert any("Git branch list unavailable" in r.getMessage() for r in caplog.records), (
             failure
@@ -377,7 +377,7 @@ def test_allocation_without_usable_git_skips_only_worktree_directories(
 
 def test_allocation_survives_a_branch_name_that_is_not_utf8(tmp_path, monkeypatch):
     """One undecodable branch name must not stop handle allocation."""
-    real_run = subprocess.run
+    real_run = platform_paths.run_captured_bounded
     listing = (
         "import sys; sys.stdout.buffer.write(b'refs/heads/booley/s1\\nrefs/heads/booley/\\xff\\n')"
     )
@@ -389,5 +389,5 @@ def test_allocation_survives_a_branch_name_that_is_not_utf8(tmp_path, monkeypatc
     booley_dir = checkout / ".booley"
     booley_dir.mkdir(parents=True)
     (checkout / ".git").mkdir()
-    monkeypatch.setattr(subprocess, "run", run_listing)
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", run_listing)
     assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2"

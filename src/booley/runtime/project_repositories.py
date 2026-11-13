@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime import platform_paths
 from booley.runtime.booley_dir import (
     BOOLEY_DIR_NAME,
     BooleyDirOutsideCheckoutError,
@@ -249,15 +250,8 @@ def parse_porcelain_z(stdout: str) -> tuple[ProjectRepositoryChange, ...]:
 
 def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            env=inherited_git_environment(),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            check=False,
+        return platform_paths.run_captured_bounded(
+            ["git", *args], timeout=30, cwd=cwd, env=inherited_git_environment(), errors="strict"
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(["git", *args], 1, "", str(exc))

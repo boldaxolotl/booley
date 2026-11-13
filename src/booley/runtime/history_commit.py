@@ -37,6 +37,8 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from booley.runtime import platform_paths
+
 # A branch that moves under us this many times in one call is left for the
 # caller to retry later rather than retried forever.
 COMMIT_ATTEMPTS = 3
@@ -81,14 +83,8 @@ def git(
 ) -> subprocess.CompletedProcess[str]:
     """Run ``git`` in *repository*; raise :class:`FileCommitError` if it cannot run."""
     try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=repository,
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT_S,
-            check=False,
-            env=env,
+        return platform_paths.run_captured_bounded(
+            ["git", *args], timeout=_GIT_TIMEOUT_S, cwd=repository, env=env, errors="strict"
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise FileCommitError(f"git {' '.join(args)} failed in {repository}: {exc}") from exc
