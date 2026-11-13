@@ -175,18 +175,36 @@ suits your design. Name the profile on the Target so results stay comparable ove
 time. `--ppa-profile` replaces any expert settings on the Target for that run,
 so you see the clean profile.
 
-Expert options for tuning experiments; each one also exists as a Target
-setting under the same name with underscores:
+For tuning experiments, expert options override single settings of the
+profile. Pass them for one run, or set them on the Target: drop the leading
+`--`, write the name with underscores, and nest it under the table the
+second column names.
 
-- Mapping: `--abc-recipe <default|balanced|fast>` or `--abc-script <script>`,
-  `--generic-abc-before-mapping` / `--no-generic-abc-before-mapping`,
-  `--abc-delay-ps <ps>`.
-- Placement and timing repair (physical mode only): `--utilization-pct <percent>`,
-  `--placement-density <fraction>`, `--repair-setup` / `--no-repair-setup`,
-  `--repair-hold` / `--no-repair-hold`, `--gate-cloning` / `--no-gate-cloning`,
-  `--setup-margin-ns <ns>`, `--repair-tns-percent <percent>`. How many paths the
-  timing reports list is a project setting, not a Target setting; see
-  [Configuration](#configuration-flowssynth).
+| Option | Target table | What it changes | Default |
+|---|---|---|---|
+| `--abc-recipe <default\|balanced\|fast>` | `advanced_settings_yosys` | Logic-optimization script used during mapping. | From the profile |
+| `--abc-script <script>` | `advanced_settings_yosys` | Your own ABC commands in place of a recipe, starting with `+` (for example `+strash;map`). Cannot be combined with `--abc-recipe`. | None |
+| `--generic-abc-before-mapping` / `--no-generic-abc-before-mapping` | `advanced_settings_yosys` | Adds a generic logic-optimization pass before mapping. | Off |
+| `--abc-delay-ps <ps>` | `advanced_settings_yosys` | Delay target for mapping, in ps. | None |
+| `--utilization-pct <percent>` | `advanced_settings_openroad` | Share of the floorplan that cells fill. | From the profile |
+| `--placement-density <fraction>` | `advanced_settings_openroad` | Target density for placement. | From the profile |
+| `--repair-setup` / `--no-repair-setup` | `advanced_settings_openroad` | Repairs setup violations after placement. | On |
+| `--repair-hold` / `--no-repair-hold` | `advanced_settings_openroad` | Repairs hold violations. | Off |
+| `--gate-cloning` / `--no-gate-cloning` | `advanced_settings_openroad` | Lets setup repair duplicate gates. | Off |
+| `--setup-margin-ns <ns>` | `advanced_settings_openroad` | Extra setup slack that repair aims for, in ns. | 0 |
+| `--repair-tns-percent <percent>` | `advanced_settings_openroad` | Share of violating endpoints that setup repair works on. | OpenROAD's default |
+
+```yaml
+flow_options:
+  ppa_profile: balanced
+  advanced_settings_yosys: {abc_recipe: fast}
+  advanced_settings_openroad: {utilization_pct: 60, gate_cloning: true}
+```
+
+The `advanced_settings_openroad` options apply in physical mode only; a
+logical-mode Target that sets them is rejected. How many paths the timing
+reports list is a project setting, not a Target setting; see
+[Configuration](#configuration-flowssynth).
 
 After changing the mapping options, rerun the baseline with the same options;
 otherwise the comparison mixes two recipes.
