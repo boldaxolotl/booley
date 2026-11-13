@@ -38,7 +38,7 @@ refused.
 
 | Option | Effect |
 |---|---|
-| `--scope <file,...>` | RTL files to plant Mutants in. Default: the Target's own RTL, without testbench, vendored, and generated files. |
+| `--scope <file,...>` | RTL files to plant Mutants in; repeat the flag to add more. Default: the Target's own RTL, without testbench, vendored, and generated files. A file you name must belong to the Target: testbench files are refused, while vendored and generated files may be named explicitly. |
 | `--count <N\|auto>` | Number of Mutants (default `10`). `auto` derives it from the size of the scope, capped by the time limit (about one Mutant per 150 seconds, at least 3). |
 | `--seed <N>` | Non-negative integer that selects the Mutants (default `0`). Change it to try a different sample. |
 | `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up. |
