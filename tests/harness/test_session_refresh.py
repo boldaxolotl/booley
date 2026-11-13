@@ -84,8 +84,9 @@ class _Host:
     lookup_broken: bool = False
     vscode_appears_after_removal: bool = False
     docker_calls: list[list[str]] = field(default_factory=list)
-    # The real primitive, captured before the fixture replaces it with a fake.
-    real_start: Callable[..., str] | None = None
+    # The real primitive, captured before the fixture replaces it. A missing primitive
+    # surfaces in the test body, so red evidence fails where the behavior is asserted.
+    original_start: Callable[..., str] | None = None
 
     @property
     def canonical(self) -> str:
@@ -175,18 +176,22 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
-    fake = _Host(project, real_start=sr.start_refreshed_sandbox)
+    fake = _Host(project, original_start=getattr(sr, "start_refreshed_sandbox", None))
     monkeypatch.setattr(sr, "vscode_session_container", lambda _project: None)
     monkeypatch.setattr(
         session_admission, "has_pending_claim", lambda _project: fake.pending_claim
     )
     monkeypatch.setattr(sr, "resolve_running_sandbox", fake.resolve_running_sandbox)
     monkeypatch.setattr(sr.idk, "container_exists", fake.container_exists)
-    monkeypatch.setattr(sr, "verified_headless_container", fake.verified_headless_container)
-    monkeypatch.setattr(sr, "check_refresh_start", fake.check_refresh_start)
-    monkeypatch.setattr(sr, "remove_refresh_predecessor", fake.remove_refresh_predecessor)
-    monkeypatch.setattr(sr, "remove_refresh_relay", fake.remove_refresh_relay)
-    monkeypatch.setattr(sr, "start_refreshed_sandbox", fake.start_refreshed_sandbox)
+    monkeypatch.setattr(
+        sr, "verified_headless_container", fake.verified_headless_container, raising=False
+    )
+    monkeypatch.setattr(sr, "check_refresh_start", fake.check_refresh_start, raising=False)
+    monkeypatch.setattr(
+        sr, "remove_refresh_predecessor", fake.remove_refresh_predecessor, raising=False
+    )
+    monkeypatch.setattr(sr, "remove_refresh_relay", fake.remove_refresh_relay, raising=False)
+    monkeypatch.setattr(sr, "start_refreshed_sandbox", fake.start_refreshed_sandbox, raising=False)
     monkeypatch.setattr(sr, "_run", fake.docker)
     monkeypatch.setattr(
         session_refresh, "_cleanup_owned_images", lambda _project: fake.events.append("cleanup")
@@ -660,7 +665,8 @@ def test_vscode_appearing_during_start_is_reported_untouched(
     host.run_old_sandbox()
     host.vscode_appears_after_removal = True
     # The real start refuses while any Sandbox runs, before it makes any Docker call.
-    monkeypatch.setattr(sr, "start_refreshed_sandbox", host.real_start)
+    assert host.original_start is not None
+    monkeypatch.setattr(sr, "start_refreshed_sandbox", host.original_start)
 
     with pytest.raises(sr.SessionError) as caught:
         session_refresh.refresh(host.project, _images(host, _image()))
