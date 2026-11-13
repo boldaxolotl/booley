@@ -291,17 +291,20 @@ def _communicate_sliced(
                 raise
 
 
-def _close_pipes_on_posix(proc: subprocess.Popen[bytes]) -> None:
+def _close_unowned_pipes(proc: subprocess.Popen[bytes]) -> None:
     """Close *proc*'s output pipes after an abandoned or interrupted ``communicate``.
 
     On POSIX ``communicate`` reads on the calling thread, so closing is safe. On
-    Windows daemon reader threads own the pipes (closing a buffered pipe a reader
-    is blocked on would block), so they are left to those threads.
+    Windows ``communicate`` hands each pipe to a daemon reader thread, which
+    closes it at end of file; closing a buffered pipe a live reader is blocked
+    on would block, so only pipes without a live reader are closed here (an
+    interrupt before the readers started leaves both unowned and would leak
+    them).
     """
-    if IS_WINDOWS:
-        return
-    for pipe in (proc.stdout, proc.stderr):
-        if pipe is not None:
+    for name in ("stdout", "stderr"):
+        pipe = getattr(proc, name)
+        reader = getattr(proc, f"{name}_thread", None)
+        if pipe is not None and not (reader is not None and reader.is_alive()):
             pipe.close()
 
 
@@ -328,11 +331,11 @@ def _run_bounded(
                 # A descendant escaped the group and still holds a pipe: give up
                 # on its output.
                 out = err = None
-                _close_pipes_on_posix(proc)
+                _close_unowned_pipes(proc)
             raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err) from None
         except BaseException:
             kill_process_tree(proc)
-            _close_pipes_on_posix(proc)
+            _close_unowned_pipes(proc)
             raise
     finally:
         if feeder is not None:

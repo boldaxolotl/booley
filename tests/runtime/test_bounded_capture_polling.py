@@ -65,3 +65,55 @@ def test_missing_executable_with_input_raises_and_leaks_no_descriptor(tmp_path: 
 
     if before is not None:
         assert len(list(fd_dir.iterdir())) == before
+
+
+class _FakePipe:
+    """A pipe stand-in that records whether it was closed."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeReader:
+    """A Windows ``communicate`` reader-thread stand-in."""
+
+    def __init__(self, alive: bool) -> None:
+        self._alive = alive
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+
+def test_interrupt_before_communicate_starts_closes_both_pipes() -> None:
+    """No reader thread owns the pipes yet, so the helper closes them (no leak)."""
+    proc = subprocess.Popen(_sleep_argv(0), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        platform_paths._close_unowned_pipes(proc)
+
+        assert proc.stdout is not None and proc.stdout.closed
+        assert proc.stderr is not None and proc.stderr.closed
+    finally:
+        proc.wait(timeout=10)
+
+
+def test_pipe_with_a_live_reader_thread_is_left_to_that_thread() -> None:
+    """Closing a buffered pipe a live reader is blocked on would block."""
+    proc = subprocess.Popen(_sleep_argv(0), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    owned, finished = _FakePipe(), _FakePipe()
+    real_stdout, real_stderr = proc.stdout, proc.stderr
+    proc.stdout, proc.stderr = owned, finished  # type: ignore[assignment]
+    proc.stdout_thread = _FakeReader(alive=True)  # type: ignore[attr-defined]
+    proc.stderr_thread = _FakeReader(alive=False)  # type: ignore[attr-defined]
+    try:
+        platform_paths._close_unowned_pipes(proc)
+
+        assert not owned.closed
+        assert finished.closed
+    finally:
+        assert real_stdout is not None and real_stderr is not None
+        real_stdout.close()
+        real_stderr.close()
+        proc.wait(timeout=10)
