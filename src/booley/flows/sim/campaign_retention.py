@@ -1255,7 +1255,10 @@ def _validate_authenticated_projection(
 
 
 def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> bool:
-    """Recognize a complete report-only resume without granting storage authority."""
+    """Recognize a complete report-only resume without granting storage authority.
+
+    Raises ``CampaignRetentionError`` for a receipt Booley 0.4.0 wrote.
+    """
     if pending or not completed or (root / "targets").exists():
         return False
     try:
