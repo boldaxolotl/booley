@@ -167,13 +167,14 @@ def test_untraced_run_leaves_existing_sessions_unchanged(
 def test_untraced_run_registers_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkout_store: Path
 ):
-    def refuse_store(_project_root: Path) -> None:
-        raise AssertionError("an untraced run must not resolve a session store")
-
-    monkeypatch.setattr(bwave_registration, "session_store", refuse_store)
+    resolved: list[Path] = []
+    monkeypatch.setattr(bwave_registration, "session_store", resolved.append)
 
     _run(tmp_path, monkeypatch, {"lite": ["smoke"]}, traced=False)
 
+    assert (
+        resolved == []
+    )  # A raise inside registration is swallowed as a warning, so record calls.
     assert not checkout_store.parent.exists()
 
 

@@ -222,13 +222,7 @@ def _session_owner(checkout: Path) -> Path:
     return common.parent
 
 
-def containing_checkout(selected: Path) -> Path | None:
-    """The checkout containing *selected*, or ``None`` outside any Project.
-
-    That is its nearest Git checkout (a linked worktree is its own checkout);
-    otherwise, for an initialized non-Git Project, the nearest ancestor with a
-    Booley Directory of its own.
-    """
+def _session_checkout(selected: Path) -> Path:
     current, checkouts = _checkout_candidates(selected)
     if checkouts:
         return checkouts[0]
@@ -236,14 +230,43 @@ def containing_checkout(selected: Path) -> Path | None:
     for parent in (current, *current.parents):
         if parent != Path.home() and resolve_authoritative_booley_dir(parent).is_dir():
             return parent
+    raise _session_error()
+
+
+def _has_own_booley_dir(root: Path) -> bool:
+    """Whether *root* itself (never an ancestor, never ``BOOLEY_DIR``) has a Booley Directory."""
+    try:
+        return own_booley_dir(root).is_dir()
+    except (BooleyLayoutError, OSError):
+        return False
+
+
+def _is_linked_worktree_pointer(checkout: Path) -> bool:
+    """Whether *checkout*'s ``.git`` pointer names a linked worktree, not a submodule."""
+    try:
+        pointer = (checkout / ".git").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False  # A ``.git`` directory is a standalone repository.
+    return "/worktrees/" in pointer.replace("\\", "/")
+
+
+def session_store_checkout(selected: Path) -> Path | None:
+    """The Project checkout whose Booley Directory holds the bwave store, or ``None``.
+
+    The nearest enclosing checkout with a Booley Directory of its own. A nested
+    Git repository without one (a submodule, vendored IP) is skipped so the
+    enclosing Project is found; a linked worktree is never skipped, so one
+    without its own Booley Directory never borrows the main checkout's.
+    """
+    current, checkouts = _checkout_candidates(selected)
+    for checkout in checkouts:
+        if _has_own_booley_dir(checkout) or _is_linked_worktree_pointer(checkout):
+            return checkout
+    # Initialized non-Git Projects: the nearest ancestor that owns a Booley Directory.
+    for parent in (current, *current.parents):
+        if parent != Path.home() and _has_own_booley_dir(parent):
+            return parent
     return None
-
-
-def _session_checkout(selected: Path) -> Path:
-    checkout = containing_checkout(selected)
-    if checkout is None:
-        raise _session_error()
-    return checkout
 
 
 def discover_session_context(

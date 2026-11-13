@@ -54,7 +54,7 @@ from booley.core.booley_layout import BooleyLayoutError
 from booley.core.boundary import BoundaryError
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
-from booley.runtime.project_discovery import containing_checkout
+from booley.runtime.project_discovery import session_store_checkout
 from booley.runtime.timefmt import format_age, utc_now_rfc3339
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ def session_store(checkout: Path | None) -> SessionStore:
 def current_session_store() -> SessionStore:
     """The store of the Project checkout containing the working directory."""
     try:
-        checkout = containing_checkout(Path.cwd())
+        checkout = session_store_checkout(Path.cwd())
     except _NO_STORE_ERRORS:
         checkout = None
     return session_store(checkout)

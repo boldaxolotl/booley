@@ -304,10 +304,10 @@ last Test Run that did not pass if any, else of the last Test Run. The last
 Target's waveform also becomes the default session, so `bwave list` alone reads
 the newest trace. Each checkout, the main checkout or a linked worktree, keeps
 its own sessions in its Booley Directory, so `@<target>` and the default session
-are that checkout's latest traced run. A shell reads the store of the checkout
-it works in, and an agent's `bwave` tool the store of the checkout the agent
-works in. A new worktree starts with no sessions. Outside any Project,
-`bwave register` keeps sessions in the temporary directory instead. A failure to
+are that checkout's latest traced run. A shell or an agent reads the sessions of
+the checkout it works in, and a new worktree starts with none. Outside any
+Project, or in a checkout without a Booley Directory of its own, sessions stay in
+the temporary directory instead. A failure to
 register never changes the run's result.
 
 Booley stores every waveform as FST, a compact format that B-Wave and common

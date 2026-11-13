@@ -143,6 +143,56 @@ def test_subdirectory_of_a_non_git_project_reads_its_store(tmp_path: Path) -> No
     assert _resolve(project / "rtl", shell_env, "@dut", "list") == trace
 
 
+def test_subdirectory_of_a_relocated_non_git_project_resolves_against_the_root(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    (project / "data").mkdir(parents=True)
+    (project / "rtl").mkdir()
+    (project / "booley.toml").write_text('[project]\ndir = "data"\n', encoding="utf-8")
+    env = _env(tmp_path / "shared-tmp")
+    trace = _trace(project / "sim", "dut.fst")
+
+    _register(project, env, trace, "dut")
+
+    # The run recorded the trace relative to the Project Root, whatever the shell's directory.
+    assert (project / "data" / ".runtime" / "bwave" / "bwave_sessions.json").is_file()
+    assert _resolve(project / "rtl", env, "@dut", "list") == trace
+
+
+def test_nested_git_repository_without_a_booley_directory_reads_the_enclosing_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    isolate_git(tmp_path, monkeypatch)
+    main = main_project(tmp_path)
+    nested = main / "vendor" / "ip"
+    (nested / ".git").mkdir(parents=True)
+    (nested / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    env = _env(tmp_path / "shared-tmp")
+    trace = _trace(main / "out", "dut.fst")
+
+    _register(main, env, trace, "dut")
+
+    assert _resolve(nested, env, "@dut", "list") == trace
+
+
+def test_worktree_pointer_tells_a_linked_worktree_from_a_submodule(tmp_path: Path) -> None:
+    from booley.runtime.project_discovery import _is_linked_worktree_pointer
+
+    worktree = tmp_path / "worktree"
+    submodule = tmp_path / "submodule"
+    standalone = tmp_path / "standalone"
+    for path in (worktree, submodule, standalone / ".git"):
+        path.mkdir(parents=True)
+    (worktree / ".git").write_bytes(b"gitdir: /repo/.git/worktrees/wt\n")
+    (submodule / ".git").write_bytes(b"gitdir: ../.git/modules/sub\n")
+
+    assert _is_linked_worktree_pointer(worktree)
+    assert not _is_linked_worktree_pointer(submodule)
+    assert not _is_linked_worktree_pointer(standalone)
+    assert not _is_linked_worktree_pointer(tmp_path / "absent")
+
+
 def test_outside_a_project_uses_the_temporary_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

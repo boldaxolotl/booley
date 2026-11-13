@@ -51,7 +51,7 @@ def test_an_unresolvable_booley_directory_falls_back_to_the_temporary_store(
         raise BooleyLayoutError("unusable layout")
 
     monkeypatch.setattr(sessions, "resolve_authoritative_booley_dir", refuse)
-    monkeypatch.setattr(sessions, "containing_checkout", lambda _cwd: tmp_path)
+    monkeypatch.setattr(sessions, "session_store_checkout", lambda _cwd: tmp_path)
 
     assert session_store(tmp_path).checkout is None
     assert current_session_store().checkout is None
@@ -65,6 +65,6 @@ def test_a_working_directory_that_cannot_be_inspected_falls_back_to_the_temporar
     def unreadable(_cwd: Path) -> Path:
         raise PermissionError("cannot read the working directory")
 
-    monkeypatch.setattr(sessions, "containing_checkout", unreadable)
+    monkeypatch.setattr(sessions, "session_store_checkout", unreadable)
 
     assert current_session_store().checkout is None

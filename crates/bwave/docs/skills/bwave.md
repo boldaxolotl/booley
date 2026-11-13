@@ -28,7 +28,8 @@ corpus) → `bwave schema` (JSON Schema for `--format json`).
 - **Sessions**: after `booley flow sim` with tracing, `@<target>` and the
   default session point at that run's waveform, so queries need no trace path.
   The latest traced run of the checkout bwave runs in owns them; outside a
-  Project, sessions live in the temporary directory.
+  Project, or in a checkout without a Booley Directory of its own, sessions
+  live in the temporary directory.
 - **Sync mode (default)**: every emitted row is indexed by *clock cycle*. Cycle
   1 is the first rising edge after reset deasserts. The clock is auto-detected
   (`*clk*` heuristic, shallowest scope wins) — override with `--clock PATTERN`.
