@@ -5012,7 +5012,8 @@ def _check_target_naming(
     reads in ``--target``, ``sim_pass_<target>``, and ``tests.toml`` keys. See
     :mod:`booley.targets.target_naming` for the rule.
 
-    A note, never a failure, and only for owned cores (:func:`core_tree_inspection.owned_core_files`): a
+    A note, never a failure, and only for owned cores
+    (:func:`core_tree_inspection.owned_core_files`): a
     non-conforming name still runs, and renaming a vendored upstream Target is
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
