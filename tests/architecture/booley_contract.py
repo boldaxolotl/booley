@@ -246,6 +246,7 @@ DIRECTION_RULES = (
             exact("booley.runtime.vaporview"),
             exact("booley.flows.target_test_plan_inspection"),
             exact("booley.audit.core_tree_inspection"),
+            exact("booley.runtime.core_repository_hygiene"),
             exact("booley.runtime.project_image"),
         ),
         (
