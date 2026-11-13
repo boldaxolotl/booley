@@ -38,6 +38,7 @@ from booley.flows.implementation_comparison import (
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.job_estimates import JobRequest
 from booley.flows.job_resources import JobResourceMonitor
+from booley.flows.memory_admission import memory_admission_enabled
 from booley.flows.prepared_invocation import (
     OrdinaryRunInvocation,
     PreparedInvocation,
@@ -46,7 +47,12 @@ from booley.flows.prepared_invocation import (
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
-from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, ExecutionResult
+from booley.runtime.endpoint_execution import (
+    EXIT_ERROR,
+    EndpointOutcome,
+    ExecutionResult,
+    note_job_oom_kill,
+)
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
@@ -73,9 +79,40 @@ class SubprocessResult:
     # Peak resident memory of the locally-executed process tree.  ``None``
     # means the platform could not measure it (not zero usage).
     peak_rss_mb: float | None = None
-    # cgroup v2 OOM-kill counter delta observed across this command.  This
-    # corroborates an otherwise-ambiguous SIGKILL/rc137 as an actual OOM.
+    # cgroup v2 OOM-kill counter delta observed across this command.  It is
+    # container-wide evidence: another Job's kill moves it too.
     oom_kill_delta: int = 0
+    # Under memory admission: a process of this command's own tree was killed by
+    # the OOM killer (``job_resources.own_oom_kill``). Set by ``_execute_local``.
+    oom_killed: bool = False
+
+    @property
+    def oom_blamed(self) -> bool:
+        """Whether to classify this command's failure as an OOM kill.
+
+        With memory admission on, only the command's own kill counts; otherwise
+        any container OOM kill observed while it ran does (ADR 0087).
+        """
+        if memory_admission_enabled():
+            return self.oom_killed
+        return self.oom_kill_delta > 0
+
+
+def _blame_own_oom_kill(
+    measurement: job_resources.JobMeasurement,
+    result: SubprocessResult,
+    scope: Any,
+) -> None:
+    """Under memory admission, mark a command whose own process the OOM killer took.
+
+    A kill also counts for the whole Job, which the requeue reads (ADR 0087).
+    """
+    if not memory_admission_enabled():
+        return
+    cancelled = scope is not None and scope.cancelled()
+    result.oom_killed = job_resources.own_oom_kill(measurement, result, cancelled=cancelled)
+    if result.oom_killed:
+        note_job_oom_kill()
 
 
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
@@ -311,6 +348,7 @@ class FlowMechanics:
             return SubprocessResult(returncode=-1)
         result.peak_rss_mb = measurement.peak_rss_mb
         result.oom_kill_delta = measurement.oom_kill_delta or 0
+        _blame_own_oom_kill(measurement, result, scope)
         job_resources.record_command(flow, label, self._resource_flags(), measurement, result)
         return result
 
