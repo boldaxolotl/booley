@@ -218,7 +218,11 @@ def test_unreadable_holder_blocks_promotion(root, world, monkeypatch):
         pytest.param(lambda _store: claim(1, run_alone=True), id="reservation-and-run-alone"),
         pytest.param(lambda _store: claim(), id="neither-reservation-nor-run-alone"),
         pytest.param(lambda _store: claim(2000), id="reservation-above-budget"),
-        pytest.param(lambda _store: claim(0), id="zero-reservation"),
+        pytest.param(
+            lambda store: store.submit(job_slots.CLASS_MEMORY, pid=1, memory=claim(0)),
+            id="new-zero-reservation",
+        ),
+        pytest.param(lambda _store: claim(-1), id="negative-reservation"),
         pytest.param(lambda _store: claim(run_alone=cast(Any, 1)), id="non-bool-run-alone"),
         pytest.param(lambda _store: claim(1, budget_mb=float("nan")), id="non-finite-budget"),
         pytest.param(lambda _store: claim(1, wall_s=-1.0), id="negative-wall"),
@@ -428,7 +432,7 @@ def test_shrink_never_grows_a_reservation(root, world):
     holder = join(store, world, 101, claim(500))
     assert store.refresh(holder).state == HOLDING
     before = holder.path.read_bytes()
-    for value in (500, 700, 0, -1):
+    for value in (500, 700, -1):
         assert not store.shrink_reservation(holder, value)
     assert holder.path.read_bytes() == before
     assert holder.memory == claim(500)
@@ -448,6 +452,55 @@ def test_shrink_refuses_a_run_alone_or_vanished_entry(root, world):
     assert not store.shrink_reservation(alone, 100)
     store.release(alone)
     assert not store.shrink_reservation(alone, 100)
+
+
+def test_holder_drops_to_zero_from_a_reservation_or_run_alone(root, world):
+    store = make_store(root, world)
+    sized = join(store, world, 101, claim(500))
+    assert store.refresh(sized).state == HOLDING
+    assert store.shrink_reservation(sized, 0)
+    assert _on_disk_reservation(sized) == 0
+    assert not store.shrink_reservation(sized, 0)  # already zero
+    assert not store.shrink_reservation(sized, 100)  # never grows back
+    assert store.renew(sized)
+    assert _on_disk_reservation(sized) == 0
+    store.release(sized)
+    alone = join(store, world, 102, claim(run_alone=True, wall_s=30.0))
+    assert store.refresh(alone).state == HOLDING
+    assert not store.shrink_reservation(alone, 100)
+    assert store.shrink_reservation(alone, 0)
+    on_disk = json.loads(alone.path.read_text(encoding="utf-8"))["memory"]
+    assert (on_disk["reservation_mb"], on_disk["run_alone"], on_disk["wall_s"]) == (0, False, 30.0)
+    assert on_disk["budget_mb"] == BUDGET_MB
+
+
+def test_zero_holder_blocks_no_claim(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(500))
+    assert store.refresh(holder).state == HOLDING
+    assert store.shrink_reservation(holder, 0)
+    # A full budget, then a run-alone claim, both start beside the zero holder.
+    full = join(store, world, 102, claim(1000))
+    assert store.refresh(full).state == HOLDING
+    store.release(full)
+    alone = join(store, world, 103, claim(run_alone=True))
+    assert store.refresh(alone).state == HOLDING
+    assert holder.path.exists()  # the zero holder keeps its lease
+    with pytest.raises(ValueError, match="must reserve memory or run alone"):
+        store.submit(job_slots.CLASS_MEMORY, pid=1, memory=claim(0))
+
+
+def test_an_unbounded_claim_queues_past_the_queue_bound(root, world):
+    store = make_store(root, world, SlotCaps(queue_max=0))
+    holder = join(store, world, 101, claim(run_alone=True))
+    assert store.refresh(holder).state == HOLDING
+    spawn(world, 102)
+    with pytest.raises(QueueFullError):
+        store.submit(job_slots.CLASS_MEMORY, pid=102, memory=claim(100))
+    waiter = store.submit(job_slots.CLASS_MEMORY, pid=102, memory=claim(100), bounded=False)
+    assert store.refresh(waiter) == TokenState(QUEUED, position=0)
+    store.release(holder)
+    assert store.refresh(waiter).state == HOLDING
 
 
 def test_shrink_keeps_the_claims_seats_and_wall_clock_estimate(root, world):

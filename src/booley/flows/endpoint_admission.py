@@ -22,6 +22,7 @@ from booley.flows.endpoint_events import (
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.memory_admission import (
     MemoryAdmissionPlan,
+    MemorySizing,
     fixed_job_threads,
     job_threads_at_start,
     measure_memory_claim,
@@ -59,10 +60,10 @@ class AdmissionContext:
 
     ``max_heavy`` is the store's heavy cap, used by Simulation Campaign
     capacity; other endpoints ignore it. A Job admitted by Memory Reservation
-    has one lane: its Campaign runs work items in series until they are
-    admitted themselves. ``memory_warning`` is the warning that Job's result
-    carries (it ran alone because its estimate exceeded the Memory Budget, or
-    the budget was unavailable).
+    has one lane: its Campaign runs work items in series. ``memory_warning`` is
+    the warning that Job's result carries (it ran alone because its estimate
+    exceeded the Memory Budget, or the budget was unavailable). ``memory_sizing``
+    lets its Campaign give each work item its own claim, and is set only then.
     """
 
     mode: str
@@ -75,6 +76,7 @@ class AdmissionContext:
     cancellation: Callable[[], bool]
     cancellation_cause: Callable[[], str | None] = no_cancellation_cause
     memory_warning: str | None = None
+    memory_sizing: MemorySizing | None = None
     parent_execution_id: ExecutionId = field(init=False)
 
     def __post_init__(self) -> None:
@@ -102,13 +104,14 @@ class _Claim:
 
     ``plan`` sized a memory-admitted Job's claim; ``threads`` is the Job's
     share of the cores, fixed when its Memory Reservation is admitted. Only a
-    memory-admitted Job has either.
+    memory-admitted Job has either. ``sizing`` is what it lends its work items.
     """
 
     store: job_slots.SlotStore | None
     token: object | None
     plan: MemoryAdmissionPlan | None = None
     threads: int | None = None
+    sizing: MemorySizing | None = None
 
 
 class AdmissionGate:
@@ -176,6 +179,7 @@ class AdmissionGate:
                     cancellation=lambda: cause() is not None,
                     cancellation_cause=cause,
                     memory_warning=None if memory_plan is None else memory_plan.warning,
+                    memory_sizing=claim.sizing,
                 )
         finally:
             if store is not None and token is not None:
@@ -470,4 +474,4 @@ def _acquire_memory_reservation(
         # The caller never sees the token, so it cannot release it.
         store.release(token)
         raise
-    return _Claim(store, token, plan, threads)
+    return _Claim(store, token, plan, threads, MemorySizing(project, config))

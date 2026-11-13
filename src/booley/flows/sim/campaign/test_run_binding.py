@@ -12,11 +12,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from booley.flows.test_runs import discovered_test_run, test_run_from_document
+from booley.flows.test_runs import TestRun, discovered_test_run, test_run_from_document
 
 from .codec import SimulationCampaignIntegrityError
 
-__all__ = ["observation_test_runs"]
+__all__ = ["observation_test_runs", "work_item_test_runs"]
 
 
 def observation_test_runs(
@@ -57,3 +57,18 @@ def observation_test_runs(
         run = matching[position]
         bound.append((cast(str, run["name"]), cast(str, run["fingerprint"])))
     return tuple(bound)
+
+
+def work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...]:
+    """The concrete Test Runs a work item froze.
+
+    Manifest decode reads these records raw, so this is where they are parsed
+    strictly; a failure means the record was altered after planning.
+    """
+    try:
+        return tuple(
+            test_run_from_document(entry)
+            for entry in cast(tuple[object, ...], work_item["test_runs"])
+        )
+    except ValueError as exc:
+        raise SimulationCampaignIntegrityError(f"work item Test Runs are invalid: {exc}") from exc
