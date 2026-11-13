@@ -172,33 +172,33 @@ def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
     ("statement", "target"),
     [
         (
-            "import booley.flows.sim.campaign.store\n",
-            "booley.flows.sim.campaign.store",
+            "import booley.flows.sim.record.store\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "from booley.flows.sim.campaign import store\n",
-            "booley.flows.sim.campaign.store",
+            "from booley.flows.sim.record import store\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "from booley.flows.sim.campaign.store import CampaignStore\n",
-            "booley.flows.sim.campaign.store",
+            "from booley.flows.sim.record.store import CampaignStore\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "def deferred():\n    import booley.flows.sim.campaign.store\n",
-            "booley.flows.sim.campaign.store",
+            "def deferred():\n    import booley.flows.sim.record.store\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "if enabled:\n    import booley.flows.sim.campaign.store\n",
-            "booley.flows.sim.campaign.store",
+            "if enabled:\n    import booley.flows.sim.record.store\n",
+            "booley.flows.sim.record.store",
         ),
         (
             "from typing import TYPE_CHECKING\n"
-            "if TYPE_CHECKING:\n    from booley.flows.sim.campaign.store import CampaignStore\n",
-            "booley.flows.sim.campaign.store",
+            "if TYPE_CHECKING:\n    from booley.flows.sim.record.store import CampaignStore\n",
+            "booley.flows.sim.record.store",
         ),
         (
-            "from booley.flows.sim.campaign.inspection import authenticate_work_item\n",
-            "booley.flows.sim.campaign.inspection",
+            "from booley.flows.sim.record.inspection import authenticate_work_item\n",
+            "booley.flows.sim.record.inspection",
         ),
     ],
 )
@@ -219,7 +219,7 @@ def test_campaign_storage_rule_allows_public_facade_import(tmp_path: Path) -> No
     root = _campaign_rule_seed(
         tmp_path,
         "flows/sim/rogue.py",
-        "from booley.flows.sim import campaign\n",
+        "from booley.flows.sim import record\n",
     )
 
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
@@ -230,9 +230,9 @@ def test_campaign_storage_rule_allows_public_facade_import(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ("source", "target"),
     [
-        ("booley.flows.sim.campaign.coordinator", "booley.flows.sim.campaign.store"),
-        ("booley.flows.sim.campaign.inspection", "booley.flows.sim.campaign.store"),
-        ("booley.flows.sim.campaign", "booley.flows.sim.campaign.inspection"),
+        ("booley.flows.sim.record.coordinator", "booley.flows.sim.record.store"),
+        ("booley.flows.sim.record.inspection", "booley.flows.sim.record.store"),
+        ("booley.flows.sim.record", "booley.flows.sim.record.inspection"),
     ],
 )
 def test_campaign_storage_permissions_allow_only_their_exact_edges(
@@ -353,9 +353,9 @@ def _campaign_rule_seed(tmp_path: Path, source: str, statement: str) -> Path:
         "__init__.py",
         "flows/__init__.py",
         "flows/sim/__init__.py",
-        "flows/sim/campaign/__init__.py",
-        "flows/sim/campaign/store.py",
-        "flows/sim/campaign/inspection.py",
+        "flows/sim/record/__init__.py",
+        "flows/sim/record/store.py",
+        "flows/sim/record/inspection.py",
         source,
     )
     for relative in files:
