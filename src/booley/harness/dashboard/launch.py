@@ -238,26 +238,9 @@ class Launcher:
         """The form of a Flow, or the reviewer's, its spec path prefilled from *worktree*'s Goal."""
         if kind == "flow":
             return form(name)
-        from booley.harness.dashboard.specialist_form import ReviewerForm
+        from booley.harness.dashboard.specialist_form import ReviewerForm, spec_prefill
 
-        return ReviewerForm(self.spec_prefill(worktree))
-
-    def spec_prefill(self, worktree: Path) -> str:
-        """The spec of *worktree*'s active spec-review Goal, else ``""``."""
-        from booley.goals.model import REVIEW_VERDICTS, SPEC_REVIEW_KIND
-        from booley.goals.store import GoalStore, GoalStoreError
-
-        try:
-            record = GoalStore(self._booley_dir).active_for_worktree(worktree)
-        except (GoalStoreError, OSError):
-            return ""
-        keys = {f"review_{SPEC_REVIEW_KIND}_{verdict}" for verdict in REVIEW_VERDICTS}
-        specs = (
-            goal.spec.params.get("spec", "")
-            for goal in (record.goals if record else ())
-            if goal.spec.key in keys
-        )
-        return next((str(spec) for spec in specs if spec), "")
+        return ReviewerForm(spec_prefill(self._booley_dir, worktree))
 
     def check(self, worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> CheckResult:
         return check(worktree, kind, name, argv)

@@ -88,6 +88,10 @@ _ALLOWED: dict[str, tuple[frozenset[str], str]] = {
     "booley.harness.dashboard.app": (frozenset({"goals"}), "Goal-only #3511"),
     "booley.harness.dashboard.doctor": (frozenset({"goals"}), "Goal-only #3511"),
     "booley.harness.dashboard.jobs": (frozenset({"goals"}), "Goal-only #3511"),
+    "booley.harness.dashboard.specialist_form": (
+        frozenset({"goals"}),
+        "Goal-only #3511; spec prefill and review focuses read the Goal model and store",
+    ),
     "booley.harness.dashboard.model": (frozenset({"criteria", "goals"}), "Goal-only #3511"),
     "booley.harness.goal_status_view": (frozenset({"goals"}), "Goal-only #3511"),
     "booley.harness.init_cmd": (frozenset({"goals"}), "Goal-only #3511"),

@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
-from booley.goals.model import REVIEW_KINDS
 from booley.harness.dashboard.run_form import Field, text_words
 
 # The one Specialist the wizard has a form for.
@@ -53,8 +53,30 @@ _TIMEOUT = _text("timeout", "Timeout", "--timeout", "How long the review may run
 
 def focuses(category: str) -> tuple[str, ...]:
     """The review focuses of *category*: the review Goal kinds, so a new Goal kind appears here."""
+    # The only Goal Mode dependency of the wizard (with ``spec_prefill``); imported lazily so it
+    # is one allowlisted module that goes away with Goal Mode (#3511).
+    from booley.goals.model import REVIEW_KINDS
+
     prefix = f"{category}_"
     return tuple(kind.removeprefix(prefix) for kind in REVIEW_KINDS if kind.startswith(prefix))
+
+
+def spec_prefill(booley_dir: Path, worktree: Path) -> str:
+    """The spec of *worktree*'s active spec-review Goal, else ``""`` (also when the store is unreadable)."""
+    from booley.goals.model import REVIEW_VERDICTS, SPEC_REVIEW_KIND
+    from booley.goals.store import GoalStore, GoalStoreError
+
+    try:
+        record = GoalStore(booley_dir).active_for_worktree(worktree)
+    except (GoalStoreError, OSError):
+        return ""
+    keys = {f"review_{SPEC_REVIEW_KIND}_{verdict}" for verdict in REVIEW_VERDICTS}
+    specs = (
+        goal.spec.params.get("spec", "")
+        for goal in (record.goals if record else ())
+        if goal.spec.key in keys
+    )
+    return next((str(spec) for spec in specs if spec), "")
 
 
 @dataclass(frozen=True)
