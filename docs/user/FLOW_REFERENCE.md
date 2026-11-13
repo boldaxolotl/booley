@@ -10,8 +10,8 @@ Booley ships five:
   declared in [`tests.toml`](TESTS.md). A companion guide covers coverage:
     - [Coverage](COVERAGE.md): guide to measuring how much of the RTL your
       tests exercise, and finding what they miss.
-- [Lint (`lint`)](FLOW-LINT.md): check RTL for structural, semantic, and style
-  problems.
+- [Lint (`lint`)](FLOW-LINT.md): check RTL for mistakes without simulating it
+  and get a list of findings.
 - [ASIC synthesis (`synth`)](FLOW-SYNTH.md): estimate ASIC area and timing
   quickly while you iterate on RTL.
 - [FPGA implementation (`fpga`)](FLOW-FPGA.md): implement the design for an
