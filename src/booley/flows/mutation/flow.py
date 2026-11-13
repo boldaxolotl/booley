@@ -65,6 +65,7 @@ from booley.flows.mutation.variants import MutationVariantError, MutationVariant
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
+    TIMEOUT_ACTIVE_DETAIL,
     VERDICT_FAIL,
     VERDICT_PASS,
     CocotbResults,
@@ -1881,6 +1882,19 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
 
     @staticmethod
+    def _timed_out_test_name(run: MutationTestRun) -> str:
+        """Name the cocotb test running at the timeout, else the campaign unit."""
+        parsed = parse_results_line(run.output) if run.requires_cocotb_results else None
+        return next(
+            (
+                test.name
+                for test in (parsed.tests if parsed is not None else ())
+                if test.status == VERDICT_FAIL and test.failure_text == TIMEOUT_ACTIVE_DETAIL
+            ),
+            run.test_name,
+        )
+
+    @staticmethod
     def _preclassify_mutation_run(
         run: MutationTestRun,
         *,
@@ -1893,7 +1907,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             if timeout_is_inconclusive:
                 return VariantSuiteVerdict(inconclusive_reason=prefix + "simulation timed out")
             return VariantSuiteVerdict(
-                detected=True, first_killing_test=run.test_name, timed_out=True
+                detected=True,
+                first_killing_test=MutationFlow._timed_out_test_name(run),
+                timed_out=True,
             )
         if run.process is None:
             return VariantSuiteVerdict(

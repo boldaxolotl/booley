@@ -359,3 +359,89 @@ def test_generated_direct_source_rejected_before_fusesoc_setup(tmp_path, monkeyp
     assert result.returncode == 1
     assert "unsupported generated/imperative" in result.stderr
     assert source.read_text() == "assign x = a + b;\n"
+
+
+def _timeout_results_line(progress: str, selected: list[str]) -> str:
+    """Build the results line the cocotb run-half prints after a timeout."""
+    from booley.flows.sim.backends import cocotb_results as cr
+
+    results = cr.recover_timeout_progress(progress, selected)
+    return cr.format_results_line(cr.results_payload(results))
+
+
+def test_cocotb_run_half_timeout_names_the_running_test(tmp_path: Path) -> None:
+    scope = "rtl/dut.sv"
+    source = tmp_path / scope
+    source.parent.mkdir(parents=True)
+    source.write_text("assign x = a + b;\n", encoding="utf-8")
+    specs = [MutationSpec(1, "operator", scope, 1, "a + b", "a - b")]
+    variants = MutationVariantPlan.resolve(specs, tmp_path, [scope])
+    line = _timeout_results_line(
+        "0.00ns INFO cocotb.regression running tb.full (1/2)\n", ["full", "smoke"]
+    )
+    endpoint = _endpoint(tmp_path)
+    endpoint._run_elab = lambda *_args, **_kwargs: _process(0)
+    endpoint._run_target_test_suite = lambda *_args, **_kwargs: [
+        MutationTestRun(
+            "<cocotb-suite>",
+            process=_process(1),
+            output="ERROR: cocotb simulation timed out (5s)\n" + line,
+            requires_cocotb_results=True,
+        )
+    ]
+
+    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
+    results = sweep.results
+
+    assert results[0].detected is True
+    assert results[0].timed_out is True
+    assert results[0].first_killing_test == "full"
+
+
+def test_cocotb_outer_timeout_names_the_running_test(tmp_path: Path) -> None:
+    endpoint = _endpoint(tmp_path)
+    line = _timeout_results_line(
+        "0.00ns INFO cocotb.regression running tb.full (1/2)\n", ["full", "smoke"]
+    )
+    runs = [
+        MutationTestRun(
+            "<cocotb-suite>", timed_out=True, output=line, requires_cocotb_results=True
+        )
+    ]
+
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is True
+    assert verdict.timed_out is True
+    assert verdict.inconclusive_reason == ""
+    assert verdict.first_killing_test == "full"
+
+
+def test_cocotb_timeout_after_earlier_failure_names_the_running_test(tmp_path: Path) -> None:
+    endpoint = _endpoint(tmp_path)
+    progress = (
+        "0.00ns INFO cocotb.regression running tb.smoke (1/2)\n"
+        "1.00ns INFO cocotb.regression tb.smoke failed\n"
+        "1.00ns INFO cocotb.regression running tb.full (2/2)\n"
+    )
+    line = _timeout_results_line(progress, ["smoke", "full"])
+    runs = [
+        MutationTestRun(
+            "<cocotb-suite>", timed_out=True, output=line, requires_cocotb_results=True
+        )
+    ]
+
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.first_killing_test == "full"
+    assert verdict.timed_out is True
+
+
+def test_cocotb_timeout_without_results_line_names_the_unit(tmp_path: Path) -> None:
+    endpoint = _endpoint(tmp_path)
+    runs = [
+        MutationTestRun("<cocotb-suite>", timed_out=True, output="", requires_cocotb_results=True)
+    ]
+
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is True
+    assert verdict.timed_out is True
+    assert verdict.first_killing_test == "<cocotb-suite>"
