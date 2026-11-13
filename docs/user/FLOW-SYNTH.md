@@ -211,12 +211,32 @@ otherwise the comparison mixes two recipes.
 
 ## Large memories
 
-Synthesizing a large RAM as flip-flops makes area and timing meaningless, and
-leaving it out lets synthesis delete the logic around it. Instead, a synthesis
-Target can swap in a Memory Timing Surrogate: a small standard-cell stand-in
-that keeps the memory's latency, reset behavior and data dependence but not
-its capacity. The Target selects it with a define and a synthesis-only
-fileset, so simulation and lint keep the real memory:
+`synth` does not synthesize memories. The cell library has no SRAM or
+register-file macros, so Yosys would build every RAM out of flip-flops and
+logic, and a large one would swamp the area and timing of the rest of the
+design. For a design with large memories, `synth` measures the logic around
+them instead. Results leave out each memory's own area, contents and internal
+timing; add the macro's figures from its datasheet when you need a total.
+
+Project Setup decides how each memory is handled. Its plan (Step 0, see
+[Setup](SETUP.md#porting-an-existing-project-plan-then-execute)) lists every
+memory it finds in a synthesis Target and picks one of:
+
+- **Kept at the boundary:** the memory is outside the synthesized top, so its
+  ports are the top's ports and the SDC constrains them.
+- **Replaced by a surrogate:** Setup writes a Memory Timing Surrogate and wires
+  it into the synthesis Target (Step 2).
+- **Blocked:** no safe way to swap the memory out, for example an asynchronous
+  read or a multiport memory with independent clocks. The plan marks that
+  synthesis Target red until you resolve it.
+
+You write a surrogate by hand only for a memory added after setup, or ask the
+agent to do it with the same rules.
+
+A Memory Timing Surrogate is a small standard-cell stand-in that keeps the
+memory's ports, latency, reset behavior and data dependence but not its
+capacity. The Target selects it with a define and a synthesis-only fileset,
+so simulation and lint keep the real memory:
 
 ```yaml
 # <design>.core
@@ -236,11 +256,9 @@ Every read-data bit of a valid surrogate depends, through registers only, on
 the write data, address, write enables and byte enables, with no combinational
 write-to-read arc. A surrogate whose read data depends only on the address or
 on constants lets synthesis delete the surrounding logic, so area and timing
-look better than they are.
-Project Setup checks each surrogate with a no-pruning probe against
-synthesis with the memory left out. Results then exclude the memory's own
-area, contents and internal timing; add the macro's figures from its
-datasheet when you need a total.
+look better than they are. Project Setup checks each surrogate it writes with
+a no-pruning probe: synthesis with the surrogate must keep the same flip-flops and nearly the
+same logic as synthesis with the memory left out.
 
 ## RTL frontend (sv2v vs slang)
 
