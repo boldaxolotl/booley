@@ -620,7 +620,7 @@ def test_capacity_probe_process_failure_is_fail_closed(monkeypatch) -> None:
     def fail(*_args, **_kwargs):
         raise OSError("probe unavailable")
 
-    monkeypatch.setattr(docker_capacity.subprocess, "run", fail)
+    monkeypatch.setattr(docker_capacity, "run_captured_bounded", fail)
 
     with pytest.raises(
         docker_capacity.DockerCapacityError, match="could not run Docker capacity probe"
