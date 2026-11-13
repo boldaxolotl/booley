@@ -52,6 +52,7 @@ class _TurnHold:
         self._passed = False
 
     def pass_on(self) -> None:
+        """Hand the turn to the next lane; a second call does nothing."""
         if not self._passed:
             self._passed = True
             self._lock.release()
@@ -65,14 +66,18 @@ class _StartTurn:
     every other Job's queue bound).
     """
 
-    def __init__(self, stopped: Callable[[], bool]) -> None:
+    def __init__(self, stop: threading.Event) -> None:
         self._lock = threading.Lock()
-        self._stopped = stopped
+        self._stop = stop
 
     def take(self) -> _TurnHold | None:
-        """Wait for the turn; ``None`` once the campaign stops."""
+        """Wait for the turn; ``None`` once the campaign stops.
+
+        Waiters check only the stop event, which the supervisor sets within moments of
+        any shutdown: a full cancellation check would rescan the slot store per lane.
+        """
         while not self._lock.acquire(timeout=_TURN_POLL_SECONDS):
-            if self._stopped():
+            if self._stop.is_set():
                 return None
         return _TurnHold(self._lock)
 
@@ -128,7 +133,7 @@ class BoundedCampaignScheduler:
             else 0
         )
         self._lanes_concurrent = child_count > 0
-        self._turn = _StartTurn(self._stopped) if self._capacity.items_admitted else None
+        self._turn = _StartTurn(self._stop) if self._capacity.items_admitted else None
         self._lanes_exited.clear()
         with self._capacity.outer_permit():
             lanes = self._start_lanes(ready, child_count)
@@ -142,7 +147,11 @@ class BoundedCampaignScheduler:
     def _start_lanes(
         self, ready: queue.Queue[Mapping[str, object]], child_count: int
     ) -> list[threading.Thread]:
-        """Start the outer lane (first item taken in manifest order) and the child lanes."""
+        """Start the outer lane and the child lanes.
+
+        In heavy mode the outer lane starts with the first item in manifest order; under
+        memory admission every lane takes its items through the start turn.
+        """
         first = ready.get_nowait() if child_count and self._turn is None else None
         specs = [("outer", True, first)]
         specs.extend((f"child-{index + 1}", False, None) for index in range(child_count))
@@ -238,7 +247,10 @@ class BoundedCampaignScheduler:
             self._lane_exited()
 
     def _run_turn(self, ready: queue.Queue[Mapping[str, object]], outer: bool) -> bool:
-        """Take the start turn, then the next item; ``False`` ends the lane (stopped, drained or failed)."""
+        """Take the start turn, then the next item.
+
+        ``False`` ends the lane: the campaign stopped, the queue drained or the item failed.
+        """
         assert self._turn is not None
         hold = self._turn.take()
         if hold is None:

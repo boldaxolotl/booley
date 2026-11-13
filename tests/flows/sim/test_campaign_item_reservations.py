@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -64,6 +65,7 @@ from tests.flows.sim.campaign_test_support import (
 
 NAMES = ("alpha", "beta", "gamma")
 BUDGET_MIB = 1000.0
+_SETTLE_S = 0.3  # time to wait for a wrong extra queued claim to appear
 # History peaks (MiB); the estimator adds 25 %. The build is the largest phase.
 BUILD_PEAK = 400.0
 RUN_PEAKS = {"alpha": 100.0, "beta": 200.0, "gamma": 160.0}
@@ -291,6 +293,11 @@ class _ForeignJob:
         self.started_after = list(self._scenario.state.completion_order)
         self._release.wait(_PARALLEL_SYNC_TIMEOUT_S)
         store.release(token)
+
+    @property
+    def alive(self) -> bool:
+        """True while the Job's thread has neither run nor been refused."""
+        return self._thread.is_alive()
 
     def release(self) -> None:
         self._release.set()
@@ -825,7 +832,9 @@ def test_lost_flow_lease_cancels_running_lanes_and_withdraws_the_queued_claim(
         def lose_the_flow_lease() -> None:
             # Two items run and the third item's claim waits: now the Flow's lease goes.
             _wait_until(lambda: set(names[1:3]) <= set(scenario.seen), _PARALLEL_SYNC_TIMEOUT_S)
-            _wait_until(lambda: bool(scenario.store.snapshot(CLASS_MEMORY)[1]))
+            _wait_until(
+                lambda: bool(scenario.store.snapshot(CLASS_MEMORY)[1]), _PARALLEL_SYNC_TIMEOUT_S
+            )
             scenario.store.release(scenario.flow_token)
 
         killer = threading.Thread(target=lose_the_flow_lease)
@@ -880,20 +889,26 @@ def test_waiting_campaign_queues_one_item_claim_in_manifest_order(
         assert store is not None
         store.caps = replace(store.caps, queue_max=2)
         alone = _ForeignJob(scenario, _alone())
-        small = _ForeignJob(scenario, MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=100.0))
-        released = threading.Event()
+        foreign: list[_ForeignJob] = []
+        waiting = lambda: len(scenario.store.snapshot(CLASS_MEMORY)[1])  # noqa: E731
 
         def release_once_waiting() -> None:
-            # The foreign Job runs once the Flow dropped; one item claim queues behind it,
-            # and the other Job's bounded claim queues beside it instead of being refused.
+            # The foreign Job runs once the Flow dropped. Exactly one item claim queues behind
+            # it: the turn passes on only when that claim is admitted, however many lanes wait.
             _wait_until(lambda: alone.started_after is not None, _PARALLEL_SYNC_TIMEOUT_S)
-            _wait_until(
-                lambda: len(scenario.store.snapshot(CLASS_MEMORY)[1]) == 2,
-                _PARALLEL_SYNC_TIMEOUT_S,
+            _wait_until(lambda: waiting() >= 1, _PARALLEL_SYNC_TIMEOUT_S)
+            time.sleep(_SETTLE_S)  # a second queued item claim would have shown up by now
+            assert waiting() == 1
+            # The queue bound is 2: the other Job's bounded claim must queue, not be refused.
+            foreign.append(
+                _ForeignJob(scenario, MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=100.0))
             )
+            _wait_until(lambda: waiting() == 2, _PARALLEL_SYNC_TIMEOUT_S)
+            assert foreign[0].alive
             released.set()
             alone.release()
 
+        released = threading.Event()
         releaser = threading.Thread(target=release_once_waiting)
         try:
             releaser.start()
@@ -902,8 +917,10 @@ def test_waiting_campaign_queues_one_item_claim_in_manifest_order(
             releaser.join(_PARALLEL_SYNC_TIMEOUT_S)
         finally:
             alone.finish()
-            small.finish()
+            for job in foreign:
+                job.finish()
 
     assert released.is_set()
     assert outcome.complete is True
     assert sorted(scenario.state.completion_order) == list(names)
+    assert list(scenario.seen) == list(names)  # items start in manifest order
