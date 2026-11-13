@@ -157,10 +157,10 @@ Verilator version).
 ## Reading results
 
 The report starts with what reproduces the run, then the tally and the
-verdict. The first line records the exact pyslang version, and on a
-Verilator Target the Verilator version, because pyslang finds the
-candidate Mutants and Verilator's generated C++ decides which of them are
-equivalent. Example (Verilator):
+verdict. The first line records the pyslang version (the parser that finds
+the candidate Mutants) and, on a Verilator Target, the Verilator version
+(its generated C++ decides which Mutants are equivalent). Example
+(Verilator):
 
 ```text
 [mutation_test] 10 Mutants (seed 0, count 10, generator 4, pyslang <version>, Verilator <version>)
