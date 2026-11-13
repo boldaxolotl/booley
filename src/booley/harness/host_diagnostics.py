@@ -29,6 +29,7 @@ from booley.runtime.host_install import (
 )
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.paths import skills_dir
+from booley.runtime.platform_paths import run_captured_bounded
 
 MIN_PY = (3, 11)
 
@@ -56,7 +57,10 @@ def inspect_host() -> HostDiagnosticResult:
     if runtime_context.inside_session_runtime():
         report.skip("Host Bootstrap check skipped inside the Sandbox")
         runtime = host_environment.probe_container_runtime(
-            "docker", inside_session_runtime=True, which=shutil.which
+            "docker",
+            inside_session_runtime=True,
+            which=shutil.which,
+            run=run_captured_bounded,
         )
         _add_environment(runtime.finding, report)
         docker_exe = runtime.executable

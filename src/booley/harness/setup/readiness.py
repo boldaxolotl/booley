@@ -52,6 +52,7 @@ from booley.runtime.booley_dir import (
     resolve_main_checkout_root,
 )
 from booley.runtime.git import _git_common_dir
+from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.worktree_paths import worktree_state_dir
 from booley.targets.catalog import TargetCatalog
 
@@ -307,9 +308,7 @@ def inspect_worktree_portability(request: WorktreePortabilityRequest) -> Diagnos
 
 def _git_version_at(*command: str) -> tuple[int, int, int] | None:
     try:
-        result = subprocess.run(
-            list(command), capture_output=True, text=True, check=False, timeout=30
-        )
+        result = run_captured_bounded(list(command), timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     return parse_git_version(result.stdout) if result.returncode == 0 else None
