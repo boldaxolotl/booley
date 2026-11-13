@@ -87,6 +87,7 @@ def test_tracked_metric_is_tracked_and_a_missing_metric_is_error() -> None:
     assert tracked_result.verdict is Verdict.TRACKED
     assert tracked_result.bound is None
     assert tracked_result.value == 12.5
+    assert tracked_result.detail is None
 
     # Tracked metric missing: error naming the metric; the table exits 2 although the bound is met.
     results = module.evaluate_table(rules, _flow_values(_values({"cell_count": 90})))
@@ -148,6 +149,8 @@ def test_clock_prefix_must_name_one_reported_clock() -> None:
     for result in module.evaluate_table(rules, two):
         assert result.verdict is Verdict.ERROR, result.key
         assert "clk_a" in result.detail and "clk_b" in result.detail
+    # The unprefixed forms ask for a prefix, quoted the way TOML needs it.
+    assert all("prefix" in result.detail for result in module.evaluate_table(rules, two)[1:])
 
     single_rules = _rules("synth", (_bound("fmax_mhz_min", "fmax_mhz", "min", 150),))
     for fmax, verdict in ((200.0, Verdict.MET), (100.0, Verdict.UNMET)):
@@ -185,6 +188,7 @@ def test_reported_clock_without_a_value_is_error() -> None:
     unprefixed, missing, present = module.evaluate_table(rules, outcome)
     assert unprefixed.verdict is Verdict.ERROR
     assert "clk_a" in unprefixed.detail and "clk_b" in unprefixed.detail
+    assert "prefix" in unprefixed.detail
     assert missing.verdict is Verdict.ERROR
     assert "clk_b" in missing.detail and "no fmax_mhz value" in missing.detail
     assert present.verdict is Verdict.MET

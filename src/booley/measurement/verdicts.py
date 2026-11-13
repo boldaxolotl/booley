@@ -49,28 +49,32 @@ def evaluate_table(rules: TableRules, outcome: FlowOutcome) -> tuple[MetricResul
     """One result per rules entry, bounds first then tracked (the order a run serializes in)."""
     kinds = {declaration.name: declaration.kind for declaration in metric_declarations(rules.flow)}
     entries: list[Bound | TrackedMetric] = [*rules.bounds, *rules.tracked]
-    results: list[MetricResult] = []
-    for entry in entries:
-        bound = entry.value if isinstance(entry, Bound) else None
-        if isinstance(outcome, FlowFailed):
-            results.append(MetricResult(entry.key, bound, None, Verdict.ERROR, outcome.excerpt))
-        elif isinstance(outcome, FlowNotStarted):
-            results.append(
-                MetricResult(entry.key, bound, None, Verdict.NOT_EVALUATED, outcome.reason)
-            )
-        else:
-            value, why = _read_value(entry, kinds[entry.metric], rules.flow, outcome)
-            results.append(_judge(entry, bound, value, why))
-    return tuple(results)
+    if isinstance(outcome, FlowFailed):
+        return tuple(
+            MetricResult(entry.key, _bound_of(entry), None, Verdict.ERROR, outcome.excerpt)
+            for entry in entries
+        )
+    if isinstance(outcome, FlowNotStarted):
+        return tuple(
+            MetricResult(entry.key, _bound_of(entry), None, Verdict.NOT_EVALUATED, outcome.reason)
+            for entry in entries
+        )
+    return tuple(
+        _judge(entry, *_read_value(entry, kinds[entry.metric], rules.flow, outcome))
+        for entry in entries
+    )
+
+
+def _bound_of(entry: Bound | TrackedMetric) -> MetricValue | None:
+    """The bound recorded for an enforced entry; a tracked entry has none."""
+    return entry.value if isinstance(entry, Bound) else None
 
 
 def _judge(
-    entry: Bound | TrackedMetric,
-    bound: MetricValue | None,
-    value: MetricValue | None,
-    why: str | None,
+    entry: Bound | TrackedMetric, value: MetricValue | None, why: str | None
 ) -> MetricResult:
     """The verdict of one entry whose value was read (or could not be, with *why*)."""
+    bound = _bound_of(entry)
     if value is None:
         return MetricResult(entry.key, bound, None, Verdict.ERROR, why)
     if not isinstance(entry, Bound):
@@ -96,7 +100,9 @@ def _read_value(
         plain = values.plain.get(metric)
         return (plain, None) if plain is not None else (None, f"{flow} returned no {metric}")
     if kind is MetricKind.PER_TEST:
-        by_test = values.per_test.get(metric, {}).get(entry.test_run or "")
+        # The loader resolves every per-test entry to a Test Run (metrics_file).
+        assert entry.test_run is not None
+        by_test = values.per_test.get(metric, {}).get(entry.test_run)
         if by_test is not None:
             return by_test, None
         return None, f"no {metric} for Test Run {entry.test_run}"
@@ -117,7 +123,7 @@ def _read_clock_value(
         if len(clocks) > 1:
             return None, (
                 f"{metric} is per clock and the Flow reported clocks {listed}; "
-                f"prefix the key with one (<clock>.{entry.key})"
+                f'prefix the key with one ("<clock>.{entry.key}")'
             )
         clock = clocks[0]
     elif clock not in clocks:
