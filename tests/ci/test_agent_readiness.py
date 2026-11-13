@@ -12,6 +12,7 @@ import tomllib
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
@@ -855,10 +856,10 @@ def test_remaining_readiness_boundaries(monkeypatch, tmp_path):
 
 
 def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):
-    assert (
-        probe_docker(which=lambda _name: None, run=lambda *_a, **_k: None).state  # type: ignore[arg-type,return-value]
-        is ProbeState.MISSING
-    )
+    def unused_run(*_args, **_kwargs) -> NoReturn:
+        raise AssertionError("a missing Docker executable must not be run")
+
+    assert probe_docker(which=lambda _name: None, run=unused_run).state is ProbeState.MISSING
 
     def docker_error(*_args, **_kwargs):
         raise OSError

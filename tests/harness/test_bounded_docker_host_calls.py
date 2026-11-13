@@ -525,7 +525,7 @@ def _sites() -> list[_Site]:
             interactive_docker,
             ["docker", "container", "rm"],
             30,
-            lambda _root: _remove_license_relay_error(relay),
+            lambda _root: _remove_relay_for_site(relay),
             "",
             {"ok": "returned:None"} | _same("SessionError"),
         ),
@@ -538,7 +538,7 @@ def _readiness_docker_observation() -> tuple[str, str]:
     return check.id, check.status.value
 
 
-def _remove_license_relay_error(relay: Any) -> None:
+def _remove_relay_for_site(relay: Any) -> None:
     session_runtime._remove_license_relay(relay)
 
 
@@ -621,6 +621,8 @@ def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(tmp_path: Path
     events = _Events()
     with heartbeat_tree(tmp_path) as paths:
         cmd = parent_argv(tmp_path, sys.executable, paths, "live")
+        # The helper's documented worst case after the 2 s timeout: +12 s POSIX, +32 s Windows.
+        limit = 40 if os.name == "nt" else 25
         start = time.monotonic()
         result = doctor._execute_selftest(
             SimpleNamespace(project_root=tmp_path),  # type: ignore[arg-type]
@@ -636,7 +638,7 @@ def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(tmp_path: Path
         assert [message for kind, message in events.log if kind == "fail"] == [
             "selftest timed out after 2s"
         ]
-        assert elapsed < 25, f"self-test hung {elapsed:.1f}s on a pipe held by a grandchild"
+        assert elapsed < limit, f"self-test hung {elapsed:.1f}s on a pipe held by a grandchild"
         assert paths["heartbeat"].exists(), "grandchild never started"
         assert wait_until_heartbeat_stops(paths["heartbeat"], window=5), (
             "grandchild still running after the timeout"
