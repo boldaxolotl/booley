@@ -394,7 +394,7 @@ def test_exact_campaign_wrapper_analyzes_without_native_payload_or_project_state
     analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     report = analyst.coverage_analyst(path, "Explain the gaps").to_dict()
-    assert report["$schema"] == "booley.coverage-analysis/v2"
+    assert report["$schema"] == "booley.coverage-analysis/v4"
     assert report["source_access"] == "report_only"
     assert len(model.calls) == 1
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
@@ -870,7 +870,7 @@ def test_in_memory_composition_stages_v2_evidence_for_the_scoped_tool(monkeypatc
 
     report = analyze_coverage_campaign(campaign, None, "Explain gaps").to_dict()
 
-    assert report["$schema"] == "booley.coverage-analysis/v2"
+    assert report["$schema"] == "booley.coverage-analysis/v4"
     assert staged_paths and not staged_paths[0].exists()
 
 

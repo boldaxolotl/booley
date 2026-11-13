@@ -12,6 +12,7 @@ from booley.flows.sim.coverage_analysis_input import (
     verified_source_snapshot,
 )
 from booley.flows.sim.coverage_campaign import (
+    DOCUMENT_SCHEMA,
     CoverageCampaign,
     CoveragePoint,
     decode_coverage_point_id,
@@ -19,7 +20,7 @@ from booley.flows.sim.coverage_campaign import (
     encode_coverage_point,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V5,
+    CAMPAIGN_SCHEMA,
     CoverageCampaignSummary,
 )
 from booley.flows.sim.coverage_evidence import is_coverage_point_reference
@@ -66,7 +67,7 @@ def _analysis_envelope(
         "identity": campaign.target.identity,
         "selector": campaign.target.selector,
     }
-    storage_schema = "booley.coverage-campaign/v1"
+    storage_schema = DOCUMENT_SCHEMA
     point_store = None
     manifest = None
     if summary is not None:
@@ -74,25 +75,25 @@ def _analysis_envelope(
         manifest = coverage_mapping_document(summary.document)
         point_store = manifest.get("point_store")
     reference = {
-        "campaign_reference": {
-            "campaign_id": campaign.campaign_id,
+        "coverage_record_reference": {
+            "coverage_record_id": campaign.campaign_id,
             "target": target,
             "point_count": len(campaign.points),
             "storage_schema": storage_schema,
             **({"point_store": point_store} if point_store is not None else {}),
         }
     }
-    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V5:
+    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA:
         observed = encode_coverage_campaign(campaign)
-        return _AnalysisEnvelope("booley.coverage-analysis/v1", reference, observed), target
+        return _AnalysisEnvelope("booley.coverage-analysis/v3", reference, observed), target
     assert manifest is not None
     assert summary.point_store is not None
     return (
         _AnalysisEnvelope(
-            "booley.coverage-analysis/v2",
+            "booley.coverage-analysis/v4",
             reference,
             {
-                "campaign_manifest": manifest,
+                "coverage_record_manifest": manifest,
                 "point_store_sha256": summary.point_store.sha256,
             },
         ),
@@ -131,7 +132,7 @@ class CoverageAnalyzer:
         )
         report = {
             "$schema": envelope.schema,
-            "campaign_id": campaign.campaign_id,
+            "coverage_record_id": campaign.campaign_id,
             "target": target,
             "eligibility": eligibility,
             "source_access": "report_only" if sources is None else "verified",
@@ -349,7 +350,7 @@ def _resolve_reference(
         if decode_coverage_point_id(value) is None:
             category = "malformed_cp1"
         elif value not in points:
-            category = "cp1_not_in_campaign"
+            category = "cp1_not_in_record"
         elif delivered is not None and value not in delivered:
             category = "cp1_not_delivered"
         else:

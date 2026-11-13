@@ -263,7 +263,7 @@ class CoverageEvidenceSession:
         )
         return {
             "rtl_sources_without_points": source_gap_overview(self._campaign),
-            "campaign_id": self._campaign.campaign_id,
+            "coverage_record_id": self._campaign.campaign_id,
             "target": {
                 "identity": self._campaign.target.identity,
                 "selector": self._campaign.target.selector,
@@ -634,7 +634,7 @@ def _minimal_overview(value: Mapping[str, object]) -> dict[str, object]:
                 "total_sources", 0
             ),
         },
-        "campaign_id": str(value.get("campaign_id", ""))[:256],
+        "coverage_record_id": str(value.get("coverage_record_id", ""))[:256],
         "target": value.get("target"),
         "normalization": value.get("normalization"),
         "rollups": value.get("rollups"),

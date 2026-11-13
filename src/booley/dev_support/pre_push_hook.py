@@ -61,7 +61,7 @@ from commit_msg_utils import (
 try:
     from booley.commit_policy.policy import checkout_booley_dir, validate_push_configuration
 except ImportError:
-    from booley_commit_policy import checkout_booley_dir, validate_push_configuration
+    from booley_commit_policy import checkout_booley_dir, validate_push_configuration  # pyright: ignore[reportMissingImports]
 
 _MAX_SYMLINK_TARGET_BYTES = 64 * 1024
 _SYMLINK_MODE = "120000"

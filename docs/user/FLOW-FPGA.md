@@ -1,8 +1,8 @@
 # FPGA implementation (`fpga`)
 
-`fpga` synthesizes, places, and routes a Target for a specific FPGA part with
-AMD Vivado, then reports resource use (LUTs, flip-flops, block RAMs, DSPs) and
-routed timing for each clock. Use it to see whether the design fits the device
+`fpga` synthesizes, places, and routes a Target for a specific FPGA part, then
+reports resource use (LUTs, flip-flops, block RAMs, DSPs) and routed timing for
+each clock. AMD Vivado runs the build. Use it to see whether the design fits the device
 and meets its clocks, and to measure how an RTL change moves those numbers. A
 build can take minutes to hours, so run [Lint](FLOW-LINT.md) and
 [Simulation](FLOW-SIM.md) first; for a fast area and timing estimate without
@@ -16,8 +16,8 @@ what all Flows share (choosing Targets, options, logs, exit codes), see
    Sandbox Image: a host administrator registers an installation and grants it
    to the Project, and Booley mounts it read-only into the Sandbox, where
    Vivado runs. This works only on a Linux x86-64 host. If your part needs a
-   paid licence, the grant also names a licence profile; floating (FlexNet)
-   licences are experimental. Steps:
+   paid license, the grant also names a license profile; floating (FlexNet)
+   licenses are experimental. Steps:
    [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
 2. **Give the agent an FPGA Target.** It needs the FPGA part, the top module,
    and at least one XDC constraints file that defines your clocks
@@ -52,7 +52,8 @@ booley flow fpga --target fpga_soc --ppa-profile max_frequency --baseline main
 
 ## Reading results
 
-A run you start yourself prints one row per Target, then the path of its log:
+A run you start yourself prints one row per Target, then the path of its log.
+Example (Vivado):
 
 ```text
   Target     LUT      FF      BRAM   DSP   WNS        WHS        Fmax                  Time      Status

@@ -27,6 +27,7 @@ from .agent import (  # noqa: F401 — re-exported as public API of configuratio
     get_agent_settings,
     load_agent_settings,
     set_agent_settings,
+    worktree_agent_settings,
 )
 
 # --- Re-exports: editor for Console clickable links (always VS Code) ---

@@ -94,7 +94,7 @@ def _persisted_reference(
     value: CoverageCampaignReference,
 ) -> dict[str, object]:
     raw = encode_coverage_campaign_reference(value)
-    nested = value.document["coverage_campaign"]
+    nested = value.document["coverage_record"]
     assert isinstance(nested, Mapping)
     return {
         "path_base": "reports_root",
@@ -141,8 +141,8 @@ def test_building_and_encoding_a_built_reference_never_decodes(
 @pytest.mark.parametrize(
     ("pointer", "replacement"),
     [
-        (("$schema",), "booley.coverage-campaign-reference/v2"),
-        (("simulation_campaign_id",), "12345678-1234-1234-9234-123456789abc"),
+        (("$schema",), "booley.coverage-record-reference/v2"),
+        (("simulation_record_id",), "12345678-1234-1234-9234-123456789abc"),
         (("simulation_manifest_sha256",), "sha256:" + "A" * 64),
         (("origin_invocation_id",), True),
         (("origin_invocation_id",), 0),
@@ -150,16 +150,16 @@ def test_building_and_encoding_a_built_reference_never_decodes(
         (("simulation_work_item_id",), "item:1:0123456789abcdef"),
         (("simulation_attempt_id",), "87654321-4321-1432-a234-cba987654321"),
         (("target", "identity"), ""),
-        (("coverage_campaign", "path_base"), "report_root"),
-        (("coverage_campaign", "path"), "/record/coverage.json"),
-        (("coverage_campaign", "path"), "record/../coverage.json"),
-        (("coverage_campaign", "path"), "record/work-items/\0/coverage.json"),
-        (("coverage_campaign", "path"), "elsewhere/coverage.json"),
-        (("coverage_campaign", "bytes"), True),
-        (("coverage_campaign", "bytes"), 0),
-        (("coverage_campaign", "sha256"), "sha256:" + "0" * 63),
-        (("coverage_campaign", "campaign_id"), ""),
-        (("coverage_campaign", "schema"), "booley.coverage-campaign/v2"),
+        (("coverage_record", "path_base"), "report_root"),
+        (("coverage_record", "path"), "/record/coverage.json"),
+        (("coverage_record", "path"), "record/../coverage.json"),
+        (("coverage_record", "path"), "record/work-items/\0/coverage.json"),
+        (("coverage_record", "path"), "elsewhere/coverage.json"),
+        (("coverage_record", "bytes"), True),
+        (("coverage_record", "bytes"), 0),
+        (("coverage_record", "sha256"), "sha256:" + "0" * 63),
+        (("coverage_record", "coverage_record_id"), ""),
+        (("coverage_record", "schema"), "booley.coverage-record/v2"),
     ],
 )
 def test_reference_codec_rejects_boundary_and_identity_substitutions(
@@ -183,9 +183,7 @@ def test_reference_codec_refuses_a_nested_v4_campaign_as_an_older_booley_record(
 
     with pytest.raises(UnsupportedSimulationCampaignFormatError, match="older Booley"):
         decode_coverage_campaign_reference(
-            _rewrite_reference(
-                value, ("coverage_campaign", "schema"), "booley.coverage-campaign/v4"
-            )
+            _rewrite_reference(value, ("coverage_record", "schema"), "booley.coverage-campaign/v4")
         )
 
 
@@ -199,7 +197,7 @@ def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a
     stray = tmp_path / "stray" / "coverage.json"
     stray.parent.mkdir()
     stray.write_bytes(
-        _rewrite_reference(value, ("coverage_campaign", "schema"), "booley.coverage-campaign/v4")
+        _rewrite_reference(value, ("coverage_record", "schema"), "booley.coverage-campaign/v4")
     )
 
     with pytest.raises(UnsupportedSimulationCampaignFormatError) as excinfo:
@@ -217,7 +215,7 @@ def test_reference_codec_rejects_unknown_fields_noncanonical_bytes_and_size() ->
         decode_coverage_campaign_reference(b"x" * (MAX_REFERENCE_BYTES + 1))
 
 
-@pytest.mark.parametrize("container", [(), ("target",), ("coverage_campaign",)])
+@pytest.mark.parametrize("container", [(), ("target",), ("coverage_record",)])
 def test_reference_codec_rejects_unknown_fields(
     tmp_path: Path, container: tuple[str, ...]
 ) -> None:
@@ -259,7 +257,7 @@ def test_resolver_authenticates_real_nested_campaign_at_exact_attempt_path(
     resolved = resolve_coverage_campaign_reference(path)
 
     assert resolved.campaign_path == nested
-    assert resolved.loaded.campaign.campaign_id == _valid_document()["campaign_id"]
+    assert resolved.loaded.campaign.campaign_id == _valid_document()["coverage_record_id"]
     assert resolved.loaded.campaign.target.identity == _TARGET_IDENTITY
 
 
@@ -331,12 +329,12 @@ def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path)
     corrupt_campaign_with_duplicate_negative_point(nested)
     nested_bytes = nested.read_bytes()
     reference = decode_coverage_campaign_reference(
-        _rewrite_reference(reference, ("coverage_campaign", "bytes"), len(nested_bytes))
+        _rewrite_reference(reference, ("coverage_record", "bytes"), len(nested_bytes))
     )
     reference = decode_coverage_campaign_reference(
         _rewrite_reference(
             reference,
-            ("coverage_campaign", "sha256"),
+            ("coverage_record", "sha256"),
             "sha256:" + hashlib.sha256(nested_bytes).hexdigest(),
         )
     )
@@ -395,7 +393,7 @@ def test_resolver_rejects_reference_digest_substitution_even_for_valid_nested_by
     value = _reference(target, nested)
     raw = _rewrite_reference(
         value,
-        ("coverage_campaign", "sha256"),
+        ("coverage_record", "sha256"),
         "sha256:" + hashlib.sha256(b"substitute").hexdigest(),
     )
     path = target / "coverage.json"

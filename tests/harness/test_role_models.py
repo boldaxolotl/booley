@@ -429,3 +429,26 @@ def test_model_list_gateway_pin_replaces_codex_entries(tmp_path):
     )
 
     assert settings.model_candidates("reviewer") == ("gpt-6-luna", "claude-opus-5-5")
+
+
+def test_worktree_resolver_reads_the_checkout_without_installing(tmp_path, monkeypatch):
+    """The read-only resolver gives a checkout's pins and auth and leaves the cache alone."""
+    checkout = tmp_path / "checkout"
+    _write_toml(
+        checkout,
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n'
+        '[agent.auth]\nclaude = "subscription"\n\n[models]\nreviewer = "claude-pinned-test"\n',
+    )
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "codex=api_key")
+    sentinel = bc.settings_from_data({"agent": {"default": "claude"}}, lazy=False)
+    bc.set_agent_settings(sentinel)
+    try:
+        settings = bc.worktree_agent_settings(checkout)
+        assert bc.get_agent_settings() is sentinel
+    finally:
+        bc.set_agent_settings(None)
+
+    assert settings.model_for_specialist("reviewer") == "claude-pinned-test"
+    assert settings.default_cli == "claude"
+    assert settings.auth_for("claude") == "subscription"
+    assert settings.auth_for("codex") == "api_key"

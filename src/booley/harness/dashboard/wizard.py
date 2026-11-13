@@ -11,6 +11,7 @@ stage.
 from __future__ import annotations
 
 import logging
+import shlex
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,6 +75,8 @@ NO_TARGET_YET = "Choose a Target first; or type Test Runs in the extra arguments
 TARGET_KIND_OF_FLOW = {"mutation": "sim"}
 TYPE_TARGETS = "Type Targets in the extra arguments."
 TYPE_RUNS = "Type Test Runs in the extra arguments."
+# What Enter on the Target row says when a Target detail opened the wizard.
+PRESET_TARGET = "The Target comes from the Target detail; Esc goes back to it."
 NO_FITTING_TARGET = (
     "No Target here can be driven by this Flow; type Targets in the extra arguments."
 )
@@ -115,6 +118,18 @@ _SHOWN: dict[str, tuple[str, ...]] = {
     "edit": ("#run-hint", "#run-edit"),
     "review": ("#run-command", "#run-review", "#run-actions"),
 }
+
+
+@dataclass(frozen=True)
+class RunPreset:
+    """Where a Target detail opened the wizard: the worktree, the Flow and the Target are chosen.
+
+    The wizard starts at the form; Esc there closes it, back to the detail.
+    """
+
+    worktree: Path
+    flow: str
+    target: str
 
 
 @dataclass(frozen=True)
@@ -165,8 +180,10 @@ class RunWizard(ModalScreen[str | None]):
         message: str,
         preselect: Callable[[tuple[WorktreeChoice, ...]], Path | None],
         occupants: Callable[[Path], Occupants],
+        preset: RunPreset | None = None,
     ) -> None:
         super().__init__()
+        self._preset = preset
         self._launcher = launcher
         self._targets = targets  # the app's reader: its lock serializes every catalog read
         self._flows = launcher.flows()
@@ -218,7 +235,11 @@ class RunWizard(ModalScreen[str | None]):
 
     def on_mount(self) -> None:
         self.set_worktrees(self._choices, self._message)
-        self._show_stage("worktree")
+        if self._preset is None:
+            self._show_stage("worktree")
+        else:
+            self._worktree = self._preset.worktree
+            self._choose_flow(self._preset.flow)
 
     def set_worktrees(self, choices: tuple[WorktreeChoice, ...], message: str) -> None:
         """Replace the worktree list (``message`` stands in while there is none), keeping the highlight.
@@ -277,7 +298,7 @@ class RunWizard(ModalScreen[str | None]):
 
     def action_back(self) -> None:
         parent = _PARENT.get(self._stage)
-        if parent is None:
+        if parent is None or (self._preset is not None and self._stage == "form"):
             self.dismiss(None)
         else:
             self._show_stage(parent)
@@ -435,7 +456,10 @@ class RunWizard(ModalScreen[str | None]):
             elif field.kind == "text":
                 self._edit(value, field.hint)
             elif field.kind == "target":
-                self._show_stage("target")
+                if self._preset is None:
+                    self._show_stage("target")
+                else:
+                    self._show_error(PRESET_TARGET)
             elif field.kind == "tests":
                 self._open_tests()
             else:
@@ -640,8 +664,23 @@ class RunWizard(ModalScreen[str | None]):
             return
         event.stop()
         self._building = False
+        self._apply_preset()
         if self._stage == "form":
             self._show_stage("form")
+
+    def _apply_preset(self) -> None:
+        """Fill in the Target a Target detail chose.
+
+        Without a built form (or without a Target field to hold it) the Target goes to the
+        extra arguments instead, so the command still names it.
+        """
+        if self._preset is None:
+            return
+        dest = next((f.dest for f in self._fields() if f.kind == "target"), None)
+        if dest is None:
+            self._extra = shlex.join(["--target", self._preset.target])
+        else:
+            self._values[dest] = self._preset.target
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Apply a finished check unless the human moved on or changed the form meanwhile."""
