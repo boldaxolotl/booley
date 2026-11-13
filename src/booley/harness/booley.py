@@ -1932,7 +1932,7 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
         try:
             return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
         except KeyboardInterrupt:
-            # The Job runner has already recorded the run as cancelled with exit 130.
+            # The Job runner records a started run as cancelled with exit 130 (when it can).
             print("interrupted; run cancelled", file=sys.stderr)
             raise _CancelledRun from None
     finally:
