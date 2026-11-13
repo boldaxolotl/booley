@@ -146,9 +146,20 @@ hardening), one budget per container, no licence budgets in v1.
   container does not set `memory.oom.group` (the kernel would then kill the
   whole cgroup) and that tools stay in the coordinator's process tree (a tool
   that detaches and is re-parented elsewhere is not ranked). Without `/proc`
-  nothing changes. A Campaign's work items share their Flow's process, so the
-  Flow and its items count as one Job; ranking items against each other is
-  future work (#3774).
+  nothing changes.
+- A Campaign work item that holds its own Memory Reservation counts as a Job
+  of its own, admitted after its Flow: its simulator processes rank by the
+  item's admission order, so the newest item's simulator is killed first. A
+  Campaign with five or more running items puts older Jobs at 300 and its own
+  coordinator at 275. An item's own OOM kill stops only that item. Its attempt
+  publishes no result, and the item is requeued once: it goes to the back of
+  the Campaign's queue, claims the whole budget with the reason `requeued after
+  out-of-memory`, and runs again alone while the other lanes keep going. If
+  that second attempt is killed too, its failure is the item's result. Only an
+  item's final attempt counts, so a Flow bound to a Goal requeues its items as
+  well. An item running under the Flow's own claim, before the Flow's
+  reservation drops, keeps the Flow-level requeue. A resumed Campaign arms its
+  items again.
 - The levels hold for these reference sizes, shares of the limit defined above,
   for example 32 GiB. Each check is `1000 × share + adj`, the share written as
   a fraction (0.001 is 0.1 %):
@@ -192,9 +203,9 @@ hardening), one budget per container, no licence budgets in v1.
   with its own key. The Flow's reservation covers preparation and build, then
   drops to zero.
 - The lane count becomes min(items, the container's cores); admission decides
-  how many run at once. Ranking each work item's simulator process by start
-  order for the OOM killer is future work (#3774); until then they share their
-  Job's level.
+  how many run at once. Each item's simulator processes rank for the OOM
+  killer by the item's admission order, and an OOM-killed item runs once more,
+  alone (see the out-of-memory guard above).
 
 ### Licence seats
 

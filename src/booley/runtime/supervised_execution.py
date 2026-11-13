@@ -60,6 +60,11 @@ class SupervisedProcessSet:
             if current is not None and current.get("state") == "running":
                 self._write_record("waiting", None, tree_terminal=False)
 
+    def pids(self) -> tuple[int, ...]:
+        """The PIDs of the processes registered now."""
+        with self._gate:
+            return tuple(process.pid for process in self._processes)
+
     def terminate_all(self) -> None:
         with self._gate:
             processes = tuple(self._processes)

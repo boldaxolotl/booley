@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -428,7 +428,9 @@ def _handle(project: Path) -> SimpleNamespace:
 
 
 def _failed_shared_executor(
-    build_root: Path, counters: dict[str, int]
+    build_root: Path,
+    counters: dict[str, int],
+    on_compile: Callable[[], None] | None = None,
 ) -> OrdinaryHdlSerialExecutor:
     build_root.mkdir()
 
@@ -443,6 +445,8 @@ def _failed_shared_executor(
 
         def compile(self):
             counters["compile"] += 1
+            if on_compile is not None:
+                on_compile()
             return SimpleNamespace(passed=False)
 
         def finish_build_failure(self):

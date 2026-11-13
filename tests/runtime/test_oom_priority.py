@@ -104,20 +104,79 @@ def test_ranking_holds_after_many_jobs_start_and_finish(
         assert min(levels) > proc.values[1] == 0
 
 
-def test_campaign_item_claims_rank_with_their_job(
+class _ItemProcesses:
+    """The registered command PIDs of one running work item."""
+
+    def __init__(self, *pids: int) -> None:
+        self._pids = pids
+
+    def pids(self) -> tuple[int, ...]:
+        return self._pids
+
+
+def _item_claim(store: job_slots.SlotStore, flow_pid: int) -> job_slots.SlotToken:
+    """A Campaign work item's claim: under the Flow's PID, after everything admitted so far."""
+    return store.acquire(
+        job_slots.CLASS_MEMORY, pid=flow_pid, role=job_slots.ROLE_BACKGROUND, memory=CLAIM
+    )
+
+
+def test_work_items_rank_by_their_own_admission_order(
+    store: job_slots.SlotStore, world: FakeWorld, proc: FakeProc
+) -> None:
+    flow, flow_tool = _admit(store, world, proc, 101)
+    older_item, newer_item = _item_claim(store, 101), _item_claim(store, 101)
+    # Each item's adapter process has a simulator child; the Flow has a tool of its own.
+    older_root = proc.add(201, parent=101)
+    older_sim = proc.add(202, parent=older_root)
+    newer_root = proc.add(301, parent=101)
+    newer_sim = proc.add(302, parent=newer_root)
+
+    with (
+        oom_priority.work_item_processes(older_item.lease_id, _ItemProcesses(older_root)),
+        oom_priority.work_item_processes(newer_item.lease_id, _ItemProcesses(newer_root)),
+    ):
+        _rank(store, flow, proc)
+
+    assert (proc.values[newer_root], proc.values[newer_sim]) == (1000, 1000)
+    assert (proc.values[older_root], proc.values[older_sim]) == (500, 500)
+    assert proc.values[flow_tool] == 450  # both items are newer than the Flow
+    assert proc.values[101] == 450 - oom_priority.COORDINATOR_GAP
+    assert proc.values[1] == 0
+
+
+def test_other_jobs_count_each_campaign_item_as_newer(
     store: job_slots.SlotStore, world: FakeWorld, proc: FakeProc
 ) -> None:
     flow, flow_tool = _admit(store, world, proc, 101)
     other, other_tool = _admit(store, world, proc, 102)
-    # The Flow's Work Items claim under the Flow's own PID, after the other Job.
-    store.acquire(job_slots.CLASS_MEMORY, pid=101, role=job_slots.ROLE_BACKGROUND, memory=CLAIM)
-    store.acquire(job_slots.CLASS_MEMORY, pid=101, role=job_slots.ROLE_BACKGROUND, memory=CLAIM)
+    _item_claim(store, 101)
+    _item_claim(store, 101)
 
     _rank(store, flow, proc)
     _rank(store, other, proc)
 
-    assert proc.values[other_tool] == 1000
-    assert proc.values[flow_tool] == 500
+    assert proc.values[other_tool] == 450  # two items were admitted after it
+    assert proc.values[flow_tool] == 400  # the other Job and both items are newer
+
+
+def test_an_unregistered_item_leaves_its_processes_at_the_flow_level(
+    store: job_slots.SlotStore, world: FakeWorld, proc: FakeProc
+) -> None:
+    flow, flow_tool = _admit(store, world, proc, 101)
+    item = _item_claim(store, 101)
+    root = proc.add(201, parent=101)
+
+    _rank(store, flow, proc)  # the item never registered its commands
+    assert proc.values[root] == proc.values[flow_tool] == 500
+
+    with oom_priority.work_item_processes(item.lease_id, _ItemProcesses(root)):
+        _rank(store, flow, proc)
+        assert proc.values[root] == 1000
+    # Once it ends the registry forgets it: its processes fall back to the Flow's level.
+    proc.values[root] = 0
+    _rank(store, flow, proc)
+    assert proc.values[root] == 500
 
 
 def test_a_nested_job_ranks_its_own_tree_and_restores_what_it_inherited(
