@@ -376,7 +376,7 @@ def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
 
     Both checks must carry the completion marker, otherwise the counts are
     not trusted. The loop count is the larger of the two so a loop that the
-    final check ever reports still fails the run.
+    final check ever reports counts toward ``expected_comb_loops``.
     """
     premap_check = sources.get("premap_check", "")
     final_check = sources.get("final_check", "")
