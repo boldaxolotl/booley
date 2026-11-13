@@ -266,13 +266,19 @@ def test_lost_child_lease_interrupts_only_that_lane_item(
 _REAP_ORDERINGS = ("hook_first", "other_lane_first")
 
 
-def _reap_in_order(slots: SlotStore, unwrapped_reap, child_id: ExecutionId, ordering: str) -> None:
+def _reap_in_order(
+    slots: SlotStore,
+    unwrapped_reap: Callable[[str], list[str]],
+    child_id: ExecutionId,
+    ordering: str,
+) -> None:
     """Reap the terminal child's token in the requested order and prove it is gone."""
     if ordering == "other_lane_first":
         # Another lane's reap, on its own thread outside this lane's scope.
         other_lane_reaped: list[str] = []
         other_lane = threading.Thread(
-            target=lambda: other_lane_reaped.extend(unwrapped_reap(CLASS_MEMORY))
+            target=lambda: other_lane_reaped.extend(unwrapped_reap(CLASS_MEMORY)),
+            daemon=True,  # a hung reap must not keep the worker alive past the assert
         )
         other_lane.start()
         other_lane.join(_PARALLEL_SYNC_TIMEOUT_S)
@@ -283,6 +289,29 @@ def _reap_in_order(slots: SlotStore, unwrapped_reap, child_id: ExecutionId, orde
         assert len(slots.reap(CLASS_MEMORY)) == 1  # this child's token
     holders, waiters = slots.snapshot(CLASS_MEMORY)
     assert all(token.execution_id != child_id for token in (*holders, *waiters))
+
+
+def _record_recovery_side_effects(
+    slots: SlotStore, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[ExecutionId], list[str]]:
+    """Record child cancels and token-recovery starts; both must stay empty."""
+    cancelled: list[ExecutionId] = []
+    registry_cancel = ChildExecutionRegistry.cancel
+
+    def recording_cancel(registry, execution_id: ExecutionId) -> bool:
+        cancelled.append(execution_id)
+        return registry_cancel(registry, execution_id)
+
+    monkeypatch.setattr(ChildExecutionRegistry, "cancel", recording_cancel)
+    recoveries: list[str] = []
+    begin_recovery = slots.begin_token_recovery
+
+    def recording_begin_recovery(token) -> bool:
+        recoveries.append(str(token.execution_id))
+        return begin_recovery(token)
+
+    monkeypatch.setattr(slots, "begin_token_recovery", recording_begin_recovery)
+    return cancelled, recoveries
 
 
 def _run_terminal_reap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ordering: str) -> None:
@@ -315,22 +344,7 @@ def _run_terminal_reap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ordering
             _reap_in_order(campaign.slots, unwrapped_reap, prepared.execution_id, ordering)
 
     monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", mark_terminal_then_reap)
-    cancelled: list[ExecutionId] = []
-    registry_cancel = ChildExecutionRegistry.cancel
-
-    def recording_cancel(registry, execution_id: ExecutionId) -> bool:
-        cancelled.append(execution_id)
-        return registry_cancel(registry, execution_id)
-
-    monkeypatch.setattr(ChildExecutionRegistry, "cancel", recording_cancel)
-    recoveries: list[str] = []
-    begin_recovery = campaign.slots.begin_token_recovery
-
-    def recording_begin_recovery(token) -> bool:
-        recoveries.append(str(token.execution_id))
-        return begin_recovery(token)
-
-    monkeypatch.setattr(campaign.slots, "begin_token_recovery", recording_begin_recovery)
+    cancelled, recoveries = _record_recovery_side_effects(campaign.slots, monkeypatch)
 
     try:
         # A reaped terminal token handled as a lost lease raises LeaseLostError here.
@@ -356,7 +370,11 @@ def test_reaping_a_terminal_child_token_is_not_a_lost_lease(
     # lane first; either way it is not a lost lease. Both orders are forced, not raced.
     for ordering in _REAP_ORDERINGS:
         with monkeypatch.context() as ordering_patch:
-            _run_terminal_reap(tmp_path / ordering, ordering_patch, ordering)
+            try:
+                _run_terminal_reap(tmp_path / ordering, ordering_patch, ordering)
+            except AssertionError as error:
+                error.add_note(f"failing ordering: {ordering}")
+                raise
 
 
 def test_lease_tick_after_terminal_reap_starts_no_recovery(
