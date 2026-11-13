@@ -301,7 +301,7 @@ def _parse_variant_args(raw: object, where: str) -> tuple[str, ...]:
     """Validate a Variant's argument list: one option token per entry."""
     if not is_str_list(raw):
         raise TestVariantError(f"{where} arguments must be a list of strings")
-    arguments = cast(list[str], raw)
+    arguments = raw
     for argument in arguments:
         problem = argument_token_problem(argument)
         if problem:

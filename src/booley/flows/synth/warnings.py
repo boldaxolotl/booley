@@ -21,6 +21,9 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 WarningDisposition = Literal["benign", "advisory", "structural", "informational"]
+# Identity of one warning group: the `_WarningRecord` fields `_warning_summary` counts by
+# (tool, code, category, disposition, message_sha256, message, original_bytes, truncated, rationale).
+_GroupKey = tuple[str, str | None, str, WarningDisposition, str, str, int, bool, str | None]
 
 _SOURCE_ORDER = ("sv2v", "yosys", "openroad", "final_check")
 _REPRESENTATIVE_LIMIT = 8
@@ -316,7 +319,7 @@ def _sv2v_records(text: str) -> list[_WarningRecord]:
 
 
 def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
-    grouped = Counter(
+    grouped: Counter[_GroupKey] = Counter(
         (
             item.tool,
             item.code,
