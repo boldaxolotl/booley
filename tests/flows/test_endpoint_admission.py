@@ -649,7 +649,10 @@ def test_memory_admission_claims_the_estimated_reservation(
 
     with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter() as context:
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
-        assert holder.memory == job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0)
+        # One phase with its own history: 1.0 s x the estimator's 1.25 headroom.
+        assert holder.memory == job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25
+        )
         assert _held(memory_runtime, job_slots.CLASS_HEAVY) == []
         assert context.mode == "managed"
         assert context.memory_warning is None
@@ -859,7 +862,10 @@ def test_lint_job_reserves_its_largest_target_estimate(
     with AdmissionGate(flow, prepared).enter() as context:
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
         # The 600 MiB peak of Target b, with the estimator's headroom.
-        assert holder.memory == job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=750.0)
+        # The lint covers two Targets: 2 x 1.25 s of own wall-clock.
+        assert holder.memory == job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=750.0, wall_s=2.5
+        )
         assert _held(memory_runtime, job_slots.CLASS_HEAVY) == []
         assert _held(memory_runtime, job_slots.CLASS_LIGHT) == []
         assert context.mode == "managed"
@@ -877,7 +883,7 @@ def test_custom_flow_job_reserves_its_flow_phase(memory_runtime: Path) -> None:
 
         with AdmissionGate(flow, prepared).enter():
             (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
-            expected = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0)
+            expected = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25)
             assert holder.memory == expected, target
             assert _held(memory_runtime, job_slots.CLASS_HEAVY) == [], target
 
@@ -1052,7 +1058,7 @@ def test_fpga_job_runs_beside_another_vivado_job_under_a_cap_of_two(
             holders = _held(memory_runtime, job_slots.CLASS_MEMORY)
             (mine,) = (token for token in holders if token.seq != first.seq)
             assert mine.memory == job_slots.MemoryClaim(
-                budget_mb=1000.0, reservation_mb=500.0, seats=(("vivado", 2),)
+                budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25, seats=(("vivado", 2),)
             )
             assert len(holders) == 2
     finally:
@@ -1114,7 +1120,9 @@ def test_jobs_owing_no_seat_ignore_seat_caps(
     flow = AsicSynthesizeFlow()
     with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
-        assert holder.memory == job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0)
+        assert holder.memory == job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25
+        )
 
     # A disabled FPGA Flow reaches its own refusal instead of a seat refusal.
     _write_jobs(memory_runtime, None)

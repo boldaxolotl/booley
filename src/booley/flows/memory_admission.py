@@ -73,10 +73,11 @@ def plan_memory_claim(
             MemoryClaim(budget_mb=0.0, run_alone=True),
             f"Memory Budget unavailable ({budget_error}); this Job ran alone.",
         )
-    alone = MemoryClaim(budget_mb=budget_mb, run_alone=True)
     if not requests:
-        return MemoryAdmissionPlan(alone)
+        return MemoryAdmissionPlan(MemoryClaim(budget_mb=budget_mb, run_alone=True))
     estimate = ResourceEstimator(records).estimate(requests)
+    wall_s = estimate.own_wall_s
+    alone = MemoryClaim(budget_mb=budget_mb, run_alone=True, wall_s=wall_s)
     reservation = estimate.reservation_mb
     if reservation is None:
         return MemoryAdmissionPlan(alone)
@@ -89,7 +90,9 @@ def plan_memory_claim(
         )
     if fit is Fit.RUN_ALONE or reservation <= 0:
         return MemoryAdmissionPlan(alone)
-    return MemoryAdmissionPlan(MemoryClaim(budget_mb=budget_mb, reservation_mb=reservation))
+    return MemoryAdmissionPlan(
+        MemoryClaim(budget_mb=budget_mb, reservation_mb=reservation, wall_s=wall_s)
+    )
 
 
 def measure_memory_claim(

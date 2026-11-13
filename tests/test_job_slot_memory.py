@@ -40,11 +40,15 @@ def root(tmp_path: Path) -> Path:
 
 
 def claim(
-    reservation_mb: float | None = None, *, run_alone: bool = False, budget_mb: float = BUDGET_MB
+    reservation_mb: float | None = None,
+    *,
+    run_alone: bool = False,
+    budget_mb: float = BUDGET_MB,
+    wall_s: float | None = None,
 ):
     """A memory claim against the shared test budget."""
     return job_slots.MemoryClaim(
-        budget_mb=budget_mb, reservation_mb=reservation_mb, run_alone=run_alone
+        budget_mb=budget_mb, reservation_mb=reservation_mb, run_alone=run_alone, wall_s=wall_s
     )
 
 
@@ -217,6 +221,8 @@ def test_unreadable_holder_blocks_promotion(root, world, monkeypatch):
         pytest.param(lambda _store: claim(0), id="zero-reservation"),
         pytest.param(lambda _store: claim(run_alone=cast(Any, 1)), id="non-bool-run-alone"),
         pytest.param(lambda _store: claim(1, budget_mb=float("nan")), id="non-finite-budget"),
+        pytest.param(lambda _store: claim(1, wall_s=-1.0), id="negative-wall"),
+        pytest.param(lambda _store: claim(1, wall_s=float("inf")), id="non-finite-wall"),
     ],
 )
 def test_claim_shape_is_validated(root, world, attempt):
@@ -236,9 +242,10 @@ def test_zero_budget_admits_only_run_alone_claims(root, world):
         {"budget_mb": "lots", "reservation_mb": 1, "run_alone": False},
         {"reservation_mb": 1},
         {"budget_mb": 10**400, "reservation_mb": 1, "run_alone": False},
+        {"budget_mb": 10, "reservation_mb": 1, "run_alone": False, "wall_s": "slow"},
         "junk",
     ],
-    ids=["bad-budget", "missing-budget", "unconvertible-budget", "not-a-table"],
+    ids=["bad-budget", "missing-budget", "unconvertible-budget", "bad-wall", "not-a-table"],
 )
 def test_malformed_memory_field_is_read_as_no_claim(root, world, malformed):
     store = make_store(root, world)
@@ -300,7 +307,7 @@ def test_vanished_holder_does_not_refuse_a_claim_that_fits(root, world, monkeypa
     store = make_store(root, world, SlotCaps(queue_max=0))
     holder = join(store, world, 101, claim(1000))
     assert store.refresh(holder).state == HOLDING
-    real_read = store._read_memory_claim
+    real_read = store._read_memory_entry
     released = False
 
     def read_after_release(path):
@@ -311,7 +318,7 @@ def test_vanished_holder_does_not_refuse_a_claim_that_fits(root, world, monkeypa
             store.release(holder)
         return real_read(path)
 
-    monkeypatch.setattr(store, "_read_memory_claim", read_after_release)
+    monkeypatch.setattr(store, "_read_memory_entry", read_after_release)
     assert store.refresh(join(store, world, 102, claim(100))).state == HOLDING
 
 
@@ -377,3 +384,174 @@ def test_seat_cap_shape_is_validated():
     for cap in (0, -1, True, 1.5, "1"):
         with pytest.raises(ValueError):
             seated(100, cast(Any, cap))
+
+
+# ------------------------------------------------------------- jumping ahead
+
+
+def hold(store: SlotStore, world: FakeWorld, pid: int, memory) -> job_slots.SlotToken:
+    """Submit *memory* as process *pid* and promote it to a holder."""
+    token = join(store, world, pid, memory)
+    assert store.refresh(token).state == HOLDING
+    return token
+
+
+def start_age(token: job_slots.SlotToken, world: FakeWorld, seconds: float) -> None:
+    """Rewrite a holder's promotion stamp to *seconds* before now (the clock stays put)."""
+    payload = json.loads(token.path.read_text(encoding="utf-8"))
+    payload["promoted_at"] = job_slots._utc_stamp(world.clock - seconds)
+    token.path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_short_claim_jumps_a_blocked_front_claim(tmp_path):
+    cases = {
+        "3min-starts": (180.0, TokenState(HOLDING)),
+        "12min-waits": (720.0, TokenState(QUEUED, position=1)),
+    }
+    for name, (wall_s, expected) in cases.items():
+        world = FakeWorld()
+        store = make_store(tmp_path / name, world)
+        hold(store, world, 101, claim(800, wall_s=600.0))  # frees its memory in 10 min
+        front = join(store, world, 102, claim(400))
+        short = join(store, world, 103, claim(100, wall_s=wall_s))
+        assert store.refresh(front) == TokenState(QUEUED, position=0), name
+        assert store.refresh(short) == expected, name
+
+
+def test_jumpers_start_in_queue_order(root, world):
+    store = make_store(root, world)
+    hold(store, world, 101, claim(800, wall_s=600.0))
+    join(store, world, 102, claim(400))
+    first = join(store, world, 103, claim(50, wall_s=60.0))
+    second = join(store, world, 104, claim(50, wall_s=60.0))
+    # Both may jump, but the later one waits for the one ranked ahead of it.
+    assert store.refresh(second).state == QUEUED
+    assert store.refresh(first).state == HOLDING
+    assert store.refresh(second).state == HOLDING
+
+
+JUMP_CASES = {
+    # A frees 300 MiB at 5 min, B 500 MiB at 10 min; the front (400) fits after A.
+    "early": (
+        [(300, 300.0), (500, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 180.0},
+        HOLDING,
+    ),
+    "late": (
+        [(300, 300.0), (500, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 420.0},
+        QUEUED,
+    ),
+    "finishes-as-the-front-starts": (
+        [(300, 300.0), (500, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 300.0},
+        QUEUED,
+    ),
+    # A run-alone front waits for the latest finish (10 min).
+    "run-alone-front-early": (
+        [(300, 300.0), (500, 600.0)],
+        {"run_alone": True},
+        {"reservation_mb": 100, "wall_s": 420.0},
+        HOLDING,
+    ),
+    "run-alone-front-late": (
+        [(300, 300.0), (500, 600.0)],
+        {"run_alone": True},
+        {"reservation_mb": 100, "wall_s": 720.0},
+        QUEUED,
+    ),
+    # The front needs A, which has no wall-clock estimate: its start is unknown.
+    "front-needs-an-unknown-finish": (
+        [(500, None), (300, 300.0)],
+        {"reservation_mb": 600},
+        {"reservation_mb": 100, "wall_s": 180.0},
+        QUEUED,
+    ),
+    "front-needs-only-a-known-finish": (
+        [(500, None), (300, 300.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 180.0},
+        HOLDING,
+    ),
+    # Short enough to jump, but it does not fit beside the holders now.
+    "short-but-does-not-fit": (
+        [(300, 300.0), (500, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 300, "wall_s": 100.0},
+        QUEUED,
+    ),
+    # The front's own 1000 MiB budget applies, not the jumper's 750 MiB one.
+    "front-judged-by-its-own-budget": (
+        [(300, 300.0), (200, 600.0)],
+        {"reservation_mb": 600},
+        {"reservation_mb": 250, "wall_s": 420.0, "budget_mb": 750.0},
+        QUEUED,
+    ),
+}
+
+
+def test_jump_never_delays_the_front_claim(tmp_path):
+    for name, (holders, front, jumper, state) in JUMP_CASES.items():
+        world = FakeWorld()
+        store = make_store(tmp_path / name, world)
+        for pid, (reservation_mb, wall_s) in enumerate(holders, start=101):
+            hold(store, world, pid, claim(reservation_mb, wall_s=wall_s))
+        assert store.refresh(join(store, world, 201, claim(**front))).state == QUEUED, name
+        assert store.refresh(join(store, world, 202, claim(**jumper))).state == state, name
+
+
+def test_a_jumper_is_not_refused_by_queue_max_but_a_waiter_is(root, world):
+    store = make_store(root, world, SlotCaps(queue_max=1))
+    hold(store, world, 101, claim(800, wall_s=600.0))
+    join(store, world, 102, claim(400))  # the front: position 0, within queue_max
+    assert store.refresh(join(store, world, 103, claim(100, wall_s=60.0))).state == HOLDING
+    with pytest.raises(QueueFullError):
+        join(store, world, 104, claim(400))  # blocked behind the front: position 1
+
+
+def test_jump_past_a_holder_overdue_by_its_estimate_waits(root, world):
+    store = make_store(root, world)
+    overdue = hold(store, world, 101, claim(500, wall_s=300.0))
+    hold(store, world, 102, claim(300, wall_s=600.0))
+    start_age(overdue, world, 900.0)  # estimated to be done 10 min ago
+    join(store, world, 201, claim(400))
+    assert store.refresh(join(store, world, 202, claim(100, wall_s=180.0))).state == QUEUED
+
+
+def test_unreadable_waiter_behind_the_front_ends_jumping(root, world, monkeypatch):
+    store = make_store(root, world)
+    hold(store, world, 101, claim(800, wall_s=600.0))
+    join(store, world, 102, claim(400))
+    unreadable = join(store, world, 103, claim(50, wall_s=60.0))
+    behind = join(store, world, 104, claim(100, wall_s=60.0))
+    real_load = store._load_token
+
+    def load(path):
+        if path == unreadable.path:
+            raise OSError("sharing violation")
+        return real_load(path)
+
+    monkeypatch.setattr(store, "_load_token", load)
+    assert store.refresh(behind).state == QUEUED
+    monkeypatch.setattr(store, "_load_token", real_load)
+    assert store.refresh(behind).state == QUEUED  # the claim ahead of it still has to start
+
+
+def test_wall_clock_survives_the_entry_file(root, world):
+    store = make_store(root, world)
+    token = hold(store, world, 101, claim(100, wall_s=42.5))
+    assert store.renew(token)
+    reloaded = store._load_token(token.path)
+    assert reloaded is not None and reloaded.memory == claim(100, wall_s=42.5)
+
+
+def test_front_that_can_start_now_under_its_own_budget_is_not_jumped(root, world):
+    store = make_store(root, world)
+    hold(store, world, 101, claim(500, wall_s=600.0))
+    front = join(store, world, 102, claim(400))  # fits its own 1000 MiB budget, not 800 MiB
+    jumper = join(store, world, 103, claim(50, wall_s=60.0, budget_mb=800.0))
+    assert store.refresh(jumper).state == QUEUED  # the front starts first, not later
+    assert store.refresh(front).state == HOLDING
