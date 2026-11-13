@@ -456,6 +456,14 @@ class EndpointState(ABC):
         """The Job Class this call belongs to, or None for unclassed endpoints."""
         return self.JOB_CLASS
 
+    def _memory_admitted(self) -> bool:
+        """Whether the development switch admits this Job by Memory Reservation (ADR 0087).
+
+        Heavy Jobs do; lint and Custom Flows override this, since they hold
+        nothing without the switch. Specialists keep their light count cap.
+        """
+        return self._resolve_job_class() == job_slots.CLASS_HEAVY
+
     def _acquire_job_slot(self) -> tuple[job_slots.SlotStore | None, object | None]:
         return endpoint_admission._acquire_job_slot(self)
 
