@@ -236,7 +236,7 @@ def test_live_status_preserves_independent_names_and_observation_precedes_import
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-    for key in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_CAMPAIGN"):
+    for key in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_RECORD"):
         monkeypatch.delenv(key, raising=False)
     reset_cache()
     seen, imports = [], []

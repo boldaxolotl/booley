@@ -1276,7 +1276,7 @@ def test_mutation_flow_and_specialist_public_completion_projects_actual_evaluati
     endpoint_type = classes[name]
     extras = {
         "mutation": ["--target", "first", "--scope", "rtl"],
-        "coverage_analyst": ["--campaign", str(runtime / "coverage.json")],
+        "coverage_analyst": ["--record", str(runtime / "coverage.json")],
     }[name]
 
     def run(self):

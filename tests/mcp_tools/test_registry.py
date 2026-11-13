@@ -544,7 +544,7 @@ def test_no_mutation_tester_endpoint():
 def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
     monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
 
-    for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_CAMPAIGN"):
+    for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_RECORD"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 

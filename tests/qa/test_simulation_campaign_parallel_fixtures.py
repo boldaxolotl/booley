@@ -129,7 +129,7 @@ def _write_attempt(campaign: Path, index: int, common: dict[str, str]) -> None:
             "attempt_ordinal": 1,
             "child_execution_id": CHILDREN[index],
             "run_directory": {
-                "configured": ".booley-qa/campaign/{campaign}/{test}/{attempt}",
+                "configured": ".booley-qa/campaign/{record}/{test}/{attempt}",
                 "kind": "templated",
                 "owned": True,
                 "resolved": _run_directory(index),
@@ -408,7 +408,7 @@ def test_uart_literal_cwd_validator_proves_scoped_serialization(tmp_path: Path) 
 
 def test_phase4_fixture_policy_is_explicit() -> None:
     assert (
-        'run_cwd = ".booley-qa/campaign/{campaign}/{test}/{attempt}"'
+        'run_cwd = ".booley-qa/campaign/{record}/{test}/{attempt}"'
         in (TAXI / "parallel.toml").read_text()
     )
     assert (

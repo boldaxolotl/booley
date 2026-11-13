@@ -326,7 +326,7 @@ def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> 
 
 def _coverage_campaign_path(reports: Path, detail: Mapping[str, Any]) -> Path:
     """Locate the public Coverage reference from its typed, invocation-relative artifact."""
-    reference = detail["targets"]["sim"]["coverage_campaign"]
+    reference = detail["targets"]["sim"]["coverage_record"]
     assert reference["path_base"] == "report_invocation"
     return reports / "sim" / "1" / reference["path"]
 

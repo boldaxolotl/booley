@@ -236,7 +236,7 @@ def test_exit_taxonomy_and_soft_warnings():
 ROWS = [
     (
         "sim",
-        {"campaigns": {"top": {**campaign(), "grade": "inconclusive"}}},
+        {"records": {"top": {**campaign(), "grade": "inconclusive"}}},
         "grade inconclusive",
         [],
     ),
@@ -255,7 +255,7 @@ ROWS = [
         )
         for outcome in ("advisory", "corrective", "no_findings")
     ],
-    ("sim", {"campaigns": {"top": campaign()}}, "2/2 tests passed", ["top"]),
+    ("sim", {"records": {"top": campaign()}}, "2/2 tests passed", ["top"]),
     (
         "sim",
         {"mode": "elab-only", "targets": [{"target": "top", "passed": True}]},
@@ -282,7 +282,7 @@ ROWS = [
             "targets": {
                 "top": {"simulation": "pass", "collection": "complete", "evaluation": "fail"}
             },
-            "campaigns": {"top": campaign(1, 1)},
+            "records": {"top": campaign(1, 1)},
         },
         "Coverage: 0/1 Targets met",
         ["evaluation fail", "1/2 tests passed", "test_bad", "23"],
@@ -406,7 +406,7 @@ def test_report_locations_and_coverage_miss():
                         "top": {"evaluation": evaluation},
                         "other": {"evaluation": "pass"},
                     },
-                    "campaigns": {"top": campaign()},
+                    "records": {"top": campaign()},
                 },
             }
             if key:
@@ -420,7 +420,7 @@ def test_report_locations_and_coverage_miss():
 
 def test_multitarget_and_list_caps():
     campaigns = {f"t{i}": campaign(2, 1) for i in range(8)}
-    report = {"flow": "sim", "detail": {"campaigns": campaigns}}
+    report = {"flow": "sim", "detail": {"records": campaigns}}
     text = job_detail(job(report))
     assert "16/24 tests passed" in text, "aggregate counts must use canonical observation counts"
     assert "3 more Targets" in text and "t7:" not in text
@@ -431,11 +431,11 @@ def test_multitarget_and_list_caps():
             "observations_truncated": True,
         }
     }
-    text = job_detail(job({"flow": "sim", "detail": {"campaigns": campaigns}}))
+    text = job_detail(job({"flow": "sim", "detail": {"records": campaigns}}))
     assert "3 more failures" in text and "bad6" not in text
     assert "preview" in text
 
-    result = present_report({"flow": "sim", "detail": {"campaigns": {"top": {}}}})
+    result = present_report({"flow": "sim", "detail": {"records": {"top": {}}}})
     assert "unavailable" in result.flow_result.value
     assert len(result.result_rows) <= 24
     targets = {
@@ -576,7 +576,7 @@ def test_campaign_producer_failure_axes_are_visible():
             "flow": "sim",
             "exit_code": 1,
             "detail": {
-                "campaigns": {
+                "records": {
                     "top": {
                         "grade": "fail",
                         "observation_counts": counts,

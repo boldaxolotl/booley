@@ -54,6 +54,7 @@ from booley.audit.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
+from booley.audit.output_excerpt import output_excerpt_lines
 from booley.config.gateway import (
     GATEWAY_AUTH,
     GATEWAY_EFFORT_ENV,
@@ -72,7 +73,6 @@ from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
-    require_bool,
     require_dict,
     require_int,
     require_list,
@@ -117,6 +117,7 @@ from booley.presentation.terminal_table import render_table
 from booley.runtime import (
     auth_token,
     core_repository_hygiene,
+    core_resolution,
     doctor_stamp,
     health,
     image_identity,
@@ -251,9 +252,6 @@ _BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
 _ADVISORY_SPECIALIST_TOOLS = frozenset({"reviewer"})
 _ADVISORY_FLOW_TOOLS = frozenset({"mutation"})
 _MCP_PROBE_TIMEOUT_S = 60
-# Budget for the one Sandbox container that resolves every selected Target.
-_CORE_RESOLVE_TIMEOUT_S = 600
-
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
 Warn = Callable[..., None]
@@ -856,7 +854,7 @@ def run_doctor_result(
 
     summary = None
     if deep:
-        summary = _run_deep_phase(project, docker_exe, flow_runtime, reporter)
+        summary = _run_deep_phase(project, flow_runtime, reporter)
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
@@ -1390,7 +1388,6 @@ def _run_flow_and_core_phase(
 
 def _run_deep_phase(
     project: ProjectAudit | None,
-    docker_exe: str | None,
     flow_runtime: _DoctorFlowRuntime | None,
     reporter: _Reporter,
 ) -> doctor_deep.DeepAttemptSummary:
@@ -1414,19 +1411,41 @@ def _run_deep_phase(
         _diagnostics=reporter.diagnostics,
         completeness=tracker,
     )
-    _run_core_resolve_checks(
-        project,
-        docker_exe,
-        reporter.pass_,
-        reporter.skip_,
-        reporter.fail_,
-        flow_runtime=flow_runtime,
-        completeness=tracker,
-    )
+    _run_core_resolution(project, flow_runtime, reporter, tracker)
     issues = _deep_identity_reasons(image_id, sandbox_version)
     if not reporter.profile.records_health_evidence:
         tracker.require("agent-checks")
     return doctor_deep.DeepAttemptSummary(tracker.missing, issues, image_id)
+
+
+def _run_core_resolution(
+    project: ProjectAudit,
+    flow_runtime: _DoctorFlowRuntime,
+    reporter: _Reporter,
+    tracker: doctor_deep.DeepCheckTracker,
+) -> None:
+    """Deep: resolve each Doctor-selected Target in the Sandbox; track completion.
+
+    The owner grades resolvability; Doctor keeps one completeness identifier per
+    selected Target, required before the owner runs so a skip stays incomplete.
+    """
+    selected = _project_target_matrix(project).seed_targets
+    if not selected:
+        return
+    identifiers = {
+        selector: f"core.resolve.{hashlib.sha256(selector.encode()).hexdigest()[:16]}"
+        for selector in selected
+    }
+    for identifier in identifiers.values():
+        tracker.require(identifier)
+    result = core_resolution.inspect_core_resolution(
+        core_resolution.CoreResolutionRequest(
+            project.project_root, tuple(selected), flow_runtime.available, flow_runtime.command
+        )
+    )
+    reporter.diagnostics(result.report)
+    for selector in result.completed:
+        tracker.completed(identifiers[selector], True)
 
 
 def _track_developer_probe(
@@ -5577,308 +5596,6 @@ def _native_dependency_request(project: ProjectAudit) -> pi.NativeDependencyRequ
     )
 
 
-def _report_core_resolve(
-    name: str,
-    ok: bool,
-    err: str,
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Grade one Doctor-selected Target resolution."""
-    if ok:
-        _pass(f".core Target '{name}' resolves")
-        return
-    _fail(f".core Target '{name}' fails to resolve", "fix the .core / depends graph")
-    _print_text_excerpt(err)
-
-
-def _run_core_resolve_checks(
-    project: ProjectAudit,
-    docker_exe: str | None,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-    *,
-    flow_runtime: _DoctorFlowRuntime | None = None,
-    completeness: doctor_deep.DeepCheckTracker | None = None,
-) -> None:
-    """Deep: resolve each Doctor-selected Target through ``fusesoc``.
-
-    Resolution runs Edalize's ``configure()``, which needs the ``fusesoc``
-    console script + toolchain — that environment IS the Sandbox image, so we
-    resolve INSIDE the container (mirroring the deep Flow checks). Only when the
-    image is unavailable do we fall back to a host ``fusesoc`` if one happens to
-    be installed; failing that, the check skips rather than failing.
-
-    Transitive dependencies remain covered because FuseSoC resolves the full
-    dependency closure of every selected Target. Unselected vendored Targets
-    are not configured merely to produce advisory notes.
-    """
-    if flow_runtime is not None:
-        assert completeness is not None
-        _resolve_deep_core_targets(project, flow_runtime, completeness, _pass, _skip, _fail)
-        return
-    matrix = _project_target_matrix(project)
-    catalog = TargetCatalog.build(project.project_root)
-    refs: dict[str, TargetHandle] = {}
-    for selector in matrix.seed_targets:
-        try:
-            refs[selector] = catalog.select(selector)
-        except FuseSocError as exc:
-            _report_core_resolve(
-                selector,
-                False,
-                str(exc),
-                _pass,
-                _fail,
-            )
-    if not refs:
-        return
-
-    image = _sandbox_image(project)
-    if docker_exe and _docker_image_exists_by_name(image):
-        _announce_long_check(
-            f".core resolvability of {len(refs)} Target(s) in the Sandbox",
-            f"FuseSoC configure; timeout {format_duration(_CORE_RESOLVE_TIMEOUT_S)}",
-        )
-        _run_core_resolve_in_docker(
-            project,
-            docker_exe,
-            image,
-            refs,
-            _pass,
-            _fail,
-        )
-        return
-
-    if shutil.which("fusesoc") is None:
-        _skip(
-            ".core resolvability skipped - Sandbox image unavailable and "
-            "fusesoc not on host PATH (build the image with 'booley init')"
-        )
-        return
-    _announce_long_check(
-        f".core resolvability of {len(refs)} Target(s) on the host",
-        "FuseSoC configure; no timeout",
-    )
-    for selector, ref in sorted(refs.items()):
-        build_key = hashlib.sha256(selector.encode()).hexdigest()[:16]
-        build_root = project.booley_dir / "runtime" / "doctor" / "core-resolve" / build_key
-        try:
-            fusesoc_registry.resolve_target_handle(
-                ref,
-                build_root=build_root,
-            )
-            _report_core_resolve(selector, True, "", _pass, _fail)
-        except FuseSocError as exc:
-            _report_core_resolve(
-                selector,
-                False,
-                str(exc),
-                _pass,
-                _fail,
-            )
-
-
-def _resolve_deep_core_targets(
-    project: ProjectAudit,
-    flow_runtime: _DoctorFlowRuntime,
-    tracker: doctor_deep.DeepCheckTracker,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Resolve in the same pinned runtime as the smoke and self-test checks."""
-    selected = _project_target_matrix(project).seed_targets
-    if not selected:
-        return
-    identifiers = {
-        selector: f"core.resolve.{hashlib.sha256(selector.encode()).hexdigest()[:16]}"
-        for selector in selected
-    }
-    for identifier in identifiers.values():
-        tracker.require(identifier)
-    if not flow_runtime.available:
-        _skip(".core resolvability skipped - Sandbox runtime unavailable")
-        return
-    catalog = TargetCatalog.build(project.project_root)
-    refs = {}
-    for selector in selected:
-        try:
-            refs[selector] = catalog.select(selector)
-        except FuseSocError as exc:
-            _report_core_resolve(selector, False, str(exc), _pass, _fail)
-    if not refs:
-        return
-    completed = _execute_core_resolution(project, flow_runtime, refs, _pass, _fail)
-    for selector in completed:
-        tracker.completed(identifiers[selector], True)
-
-
-def _execute_core_resolution(
-    project: ProjectAudit,
-    flow_runtime: _DoctorFlowRuntime,
-    refs: Mapping[str, TargetHandle],
-    _pass: Check,
-    _fail: Fail,
-) -> tuple[str, ...]:
-    payload = json.dumps(_core_resolve_payload(refs), separators=(",", ":"))
-    try:
-        command = flow_runtime.command(["python3", "-c", _CORE_RESOLVE_SNIPPET, payload])
-        proc = subprocess.run(
-            command,
-            cwd=project.project_root,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError, session_runtime.SessionError) as exc:
-        _fail(f".core resolvability could not complete in the Sandbox: {exc}", "check the Sandbox")
-        return ()
-    return _grade_core_resolution(proc, refs, _pass, _fail)
-
-
-def _grade_core_resolution(
-    proc: subprocess.CompletedProcess[str],
-    refs: Mapping[str, TargetHandle],
-    _pass: Check,
-    _fail: Fail,
-) -> tuple[str, ...]:
-    """Require exactly one bounded verdict for every selected Target."""
-    marker = "[[CORE_RESOLVE_JSON]]"
-    line = next(
-        (line for line in reversed(proc.stdout.splitlines()) if line.startswith(marker)), None
-    )
-    try:
-        if line is None or proc.returncode != 0:
-            raise BoundaryError("missing completed Sandbox resolution verdict")
-        entries = require_list(json.loads(line[len(marker) :]), field="core resolution verdicts")
-        if len(entries) != len(refs):
-            raise BoundaryError("incomplete Target resolution verdicts")
-        seen: set[str] = set()
-        for raw in entries:
-            entry = require_dict(raw, field="core resolution")
-            selector = require_str(entry, "selector")
-            ok = require_bool(entry, "ok")
-            if selector not in refs or selector in seen:
-                raise BoundaryError("invalid Target resolution verdict")
-            seen.add(selector)
-            _report_core_resolve(selector, ok, str(entry.get("err", "")), _pass, _fail)
-        return tuple(sorted(seen))
-    except (ValueError, BoundaryError):
-        _fail(
-            ".core resolvability produced incomplete Sandbox evidence",
-            "check the Sandbox / FuseSoC",
-        )
-        return ()
-
-
-# Container-side resolver: resolve the host-selected Targets in one docker run
-# and emit a machine-readable JSON verdict line the host parses back into checks.
-# Kept as a module constant so the quoting is auditable in one place.
-_CORE_RESOLVE_SNIPPET = (
-    "import json, os, sys\n"
-    "from pathlib import Path\n"
-    "from booley.runtime.booley_dir import resolve_checkout_booley_dir\n"
-    "from booley.fusesoc import fusesoc_registry as fr\n"
-    "from booley.targets.catalog import TargetCatalog\n"
-    "root = os.getcwd()\n"
-    "catalog = TargetCatalog.build(root)\n"
-    "targets = json.loads(sys.argv[1])\n"
-    "out = []\n"
-    "for target in targets:\n"
-    "    selector = target['selector']\n"
-    "    br = resolve_checkout_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
-    "    try:\n"
-    "        fr.resolve_target_handle(catalog.select(selector), build_root=br)\n"
-    "        out.append({'selector': selector, 'ok': True})\n"
-    "    except fr.FuseSocError as exc:\n"
-    "        out.append({'selector': selector, 'ok': False, 'err': str(exc)})\n"
-    "print('[[CORE_RESOLVE_JSON]]' + json.dumps(out))\n"
-)
-
-
-def _core_resolve_payload(
-    refs: Mapping[str, TargetHandle],
-) -> list[dict[str, str]]:
-    """Serialize the immutable selected Target set for the Sandbox."""
-    return [
-        {
-            "selector": selector,
-            "name": ref.name,
-            "vlnv": ref.vlnv,
-            "build_key": hashlib.sha256(selector.encode()).hexdigest()[:16],
-        }
-        for selector, ref in sorted(refs.items())
-    ]
-
-
-def _run_core_resolve_in_docker(
-    project: ProjectAudit,
-    docker_exe: str,
-    image: str,
-    refs: Mapping[str, TargetHandle],
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Resolve selected ``.core`` Targets inside the Sandbox image."""
-    payload = json.dumps(_core_resolve_payload(refs), separators=(",", ":"))
-    inner = ["python3", "-c", _CORE_RESOLVE_SNIPPET, payload]
-    cmd = _docker_wrap(docker_exe, image, project.project_root, inner)
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=_CORE_RESOLVE_TIMEOUT_S,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        _fail(
-            f".core resolvability timed out after {_CORE_RESOLVE_TIMEOUT_S}s in sandbox",
-            "check the .core / depends graph for a resolution hang",
-        )
-        return
-    except OSError as exc:
-        _fail(f".core resolvability failed to start container: {exc}", "check docker")
-        return
-
-    if _sandbox_guard_failed(proc):
-        # The in-container self-assertion refused: the resolve snippet was
-        # composed for the sandbox but executed outside it (doctor misrouting,
-        # b5e8681's failure class). Loud FAIL — never let this look like a mere
-        # "no verdict" or resolve failure.
-        _fail(
-            ".core resolvability was routed into the sandbox but executed "
-            "OUTSIDE it (in-container self-assertion failed)",
-            "doctor routing bug - report this, and rebuild the image "
-            "('booley init --force') to rule out a stale sandbox",
-        )
-        return
-
-    marker = "[[CORE_RESOLVE_JSON]]"
-    line = next(
-        (ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith(marker)),
-        None,
-    )
-    if line is None:
-        _fail(
-            ".core resolvability produced no verdict from the sandbox",
-            f"exit {proc.returncode}: {(proc.stderr or proc.stdout)[-400:]}",
-        )
-        return
-    for entry in json.loads(line[len(marker) :]):
-        selector = entry["selector"]
-        _report_core_resolve(
-            selector,
-            bool(entry.get("ok")),
-            str(entry.get("err", "")),
-            _pass,
-            _fail,
-        )
-
-
 def _run_deep_checks(
     project: ProjectAudit,
     flow_runtime: _DoctorFlowRuntime,
@@ -6183,8 +5900,8 @@ def _read_selftest_campaign(project: ProjectAudit, case: _SelftestCase, rc: int)
         raise ValueError("report is not a Simulation Flow v3 report")
     if require_int(report.get("exit_code"), field="exit_code") != rc:
         raise ValueError("report exit code does not match this invocation")
-    campaigns = require_dict(require_dict(report.get("detail")).get("campaigns"))
-    campaign = require_dict(campaigns.get(case.target), field="selected campaign")
+    records = require_dict(require_dict(report.get("detail")).get("records"))
+    campaign = require_dict(records.get(case.target), field="selected campaign")
     if campaign.get("complete") is not True:
         raise ValueError("selected Simulation Campaign is incomplete")
     return campaign
@@ -6551,7 +6268,7 @@ def _record_output_excerpt(
     verbose_only: bool = True,
 ) -> None:
     """Attach the informative slice of *result*'s output to the last finding."""
-    for line in _output_excerpt_lines(result.stderr or result.stdout or "", max_lines):
+    for line in output_excerpt_lines(result.stderr or result.stdout or "", max_lines):
         findings.detail(line, verbose_only=verbose_only)
 
 
@@ -6938,146 +6655,9 @@ def _flow_command(
     return flow_runtime.command(inner, env=command_env)
 
 
-# In-container self-assertion (b5e8681's failure class: sandbox-semantics
-# checks silently running on the host). Every inner command routed through
-# _docker_wrap is prefixed with a POSIX-sh guard that re-verifies the command
-# really IS inside the sandbox before exec'ing it. If a wrapped command ever
-# executes outside the container (misrouting, argv recomposition dropping the
-# docker prefix), the guard refuses with a distinctive exit code + stderr
-# marker that callers convert into a loud FAIL — never a silent pass or SKIP.
-_SANDBOX_GUARD_MARKER = "[[BOOLEY_SANDBOX_GUARD_FAIL]]"
-# Distinctive code so callers can tell "guard refused" apart from ordinary Flow
-# failures (Flows exit 0/1/2) and from Docker's own 125-127 range.
-_SANDBOX_GUARD_EXIT = 97
-# The assertion is deliberately env-only, NOT a marker-file probe
-# (/.dockerenv): BOOLEY_IN_SANDBOX=1 is
-# injected by _docker_wrap's own ``-e`` below, so it proves the command went
-# through THIS wrapper's docker invocation. A /.dockerenv fallback would
-# falsely pass when doctor itself runs inside the Interactive-Mode
-# devcontainer and a misrouted "sandbox" check lands there instead of the
-# real sandbox image.
-_SANDBOX_GUARD_SCRIPT = (
-    'if [ "$BOOLEY_IN_SANDBOX" = "1" ]; then exec "$@"; fi; '
-    f'echo "{_SANDBOX_GUARD_MARKER} refusing to run: not inside the sandbox '
-    "(BOOLEY_IN_SANDBOX unset - the command did not go through doctor's "
-    'docker wrapper)" >&2; '
-    f"exit {_SANDBOX_GUARD_EXIT}"
-)
-
-
-def _sandbox_guard_failed(result: subprocess.CompletedProcess[str]) -> bool:
-    """Return whether *result* is the sandbox guard refusing a misrouted run.
-
-    Requires BOTH the reserved exit code and the stderr marker so a Flow that
-    happens to exit 97 for its own reasons is not misreported as misrouting.
-    """
-    if result.returncode != _SANDBOX_GUARD_EXIT:
-        return False
-    return _SANDBOX_GUARD_MARKER in f"{result.stderr or ''}{result.stdout or ''}"
-
-
-def _docker_wrap(
-    docker_exe: str,
-    image: str,
-    project_root: Path,
-    inner: list[str],
-    *,
-    memory: str = "",
-    doctor_selftest_kind: str | None = None,
-) -> list[str]:
-    """Wrap *inner* argv in a ``docker run`` that mounts the repo at ``/work``.
-
-    The single source of truth for how doctor executes a command inside the
-    Sandbox image: repo bind-mounted at ``/work``, network isolated, and the
-    in-container ``BOOLEY_DIR`` / ``BOOLEY_IN_SANDBOX`` env set so the
-    Flow resolves the project the same way a real sandbox run would.
-
-    The inner argv is additionally prefixed with the sandbox self-assertion
-    guard (see ``_SANDBOX_GUARD_SCRIPT``): *inner* is passed as positional
-    parameters to ``sh -c '... exec "$@"'`` — never spliced into the script
-    string — so arbitrary argv (including ``python3 -c`` snippets) survives
-    unquoted, and every command wrapped here gets the assertion for free.
-    """
-    resource_args = ["--memory", memory] if memory else []
-    selftest_env = (
-        ["-e", f"{selftest_overlay.INTERNAL_KIND_ENV}={doctor_selftest_kind}"]
-        if doctor_selftest_kind is not None
-        else []
-    )
-    return [
-        docker_exe,
-        "run",
-        "--init",
-        "--rm",
-        *resource_args,
-        "-v",
-        f"{docker_mount_path(project_root)}:/work",
-        "-w",
-        "/work",
-        "--network",
-        "none",
-        "-e",
-        f"BOOLEY_DIR={_sandbox_booley_dir(project_root)}",
-        "-e",
-        "BOOLEY_IN_SANDBOX=1",
-        *selftest_env,
-        image,
-        # $0 for the guard shell; *inner* lands in "$@" untouched.
-        "sh",
-        "-c",
-        _SANDBOX_GUARD_SCRIPT,
-        "booley-sandbox-guard",
-        *inner,
-    ]
-
-
-# Substrings that mark the informative failure lines in EDA/fusesoc output. The
-# reason for a fusesoc parse error is printed on the line AFTER
-# "Parse error. Ignoring file X:", so a first-line-only excerpt dropped it.
-_OUTPUT_ERROR_MARKERS = (
-    "error",
-    "must be array",
-    "ignoring file",
-    "could not",
-    "cannot",
-    "traceback",
-    "failed",
-    "exception",
-    "not found",
-    "requires",
-)
-
-
-def _output_excerpt_lines(text: str, max_lines: int = 8) -> list[str]:
-    """Return the informative slice of multi-line command output (indented).
-
-    A first-line-only excerpt truncated multi-line diagnostics — notably a
-    fusesoc parse error whose reason (``... must be array``) lands on the *next*
-    line. When any line looks like an error, take from the first such line
-    through the line after the last one (to catch the trailing reason); otherwise
-    fall back to the head of the output. Capped at *max_lines* with a "… N more"
-    note so the report dir is still the full record.
-    """
-    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        return []
-    flagged = [
-        i for i, ln in enumerate(lines) if any(m in ln.lower() for m in _OUTPUT_ERROR_MARKERS)
-    ]
-    if flagged and max_lines > 1:
-        selected = lines[flagged[0] : flagged[-1] + 2][:max_lines]
-    else:
-        selected = lines[:max_lines]
-    excerpt = [f"    {ln}" for ln in selected]
-    hidden = len(lines) - len(selected)
-    if hidden > 0:
-        excerpt.append(f"    … ({hidden} more line(s); see the report dir)")
-    return excerpt
-
-
 def _print_text_excerpt(text: str, max_lines: int = 8) -> None:
-    """Print :func:`_output_excerpt_lines` of *text*."""
-    for line in _output_excerpt_lines(text, max_lines):
+    """Print :func:`output_excerpt_lines` of *text*."""
+    for line in output_excerpt_lines(text, max_lines):
         info(line)
 
 

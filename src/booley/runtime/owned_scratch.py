@@ -39,6 +39,8 @@ OWNED_PREFIXES = (
     "codex-nested-home-",
     "booley-specialist-ro-",
     "booley-coverage-analysis-",
+    "booley-coverage-record-",
+    # Swept only, never created: leftovers of a Booley 0.4.0 coverage analysis.
     "booley-coverage-campaign-",
     "booley-developer-probe-",
 )

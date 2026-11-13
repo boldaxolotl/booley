@@ -223,7 +223,7 @@ def _coverage_params(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
     analyst = CoverageAnalystSpecialist()
-    analyst.parse_args(["--project", str(project), "--campaign", str(tmp_path / "campaign.json")])
+    analyst.parse_args(["--project", str(project), "--record", str(tmp_path / "campaign.json")])
     analysis_dir = tmp_path / "analysis"
     analysis_dir.mkdir()
     params = analyst._coverage_agent_params(

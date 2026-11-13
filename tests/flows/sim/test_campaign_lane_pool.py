@@ -47,7 +47,7 @@ from tests.flows.sim.campaign_test_support import (
 
 # Threads owned by other modules and unchanged by the pool: the slot store's lease
 # renewal and the supervised scope's per-scope process killer.
-_UNRELATED_THREAD_PREFIXES = ("booley-lease-", "booley-campaign-process-cancellation")
+_UNRELATED_THREAD_PREFIXES = ("booley-lease-", "booley-record-process-cancellation")
 
 
 class _Campaign:
@@ -372,7 +372,7 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path)
         # The lane that finished leaves; only the stuck lane (and its scope's
         # process killer) remain: retention lives inside the pool, not in a thread.
         _wait_until(lambda: len(_lane_thread_names(earlier_threads)) == 1)
-        assert "booley-campaign-process-cancellation" in _campaign_thread_names(earlier_threads)
+        assert "booley-record-process-cancellation" in _campaign_thread_names(earlier_threads)
     finally:
         release_child.set()
         trigger.join(timeout=_PARALLEL_SYNC_TIMEOUT_S)
@@ -431,7 +431,8 @@ def _campaign_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
     return {
         thread.name
         for thread in threading.enumerate()
-        if thread not in earlier_threads and thread.name.startswith("booley-campaign-")
+        if thread not in earlier_threads
+        and thread.name.startswith(("booley-campaign-", "booley-record-process-cancellation"))
     }
 
 

@@ -526,6 +526,6 @@ class TestCocotbDryRun:
         )
 
         assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
-        (preview,) = result.outcome.detail["campaign_preview"]
+        (preview,) = result.outcome.detail["record_preview"]
         # Naming tests needs the registry, so success shows it was read; two tests, one batch.
         assert preview["work_items"] == 1
