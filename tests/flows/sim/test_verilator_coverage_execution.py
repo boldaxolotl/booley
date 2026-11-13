@@ -21,26 +21,26 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
-from booley.flows.sim.campaign.coordinator import (
+from booley.flows.sim.coverage_overlay import CoverageOverlay
+from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
+from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
+from booley.flows.sim.record.coordinator import (
     CampaignPolicy,
     NewCampaignRunRequest,
     SimulationCampaign,
 )
-from booley.flows.sim.campaign.coverage_execution import (
+from booley.flows.sim.record.coverage_execution import (
     _coverage_observation,
     _publish_coverage_build_failure,
 )
-from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-from booley.flows.sim.campaign.planning import finalize_manifest
-from booley.flows.sim.campaign.serial_execution import (
+from booley.flows.sim.record.model import create_simulation_campaign_plan
+from booley.flows.sim.record.planning import finalize_manifest
+from booley.flows.sim.record.serial_execution import (
     BuildScope,
     bundle_build_attempt,
     simulation_attempt,
 )
-from booley.flows.sim.campaign.store import CampaignStore
-from booley.flows.sim.coverage_overlay import CoverageOverlay
-from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
-from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
+from booley.flows.sim.record.store import CampaignStore
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
@@ -59,8 +59,8 @@ from booley.flows.sim.verilator_coverage_execution import (
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.fusesoc.fusesoc_registry import ResolvedFile, core_target_coverage_errors
 from booley.targets.catalog import TargetCatalog
-from tests.flows.sim.campaign_test_support import _admission
-from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
+from tests.flows.sim.simulation_record_test_support import _admission
+from tests.flows.sim.test_simulation_record_manifest_codec import _manifest, _sha
 
 
 def _build_coverage(
@@ -1104,7 +1104,7 @@ def _coverage_build_failure_request(tmp_path: Path):
     item = document["work_items"][0]
     item["kind"] = "coverage_aggregate"
     item["selection"] = {"kind": "named", "names": ["wrap"]}
-    from tests.flows.sim.test_campaign_manifest_codec import _selection_test_runs
+    from tests.flows.sim.test_simulation_record_manifest_codec import _selection_test_runs
 
     item["test_runs"] = _selection_test_runs(("wrap",))
     document["required_suite"]["names"] = ["wrap"]
@@ -1136,7 +1136,7 @@ def test_coverage_infrastructure_build_failure_publishes_terminal_campaign(
     # Isolate Simulation build/result durability from nested collector publication.
     monkeypatch.setattr(SimulationCampaign, "_publish_coverage_reference", lambda *_args: None)
     monkeypatch.setattr(
-        "booley.flows.sim.campaign.coverage_execution._coverage_evidence", lambda *_args: []
+        "booley.flows.sim.record.coverage_execution._coverage_evidence", lambda *_args: []
     )
 
     outcome = SimulationCampaign(_CoverageFailedBuildExecutor()).run(request)
@@ -1204,7 +1204,7 @@ def test_coverage_cleanup_failure_retains_authenticated_result(verdict) -> None:
 def test_coverage_pre_sim_project_relative_hook_uses_project_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: str
 ) -> None:
-    from booley.flows.sim.campaign.run_directory import expand_run_directory
+    from booley.flows.sim.record.run_directory import expand_run_directory
 
     (tmp_path / "hook.py").write_text(
         "import json, os\n"

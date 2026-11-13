@@ -12,8 +12,8 @@ from booley.flows.endpoint_state import EndpointState
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
-from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record_invocation import SimulationCampaignInvocation
 from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
@@ -961,10 +961,10 @@ def self_scope(flow):
 def _report_campaign_document(handle, inspection, preview, mode, selected):
     from dataclasses import replace
 
-    from tests.flows.sim.test_campaign_flow_planning import _plan
+    from tests.flows.sim.test_simulation_record_flow_planning import _plan
 
     if mode in {"unfiltered", "coverage"}:
-        from booley.flows.sim.campaign.flow_planning import plan_coarse_simulation_campaign
+        from booley.flows.sim.record.flow_planning import plan_coarse_simulation_campaign
 
         inspection = replace(
             inspection, flow_options={"cocotb_module": "tests"} if mode == "unfiltered" else {}
@@ -992,15 +992,15 @@ def _report_campaign_document(handle, inspection, preview, mode, selected):
 def _prepared_report_campaign(runtime, mode, resume):
     from dataclasses import replace
 
-    from booley.flows.sim.campaign.codec import (
+    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.flows.sim.record.codec import (
         decode_simulation_campaign_manifest,
         encode_simulation_campaign_manifest,
     )
-    from booley.flows.sim.campaign.model import SimulationCampaignManifest
-    from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
-    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.flows.sim.record.model import SimulationCampaignManifest
+    from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
     from booley.targets.catalog import TargetCatalog
-    from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
+    from tests.flows.sim.test_simulation_record_flow_planning import _planning_fixture
 
     project, handle, inspection, preview = _planning_fixture(runtime)
     (runtime / "design.core").write_text(

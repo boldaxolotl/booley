@@ -28,7 +28,8 @@ from booley.flows.sim.test_selection import _filter_tests
 from booley.flows.sim.watchdog_sizing import resolve_sim_campaign_work_units
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
-from tests.flows.sim.campaign_boundary import (
+from tests.flows.sim.leased_session import canned_build_session
+from tests.flows.sim.simulation_record_boundary import (
     FAIL_PROCESS,
     INCONCLUSIVE_PROCESS,
     PASS_PROCESS,
@@ -36,7 +37,6 @@ from tests.flows.sim.campaign_boundary import (
     Launch,
     run_campaign_sim,
 )
-from tests.flows.sim.leased_session import canned_build_session
 from tests.target_test_support import write_sim_preview_project
 
 # Built-in Flow execution inside the Sandbox.
@@ -578,7 +578,7 @@ class TestCommandBuilding:
 # Ordinary simulation through the campaign path (SimulateFlow.execute)
 #
 # These run the real endpoint, campaign planning and execution, and Criteria
-# reconciliation; only the process edge is faked (``campaign_boundary``).
+# reconciliation; only the process edge is faked (``simulation_record_boundary``).
 # ---------------------------------------------------------------------------
 
 

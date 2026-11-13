@@ -241,6 +241,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   configurable LR/SC reservation-set size, a Zvt tile fix, and a batch of
   CSR and PMP fixes (`stopei`, `mstateen0`, `scountovf`, mcontrol6 triggers).
   ([PR #3633](https://github.com/boldaxolotl/booley/pull/3633))
+- The command that prunes the evidence of a Simulation Record invocation is now
+  `python -m booley.flows.sim.record_retention`; it was
+  `python -m booley.flows.sim.campaign_retention`. Its options are unchanged.
+  Update any script that calls the old name
+  ([#3907](https://github.com/boldaxolotl/Booley/issues/3907)).
 
 ## 0.4.0 - 04 NOV 2026
 

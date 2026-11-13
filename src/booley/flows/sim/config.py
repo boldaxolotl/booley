@@ -18,7 +18,7 @@ from booley.core.boundary import (
     require_str_value,
 )
 from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
-from booley.flows.sim.campaign_reports import is_report_link
+from booley.flows.sim.record_reports import is_report_link
 from booley.targets.flow_names import config_section
 
 DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3

@@ -190,7 +190,7 @@ Depends on: baseline.analysis, baseline.policy, baseline.multi.
 Intent: pruning removes exactly what was asked, is retryable, and resume/recovery never duplicates or loses
 evidence.
 Try:
-- `python -m booley.flows.sim.campaign_retention --reports-root <r> --invocation N --native-target <t>`
+- `python -m booley.flows.sim.record_retention --reports-root <r> --invocation N --native-target <t>`
   → only that payload gone, normalized evidence byte-identical, pruned Campaign still analyzable; repeat is
   safe. `--full` → empty `.pruned-N` tombstone, analysis now fails cleanly, next run skips N.
 - Native rejections before deletion (rc2, sentinels unchanged): ambiguous/unknown Target, invalid

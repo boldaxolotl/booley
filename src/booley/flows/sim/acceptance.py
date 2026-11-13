@@ -26,19 +26,6 @@ from booley.flows.execution_persistence import (
     frozen_test_runs_for,
 )
 from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns
-from booley.flows.sim.campaign import (
-    SIMULATION_PROJECTION_SCHEMA,
-    CampaignOutcome,
-    build_artifact_reference,
-    encode_artifact_reference,
-)
-from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
-from booley.flows.sim.campaign.test_run_files import campaign_test_run_files
-from booley.flows.sim.campaign.test_run_report import evidence_test_run_rows
-from booley.flows.sim.campaign_reports import (
-    simulation_booley_dir,
-    write_compatibility_projection,
-)
 from booley.flows.sim.coverage_json import content_digest, coverage_mapping_document
 from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_reference import (
@@ -47,6 +34,19 @@ from booley.flows.sim.coverage_reference import (
     authenticate_coverage_campaign_owner,
     encode_coverage_campaign_reference,
     resolve_coverage_campaign_reference,
+)
+from booley.flows.sim.record import (
+    SIMULATION_PROJECTION_SCHEMA,
+    CampaignOutcome,
+    build_artifact_reference,
+    encode_artifact_reference,
+)
+from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
+from booley.flows.sim.record.test_run_files import campaign_test_run_files
+from booley.flows.sim.record.test_run_report import evidence_test_run_rows
+from booley.flows.sim.record_reports import (
+    simulation_booley_dir,
+    write_compatibility_projection,
 )
 from booley.flows.sim.test_run_invocation import baseline_refusal_key
 from booley.targets.domain import criterion_matches_target

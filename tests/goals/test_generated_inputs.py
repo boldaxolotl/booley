@@ -9,19 +9,22 @@ from uuid import uuid4
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.campaign.codec import (
+from booley.flows.sim.record.codec import (
     MANIFEST_SCHEMA,
     canonical_json_bytes,
     encode_simulation_campaign_manifest,
 )
-from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
+from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.goals.entry import EntryEnvironment
 from booley.goals.finish import finish_goal
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.paths import record_paths
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.mcp.goal_completion import complete_goal, completion_environment
-from tests.flows.sim.test_campaign_manifest_codec import _manifest_components, _manifest_work
+from tests.flows.sim.test_simulation_record_manifest_codec import (
+    _manifest_components,
+    _manifest_work,
+)
 from tests.goals.conftest import LINT_KEY, bind, campaign_facts, enter_goals, git
 from tests.goals.test_finish import Crash, request
 

@@ -10,12 +10,6 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import ResolvedFlowAcceptance
-from booley.flows.sim.campaign import (
-    SimulationCampaign,
-    collect_pre_sim_firings,
-    resolve_report_artifact_reference,
-)
-from booley.flows.sim.campaign_presentation import _coverage_request_selector
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
@@ -23,6 +17,12 @@ from booley.flows.sim.coverage_reference import (
 )
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record import (
+    SimulationCampaign,
+    collect_pre_sim_firings,
+    resolve_report_artifact_reference,
+)
+from booley.flows.sim.record_presentation import _coverage_request_selector
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.mcp.flow_adapter import flow_schema
@@ -312,9 +312,9 @@ def _prepare_atomic_coverage_state(
 
 
 def _assert_enclosing_result_is_authenticated(campaign_path, resolved) -> None:
-    from booley.flows.sim.campaign.codec import canonical_json_bytes
-    from booley.flows.sim.campaign.store import CampaignStore
     from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.record.codec import canonical_json_bytes
+    from booley.flows.sim.record.store import CampaignStore
 
     store = CampaignStore(campaign_path.parent / "record")
     work_item_id = resolved.reference.document["simulation_work_item_id"]
@@ -350,8 +350,8 @@ def _assert_projection_tamper_rejected(campaign_path: Path) -> None:
 
 
 def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import prune_native_payload
     from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.record_retention import prune_native_payload
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -504,8 +504,8 @@ def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, mo
 
 
 def _publish_real_hook_series(request, handle, commands, count):
-    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
     from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+    from booley.flows.sim.record.pre_sim_evidence import publish_pre_sim_firing
 
     for ordinal in range(1, count + 1):
         evidence = run_pre_sim_commands(
@@ -524,10 +524,10 @@ def _publish_real_hook_series(request, handle, commands, count):
 def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_path, monkeypatch):
     import json
 
-    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.record.store import CampaignStore
     from booley.runtime.endpoint_execution import EndpointOutcome
-    from tests.flows.sim.campaign_test_support import _executor, _handle, _request
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+    from tests.flows.sim.simulation_record_test_support import _executor, _handle, _request
+    from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
 
     def transform(document):
         document["workload"]["coverage"] = True
@@ -784,8 +784,8 @@ def test_unreadable_unrelated_directory_does_not_block_coverage(
 def test_copied_complete_invocation_remains_analyzable_and_independently_prunable(
     tmp_path, monkeypatch
 ):
-    from booley.flows.sim.campaign_retention import prune_invocation
     from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.record_retention import prune_invocation
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -912,7 +912,7 @@ def test_fatal_coverage_failure_lists_completed_campaigns(tmp_path, monkeypatch)
 
 
 def test_unmatched_coverage_failure_lists_completed_campaigns(tmp_path, monkeypatch):
-    from booley.flows.sim import campaign_presentation as sim_flow
+    from booley.flows.sim import record_presentation as sim_flow
 
     monkeypatch.setattr(sim_flow, "_campaign_structured_details", lambda *_args: {})
     finished = SimpleNamespace(
@@ -1315,7 +1315,7 @@ def _prepare_coverage_origin(tmp_path, monkeypatch, *, skipped=()):
     revision = "a" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
     monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: revision)
-    monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
+    monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: revision)
     project(tmp_path)
     data = tmp_path / ".booley"
     data.mkdir()
@@ -1395,7 +1395,7 @@ def _interrupt_coverage_publication(tmp_path, monkeypatch, *, selected=None, ski
 
 
 def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import prune_invocation
+    from booley.flows.sim.record_retention import prune_invocation
 
     reports, request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     original_path = next(
@@ -1444,11 +1444,11 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
 
 
 def test_full_pruning_refuses_resume_dependent_unless_explicitly_included(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign.artifact_reference import (
+    from booley.flows.sim.record.artifact_reference import (
         resolve_report_artifact_reference,
     )
-    from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES
-    from booley.flows.sim.campaign_retention import (
+    from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES
+    from booley.flows.sim.record_retention import (
         CampaignRetentionError,
         prune_invocation,
     )
@@ -1492,7 +1492,7 @@ def test_full_pruning_refuses_resume_dependent_unless_explicitly_included(tmp_pa
 def test_dependent_pruning_retries_after_dependent_cleanup_interruption(
     tmp_path, monkeypatch, legacy
 ):
-    from booley.flows.sim.campaign_retention import prune_invocation
+    from booley.flows.sim.record_retention import prune_invocation
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
@@ -1527,7 +1527,7 @@ def test_dependent_pruning_retries_after_dependent_cleanup_interruption(
 
 
 def test_dependent_pruning_retries_after_origin_cleanup_interruption(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import prune_invocation
+    from booley.flows.sim.record_retention import prune_invocation
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
@@ -1556,8 +1556,8 @@ def test_dependent_pruning_retries_after_origin_cleanup_interruption(tmp_path, m
 
 
 def test_dependent_pruning_preflights_all_members_before_mutation(tmp_path, monkeypatch):
-    from booley.flows.sim import campaign_retention
-    from booley.flows.sim.campaign_retention import (
+    from booley.flows.sim import record_retention
+    from booley.flows.sim.record_retention import (
         CampaignRetentionError,
         prune_invocation,
     )
@@ -1569,14 +1569,14 @@ def test_dependent_pruning_preflights_all_members_before_mutation(tmp_path, monk
         coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
     ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
     assert result.exit_code == 0
-    original = campaign_retention._preflight_campaign_resources
+    original = record_retention._preflight_campaign_resources
 
     def reject_origin(root, project_data):
         if root == origin:
             raise CampaignRetentionError("injected origin preflight failure")
         return original(root, project_data)
 
-    monkeypatch.setattr(campaign_retention, "_preflight_campaign_resources", reject_origin)
+    monkeypatch.setattr(record_retention, "_preflight_campaign_resources", reject_origin)
     with pytest.raises(CampaignRetentionError, match="injected origin preflight failure"):
         prune_invocation(reports, 1, include_dependents=True)
 
@@ -1588,8 +1588,8 @@ def test_dependent_pruning_preflights_all_members_before_mutation(tmp_path, monk
 
 
 def test_dependent_pruning_refuses_locked_member_before_mutation(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_reports import campaign_invocation_lock
-    from booley.flows.sim.campaign_retention import (
+    from booley.flows.sim.record_reports import campaign_invocation_lock
+    from booley.flows.sim.record_retention import (
         CampaignRetentionError,
         prune_invocation,
     )
@@ -1616,7 +1616,7 @@ def test_dependent_pruning_refuses_locked_member_before_mutation(tmp_path, monke
 
 
 def test_dependent_pruning_removes_multiple_dependents(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import prune_invocation
+    from booley.flows.sim.record_retention import prune_invocation
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
@@ -1634,7 +1634,7 @@ def test_dependent_pruning_removes_multiple_dependents(tmp_path, monkeypatch):
 
 
 def test_cross_root_resume_dependency_is_registered_and_pruned(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import (
+    from booley.flows.sim.record_retention import (
         CampaignRetentionError,
         prune_invocation,
     )
@@ -1656,12 +1656,12 @@ def test_cross_root_resume_dependency_is_registered_and_pruned(tmp_path, monkeyp
 
 
 def test_native_pruning_preserves_live_resume_dependency(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import (
+    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.record_retention import (
         CampaignRetentionError,
         prune_invocation,
         prune_native_payload,
     )
-    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
@@ -1681,7 +1681,7 @@ def test_native_pruning_preserves_live_resume_dependency(tmp_path, monkeypatch):
 
 
 def test_cross_root_dependent_pruning_rejects_forged_report_reference(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import (
+    from booley.flows.sim.record_retention import (
         CampaignRetentionError,
         prune_invocation,
     )
@@ -1707,7 +1707,7 @@ def test_cross_root_dependent_pruning_rejects_forged_report_reference(tmp_path, 
 
 
 def test_cross_root_dependent_pruning_rejects_matching_forged_digests(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import (
+    from booley.flows.sim.record_retention import (
         CampaignRetentionError,
         prune_invocation,
     )
@@ -1738,7 +1738,7 @@ def test_cross_root_dependent_pruning_rejects_matching_forged_digests(tmp_path, 
 
 
 def test_same_root_legacy_resume_without_receipt_is_still_detected(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import (
+    from booley.flows.sim.record_retention import (
         CampaignRetentionError,
         prune_invocation,
     )
@@ -1770,7 +1770,7 @@ def test_resume_reports_dependency_registration_failure(tmp_path, monkeypatch):
         raise ValueError("injected dependency failure")
 
     monkeypatch.setattr(
-        "booley.flows.sim.campaign.dependency.register_campaign_dependency",
+        "booley.flows.sim.record.dependency.register_campaign_dependency",
         fail_registration,
     )
     result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
@@ -1783,7 +1783,7 @@ def test_resume_reports_dependency_registration_failure(tmp_path, monkeypatch):
 
 
 def test_resume_reports_busy_origin_lock(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_reports import campaign_invocation_lock
+    from booley.flows.sim.record_reports import campaign_invocation_lock
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
@@ -1802,7 +1802,7 @@ def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "booley.flows.sim.campaign.dependency.register_campaign_dependency",
+        "booley.flows.sim.record.dependency.register_campaign_dependency",
         lambda *_args, **_kwargs: tmp_path,
     )
     origin = tmp_path / "sim/1"
@@ -1910,7 +1910,7 @@ def _campaign_bytes(root):
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("state", ["interrupted", "pending"])
 def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, state, dry_run):
-    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.record.store import CampaignStore
 
     reports, _request = _interrupt_coverage_collection(
         tmp_path,
@@ -1983,7 +1983,7 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary, *, no_waivers=F
     revision = "b" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
     monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: revision)
-    monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
+    monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: revision)
     project(tmp_path)
     data = tmp_path / ".booley"
     data.mkdir()
@@ -2141,7 +2141,7 @@ def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeyp
         raise OSError("injected report reference failure")
 
     monkeypatch.setattr(
-        "booley.flows.sim.campaign_presentation._report_artifact_reference", fail_reference
+        "booley.flows.sim.record_presentation._report_artifact_reference", fail_reference
     )
     resumed = SimulateFlow(
         coverage_execution=execution_factory,
@@ -2174,9 +2174,7 @@ def test_unreadable_publication_evidence_preserves_simulation_truth(
     def unreadable(*_args, **_kwargs):
         raise OSError("nested coverage evidence unreadable")
 
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign_presentation.load_coverage_campaign", unreadable
-    )
+    monkeypatch.setattr("booley.flows.sim.record_presentation.load_coverage_campaign", unreadable)
     if resumed:
 
         def checkpoint(boundary):
@@ -2220,7 +2218,7 @@ def _run_with_retention_reference_failure(monkeypatch, request, execution=None):
 
     with monkeypatch.context() as patch:
         patch.setattr(
-            "booley.flows.sim.campaign_presentation.resolve_coverage_campaign_reference", fail_once
+            "booley.flows.sim.record_presentation.resolve_coverage_campaign_reference", fail_once
         )
         return SimulateFlow(
             coverage_execution=lambda *_args: execution or NativeExecution()
@@ -2290,7 +2288,7 @@ def test_retention_failure_preserves_in_memory_campaign_truth(tmp_path, monkeypa
 def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatch):
     from pathlib import Path
 
-    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+    from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -2321,7 +2319,7 @@ def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatc
 
 
 def test_full_pruning_rejects_extra_nested_coverage_payload(tmp_path, monkeypatch):
-    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+    from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -2351,8 +2349,8 @@ def test_full_pruning_rejects_extra_nested_coverage_payload(tmp_path, monkeypatc
 def test_pruning_during_allocation_does_not_reuse_campaign_number(tmp_path, monkeypatch):
     from pathlib import Path
 
-    from booley.flows.sim.campaign_retention import prune_invocation
-    from tests.flows.sim.campaign_test_support import coverage_invocation
+    from booley.flows.sim.record_retention import prune_invocation
+    from tests.flows.sim.simulation_record_test_support import coverage_invocation
 
     coverage_invocation(tmp_path, monkeypatch)
     sim = tmp_path / "reports/sim"
@@ -2942,8 +2940,11 @@ def _coverage_hook_flow_fixture(tmp_path, monkeypatch):
 def test_actual_coverage_hook_publication_crash_keeps_only_durable_evidence(
     tmp_path, monkeypatch, side
 ):
-    from booley.flows.sim.campaign.coverage_execution import CoverageAggregateExecutor
-    from tests.flows.sim.test_campaign_crash_matrix import _CrashOnce, _InjectedProcessDeath
+    from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
+    from tests.flows.sim.test_simulation_record_crash_matrix import (
+        _CrashOnce,
+        _InjectedProcessDeath,
+    )
 
     original = CoverageAggregateExecutor.__init__
     crash = _CrashOnce(f"{side}:pre_sim_evidence")
@@ -2970,8 +2971,8 @@ def test_actual_coverage_hook_publication_crash_keeps_only_durable_evidence(
 
 def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_path, monkeypatch):
     from booley.flows.sim import flow as flow_module
-    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
-    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.record.store import CampaignStore
 
     original = CampaignStore.publish_pre_sim_evidence
     failure_outcome = flow_module._coverage_failure_outcome
@@ -3008,8 +3009,8 @@ def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_pa
 
 
 def _observe_pre_sim_projection(monkeypatch):
-    from booley.flows.sim import campaign_presentation as flow_module
-    from booley.flows.sim.campaign import pre_sim_evidence
+    from booley.flows.sim import record_presentation as flow_module
+    from booley.flows.sim.record import pre_sim_evidence
 
     reads = {"manifest": 0, "preview": 0, "decoder_manifest": 0}
     digest = pre_sim_evidence.manifest_digest
@@ -3035,12 +3036,15 @@ def _observe_pre_sim_projection(monkeypatch):
 
 
 def _owned_coverage_hook_request(tmp_path):
-    from booley.flows.sim.campaign.codec import canonical_json_bytes
-    from booley.flows.sim.campaign.planning import finalize_manifest
-    from booley.flows.sim.campaign.serial_execution import simulation_attempt
-    from booley.flows.sim.campaign.store import CampaignStore
-    from tests.flows.sim.campaign_test_support import _maximum_hook_selection_plan, _request
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _refresh_hook_workload_identity
+    from booley.flows.sim.record.codec import canonical_json_bytes
+    from booley.flows.sim.record.planning import finalize_manifest
+    from booley.flows.sim.record.serial_execution import simulation_attempt
+    from booley.flows.sim.record.store import CampaignStore
+    from tests.flows.sim.simulation_record_test_support import (
+        _maximum_hook_selection_plan,
+        _request,
+    )
+    from tests.flows.sim.test_endpoint_record_lifecycle import _refresh_hook_workload_identity
 
     plan, _ = _maximum_hook_selection_plan(("wrap",))
     document = json.loads(canonical_json_bytes(plan.manifest.document))
@@ -3060,8 +3064,11 @@ def _owned_coverage_hook_request(tmp_path):
 def test_owned_coverage_sink_crash_preserves_actual_hook_before_adapter_launch(
     tmp_path, monkeypatch, side
 ):
-    from booley.flows.sim.campaign.coverage_execution import _publish_hook
-    from tests.flows.sim.test_campaign_crash_matrix import _CrashOnce, _InjectedProcessDeath
+    from booley.flows.sim.record.coverage_execution import _publish_hook
+    from tests.flows.sim.test_simulation_record_crash_matrix import (
+        _CrashOnce,
+        _InjectedProcessDeath,
+    )
     from tests.flows.sim.test_verilator_coverage_execution import (
         _build_coverage,
         _execution_fixture,
@@ -3221,7 +3228,7 @@ def _linked_coverage_project(tmp_path, monkeypatch):
     revision = "a" * 40
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
     monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: revision)
-    monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
+    monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: revision)
     root = tmp_path / "project"
     (root / ".git").mkdir(parents=True)
     project(root)

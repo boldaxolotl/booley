@@ -33,12 +33,12 @@ from booley.flows.progress_lifecycle import (
     progress_document,
 )
 from booley.flows.run_log import RUN_LOG_NAME, write_run_log
-from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.live_progress import (
     attempt_scope,
     observe_stage,
     publish_checkpoint,
 )
+from booley.flows.sim.record_reports import target_report_directory
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,

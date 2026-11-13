@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from tests.flows.sim.campaign_test_support import _observation, _simulation_outcome
+from tests.flows.sim.simulation_record_test_support import _observation, _simulation_outcome
 from tests.flows.sim.test_sim_flow_metrics import _coverage_outcome, _MixedCoverageExecution
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "vivado_reports"

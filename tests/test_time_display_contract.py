@@ -18,8 +18,8 @@ from booley.flows.lint.flow import (
     _lint_result_parts,
     _target_summary_line,
 )
-from booley.flows.sim import campaign_presentation
 from booley.flows.sim import flow as sim
+from booley.flows.sim import record_presentation
 from booley.flows.sim.standalone import (
     StandaloneMixin,
     _StandalonePlanRecipe,
@@ -123,7 +123,7 @@ def _protected_outputs(root, monkeypatch):
 def _protected_campaign(root, monkeypatch):
     """Campaign report lines and ``simulation.json`` test entries for a fixed passing campaign."""
     from booley.flows.sim.acceptance import _campaign_projection, _OutcomeEvidence
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_campaign
 
     # These budgets size the cycle lines, so the golden must not depend on the host.
     monkeypatch.delenv("BOOLEY_MCP_MAX_STDOUT_BYTES", raising=False)
@@ -136,7 +136,7 @@ def _protected_campaign(root, monkeypatch):
     manifest = str(outcome.manifest_path.resolve())
     lines = [
         line.replace(manifest, "<manifest>")
-        for line in campaign_presentation._campaign_report_lines((outcome,))
+        for line in record_presentation._campaign_report_lines((outcome,))
     ]
     return [lines, _campaign_projection(_OutcomeEvidence(outcome))["tests"]]
 
