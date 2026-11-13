@@ -788,6 +788,7 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
 
     capacity = SimpleNamespace(
         managed=False,
+        items_admitted=False,
         shutdown_requested=False,
         outer_permit=nullcontext,
         outer_scope=lambda stopped: SupervisedExecutionScope(None, tmp_path, stopped),
