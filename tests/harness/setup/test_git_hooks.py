@@ -1128,7 +1128,8 @@ class TestLineEndingsStep:
         assert ctx.results[-1].detail == "dirty tree"
         output = capsys.readouterr().out
         assert "!  1 tracked file(s) are checked out with CRLF" in output
-        assert "·  detected core.autocrlf=true" in output
+        # The pin is withheld: flipping autocrlf over a CRLF checkout would create phantom diffs.
+        assert "would set core.autocrlf=false and core.eol=lf" in output
 
     def test_failed_autocrlf_update_blocks_readiness(self, tmp_path: Path, capsys):
         from booley.harness.setup import line_endings as init_git_hooks

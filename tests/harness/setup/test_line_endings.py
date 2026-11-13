@@ -339,6 +339,26 @@ def test_separate_repository_failure_does_not_rollback_safe_outer_progress(tmp_p
     assert _git(outer, "config", "--local", "--get", "core.autocrlf").stdout.strip() == b"false"
 
 
+def test_refused_normalization_withholds_the_autocrlf_flip_and_leaves_no_phantom_diffs(
+    tmp_path: Path,
+):
+    # Flipping core.autocrlf=true to false over a CRLF checkout that stays would make Git
+    # report every such file as modified; with no attributes rule nothing masks that.
+    _crlf_repo(tmp_path)
+    (tmp_path / "a.v").write_bytes(b"module a;\r\nendmodule\r\n// local edit\r\n")
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    pin = next(
+        action
+        for action in report.repositories[0].actions
+        if action.kind is LineEndingActionKind.PIN_AUTOCRLF
+    )
+    assert pin.state is LineEndingActionState.PLANNED
+    assert _local_autocrlf(tmp_path) == "true"
+    assert _normalize_action(report).state is LineEndingActionState.REFUSED
+
+
 def test_readonly_staged_file_cleanup_does_not_crash(tmp_path: Path):
     """Windows [WinError 5] when unlinking a read-only temp file must not crash."""
     from booley.harness.setup.line_endings import _cleanup_staged_files

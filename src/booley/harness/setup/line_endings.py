@@ -1283,12 +1283,33 @@ def _repair_settings_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionRes
 
 
 def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]:
+    """Normalize CRLF checkouts first; flip ``core.autocrlf`` only once none are left.
+
+    Pinning ``core.autocrlf=false`` over a CRLF checkout that stays (a refused or
+    failed normalization) makes Git report every such file as modified, and
+    nothing masks that now that Booley writes no ``.gitattributes`` rule. The pin
+    stays planned there, as in a settings-only repair, until a later run
+    normalizes the files. A repository whose local ``core.autocrlf`` is already
+    ``false`` has nothing to flip, so a ``core.eol`` pin still applies.
+    """
     actions: list[LineEndingActionResult] = []
-    if _pin_needed(plan):
-        actions.append(_pin_line_ending_config(plan))
+    normalized: LineEndingActionResult | None = None
     if plan.crlf_paths:
-        actions.append(_normalize_action(plan))
-    elif plan.phantom_paths:
+        normalized = _normalize_action(plan)
+        actions.append(normalized)
+    if _pin_needed(plan):
+        flips_autocrlf = not plan.local_autocrlf.is_set or plan.local_autocrlf.value
+        withheld = (
+            normalized is not None
+            and normalized.state is not LineEndingActionState.COMPLETED
+            and flips_autocrlf
+        )
+        actions.append(
+            _action(LineEndingActionKind.PIN_AUTOCRLF, LineEndingActionState.PLANNED)
+            if withheld
+            else _pin_line_ending_config(plan)
+        )
+    if not plan.crlf_paths and plan.phantom_paths:
         actions.append(_refresh_action(plan))
     return tuple(actions)
 
