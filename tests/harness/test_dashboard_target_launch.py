@@ -322,7 +322,7 @@ async def test_submit_from_a_target_selects_the_job_and_esc_returns_to_the_detai
         await check_arguments(app, pilot, wizard, "")
         await pilot.press("enter")  # Submit is highlighted
         await settle(app, pilot)
-        assert launcher.submitted == [(wt_a, "sim", ("--target", "sim_wide"))]
+        assert launcher.submitted == [(wt_a, "flow", "sim", ("--target", "sim_wide"))]
         assert app.window == "jobs"
         assert app.navigation.selected == key
         await pilot.press("escape")
