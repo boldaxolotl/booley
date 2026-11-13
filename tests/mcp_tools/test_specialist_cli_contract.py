@@ -404,7 +404,7 @@ def test_reviewer_initial_and_verification_calls_round_up(tmp_path, monkeypatch)
             "--work-dir",
             str(tmp_path),
             "--timeout-ms",
-            "1001",
+            "600001",  # just above the reviewer's 10-minute minimum, which a lower value would meet
         ]
     )
     for hook in [
@@ -414,8 +414,8 @@ def test_reviewer_initial_and_verification_calls_round_up(tmp_path, monkeypatch)
         "_build_verify_system_prompt",
     ]:
         monkeypatch.setattr(endpoint, hook, lambda *_args, **_kwargs: "fixture")
-    assert endpoint._single_review_params("bugs").timeout_seconds == 2
-    assert endpoint._verify_agent_params("bugs", {}, None).timeout_seconds == 2
+    assert endpoint._single_review_params("bugs").timeout_seconds == 601
+    assert endpoint._verify_agent_params("bugs", {}, None).timeout_seconds == 601
 
 
 @pytest.mark.parametrize("route", ["flow", "specialist"])

@@ -21,6 +21,7 @@ from booley.mcp.registry import McpToolInfo, discover_mcp_inventory, flow_blurb
 from booley.runtime import detached_job
 
 if TYPE_CHECKING:
+    from booley.config.agent import AgentSettings
     from booley.flows.base import BuiltinFlow
     from booley.flows.endpoint_state import EndpointState
     from booley.harness.dashboard.run_form import RunForm
@@ -117,18 +118,39 @@ def shell_command(worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -
 
 
 @dataclass(frozen=True)
+class SpecialistFacts:
+    """What the check child resolved for a Specialist run, for the review screen.
+
+    ``model``, ``cli`` and ``policy`` are empty when the settings could not be read
+    (``refusal`` then says why). ``timeout_ms`` is what each model call will use and
+    ``asked_ms`` what the form asked for. ``refusal`` is a failed auth check or an error
+    the check could not evaluate (empty: the run may launch); ``warning`` is the sign-in
+    fix shown when ``auth = "auto"`` found no credential (empty: none).
+    """
+
+    model: str
+    cli: str
+    policy: str
+    timeout_ms: int
+    asked_ms: int
+    refusal: str = ""
+    warning: str = ""
+
+
+@dataclass(frozen=True)
 class RunFacts:
     """What the child's parse says about the run, for the review screen.
 
     ``job_class`` is the admission class (``None``: no slot); ``timeout_ms`` is
     set only for Flows with a long default budget, and ``timeout_problem`` says
-    why the configured value cannot be resolved.
+    why the configured value cannot be resolved. ``specialist`` is set for a Specialist.
     """
 
     job_class: str | None
     dry_run: bool
     timeout_ms: int | None = None
     timeout_problem: str = ""
+    specialist: SpecialistFacts | None = None
 
     @property
     def takes_slot(self) -> bool:
@@ -187,9 +209,32 @@ def _parse_facts(stdout: str) -> RunFacts | None:
             and isinstance(timeout_problem, str)
         ):
             return None
-        return RunFacts(job_class, data["dry_run"], timeout_ms, timeout_problem)
+        specialist = _parse_specialist_facts(data.get("specialist"))
+        if data.get("specialist") is not None and specialist is None:
+            return None
+        return RunFacts(job_class, data["dry_run"], timeout_ms, timeout_problem, specialist)
     except (ValueError, KeyError, AttributeError):
         return None
+
+
+def _parse_specialist_facts(raw: object) -> SpecialistFacts | None:
+    """The child's ``specialist`` object, or ``None`` when absent or malformed.
+
+    Empty strings are normal values here (settings that could not be read), so only the type is checked.
+    """
+    if not isinstance(raw, dict):
+        return None
+    data = cast("dict[str, Any]", raw)
+    texts = [data.get(key) for key in ("model", "cli", "policy", "refusal", "warning")]
+    timeouts = [data.get("timeout_ms"), data.get("asked_ms")]
+    if not (
+        all(isinstance(text, str) for text in texts)
+        and all(isinstance(ms, int) and not isinstance(ms, bool) for ms in timeouts)
+    ):
+        return None
+    model, cli, policy, refusal, warning = cast("list[str]", texts)
+    timeout_ms, asked_ms = cast("list[int]", timeouts)
+    return SpecialistFacts(model, cli, policy, timeout_ms, asked_ms, refusal, warning)
 
 
 def check(worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> CheckResult:
@@ -240,7 +285,7 @@ class Launcher:
             return form(name)
         from booley.harness.dashboard.specialist_form import ReviewerForm, spec_prefill
 
-        return ReviewerForm(spec_prefill(self._booley_dir, worktree))
+        return ReviewerForm(spec_prefill(self._booley_dir, worktree), agent_note(worktree, name))
 
     def check(self, worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> CheckResult:
         return check(worktree, kind, name, argv)
@@ -340,20 +385,101 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+def run_choice(settings: AgentSettings, name: str) -> tuple[str, str]:
+    """The (model, Agent CLI) a launch of Specialist *name* runs on under *settings*.
+
+    A string pin or none: the resolved model, as ``call_with_fallback`` calls it. A hidden
+    ``[models]`` fallback list: its first entry the launch's no-model-call skip rule accepts.
+    ``ValueError`` (with every entry's reason) when no entry is usable.
+    """
+    from booley.runtime.model_fallback import entry_skip_reason
+
+    candidates = settings.model_candidates(name)
+    if candidates is None:
+        return settings.model_for_specialist(name), settings.cli_for_specialist(name)
+    reasons: list[str] = []
+    for model in candidates:
+        reason = entry_skip_reason(settings, model, remembered=False)
+        if reason is None:
+            return model, settings.cli_for_model_id(model)
+        reasons.append(f"{model}: {reason}")
+    raise ValueError(f"no usable [models] {name} entry: {'; '.join(reasons)}")
+
+
+def agent_note(worktree: Path, name: str) -> str:
+    """The form's note: the model and Agent CLI *name* runs on in *worktree*, or why that cannot be read.
+
+    Read in this process from the worktree's settings. It is a preview: the review screen's
+    lines come from the check child, which has the worker's environment.
+    """
+    from booley.config.agent import worktree_agent_settings
+    from booley.harness.dashboard.review import model_line
+    from booley.harness.dashboard.targets import first_line
+
+    try:
+        return model_line(*run_choice(worktree_agent_settings(worktree), name))
+    except (OSError, ValueError, RuntimeError) as exc:
+        return f"Cannot read the agent settings: {type(exc).__name__}: {first_line(exc)}"
+
+
+def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
+    """The model, Agent CLI, policy and auth verdict of Specialist *name* in the current directory.
+
+    Resolves what the worker resolves before the run (the child is a throwaway process, so
+    installing the settings is safe). The model and CLI are filled before the health check,
+    so a credential error still shows them.
+    """
+    from booley.config.agent import set_agent_settings, worktree_agent_settings
+    from booley.harness.dashboard.targets import first_line
+    from booley.runtime import auth_token
+    from booley.runtime.agent_config import get_backend_config
+
+    facts: dict[str, Any] = {
+        "model": "",
+        "cli": "",
+        "policy": "",
+        "timeout_ms": timeout_ms,
+        "asked_ms": asked_ms,
+        "refusal": "",
+        "warning": "",
+    }
+    try:
+        settings = worktree_agent_settings(Path.cwd())
+        set_agent_settings(settings)
+        model, cli = run_choice(settings, name)
+        policy = settings.auth_for(cli)
+        facts.update(model=model, cli=cli, policy=policy)
+        problem = get_backend_config().backend_for(cli).health_check()
+        if problem:
+            facts["refusal"] = problem
+        elif policy == "auto" and auth_token.credential_plan(cli, policy).selected is None:
+            facts["warning"] = auth_token.missing_credential_fix(cli, policy)
+    except (OSError, ValueError, RuntimeError) as exc:
+        facts["refusal"] = (
+            f"cannot check the agent settings: {type(exc).__name__}: {first_line(exc)}"
+        )
+    return facts
+
+
 def _check_specialist(name: str, typed: list[str]) -> int:
     """Parse *typed* as ``booley specialist <name>`` would and print how the Job is admitted.
 
     The wizard writes these words from a form that never offers a Project selector, help
-    or ``--dry-run``, so the parse is the whole check.
+    or ``--dry-run``, so the parse is the whole argument check; the Agent CLI's auth check
+    and the timeout the run will use follow it (see :class:`SpecialistFacts`).
     """
     from booley.flows.endpoint_cli import human_endpoint_parser
     from booley.specialists.specialist import Specialist
 
     specialist = _load_endpoint(Specialist, name)
-    human_endpoint_parser(specialist).parse_args(typed)
-    print(
-        json.dumps({"job_class": specialist._resolve_job_class(), "dry_run": False, "timeout": {}})
-    )
+    asked_ms: int = human_endpoint_parser(specialist).parse_args(typed).timeout_ms
+    facts = {
+        "job_class": specialist._resolve_job_class(),
+        "dry_run": False,
+        "timeout": {},
+        "specialist": _agent_facts(name, asked_ms, specialist.model_call_timeout_ms(asked_ms)),
+    }
+    print(json.dumps(facts))
     return 0
 
 
