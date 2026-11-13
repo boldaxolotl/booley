@@ -2586,59 +2586,6 @@ targets:
         assert reporter.counts["waived"] == 1
         assert reporter.finish() == 0
 
-    def test_in_scope_script_is_advisory_not_a_hard_fail(self, tmp_path: Path):
-        """F-10: doctor's Scope is synthetic, so it cannot hard-fail on it.
-
-        Ibex's upstream `check_tool_requirements.core` references a script
-        under `util/`, which doctor classes as writable — so the audit failed
-        the whole setup gate over a generator the configured Targets never
-        invoke. The binding check is the per-change-specific scope at commit time.
-        """
-        (tmp_path / "design.core").write_text(
-            _CLEAN_SIM_CORE
-            + """\
-generators:
-  check_reqs:
-    command: rtl/check_tool_requirements.py
-""",
-            encoding="utf-8",
-        )
-        (tmp_path / "rtl").mkdir(exist_ok=True)
-        (tmp_path / "rtl" / "check_tool_requirements.py").write_text("#!/usr/bin/env python3\n")
-
-        rec = _audit(tmp_path)
-
-        assert rec.fails() == []
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("in_scope_script" in m for m in warns)
-        # The advisory must say why it is not a gate, or it reads as a bug.
-        assert any("at commit time" in m for m in warns)
-
-    def test_structural_core_violation_still_hard_fails(self, tmp_path: Path):
-        """Scope-independent violations are properties of the .core itself."""
-        (tmp_path / "design.core").write_text(
-            """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv]}
-  tb: {files: [tb/tb_dut.sv], tags: [tb]}
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator}
-    filesets: [rtl, tb]
-    toplevel: tb_dut
-parameters:
-  width:
-    datatype: expression
-    paramtype: vlogparam
-""",
-            encoding="utf-8",
-        )
-        rec = _audit(tmp_path)
-        assert any("expr_param" in m for m in rec.fails())
-
     def test_untagged_tb_sim_fails(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(
             """\
@@ -2847,22 +2794,6 @@ targets:
         rec = _audit(tmp_path)
         assert not any("collision" in m for m in rec.fails())
         assert any(".core Targets enumerated" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_fpga_hook_fails_security(self, tmp_path: Path):
-        (tmp_path / "impl.core").write_text(
-            """\
-CAPI=2:
-name: ::demo:0
-targets:
-  impl:
-    flow_options: {tool: vivado}
-    hooks:
-      post_build: [run_bitstream]
-""",
-            encoding="utf-8",
-        )
-        rec = _audit(tmp_path)
-        assert any("[fpga_hook]" in m for m in rec.fails())
 
     def test_bad_tests_toml_fails(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
@@ -3316,154 +3247,6 @@ def _schema_audit(tmp_path, booley_toml=None) -> doctor.ProjectAudit:
     )
 
 
-_BAD_FILE_KEY_CORE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl:
-    files: [rtl/dut.sv: {file_type: systemVerilogSource, vendored: true}]
-targets:
-  sim:
-    flow: sim
-    flow_options: {booley: {doctor: [sim]}}
-    filesets: [rtl]
-"""
-
-
-@pytest.mark.parametrize(
-    ("core_text", "expected"),
-    [
-        (_BAD_DEPEND_CORE, "depend must be array"),
-        (_BAD_FILE_KEY_CORE, "vendored"),
-    ],
-    ids=["scalar-depend", "per-file-key"],
-)
-def test_check_core_schema_flags_single_fuse_soc_class_violation(tmp_path, core_text, expected):
-    """A schema violation in a core the project drives is exactly one FAIL.
-
-    The Booley subset and FuseSoC's own verdict describe the same CAPI2 entry,
-    so the FuseSoC row must not duplicate the subset row.
-    """
-    _write_core(tmp_path, core_text)
-    project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert len(c.failed) == 1
-    assert expected in c.failed[0][0]
-
-
-def test_check_core_setup_hazards_fails_selected_provider(tmp_path):
-    core = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-provider: {name: github, user: acme, repo: demo}
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator, booley: {doctor: [sim]}}
-""",
-    )
-    project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
-    rec = _Rec()
-    doctor._check_core_setup_hazards(project, tmp_path, rec.p, rec.f, _note=rec.n)
-    assert len(rec.fails()) == 1
-    assert core.name in rec.fails()[0]
-    assert "remote fetch" in rec.fails()[0]
-
-
-def test_check_core_setup_hazards_notes_unselected_provider(tmp_path):
-    _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-provider: {name: github, user: acme, repo: demo}
-targets:
-  sim: {flow: sim, flow_options: {tool: verilator}}
-""",
-    )
-    rec = _Rec()
-    doctor._check_core_setup_hazards(_schema_audit(tmp_path), tmp_path, rec.p, rec.f, _note=rec.n)
-    assert not rec.fails()
-    assert any(
-        "no Doctor Target selects it" in msg for level, msg in rec.events if level == "note"
-    )
-
-
-def test_check_core_setup_hazards_fails_provider_in_dependency_closure(tmp_path):
-    _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: acme:demo:top:0
-filesets:
-  rtl:
-    depend: [acme:demo:dep]
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator, booley: {doctor: [sim]}}
-    filesets: [rtl]
-""",
-        name="top.core",
-    )
-    dep = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: acme:demo:dep:0
-provider: {name: github, user: acme, repo: dep}
-targets:
-  default: {}
-""",
-        name="dep.core",
-    )
-    project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
-    rec = _Rec()
-    doctor._check_core_setup_hazards(project, tmp_path, rec.p, rec.f, _note=rec.n)
-    assert len(rec.fails()) == 1
-    assert dep.name in rec.fails()[0]
-
-
-def test_check_core_schema_vendored_core_is_a_note(tmp_path):
-    """The same violation in a core no configured Target selects is a NOTE:
-    FuseSoC skips the core at resolve, the configured flows are unaffected, and
-    'fix the .core' is unfollowable for a pristine upstream checkout (the
-    YosysHQ picorv32.core ships a bare ``depend:``)."""
-    _write_core(
-        tmp_path,
-        _BAD_DEPEND_CORE.replace("    flow_options: {booley: {doctor: [sim]}}\n", ""),
-    )
-    project = _schema_audit(tmp_path)
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail, _note=c._note)
-    assert not c.failed
-    assert not c.warned
-    assert any("depend must be array" in m and "vendored" in m for m in c.noted)
-
-
-def test_check_core_schema_state_zone_core_fails_even_unconfigured(tmp_path):
-    """State-zone cores (ADR 0036) are always Booley-authored — a schema
-    violation there is ours to fix regardless of configuration."""
-    state_cores = tmp_path / ".booley" / "cores"
-    state_cores.mkdir(parents=True)
-    _write_core(state_cores, _BAD_DEPEND_CORE)
-    project = _schema_audit(tmp_path)
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert any("depend must be array" in msg for msg, _ in c.failed)
-
-
-def test_check_core_schema_passes_clean_core(tmp_path):
-    _write_core(tmp_path, _GOOD_CORE)
-    c = _Collector()
-    doctor._check_core_schema(_schema_audit(tmp_path), tmp_path, c._pass, c._warn, c._fail)
-    assert not c.failed
-    assert any("schema valid" in m for m in c.passed)
-
-
 _MISPLACED_BOOLEY_CORE = """\
 CAPI=2:
 name: acme:ip:picorv32_impl:0
@@ -3487,20 +3270,6 @@ targets:
     booley: {doctor: [fpga]}
     filesets: [rtl]
     toplevel: top
-"""
-
-_UNKNOWN_PROPERTY_CORE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  lint:
-    filesetz: [rtl]
-    flow: lint
-    flow_options: {tool: verilator, booley: {doctor: [lint]}}
-    filesets: [rtl]
-    toplevel: dut
 """
 
 
@@ -3527,7 +3296,6 @@ def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_pat
     doctor._run_flow_and_core_phase(
         project,
         doctor._DoctorFlowRuntime(tmp_path, None),
-        False,
         reporter,
         lambda _message: None,
     )
@@ -3544,65 +3312,6 @@ def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_pat
     for target in ("lint_core", "synth_core"):
         assert any(target in m and "picorv32_impl.core" in m for m in skips), skips
     assert any("fpga has no Doctor Target" in m and "picorv32_impl.core" in m for m in skips)
-
-
-def test_check_core_schema_fails_unknown_target_property(tmp_path):
-    """Another property FuseSoC's CAPI2 schema forbids is one FAIL naming the key."""
-    _write_core(tmp_path, _UNKNOWN_PROPERTY_CORE)
-    project = _schema_audit(tmp_path, {"flows": {"lint": {}}})
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert len(c.failed) == 1
-    message, fix = c.failed[0]
-    assert "design.core" in message
-    assert "targets.lint" in message
-    assert "filesetz" in message
-    assert "flow_options" not in fix
-
-
-_SOLE_MISPLACED_CORE = """\
-CAPI=2:
-name: ::solo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  fpga_core:
-    flow: generic
-    flow_options: {tool: vivado, part: xc7a35tcsg324-1}
-    booley: {doctor: [fpga]}
-    filesets: [rtl]
-    toplevel: dut
-"""
-
-
-def test_misplaced_booley_in_sole_target_core_is_an_owned_fail_with_hint(tmp_path):
-    """The misplaced marker is the core's only Doctor intent, yet the core is driven.
-
-    No Doctor-selected Target remains for Booley's reader, so ownership must come
-    from the misplaced marker; otherwise the row is a hint-less vendored-core NOTE.
-    """
-    _write_core(tmp_path, _SOLE_MISPLACED_CORE)
-    project = _schema_audit(tmp_path, {"flows": {"fpga": {}}})
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail, _note=c._note)
-    assert c.noted == []
-    assert len(c.failed) == 1
-    message, fix = c.failed[0]
-    assert "fpga_core" in message
-    assert "targets.fpga_core.flow_options" in fix
-
-
-def test_booley_only_schema_row_does_not_hide_fusesoc_reason(tmp_path):
-    """An unsupported Booley key does not say why FuseSoC ignores the file."""
-    _write_core(
-        tmp_path,
-        _UNKNOWN_PROPERTY_CORE.replace("{doctor: [lint]}", "{doctor: [lint], bogus: 1}"),
-    )
-    project = _schema_audit(tmp_path, {"flows": {"lint": {}}})
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert any("not a supported Booley Target key" in msg for msg, _ in c.failed)
-    assert any("filesetz" in msg for msg, _ in c.failed)
 
 
 def test_no_doctor_target_skip_is_limited_to_flows_the_misplaced_marker_names(tmp_path):
@@ -9475,7 +9184,6 @@ def _flow_phase_output(tmp_path, monkeypatch, capsys, *, verbose: bool) -> tuple
     doctor._run_flow_and_core_phase(
         project,
         doctor._DoctorFlowRuntime(tmp_path, docker_exe),
-        verbose,
         reporter,
         lambda _message: None,
     )

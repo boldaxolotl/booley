@@ -214,10 +214,10 @@ drop the rest.
 ### 26. Variants go in collapsed callouts
 
 The main text describes one baseline setup: Stealth Mode off, an HDL
-testbench, Linux, and the EDA tools in the Sandbox Image. A user on that setup
-never has to skip a sentence. When a variant changes what the user sees or
-does, put the difference in a collapsed callout right after the baseline text
-it modifies:
+testbench, Linux, the EDA tools in the Sandbox Image, and the open 45 nm cell
+library. A user on that setup never has to skip a sentence. When a variant
+changes what the user sees or does, put the difference in a collapsed callout
+right after the baseline text it modifies:
 
 ```markdown
 <details markdown>
@@ -237,6 +237,29 @@ Commit `AGENTS.md` in the Booley Directory's own repository instead:
 - Leave in the main text: choices every user makes (port or scaffold, FPGA or
   ASIC), hard limits (no coverage on Icarus), and reference tables that must
   list every value.
+
+**EDA tools are variants too.** A Flow doc (a `FLOW-*.md` page, or a guide
+for one Flow such as `TESTS.md` and `COVERAGE.md`) describes what the Flow
+does in words that hold for every EDA tool it supports, and so does any
+summary of a Flow in another user doc. A Flow promises the same call and
+result whichever tool runs it, and tool-neutral text stays true when a tool
+is added.
+
+- Collapse only where tools differ. A fact every supported tool shares is
+  written neutrally and stays in the main text; a Flow with one tool keeps
+  its content visible.
+- When a tool changes what the user sees or does, put the difference in a
+  `With <Tool>` callout (`With Verilator`, `With Xcelium`).
+- Tool setup, such as waiver files and rule configs, goes in that tool's
+  Target recipe in `TARGETS.md`; the Flow doc links it.
+- Hard limits stay in the main text. So does example output, labeled with
+  the tool that produced it: "Example (Verilator):".
+
+**Cell libraries are variants too.** ASIC synthesis maps to one cell library
+today, but the same rule keeps its docs true when a PDK is added. Say "the
+cell library" and name the 45 nm library only where the reader needs its
+value, such as a reference table. When a library changes what the user sees
+or does, put the difference in a `With the <name> library` callout.
 
 ### 27. Mirror parallel variants
 

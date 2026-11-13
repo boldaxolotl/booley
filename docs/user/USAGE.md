@@ -157,10 +157,10 @@ kind of run that Project Setup configured, so ask the agent which ones you have.
 
 | Flow or Specialist | What it does | Try asking | Guide |
 | --- | --- | --- | --- |
-| `sim` | Builds and runs your tests in Verilator or Icarus, optionally with coverage | *"Debug the backpressure test failure on the `sim_heavy` target."* | [FLOW-SIM.md](FLOW-SIM.md), [TESTS.md](TESTS.md), [COVERAGE.md](COVERAGE.md) |
-| `lint` | Lints with Verilator (structure and semantics) or Verible (style) | *"Run lint and explain every finding."* | [FLOW-LINT.md](FLOW-LINT.md) |
-| `synth` | Quick ASIC area and timing estimate with Yosys and OpenROAD | *"Compare synth area between these two commits: ..."* | [FLOW-SYNTH.md](FLOW-SYNTH.md) |
-| `fpga` | FPGA implementation with AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
+| `sim` | Builds and runs your tests and reports which pass, optionally with coverage on Verilator Targets | *"Debug the backpressure test failure on the `sim_heavy` target."* | [FLOW-SIM.md](FLOW-SIM.md), [TESTS.md](TESTS.md), [COVERAGE.md](COVERAGE.md) |
+| `lint` | Checks RTL for mistakes without simulating it and lists the findings | *"Run lint and explain every finding."* | [FLOW-LINT.md](FLOW-LINT.md) |
+| `synth` | Quick ASIC area and timing estimate while you iterate on RTL | *"Compare synth area between these two commits: ..."* | [FLOW-SYNTH.md](FLOW-SYNTH.md) |
+| `fpga` | Implements the design for an FPGA and reports resources and timing; needs AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
 | `mutation` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [FLOW-MUTATION.md](FLOW-MUTATION.md) |
 | `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) |
 | `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md), [CLI-REFERENCE.md](CLI-REFERENCE.md#coverage_analyst) |
@@ -248,8 +248,12 @@ The Dashboard has three windows; press `←` or `→` to switch:
   to `job.log`, shown as a link.
 - **Targets:** the Targets of one worktree, with their core and the Flows that
   can drive them. Press `Enter` on a Target for its filesets, tests, Test
-  Variants, and constraints. The **Worktree** item in the top bar picks the
-  worktree: those with a connected session come first, the main checkout last.
+  Variants, and constraints. When Run is available and a Flow can drive the
+  Target, the detail ends with those Flows: press `↓` past its end, then `Enter`
+  on a Flow to open the Run form with the worktree and Target filled in; `Esc`
+  on the form itself returns to the detail.
+  The **Worktree** item in the top bar picks the worktree: those with a
+  connected session come first, the main checkout last.
 
 The **Run** item in the top bar starts a built-in Booley Flow, or the `reviewer`
 Specialist (below), as a Standalone Job. Pick the worktree and the Flow, then fill in the form the Dashboard

@@ -297,7 +297,7 @@ def wheel_embedded_source_fingerprint(wheel: Path) -> str:
 def embedded_payload_fingerprint() -> str | None:
     """Return the canonical fingerprint embedded in an installed wheel, if any."""
     try:
-        from booley._build_commit import PAYLOAD_FINGERPRINT
+        from booley._build_commit import PAYLOAD_FINGERPRINT  # pyright: ignore[reportMissingImports]
     except (ImportError, AttributeError):
         return None
     return PAYLOAD_FINGERPRINT or None
@@ -306,7 +306,7 @@ def embedded_payload_fingerprint() -> str | None:
 def embedded_wheel_source_fingerprint() -> str | None:
     """Return the wheel-source identity embedded in an installed wheel."""
     try:
-        from booley._build_commit import WHEEL_SOURCE_FINGERPRINT
+        from booley._build_commit import WHEEL_SOURCE_FINGERPRINT  # pyright: ignore[reportMissingImports]
     except (ImportError, AttributeError):
         return None
     return WHEEL_SOURCE_FINGERPRINT or None
@@ -315,7 +315,7 @@ def embedded_wheel_source_fingerprint() -> str | None:
 def embedded_official_release() -> bool:
     """Return whether the installed wheel was built for official publication."""
     try:
-        from booley._build_commit import OFFICIAL_RELEASE
+        from booley._build_commit import OFFICIAL_RELEASE  # pyright: ignore[reportMissingImports]
     except (ImportError, AttributeError):
         return False
     return OFFICIAL_RELEASE is True
@@ -525,7 +525,7 @@ def _is_sha256(value: object) -> bool:
 def extracted_development_context() -> Iterator[Path]:
     """Yield a verified repository-shaped build context from an installed wheel."""
     try:
-        from booley._build_commit import DEVELOPMENT_CONTEXT_SHA256, PAYLOAD_FINGERPRINT
+        from booley._build_commit import DEVELOPMENT_CONTEXT_SHA256, PAYLOAD_FINGERPRINT  # pyright: ignore[reportMissingImports]
     except (ImportError, AttributeError) as exc:
         raise ValueError("development wheel has no embedded Sandbox Image build context") from exc
     if DEVELOPMENT_CONTEXT_SHA256 == "" and not embedded_official_release():

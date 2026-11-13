@@ -40,9 +40,9 @@ threshold applies to it. The metric names in the table are the ones
 4. To find out what is missing and why, ask the agent to run the
    [Coverage Analyst](#analyzing-a-campaign) on the run.
 
-If any selected Target uses Icarus, the whole run is refused before anything
-builds. Coverage runs only in the default `--mode simulate`. `--trace` can be
-combined with `--coverage`.
+If any selected Target does not use Verilator, the whole run is refused
+before anything builds. Coverage runs only in the default `--mode simulate`.
+`--trace` can be combined with `--coverage`.
 
 Generated or custom C++ mains, HDL testbenches, and cocotb all work.
 
@@ -53,7 +53,7 @@ Target in one run. The easiest way to read it is to ask the agent, for example
 "What coverage did sim_soc reach?". The agent gets every metric's percentage,
 any threshold and whether it was met, and the Campaign's location.
 
-A run you start yourself prints a block per Target:
+A run you start yourself prints a block per Target. Example (Verilator):
 
 ```text
 sim_soc: simulation PASS · coverage collection COMPLETE · evaluation PASS (Simulation Campaign …)
@@ -172,7 +172,7 @@ booley coverage uncovered <coverage.json> --metric toggle --source rtl/fifo.sv
 ```
 
 It prints one line per uncovered point, sorted by source file, line, and
-metric, then a count:
+metric, then a count. Example (Verilator):
 
 ```text
 rtl/fifo.sv:42  toggle  wr_ptr[2]:1->0  TOP.tb.dut.u_fifo
