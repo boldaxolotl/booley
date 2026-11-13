@@ -26,7 +26,7 @@ def _reference(target: Path, nested: Path) -> Path:
         json.dumps(
             {
                 "$schema": faults.REFERENCE_SCHEMA,
-                "coverage_campaign": {
+                "coverage_record": {
                     "path": NESTED,
                     "path_base": "origin_target",
                     "bytes": len(raw),
@@ -69,7 +69,7 @@ def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Pat
     owned.mkdir()
     (owned / ".qa-coverage-fault-copy").touch()
     manifest = owned / "coverage.json"
-    manifest.write_text(json.dumps({"$schema": "booley.coverage-campaign/v5"}))
+    manifest.write_text(json.dumps({"$schema": "booley.coverage-record/v1"}))
     with pytest.raises(ValueError, match=r"Target coverage\.json"):
         faults.mutate(manifest, owned, "wrong-evaluation")
 
@@ -88,6 +88,8 @@ def _product_reference(owned: Path, mode: str) -> Path:
     return reference
 
 
+#: Stands in for the error code of a refusal that has none: the older-Booley refusal.
+_OLDER_BOOLEY = "OLDER_BOOLEY"
 _PRODUCT_FAULTS = {
     "duplicate-point": {"COV_POINT_ID_DUPLICATE"},
     "invalid-final-record": {"COV_POINT_RUN_UNKNOWN", "COV_POINT_HIT_NONPOSITIVE"},
@@ -102,12 +104,11 @@ _PRODUCT_FAULTS = {
 
 def _product_faults() -> dict[str, set[str]]:
     """Every retired schema version gets a mode; resource-ceiling stays last (it patches)."""
-    from booley.flows.sim import coverage_campaign_store as store
-
-    current = int(store.CAMPAIGN_SCHEMA_V5.rsplit("/v", 1)[1])
+    assert faults.RETIRED_SCHEMAS
     faults_by_mode = dict(_PRODUCT_FAULTS)
     ceiling = faults_by_mode.pop("resource-ceiling")
-    faults_by_mode.update({f"v{n}": {"COV_SCHEMA_VERSION_UNSUPPORTED"} for n in range(1, current)})
+    # Booley 0.4.0 and earlier wrote these; the product refuses them as an older Booley's.
+    faults_by_mode.update({mode: {_OLDER_BOOLEY} for mode in sorted(faults.RETIRED_SCHEMAS)})
     faults_by_mode["resource-ceiling"] = ceiling
     return faults_by_mode
 
@@ -116,6 +117,7 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
     from tests.conftest import require_symlinks
 
     from booley.flows.sim import coverage_campaign_store as store
+    from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
     from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
     from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
     from booley.flows.sim.coverage_json import MANIFEST_JSON
@@ -151,15 +153,20 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
             assert manifest_after == MANIFEST_JSON.encode(json.loads(manifest_after))
 
         with pytest.raises(
-            (CoverageCampaignValidationError, CoverageCampaignStoreError)
+            (
+                CoverageCampaignValidationError,
+                CoverageCampaignStoreError,
+                UnsupportedSimulationCampaignFormatError,
+            )
         ) as caught:
             resolve_coverage_campaign_reference(reference)
         error = caught.value
-        codes = (
-            {finding.code for finding in error.findings}
-            if isinstance(error, CoverageCampaignValidationError)
-            else {error.code}
-        )
+        if isinstance(error, UnsupportedSimulationCampaignFormatError):
+            codes = {_OLDER_BOOLEY}
+        elif isinstance(error, CoverageCampaignValidationError):
+            codes = {finding.code for finding in error.findings}
+        else:
+            codes = {error.code}
         assert expected_codes <= codes
 
 
@@ -184,7 +191,7 @@ def test_nested_manifest_cannot_mutate_borrowed_file(tmp_path: Path, link_kind: 
     reference = _reference(owned, manifest)
     if link_kind == "outside":
         document = json.loads(reference.read_text())
-        document["coverage_campaign"]["path"] = "../borrowed.json"
+        document["coverage_record"]["path"] = "../borrowed.json"
         reference.write_text(json.dumps(document))
     before = reference.read_bytes()
 

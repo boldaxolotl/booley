@@ -17,7 +17,7 @@ from booley.flows.sim.campaign_files import (
     read_bounded,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V5,
+    CAMPAIGN_SCHEMA,
     MAX_MANIFEST_BYTES,
     LoadedCoverageCampaign,
     load_coverage_campaign_bytes,
@@ -34,7 +34,7 @@ from booley.runtime.sandbox_layout import canonical_project_alias_path
 if TYPE_CHECKING:
     from booley.flows.sim.campaign import CampaignWorkItemEvidence
 
-REFERENCE_SCHEMA = "booley.coverage-campaign-reference/v1"
+REFERENCE_SCHEMA = "booley.coverage-record-reference/v1"
 MAX_REFERENCE_BYTES = 1024 * 1024
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _WORK_ITEM_RE = re.compile(r"^item:[0-9]{4}:[0-9a-f]{16}$")
@@ -75,6 +75,11 @@ def decode_coverage_campaign_reference(raw: bytes) -> CoverageCampaignReference:
     if not raw or len(raw) > MAX_REFERENCE_BYTES:
         raise CoverageCampaignReferenceError("Coverage Campaign reference exceeds size limit")
     value = parse_json_object(raw, error=CoverageCampaignReferenceError, canonical=True)
+    # Imported here: ``booley.flows.sim.campaign`` imports this module through its coordinator.
+    from booley.flows.sim.campaign.codec import raise_if_retired_schema
+
+    # An older Booley's reference is refused as old before its fields are checked.
+    raise_if_retired_schema(value.get("$schema"))
     _validate_reference(value)
     return CoverageCampaignReference(freeze_coverage_mapping(value))
 
@@ -137,7 +142,7 @@ def _resolve_coverage_campaign_reference_bytes(
     """Resolve one already-authenticated public reference byte sequence."""
     reference = decode_coverage_campaign_reference(raw)
     document = reference.document
-    nested = cast(Mapping[str, object], document["coverage_campaign"])
+    nested = cast(Mapping[str, object], document["coverage_record"])
     target_root = absolute.parent
     campaign_path = _contained_relative(target_root, cast(str, nested["path"]))
     campaign_raw = read_bounded(
@@ -154,7 +159,7 @@ def _resolve_coverage_campaign_reference_bytes(
     campaign = loaded.campaign
     target = cast(Mapping[str, str], document["target"])
     if (
-        campaign.campaign_id != nested["campaign_id"]
+        campaign.campaign_id != nested["coverage_record_id"]
         or campaign.target.identity != target["identity"]
         or campaign.target.selector != target["selector"]
         or campaign.invocation["id"] != document["origin_invocation_id"]
@@ -227,7 +232,7 @@ def resolve_persisted_coverage_campaign_reference(
             "persisted Coverage Campaign reference bytes disagree with acceptance state"
         )
     resolved = _resolve_located(public_path, raw)
-    nested = cast(Mapping[str, object], resolved.reference.document["coverage_campaign"])
+    nested = cast(Mapping[str, object], resolved.reference.document["coverage_record"])
     if nested["sha256"] != persisted["nested_campaign_sha256"]:
         raise CoverageCampaignReferenceError(
             "persisted nested Coverage Campaign digest disagrees with public reference"
@@ -261,19 +266,19 @@ def build_coverage_campaign_reference(
         freeze_coverage_mapping(
             {
                 "$schema": REFERENCE_SCHEMA,
-                "simulation_campaign_id": simulation_campaign_id,
+                "simulation_record_id": simulation_campaign_id,
                 "simulation_manifest_sha256": simulation_manifest_sha256,
                 "target": {"identity": target_identity, "selector": target_selector},
                 "origin_invocation_id": origin_invocation_id,
                 "producer_invocation_id": producer_invocation_id,
                 "simulation_work_item_id": simulation_work_item_id,
                 "simulation_attempt_id": simulation_attempt_id,
-                "coverage_campaign": {
+                "coverage_record": {
                     "path_base": "origin_target",
                     "path": relative,
                     "bytes": len(raw),
                     "sha256": content_digest(raw),
-                    "campaign_id": loaded.campaign.campaign_id,
+                    "coverage_record_id": loaded.campaign.campaign_id,
                     "schema": loaded.summary.source_schema,
                 },
             }
@@ -292,7 +297,7 @@ def authenticate_coverage_campaign_owner(
     )
 
     document = resolved.reference.document
-    nested = cast(Mapping[str, object], document["coverage_campaign"])
+    nested = cast(Mapping[str, object], document["coverage_record"])
     manifest_path = resolved.reference_path.parent / RECORD_DIRECTORY / "manifest.json"
     try:
         authenticated = authenticate_work_item(
@@ -317,14 +322,14 @@ def authenticate_coverage_campaign_owner(
         nested_evidence = [
             (item["bytes"], item["sha256"], Path(cast(str, item["path"])).parts)
             for item in evidence
-            if item["kind"] == "coverage_campaign_manifest"
+            if item["kind"] == "coverage_record_manifest"
         ]
     except (KeyError, TypeError) as exc:
         raise CoverageCampaignReferenceError(
             "enclosing Simulation result evidence is malformed"
         ) from exc
     if (
-        manifest.document["simulation_record_id"] != document["simulation_campaign_id"]
+        manifest.document["simulation_record_id"] != document["simulation_record_id"]
         or authenticated.manifest_sha256 != document["simulation_manifest_sha256"]
         or target["selector"] != cast(Mapping[str, str], document["target"])["selector"]
         or f"{target['vlnv']}#{target['name']}"
@@ -345,20 +350,20 @@ def _validate_reference(value: Mapping[str, object]) -> None:
         value,
         {
             "$schema",
-            "simulation_campaign_id",
+            "simulation_record_id",
             "simulation_manifest_sha256",
             "target",
             "origin_invocation_id",
             "producer_invocation_id",
             "simulation_work_item_id",
             "simulation_attempt_id",
-            "coverage_campaign",
+            "coverage_record",
         },
         "reference",
     )
     if value["$schema"] != REFERENCE_SCHEMA:
         raise CoverageCampaignReferenceError("unsupported Coverage Campaign reference schema")
-    _uuid(value["simulation_campaign_id"], "simulation_campaign_id")
+    _uuid(value["simulation_record_id"], "simulation_record_id")
     _uuid(value["simulation_attempt_id"], "simulation_attempt_id")
     _digest(value["simulation_manifest_sha256"], "simulation_manifest_sha256")
     for field in ("origin_invocation_id", "producer_invocation_id"):
@@ -376,9 +381,9 @@ def _validate_reference(value: Mapping[str, object]) -> None:
     _string(target["selector"], "target.selector")
     _validate_nested_reference(
         _exact(
-            value["coverage_campaign"],
-            {"path_base", "path", "bytes", "sha256", "campaign_id", "schema"},
-            "coverage_campaign",
+            value["coverage_record"],
+            {"path_base", "path", "bytes", "sha256", "coverage_record_id", "schema"},
+            "coverage_record",
         )
     )
 
@@ -388,7 +393,7 @@ def _validate_nested_reference(nested: Mapping[str, object]) -> None:
     from booley.flows.sim.campaign.codec import raise_if_retired_schema
 
     raise_if_retired_schema(nested["schema"])
-    if nested["path_base"] != "origin_target" or nested["schema"] != CAMPAIGN_SCHEMA_V5:
+    if nested["path_base"] != "origin_target" or nested["schema"] != CAMPAIGN_SCHEMA:
         raise CoverageCampaignReferenceError("coverage_campaign storage contract is invalid")
     nested_path = _relative_path(nested["path"])
     refuse_older_nested_path(nested_path)
@@ -409,7 +414,7 @@ def _validate_nested_reference(nested: Mapping[str, object]) -> None:
     if size < 1 or size > MAX_MANIFEST_BYTES:
         raise CoverageCampaignReferenceError("coverage_campaign.bytes is invalid")
     _digest(nested["sha256"], "coverage_campaign.sha256")
-    _string(nested["campaign_id"], "coverage_campaign.campaign_id")
+    _string(nested["coverage_record_id"], "coverage_record.coverage_record_id")
 
 
 def _exact(value: object, fields: set[str], label: str) -> Mapping[str, object]:

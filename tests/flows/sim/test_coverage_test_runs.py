@@ -117,7 +117,7 @@ def test_two_variants_and_a_seed_count_are_one_process_each(tmp_path, monkeypatc
     assert all(_WINDOWS_SAFE_NAME.match(request.raw_path.name) for request in execution.runs)
 
     document = json.loads(outcome.campaign_path.read_text())
-    assert document["$schema"] == "booley.coverage-campaign/v5"
+    assert document["$schema"] == "booley.coverage-record/v1"
     assert document["tests"]["selected"] == ["reset", "wrap"]
     assert [(run["test"], run["test_run"]) for run in document["tests"]["runs"]] == [
         ("reset", "reset+soak@1"),

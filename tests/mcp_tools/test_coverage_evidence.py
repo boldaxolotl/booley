@@ -424,7 +424,7 @@ def test_bound_tool_deep_loads_campaign_and_publishes_audit(tmp_path, monkeypatc
 
     result = coverage_evidence.query_active_coverage_evidence({"view": "overview"})
 
-    assert result["campaign_id"].startswith("campaign:")
+    assert result["coverage_record_id"].startswith("campaign:")
     audit = json.loads(audit_path.read_text())
     assert audit["queries"] == [{"point_ids": [], "returned": 0, "view": "overview"}]
     assert audit["point_references"] == {}

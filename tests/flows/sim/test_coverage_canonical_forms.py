@@ -79,15 +79,15 @@ GOLDEN_IDENTITY = {
     },
 }
 GOLDEN_REFERENCE_BYTES = (
-    b'{"$schema":"booley.coverage-campaign-reference/v1","coverage_campaign":{"bytes":5386,'
-    b'"campaign_id":"campaign:sim_counter:2026-09-01T10:30:00Z","path":"record/work-items/'
+    b'{"$schema":"booley.coverage-record-reference/v1","coverage_record":{"bytes":5386,'
+    b'"coverage_record_id":"campaign:sim_counter:2026-09-01T10:30:00Z","path":"record/work-items/'
     b"0001-0123456789abcdef/attempts/0001-87654321-4321-4432-a234-cba987654321/"
     b'coverage-record/coverage.json","path_base":"origin_target",'
-    b'"schema":"booley.coverage-campaign/v5","sha256":"sha256:' + b"b" * 64 + b'"},'
+    b'"schema":"booley.coverage-record/v1","sha256":"sha256:' + b"b" * 64 + b'"},'
     b'"origin_invocation_id":12,"producer_invocation_id":19,'
     b'"simulation_attempt_id":"87654321-4321-4432-a234-cba987654321",'
-    b'"simulation_campaign_id":"12345678-1234-4234-9234-123456789abc",'
     b'"simulation_manifest_sha256":"sha256:' + b"a" * 64 + b'",'
+    b'"simulation_record_id":"12345678-1234-4234-9234-123456789abc",'
     b'"simulation_work_item_id":"item:0000:0123456789abcdef",'
     b'"target":{"identity":"acme:demo:counter:1.0#sim_counter","selector":"sim_z\xc3\xa4hler"}}\n'
 )
@@ -145,7 +145,7 @@ def test_point_store_lines_golden(tmp_path: Path) -> None:
 
     assert "zähler".encode() in lines
     assert lines.endswith(b"\n")
-    assert _sha256_hex(lines) == "609dfae9ad04d68120e098360b3891688bd71492ff80276907a92dd18a709c4c"
+    assert _sha256_hex(lines) == "00b20bb72d9afbbe2895a1c27e6afd66f4996c0674b228916b12249f736376e9"
 
 
 def test_manifest_golden(tmp_path: Path) -> None:
@@ -166,7 +166,7 @@ def test_manifest_golden(tmp_path: Path) -> None:
     assert "ä".encode() not in raw
     assert (
         _sha256_hex(normalized)
-        == "cc701b79374df1d0f6266b77021345ed6d07eb0863093ce428f223db55872e41"
+        == "9472651ded3ee395d84ff35c65558e8fdb7ab2e6050cbb846b70b03ffddbf340"
     )
     loaded = load_coverage_campaign(paths.campaign)
     assert loaded.summary.manifest_sha256 == f"sha256:{_sha256_hex(raw)}"
@@ -179,26 +179,26 @@ def test_coverage_campaign_reference_golden() -> None:
             "target": {"selector": "sim_zähler", "identity": "acme:demo:counter:1.0#sim_counter"},
             "simulation_work_item_id": "item:0000:0123456789abcdef",
             "simulation_manifest_sha256": "sha256:" + "a" * 64,
-            "simulation_campaign_id": "12345678-1234-4234-9234-123456789abc",
+            "simulation_record_id": "12345678-1234-4234-9234-123456789abc",
             "simulation_attempt_id": "87654321-4321-4432-a234-cba987654321",
             "producer_invocation_id": 19,
             "origin_invocation_id": 12,
-            "coverage_campaign": {
+            "coverage_record": {
                 "sha256": "sha256:" + "b" * 64,
-                "schema": "booley.coverage-campaign/v5",
+                "schema": "booley.coverage-record/v1",
                 "path_base": "origin_target",
                 "path": "record/work-items/0001-0123456789abcdef/attempts/0001-87654321-4321-4432-a234-cba987654321/coverage-record/coverage.json",
-                "campaign_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
+                "coverage_record_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
                 "bytes": 5386,
             },
-            "$schema": "booley.coverage-campaign-reference/v1",
+            "$schema": "booley.coverage-record-reference/v1",
         }
     )
 
     raw = encode_coverage_campaign_reference(reference)
 
     assert raw == GOLDEN_REFERENCE_BYTES
-    assert _sha256_hex(raw) == "b1e20e636e92fae8ccb04251d374e736683f6a3c7fea279581554432f32c295a"
+    assert _sha256_hex(raw) == "6abaa2cfc585358b9c9eb31abe21e67627d7849e8e46b00a7d1d231df0ec5770"
 
 
 def test_approved_waiver_set_digest_golden(tmp_path: Path) -> None:
