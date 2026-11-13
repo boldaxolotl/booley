@@ -41,7 +41,7 @@ refused.
 | `--scope <file,...>` | RTL files to plant Mutants in. Default: the Target's own RTL, without testbench, vendored, and generated files. |
 | `--count <N\|auto>` | Number of Mutants (default `10`). `auto` derives it from the size of the scope, capped by the time limit (about one Mutant per 150 seconds, at least 3). |
 | `--seed <N>` | Non-negative integer that selects the Mutants (default `0`). Change it to try a different sample. |
-| `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up; when fewer Mutants are scored than `--count` (too few candidates, or equivalent Mutants used them up), 80 % of the Mutants scored, invalid ones included. |
+| `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up; when fewer Mutants run than `--count` (the candidates ran out), 80 % of the Mutants that ran, rounded up, invalid ones included. |
 | `--dry-run` | Validate the Target and scope and print the count, threshold, and seed. Nothing is built or simulated. |
 
 The shared options (`-C/--project`, `--timeout`, `--report-dir`, `--diagnostic`,
@@ -149,8 +149,8 @@ Only design code is mutated. Booley skips:
    one kind.
 
 If fewer candidates exist than `--count`, all of them run and the report says
-so. An unset `--min-detected` then follows the number scored (invalid Mutants
-included), and the tally names that base. The knobs are `--scope` (where to
+so. An unset `--min-detected` then becomes 80 % of the Mutants that ran, rounded
+up (invalid Mutants included), and the tally labels that base as scored. The knobs are `--scope` (where to
 look), `--count` (how many), and `--seed` (which sample); there is no filter by
 operator. The same RTL, scope, count, and seed choose the same Mutants (on a
 Verilator Target, with the same Verilator version).

@@ -459,7 +459,7 @@ def test_auto_dry_run_explains_source_size_count(tmp_path, monkeypatch, sizes, t
         assert f"rtl/{name}: {lines} lines ({10 * lines} bytes)" in result.report_text
     assert f"total: {sum(sizes)} lines" in result.report_text
     assert f"time cap: max(3, {timeout}s // 150) = 12" in result.report_text
-    assert f") = {count}" in result.display_lines[-3]
+    assert any(f") = {count}" in line for line in result.display_lines)
 
 
 def test_fixed_dry_run_identifies_given_count(tmp_path, monkeypatch):

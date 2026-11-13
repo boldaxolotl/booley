@@ -2582,6 +2582,7 @@ def _threshold_source(plan: MutationRunPlan, scored: int) -> str:
 
     An unset ``--min-detected`` is 80 % of ``--count``, re-based on the Mutants scored
     when fewer than ``--count`` ran (ADR 0088); the label says which base applied.
+    ``scored`` counts every Mutant that ran, invalid ones included.
     """
     if plan.explicit_min_detected:
         return "explicit"
