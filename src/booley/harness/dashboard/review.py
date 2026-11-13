@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from booley.runtime.timefmt import format_duration
 
 if TYPE_CHECKING:
-    from booley.harness.dashboard.launch import RunFacts
+    from booley.harness.dashboard.launch import RunFacts, SpecialistFacts
     from booley.runtime.job_slots import AdmissionOutlook
 
 
@@ -58,6 +58,39 @@ def timeout_line(facts: RunFacts) -> str:
     if facts.timeout_ms is None:
         return ""
     return f"Timeout: {format_duration(facts.timeout_ms / 1000)} per work unit"
+
+
+def model_line(model: str, cli: str) -> str:
+    """The model and Agent CLI a Specialist run uses."""
+    return f"Model: {model} on the {cli} Agent CLI"
+
+
+def specialist_lines(facts: SpecialistFacts) -> list[str]:
+    """A Specialist's model, token use, per-call timeout and sign-in warning."""
+    lines: list[str] = []
+    if facts.model:
+        lines += [
+            model_line(facts.model, facts.cli),
+            f"Uses model tokens on the {facts.cli} Agent CLI's credential (auth = {facts.policy})",
+        ]
+    timeout = f"Timeout: {format_duration(facts.timeout_ms / 1000)} per model call"
+    if facts.timeout_ms != facts.asked_ms:
+        timeout += (
+            f" (raised to the reviewer's minimum; the form asked for"
+            f" {format_duration(facts.asked_ms / 1000)})"
+        )
+    lines.append(timeout)
+    if facts.warning:
+        lines.append(
+            f"Warning: no {facts.cli} credential found under auth = 'auto'; a proxy token or"
+            f" cloud provider may still work. To sign in: {facts.warning}"
+        )
+    return lines
+
+
+def agent_refusal(facts: SpecialistFacts) -> str:
+    """Why Submit does nothing when the Agent CLI cannot sign in or its settings cannot be checked."""
+    return f"Refused: {facts.refusal}. Copy command still works." if facts.refusal else ""
 
 
 def warning_lines(occupants: Occupants, uncommitted: int | str) -> list[str]:

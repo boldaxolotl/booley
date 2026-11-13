@@ -39,8 +39,10 @@ from booley.harness.dashboard.launch import (
 )
 from booley.harness.dashboard.review import (
     Occupants,
+    agent_refusal,
     queue_line,
     refusal,
+    specialist_lines,
     timeout_line,
     warning_lines,
 )
@@ -472,6 +474,8 @@ class RunWizard(ModalScreen[str | None]):
         note = BUILDING if self._building else self._form_error
         if note and not self._building:
             note = f"The form cannot be built: {note}"
+        elif isinstance(self._form, ReviewerForm):
+            note = self._form.note
         self.query_one("#run-note", Static).update(note)
         self.query_one("#run-note", Static).display = bool(note)
         rows = self.query_one("#run-form", OptionList)
@@ -837,11 +841,14 @@ class RunWizard(ModalScreen[str | None]):
         assert checked is not None and checked.facts is not None
         occupants = self._occupants(checked.request.worktree)
         lines = [queue_line(checked.facts, outlook), timeout_line(checked.facts)]
+        specialist = checked.facts.specialist
+        if specialist is not None:
+            lines += specialist_lines(specialist)
         lines += warning_lines(occupants, checked.uncommitted)
         self.query_one("#run-review", Static).update("\n".join(line for line in lines if line))
-        refusal_text = (
-            refusal(outlook) if isinstance(outlook, AdmissionOutlook) and outlook.full else ""
-        )
+        refusal_text = agent_refusal(specialist) if specialist is not None else ""
+        if not refusal_text and isinstance(outlook, AdmissionOutlook) and outlook.full:
+            refusal_text = refusal(outlook)
         self._show_error(refusal_text)
 
     def _apply_action(self, action: str) -> None:
@@ -852,6 +859,11 @@ class RunWizard(ModalScreen[str | None]):
             self.notify(COPY_NOTICE)
             return
         checked = self._checked
+        if checked is not None and checked.facts is not None and checked.facts.specialist:
+            refused = agent_refusal(checked.facts.specialist)
+            if refused:  # the Agent CLI cannot sign in: nothing to start
+                self._show_error(refused)
+                return
         if checked is not None and checked.facts is not None and checked.facts.takes_slot:
             # The queue may have changed since the screen opened: read it again.
             outlook = self._read_outlook(checked.facts)
