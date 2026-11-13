@@ -72,15 +72,6 @@ class MemoryAdmissionPlan:
         )
         return MemoryAdmissionPlan(claim, self.warning)
 
-    def describe(self) -> str:
-        """What the Job asks of the budget, for queue narration."""
-        if self.claim.run_alone or self.claim.reservation_mb is None:
-            return "runs alone"
-        return (
-            f"needs {self.claim.reservation_mb:,.0f} MiB "
-            f"of the {self.claim.budget_mb:,.0f} MiB Memory Budget"
-        )
-
 
 def plan_memory_claim(
     requests: Sequence[JobRequest] | None,

@@ -567,9 +567,22 @@ def _memory_claim(
 
 
 def _slot_narrator(store: job_slots.SlotStore, job_class: str) -> Callable[[int | None], None]:
-    """Narrate a waiting baseline on stderr, naming who holds its Job Class."""
+    """Narrate a waiting baseline on stderr, naming who holds its Job Class.
+
+    A memory-class wait names the need, the free memory and the largest holders.
+    """
 
     def narrate(position: int | None) -> None:
+        if job_class == job_slots.CLASS_MEMORY:
+            wait = store.memory_wait(os.getpid())
+            if wait is not None:  # None: promoted since the tick
+                print(
+                    f"[slot] baseline waiting for memory (position {wait.position}): "
+                    f"{wait.describe()}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return
         line = f"baseline waiting for {job_class} slot (position {(position or 0) + 1})"
         print(
             f"[slot] {line}; held by {store.describe_holders(job_class)}",
@@ -599,7 +612,8 @@ def _background_slot(
     from booley.runtime.shared_infra import load_job_budget_config
 
     booley_dir = Path(owner["booley_dir"])
-    executor = EXECUTORS[family_for_schema(owner["schema"]).name]
+    family_name = family_for_schema(owner["schema"]).name
+    executor = EXECUTORS[family_name]
     job_class = executor.job_class()
     config = load_job_budget_config(booley_dir=booley_dir)
     store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), parse_caps(config))
@@ -621,6 +635,9 @@ def _background_slot(
             on_queued=_slot_narrator(store, job_class),
             should_abort=lambda: time.monotonic() >= deadline,
             memory=memory,
+            job=None
+            if memory is None
+            else job_slots.JobLabel(owner["job_id"], family_name, work[1]),
         )
     except job_slots.ClaimAbortedError as exc:
         raise TimeoutError(

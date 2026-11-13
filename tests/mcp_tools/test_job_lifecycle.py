@@ -551,7 +551,8 @@ async def test_cancelled_requeued_job_names_the_requeue(context):
         run_id = jobs.submit("lint", requeued_command(context), JOB_TIMEOUT, context=context)
         await wait_until((context.work_dir / "queued").exists)
         queued = await jobs.poll(run_id)
-        assert queued.phase == "QUEUED (position 1, requeued after out-of-memory)"
+        assert queued.phase.startswith("QUEUED (position 1): waits to run alone")
+        assert queued.phase.endswith("; requeued after out-of-memory")
         rec = job_records.read_record(run_id, context.jobs_root)
         assert jobs._child_requeued(rec) is True
         assert await jobs.cancel(run_id) == "queued"

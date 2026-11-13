@@ -21,6 +21,8 @@ class JobObservation:
     stage: str = ""
     diagnostic: str = ""
     artifacts: tuple[str, ...] = ()
+    # What a queued memory claim waits for; empty for any other Job.
+    queue: str = ""
 
     @property
     def key(self) -> tuple[str, str]:

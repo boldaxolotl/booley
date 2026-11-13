@@ -2147,6 +2147,42 @@ class TestJobPhase:
         )
         assert _job_phase("simulate-p-1") == "QUEUED (position 1)"
 
+    def test_memory_waiter_phase_reports_need_free_memory_and_holders(self, _report_env):
+        import os
+
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="simulate-p-4",
+                endpoint="sim",
+                started_at=_utc_stamp(-5),
+                timeout_s=600,
+                pid=os.getpid(),
+                status=jobrec.STATUS_RUNNING,
+            ),
+            root=session_jobs_dir(),
+        )
+        root = job_slots.slots_dir()
+        assert root is not None
+        store = job_slots.SlotStore(root)
+        for run_id, mib in (("run-1", 200.0), ("run-2", 500.0)):
+            holder = store.submit(
+                job_slots.CLASS_MEMORY,
+                pid=os.getppid(),  # another live process: this one is the queued Job
+                memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=mib),
+                job=job_slots.JobLabel(run_id, "synth", "a"),
+            )
+            assert store.refresh(holder).state == job_slots.HOLDING
+        store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=400.0),
+        )
+
+        assert _job_phase("simulate-p-4") == (
+            "QUEUED (position 1): needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
+            "largest holders: run-2 (synth, a) 500 MiB, run-1 (synth, a) 200 MiB"
+        )
+
     def test_no_slot_entry_reads_running(self, _report_env):
         import os
 
@@ -2201,17 +2237,33 @@ class TestJobPhase:
         root = job_slots.slots_dir()
         assert root is not None
         store = job_slots.SlotStore(root)
+        holder = store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getppid(),  # another live process: this one is the queued Job
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=200.0),
+            job=job_slots.JobLabel("run-1", "synth", "a"),
+        )
+        assert store.refresh(holder).state == job_slots.HOLDING
         token = store.submit(
-            job_slots.CLASS_HEAVY,
+            job_slots.CLASS_MEMORY,
             pid=os.getpid(),
-            argv=[],
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True),
             queue_reason="requeued after out-of-memory",
         )
-        assert _job_phase("simulate-p-4") == "QUEUED (position 1, requeued after out-of-memory)"
-        # Contrast: the same waiter without a reason reads as before.
+        # The queue detail and the requeue reason read together.
+        assert _job_phase("simulate-p-4") == (
+            "QUEUED (position 1): waits to run alone (memory estimate unknown or above the "
+            "Memory Budget); largest holders: run-1 (synth, a) 200 MiB; "
+            "requeued after out-of-memory"
+        )
+        # Contrast: the same waiter without a reason reads without it.
         store.release(token)
-        store.submit(job_slots.CLASS_HEAVY, pid=os.getpid(), argv=[])
-        assert _job_phase("simulate-p-4") == "QUEUED (position 1)"
+        store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True),
+        )
+        assert "requeued" not in _job_phase("simulate-p-4")
 
 
 class TestAsyncJobToolMembership:
