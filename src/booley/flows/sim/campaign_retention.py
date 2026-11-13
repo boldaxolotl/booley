@@ -581,7 +581,9 @@ def _report_references_origin(report: Path, manifests: tuple[Path, ...]) -> bool
     for manifest in manifests:
         try:
             document = _read_object(manifest)
-            campaign_id = require_uuid4(document.get("simulation_record_id"), field="campaign_id")
+            campaign_id = require_uuid4(
+                document.get("simulation_record_id"), field="simulation_record_id"
+            )
             if _report_references_campaign(report, manifest, campaign_id):
                 return True
         except _UnreadableDependencyError:

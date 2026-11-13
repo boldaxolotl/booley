@@ -214,7 +214,7 @@ _CONTEXT_FIELDS = frozenset(
         "attempt_ordinal",
     }
 )
-# What Booley 0.4.0 wrote: the same fields, with ``campaign_id`` for the identity.
+# What Booley 0.4.0 wrote (checked against the v0.4.0 tag): the same fields, with ``campaign_id`` for the identity.
 _OLDER_CONTEXT_SCHEMA = "booley.supervised-child-context/v1"
 _OLDER_CONTEXT_FIELDS = (_CONTEXT_FIELDS - {"simulation_record_id"}) | {"campaign_id"}
 

@@ -186,7 +186,7 @@ def _absolute_path(value: object, label: str) -> Path:
 
 def _campaign_id(value: object) -> str:
     try:
-        return require_uuid4(value, field="dependency campaign_id")
+        return require_uuid4(value, field="dependency simulation_record_id")
     except BoundaryError as exc:
         raise ValueError("Dependency Simulation Campaign id is invalid") from exc
 

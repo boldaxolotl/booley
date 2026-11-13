@@ -211,12 +211,8 @@ def test_a_child_lane_writes_the_record_context_and_terminal_causes(tmp_path: Pa
         assert "record_id" not in context
         assert child_context_matches(paths, child)
 
-        # A lane that cannot publish is recorded as a Record error, and its cancellation
-        # request names the Record. Nothing reads either code back, so writing only the new
-        # ones is the whole no-alias contract.
-        lane_pool.test_child_lane_terminal_cause(
-            tmp_path / "lane", "publish_failed", "record_error"
-        )
+        # A lane's cancellation request names the Record. The terminal cause
+        # ``record_error`` is pinned by the parametrized lane-pool test.
         cancelled, cancelled_paths = _prepared_lane(campaign, "a" * 32)
         assert campaign.registry.cancel(cancelled)
         assert read_json(cancelled_paths.cancel)["reason"] == "record_cancelled"

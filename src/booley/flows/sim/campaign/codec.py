@@ -113,14 +113,14 @@ def canonical_json_bytes(value: object) -> bytes:
         raise SimulationCampaignIntegrityError(f"value is not canonical JSON: {exc}") from exc
 
 
-# v4 = the exact work-item shape with the required ``test_runs`` of every work
-# item: the concrete Test Runs (Test Variant, seed, declared arguments and
-# environment) the item executes (ADR 0072), an optional ``no_waivers`` and
-# explicit declared source identities in disclosures. It is the only version
-# written and read.
+# v1 of the Simulation Record manifest (it replaces simulation-campaign-manifest/v4):
+# the exact work-item shape with the required ``test_runs`` of every work item: the
+# concrete Test Runs (Test Variant, seed, declared arguments and environment) the item
+# executes (ADR 0072), an optional ``no_waivers`` and explicit declared source
+# identities in disclosures. It is the only version written and read.
 MANIFEST_SCHEMA = "booley.simulation-record-manifest/v1"
 
-# v3 = the required ``test_run`` of every observation: the resolved name of the
+# v4 = the Simulation Record identity key, on top of v3's required ``test_run`` of every observation: the resolved name of the
 # Test Run it observed (ADR 0072). Observations are unique by Test Run.
 RESULT_SCHEMA = "booley.simulation-result/v4"
 
