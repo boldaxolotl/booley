@@ -20,6 +20,7 @@ from booley.config.project_config import normalize_tests_toml
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import doctor_stamp, inspection, session_admission, vaporview
+from tests.conftest import symlink_or_skip
 from tests.diagnostic_helpers import _Rec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.harness.test_doctor import (
@@ -611,7 +612,9 @@ def test_core_audit_renders_the_owner_report_unchanged(tmp_path, monkeypatch):
     )
     # The Test Run plan owner also reports through the same path, after the cocotb owner.
     assert [item for item in rendered if item is report] == [report]
-    assert rendered[0] is report
+    # Its position among the rendered reports: before the Test Run plan report, which
+    # is followed only by the native-dependency report.
+    assert rendered.index(report) < len(rendered) - 2
     assert not any(message.startswith("cocotb Target") for _level, message in rec.events)
 
 
@@ -650,3 +653,271 @@ def test_container_tools_ask_the_owner_for_cocotb(tmp_path, monkeypatch):
     doctor._run_container_tool_checks(None, record)
     assert asked == []
     assert not any(argv[0] == "cocotb-config" for _description, argv, _fix in checks)
+
+
+_CORE_TREE_SECTION_HEADER = "FuseSoC .core checks"
+
+
+def _core_tree_project(root: Path) -> Path:
+    """A Project whose ``.core`` tree trips every moved rule once."""
+    booley_dir = _write_project(root)
+    # Owned (a Doctor-selected sim Target) and schema-invalid: one schema FAIL.
+    (root / "design.core").write_text(
+        "CAPI=2:\n"
+        "name: ::bad_depend:0\n"
+        "filesets:\n"
+        "  tb:\n"
+        "    files: [tb/tb.sv: {file_type: systemVerilogSource}]\n"
+        "    depend: not_a_list\n"
+        "targets:\n"
+        "  sim_bad:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n"
+        "    filesets: [tb]\n"
+        "    toplevel: tb\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    # Schema-valid, so FuseSoC keeps it: an `expression` parameter is a hard
+    # security FAIL and the generator script a Scope-dependent advisory.
+    (root / "sec.core").write_text(
+        "CAPI=2:\n"
+        "name: ::sec:0\n"
+        "filesets:\n"
+        "  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}\n"
+        "  tb: {files: [tb/tb.sv: {file_type: systemVerilogSource}], tags: [tb]}\n"
+        "parameters:\n"
+        "  width: {datatype: expression, paramtype: vlogparam}\n"
+        "generators:\n"
+        "  gen: {command: rtl/gen.py}\n"
+        "targets:\n"
+        "  sim_sec:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n"
+        "    filesets: [rtl, tb]\n"
+        "    toplevel: tb\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (root / "rtl" / "gen.py").write_text("print('generated')\n", encoding="utf-8", newline="\n")
+    # Vendored (no Doctor Target) with a provider block, at the root so its
+    # relative path has no separator: a NOTE.
+    (root / "upstream.core").write_text(
+        "CAPI=2:\n"
+        "name: ::upstream:0\n"
+        "provider: {name: github, user: acme, repo: demo}\n"
+        "targets:\n"
+        "  default: {}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (booley_dir / "doctor-waivers.toml").write_text(
+        'version = 1\n[[waiver]]\ncheck = "core.security-scope-advisory"\n'
+        'subject = "sec.core:-"\nreason = "Accepted for this fixture"\npermanent = true\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    library = root / "lib00"
+    library.mkdir()
+    symlink_or_skip(library / "self", "..", target_is_directory=True)
+    return booley_dir
+
+
+def _core_tree_section(output: str, root: Path) -> str:
+    """The ``.core`` checks section with machine-specific paths normalized."""
+    lines = output.splitlines()
+    start = lines.index(_CORE_TREE_SECTION_HEADER)
+    end = next((i for i in range(start, len(lines)) if not lines[i].strip()), len(lines))
+    return "\n".join(lines[start:end]).replace(str(root.resolve()), "<root>").replace("\\", "/")
+
+
+_CORE_TREE_SECTION = """\
+FuseSoC .core checks
+  ·  vendored .core upstream.core has a provider block, but no Doctor Target selects it
+  ✗  FuseSoC recursive symlinks: 1 link resolves to ancestor <root> (lib00/self)
+     → add a FUSESOC_IGNORE marker in each link's containing directory or an enclosing subtree (excludes all cores there); ensure markers are present in worktrees too, or remove the links
+    recursive symlink lib00/self: directory link resolves to ancestor <root>
+  ✗  .core schema design.core: filesets.tb.depend must be array
+     → fix the .core — FuseSoC's CAPI2 schema requires this (caught here so it does not only surface under --deep)
+  ✗  .core schema sec.core: parameters.width.datatype must be one of ['bool', 'file', 'int', 'real', 'str'] — FuseSoC ignores this whole .core, so none of its Targets resolve
+     → fix the .core — FuseSoC's CAPI2 schema requires this (caught here so it does not only surface under --deep)
+  ·  .core schema upstream.core: provider cannot be validated by any definition — FuseSoC ignores this whole .core, so none of its Targets resolve — vendored core, no Doctor Target selects it; FuseSoC skips it at resolve, so only that core's own Targets are unusable
+  ✓  .core Targets enumerated: lint_fast, sim_bad, sim_fast, sim_sec, synth_fast
+  ✓  Doctor Target matrix valid: 5 Target/Flow pair(s)
+  ✓  .core Targets use the flow API (no legacy FuseSoC tools-section targets)
+  ✓  Target names follow the <axis>_<subject> convention
+  ✓  no dead 'default:' Targets in Booley-authored .core files
+  ✓  synth Target 'synth_fast' (yosys) declares flow_options.arch
+  ✓  3 Verilator sim Target(s) trace-capable (own a --exe main)
+  ✓  sim Target 'sim_fast' TB fileset tagged
+  ✓  sim Target 'sim_fast' TB emits a recognized pass sentinel
+  ✓  lint Target 'lint_fast' toplevel 'dut' elaborates standalone
+  ✓  generic Target 'synth_fast' toplevel 'dut' elaborates standalone
+  !  2 .core-referenced file(s) exist on disk but are untracked by git (rtl/dut.sv, tb/tb.sv) — if gitignored (vendored firmware / build artifact), force-add with `git add -f <file>` and verify with `git ls-files <file>`; a fresh clone or CI checkout will lack them  project.core-file-untracked:rtl/dut.sv,tb/tb.sv
+  ✗  .core security [expr_param] sec.core: parameter 'width' declares datatype 'expression', which is not a CAPI2 literal (bool/file/int/real/str). An HDL expression cannot be a faithful -G vlogparam and Booley ships no evaluator: resolve it to a literal, or convert it to a vlogdefine (decision 8).
+     → ADR 0022 decision 21
+  ~  .core security [in_scope_script] sec.core: generator 'gen' references 'rtl/gen.py', which is inside the agent's write Scope and therefore mutable. generators/hooks scripts must be out-of-Scope and read-only-mounted so the agent cannot author or edit them (decision 21). (advisory: doctor audits the union of writable category dirs, without a change-specific scope — the binding check runs at commit time)  core.security-scope-advisory:sec.core:-
+     → reason: Accepted for this fixture
+  ·  tests.toml not present (each sim Target runs its testbench's default test)
+"""
+
+_CORE_TREE_ROWS = [
+    (
+        Severity.NOTE,
+        "vendored .core upstream.core has a provider block, but no Doctor Target selects it",
+        "",
+        None,
+        None,
+    ),
+    (
+        Severity.FAIL,
+        "FuseSoC recursive symlinks: 1 link resolves to ancestor <root> (lib00/self)",
+        "add a FUSESOC_IGNORE marker in each link's containing directory or an enclosing subtree (excludes all cores there); ensure markers are present in worktrees too, or remove the links",
+        None,
+        None,
+    ),
+    (
+        Severity.FAIL,
+        ".core schema design.core: filesets.tb.depend must be array",
+        "fix the .core — FuseSoC's CAPI2 schema requires this (caught here so it does not only surface under --deep)",
+        None,
+        None,
+    ),
+    (
+        Severity.FAIL,
+        ".core schema sec.core: parameters.width.datatype must be one of ['bool', 'file', 'int', 'real', 'str'] — FuseSoC ignores this whole .core, so none of its Targets resolve",
+        "fix the .core — FuseSoC's CAPI2 schema requires this (caught here so it does not only surface under --deep)",
+        None,
+        None,
+    ),
+    (
+        Severity.NOTE,
+        ".core schema upstream.core: provider cannot be validated by any definition — FuseSoC ignores this whole .core, so none of its Targets resolve — vendored core, no Doctor Target selects it; FuseSoC skips it at resolve, so only that core's own Targets are unusable",
+        "",
+        None,
+        None,
+    ),
+    (
+        Severity.FAIL,
+        ".core security [expr_param] sec.core: parameter 'width' declares datatype 'expression', which is not a CAPI2 literal (bool/file/int/real/str). An HDL expression cannot be a faithful -G vlogparam and Booley ships no evaluator: resolve it to a literal, or convert it to a vlogdefine (decision 8).",
+        "ADR 0022 decision 21",
+        None,
+        None,
+    ),
+    (
+        Severity.WAIVED,
+        ".core security [in_scope_script] sec.core: generator 'gen' references 'rtl/gen.py', which is inside the agent's write Scope and therefore mutable. generators/hooks scripts must be out-of-Scope and read-only-mounted so the agent cannot author or edit them (decision 21). (advisory: doctor audits the union of writable category dirs, without a change-specific scope — the binding check runs at commit time)",
+        "Accepted for this fixture",
+        "core.security-scope-advisory",
+        "sec.core:-",
+    ),
+]
+
+
+_CORE_TREE_ROW_PREFIXES = (
+    ".core schema",
+    ".core security",
+    ".core tree has no",
+    "FuseSoC recursive symlink",
+    "vendored .core",
+)
+
+
+def _core_tree_rows(result, root: Path):
+    """``(severity, message, fix, check_id, subject)`` of the moved rules' findings."""
+    normalize = lambda text: text.replace(str(root.resolve()), "<root>").replace("\\", "/")  # noqa: E731
+    return [
+        (f.severity, normalize(f.message), normalize(f.fix), f.check_id, f.subject)
+        for f in result.findings
+        if f.message.startswith(_CORE_TREE_ROW_PREFIXES)
+    ]
+
+
+def test_core_tree_section_output_is_pinned(tmp_path, monkeypatch, capsys):
+    """The .core checks section keeps its text, order, check IDs and exit code.
+
+    The literals were captured from Doctor's own core-tree checks before they
+    moved to their owner and are unchanged by the move; the rows now reach the
+    section as the owner's typed reports.
+    """
+    booley_dir = _core_tree_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    reports = []
+    render = doctor._Reporter.diagnostics
+
+    def record_then_render(self, report):
+        reports.append(report)
+        render(self, report)
+
+    monkeypatch.setattr(doctor._Reporter, "diagnostics", record_then_render)
+    result = doctor.run_doctor_result(
+        argparse.Namespace(deep=False, verbose=True, concise=False), tmp_path
+    )
+    section = _core_tree_section(capsys.readouterr().out, tmp_path)
+    assert section == _CORE_TREE_SECTION.rstrip("\n")
+    assert _core_tree_rows(result, tmp_path) == _CORE_TREE_ROWS
+    assert result.exit_code == 1
+    owner_rows = [
+        finding.message.replace(str(tmp_path.resolve()), "<root>").replace("\\", "/")
+        for report in reports
+        for finding in report.findings
+        if finding.message.startswith(_CORE_TREE_ROW_PREFIXES)
+    ]
+    assert owner_rows == [row[1] for row in _CORE_TREE_ROWS], (
+        "the core-tree rows must reach Doctor as owner reports"
+    )
+
+
+def _core_tree_owner():
+    """The ``.core`` tree owner module, imported where used."""
+    return importlib.import_module("booley.audit.core_tree_inspection")
+
+
+def test_core_audit_renders_core_tree_owner_reports_in_place(tmp_path, monkeypatch):
+    """Doctor builds each owner request, renders each report once, and adds no rows of its own.
+
+    The tree report (setup hazards, then schema) leads the section; the security
+    report follows the Target checks, immediately before the Test Run plan report.
+    """
+    owner = _core_tree_owner()
+    project = _cocotb_audit_project(tmp_path)
+    tree_report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "tree-row"),))
+    security_report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "security-row"),))
+    tree_requests, security_requests = [], []
+
+    def tree_spy(request):
+        tree_requests.append(request)
+        return tree_report
+
+    def security_spy(request):
+        security_requests.append(request)
+        return security_report
+
+    monkeypatch.setattr(owner, "inspect_core_tree", tree_spy)
+    monkeypatch.setattr(owner, "inspect_core_security", security_spy)
+    rendered = []
+    rec = _Rec()
+    doctor._run_core_audit(
+        project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=rendered.append
+    )
+
+    seeds = doctor._project_target_matrix(project).seed_targets
+    assert seeds
+    assert tree_requests == [owner.CoreTreeInspectionRequest(tmp_path, seeds)]
+    assert security_requests == [
+        owner.CoreSecurityInspectionRequest(tmp_path, tuple(doctor._project_write_scope(tmp_path)))
+    ]
+    assert rendered[0] is tree_report
+    assert rendered[-3] is security_report
+    assert [item for item in rendered if item in (tree_report, security_report)] == [
+        tree_report,
+        security_report,
+    ]
+    moved_row_prefixes = (
+        ".core schema",
+        ".core security",
+        ".core tree has no",
+        "FuseSoC recursive symlink",
+        "vendored .core",
+    )
+    assert not [m for _level, m in rec.events if m.startswith(moved_row_prefixes)]

@@ -26,6 +26,7 @@ inputs and returns a complete typed report:
 | `harness.setup.readiness` | `load_project(root)`; `check_guidance(project, mode=...)`; `check_stealth_cores(project, mode=...)`; `inspect_worktree_portability(WorktreePortabilityRequest)`; `inspect_line_endings(LineEndingInspectionRequest)` | Checkout-local Project resolution, schema composition, parsed EDA inputs, valid continuation data, guidance and core-projection grading and bounded reconciliation; worktree portability policy; line-ending observation precedence (CRLF, autocrlf risk, attributes policy, stale index, migration) and its check IDs and subjects. |
 | `flows.sim.backends.cocotb_target_checks` | `inspect_cocotb_targets(CocotbTargetRequest)`; `project_has_cocotb_target(project_root)` | cocotb Target selection, the `select` template contradiction, module-file/fileset/`tb`-tag rules, the static AST test-name scan and generating-module deferral, the duplicate-section skip, and their check IDs and subjects. |
 | `flows.target_test_plan_inspection` | `inspect_target_test_plans(TargetTestPlanInspectionRequest)` | `tests.toml` load and validation, section-key-to-Target matching (dead and duplicate keys), per-Target Test Run plan applicability and the seeding line each passing Target gets. |
+| `audit.core_tree_inspection` | `inspect_core_tree(CoreTreeInspectionRequest)`; `inspect_core_security(CoreSecurityInspectionRequest)`; `owned_core_files(project_root, seed_targets)`; `fusesoc_rejected_cores(project_root)`; `rejected_target_core(project_root, target, rejected_cores)` | `.core` ownership (a core hosting a Doctor-selected Target, in the state zone, or with a misplaced `booley:` marker FAILs; a vendored core is a NOTE), FuseSoC's rejection verdict and the duplicate-row suppression, the provider-block rule over the dependency closure, recursive-symlink grouping with its verbose-only link paths, and the severity of each security violation (Scope-dependent kinds are advisory WARNs with a check ID). The request's `seed_targets` and `write_scope` are raw inputs Doctor derives. |
 | `runtime.project_image` | `inspect_native_dependencies(NativeDependencyRequest)` | The curated header-to-Debian-package table, the C-family source scan and its file cap, and the rule for what counts as a Dockerfile `apt install` declaration. The request's `sources` are the selected Targets' compile inputs; the owner scans the C-family ones. |
 | `audit.host_environment` | `inspect_agent_installation(provider)` | The shared configuration-directory-or-executable installation heuristic. |
 | `runtime.interactive_docker` | `image_exists(name, executable=..., timeout=...)` | The image observation shared by Doctor and Project Initialization. |
@@ -55,6 +56,7 @@ deduplication, and interleaves details (verbose-only unless marked) without chan
 | cocotb Target inspection | Reads `.core` files and the cocotb module source (parsed with `ast`, never imported or executed); writes nothing. |
 | Viewer Bridge inspection | Runs bounded 20-second `python3 -c` probes in the attached VS Code devcontainer (`docker exec`) or locally inside the Sandbox, and reads the Sandbox inventory; writes nothing. |
 | Test Run plan inspection | Reads `tests.toml` and the Project's `.core` files through `TargetCatalog`; runs no subprocess and writes nothing. |
+| Core-tree inspection | Reads `.core` files and walks the Project tree for directory links; runs no subprocess and writes nothing. |
 | Native-dependency inspection | Reads the listed source files and the Project Dockerfile; starts no subprocess and writes nothing. |
 | Project RECONCILE | Uses the guidance-link and core-projection owners to repair generated artifacts. It does not run Init or issue a Runtime. |
 
@@ -70,7 +72,8 @@ convention:
 - The owner takes a typed, frozen request and returns a `DiagnosticReport` built
   with `audit.diagnostic_results.Findings`. Every WARN carries a `check_id`, plus
   `subject` and `dedupe` where the check had them. The owner accepts no Doctor
-  callbacks.
+  reporting callbacks; a Sandbox command builder in the request is not one. The
+  request carries raw inputs, and the owner decides ownership and severity.
 - The owner imports no Doctor, CLI orchestration, or rendering module. Add
   its module to D26's sources in `tests/architecture/booley_contract.py` and
   in the D26 row of the
@@ -79,8 +82,8 @@ convention:
   helpers in the table (`audit.host_environment`,
   `runtime.interactive_docker`) and the value module
   `audit.diagnostic_results` stay outside it.
-- Doctor builds the request, calls the owner, and renders the report with
-  `_Reporter.diagnostics` at the check's position. Moving a check this way
+- Doctor builds the request, calls the owner, and renders each report with
+  `_Reporter.diagnostics` at its check's position. Moving a check this way
   changes none of its message, fix text, severity, check ID, waiver behavior,
   order, or exit code.
 - Tests assert on the returned report and patch no private Doctor name. Only
@@ -88,6 +91,20 @@ convention:
   render the report through `_Reporter.diagnostics`.
 - When an orchestrator inventoried in `tests/harness/test_doctor_probe_inventory.py`
   called the replaced check directly, the inventory names the owner call instead.
+- An owner exposes one operation per position at which its checks render. When
+  Doctor needs more than findings, an operation may return a result that wraps
+  the report.
+- The maintainer approved treating the rewrite of a moved check's reporting
+  calls into `Findings`, with its text unchanged, as a mechanical move under
+  [principle 18](CODING_PRINCIPLES.md#18-pull-requests-stay-small) of
+  `CODING_PRINCIPLES.md`. The PR body states moved and new line counts.
+- Sibling moves edit the same owner table, D26 sources and probe inventory, so
+  they land one at a time, ordered by a `Blocked by` edge between the issues.
+- Add the owner to the D26 test list in
+  `tests/architecture/test_source_dependency_contract.py` first and watch it
+  fail, then add it to the D26 sources in `tests/architecture/booley_contract.py`.
+  Tests import a new owner inside a helper (`importlib.import_module`),
+  so the file collects before the owner exists and each test fails on its own.
 
 ## Shared health
 
