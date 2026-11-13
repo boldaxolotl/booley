@@ -28,6 +28,7 @@ from booley.flows.sim.request import SimRequest
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
+from tests.bwave.session_store_support import use_store
 from tests.conftest import symlink_or_skip
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.target_test_support import write_sim_preview_project
@@ -315,7 +316,7 @@ class TestBwaveRoundTrip:
         # Redirect the session file to tmp_path so the test doesn't pollute
         # the user's real cache.
         session_file = tmp_path / "bwave_sessions.json"
-        monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
+        use_store(monkeypatch, session_file)
 
         fake_trace = tmp_path / "test.fst"
         fake_trace.write_bytes(b"")
@@ -341,7 +342,7 @@ class TestBwaveRoundTrip:
         from booley.bwave import cli as bwave
 
         session_file = tmp_path / "bwave_sessions.json"
-        monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
+        use_store(monkeypatch, session_file)
 
         fake_trace = tmp_path / "test.fst"
         fake_trace.write_bytes(b"")

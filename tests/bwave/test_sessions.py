@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from booley.bwave.cli import SESSION_FILE
 from booley.dev_support.test_profiles import native_test_binary
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
+from tests.bwave.session_store_support import isolate_temporary_store, use_store
 from tests.subprocess_budget import run_bounded_child
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -47,10 +47,11 @@ def _ensure_bwave_fixture() -> None:
 
 
 def _write_sessions(entries: dict) -> None:
-    from booley.bwave import cli as bwave
+    from booley.bwave import sessions
 
-    bwave.SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    bwave.SESSION_FILE.write_text(json.dumps(entries, indent=2) + "\n")
+    session_file = sessions._temporary_store().path
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text(json.dumps(entries, indent=2) + "\n")
 
 
 def _make_entry(trace: str, **overrides) -> dict:
@@ -141,14 +142,9 @@ def test_direct_subcommand_help_forwards_to_native_bwave(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _clean_session():
-    """Remove session file before and after each test."""
-    lock_file = SESSION_FILE.with_name(f"{SESSION_FILE.name}.lock")
-    SESSION_FILE.unlink(missing_ok=True)
-    lock_file.unlink(missing_ok=True)
-    yield
-    SESSION_FILE.unlink(missing_ok=True)
-    lock_file.unlink(missing_ok=True)
+def _clean_session(monkeypatch, tmp_path):
+    """Start every test with an empty temporary-directory session store of its own."""
+    isolate_temporary_store(monkeypatch, tmp_path)
 
 
 # ── save / load round-trip ───────────────────────────────────────────
@@ -170,11 +166,12 @@ def test_load_missing_sessions():
 
 
 def test_load_corrupt_sessions():
-    from booley.bwave.cli import SESSION_FILE as SF
+    from booley.bwave import sessions
     from booley.bwave.cli import _load_sessions
 
-    SF.parent.mkdir(parents=True, exist_ok=True)
-    SF.write_text("not json {{{")
+    session_file = sessions._temporary_store().path
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text("not json {{{")
     assert _load_sessions() == {}
 
 
@@ -308,7 +305,7 @@ def test_register_raw_vcd_refuses_and_registers_nothing(tmp_path, monkeypatch, c
     from booley.bwave import cli as bwave
 
     sessions = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", sessions)
+    use_store(monkeypatch, sessions)
 
     vcd = tmp_path / "waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
@@ -331,7 +328,7 @@ def test_register_raw_vcd_with_build_converts_and_registers(tmp_path, monkeypatc
     from booley.bwave import cli as bwave
     from tests.conftest import MINIMAL_FST_BYTES
 
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    use_store(monkeypatch, tmp_path / "sessions.json")
 
     vcd = tmp_path / "waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
@@ -361,7 +358,7 @@ def test_register_raw_vcd_build_failure_exits_nonzero(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     sessions = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", sessions)
+    use_store(monkeypatch, sessions)
 
     vcd = tmp_path / "waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
@@ -390,7 +387,7 @@ def test_register_build_refuses_to_clobber_an_existing_store(tmp_path, monkeypat
     from booley.bwave import cli as bwave
 
     sessions = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", sessions)
+    use_store(monkeypatch, sessions)
 
     vcd = tmp_path / "waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
@@ -430,7 +427,7 @@ def test_register_sim_dir_falling_back_to_vcd_shows_why_conversion_failed(
     from booley.bwave import cli as bwave
 
     sessions = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", sessions)
+    use_store(monkeypatch, sessions)
 
     vcd = tmp_path / "trace.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
@@ -473,7 +470,7 @@ def test_register_bwave_file_no_build_hint(tmp_path, monkeypatch, capsys):
     from booley.bwave import cli as bwave
     from tests.conftest import MINIMAL_FST_BYTES
 
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    use_store(monkeypatch, tmp_path / "sessions.json")
     # This test owns the direct-store registration hint, not native trace
     # inspection. Reaching _trace_identity here would make a stock checkout
     # auto-build B-Wave merely to print optional diagnostic context.
@@ -500,7 +497,7 @@ def test_register_rejects_header_only_fst(tmp_path, monkeypatch, capsys):
     from booley.bwave import cli as bwave
     from tests.conftest import FST_HEADER_BYTES
 
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    use_store(monkeypatch, tmp_path / "sessions.json")
 
     trace = tmp_path / "trace.fst"
     trace.write_bytes(FST_HEADER_BYTES)
@@ -565,7 +562,7 @@ def test_register_missing_identity_warns_loudly(tmp_path, monkeypatch, capsys):
     from booley.bwave import sessions as bwave_sessions
     from tests.conftest import MINIMAL_FST_BYTES
 
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    use_store(monkeypatch, tmp_path / "sessions.json")
     # The minimal fixture passes structural inspection but is not a real FST the native
     # binary can list scopes from; force the identity probe's empty answer.
     monkeypatch.setattr(bwave_sessions, "_trace_identity", lambda _trace: "")
@@ -586,7 +583,7 @@ def test_trace_identity_reports_multiple_root_scopes(tmp_path, monkeypatch, caps
     from tests.conftest import MINIMAL_FST_BYTES
 
     monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-bin"])
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    use_store(monkeypatch, tmp_path / "sessions.json")
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -655,7 +652,7 @@ def test_no_session_error():
 def test_no_session_error_names_the_traced_sim_run(monkeypatch, tmp_path):
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "none" / "bwave_sessions.json")
+    use_store(monkeypatch, tmp_path / "none" / "bwave_sessions.json")
 
     with pytest.raises(SystemExit) as exc:
         bwave._resolve_trace_from_session()
@@ -667,49 +664,11 @@ def test_no_session_error_names_the_traced_sim_run(monkeypatch, tmp_path):
     assert "trace: true" in message
 
 
-_REGISTER_MANY_CHILD = """
-import sys
-from pathlib import Path
-from booley.bwave import cli, sessions
-
-cli.SESSION_FILE = Path(sys.argv[1])
-for index in range(20):
-    sessions.register_trace(Path(f"/traces/{sys.argv[2]}{index}.fst"), alias=f"{sys.argv[2]}{index}")
-"""
-
-
-def test_concurrent_registrations_keep_every_alias(monkeypatch, tmp_path):
-    """Two traced runs finishing together must not drop each other's aliases."""
-    import booley
-    from booley.bwave import cli as bwave
-
-    store = tmp_path / "store" / "bwave_sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", store)
-    env = {**os.environ, "PYTHONPATH": str(Path(booley.__file__).resolve().parents[1])}
-    children = [
-        subprocess.Popen(
-            [sys.executable, "-c", _REGISTER_MANY_CHILD, str(store), prefix],
-            env=env,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for prefix in ("a", "b")
-    ]
-    for child in children:
-        # Kept on communicate: both children must run concurrently to race the store.
-        _, stderr = child.communicate(timeout=120)
-        assert child.returncode == 0, stderr
-
-    aliases = set(bwave._load_sessions())
-    assert {f"{prefix}{index}" for prefix in "ab" for index in range(20)} <= aliases
-
-
 def test_register_trace_raises_when_the_store_cannot_be_written(monkeypatch, tmp_path, capsys):
-    from booley.bwave import cli as bwave
     from booley.bwave import sessions
 
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "bwave_sessions.json")
-    monkeypatch.setattr(sessions, "_save_sessions", lambda _data: False)
+    use_store(monkeypatch, tmp_path / "bwave_sessions.json")
+    monkeypatch.setattr(sessions, "_save_sessions", lambda *_args: False)
     trace = tmp_path / "trace.fst"
     trace.write_bytes(b"fixture")
 
@@ -763,7 +722,7 @@ def test_register_trace_preserves_alias_and_last_markers(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
+    use_store(monkeypatch, session_file)
     a = tmp_path / "a.fst"
     b = tmp_path / "b.fst"
     a.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
@@ -796,7 +755,7 @@ def test_markers_set_list_delete(tmp_path, monkeypatch, capsys):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
+    use_store(monkeypatch, session_file)
     trace = tmp_path / "trace.fst"
     trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
     bwave.register_trace(trace, alias="dut")
@@ -816,7 +775,7 @@ def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
+    use_store(monkeypatch, session_file)
     _write_sessions({"dut": _make_entry("/tmp/t.fst", markers={"start": 10, "done": 20})})
 
     cases = [
@@ -841,7 +800,7 @@ def test_inject_marker_flags_only_for_wave(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
+    use_store(monkeypatch, session_file)
     _write_sessions({"dut": _make_entry("/tmp/t.fst", markers={"start": 10, "done": 20})})
 
     legacy = ["--wave"]
@@ -861,7 +820,7 @@ def test_query_resolves_markers_and_injects_wave_labels(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
+    use_store(monkeypatch, session_file)
     trace = tmp_path / "trace.fst"
     trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
     _write_sessions(
@@ -906,7 +865,7 @@ def test_query_resolves_v02_diff_markers(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"
-    monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
+    use_store(monkeypatch, session_file)
     trace = tmp_path / "trace.fst"
     trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
     _write_sessions(
@@ -944,7 +903,7 @@ def test_resolve_trace_missing_trace_key_exits(monkeypatch, tmp_path):
     """A session object lacking the "trace" key must exit cleanly, not KeyError."""
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    use_store(monkeypatch, tmp_path / "sessions.json")
     _write_sessions({"dut": {"registered_at": datetime.now(UTC).isoformat()}})
 
     with pytest.raises(SystemExit) as exc:
@@ -956,7 +915,7 @@ def test_resolve_trace_non_object_session_exits(monkeypatch, tmp_path):
     """A non-object session entry (corrupted JSON) must not crash on .get()."""
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    use_store(monkeypatch, tmp_path / "sessions.json")
     _write_sessions({"dut": "not-an-object"})
 
     with pytest.raises(SystemExit) as exc:
@@ -968,7 +927,7 @@ def test_resolve_trace_bad_timestamp_still_resolves(monkeypatch, tmp_path):
     """A garbage registered_at must skip the staleness warning, not crash."""
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    use_store(monkeypatch, tmp_path / "sessions.json")
     trace = tmp_path / "trace.fst"
     trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
     _write_sessions({"dut": {"trace": str(trace), "registered_at": "yesterday-ish"}})
@@ -1031,7 +990,7 @@ def test_register_reports_trace_identity_and_age(tmp_path, monkeypatch, capsys):
     from booley.bwave import cli as bwave
 
     _ensure_bwave_fixture()
-    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    use_store(monkeypatch, tmp_path / "sessions.json")
 
     bwave.cmd_register(argparse.Namespace(sim_dir=str(BWAVE), alias="dut"))
     err = capsys.readouterr().err

@@ -162,13 +162,13 @@ def _trace_diagnostics(target: Path) -> str:
 # import would raise "attempted relative import with no known parent package".
 from booley.bwave.sessions import (
     _DEFAULT_ALIAS,
-    SESSION_FILE,  # noqa: F401  # re-exported for backward compatibility
     _get_markers,
     _load_sessions,
     _save_sessions,  # noqa: F401  # re-exported for backward compatibility
     _validate_marker_name,  # noqa: F401  # re-exported for backward compatibility
     cmd_markers,
     cmd_register,
+    current_session_store,
     register_trace,  # noqa: F401  # re-exported for the tests and the facade
 )
 
@@ -266,7 +266,8 @@ def _inject_marker_flags(extra: list[str], alias: str) -> None:
 # ---------------------------------------------------------------------------
 def _resolve_trace_from_session(alias: str | None = None) -> str:
     """Resolve trace path from session alias, or exit with helpful error."""
-    sessions = _load_sessions()
+    store = current_session_store()
+    sessions = _load_sessions(store)
     key = alias or _DEFAULT_ALIAS
     session = sessions.get(key)
     if not session:
@@ -290,6 +291,8 @@ def _resolve_trace_from_session(alias: str | None = None) -> str:
             f"ERROR: Session for @{key} is malformed (no trace path).\n"
             f"Re-register with: bwave register SIM_DIR --as {key}"
         )
+    # A trace inside the checkout is stored relative to it, so a moved checkout still resolves.
+    trace = str(store.trace_path(trace))
     if not Path(trace).exists():
         sys.exit(
             f"ERROR: Trace for @{key} no longer exists: {trace}\n"
