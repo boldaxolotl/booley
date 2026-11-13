@@ -42,6 +42,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _managed,
     _named_manifest,
     _outer_claim,
+    _remove_child_lease,
     _scheduled_attempt,
     _wait_until,
 )
@@ -142,15 +143,6 @@ def test_parallel_campaign_runs_only_bounded_lane_threads(
     assert pool == ["booley-campaign-child-1", "booley-campaign-child-2", "booley-campaign-outer"]
 
 
-def _delete_own_token(slots: SlotStore, child_id: str) -> None:
-    """Make the lease of exactly this child disappear, like a reaper reclaiming it."""
-    for token in slots.snapshot(CLASS_MEMORY)[0]:
-        if str(token.execution_id) == child_id:
-            with slots._lease_gate(token) as acquired:
-                assert acquired
-                token.path.unlink()
-
-
 @pytest.mark.parametrize(
     ("failure", "cause"),
     [
@@ -240,7 +232,7 @@ def test_lost_child_lease_interrupts_only_that_lane_item(
             return
         # The Flow's claim and both lanes' item claims.
         _wait_until(lambda: len(campaign.slots.snapshot(CLASS_MEMORY)[0]) == 3)
-        _delete_own_token(campaign.slots, child_id)
+        _remove_child_lease(campaign.slots, child_id)
         _wait_until(scope.cancelled, _PARALLEL_SYNC_TIMEOUT_S)
         # Exact recovery of this child starts while its work is still running.
         _wait_until(
