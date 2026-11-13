@@ -37,7 +37,6 @@ from booley.flows.memory_admission import (
     measure_memory_claim,
     memory_admission_enabled,
 )
-from booley.flows.sim.build_parallelism import available_cpu_count
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, test_run_document
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
@@ -70,6 +69,7 @@ from booley.mcp.synth_baseline_execution import (
 )
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.git_ignore import ignored_paths
 from booley.runtime.process_group import (
     ProcessGroup,

@@ -25,9 +25,9 @@ from booley.flows.memory_admission import (
     measure_memory_claim,
     memory_admission_enabled,
 )
-from booley.flows.sim.build_parallelism import available_cpu_count
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_common_booley_dir
+from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,

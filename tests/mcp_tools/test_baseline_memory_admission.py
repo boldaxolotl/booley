@@ -200,11 +200,11 @@ def test_each_family_says_what_its_baseline_job_runs(scene, monkeypatch):
 
 
 def test_baseline_child_inherits_the_job_thread_count(memory_scene, foreign_owner, monkeypatch):
-    from booley.flows.sim import build_parallelism
+    from booley.runtime import cpu_budget
 
     scene = memory_scene
-    monkeypatch.setattr(build_parallelism, "_affinity_cpu_count", lambda: 8)
-    monkeypatch.setattr(build_parallelism, "_read_text", lambda _path: None)
+    monkeypatch.setattr(cpu_budget, "_affinity_cpu_count", lambda: 8)
+    monkeypatch.setattr(cpu_budget, "_read_text", lambda _path: None)
     # One other Job holds a (small) Memory Reservation beside the baseline's own.
     other = job_slots.MemoryClaim(budget_mb=_BUDGET_MB, reservation_mb=100.0)
     holder = _foreign_memory_claim(scene, foreign_owner, other)
