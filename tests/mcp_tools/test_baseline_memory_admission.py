@@ -27,6 +27,10 @@ from tests.goals.test_sim_baseline_admission import (  # noqa: F401  (fixtures a
     foreign_owner,
     scene,
 )
+from tests.oom_priority_support import (
+    inert_oom_proc,  # noqa: F401  (fixture, used by memory_scene)
+    oom_priority,
+)
 
 pytestmark = pytest.mark.timeout(180)
 
@@ -38,11 +42,13 @@ _BUDGET_MB = 1000.0
 
 
 @pytest.fixture
-def memory_scene(scene, monkeypatch):
+def memory_scene(scene, monkeypatch, inert_oom_proc):
     """The scene with the switch set, a 1,000 MiB Memory Budget and a history for ``top``."""
     from booley.runtime.resource_history import SCHEMA
 
     monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    # No process is known to the fake /proc, so ranking never touches the worker's real one.
+    scene.proc = inert_oom_proc
     with (scene.control / "booley.toml").open("a", encoding="utf-8") as config:
         config.write('\n[jobs]\nmemory_budget = "1000m"\n')
     records = [
@@ -198,6 +204,26 @@ def test_baseline_is_not_admitted_while_a_run_alone_job_holds(memory_scene, fore
         driver.finish()
     assert seen == {"popen_calls_while_held": 0}
     assert len(scene.popen_envs) == 1
+
+
+def test_baseline_flow_child_gets_its_job_oom_priority(memory_scene, monkeypatch):
+    scene = memory_scene
+    monkeypatch.setattr("booley.runtime.oom_priority.RANK_INTERVAL_SECONDS", 0.01)
+    supervisor = scene.proc.add(os.getpid(), value=0)
+    seen = {}
+
+    def during_measurement():
+        # The Flow child the supervisor just spawned, inheriting the supervisor's value.
+        child = scene.proc.add(supervisor + 1_000_000, parent=supervisor)
+        seen["supervisor"] = scene.proc.values[supervisor]
+        _wait_until(lambda: scene.proc.values[child] == 1000)
+        seen["child"] = scene.proc.values[child]
+
+    scene.on_popen = during_measurement
+    _execute(scene)
+
+    assert seen == {"supervisor": 1000 - oom_priority.COORDINATOR_GAP, "child": 1000}
+    assert scene.proc.values[supervisor] == 0
 
 
 def test_baseline_child_reuses_its_memory_admission(memory_scene):

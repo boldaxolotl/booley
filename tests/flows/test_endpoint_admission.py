@@ -38,6 +38,12 @@ from booley.runtime.endpoint_execution import (
     ExecutionResult,
 )
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
+from tests.oom_priority_support import (
+    PROC_PATH,
+    FakeProc,
+    inert_oom_proc,  # noqa: F401  (fixture, used by memory_runtime)
+    oom_priority,
+)
 
 FLOW_TYPES = {"sim": SimulateFlow, "synth": AsicSynthesizeFlow}
 MAX_HEAVY = 3
@@ -615,7 +621,11 @@ def _seed_history(booley_dir: Path, *peaks: tuple[str, float]) -> None:
 
 
 @pytest.fixture
-def memory_runtime(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def memory_runtime(
+    runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inert_oom_proc: FakeProc,  # noqa: F811  (keeps the worker's own OOM priority out of reach)
+) -> Path:
     """The runtime with the switch set, a real slots root and a 1,000 MiB Memory Budget."""
     booley_dir = runtime / ".booley"
     booley_dir.mkdir()
@@ -668,6 +678,42 @@ def test_memory_admission_claims_the_estimated_reservation(
         assert context.max_heavy == 1
 
     assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+
+
+def test_memory_admitted_job_ranks_its_processes(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_history(memory_runtime, ("a", 400))
+    proc = FakeProc()
+    coordinator = proc.add(os.getpid(), value=0)
+    tool = proc.add(coordinator + 1_000_000, parent=coordinator)
+    monkeypatch.setattr(PROC_PATH, proc)
+    flow = AsicSynthesizeFlow()
+
+    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
+        # The only running Job is the newest: its tool is first to go, the
+        # coordinator that reports the kill stays just below it.
+        assert proc.values[tool] == 1000
+        assert proc.values[coordinator] == 1000 - oom_priority.COORDINATOR_GAP
+
+    assert proc.values[coordinator] == 0
+
+
+def test_no_oom_priority_change_without_the_switch(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
+    proc = FakeProc()
+    coordinator = proc.add(os.getpid(), value=0)
+    tool = proc.add(coordinator + 1_000_000, parent=coordinator)
+    monkeypatch.setattr(PROC_PATH, proc)
+    flow = AsicSynthesizeFlow()
+
+    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
+        assert _held(memory_runtime, job_slots.CLASS_HEAVY) != []
+
+    assert (proc.reads, proc.writes) == ([], [])
+    assert (proc.values[coordinator], proc.values[tool]) == (0, 0)
 
 
 @pytest.mark.parametrize("case", ("unknown_invocation", "inherited"))

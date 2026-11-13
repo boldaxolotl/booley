@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 
@@ -50,8 +50,11 @@ def has_ancestor(
     return False
 
 
-def descendant_pids(root: int) -> list[int]:
-    """Return *root*'s descendants deepest-first from the Unix ``/proc`` tree."""
+def descendant_pids(root: int, *, exclude: Collection[int] = ()) -> list[int]:
+    """Return *root*'s descendants deepest-first from the Unix ``/proc`` tree.
+
+    A PID in *exclude* is skipped together with its whole subtree.
+    """
     children: dict[int, list[int]] = {}
     try:
         entries = [int(path.name) for path in Path("/proc").iterdir() if path.name.isdigit()]
@@ -67,6 +70,8 @@ def descendant_pids(root: int) -> list[int]:
     while frontier:
         pid = frontier.pop()
         for child in children.get(pid, []):
+            if child in exclude:
+                continue
             ordered.append(child)
             frontier.append(child)
     ordered.reverse()

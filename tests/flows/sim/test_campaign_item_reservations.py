@@ -60,6 +60,7 @@ from tests.flows.sim.campaign_test_support import (
     _validated_campaign,
     _wait_until,
 )
+from tests.oom_priority_support import FakeProc
 
 NAMES = ("alpha", "beta", "gamma")
 BUDGET_MIB = 1000.0
@@ -208,6 +209,8 @@ def _scenario(
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     if switch:
         monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+        # A fake /proc with no process: ranking never touches the worker's real OOM priority.
+        monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     else:
         monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION", raising=False)
     monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "a" * 32)
