@@ -107,6 +107,8 @@ def _job_phase(run_id: str) -> str:
 def _phase_for_record(rec: jobrec.JobRecord | None) -> str:
     """Admission phase of a detached job: "RUNNING" or "QUEUED (position N)".
 
+    A holder whose claim carries a requeue reason reads ``RUNNING (<reason>)``.
+
     A queued memory claim appends ``: <what it waits for>`` (need, free memory,
     holders; see ``MemoryWait.describe``), and a Job queued again after an OOM
     kill adds the claim's requeue reason there.
@@ -122,6 +124,9 @@ def _phase_for_record(rec: jobrec.JobRecord | None) -> str:
     try:
         store = job_slots.SlotStore(root)
         state = store.state_for_pid(rec.pid)
+        if state is not None and state.state == job_slots.HOLDING and state.reason:
+            # A requeued Job holding its run-alone claim: the reason would otherwise vanish.
+            return f"RUNNING ({state.reason})"
         if state is None or state.state != job_slots.QUEUED:
             return "RUNNING"
         # Only a memory waiter (admitted under the development switch) has a wait to report.

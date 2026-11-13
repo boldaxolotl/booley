@@ -138,10 +138,10 @@ def _seam(scene, monkeypatch) -> Any:
     """Fake only the synthesis Flow run; ``scene.outcome[selector]`` overrides its envelope."""
     from booley.mcp import synth_baseline_execution as module
 
-    def synthesize(_checkout, selector, _report_dir, _timeout_ms):
+    def synthesize(_checkout, selector, _report_dir, _timeout_ms, *, armed=False):
         scene.calls.append(selector)
         fingerprint = scene.fingerprints.get(selector) or _frozen(scene, selector)
-        return _envelope(fingerprint, **scene.outcome.get(selector, {}))
+        return _envelope(fingerprint, **scene.outcome.get(selector, {})), False
 
     monkeypatch.setattr(module, "_synthesize", synthesize)
     return module
@@ -538,9 +538,10 @@ def test_synthesize_runs_the_standalone_flow_and_reads_its_canonical_report(tmp_
         report = request.report_dir / "synth_top.json"
         report.parent.mkdir(parents=True)
         report.write_text(json.dumps({"implementation": _envelope("f1")}), encoding="utf-8")
+        return SimpleNamespace(outcome=SimpleNamespace(oom_killed=False))
 
     monkeypatch.setattr(AsicSynthesizeFlow, "execute", execute)
-    envelope = _synthesize(tmp_path, "top", tmp_path / "reports", 90_000)
+    envelope, oom_killed = _synthesize(tmp_path, "top", tmp_path / "reports", 90_000)
     ((request, adapter),) = seen
     assert (request.target, request.work_dir, request.timeout_ms) == ("top", tmp_path, 90_000)
     assert type(adapter).__name__ == "StandaloneFlowExecution"
@@ -548,3 +549,4 @@ def test_synthesize_runs_the_standalone_flow_and_reads_its_canonical_report(tmp_
     frozen = synthesis_recipe_args({}, default_recipe_args(), target="top")
     assert synthesis_recipe_args({}, request, target="top") == frozen
     assert envelope["recipe"]["fingerprint"] == "f1"
+    assert oom_killed is False

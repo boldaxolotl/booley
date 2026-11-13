@@ -33,6 +33,7 @@ from booley.flows.frozen_test_runs import current_declaration
 from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.memory_admission import (
     JOB_THREADS_ENV,
+    MemoryAdmissionPlan,
     job_threads_at_start,
     measure_memory_claim,
     memory_admission_enabled,
@@ -70,6 +71,7 @@ from booley.mcp.synth_baseline_execution import (
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.cpu_budget import available_cpu_count
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON
 from booley.runtime.git_ignore import ignored_paths
 from booley.runtime.process_group import (
     ProcessGroup,
@@ -495,6 +497,9 @@ def _observe_missing(checkout, path, request, runs, proof, execute) -> list[dict
                 if missing
                 else {"rows": [], "stamps": [stamp]}
             )
+            if observed.get("oom_requeue"):
+                # The final request document keeps that this baseline ran a second attempt.
+                request["oom_requeue"] = observed["oom_requeue"]
             after = DEFAULT_RESOLVERS.fingerprint(checkout, target=target)
             if (
                 contents_stamp(after, family.freshness_key) != stamp
@@ -538,6 +543,8 @@ def _publish_run(project, family, target, run, proof, cached, observed) -> dict[
             or "baseline Test Run produced no graded result"
         )
         result["reason"] = " ".join(str(reason).split())[:300]
+        if observed.get("oom_requeue"):
+            result["reason"] += f" ({observed['oom_requeue']})"
     else:
         key = family.result_key(target, run, proof["contents"], proof["protected_digest"])
         write_document(
@@ -553,17 +560,17 @@ def _measurement(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return next(({"measurement": row["measurement"]} for row in rows if "measurement" in row), {})
 
 
-def _memory_claim(
+def _memory_plan(
     executor: BaselineExecutor,
     job_class: str,
     booley_dir: Path,
     config: Mapping[str, object],
     work: tuple[Path, str, tuple[Any, ...]],
-) -> job_slots.MemoryClaim | None:
-    """The Memory Reservation a heavy baseline holds under the switch, else ``None``."""
+) -> MemoryAdmissionPlan | None:
+    """The Memory Reservation a heavy baseline plans under the switch, else ``None``."""
     if not memory_admission_enabled() or job_class != job_slots.CLASS_HEAVY:
         return None
-    return measure_memory_claim(booley_dir, config, executor.job_requests(*work)).claim
+    return measure_memory_claim(booley_dir, config, executor.job_requests(*work))
 
 
 def _slot_narrator(store: job_slots.SlotStore, job_class: str) -> Callable[[int | None], None]:
@@ -593,9 +600,32 @@ def _slot_narrator(store: job_slots.SlotStore, job_class: str) -> Callable[[int 
     return narrate
 
 
+def _restart_budget(request: Mapping[str, Any]) -> None:
+    """Give the Job a full ``BASELINE_TIMEOUT_S`` from now, as the flow-lock wait does.
+
+    The Job record's ``timeout_s`` grows by the time already used, so the
+    measurement budget, the child watchdog and every reader's deadline guard
+    agree on it.
+    """
+    from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
+    from booley.runtime import job_records
+
+    jobs = Path(request["jobs_root"])
+    job = job_records.read_record(request["job_id"], jobs)
+    started = None if job is None else job_records.parse_stamp(job.started_at)
+    if job is None or started is None:
+        raise ValueError("baseline Job has no valid watchdog start time")
+    job.timeout_s = BASELINE_TIMEOUT_S + math.ceil(time.time() - started)
+    job_records.write_record(job, jobs)
+
+
 @contextmanager
 def _background_slot(
-    owner: Mapping[str, Any], output: Path, work: tuple[Path, str, tuple[Any, ...]]
+    owner: Mapping[str, Any],
+    output: Path,
+    work: tuple[Path, str, tuple[Any, ...]],
+    *,
+    requeued: bool = False,
 ) -> Iterator[tuple[job_slots.SlotToken, int | None]]:
     """Hold one background-priority claim of the Flow's Job Class while measuring.
 
@@ -605,6 +635,11 @@ def _background_slot(
     a background Memory Reservation (sized from *work*, the ``(checkout,
     target, units)`` it measures) instead of a heavy slot. Yields the claim and
     the Job's thread count (``None`` without a Memory Reservation).
+
+    A *requeued* attempt (after an OOM kill) claims the whole Memory Budget to
+    run alone and carries the requeue reason. Its wait never spends the Job's
+    budget (a 24 h limit applies instead), and the budget restarts when it is
+    granted.
     """
     from booley.config.jobs import parse_caps
     from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
@@ -617,11 +652,19 @@ def _background_slot(
     job_class = executor.job_class()
     config = load_job_budget_config(booley_dir=booley_dir)
     store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), parse_caps(config))
-    memory = _memory_claim(executor, job_class, booley_dir, config, work)
-    if memory is not None:
+    plan = _memory_plan(executor, job_class, booley_dir, config, work)
+    memory = None
+    if plan is not None:
         job_class = job_slots.CLASS_MEMORY
-    deadline = time.monotonic() + _remaining_seconds(output)
+        memory = (plan.alone() if requeued else plan).claim
+    deadline = time.monotonic() + (QUEUE_WAIT_LIMIT_S if requeued else _remaining_seconds(output))
+    narrate = _slot_narrator(store, job_class)
     pid = os.getpid()
+
+    def on_queued(position: int | None) -> None:
+        narrate(position)
+        if requeued:
+            _restart_budget(owner)
 
     try:
         token = store.acquire(
@@ -632,9 +675,10 @@ def _background_slot(
             # Twice the Job budget keeps the reaper's holder deadline a strict
             # upper bound of any legitimate measurement.
             timeout_s=2.0 * BASELINE_TIMEOUT_S,
-            on_queued=_slot_narrator(store, job_class),
+            on_queued=on_queued,
             should_abort=lambda: time.monotonic() >= deadline,
             memory=memory,
+            queue_reason=OOM_REQUEUE_REASON if requeued else None,
             job=None
             if memory is None
             else job_slots.JobLabel(owner["job_id"], family_name, work[1]),
@@ -644,10 +688,86 @@ def _background_slot(
             f"baseline Job exceeded its total execution budget while waiting for a {job_class} slot"
         ) from exc
     try:
+        if requeued:
+            _restart_budget(owner)
         threads = None if memory is None else job_threads_at_start(store, available_cpu_count())
         yield token, threads
     finally:
         store.release(token)
+
+
+def _begin_requeued_attempt(output: Path, family: BaselineFamily) -> None:
+    """Discard what the OOM-killed attempt left, so only the final attempt is read."""
+    print(
+        f"[requeue] baseline {OOM_REQUEUE_REASON}; the killed attempt's results are discarded",
+        file=sys.stderr,
+        flush=True,
+    )
+    request_path = output / "request.json"
+    write_document(
+        request_path, read_document(request_path, None) | {"oom_requeue": OOM_REQUEUE_REASON}
+    )
+    (output / f"{family.child_stem}-result.json").unlink(missing_ok=True)
+    reports = output / "reports"
+    if reports.exists():
+        # Kept as evidence; the final attempt writes a fresh ``reports``.
+        reports.rename(output / "reports-killed")
+
+
+def _run_child_attempt(
+    checkout: Path,
+    target: str,
+    runs: tuple[TestRun, ...],
+    output: Path,
+    *,
+    requeued: bool,
+) -> tuple[dict[str, Any], bool]:
+    """One child measurement under its own claim; returns its result and whether it was armed.
+
+    The child is armed to stop reading results after an own OOM kill when this
+    attempt holds a Memory Reservation and is not already the requeued one.
+    """
+    from booley.runtime.detached_job import detached_environment
+    from booley.runtime.pid import capture_process_identity
+
+    request_path = output / "request.json"
+    owner = read_document(request_path, None)
+    family = family_for_schema(owner["schema"])
+    document = output / f"{family.child_stem}-request.json"
+    command = [sys.executable, "-m", "booley.mcp.sim_baseline_execution", str(document)]
+    with _background_slot(owner, output, (checkout, target, runs), requeued=requeued) as (
+        token,
+        threads,
+    ):
+        armed = not requeued and token.job_class == job_slots.CLASS_MEMORY
+        write_document(
+            document,
+            {
+                "schema": family.schema,
+                "checkout": str(checkout),
+                "target": target,
+                "identity": {"runs": [family.unit_document(run) for run in runs]},
+                "output": str(output),
+            }
+            | ({"armed": True} if armed else {}),
+        )
+        environment = detached_environment() | {
+            job_slots.INHERITED_SLOT_ENV: f"{token.job_class}/{token.path.name}"
+        }
+        if threads is not None:
+            environment[JOB_THREADS_ENV] = str(threads)
+        process = subprocess.Popen(command, env=environment, **new_group_kwargs())
+        group = capture_process_group(process)
+        identity = capture_process_identity(process.pid)
+        write_document(
+            request_path,
+            owner | {"child_process": None if identity is None else identity.to_payload()},
+        )
+        try:
+            process.wait(timeout=_remaining_seconds(output))
+            return read_document(output / f"{family.child_stem}-result.json", family), armed
+        finally:
+            terminate_process_group(process, group)
 
 
 def execute_child(
@@ -656,45 +776,17 @@ def execute_child(
     """A watchdog survives MCP exit and cleans the whole simulator process group.
 
     The child runs under the supervisor's background slot claim, so its own
-    Flow admission claims nothing (``INHERITED_SLOT_ENV``).
+    Flow admission claims nothing (``INHERITED_SLOT_ENV``). When an armed child
+    reports an own OOM kill, the killed attempt is discarded and the baseline
+    runs once more, alone; only that final attempt's result is returned.
     """
-    from booley.runtime.detached_job import detached_environment
-
-    request_path = output / "request.json"
-    owner = read_document(request_path, None)
-    family = family_for_schema(owner["schema"])
-    document = output / f"{family.child_stem}-request.json"
-    write_document(
-        document,
-        {
-            "schema": family.schema,
-            "checkout": str(checkout),
-            "target": target,
-            "identity": {"runs": [family.unit_document(run) for run in runs]},
-            "output": str(output),
-        },
-    )
-    command = [sys.executable, "-m", "booley.mcp.sim_baseline_execution", str(document)]
-    with _background_slot(owner, output, (checkout, target, runs)) as (token, threads):
-        environment = detached_environment() | {
-            job_slots.INHERITED_SLOT_ENV: f"{token.job_class}/{token.path.name}"
-        }
-        if threads is not None:
-            environment[JOB_THREADS_ENV] = str(threads)
-        process = subprocess.Popen(command, env=environment, **new_group_kwargs())
-        group = capture_process_group(process)
-        from booley.runtime.pid import capture_process_identity
-
-        identity = capture_process_identity(process.pid)
-        write_document(
-            request_path,
-            owner | {"child_process": None if identity is None else identity.to_payload()},
-        )
-        try:
-            process.wait(timeout=_remaining_seconds(output))
-            return read_document(output / f"{family.child_stem}-result.json", family)
-        finally:
-            terminate_process_group(process, group)
+    result, armed = _run_child_attempt(checkout, target, runs, output, requeued=False)
+    if not (armed and result.get("oom_killed") is True):
+        return result
+    family = family_for_schema(read_document(output / "request.json", None)["schema"])
+    _begin_requeued_attempt(output, family)
+    final, _ = _run_child_attempt(checkout, target, runs, output, requeued=True)
+    return final | {"oom_requeue": OOM_REQUEUE_REASON}
 
 
 def reap_owned_checkout(request: Mapping[str, Any], supervisor_pid: int) -> None:
@@ -807,6 +899,10 @@ def simulate(request: Mapping[str, Any]) -> dict[str, Any]:
         ),
         adapter=adapter,
     )
+    oom_killed = result.outcome.oom_killed
+    if oom_killed and request.get("armed") is True:
+        # The supervisor discards this attempt; reading its aborted Campaigns could only raise.
+        return oom_killed_result(SCHEMA)
     rows: list[dict[str, Any]] = []
     for campaign in adapter.campaigns:
         durable = read_unpublished_results(campaign.manifest_path, campaign.manifest_sha256)
@@ -817,6 +913,18 @@ def simulate(request: Mapping[str, Any]) -> dict[str, Any]:
         "rows": rows,
         "stamps": adapter.stamps,
         "reason": result.outcome.report_text,
+        "oom_killed": oom_killed,
+    }
+
+
+def oom_killed_result(schema: str) -> dict[str, Any]:
+    """What an armed child returns after an own OOM kill: no rows, the kill marked."""
+    return {
+        "schema": schema,
+        "rows": [],
+        "stamps": [],
+        "reason": "measurement OOM-killed",
+        "oom_killed": True,
     }
 
 
