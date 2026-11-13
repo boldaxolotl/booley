@@ -248,8 +248,11 @@ The Dashboard has three windows; press `←` or `→` to switch:
   to `job.log`, shown as a link.
 - **Targets:** the Targets of one worktree, with their core and the Flows that
   can drive them. Press `Enter` on a Target for its filesets, tests, Test
-  Variants, and constraints. The **Worktree** item in the top bar picks the
-  worktree: those with a connected session come first, the main checkout last.
+  Variants, and constraints. The detail ends with the Flows that can drive the
+  Target: press `↓` past its end, then `Enter` on a Flow to open the Run form
+  with the worktree and Target filled in; `Esc` there returns to the detail.
+  The **Worktree** item in the top bar picks the worktree: those with a
+  connected session come first, the main checkout last.
 
 The **Run** item in the top bar starts a built-in Booley Flow as a Standalone
 Job. Pick the worktree and the Flow, then fill in the form the Dashboard
