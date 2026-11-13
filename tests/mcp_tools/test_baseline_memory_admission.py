@@ -697,7 +697,7 @@ def test_requeued_baseline_that_waits_too_long_to_run_alone_names_that_limit(
     scene.on_popen = on_popen
     monkeypatch.setattr(execution, "QUEUE_WAIT_LIMIT_S", 0.5)
     try:
-        with pytest.raises(RuntimeError, match="waited over .* to run alone") as raised:
+        with pytest.raises(RuntimeError, match=r"waited over .* to run alone") as raised:
             _execute(scene)
     finally:
         scene.store.release(holder[0])
