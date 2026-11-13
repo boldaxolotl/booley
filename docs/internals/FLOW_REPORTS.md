@@ -506,7 +506,7 @@ Job report `detail` fields:
 |---|---|
 | `target`, `tests`, `seed` | The Simulation Target, the display names of the tests of its suite, and the seed. |
 | `detected`, `not_detected`, `invalid` | Mutant counts. `detected_timeout` is the subset of `detected` that ran past the baseline-scaled limit. |
-| `min_detected`, `total_requested`, `total_valid` | The pass threshold, the requested count, and `detected + not_detected` (invalid Mutants excluded). |
+| `min_detected`, `total_requested`, `total_scored`, `total_valid` | The pass threshold, the requested count (the resolved `--count`), the number of Mutants scored (fewer than requested after a `shortfall`; invalid Mutants included), and `detected + not_detected` (invalid Mutants excluded). |
 | `identity` | What reproduces the run: `scope_hashes` (file to digest), `generator_version`, `pyslang_version`, `seed`, `count`, and on a Verilator Target `verilator_version` (the first line of `verilator --version`, `unknown` if it cannot be read). |
 | `classified` | Per Mutant: `index`, `id`, `category`, `file`, `line`, `status` (`detected`, `not_detected`, `invalid`, `untested`), `timed_out`, `sim_output_snippet`, `log`, `first_killing_test`. |
 | `auto`, `formula_count`, `budget_capped`, `source_size_budget` | `--count auto` only: how the count was derived. |

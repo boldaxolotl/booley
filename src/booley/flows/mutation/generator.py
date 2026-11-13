@@ -70,25 +70,6 @@ class MutantSelection:
         """The selected Mutants: the first ``requested`` candidates."""
         return self.ranked[: self.requested]
 
-    @property
-    def available(self) -> int:
-        """How many candidate Mutants exist."""
-        return len(self.ranked)
-
-    @property
-    def shortfall(self) -> str | None:
-        """A message when fewer candidates exist than were requested, else None."""
-        return shortfall_message(self.available, self.requested)
-
-
-def shortfall_message(available: int, requested: int) -> str | None:
-    """A message when ``available`` Mutants fall short of ``requested``, else None."""
-    if available >= requested:
-        return None
-    return (
-        f"only {available} candidate Mutants exist; returning all of them ({requested} requested)"
-    )
-
 
 def generate_mutants(
     root: Path,

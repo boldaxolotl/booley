@@ -174,7 +174,7 @@
     "shortfall": {
       "count": 50,
       "run": 41,
-      "message": "only 41 candidate Mutants exist; returning all of them (50 requested)",
+      "message": "only 41 Mutants could be scored (50 requested)",
       "message_source": "code",
       "threshold_by_doc": "ceil(0.8 x 50) = 40, which 33 detected cannot reach: the doc implies FAIL, exit 1; a PASS is a finding to record"
     }
