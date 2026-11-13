@@ -406,7 +406,7 @@ FORM_SCRIPTS: dict[str, FormScript] = {
     "synth": FormScript(
         steps=(
             ("target", "--target", "synth_fifo"),
-            ("toggle", "--fresh-openroad", ""),
+            ("toggle", "--no-cache", ""),
             ("choice", "--flatten/--no-flatten", "off"),
             ("choice", "--frontend", "slang"),
         ),
@@ -417,10 +417,10 @@ FORM_SCRIPTS: dict[str, FormScript] = {
             "--no-flatten",
             "--frontend",
             "slang",
-            "--fresh-openroad",
+            "--no-cache",
             "--repair-hold",
         ),
-        shown="--target synth_fifo --no-flatten --frontend slang --fresh-openroad --repair-hold",
+        shown="--target synth_fifo --no-flatten --frontend slang --no-cache --repair-hold",
     ),
     "fpga": FormScript(
         steps=(

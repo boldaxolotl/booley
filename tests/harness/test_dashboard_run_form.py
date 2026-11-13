@@ -199,7 +199,7 @@ def test_command_argv_writes_fields_in_group_order_then_extra_words():
         "dry_run": "on",
         "flatten": "off",
         "frontend": "slang",
-        "fresh_openroad": "on",
+        "no_cache": "on",
         "baseline": "  main ",
     }
     assert run_form.command_argv(form, values, "--report-dir 'out dir' -q") == (
@@ -211,7 +211,7 @@ def test_command_argv_writes_fields_in_group_order_then_extra_words():
         "--no-flatten",
         "--frontend",
         "slang",
-        "--fresh-openroad",
+        "--no-cache",
         "--report-dir",
         "out dir",
         "-q",
