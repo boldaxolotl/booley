@@ -40,6 +40,7 @@ from booley.harness.setup.line_endings import (
     LineEndingActionState,
     LineEndingMode,
     LineEndingObservationCode,
+    LineEndingRefusalReason,
     LineEndingReport,
     LineEndingStatus,
     RepositoryLineEndingReport,
@@ -72,11 +73,11 @@ _OBSERVATION_MESSAGES = {
 
 _ACTION_LINES = {
     (LineEndingActionState.COMPLETED, LineEndingActionKind.PIN_AUTOCRLF): (
-        (ok, "core.autocrlf=false (repo-local; CRLF will not come back on checkout)"),
+        (ok, "core.autocrlf=false, core.eol=lf (repo-local; CRLF will not come back on checkout)"),
     ),
     (LineEndingActionState.COMPLETED, LineEndingActionKind.NORMALIZE_FILES): (
         (note, "detected {count} tracked file(s) are checked out with CRLF"),
-        (ok, "normalized {count} file(s) to LF atomically — tree is container-safe"),
+        (ok, "normalized {count} file(s) to LF — tree is container-safe"),
     ),
     (LineEndingActionState.COMPLETED, LineEndingActionKind.REFRESH_INDEX): (
         (ok, "refreshed stale Git index metadata for {count} tracked file(s)"),
@@ -86,10 +87,10 @@ _ACTION_LINES = {
         (info, "  commit it — the rule only travels to your team through git"),
     ),
     (LineEndingActionState.PLANNED, LineEndingActionKind.PIN_AUTOCRLF): (
-        (info, "  would set core.autocrlf=false"),
+        (info, "  would set core.autocrlf=false and core.eol=lf"),
     ),
     (LineEndingActionState.PLANNED, LineEndingActionKind.NORMALIZE_FILES): (
-        (info, "  would normalize {count} tracked file(s) to LF atomically"),
+        (info, "  would normalize {count} tracked file(s) to LF"),
     ),
     (LineEndingActionState.PLANNED, LineEndingActionKind.REFRESH_INDEX): (
         (warn, "would refresh stale Git index metadata for {count} tracked file(s)"),
@@ -138,7 +139,8 @@ def _render_line_ending_observations(report: RepositoryLineEndingReport) -> None
             warn(message)
 
 
-def _render_line_ending_action(action: LineEndingActionResult) -> None:
+def _render_attributes_action(action: LineEndingActionResult) -> bool:
+    """Render a migration or repository-local publication; False for any other action."""
     if action.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES:
         if action.state is LineEndingActionState.PLANNED:
             info(f"  would migrate line-ending default: {action.detail}")
@@ -146,7 +148,7 @@ def _render_line_ending_action(action: LineEndingActionResult) -> None:
             ok(f"migrated line-ending default: {action.detail}")
         else:
             warn(f"attributes migration {action.state}: {action.detail}")
-        return
+        return True
     if (
         action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
         and action.target
@@ -159,6 +161,22 @@ def _render_line_ending_action(action: LineEndingActionResult) -> None:
             info(f"  would add '{GITATTRIBUTES_RULE}' to {destination}")
         elif action.detail:
             warn(f"attributes publication {action.state}: {action.detail}")
+        return True
+    return False
+
+
+def _render_line_ending_action(action: LineEndingActionResult) -> None:
+    if _render_attributes_action(action):
+        return
+    if (
+        action.kind is LineEndingActionKind.NORMALIZE_FILES
+        and action.state is LineEndingActionState.COMPLETED
+        and not action.count
+    ):
+        return
+    if action.reason is LineEndingRefusalReason.NOT_LINE_ENDING_ONLY:
+        # Some files were already normalized, so "would leave untouched" would be false.
+        warn(action.detail or "left tracked files untouched")
         return
     lines = _ACTION_LINES.get((action.state, action.kind))
     if lines is not None:
@@ -243,9 +261,7 @@ def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
             if refused.kind is LineEndingActionKind.NORMALIZE_FILES
             else f"{refused.kind.value} refused"
         )
-        if refused.kind is LineEndingActionKind.NORMALIZE_FILES and detail.startswith(
-            "working tree has"
-        ):
+        if refused.reason is LineEndingRefusalReason.DIRTY_TREE:
             detail = "dirty tree"
         return detail
     observation_detail = _unsafe_line_ending_observation_detail(report)
@@ -267,6 +283,10 @@ def _safe_line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
         (detail for kind, detail in _COMPLETED_ACTION_DETAILS if kind in completed),
         None,
     )
+    if completed_detail is None and report.actions:
+        planned = {action.kind for action in report.actions}
+        if planned == {LineEndingActionKind.PIN_AUTOCRLF}:
+            return "core.autocrlf/core.eol pin pending"
     return (
         completed_detail or "+".join(action.kind.value for action in report.actions) or "no CRLF"
     )
@@ -320,7 +340,12 @@ def _render_repository_line_endings(report: RepositoryLineEndingReport) -> str |
     for action in report.actions:
         _render_line_ending_action(action)
     unknown = bool(unknown_attributes_policy_details(report))
-    if report.status is LineEndingStatus.SAFE and not report.actions and not unknown:
+    only_planned_pin = all(
+        action.kind is LineEndingActionKind.PIN_AUTOCRLF
+        and action.state is LineEndingActionState.PLANNED
+        for action in report.actions
+    )
+    if report.status is LineEndingStatus.SAFE and only_planned_pin and not unknown:
         ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
     if report.status is LineEndingStatus.UNSAFE or unknown:
         return f"{repository.role}: {_line_ending_summary_detail(report)}"
