@@ -86,7 +86,7 @@ def expand_run_directory(
 ) -> RunDirectory:
     """Expand the four supported placeholders and canonicalize collisions."""
     values = {
-        "campaign": campaign_id,
+        "record": campaign_id,
         "target": target_key,
         "test": work_item_key,
         "attempt": attempt_key,

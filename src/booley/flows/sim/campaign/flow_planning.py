@@ -514,7 +514,7 @@ def _work_items(
 
 def _collision_template(configured: str) -> str:
     rendered = configured
-    for field in ("campaign", "target", "test", "attempt"):
+    for field in ("record", "target", "test", "attempt"):
         rendered = rendered.replace("{" + field + "}", field)
     return str(Path(rendered).absolute()) if Path(rendered).is_absolute() else rendered
 

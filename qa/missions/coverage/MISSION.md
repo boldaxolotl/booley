@@ -40,7 +40,7 @@ it before area 1.
   it as-is; `measurements.py` and `approvals.py` take the nested Campaign manifest it points to, and run ids are
   `run:NNN:<test>`. Resolve both with RUNBOOK.md "Campaign paths".
 - Coverage Analyst CLI:
-  `booley specialist coverage_analyst --campaign <t>/coverage.json [--instruction <q>] [--report-dir <owned>]`.
+  `booley specialist coverage_analyst --record <t>/coverage.json [--instruction <q>] [--report-dir <owned>]`.
 - Produce the named baselines each area needs fresh, from the RUNBOOK.md table (e.g. `baseline.native` =
   `booley flow sim --target sim_toggle --test half --coverage` → pass, 4/8 toggle, `not_requested`). If one
   fails, record it and build the closest state manually instead of skipping the area.
@@ -177,7 +177,7 @@ Try:
   (Target reference; manifest faults rebind it, point faults leave it unchanged), then run the Analyst CLI on that reference → rejected before
   the model: v1, v2, v3, v4, missing points, truncated gzip, trailing data, symlink, invalid final record,
   duplicate point, wrong evaluation (forged pass), resource ceiling (over-ceiling decompression).
-- Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage-campaign/coverage.json`, `rename
+- Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage-record/coverage.json`, `rename
   …/simulation.json` and terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;
   fresh run gets a new number, no resume.
@@ -267,7 +267,7 @@ Try:
   Instruction-like source comment → data.
 - Source trust: full closure → verified excerpts; missing RTL, changed RTL/TB/`rtl/constants.svh`/core,
   unsafe symlink → whole report downgraded.
-- Input rejects before model: no `--campaign`, Target name, `latest`, point store gz, VCD,
+- Input rejects before model: no `--record`, Target name, `latest`, point store gz, VCD,
   `coverage_report.json`, wrong Target/invocation path, per-call policy or waiver dir,
   missing/incomplete/other-Target `simulation.json`. Completed Target analyzable while sibling still runs.
 - Isolation: Codex/Claude sessions expose only `coverage_evidence`, empty cwd, no Project skills; missing

@@ -102,7 +102,8 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert campaign.points[0].hits_by_run == {"run:001:reset@1": 2, "run:002:wrap@1": 2}
     simulation = coverage_mapping_document(outcome.detail)
     assert simulation["passed"] is True
-    assert simulation["coverage_campaign"] == "coverage.json"
+    assert simulation["coverage_record"] == "coverage.json"
+    assert "coverage_campaign" not in simulation
     assert "source_rollups" not in simulation
     assert "source_rollups" not in outcome.detail
     assert not (outcome.campaign_path.parent / "simulation.json").exists()

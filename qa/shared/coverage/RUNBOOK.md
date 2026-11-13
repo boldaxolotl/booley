@@ -7,9 +7,10 @@ counts as a finding; this file says exactly how. Goal-child rules live in
 [GOAL-CHILD.md](../GOAL-CHILD.md), and the Simulation Campaign recovery cases
 of area 6 in [simulation-campaign/RUNBOOK.md](simulation-campaign/RUNBOOK.md).
 
-Code, messages and files still say "Campaign" for a [Coverage
-Record](../../../src/booley/flows/sim/GLOSSARY.md) (the rename has not landed),
-so this runbook does too. `<asset>` below is `qa/shared/coverage/` in the
+Stored files and schemas still say "Campaign" for a [Coverage
+Record](../../../src/booley/flows/sim/GLOSSARY.md) in places (the docs rename
+has not landed), so this runbook does too, except where it names the Analyst
+input `--record`. `<asset>` below is `qa/shared/coverage/` in the
 Booley checkout under test.
 
 ## Fixed inputs and preparation
@@ -103,18 +104,18 @@ skip the large-Campaign cases; never shrink the workload.
 
 The Flow reports `<reports>/sim/<N>/targets/<target>/coverage.json`, where
 `<reports>` is the report root (`--report-dir`). That file is a
-`booley.coverage-campaign-reference/v1` pointer, not the Campaign. Pass it
+`booley.coverage-record-reference/v1` pointer, not the Campaign. Pass it
 unchanged to the Coverage Analyst. The fixture scripts
 `evaluator/measurements.py` and `faults/approvals.py` need the nested
-Campaign manifest it points to (`booley.coverage-campaign/v5`):
+Campaign manifest it points to (`booley.coverage-record/v1`):
 
 ```bash
-python3 -c 'import json,sys,pathlib; r=pathlib.Path(sys.argv[1]); print(r.parent / json.loads(r.read_text())["coverage_campaign"]["path"])' <target>/coverage.json
+python3 -c 'import json,sys,pathlib; r=pathlib.Path(sys.argv[1]); print(r.parent / json.loads(r.read_text())["coverage_record"]["path"])' <target>/coverage.json
 ```
 
 `path_base` is `origin_target`: the path resolves against the Target directory
 that wrote the reference. The result is
-`.../campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/coverage.json`.
+`.../record/work-items/<item>/attempts/<attempt>/coverage-record/coverage.json`.
 That Campaign directory holds `coverage-points.jsonl.gz`, `native/raw/`,
 `native/merged/`, `hooks/` and, once pruning starts, the `availability.json`
 sidecar. Run IDs are the manifest's `tests.runs[].id`: the run ordinal plus
@@ -290,7 +291,7 @@ survives.
 
 | Fault | Operation / destination / controller gate |
 |---|---|
-| Campaign publication | `link` to the nested Campaign manifest (suffix `/coverage-campaign/coverage.json`); fail before the link. Point-store publication has already completed. The Target `coverage.json` reference is created afterward, by an exclusive open, not a link. |
+| Campaign publication | `link` to the nested Campaign manifest (suffix `/coverage-record/coverage.json`); fail before the link. Point-store publication has already completed. The Target `coverage.json` reference is created afterward, by an exclusive open, not a link. |
 | Simulation publication | `rename` to the exact Target `/simulation.json`; fail before the replacement. |
 | Acceptance state | `rename` to the captured Goal Record `goals/<record-id>/booley_state.json`, gate `acceptance`; fail only when the temporary JSON adds an acceptance transaction absent from `--baseline-state`. |
 | Terminal progress | `rename` to the exact invocation `/progress.json`, gate `complete`; fail only when the temporary JSON has `complete: true`. Earlier writes pass through. |
@@ -410,7 +411,7 @@ deeper validation works. Restore by discarding only that copy, recreating it
 from the original, and analyzing the valid pair successfully.
 
 Analyst path faults use the exact invalid form in their name: missing-argument
-omits `--campaign`; target-name passes `sim_hdl`; latest passes the literal
+omits `--record`; target-name passes `sim_hdl`; latest passes the literal
 `latest`; point-store and waveform pass the actual owned gzip and VCD paths;
 legacy-flat-report passes a real run-owned JSON file named
 `coverage_report.json` that is not a Campaign reference. Wrong-Target and wrong-invocation cases move the valid

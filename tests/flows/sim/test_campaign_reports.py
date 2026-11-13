@@ -281,7 +281,7 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     if failure:
         assert flow._simulation_campaign_outcomes == ()
     else:
-        campaign = report["detail"]["campaigns"]["sim_0"]
+        campaign = report["detail"]["records"]["sim_0"]
         assert all(item["cycle_count"] is None for item in campaign["observations"])
         assert campaign["artifacts"]["simulation"]["path_base"] == "external_origin_target"
 

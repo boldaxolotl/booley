@@ -394,7 +394,7 @@ def _validate_nested_reference(nested: Mapping[str, object]) -> None:
 
     raise_if_retired_schema(nested["schema"])
     if nested["path_base"] != "origin_target" or nested["schema"] != CAMPAIGN_SCHEMA:
-        raise CoverageCampaignReferenceError("coverage_campaign storage contract is invalid")
+        raise CoverageCampaignReferenceError("coverage_record storage contract is invalid")
     nested_path = _relative_path(nested["path"])
     refuse_older_nested_path(nested_path)
     nested_parts = Path(nested_path).parts
@@ -405,15 +405,15 @@ def _validate_nested_reference(nested: Mapping[str, object]) -> None:
         or nested_parts[5:] != (COVERAGE_RECORD_DIRECTORY, "coverage.json")
     ):
         raise CoverageCampaignReferenceError(
-            "coverage_campaign.path is not an attempt-scoped Campaign path"
+            "coverage_record.path is not an attempt-scoped Coverage Record path"
         )
     try:
-        size = require_int(nested["bytes"], field="coverage_campaign.bytes")
+        size = require_int(nested["bytes"], field="coverage_record.bytes")
     except BoundaryError as exc:
-        raise CoverageCampaignReferenceError("coverage_campaign.bytes is invalid") from exc
+        raise CoverageCampaignReferenceError("coverage_record.bytes is invalid") from exc
     if size < 1 or size > MAX_MANIFEST_BYTES:
-        raise CoverageCampaignReferenceError("coverage_campaign.bytes is invalid")
-    _digest(nested["sha256"], "coverage_campaign.sha256")
+        raise CoverageCampaignReferenceError("coverage_record.bytes is invalid")
+    _digest(nested["sha256"], "coverage_record.sha256")
     _string(nested["coverage_record_id"], "coverage_record.coverage_record_id")
 
 
@@ -449,7 +449,7 @@ def _digest(value: object, field: str) -> None:
 
 
 def _relative_path(value: object) -> str:
-    text = _string(value, "coverage_campaign.path")
+    text = _string(value, "coverage_record.path")
     path = Path(text)
     if (
         "\\" in text
@@ -458,7 +458,7 @@ def _relative_path(value: object) -> str:
         or not path.parts
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
-        raise CoverageCampaignReferenceError("coverage_campaign.path is not normalized")
+        raise CoverageCampaignReferenceError("coverage_record.path is not normalized")
     return text
 
 
@@ -467,9 +467,7 @@ def _contained_relative(root: Path, relative: str) -> Path:
     try:
         path.resolve().relative_to(root.resolve())
     except ValueError as exc:
-        raise CoverageCampaignReferenceError(
-            "coverage_campaign.path escapes origin Target"
-        ) from exc
+        raise CoverageCampaignReferenceError("coverage_record.path escapes origin Target") from exc
     for parent in (path, *path.parents):
         if parent == root.parent:
             break

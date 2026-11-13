@@ -37,13 +37,20 @@ The Linux container then sees every file as changed. `booley init` fixes this
 for you:
 
 - It turns off Git's line-ending conversion for the repository
-  (`core.autocrlf=false`).
+  (`core.autocrlf=false`) and pins `core.eol=lf`, so a checkout writes LF.
 - It adds the rule `* text=auto eol=lf` unless your repository already sets a
   line-ending policy. The rule goes in the root `.gitattributes`, which you
   commit only if you want to share it.
-- It rewrites files already checked out with CRLF, but only on a clean tree.
-  If init says the repair is unsafe, commit or stash your changes and run
-  `booley init` again.
+- It converts files already checked out with CRLF back to LF, but only on a
+  clean tree.
+
+If init does not convert the files, it says why. Commit or stash your
+uncommitted changes, or clear an `assume-unchanged` or `skip-worktree` flag
+(init names the file; use `git update-index --no-assume-unchanged <file>` or
+`git update-index --no-skip-worktree <file>`), then run `booley init` again.
+The Git settings above still apply. A file that Git cannot re-create with LF
+endings, for example one that a Git filter changes on every checkout, stays as
+it is, and init lists it.
 
 <details markdown>
 <summary>In stealth mode</summary>

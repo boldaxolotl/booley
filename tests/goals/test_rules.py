@@ -82,7 +82,7 @@ def test_work_dir_guidance_uses_default_interactive_catalog(monkeypatch):
         "BOOLEY_NESTED_AGENT": "1",
         "BOOLEY_NESTED_MCP_TOOLS": "coverage_evidence",
         "BOOLEY_MCP_TOOLS": "lint",
-        "BOOLEY_COVERAGE_CAMPAIGN": "campaign",
+        "BOOLEY_COVERAGE_RECORD": "campaign",
         "BOOLEY_COVERAGE_PROJECT": "/project",
     }.items():
         monkeypatch.setenv(key, value)
