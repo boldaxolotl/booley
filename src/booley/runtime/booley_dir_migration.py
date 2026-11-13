@@ -8,7 +8,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -37,6 +36,7 @@ from booley.runtime.directory_migration_git import (
     verify_registrations,
 )
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
+from booley.runtime.platform_paths import run_captured_bounded
 
 _INDEX = ".directory-relocation.json"
 _JOURNAL = "directory-migration.json"
@@ -491,22 +491,14 @@ def _running_sandboxes() -> list[dict[str, Any]]:
         raise BooleyLayoutError(
             "cannot inventory live Sandboxes; install/restore Docker before migration"
         )
-    result = subprocess.run(
-        ["docker", "ps", "-q"], capture_output=True, text=True, timeout=30, check=False
-    )
+    result = run_captured_bounded(["docker", "ps", "-q"], timeout=30)
     if result.returncode:
         raise BooleyLayoutError(
             "cannot inventory live Sandboxes; stop consumers and restore Docker before migration"
         )
     documents = []
     for container in result.stdout.split():
-        inspected = subprocess.run(
-            ["docker", "inspect", container],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        inspected = run_captured_bounded(["docker", "inspect", container], timeout=30)
         if inspected.returncode:
             raise BooleyLayoutError(f"cannot inspect live Sandbox {container}")
         try:

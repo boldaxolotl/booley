@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.subprocess_budget import run_bounded_child
 
@@ -67,6 +68,12 @@ _P, _S, _F = Severity.PASS, Severity.SKIP, Severity.FAIL
 _HEALTHY = {"vaporview": _VERIFIED, "error": None, "trusted": True}
 _UNTRUSTED_ERROR = "VaporView (lramseyer.vaporview) is not installed in this VS Code window"
 _UNTRUSTED = {"vaporview": None, "error": _UNTRUSTED_ERROR, "trusted": False}
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of vaporview."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, vaporview)
 
 
 @dataclass(frozen=True)
