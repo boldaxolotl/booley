@@ -46,8 +46,13 @@ from booley.flows.sim.campaign.planning import finalize_manifest
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.synth.flow import AsicSynthesizeFlow
-from booley.runtime import job_slots
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime import job_slots, oom_priority
+from booley.runtime.endpoint_execution import (
+    EndpointOutcome,
+    job_attempt,
+    job_stopped_after_oom,
+    note_job_oom_kill,
+)
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
     CLASS_MEMORY,
@@ -114,8 +119,14 @@ class _ObservedGroup(_ParallelGroup):
 
     def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
         with self.state.running():
-            self.state.observe(self.names[0])
-            return super().launch_snapshot(snapshot_root, run_cwd)
+            killed = self.state.observe(self.names[0])
+            outcome = super().launch_snapshot(snapshot_root, run_cwd)
+            if not killed:
+                return outcome
+            # The OOM killer took the simulator: the adapter reports a crash.
+            (test,) = outcome.tests
+            crashed = replace(test, verdict="fail", passed=False, crashed=True)
+            return replace(outcome, passed=False, verdict="fail", tests=(crashed,))
 
 
 class _ObservedExecution(_ParallelExecution):
@@ -137,6 +148,10 @@ class _Scenario:
     hooks: dict[str, Callable[[], None]] = field(default_factory=dict)
     # Per item: does its own child execution hold a Memory Reservation while it runs?
     holds_own: dict[str, bool] = field(default_factory=dict)
+    # Item name -> how many of its next launches the OOM killer takes; each launch's own
+    # claim (``(run_alone, queue_reason)``) and whether it was killed, in launch order.
+    kills: dict[str, int] = field(default_factory=dict)
+    launches: dict[str, list[tuple[bool, str | None, bool]]] = field(default_factory=dict)
     # Per item: the Job thread count it saw while it ran (``None`` when it has none).
     threads: dict[str, int | None] = field(default_factory=dict)
     # Memory claims held before the Flow was admitted, so the Flow's own count is below the cores.
@@ -154,8 +169,11 @@ class _Scenario:
         assert isinstance(self.admission.outer_token, job_slots.SlotToken)
         return self.admission.outer_token
 
-    def observe(self, name: str) -> None:
-        """Record who holds memory while item *name* runs (the Flow apart from the items)."""
+    def observe(self, name: str) -> bool:
+        """Record who holds memory while item *name* runs (the Flow apart from the items).
+
+        Returns whether the OOM killer takes this launch's simulator.
+        """
         holders = self.store.observe(CLASS_MEMORY)[0]
         flow = [_held(token) for token in holders if token.lease_id == self.flow_token.lease_id]
         items = [_held(token) for token in holders if token.lease_id != self.flow_token.lease_id]
@@ -168,6 +186,21 @@ class _Scenario:
         self.threads[name] = job_thread_count()
         if name in self.hooks:
             self.hooks[name]()
+        own = [token for token in holders if token.execution_id == own_id and own_id is not None]
+        killed = self.kills.get(name, 0) > 0
+        with self._gate:
+            self.launches.setdefault(name, []).append(
+                (
+                    bool(own and own[0].memory is not None and own[0].memory.run_alone),
+                    own[0].queue_reason if own else None,
+                    killed,
+                )
+            )
+            if killed:
+                self.kills[name] -= 1
+        if killed:
+            note_job_oom_kill()
+        return killed
 
     @contextmanager
     def running(self) -> Iterator[None]:
@@ -540,7 +573,9 @@ def test_lost_work_item_lease_stops_only_that_item(
             ]
             with scenario.store._lease_gate(own) as acquired:
                 assert acquired
-                own.path.unlink()
+                assert own.path.exists(), own.path  # nothing removed it first
+                # Retries Windows sharing violations like the production release.
+                assert scenario.store._unlink_entry(own.path), own.path
             scope = current_supervised_execution()
             assert scope is not None
             _wait_until(scope.cancelled)
@@ -833,7 +868,9 @@ def test_lost_work_item_lease_stops_only_that_item_while_other_lanes_run(
             ]
             with scenario.store._lease_gate(own) as acquired:
                 assert acquired
-                own.path.unlink()
+                assert own.path.exists(), own.path  # nothing removed it first
+                # Retries Windows sharing violations like the production release.
+                assert scenario.store._unlink_entry(own.path), own.path
             _wait_until(scope.cancelled)
 
         scenario.hooks["t01"] = _meet(together)
@@ -974,6 +1011,179 @@ def test_waiting_campaign_queues_one_item_claim_in_manifest_order(
     assert list(scenario.seen) == list(names)  # items start in manifest order
 
 
+def _item_attempts(scenario: _Scenario) -> dict[str, tuple[int, dict]]:
+    """Per item name: how many attempt directories it has, and its one published result."""
+    found: dict[str, tuple[int, dict]] = {}
+    for directory in sorted(scenario.record().root.glob("work-items/*")):
+        results = list(directory.glob("result.json"))
+        assert len(results) == 1, f"{directory.name} has {len(results)} results"
+        result = json.loads(results[0].read_bytes())
+        found[result["observations"][0]["test"]] = (
+            len(list(directory.glob("attempts/*/attempt.json"))),
+            result,
+        )
+    return found
+
+
+def _kill_item_run_beside_another(scenario: _Scenario, name: str, others: str, times: int) -> dict:
+    """Make the OOM killer take item *name*'s next *times* launches while *others* runs beside it.
+
+    Returns what *others* saw: whether its commands were told to stop after the kill.
+    """
+    scenario.kills[name] = times
+    together = _barrier(2)
+    killed_noted = threading.Event()
+    seen: dict[str, bool] = {}
+
+    def killed_item() -> None:
+        if scenario.kills[name] == times:  # first launch only: the peer is there once
+            together.wait()
+
+    def peer() -> None:
+        together.wait()
+        assert killed_noted.wait(_PARALLEL_SYNC_TIMEOUT_S)
+        seen["peer_stopped"] = job_stopped_after_oom()
+
+    scenario.hooks[name] = killed_item
+    scenario.hooks[others] = peer
+    original = scenario.observe
+
+    def observe(launched: str) -> bool:
+        killed = original(launched)
+        if killed:
+            killed_noted.set()
+        return killed
+
+    scenario.state.observe = observe
+    return seen
+
+
+def test_oom_killed_item_is_requeued_once_alone_and_the_campaign_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _scenario(tmp_path, monkeypatch, history=_history("sim"), cores=2) as scenario:
+        seen = _kill_item_run_beside_another(scenario, "gamma", "beta", 1)
+        with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
+            outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+        assert scenario.store.observe(CLASS_MEMORY)[1] == []
+
+    assert outcome.complete is True
+    attempts = _item_attempts(scenario)
+    # Two attempts, one result: the second one, which passed.
+    count, result = attempts["gamma"]
+    assert count == 2, "the killed item was not run again"
+    assert result["attempt_ordinal"] == 2
+    assert result["grade"] == "pass"
+    first, second = scenario.launches["gamma"]
+    assert first[2] and not second[2]
+    assert second[:2] == (True, "requeued after out-of-memory")  # alone, with its reason
+    assert first[:2] == (False, None)
+    # The item beside it was not stopped, and published its own single result.
+    assert seen == {"peer_stopped": False}
+    assert attempts["beta"][0] == 1 and len(scenario.launches["beta"]) == 1
+    assert attempts["alpha"][0] == 1
+    # The Flow's own attempt saw no kill: it is not requeued.
+    assert not flow_attempt.oom_killed.is_set() and not flow_attempt.stopped.is_set()
+
+
+def test_item_oom_killed_again_while_alone_fails_without_a_third_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _scenario(tmp_path, monkeypatch, history=_history("sim"), cores=2) as scenario:
+        _kill_item_run_beside_another(scenario, "gamma", "beta", 2)
+        with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
+            outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+
+    assert outcome.complete is True
+    count, result = _item_attempts(scenario)["gamma"]
+    assert count == 2, "the killed item was not run again"
+    assert result["attempt_ordinal"] == 2
+    assert result["state"] == "crash" and result["grade"] != "pass"
+    assert [launch[2] for launch in scenario.launches["gamma"]] == [True, True]
+    assert not flow_attempt.oom_killed.is_set()
+
+
+def test_oom_kill_under_the_flow_claim_keeps_the_flow_requeue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first item runs under the Flow's claim: its kill is the Flow's, as before."""
+    stopped_after: dict[str, bool] = {}
+
+    def record(name: str) -> Callable[[], None]:
+        def hook() -> None:
+            stopped_after[name] = job_stopped_after_oom()
+
+        return hook
+
+    with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
+        scenario.kills["alpha"] = 1
+        scenario.hooks["beta"] = record("beta")
+        scenario.hooks["gamma"] = record("gamma")
+        with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
+            scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+
+    attempts = _item_attempts(scenario)
+    assert attempts["alpha"][0] == 1  # published, not requeued as an item
+    assert flow_attempt.oom_killed.is_set() and flow_attempt.stopped.is_set()
+    assert stopped_after == {"beta": True, "gamma": True}
+
+
+def test_only_items_holding_their_own_claim_are_registered_for_oom_ranking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An own-claim item's commands rank as its own Job; the Flow-claim item's do not."""
+    registered: dict[str, int] = {}
+
+    def record(name: str) -> Callable[[], None]:
+        def hook() -> None:
+            holders, _waiters = scenario.store.observe(CLASS_MEMORY)
+            ranked = oom_priority._item_roots({token.lease_id for token in holders})
+            registered[name] = len(ranked)
+
+        return hook
+
+    with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
+        for name in NAMES:
+            scenario.hooks[name] = record(name)
+        with _deadline(scenario):
+            scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+
+    # The first item runs under the Flow's claim; the others hold one each.
+    assert registered == {"alpha": 0, "beta": 1, "gamma": 1}
+
+
+def test_item_failing_without_an_oom_kill_is_not_requeued(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with (
+        _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario,
+        job_attempt(stop_on_oom=True) as flow_attempt,
+        _deadline(scenario),
+    ):
+        outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+
+    assert outcome.complete is True
+    attempts = _item_attempts(scenario)
+    assert {name: count for name, (count, _) in attempts.items()} == dict.fromkeys(NAMES, 1)
+    assert attempts["beta"][1]["grade"] == "fail"  # the fake's own failing Test
+    assert not flow_attempt.oom_killed.is_set()
+
+
+def test_switch_unset_oom_noted_item_runs_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _scenario(tmp_path, monkeypatch, history=_history("sim"), switch=False) as scenario:
+        scenario.kills["beta"] = 1
+        with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
+            scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+        assert scenario.store.observe(CLASS_MEMORY) == ([], [])
+
+    attempts = _item_attempts(scenario)
+    assert {name: count for name, (count, _) in attempts.items()} == dict.fromkeys(NAMES, 1)
+    assert not any(scenario.holds_own.values())  # no item took a claim
+    assert flow_attempt.oom_killed.is_set()  # the kill marks the Flow's attempt, as today
+
+
 # --- Each item's own thread count (#3788) ---
 
 EIGHT_CORES = 8
@@ -1014,12 +1224,11 @@ def test_two_items_building_in_parallel_each_get_half_the_cores(
 
         def first_waits_for_a_sibling() -> None:
             # t01 is admitted alone; t02 is then admitted beside it, and t03 (which would
-            # not fit beside both) only after t01 returns its claim.
+            # not fit beside both) only after t01 returns its claim. t01 holds on until t02
+            # has fixed its thread count: that count is read a moment after t02's claim is
+            # admitted, and a t01 that returned sooner would leave t02 the whole machine.
             _jobs_option(scenario, "t01")()
-            _wait_until(
-                lambda: len(scenario.store.observe(CLASS_MEMORY)[0]) >= 3,
-                _PARALLEL_SYNC_TIMEOUT_S,
-            )
+            _wait_until(lambda: "t02" in scenario.threads, _PARALLEL_SYNC_TIMEOUT_S)
 
         scenario.hooks["t01"] = first_waits_for_a_sibling
         together = _barrier(2)
