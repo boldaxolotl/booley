@@ -53,7 +53,7 @@ baseline: main
   ──────────   ────────   ─────   ─────────   ─────   ───────   ───────────   ─────   ──────
   synth_core   45.2 kGE   +2.7%   2,380 ps    +3.5%   420 MHz   +0.120 ns     61.0s   PASS
 
-  synth_core: 12,345 cells, hold slack +0.020 ns, reg2reg Fmax 400 MHz
+  synth_core: 12,345 cells, hold slack +0.020 ns, reg2reg Fmax 420 MHz
   synth_core: log: .booley/flow-reports/synth/3/artifacts/synth_synth_core/run.log
 
 RESULT: PASS
