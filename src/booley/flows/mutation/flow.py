@@ -56,7 +56,6 @@ from booley.flows.mutation.generator import (
     Mutant,
     generate_mutants,
     parser_version,
-    shortfall_message,
 )
 from booley.flows.mutation.operators import (
     MutantGeneratorError,
@@ -651,7 +650,7 @@ class RunResultInputs:
     #: What reproduces the Mutants: scope hashes, generator and pyslang
     #: versions, seed and requested count.
     identity: dict[str, Any] = field(default_factory=dict)
-    #: The generator's note when fewer candidate Mutants exist than requested.
+    #: The note when fewer Mutants were scored than requested.
     shortfall: str | None = None
     #: Nothing was killed, yet every mutation is provably live — the Target's
     #: tests simply never exercise this scope (SETUP-F-38).
@@ -1215,7 +1214,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             tester_elapsed=sweep.elapsed,
             variants=variants,
             identity=identity,
-            shortfall=shortfall_message(count, plan.count),
+            shortfall=_shortfall_message(count, plan.count),
             coverage_gap=self._is_variant_coverage_gap(summary, plan.min_detected),
             evidence=self._variant_evidence(variants),
             equivalent_dropped=sweep.dropped,
@@ -1444,7 +1443,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             work_dir=plan.work_dir,
             summary=inputs.summary,
             min_detected=plan.min_detected,
-            count=plan.count,
+            requested=plan.count,
         )
         detail["equivalent_dropped"] = inputs.equivalent_dropped
         self._attach_campaign_artifacts(plan, inputs, detail)
@@ -2371,7 +2370,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         valid_count = summary.detected_count + summary.not_detected_count
         passed = summary.detected_count >= min_detected
 
-        detail = _mutation_detail(summary, min_detected, count, valid_count)
+        detail = _mutation_detail(summary, min_detected, plan.count, valid_count)
         detail.update(
             {
                 "target": target,
@@ -2784,7 +2783,7 @@ def _failure_detail(
     work_dir: Path,
     summary: MutationSummary | None = None,
     min_detected: int = 0,
-    count: int = 0,
+    requested: int = 0,
     log_tail: str = "",
     evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -2803,7 +2802,7 @@ def _failure_detail(
     }
     if summary is not None:
         valid_count = summary.detected_count + summary.not_detected_count
-        detail.update(_mutation_detail(summary, min_detected, count, valid_count))
+        detail.update(_mutation_detail(summary, min_detected, requested, valid_count))
         detail["classified"] = summary.classify()
     if evidence:
         detail["evidence"] = evidence
@@ -2856,17 +2855,33 @@ def _spec_of(index: int, mutant: Mutant) -> MutationSpec:
 def _mutation_detail(
     summary: MutationSummary,
     min_detected: int,
-    count: int,
+    requested: int,
     valid_count: int,
 ) -> dict[str, Any]:
+    """The tally fields.
+
+    ``total_requested`` is the ``--count``; ``total_scored`` the Mutants kept (invalid included).
+    """
     return {
         "detected": summary.detected_count,
         "not_detected": summary.not_detected_count,
         "invalid": summary.invalid_count,
         "min_detected": min_detected,
-        "total_requested": count,
+        "total_requested": requested,
+        "total_scored": len(summary.specs),
         "total_valid": valid_count,
     }
+
+
+def _shortfall_message(scored: int, requested: int) -> str | None:
+    """The note when ``scored`` Mutants fall short of ``requested``, else None.
+
+    One text for every cause (a generator shortfall or an equivalent drop), and it
+    claims nothing about how many candidates exist.
+    """
+    if scored >= requested:
+        return None
+    return f"only {scored} Mutants could be scored ({requested} requested)"
 
 
 def _mutant_timeout(baseline_s: float) -> int:

@@ -78,7 +78,7 @@ Try:
 - `--count auto --dry-run` at the default timeout and with `--timeout 10m`,
   `1m`, `1h`: compare with the `auto` cases, and check that the dry run
   explains the count it chose.
-- `--count 50`: all 41 run, the shortfall line matches `selection.shortfall`.
+- `--count 50`: all 41 run, the shortfall line is `only 41 Mutants could be scored (50 requested)`.
 Look for: a wrong operator order, an `auto` count off the oracle, a silent
 shortfall.
 

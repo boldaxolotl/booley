@@ -22,6 +22,7 @@ import subprocess
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.flows.runtime_reality import FlowRuntimeInspectionRequest
 from booley.runtime import session_runtime
+from booley.runtime.platform_paths import run_captured_bounded
 
 __all__ = ["inspect_vivado_startup"]
 
@@ -35,12 +36,8 @@ def inspect_vivado_startup(request: FlowRuntimeInspectionRequest) -> DiagnosticR
         return findings.report()
     marker = "BOOLEY_VIVADO_STARTUP_" + secrets.token_hex(16)
     try:
-        result = subprocess.run(
-            request.sandbox_command(_startup_command(marker)),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+        result = run_captured_bounded(
+            request.sandbox_command(_startup_command(marker)), timeout=30
         )
     except subprocess.TimeoutExpired:
         findings.fail(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _managed,
     _named_manifest,
     _outer_claim,
+    _remove_child_lease,
     _scheduled_attempt,
     _wait_until,
 )
@@ -53,7 +55,14 @@ _UNRELATED_THREAD_PREFIXES = ("booley-lease-", "booley-record-process-cancellati
 class _Campaign:
     """One real manifest, registry, slot store and held outer token."""
 
-    def __init__(self, tmp_path: Path, names: tuple[str, ...], lanes: int) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        names: tuple[str, ...],
+        lanes: int,
+        *,
+        cancel_execution: Callable[[str], None] | None = None,
+    ) -> None:
         self.manifest = _named_manifest(names)
         self.store = CampaignStore(tmp_path / "record")
         self.store.publish_manifest(self.manifest)
@@ -61,12 +70,16 @@ class _Campaign:
         project.mkdir()
         (project / ".booley").mkdir()
         self.registry = ChildExecutionRegistry(self.manifest, project)
+
         # Like production, the store reads the child records the registry writes, so
         # any reap reclaims a child token once that child is terminal.
-        terminal = SlotRecovery(
-            execution_is_terminal=lambda execution_id: self.registry.is_terminal(
-                ExecutionId(execution_id)
-            )
+        def is_terminal(execution_id: str) -> bool:
+            return self.registry.is_terminal(ExecutionId(execution_id))
+
+        terminal = (
+            SlotRecovery(execution_is_terminal=is_terminal)
+            if cancel_execution is None
+            else SlotRecovery(execution_is_terminal=is_terminal, cancel_execution=cancel_execution)
         )
         self.slots = SlotStore(tmp_path / "slots", recovery=terminal)
         self.outer = _outer_claim(self.slots)
@@ -128,15 +141,6 @@ def test_parallel_campaign_runs_only_bounded_lane_threads(
         campaign.slots.release(campaign.outer)
     pool = sorted(name for name in started if not name.startswith(_UNRELATED_THREAD_PREFIXES))
     assert pool == ["booley-campaign-child-1", "booley-campaign-child-2", "booley-campaign-outer"]
-
-
-def _delete_own_token(slots: SlotStore, child_id: str) -> None:
-    """Make the lease of exactly this child disappear, like a reaper reclaiming it."""
-    for token in slots.snapshot(CLASS_MEMORY)[0]:
-        if str(token.execution_id) == child_id:
-            with slots._lease_gate(token) as acquired:
-                assert acquired
-                token.path.unlink()
 
 
 @pytest.mark.parametrize(
@@ -228,7 +232,7 @@ def test_lost_child_lease_interrupts_only_that_lane_item(
             return
         # The Flow's claim and both lanes' item claims.
         _wait_until(lambda: len(campaign.slots.snapshot(CLASS_MEMORY)[0]) == 3)
-        _delete_own_token(campaign.slots, child_id)
+        _remove_child_lease(campaign.slots, child_id)
         _wait_until(scope.cancelled, _PARALLEL_SYNC_TIMEOUT_S)
         # Exact recovery of this child starts while its work is still running.
         _wait_until(
@@ -250,29 +254,119 @@ def test_lost_child_lease_interrupts_only_that_lane_item(
     assert campaign.slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
-def test_reaping_a_terminal_child_token_is_not_a_lost_lease(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+# Who reclaims a terminal child's token first: the lane's own hook, or another lane.
+_REAP_ORDERINGS = ("hook_first", "other_lane_first")
+
+
+def _reap_in_order(
+    slots: SlotStore,
+    unwrapped_reap: Callable[[str], list[str]],
+    child_id: ExecutionId,
+    ordering: str,
 ) -> None:
-    # Every running lane's cancellation watcher reaps the memory class every 10 ms, so
-    # another lane can reclaim a child token right after its terminal record lands.
-    campaign = _Campaign(tmp_path, ("alpha", "beta"), lanes=2)
-    reaped: list[str] = []
+    """Reap the terminal child's token in the requested order and prove it is gone."""
+    if ordering == "other_lane_first":
+        # Another lane's reap, on its own thread outside this lane's scope.
+        other_lane_reaped: list[str] = []
+        other_lane = threading.Thread(
+            target=lambda: other_lane_reaped.extend(unwrapped_reap(CLASS_MEMORY)),
+            daemon=True,  # a hung reap must not keep the worker alive past the assert
+        )
+        other_lane.start()
+        other_lane.join(_PARALLEL_SYNC_TIMEOUT_S)
+        assert not other_lane.is_alive()
+        assert len(other_lane_reaped) == 1  # exactly this child's token
+        assert slots.reap(CLASS_MEMORY) == []  # nothing left for the hook
+    else:
+        assert len(slots.reap(CLASS_MEMORY)) == 1  # this child's token
+    holders, waiters = slots.snapshot(CLASS_MEMORY)
+    assert all(token.execution_id != child_id for token in (*holders, *waiters))
+
+
+def _record_recovery_side_effects(
+    slots: SlotStore, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[ExecutionId], list[str]]:
+    """Record child cancels and token-recovery starts; both must stay empty."""
+    cancelled: list[ExecutionId] = []
+    registry_cancel = ChildExecutionRegistry.cancel
+
+    def recording_cancel(registry, execution_id: ExecutionId) -> bool:
+        cancelled.append(execution_id)
+        return registry_cancel(registry, execution_id)
+
+    monkeypatch.setattr(ChildExecutionRegistry, "cancel", recording_cancel)
+    recoveries: list[str] = []
+    begin_recovery = slots.begin_token_recovery
+
+    def recording_begin_recovery(token) -> bool:
+        recoveries.append(str(token.execution_id))
+        return begin_recovery(token)
+
+    monkeypatch.setattr(slots, "begin_token_recovery", recording_begin_recovery)
+    return cancelled, recoveries
+
+
+def _run_terminal_reap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ordering: str) -> None:
+    """Run a two-item Campaign whose terminal child tokens are reaped in a forced order.
+
+    The competing reapers are the other lane's slot-store calls (``refresh``,
+    ``snapshot`` and ``submit`` all reap the memory class). The ``reap_gate`` makes the
+    race deterministic: the hook publishes the terminal record and reaps under the
+    gate, so no other lane observes the terminal record before the ordered reap.
+    """
+    recovery_cancels: list[str] = []
+    campaign = _Campaign(
+        tmp_path, ("alpha", "beta"), lanes=2, cancel_execution=recovery_cancels.append
+    )
+    reap_gate = threading.RLock()
+    unwrapped_reap = campaign.slots.reap
+
+    def gated_reap(job_class: str) -> list[str]:
+        with reap_gate:
+            return unwrapped_reap(job_class)
+
+    monkeypatch.setattr(campaign.slots, "reap", gated_reap)
+    finished: list[ExecutionId] = []
     publish_terminal = ChildExecutionRegistry.mark_terminal
 
     def mark_terminal_then_reap(registry, prepared, terminal_cause: str) -> None:
-        publish_terminal(registry, prepared, terminal_cause)
-        reaped.extend(campaign.slots.reap(CLASS_MEMORY))
+        with reap_gate:
+            publish_terminal(registry, prepared, terminal_cause)
+            finished.append(prepared.execution_id)
+            _reap_in_order(campaign.slots, unwrapped_reap, prepared.execution_id, ordering)
 
     monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", mark_terminal_then_reap)
+    cancelled, recoveries = _record_recovery_side_effects(campaign.slots, monkeypatch)
 
     try:
+        # A reaped terminal token handled as a lost lease raises LeaseLostError here.
         campaign.scheduler(lambda _attempt, _child_id: None, timeout_seconds=30.0).run(
             campaign.items
         )
     finally:
         campaign.slots.release(campaign.outer)
-    assert len(reaped) == 2  # each item's own token
+    assert len(finished) == 2  # each item's own child
+    for child_id in finished:
+        paths = execution_paths(child_id, booley_dir=campaign.registry.project_data)
+        assert read_json(paths.record)["terminal_cause"] == "completed"
+        assert not paths.cancel.exists()
+    assert (cancelled, recoveries, recovery_cancels) == ([], [], [])
+    assert campaign.capacity.cancellation_cause() is None
     assert campaign.slots.snapshot(CLASS_MEMORY) == ([], [])
+
+
+def test_reaping_a_terminal_child_token_is_not_a_lost_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The terminal child's token may be reclaimed by the lane's own hook or by another
+    # lane first; either way it is not a lost lease. Both orders are forced, not raced.
+    for ordering in _REAP_ORDERINGS:
+        with monkeypatch.context() as ordering_patch:
+            try:
+                _run_terminal_reap(tmp_path / ordering, ordering_patch, ordering)
+            except AssertionError as error:
+                error.add_note(f"failing ordering: {ordering}")
+                raise
 
 
 def test_lease_tick_after_terminal_reap_starts_no_recovery(

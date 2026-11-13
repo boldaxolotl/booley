@@ -32,8 +32,15 @@ from tests.diagnostic_helpers import (
     _record_environment,
     _require_doctor_warning,
 )
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.subprocess_budget import run_bounded_child
 from tests.target_test_support import write_two_core_sim_project
+
+
+@pytest.fixture(autouse=True)
+def _doctor_probes_use_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module fakes the doctor probes through ``subprocess.run``."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, doctor)
 
 
 class _Rec:
