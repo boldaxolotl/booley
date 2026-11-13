@@ -504,11 +504,11 @@ def _campaign_projection(
         "inconclusive": outcome.aggregate_grade == "inconclusive",
         "tests": _campaign_test_projections(outcome, test_runs, target_directory),
         "test_runs": test_runs,
-        "campaign_id": campaign_id,
-        "campaign_manifest": _artifact_document(
+        "simulation_record_id": campaign_id,
+        "simulation_record_manifest": _artifact_document(
             outcome.manifest_path,
             base=target_directory,
-            kind="simulation_campaign_manifest",
+            kind="simulation_record_manifest",
             owner=campaign_id,
             maximum=MANIFEST_MAX_BYTES,
             booley_dir=booley_dir,
@@ -582,10 +582,10 @@ def _coverage_projection_fields(
     public = evidence.coverage()
     coverage = public.resolved.loaded.campaign
     return {
-        "coverage_campaign": _artifact_document(
+        "coverage_record": _artifact_document(
             public.path,
             base=target_directory,
-            kind="coverage_campaign_reference",
+            kind="coverage_record_reference",
             owner=campaign_id,
             maximum=MAX_REFERENCE_BYTES,
             booley_dir=booley_dir,

@@ -412,7 +412,7 @@ def validate_acceptance_recovery(
     simulation, _ = _load(simulation_path)
     _need(simulation.get("complete") is True, "simulation projection is not complete")
     validate_manifest_reference(
-        simulation.get("campaign_manifest"),
+        simulation.get("simulation_record_manifest"),
         projection_path=simulation_path,
         manifest_path=manifest_path,
         manifest_raw=manifest_path.read_bytes(),

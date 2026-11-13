@@ -342,7 +342,7 @@ def _assert_projection_tamper_rejected(campaign_path: Path) -> None:
     projection_path = campaign_path.with_name("simulation.json")
     projection_raw = projection_path.read_bytes()
     projection = json.loads(projection_raw)
-    projection["campaign_manifest"]["path"] = "other/manifest.json"
+    projection["simulation_record_manifest"]["path"] = "other/manifest.json"
     projection_path.write_text(json.dumps(projection))
     with pytest.raises(ValueError, match="not a regular file"):
         read_coverage_campaign(campaign_path)
@@ -1422,10 +1422,10 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     assert len(attempts) == 1
     projection = reports / "sim/1/targets/sim_0/simulation.json"
     document = json.loads(projection.read_text())
-    assert document["campaign_manifest"]["path"] == "record/manifest.json"
-    assert document["campaign_manifest"]["path_base"] == "origin_target"
-    assert document["coverage_campaign"]["path"] == "coverage.json"
-    assert document["coverage_campaign"]["path_base"] == "origin_target"
+    assert document["simulation_record_manifest"]["path"] == "record/manifest.json"
+    assert document["simulation_record_manifest"]["path_base"] == "origin_target"
+    assert document["coverage_record"]["path"] == "coverage.json"
+    assert document["coverage_record"]["path_base"] == "origin_target"
     assert not (resumed_reports / "sim/2/targets/sim_0/simulation.json").exists()
     resume_report = json.loads((resumed_reports / "sim/2/report.json").read_text())
     resume_campaign = resume_report["detail"]["campaigns"]["sim_0"]
@@ -1832,7 +1832,7 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
     resolved = resolve_report_artifact_reference(
         report_path,
         campaign["artifacts"]["manifest"],
-        expected_kind="simulation_campaign_manifest",
+        expected_kind="simulation_record_manifest",
         expected_owner=campaign["campaign_id"],
         maximum=1024 * 1024,
         external_origin_target=manifest.parents[1],
@@ -2992,7 +2992,7 @@ def _observe_pre_sim_projection(monkeypatch):
     preview = flow_module._pre_sim_preview_record
 
     def reference(*args, **kwargs):
-        reads["manifest"] += int(kwargs["kind"] == "simulation_campaign_manifest")
+        reads["manifest"] += int(kwargs["kind"] == "simulation_record_manifest")
         return artifact(*args, **kwargs)
 
     def record(*args):
@@ -3119,7 +3119,7 @@ def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, 
         result.outcome.detail["targets"]["sim_0"]["coverage_campaign"]["path_base"]
         == "report_invocation"
     )
-    assert projection["campaign_manifest"]["path"]
+    assert projection["simulation_record_manifest"]["path"]
     (data / "linked").symlink_to(data / "reports", target_is_directory=True)
     with pytest.raises(ValueError, match=r"link|traversal"):
         read_coverage_campaign(alias / "linked/sim/1/targets/sim_0/coverage.json")

@@ -99,7 +99,7 @@ def test_a_coverage_run_writes_the_record_layout(tmp_path: Path, monkeypatch) ->
     assert nested.startswith("record/work-items/")
     assert nested.endswith("/coverage-record/coverage.json")
     projection = json.loads((target / "simulation.json").read_bytes())
-    assert projection["campaign_manifest"]["path"] == "record/manifest.json"
+    assert projection["simulation_record_manifest"]["path"] == "record/manifest.json"
 
 
 def test_resume_from_accepts_a_record_manifest(tmp_path: Path, monkeypatch) -> None:

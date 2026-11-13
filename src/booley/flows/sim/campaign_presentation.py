@@ -459,7 +459,7 @@ def _register_pre_sim_role(roles, manifest_refs, firing, invocation, current) ->
             firing.manifest_path,
             report_invocation=invocation,
             external_origin_target=firing.manifest_path.parent.parent,
-            kind="simulation_campaign_manifest",
+            kind="simulation_record_manifest",
             owner=str(document["simulation_record_id"]),
             maximum=16 * 1024 * 1024,
         )
@@ -698,7 +698,7 @@ def _campaign_artifact_paths(
     paths = {
         "manifest": (
             outcome.manifest_path,
-            "simulation_campaign_manifest",
+            "simulation_record_manifest",
             MANIFEST_MAX_BYTES,
         ),
         "simulation": (
@@ -710,7 +710,7 @@ def _campaign_artifact_paths(
     if outcome.coverage_reference is not None:
         paths["coverage"] = (
             outcome.manifest_path.parents[1] / "coverage.json",
-            "coverage_campaign_reference",
+            "coverage_record_reference",
             MAX_REFERENCE_BYTES,
         )
     return paths
@@ -963,7 +963,7 @@ def _coverage_reference_artifact(
         public,
         report_invocation=report_invocation,
         external_origin_target=public.parent,
-        kind="coverage_campaign_reference",
+        kind="coverage_record_reference",
         owner=owner,
         maximum=MAX_REFERENCE_BYTES,
     )
