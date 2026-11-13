@@ -412,6 +412,13 @@ JUMP_CASES = {
         {"reservation_mb": 100, "wall_s": 180.0},
         HOLDING,
     ),
+    # Short enough to jump, but it does not fit beside the holders now.
+    "short-but-does-not-fit": (
+        [(300, 300.0), (500, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 300, "wall_s": 100.0},
+        QUEUED,
+    ),
     # The front's own 1000 MiB budget applies, not the jumper's 750 MiB one.
     "front-judged-by-its-own-budget": (
         [(300, 300.0), (200, 600.0)],
@@ -430,6 +437,15 @@ def test_jump_never_delays_the_front_claim(tmp_path):
             hold(store, world, pid, claim(reservation_mb, wall_s=wall_s))
         assert store.refresh(join(store, world, 201, claim(**front))).state == QUEUED, name
         assert store.refresh(join(store, world, 202, claim(**jumper))).state == state, name
+
+
+def test_a_jumper_is_not_refused_by_queue_max_but_a_waiter_is(root, world):
+    store = make_store(root, world, SlotCaps(queue_max=1))
+    hold(store, world, 101, claim(800, wall_s=600.0))
+    join(store, world, 102, claim(400))  # the front: position 0, within queue_max
+    assert store.refresh(join(store, world, 103, claim(100, wall_s=60.0))).state == HOLDING
+    with pytest.raises(QueueFullError):
+        join(store, world, 104, claim(400))  # blocked behind the front: position 1
 
 
 def test_jump_past_a_holder_overdue_by_its_estimate_waits(root, world):

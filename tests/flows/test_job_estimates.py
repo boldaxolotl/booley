@@ -179,3 +179,8 @@ def test_own_wall_clock_needs_own_history_for_every_phase() -> None:
     # A phase measured for memory only has no wall-clock of its own.
     blank = estimates.ResourceEstimator([_record("t1", "sim_run", memory=1, test_run="a")])
     assert blank.estimate([_sim("t1", "a")]).own_wall_s is None
+    # A corrupt (negative) record is no history either.
+    corrupt = estimates.ResourceEstimator(
+        [_record("t1", "sim_run", memory=1, wall=-5.0, test_run="a")]
+    )
+    assert corrupt.estimate([_sim("t1", "a")]).own_wall_s is None

@@ -370,7 +370,6 @@ class _MemoryLoad:
         """True when *claim* fits now and is estimated to finish before the front starts."""
         return (
             self.front_start is not None
-            and not claim.run_alone
             and claim.wall_s is not None
             and self._fits(claim)
             and now + claim.wall_s < self.front_start

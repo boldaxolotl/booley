@@ -19,6 +19,7 @@ raise an estimate but never lower it.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -176,9 +177,12 @@ class JobEstimate:
             return None
         total = 0.0
         for phase in self.phases:
-            if phase.wall_s.source is not Source.OWN or phase.wall_s.value is None:
+            wall_s = phase.wall_s.value
+            if phase.wall_s.source is not Source.OWN or wall_s is None:
                 return None
-            total += phase.wall_s.value
+            if not math.isfinite(wall_s) or wall_s < 0:  # a corrupt record is no history
+                return None
+            total += wall_s
         return total
 
     def fit(self, budget_mb: float) -> Fit:
