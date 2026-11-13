@@ -470,6 +470,7 @@ def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypa
         stage="simulation",
         diagnostic="isolated observation",
         artifacts=(str(tmp_path / "trace.vcd"),),
+        queue="needs 400 MiB",
     )
     monkeypatch.setattr(
         JobObserver,
