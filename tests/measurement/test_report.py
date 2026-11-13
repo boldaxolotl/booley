@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from booley.measurement.report import markdown_report, terminal_report, write_markdown_report
 from booley.measurement.run_document import RunStatus, Verdict
 from booley.measurement.run_store import FlowReport, MeasurementStore, StoredRun
 from booley.presentation import colors
@@ -29,25 +30,6 @@ from tests.measurement.test_run_view import (
     view_of,
 )
 from tests.runtime.test_commit_export import add_gitlink, commit_all, git, write
-
-
-# The renderers are imported on use, so a missing module fails the test body, not collection.
-def markdown_report(view: dict[str, Any]) -> str:
-    from booley.measurement.report import markdown_report as render
-
-    return render(view)
-
-
-def terminal_report(view: dict[str, Any], *, width: int | None = None) -> str:
-    from booley.measurement.report import terminal_report as render
-
-    return render(view, width=width)
-
-
-def write_markdown_report(view: dict[str, Any]) -> Path:
-    from booley.measurement.report import write_markdown_report as write_report
-
-    return write_report(view)
 
 
 @pytest.fixture(autouse=True)
@@ -159,11 +141,11 @@ def test_identical_tree_commit_reports_measured_as_and_its_own_base(tmp_path: Pa
     assert "1 file changed (1 modified), 0 submodules" in other
     assert "- M .booley/metrics.toml" in other
     assert "- M rtl.v" not in other
-    assert "synth_core synth area_kge_max: maximum raised, 70 → 80" in other
+    assert "synth_core synth area_kge_max: maximum raised (loosened), 70 → 80" in other
     assert "measured as" not in own
     assert f"Base `{base_a}`" in own
     assert "- M rtl.v" in own
-    assert "maximum raised, 60 → 80" in own
+    assert "maximum raised (loosened), 60 → 80" in own
 
 
 def test_two_bases_give_two_base_sections_and_the_same_verdicts(tmp_path: Path) -> None:
@@ -212,8 +194,11 @@ def test_loosened_rule_turns_header_amber_and_lists_its_note(
 
     assert "Run r1: rules loosened" in markdown
     rules = section(markdown, "Rules changes")
-    assert "synth_core synth area_kge_max: maximum raised, 60 → 80 — after DSP sharing" in rules
-    assert "maximum lowered, 100 → 90" in rules
+    assert (
+        "synth_core synth area_kge_max: maximum raised (loosened), 60 → 80 — after DSP sharing"
+        in rules
+    )
+    assert "maximum lowered (tightened), 100 → 90" in rules
     assert rules.index("maximum raised") < rules.index("maximum lowered")  # loosened first
     assert "- rules loosened" in section(markdown, "Warnings")
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
@@ -418,7 +403,9 @@ def test_versioned_booley_directory_header_and_edits(tmp_path: Path) -> None:
     assert f"rules Base `{git(booley, 'rev-parse', 'main')}` (" in header
     assert "Run r1: rules loosened" in header
     assert "protected edits in the Booley Directory: .booley/metrics.toml" in markdown
-    assert "synth_core synth area_kge_max: maximum raised, 60 → 80 — (no note)" in markdown
+    assert (
+        "synth_core synth area_kge_max: maximum raised (loosened), 60 → 80 — (no note)" in markdown
+    )
 
     # The paired Base cannot be chosen: say why instead of an empty rules diff.
     checkout, booley, store, stored = stored_in_versioned_case(tmp_path / "b")
@@ -495,7 +482,7 @@ def test_submodules_tests_diff_and_failing_tests_render(tmp_path: Path) -> None:
     assert "- core synth: not started" in section(markdown, "Wall time")
     assert "- core sim: 1s" in section(markdown, "Wall time")
     header = section(markdown, "Run")
-    assert "earlier: r0 (unmet)" in header
+    assert "earlier: unmet" in header
     assert "- history:" in header
     assert "rX.json" in header
     assert "image sha256:img" in header
@@ -503,3 +490,44 @@ def test_submodules_tests_diff_and_failing_tests_render(tmp_path: Path) -> None:
     assert "    +a = 2" in terminal
     assert "ip/sub" in terminal
     assert "not started" in terminal
+
+
+def test_wordings_numbers_and_markdown_escaping_of_user_text(tmp_path: Path) -> None:
+    repo, store, stored, head, first = failing_world(tmp_path)
+    view: dict[str, Any] = json.loads(json.dumps(view_of(repo, store, stored, head, base=first)))
+    view["view"]["base"]["requested"] = "feature~7"  # a --base replaced by its merge-base
+    view["view"]["base_run"]["problem"] = "unreadable run file"
+    view["view"]["commit"]["subject"] = "<!-- hide * the rest"
+    view["view"]["changed"]["files"][0]["path"] = "tests/__init__.py"
+    (unmet,) = [r for r in view["tables"][0]["results"] if r["key"] == "area_um2_max"]
+    unmet["value"] = 1234567  # 7 digits
+    (bound,) = [b for b in view["rules"][0]["bounds"] if b["key"] == "area_um2_max"]
+    bound["value"] = 1234566
+    template = {"target": "core", "flow": "synth", "key": "k", "old": None, "new": None}
+    view["view"]["rules_diff"]["changes"] = [
+        {**template, "kind": "bound added", "direction": "tightened", "new": 5, "note": None},
+        {**template, "kind": "bound removed", "direction": "loosened", "old": 7, "note": None},
+        {**template, "kind": "table removed", "direction": "loosened", "key": None, "note": None},
+        {
+            **template,
+            "kind": "note edited",
+            "direction": "neutral",
+            "old": 80,
+            "new": 80,
+            "note": "why <b>",
+        },
+    ]
+
+    markdown = markdown_report(view)
+
+    assert "requested `feature~7`" in section(markdown, "Run")
+    assert "- base run unreadable: unreadable run file" in section(markdown, "Run")
+    assert "- Commit message: \\<!-- hide \\* the rest" in section(markdown, "Run")
+    assert "A tests/\\_\\_init\\_\\_.py" in section(markdown, "Changed files")
+    assert "1234567 vs ≤ 1234566, unmet" in section(markdown, "Failing")
+    rules = section(markdown, "Rules changes")
+    assert "core synth k: bound added (tightened), new 5" in rules
+    assert "core synth k: bound removed (loosened), was 7" in rules
+    assert "core synth: table removed (loosened)" in rules
+    assert "core synth k: note edited (neutral) — why \\<b\\>" in rules
+    assert "→ 80" not in rules

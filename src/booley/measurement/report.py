@@ -11,8 +11,9 @@ Decisions: the Target column and the rerun command use the Target key as written
 drop that is also a worse metric is shown once, under "``tests_total`` dropped" (matched
 on the rules entry's metric); the 20-line cap counts file and submodule lines together,
 while protected and constraint edits get their own uncapped lines; red and amber are
-words in Markdown, never colour; numbers print with ``:.6g`` (Δ signed) so float noise
-never reaches the report.
+words in Markdown, never colour (a rules change names its class, "loosened" and so on,
+in its text); integers print whole and floats with ``:.12g`` (Δ signed) so float noise
+never reaches the report; in Markdown, specials in user text are backslash-escaped.
 """
 
 from __future__ import annotations
@@ -57,8 +58,12 @@ _Block = _Text | _Rows | _Code
 _Section = tuple[str, list[_Block]]  # title, blocks
 
 
-def _num(value: float | None, fmt: str = ".6g") -> str:
-    return _MISSING if value is None else format(value, fmt)
+def _num(value: float | None, *, signed: bool = False) -> str:
+    """Integers whole; floats to 12 significant digits, which drops float noise."""
+    if value is None:
+        return _MISSING
+    sign = "+" if signed else ""
+    return f"{value:{sign}d}" if isinstance(value, int) else format(value, f"{sign}.12g")
 
 
 def _count(count: int, noun: str) -> str:
@@ -144,9 +149,7 @@ def _run_lines(document: Mapping[str, Any]) -> list[_Block]:
     parts.extend(f"{tool} {version}" for tool, version in toolchain["tools"].items())
     place = f"run {history['position']} of {history['total']} for this tree"
     if history["earlier"]:
-        place += "; earlier: " + ", ".join(
-            f"{r['run_id']} ({r['outcome']})" for r in history["earlier"]
-        )
+        place += "; earlier: " + ", ".join(r["outcome"] for r in history["earlier"])
     lines: list[_Block] = [_Text(f"Toolchain: {'; '.join(parts)}"), _Text(place)]
     lines.extend(_Text(f"history: {problem}", "warn") for problem in history["problems"])
     if document["status"] == "stopped":
@@ -217,7 +220,9 @@ def _metrics(document: Mapping[str, Any], names: _Names) -> _Section:
             key = (table["identity"], table["flow"], result["key"])
             entry, delta = names.entry[key], deltas[key]
             shown = (
-                str(delta["missing"]) if delta["delta"] is None else _num(delta["delta"], "+.6g")
+                str(delta["missing"])
+                if delta["delta"] is None
+                else _num(delta["delta"], signed=True)
             )
             verdict = result["verdict"]
             cells = (
@@ -246,9 +251,9 @@ def _times(document: Mapping[str, Any], names: _Names) -> _Section:
 
 
 def _change_line(change: Mapping[str, Any]) -> _Text:
-    old, new, kind = change["old"], change["new"], change["kind"]
+    old, new, kind = change["old"], change["new"], f"{change['kind']} ({change['direction']})"
     if old is not None and new is not None:
-        detail = f"{kind}, {_num(old)} → {_num(new)}"
+        detail = kind if old == new else f"{kind}, {_num(old)} → {_num(new)}"
     else:  # a bound or table added or removed, or a tracked entry edited
         detail = ", ".join([kind, *([f"new {_num(new)}"] if new is not None else [])])
         detail += f", was {_num(old)}" if old is not None else ""
@@ -354,7 +359,7 @@ def _footer(document: Mapping[str, Any], names: _Names) -> _Section:
     blocks: list[_Block] = []
     for item in document["view"]["evidence"]:
         label = names.label(item["identity"], item["flow"])
-        blocks.extend(_Text(f"{label} report: {path}") for path in item["reports"])
+        blocks.extend(_Text(f"{label} report: `{path}`") for path in item["reports"])
         blocks.extend(
             _Text(f"{label}: {report['name']} ({report['bytes']} bytes, not kept)")
             for report in item["dropped"]
@@ -362,7 +367,7 @@ def _footer(document: Mapping[str, Any], names: _Names) -> _Section:
     paths = document["view"]["paths"]
     return (
         "Files",
-        [*blocks, _Text(f"Markdown: {paths['markdown']}"), _Text(f"JSON: {paths['json']}")],
+        [*blocks, _Text(f"Markdown: `{paths['markdown']}`"), _Text(f"JSON: `{paths['json']}`")],
     )
 
 
@@ -392,20 +397,36 @@ def _fence(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+_CODE_SPAN = re.compile(r"`[^`\n]*`")
+_SPECIAL = re.compile(r"[\\*<>\[\]`]|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])")
+
+
+def _md(text: str) -> str:
+    """Backslash-escape what Markdown would parse, leaving backtick spans as written."""
+    pieces = re.split(f"({_CODE_SPAN.pattern})", text)
+    return "".join(
+        piece if index % 2 else _SPECIAL.sub(lambda hit: "\\" + hit.group(), piece)
+        for index, piece in enumerate(pieces)
+    )
+
+
+def _cell(text: str) -> str:
+    return _md(text).replace("|", "\\|").replace("\n", " ")
+
+
 def _markdown_chunks(blocks: Sequence[_Block]) -> list[str]:
     """One chunk per table or fence; consecutive text lines form one list."""
     chunks: list[str] = []
     for block in blocks:
         if isinstance(block, _Text):
-            item = "- " + block.text.replace("\n", " ")
+            item = "- " + _md(block.text).replace("\n", " ")
             if chunks and chunks[-1].startswith("- "):
                 chunks[-1] += "\n" + item
             else:
                 chunks.append(item)
         elif isinstance(block, _Rows):
-            cell = lambda text: text.replace("|", "\\|").replace("\n", " ")  # noqa: E731
             lines = [block.headers, ("---",) * len(block.headers), *block.rows]
-            chunks.append("\n".join("| " + " | ".join(map(cell, row)) + " |" for row in lines))
+            chunks.append("\n".join("| " + " | ".join(map(_cell, row)) + " |" for row in lines))
         else:
             fence = _fence(block.text)
             chunks.append(f"{fence}\n{block.text}\n{fence}")
