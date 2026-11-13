@@ -134,7 +134,7 @@ def inspect_retained_campaign(
         store.summary_path,
         digest,
         manifest,
-        cast(str, manifest.document["campaign_id"]),
+        cast(str, manifest.document["simulation_record_id"]),
         target["selector"],
         f"{target['vlnv']}#{target['name']}",
         recovery.complete,
@@ -276,7 +276,7 @@ def started_campaign(manifest_path: Path) -> StartedCampaign:
     target = cast(Mapping[str, object], manifest.document["target"])
     return StartedCampaign(
         manifest_path,
-        str(manifest.document["campaign_id"]),
+        str(manifest.document["simulation_record_id"]),
         manifest_digest(manifest),
         (str(target["selector"]), f"{target['vlnv']}#{target['name']}"),
         target["role"] == "candidate",
@@ -335,7 +335,7 @@ def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampa
     rows = tuple(observation_test_run_rows(manifest, observations))
     return DurableCampaignResults(
         digest,
-        str(manifest.document["campaign_id"]),
+        str(manifest.document["simulation_record_id"]),
         results,
         rows,
         complete=not recovery.pending and not recovery.interrupted,

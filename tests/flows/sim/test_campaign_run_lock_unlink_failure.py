@@ -20,7 +20,7 @@ def test_failed_lock_unlink_keeps_body_error_and_releases_lock(
         work_item_key="t",
         attempt_key="a1",
     )
-    identity = {"campaign_id": "c", "work_item_id": "t", "attempt_id": "a1"}
+    identity = {"simulation_record_id": "c", "work_item_id": "t", "attempt_id": "a1"}
     real_unlink = Path.unlink
 
     def deny_lock_unlink(self: Path, missing_ok: bool = False) -> None:

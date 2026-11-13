@@ -373,7 +373,7 @@ def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project
         work_item_key="smoke",
         attempt_key="first",
     )
-    identity = {"campaign_id": "audit", "work_item_id": "smoke", "attempt_id": "first"}
+    identity = {"simulation_record_id": "audit", "work_item_id": "smoke", "attempt_id": "first"}
     with claimed_run_directory(run, identity=identity) as directory:
         assert (directory / ".booley-simulation-attempt.json").is_file()
         assert run.lock_path.is_file()

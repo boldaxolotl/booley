@@ -199,3 +199,22 @@ def test_each_family_says_what_its_baseline_job_runs(scene, monkeypatch):
     assert execution.EXECUTORS["synth"].job_requests(scene.worktree, "synth_after", units) == (
         JobRequest("synth", "synth_after"),
     )
+
+
+def test_baseline_child_inherits_the_job_thread_count(memory_scene, foreign_owner, monkeypatch):
+    from booley.runtime import cpu_budget
+
+    scene = memory_scene
+    monkeypatch.setattr(cpu_budget, "_affinity_cpu_count", lambda: 8)
+    monkeypatch.setattr(cpu_budget, "_read_text", lambda _path: None)
+    # One other Job holds a (small) Memory Reservation beside the baseline's own.
+    other = job_slots.MemoryClaim(budget_mb=_BUDGET_MB, reservation_mb=100.0)
+    holder = _foreign_memory_claim(scene, foreign_owner, other)
+    assert scene.store.refresh(holder).state == job_slots.HOLDING
+    try:
+        _execute(scene)
+    finally:
+        scene.store.release(holder)
+
+    # 8 cores shared by the other Job and the baseline: counted after the baseline's claim.
+    assert [env["BOOLEY_INTERNAL_JOB_THREADS"] for env in scene.popen_envs] == ["4"]

@@ -62,7 +62,7 @@ from booley.config.gateway import (
     gateway_model_pin_from_env,
     gateway_settings_from_env,
 )
-from booley.config.jobs import parse_caps
+from booley.config.jobs import SeatCapError, parse_caps, parse_seat_caps, seat_cap_fix
 from booley.config.project_config import (
     lookup_target_section,
     normalize_tests_toml,
@@ -79,6 +79,7 @@ from booley.core.boundary import (
 )
 from booley.flows import execution, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.memory_admission import memory_admission_enabled
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -1327,6 +1328,7 @@ def _run_runtime_phase(
         reporter.fail_,
     )
     _check_memory_invariant(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_seat_caps(project, reporter.pass_, reporter.fail_)
     _run_container_checks(
         project,
         docker_exe,
@@ -1693,6 +1695,44 @@ def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMem
         calibration,
         target_matrix.doctor_targets(project.project_root, "synth"),
     )
+
+
+def _licensed_tools_in_use(project: ProjectAudit) -> tuple[str, ...]:
+    """The licensed EDA tools Booley would run for *project*: Vivado, when it provisions it.
+
+    Booley provisions Vivado when the FPGA Flow is enabled and ``[eda.vivado]``
+    is declared; a Project that asks Doctor to cover the FPGA axis also uses it.
+    """
+    eda = project.booley_toml.get("eda")
+    declared = isinstance(eda, dict) and "vivado" in eda
+    if _flow_enabled(project, "fpga") and (declared or _fpga_doctor_applicable(project)):
+        return ("vivado",)
+    return ()
+
+
+def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) -> None:
+    """ADR 0087: memory admission needs a Seat Cap for every licensed EDA tool in use.
+
+    Only the user knows how many licence seats they own, so this never writes a
+    value: a missing Seat Cap FAILs with the entry to add. Silent unless the
+    development switch is set; a malformed ``[jobs.seats]`` is the schema
+    audit's finding, not a second one here.
+    """
+    if project is None or not memory_admission_enabled():
+        return
+    try:
+        caps = parse_seat_caps(project.booley_toml)
+    except SeatCapError:
+        return
+    for tool in _licensed_tools_in_use(project):
+        if tool in caps:
+            _pass(f"Seat Cap: {tool} = {caps[tool]}")
+        else:
+            _fail(
+                f"{tool} has no Seat Cap: memory admission needs one for every "
+                "licensed EDA tool the Project uses",
+                f"add {seat_cap_fix(tool)} to booley.toml; only you know how many seats you own",
+            )
 
 
 def _check_memory_invariant(

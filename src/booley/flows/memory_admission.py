@@ -3,7 +3,8 @@
 With ``BOOLEY_DEV_MEMORY_ADMISSION=1`` such a Job is admitted in the ``memory``
 Job Class: it holds a Memory Reservation estimated from the Resource History
 and runs beside other Jobs while the reservations fit the Memory Budget. A Job
-that cannot be sized runs alone, and a Job is never refused.
+that cannot be sized runs alone. A Job is never refused, except one that uses a
+licensed tool with no Seat Cap (``[jobs.seats]``).
 
 The switch is undocumented and temporary: the cutover that makes memory
 admission the only admission removes it (ADR 0087, Rollout). Every number here
@@ -14,7 +15,9 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,7 +29,7 @@ from booley.flows.job_estimates import (
     ResourceEstimator,
     phase_occurrences,
 )
-from booley.runtime.job_slots import MemoryClaim
+from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore
 from booley.runtime.memory_budget import compute_memory_budget
 from booley.runtime.resource_history import HistoryKey, load_records
 
@@ -35,7 +38,12 @@ logger = logging.getLogger(__name__)
 #: The development switch; only the exact value ``"1"`` turns memory admission on.
 MEMORY_ADMISSION_ENV = "BOOLEY_DEV_MEMORY_ADMISSION"
 
+#: Carries a Job's thread count into a child process that runs under its parent's claim.
+JOB_THREADS_ENV = "BOOLEY_INTERNAL_JOB_THREADS"
+
 _BYTES_PER_MIB = 1024 * 1024
+
+_job_threads: ContextVar[int | None] = ContextVar("booley_job_threads", default=None)
 
 #: Flows whose Jobs report phase ends, so their reservation can shrink.
 _SHRINKING_FLOWS = frozenset({"sim", "synth", "fpga"})
@@ -161,3 +169,38 @@ def measure_memory_claim(
     except (OSError, ValueError) as exc:
         budget_error = str(exc)
     return plan_memory_claim(requests, records, budget_mb, budget_error)
+
+
+def job_threads_at_start(store: SlotStore, cores: int) -> int:
+    """The thread count one memory-admitted Job gets: its share of *cores*, rounded down.
+
+    The cores are divided by the Jobs holding a Memory Reservation. Call this
+    once, right after the Job's own claim is admitted, so the holders include
+    the Job itself; the result is fixed for the Job's run and later Jobs never
+    shrink it. It is never above *cores* and never below one.
+    """
+    holders, _waiters = store.snapshot(CLASS_MEMORY)
+    return max(1, cores // max(1, len(holders)))
+
+
+@contextmanager
+def fixed_job_threads(count: int | None) -> Iterator[None]:
+    """Make *count* the running Job's thread count (``None`` for none) inside the block."""
+    token = _job_threads.set(count)
+    try:
+        yield
+    finally:
+        _job_threads.reset(token)
+
+
+def job_thread_count() -> int | None:
+    """The running Job's thread count: the admission's, else its parent's, else ``None``.
+
+    The parent hands its count over in ``JOB_THREADS_ENV``. Only Booley writes
+    that variable, so a malformed value raises instead of being ignored.
+    """
+    count = _job_threads.get()
+    if count is not None:
+        return count
+    inherited = os.environ.get(JOB_THREADS_ENV)
+    return None if inherited is None else int(inherited)

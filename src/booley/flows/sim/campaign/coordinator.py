@@ -369,7 +369,7 @@ class SimulationCampaign:
     ) -> CampaignOutcome:
         self._raise_if_cancelled(request)
         self._preflight_owner(store, manifest, authenticated_sha256, request)
-        owner = cast(str, manifest.document["campaign_id"])
+        owner = cast(str, manifest.document["simulation_record_id"])
         self._run_prerequisites(store, manifest, request, frozenset({owner}), set())
         recovery = store.scan(manifest, authenticated_sha256)
         self._run_pending(store, manifest, recovery, request)
@@ -430,7 +430,7 @@ class SimulationCampaign:
         origin = cast(Mapping[str, object], manifest.document["origin"])
         try:
             reference = build_coverage_campaign_reference(
-                simulation_campaign_id=cast(str, manifest.document["campaign_id"]),
+                simulation_campaign_id=cast(str, manifest.document["simulation_record_id"]),
                 simulation_manifest_sha256=manifest_digest(manifest),
                 target_identity=f"{target['vlnv']}#{target['name']}",
                 target_selector=target["selector"],
@@ -484,7 +484,7 @@ class SimulationCampaign:
         recovery = store.scan(manifest, authenticated_sha256)
         self._preflight_incomplete(manifest, recovery, request)
         self._preflight_prerequisites(
-            store, manifest, request, {cast(str, manifest.document["campaign_id"])}
+            store, manifest, request, {cast(str, manifest.document["simulation_record_id"])}
         )
 
     @staticmethod
@@ -518,7 +518,7 @@ class SimulationCampaign:
         """
         invocation = owner_store.root.parents[2]
         for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
-            campaign_id = cast(str, entry["campaign_id"])
+            campaign_id = cast(str, entry["simulation_record_id"])
             if campaign_id in visited:
                 continue
             visited.add(campaign_id)
@@ -542,7 +542,7 @@ class SimulationCampaign:
         """
         invocation = owner_store.root.parents[2]
         for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
-            campaign_id = cast(str, entry["campaign_id"])
+            campaign_id = cast(str, entry["simulation_record_id"])
             if campaign_id in ancestors:
                 raise SimulationCampaignIntegrityError("cyclic prerequisite campaign")
             prerequisite_store, prerequisite = _prerequisite_campaign(entry, invocation, request)
@@ -790,7 +790,7 @@ def _scheduled_collision_key(
     run = expand_run_directory(
         cast(str, run_cwd["configured"]),
         project_root=project_root,
-        campaign_id=cast(str, manifest.document["campaign_id"]),
+        campaign_id=cast(str, manifest.document["simulation_record_id"]),
         target_key=target["selector"].replace("/", "%2F"),
         work_item_key=store.work_item_directory(work_item_id).name,
         attempt_key=f"{ordinal:04d}-{attempt_id}",
@@ -922,7 +922,7 @@ def _acceptance_facts(
     facts = AcceptanceFacts(
         {
             "$schema": ACCEPTANCE_FACTS_SCHEMA,
-            "campaign_id": manifest.document["campaign_id"],
+            "campaign_id": manifest.document["simulation_record_id"],
             "manifest_sha256": manifest_digest(manifest),
             "origin": manifest.document["origin"],
             "target": manifest.document["target"],
@@ -959,7 +959,7 @@ def _coverage_acceptance_reference(
             "bytes": len(raw),
             "sha256": content_digest(raw),
             "kind": "coverage_campaign_reference",
-            "owner": manifest.document["campaign_id"],
+            "owner": manifest.document["simulation_record_id"],
         },
         "document": json.loads(raw),
     }
@@ -1135,7 +1135,7 @@ def _prerequisite_facts(
             {
                 "role": "cycle_count_baseline",
                 "manifest": manifest_reference,
-                "campaign_id": entry["campaign_id"],
+                "campaign_id": entry["simulation_record_id"],
                 "target": entry["target"],
                 "work_item_id": entry["work_item_id"],
                 "result": result_reference,
@@ -1166,7 +1166,7 @@ def _authenticate_prerequisite_manifest(
             "Cycle Count prerequisite manifest reference is unauthenticated"
         )
     if (
-        linked.document["campaign_id"] != entry["campaign_id"]
+        linked.document["simulation_record_id"] != entry["simulation_record_id"]
         or linked.document["target"] != entry["target"]
     ):
         raise SimulationCampaignIntegrityError("Cycle Count prerequisite identity is mismatched")

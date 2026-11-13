@@ -177,7 +177,7 @@ def _reference_projection(
     if not isinstance(target, Mapping):
         raise CoverageAnalysisError("Simulation Campaign Target is invalid")
     if (
-        manifest.document["campaign_id"] != reference["simulation_campaign_id"]
+        manifest.document["simulation_record_id"] != reference["simulation_campaign_id"]
         or authenticated.manifest_path != expected_manifest.absolute()
         or authenticated.manifest_sha256 != reference["simulation_manifest_sha256"]
         or target["selector"] != resolved.loaded.campaign.target.selector

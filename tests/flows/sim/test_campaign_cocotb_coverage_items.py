@@ -99,11 +99,11 @@ def test_no_waivers_is_written_only_when_requested(tmp_path: Path) -> None:
     default = _plan(
         tmp_path / "default", kind="coverage_aggregate", cocotb=False
     ).manifest.document
-    assert default["$schema"] == "booley.simulation-campaign-manifest/v4"
+    assert default["$schema"] == "booley.simulation-record-manifest/v1"
     assert "no_waivers" not in default["workload"]  # type: ignore[operator]
     raw = _plan(tmp_path / "raw", kind="coverage_aggregate", cocotb=False, no_waivers=True)
     document = raw.manifest.document
-    assert document["$schema"] == "booley.simulation-campaign-manifest/v4"
+    assert document["$schema"] == "booley.simulation-record-manifest/v1"
     assert document["workload"]["no_waivers"] is True  # type: ignore[index]
     # Waivers never change the build, so the variant identity must not move.
     assert document["build_variants"] == default["build_variants"]

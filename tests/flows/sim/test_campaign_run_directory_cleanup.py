@@ -43,7 +43,7 @@ def _run(
         work_item_key=test,
         attempt_key=attempt,
     )
-    identity = {"campaign_id": campaign, "work_item_id": test, "attempt_id": attempt}
+    identity = {"simulation_record_id": campaign, "work_item_id": test, "attempt_id": attempt}
     return run, identity
 
 

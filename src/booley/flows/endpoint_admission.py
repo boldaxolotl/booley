@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import sys
@@ -12,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from booley.config.jobs import parse_caps
+from booley.config.jobs import SeatCapError, parse_caps, required_seats
 from booley.core.boundary import as_float
 from booley.flows.endpoint_events import (
     _endpoint_progress_event,
@@ -21,12 +22,15 @@ from booley.flows.endpoint_events import (
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.memory_admission import (
     MemoryAdmissionPlan,
+    fixed_job_threads,
+    job_threads_at_start,
     measure_memory_claim,
     memory_admission_enabled,
 )
 from booley.flows.reservation_phases import PhasePlan, ReservationShrinker, shrinking
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_common_booley_dir
+from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     OOM_REQUEUE_REASON,
@@ -93,6 +97,21 @@ class AdmissionContext:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _Claim:
+    """What one Job's admission claimed; all ``None`` when nothing was claimed.
+
+    ``plan`` sized a memory-admitted Job's claim; ``threads`` is the Job's
+    share of the cores, fixed when its Memory Reservation is admitted. Only a
+    memory-admitted Job has either.
+    """
+
+    store: job_slots.SlotStore | None
+    token: object | None
+    plan: MemoryAdmissionPlan | None = None
+    threads: int | None = None
+
+
 class AdmissionGate:
     """Lazy admission entered once, after Target authorization and the binding gate."""
 
@@ -110,19 +129,17 @@ class AdmissionGate:
         self._requeued = requeued
         self._entered = False
 
-    def _claim(
-        self,
-    ) -> tuple[job_slots.SlotStore | None, object | None, MemoryAdmissionPlan | None]:
+    def _claim(self) -> _Claim:
         """Claim the Job's admission: a Memory Reservation under the switch, else a slot.
 
         Under the switch heavy Jobs, lint and Custom Flows are memory-admitted;
-        the third element is the plan that sized the claim (``None`` for a slot).
+        the claim carries the plan that sized it (``None`` for a slot).
         """
         endpoint = self._endpoint
         if memory_admission_enabled() and endpoint._memory_admitted():
             return _acquire_memory_reservation(endpoint, self._prepared, requeued=self._requeued)
         store, token = endpoint._acquire_job_slot()
-        return store, token, None
+        return _Claim(store, token)
 
     @contextmanager
     def enter(self) -> Iterator[AdmissionContext]:
@@ -133,7 +150,8 @@ class AdmissionGate:
         token: object | None = None
         try:
             execution_id = _runtime_execution_id()
-            store, token, memory_plan = self._claim()
+            claim = self._claim()
+            store, token = claim.store, claim.token
             token_execution_id = getattr(token, "execution_id", None)
             if token_execution_id is not None and token_execution_id != execution_id:
                 raise AdmissionIdentityError(
@@ -145,6 +163,7 @@ class AdmissionGate:
             cause = _admission_cancellation_cause(store, token)
             with ExitStack() as scope:
                 # Phase ends lower the claim only while the Job holds it.
+                memory_plan = claim.plan
                 if (
                     memory_plan is not None
                     and memory_plan.phases
@@ -154,6 +173,7 @@ class AdmissionGate:
                 ):
                     phase_plan = PhasePlan(memory_plan.phases, memory_plan.claim.reservation_mb)
                     scope.enter_context(shrinking(ReservationShrinker(phase_plan, store, token)))
+                scope.enter_context(fixed_job_threads(claim.threads))
                 yield AdmissionContext(
                     mode="managed" if store is not None else "unmanaged",
                     slot_store=store,
@@ -281,13 +301,17 @@ def _enter_admission(
         job_slots.QueueFullError,
         job_slots.ClaimLostError,
         AdmissionIdentityError,
+        SeatCapError,
     ) as exc:
         raise EndpointRejectedError(_admission_rejection(endpoint, exc)) from exc
 
 
 def _admission_rejection(
     endpoint: EndpointState,
-    exc: job_slots.QueueFullError | job_slots.ClaimLostError | AdmissionIdentityError,
+    exc: job_slots.QueueFullError
+    | job_slots.ClaimLostError
+    | AdmissionIdentityError
+    | SeatCapError,
 ) -> EndpointOutcome:
     """Map one admission failure to the outcome every endpoint reports."""
     if isinstance(exc, job_slots.QueueFullError):
@@ -299,6 +323,9 @@ def _admission_rejection(
             f"CANCELLED: this queued '{endpoint.name}' run was "
             f"withdrawn (booley_cancel) before it started."
         )
+    elif isinstance(exc, SeatCapError):
+        logger.error("%s admission refused: %s", endpoint.name, exc)
+        text = f"{endpoint.name}: {exc}"
     else:
         logger.error(
             "%s admission refused: invalid %s: %s", endpoint.name, RUNTIME_EXECUTION_ENV, exc
@@ -414,11 +441,11 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
 
 def _acquire_memory_reservation(
     endpoint: EndpointState, prepared: PreparedExecution | None, *, requeued: bool = False
-) -> tuple[job_slots.SlotStore | None, object | None, MemoryAdmissionPlan | None]:
+) -> _Claim:
     """Claim this memory-admitted Job's Memory Reservation, waiting in queue order if needed.
 
-    Returns ``(store, token, plan)``; ``(None, None, None)`` when nothing is
-    claimed, as for :func:`_acquire_job_slot`. That check comes before any
+    Returns the claim with the Job's thread count; an empty claim when nothing
+    is claimed, as for :func:`_acquire_job_slot`. That check comes before any
     sizing, so a child under its parent's claim does no estimate work.
 
     A *requeued* Job (its first attempt was OOM-killed) claims the whole
@@ -426,15 +453,20 @@ def _acquire_memory_reservation(
     """
     found = _admission_root(endpoint)
     if found is None:
-        return (None, None, None)
+        return _Claim(None, None)
     project, root = found
     config = load_job_budget_config(booley_dir=project)
+    # Refused before any sizing or store entry: a Job that runs a licensed tool
+    # without a Seat Cap never queues (SeatCapError is mapped by _enter_admission).
+    seats = required_seats(endpoint._licensed_tools(), config)
     store = job_slots.SlotStore(root, parse_caps(config))
     requests = None if prepared is None else prepared.invocation.job_requests()
     plan = measure_memory_claim(project, config, requests)
     if requeued:
         _refuse_waiting_behind_own_claim(endpoint, store)
         plan = plan.alone()
+    claim = dataclasses.replace(plan.claim, seats=seats)
+    seat_detail = "".join(f"; needs a {tool} seat (cap {cap})" for tool, cap in seats)
     pid = os.getpid()
     token = store.acquire(
         job_slots.CLASS_MEMORY,
@@ -443,12 +475,22 @@ def _acquire_memory_reservation(
         role=job_slots.ROLE_INTERACTIVE,
         timeout_s=_holder_deadline_seconds(),
         on_queued=_queue_narrator(
-            endpoint, store, job_slots.CLASS_MEMORY, "memory", f": {_claim_detail(plan, requeued)}"
+            endpoint,
+            store,
+            job_slots.CLASS_MEMORY,
+            "memory",
+            f": {_claim_detail(plan, requeued)}{seat_detail}",
         ),
-        memory=plan.claim,
+        memory=claim,
         queue_reason=OOM_REQUEUE_REASON if requeued else None,
     )
-    return (store, token, plan)
+    try:
+        threads = job_threads_at_start(store, available_cpu_count())
+    except BaseException:
+        # The caller never sees the token, so it cannot release it.
+        store.release(token)
+        raise
+    return _Claim(store, token, plan, threads)
 
 
 def _claim_detail(plan: MemoryAdmissionPlan, requeued: bool) -> str:
