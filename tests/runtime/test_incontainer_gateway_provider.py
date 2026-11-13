@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from tests.codex_config_support import count_parses
 from tests.gateway_command_support import count_runs, write_token_command
 from tests.subprocess_budget import run_bounded_child
 
@@ -187,18 +188,6 @@ def test_gateway_registration_with_incomplete_env_skips_provider(
     assert "booley" in config["mcp_servers"]
 
 
-def test_gateway_registration_skips_an_unextendable_layout(tmp_path, gateway_env, capsys):
-    home = _home(tmp_path)
-    path = _seed(home, 'model_providers = { mine = { base_url = "https://m.example" } }\n')
-
-    status = reg.register("codex", home=home)
-
-    assert "gateway:skipped" in status
-    assert "cannot take it" in capsys.readouterr().err
-    assert "booley_gateway" not in _read(path)
-    assert "model_provider =" not in _read(path)
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="gateway mode is container-only")
 def test_interactive_auth_command_prints_a_freshly_claimed_token(
     tmp_path, gateway_env, monkeypatch
@@ -247,13 +236,104 @@ def test_other_policies_leave_providers_untouched(
         assert config["model_providers"]["mine"] == {"base_url": "https://m.example/v1"}
 
 
-def test_gateway_registration_skips_a_non_list_exclude(tmp_path, gateway_env, capsys):
+_USER_SEED = (
+    'model_provider = "mine"\nmodel = "user-model"\n[model_providers.mine]\nbase_url = "x"\n'
+    '[model_providers.booley_gateway]\nbase_url = "https://old.example/v1"\n'
+)
+
+
+@pytest.mark.parametrize("writer", ["add", "remove"])
+def test_gateway_writers_parse_config_once(tmp_path, gateway_env, monkeypatch, writer):
     home = _home(tmp_path)
-    path = _seed(home, 'shell_environment_policy.exclude = "SECRET_*"\n')
+    if writer == "add":
+        source = _USER_SEED
+        _seed(home, source)
+    else:
+        reg.register("codex", home=home)
+        source = _read(reg.codex_config_path(home))
+    with count_parses(monkeypatch, source) as parses:
+        if writer == "add":
+            assert reg._apply_codex_gateway(home) == "written"
+        else:
+            assert reg._drop_codex_gateway(home) == "removed"
+    assert parses() == 1
 
-    status = reg.register("codex", home=home)
 
-    assert "gateway:skipped" in status
-    assert _parsed(home)["shell_environment_policy"]["exclude"] == "SECRET_*"
-    assert "booley_gateway" not in _read(path)
-    assert "cannot take it" in capsys.readouterr().err
+@pytest.mark.parametrize(
+    ("kind", "seeded", "status"),
+    [
+        ("invalid", None, "invalid"),
+        (
+            "inline-providers",
+            'model_providers = { m = { base_url = "https://m.example" } }\n',
+            "skipped",
+        ),
+        ("non-list-exclude", 'shell_environment_policy.exclude = "SECRET_*"\n', "skipped"),
+    ],
+)
+def test_gateway_skips_leave_the_file_unchanged(
+    tmp_path, gateway_env, monkeypatch, capsys, kind, seeded, status
+):
+    home = _home(tmp_path)
+    path = reg.codex_config_path(home)
+    if seeded:
+        _seed(home, seeded)
+    if kind == "invalid":
+        monkeypatch.delenv("BOOLEY_GATEWAY_URL")
+
+    assert reg._apply_codex_gateway(home) == status
+
+    warning = capsys.readouterr().err
+    assert ("BOOLEY_GATEWAY_URL" in warning) is (kind == "invalid")
+    assert ("cannot take it" in warning) is (kind != "invalid")
+    assert (_read(path) == seeded) if seeded else not path.exists()
+
+
+def test_gateway_registration_keeps_no_final_newline_valid(tmp_path, gateway_env):
+    home = _home(tmp_path)
+    _seed(home, 'shell_environment_policy.exclude = ["A"]\nmodel_providers.mine.base_url = "x"')
+
+    assert reg._apply_codex_gateway(home) == "written"
+
+    config = _parsed(home)
+    assert config["model_provider"] == _PROVIDER
+    assert config["features"]["fast_mode"] is False
+    assert config["shell_environment_policy"]["exclude"] == ["A", _TOKEN_VARIABLE]
+    assert config["model_providers"]["mine"] == {"base_url": "x"}
+
+
+def test_gateway_removal_drops_only_owned_entries(tmp_path, gateway_env):
+    home = _home(tmp_path)
+    path = _seed(home, '[model_providers.mine]\nbase_url = "https://m.example/v1"\n')
+    reg.register("codex", home=home)
+    assert _parsed(home)["model_provider"] == _PROVIDER
+
+    assert reg._drop_codex_gateway(home) == "removed"
+
+    config = _parsed(home)
+    assert set(config["model_providers"]) == {"mine"}
+    assert "model_provider" not in config and "model" not in config
+    assert config["features"]["fast_mode"] is False
+    assert _TOKEN_VARIABLE in config["shell_environment_policy"]["exclude"]
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    assert reg._drop_codex_gateway(home) == "off"
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+def test_gateway_removal_keeps_users_own_selection(tmp_path, gateway_env):
+    home = _home(tmp_path)
+    path = _seed(home, f'model_provider = "mine"\nmodel = "{_MODEL}"\n')
+    before = path.read_bytes()
+
+    assert reg._drop_codex_gateway(home) == "off"
+
+    assert path.read_bytes() == before
+
+
+def test_gateway_off_policy_writes_nothing(tmp_path, gateway_env, monkeypatch):
+    home = _home(tmp_path)
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+
+    assert reg._apply_codex_gateway(home) == "off"
+
+    assert not reg.codex_config_path(home).exists()
