@@ -123,6 +123,7 @@ async def test_a_failed_auth_check_refuses_the_launch_and_shows_the_fix(
 async def test_auto_without_a_credential_warns_with_the_fix_and_still_submits(
     checkout, spawned, empty_home
 ):
+    write_config(checkout, "")  # The check refuses a checkout without a Booley Directory
     app = make_app(checkout, real_launcher(checkout / ".booley"))
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await review_reviewer(app, pilot)
