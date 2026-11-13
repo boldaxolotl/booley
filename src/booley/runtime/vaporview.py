@@ -110,8 +110,8 @@ def _registry_versions(root: Path) -> set[str] | None:
         return None
     versions: set[str] = set()
     for entry in entries:
-        fields = as_dict(entry, default={})
-        identifier = as_dict(fields.get("identifier"), default={})
+        fields = as_dict(entry) or {}
+        identifier = as_dict(fields.get("identifier")) or {}
         ext_id = identifier.get("id")
         if not isinstance(ext_id, str) or ext_id.lower() != EXTENSION_ID:
             continue
