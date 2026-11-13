@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -615,7 +615,8 @@ def _restart_budget(request: Mapping[str, Any]) -> None:
     if job is None or started is None:
         raise ValueError("baseline Job has no valid watchdog start time")
     job.timeout_s = BASELINE_TIMEOUT_S + math.ceil(time.time() - started)
-    job_records.write_record(job, jobs)
+    # Strict: a restart that silently failed would leave the spent budget in force.
+    job_records.write_record_strict(job, jobs)
 
 
 @contextmanager
@@ -663,7 +664,9 @@ def _background_slot(
     def on_queued(position: int | None) -> None:
         narrate(position)
         if requeued:
-            _restart_budget(owner)
+            # The grant restarts the budget again (strictly), so a failed write here is harmless.
+            with suppress(OSError):
+                _restart_budget(owner)
 
     try:
         token = store.acquire(

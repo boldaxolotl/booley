@@ -627,6 +627,17 @@ def test_requeued_baseline_gets_a_fresh_budget_after_a_long_first_attempt(memory
     assert execution._remaining_seconds(output) >= 3600
 
 
+def _release_until_gone(scene, token) -> None:
+    """Release *token*, retrying while its entry lingers (Windows denies a busy unlink)."""
+    ticker = threading.Event()
+    for _ in range(300):
+        scene.store.release(token)
+        if not token.path.exists():
+            return
+        ticker.wait(0.01)
+    raise AssertionError(f"slot entry {token.path.name} was not released")
+
+
 def test_requeued_baseline_wait_to_run_alone_does_not_spend_its_budget(
     memory_scene, foreign_owner
 ):
@@ -652,25 +663,33 @@ def test_requeued_baseline_wait_to_run_alone_does_not_spend_its_budget(
         return SimpleNamespace(pid=os.getpid(), wait=wait)
 
     finished = threading.Event()
+    restarted = threading.Event()
+    restart_budget = execution._restart_budget
 
-    def budget_left() -> bool:
-        try:
-            return execution._remaining_seconds(output) > 3000
-        except TimeoutError:
-            return False
+    def signalled_restart(request):
+        restart_budget(request)
+        restarted.set()
 
     def steps():
         try:
             _wait_until(lambda: _memory_entries(scene)[1], finished=finished)
             # Waiting restarts the budget rather than spending what the first attempt left.
-            _wait_until(budget_left, finished=finished)
+            # The baseline writes the Job record and then idles, so reading it now cannot
+            # race that write (a concurrent reader makes the Windows rename retry).
+            _wait_until(restarted.is_set, finished=finished)
+            assert execution._remaining_seconds(output) > 3000
         finally:
-            scene.store.release(holder[0])
+            _release_until_gone(scene, holder[0])
 
     driver = _Driver(steps)
     driver.start()
     try:
-        with mock.patch.object(execution.subprocess, "Popen", popen):
+        with (
+            mock.patch.object(execution.subprocess, "Popen", popen),
+            mock.patch.object(execution, "_restart_budget", signalled_restart),
+            # A failed driver must fail the test, not leave the baseline waiting for a day.
+            mock.patch.object(execution, "QUEUE_WAIT_LIMIT_S", 60),
+        ):
             result = _execute(scene)
     finally:
         finished.set()
