@@ -34,13 +34,19 @@ To reproduce a run yourself inside the Sandbox:
 booley flow synth --target synth_core --baseline main
 ```
 
-| Option | Effect |
-|---|---|
-| `--baseline <git-ref>` | Also synthesize the Target at that revision and add the change in percent to every row. Its timing reports are kept beside the current run's; the JSON report names both. Shared rules: [Running Flows](FLOW_REFERENCE.md#common-options). |
-| `--ppa-profile <compact\|balanced\|max_frequency>` | Use this [optimization profile](#optimization-profiles) for this run. Default: the Target's `ppa_profile`, else `balanced`. |
-| `--flatten` / `--no-flatten` | Flatten the hierarchy before mapping, or keep it. Default: flatten. |
-| `--frontend <sv2v\|slang>` | Pick how SystemVerilog is read; switch only when the default fails. See [RTL frontend](#rtl-frontend-sv2v-vs-slang). |
-| `--fresh-openroad` | Run OpenROAD even when [its results could be reused](#reusing-openroad-results), and store the new results instead. MCP: `fresh_openroad`. |
+The Target's `flow_options` set how it is built. Most also have an option that
+overrides the Target for one run:
+
+| Target setting | Option for one run | Effect |
+|---|---|---|
+| `synth_mode` | none | `physical` (default) runs placement and timing; `logical` stops after mapping. See [Fast logical estimates](#fast-logical-estimates). |
+| `ppa_profile` | `--ppa-profile <compact\|balanced\|max_frequency>` | What to optimize for. Default: `balanced`. See [Optimization profiles](#optimization-profiles). |
+| `flatten` | `--flatten` / `--no-flatten` | Flatten the hierarchy before mapping, or keep it. Default: flatten. |
+| `frontend` | `--frontend <sv2v\|slang>` | How SystemVerilog is read. Default: `sv2v`; switch only when it fails. See [RTL frontend](#rtl-frontend-sv2v-vs-slang). |
+| `slang_options` | none | Options passed unchanged to the `slang` frontend. Add `--single-unit` when the RTL relies on macros from a header included only once at the top of the file list. |
+| `advanced_settings_yosys`, `advanced_settings_openroad` | the expert options | Override single settings of the profile. See [Optimization profiles](#optimization-profiles). |
+| none | `--baseline <git-ref>` | Also synthesize the Target at that revision and add the change in percent to every row. Its timing reports are kept beside the current run's; the JSON report names both. Shared rules: [Running Flows](FLOW_REFERENCE.md#common-options). |
+| none | `--fresh-openroad` | Run OpenROAD even when [its results could be reused](#reusing-openroad-results), and store the new results instead. MCP: `fresh_openroad`. |
 
 ## Reading results
 
@@ -314,19 +320,6 @@ endpoints, worst first; a design with fewer paths lists those it has. Worst slac
 still come from the single worst path.
 
 Everything about how the design is built lives on the Target in the `.core`
-file, not in `booley.toml`; the full Target, with its SDC fileset, is the
-[Synthesis Target recipe](TARGETS.md#synthesis-target). Besides `tool`, the
-`flow_options` this Flow reads:
-
-- `synth_mode`: `physical` (default) or `logical`; see
-  [Fast logical estimates](#fast-logical-estimates).
-- `ppa_profile`: `compact`, `balanced` (default) or `max_frequency`; see
-  [Optimization profiles](#optimization-profiles).
-- `flatten`: `true` (default) or `false`.
-- `frontend`: `sv2v` (default) or `slang`. `slang_options` passes options to
-  the `slang` frontend unchanged. Add `--single-unit` when the RTL relies on
-  macros from a header included only once at the top of the file list.
-- `advanced_settings_yosys` and `advanced_settings_openroad`: the expert
-  options of [Optimization profiles](#optimization-profiles). Setting
-  `advanced_settings_openroad` on a logical Target is an error, since it would
-  have no effect.
+file, not in `booley.toml`: see the [Target settings](#running-synthesis) and
+the full [Synthesis Target recipe](TARGETS.md#synthesis-target), with its SDC
+fileset.
