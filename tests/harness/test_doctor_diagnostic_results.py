@@ -20,6 +20,8 @@ from booley.config.project_config import normalize_tests_toml
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import doctor_stamp, inspection, session_admission, vaporview
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError
 from tests.conftest import symlink_or_skip
 from tests.diagnostic_helpers import _Rec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
@@ -1122,7 +1124,7 @@ def test_core_audit_renders_core_repository_hygiene_report_in_place(tmp_path, mo
 
 def test_core_audit_skips_core_repository_hygiene_without_targets(tmp_path, monkeypatch):
     """No enumerated Target, no hygiene report: with no ``.core`` at all, and when
-    enumeration raises (the same VLNV in both core roots)."""
+    Target enumeration raises."""
     owner = _core_hygiene_owner()
     calls = []
     monkeypatch.setattr(
@@ -1130,24 +1132,23 @@ def test_core_audit_skips_core_repository_hygiene_without_targets(tmp_path, monk
         "inspect_core_repository_hygiene",
         lambda request: calls.append(request) or DiagnosticReport(),
     )
-    for case in ("no-core", "colliding-core"):
+    for case in ("no-core", "enumeration-error"):
         root = tmp_path / case
         root.mkdir()
         project = _cocotb_audit_project(root)
-        design_core = root / "design.core"
         if case == "no-core":
-            design_core.unlink()
-        else:
-            # The same VLNV in the repo and the state core roots: enumeration raises.
-            state_cores = root / ".booley" / "cores"
-            state_cores.mkdir()
-            (state_cores / "dup.core").write_text(
-                design_core.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
+            (root / "design.core").unlink()
+        with monkeypatch.context() as patch:
+            if case == "enumeration-error":
+
+                def refuse(_catalog, **_kwargs):
+                    raise FuseSocError("catalog unavailable")
+
+                patch.setattr(TargetCatalog, "list", refuse)
+            rec = _Rec()
+            doctor._run_core_audit(
+                project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=lambda _r: None
             )
-        rec = _Rec()
-        doctor._run_core_audit(
-            project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=lambda _report: None
-        )
         failure = "project has no .core" if case == "no-core" else ".core enumeration failed"
         assert any(failure in message for level, message in rec.events if level == "fail"), case
         assert not calls, case
