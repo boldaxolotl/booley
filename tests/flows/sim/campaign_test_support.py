@@ -10,9 +10,9 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -70,6 +70,7 @@ from booley.flows.sim.coverage_invocation import (
 )
 from booley.flows.sim.execution.contract import (
     SimulationArtifactEvidence,
+    SimulationInfrastructureFailure,
     SimulationPreview,
     SimulationTargetOutcome,
     SimulationTestOutcome,
@@ -428,7 +429,11 @@ def _handle(project: Path) -> SimpleNamespace:
 
 
 def _failed_shared_executor(
-    build_root: Path, counters: dict[str, int]
+    build_root: Path,
+    counters: dict[str, int],
+    on_compile: Callable[[], None] | None = None,
+    *,
+    infrastructure: bool = False,
 ) -> OrdinaryHdlSerialExecutor:
     build_root.mkdir()
 
@@ -443,10 +448,20 @@ def _failed_shared_executor(
 
         def compile(self):
             counters["compile"] += 1
+            if on_compile is not None:
+                on_compile()
             return SimpleNamespace(passed=False)
 
         def finish_build_failure(self):
-            return _failed_shared_outcome()
+            outcome = _failed_shared_outcome()
+            if not infrastructure:
+                return outcome
+            return replace(
+                outcome,
+                infrastructure_failure=SimulationInfrastructureFailure(
+                    "spawn", "the compiler was killed"
+                ),
+            )
 
         def launch_snapshot(self, *_args, **_kwargs):
             counters["launch"] += 1

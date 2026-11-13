@@ -279,6 +279,7 @@ def _edit_task(files: _TaskFiles, document: Document, desired: bool) -> TaskPlan
             elif insertion:
                 raise ValueError("user-edited Dashboard task insertion preserved")
             else:
+                assert tasks is not None  # a matching task implies the tasks node exists
                 after = document.remove(tasks, matching[0])
     elif desired:
         if files.owner.get("enabled", False):

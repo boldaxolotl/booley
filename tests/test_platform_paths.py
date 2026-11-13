@@ -143,14 +143,11 @@ class TestCargoBin:
 
 
 class TestPopenNewGroupKwargs:
-    # subprocess.CREATE_NEW_PROCESS_GROUP only exists on Windows, so we inject
-    # it (create=True) with its real Win32 value to exercise the Windows branch
-    # on any host.
     @patch.object(platform_paths, "IS_WINDOWS", True)
-    @patch.object(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, create=True)
     def test_windows_returns_creation_flags(self):
         result = popen_new_group_kwargs()
-        assert result == {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        # 0x200 is the Win32 CREATE_NEW_PROCESS_GROUP flag.
+        assert result == {"creationflags": 0x00000200}
 
     @patch.object(platform_paths, "IS_WINDOWS", False)
     def test_posix_returns_new_session(self):

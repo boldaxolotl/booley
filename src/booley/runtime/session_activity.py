@@ -120,7 +120,12 @@ def _parse(raw: bytes, key: str) -> ActivitySignal:
     if not isinstance(data, dict) or data.get("schema") != SCHEMA or data.get("key") != key:
         raise ValueError("not this session's activity signal")
     state, at, tool = data.get("state"), data.get("at"), data.get("tool", "")
-    if state not in EVENT_STATES.values() or not isinstance(at, str) or not isinstance(tool, str):
+    if (
+        not isinstance(state, str)
+        or state not in EVENT_STATES.values()
+        or not isinstance(at, str)
+        or not isinstance(tool, str)
+    ):
         raise ValueError("malformed activity signal")
     if rfc3339_from_epoch(parse_timestamp(at).timestamp()) != at:
         raise ValueError("activity timestamps must be canonical UTC seconds")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 
 
@@ -50,21 +50,30 @@ def has_ancestor(
     return False
 
 
-def descendant_pids(root: int, *, exclude: Collection[int] = ()) -> list[int]:
-    """Return *root*'s descendants deepest-first from the Unix ``/proc`` tree.
+def children_map() -> dict[int, list[int]]:
+    """Map each PID to its children, read from one scan of the Unix ``/proc`` tree.
 
-    A PID in *exclude* is skipped together with its whole subtree.
+    Empty when ``/proc`` cannot be listed.
     """
     children: dict[int, list[int]] = {}
     try:
         entries = [int(path.name) for path in Path("/proc").iterdir() if path.name.isdigit()]
     except (OSError, ValueError):
-        return []
+        return {}
     for pid in entries:
         ppid = _ppid_of(pid)
         if ppid is not None:
             children.setdefault(ppid, []).append(pid)
+    return children
 
+
+def descendants_in(
+    children: Mapping[int, Sequence[int]], root: int, *, exclude: Collection[int] = ()
+) -> list[int]:
+    """Return *root*'s descendants deepest-first from a :func:`children_map`.
+
+    A PID in *exclude* is skipped together with its whole subtree.
+    """
     ordered: list[int] = []
     frontier = [root]
     while frontier:
@@ -76,3 +85,11 @@ def descendant_pids(root: int, *, exclude: Collection[int] = ()) -> list[int]:
             frontier.append(child)
     ordered.reverse()
     return ordered
+
+
+def descendant_pids(root: int, *, exclude: Collection[int] = ()) -> list[int]:
+    """Return *root*'s descendants deepest-first from the Unix ``/proc`` tree.
+
+    A PID in *exclude* is skipped together with its whole subtree.
+    """
+    return descendants_in(children_map(), root, exclude=exclude)
