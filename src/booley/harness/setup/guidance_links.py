@@ -120,13 +120,34 @@ def _apply_guidance_action(action: InitAction) -> None:
     _link_file(target.path, target.desired_identity, target.link_target)
 
 
+def remaining_guidance_hardlinks(project_root: Path, booley_dir: Path) -> tuple[Path, ...]:
+    """Booley's root hardlinks that still share the canonical guidance file's identity.
+
+    After :func:`detach_guidance_hardlinks` these are the links it could not release
+    (a locked file, an unreadable tracking status). An unreadable status counts as
+    remaining: the link may be Booley's.
+    """
+    canon = booley_dir / CANON_NAME
+    remaining: list[Path] = []
+    for name in LINK_NAMES:
+        link = project_root / name
+        try:
+            if link.is_symlink() or not link.is_file() or not link.samefile(canon):
+                continue
+        except OSError:
+            continue
+        if _read_tracking_status(project_root, link) is not True:
+            remaining.append(link)
+    return tuple(remaining)
+
+
 def detach_guidance_hardlinks(project_root: Path, booley_dir: Path) -> tuple[Path, ...]:
     """Remove Booley's root hardlinks to the canonical guidance file.
 
-    On Windows without Developer Mode the root links are hardlinks, which make
-    the canonical file ineligible for line-ending normalization: rewriting one
-    name of a hardlinked file would silently split it from the others, so the
-    line-ending repair refuses. Only untracked root entries sharing the
+    On Windows without Developer Mode the root links are hardlinks. The
+    line-ending repair re-checks the canonical file out through Git, which
+    replaces its inode and would silently split it from these links, so they
+    are released first. Only untracked root entries sharing the
     canonical file's identity are removed; their content lives on in the
     canonical file, and :func:`ensure_guidance_links` recreates them. Tracked
     files, symlinks, and copies are left alone. Failed probes or removals leave

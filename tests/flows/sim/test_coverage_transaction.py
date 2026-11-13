@@ -90,7 +90,7 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert outcome.exit_code == 0
     assert len(execution.runs) == 2
     document = json.loads(outcome.campaign_path.read_text())
-    assert document["$schema"] == "booley.coverage-campaign/v5"
+    assert document["$schema"] == "booley.coverage-record/v1"
     assert document["scoring"] == {"status": "valid", "reason": None}
     assert document["source_rollups"]
     assert "points" not in document
@@ -102,7 +102,8 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert campaign.points[0].hits_by_run == {"run:001:reset@1": 2, "run:002:wrap@1": 2}
     simulation = coverage_mapping_document(outcome.detail)
     assert simulation["passed"] is True
-    assert simulation["coverage_campaign"] == "coverage.json"
+    assert simulation["coverage_record"] == "coverage.json"
+    assert "coverage_campaign" not in simulation
     assert "source_rollups" not in simulation
     assert "source_rollups" not in outcome.detail
     assert not (outcome.campaign_path.parent / "simulation.json").exists()
@@ -277,7 +278,7 @@ class InvalidHookExecution(NativeExecution):
 def _assert_invalid_hook_campaign(outcome, plan, events, expected_finding, gated) -> None:
     assert outcome.exit_code == 2
     document = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
-    assert document["$schema"] == "booley.coverage-campaign/v5"
+    assert document["$schema"] == "booley.coverage-record/v1"
     assert document["collection"]["status"] == "collector_error"
     assert document["scoring"] == {"status": "invalid", "reason": "collector_error"}
     assert document["rollups"] == []

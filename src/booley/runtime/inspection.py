@@ -419,7 +419,7 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
         report.skip("live issued Sandbox labels/topology - container runtime unavailable")
         return
     _check_runtime_booley_version(request, request.docker_exe, issuance.image, report)
-    _inspect_live_runtime(request, spec, issuance, report)
+    _inspect_live_runtime(request, request.docker_exe, spec, issuance, report)
 
 
 def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings) -> None:
@@ -472,13 +472,14 @@ def _inspect_active_sandbox(
 
 def _inspect_live_runtime(
     request: RuntimeInspectionRequest,
+    docker_exe: str,
     spec: dict,
     issuance: runtime_spec.Issuance,
     report: Findings,
 ) -> None:
     _inspect_active_sandbox(request, spec, issuance, report)
     try:
-        result = _list_issued_containers(request, issuance)
+        result = _list_issued_containers(docker_exe, issuance)
     except (OSError, subprocess.SubprocessError) as exc:
         report.fail(f"could not inspect issued Sandbox resources: {exc}", "start Docker")
         return
@@ -512,14 +513,14 @@ def _inspect_live_runtime(
 
 
 def _list_issued_containers(
-    request: RuntimeInspectionRequest, issuance: runtime_spec.Issuance
+    docker_exe: str, issuance: runtime_spec.Issuance
 ) -> subprocess.CompletedProcess[str]:
     identity = next(
         label for label in runtime_spec.labels(issuance) if label.startswith("booley.project-id=")
     )
     return subprocess.run(
         [
-            request.docker_exe,
+            docker_exe,
             "ps",
             "-aq",
             "--filter",

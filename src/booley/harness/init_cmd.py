@@ -134,6 +134,7 @@ from booley.harness.setup.guidance_links import (
     detach_guidance_hardlinks,
     ensure_guidance_links,
     plan_guidance_links,
+    remaining_guidance_hardlinks,
 )
 from booley.harness.setup.line_endings import (
     pending_normalization_paths,
@@ -2201,31 +2202,44 @@ def _line_ending_booley_dir(project_root: Path) -> Path | None:
         return None
 
 
-def _release_guidance_for_line_endings(ctx: InitContext, booley_dir: Path | None) -> bool:
+@dataclass(frozen=True)
+class _GuidanceRelease:
+    """What releasing Booley's guidance hardlinks did before a line-ending repair."""
+
+    detached: bool
+    stuck: tuple[Path, ...] = ()
+
+
+def _release_guidance_for_line_endings(
+    ctx: InitContext, booley_dir: Path | None
+) -> _GuidanceRelease:
     """Detach Booley's own guidance hardlinks when the canonical file needs LF.
 
     The Windows guidance fallback hardlinks the root ``AGENTS.md``/``CLAUDE.md``
-    to the canonical file, and line-ending repair rightly refuses to rewrite a
-    hardlinked path. Those links are Booley's, so release them first; the
-    guidance step right after line endings recreates them against the
-    normalized file. Other hardlinks still block the repair.
+    to the canonical file. Git's re-checkout replaces the canonical file's inode,
+    which would leave those links on the old CRLF bytes. They are Booley's, so
+    release them first; the guidance step right after line endings recreates them
+    against the normalized file. Other hardlinks do not block the repair; they keep
+    their bytes. A Booley link that could not be released is returned as ``stuck``:
+    the repair must wait for it, or the link would stay on stale bytes.
     """
     if ctx.check_only or booley_dir is None:
-        return False
+        return _GuidanceRelease(False)
     canon = booley_dir / "AGENTS.md"
     try:
         if not canon.is_file() or canon.stat().st_nlink < 2:
-            return False
+            return _GuidanceRelease(False)
         pending = pending_normalization_paths(ctx.project_root, booley_dir)
         if not any(path.is_file() and path.samefile(canon) for path in pending):
-            return False
+            return _GuidanceRelease(False)
         detached = detach_guidance_hardlinks(ctx.project_root, canon.parent)
+        stuck = remaining_guidance_hardlinks(ctx.project_root, canon.parent)
     except OSError as exc:
         warn(f"could not release guidance hardlinks for line-ending repair: {exc}")
-        return False
+        return _GuidanceRelease(False)
     for link in detached:
         info(f"released guidance hardlink {link.name} for line-ending repair")
-    return bool(detached)
+    return _GuidanceRelease(bool(detached), stuck)
 
 
 def _sample_line_ending_baseline(ctx: InitContext) -> dict[Path, bool | None] | None:
@@ -2254,8 +2268,21 @@ def _step_line_endings_and_guidance(
     """
     booley_dir = _line_ending_booley_dir(ctx.project_root)
     # Detaching hardlinks only serves a normalization, which this mode never runs.
-    if not ctx.preserve_tracked_content and _release_guidance_for_line_endings(ctx, booley_dir):
-        guidance_plan = None  # the preflight plan observed the detached links
+    if not ctx.preserve_tracked_content:
+        release = _release_guidance_for_line_endings(ctx, booley_dir)
+        if release.detached:
+            guidance_plan = None  # the preflight plan observed the detached links
+        if release.stuck:
+            ctx.step_banner("line endings")
+            names = ", ".join(link.name for link in release.stuck)
+            err(
+                f"refusing the line-ending repair: could not release guidance hardlink(s) {names} "
+                "(held open by another program, or their Git tracking could not be read); "
+                f"fix that, then re-run {runtime_context.booley_init_hint(code=True)}"
+            )
+            ctx.record("line_endings", "err", "guidance hardlink not released")
+            _step_guidance_links(ctx, guidance_plan)
+            return
     _step_line_endings(ctx, booley_dir, clean_baseline=clean_baseline)
     _step_guidance_links(ctx, guidance_plan)
 

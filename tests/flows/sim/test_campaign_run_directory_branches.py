@@ -19,7 +19,7 @@ PARENT_MARKER = ".booley-simulation-parent.json"
 
 def _run(root: Path, test: str = "t") -> tuple[rd.RunDirectory, dict[str, str]]:
     run = rd.expand_run_directory(
-        "work/{campaign}/{test}/{attempt}",
+        "work/{record}/{test}/{attempt}",
         project_root=root,
         campaign_id="c",
         target_key="sim",

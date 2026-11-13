@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from booley.flows.base import SubprocessResult
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim import trace_overlay as trace_overlay_module
 from booley.flows.sim.campaign.coordinator import (
@@ -78,6 +80,16 @@ def _isolated_icarus_target(tmp_path: Path, core_text: str, *, cocotb: bool):
         )
     _write_core(cores, core, create_sources=False)
     return TargetCatalog.build(project).select("sim")
+
+
+def _run_locally(
+    command: list[str], *, timeout: float | None = None, cwd: Path | None = None
+) -> SubprocessResult:
+    """Run planning's FuseSoC setup for real; nothing here builds or launches."""
+    done = subprocess.run(
+        command, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
+    )
+    return SubprocessResult(returncode=done.returncode, stdout=done.stdout, stderr=done.stderr)
 
 
 def _trace_campaign_plan(handle, execution: SimulationExecution, *, cocotb: bool):
@@ -464,9 +476,7 @@ class TestWriteTraceOverlay:
     ) -> None:
         pytest.importorskip("fusesoc")
         handle = _isolated_icarus_target(tmp_path, self._ICARUS_CORE, cocotb=cocotb)
-        execution = SimulationExecution(
-            invoke=lambda *_args, **_kwargs: None, options=SimulationOptions(trace=True)
-        )
+        execution = SimulationExecution(invoke=_run_locally, options=SimulationOptions(trace=True))
         plan = _trace_campaign_plan(handle, execution, cocotb=cocotb)
         disclosure = plan.manifest.document["planning_disclosures"][0]
 
@@ -489,7 +499,7 @@ class TestWriteTraceOverlay:
         executor = OrdinaryHdlSerialExecutor(
             invoke=lambda *_args, **_kwargs: None,
             execution_factory=lambda options: SimulationExecution(
-                invoke=lambda *_args, **_kwargs: None, options=options
+                invoke=_run_locally, options=options
             ),
         )
         invocation = tmp_path / "reports" / "000001"

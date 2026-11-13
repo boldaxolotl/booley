@@ -91,7 +91,7 @@ def _simulation_failure_report(target="sim_core", test="hello_world", variant=No
         "flow": "sim",
         "exit_code": 1,
         "detail": {
-            "campaigns": {
+            "records": {
                 target: {
                     "complete": True,
                     "build_stage": [],
@@ -349,7 +349,7 @@ def _evidence_mutations(report, campaign, observation):
 
 def _evidence_case(kind):
     report = _simulation_failure_report()
-    campaign = report["detail"]["campaigns"]["sim_core"]
+    campaign = report["detail"]["records"]["sim_core"]
     observation = campaign["observations"][0]
     changes = _evidence_mutations(report, campaign, observation)
     if kind in changes:
@@ -358,7 +358,7 @@ def _evidence_case(kind):
     elif kind == "missing-rows":
         del campaign["test_runs"]
     elif kind == "wrong-target":
-        report["detail"]["campaigns"]["other"] = report["detail"]["campaigns"].pop("sim_core")
+        report["detail"]["records"]["other"] = report["detail"]["records"].pop("sim_core")
     elif kind == "wrong-test":
         campaign["test_runs"][0]["test"] = observation["test"] = "other"
     elif kind == "build-failed":
@@ -539,3 +539,37 @@ def test_unremovable_report_fails_without_executing_bad_case(tmp_path, monkeypat
     doctor._run_selftest_checks(project, _runtime(project), rec.p, rec.w, rec.s, rec.f)
     assert executions == ["good"]
     assert any("cannot clear prior report" in message for message in rec.fails())
+
+
+def test_sim_bad_selftest_grades_the_renamed_records_field(tmp_path):
+    """The Simulation self-test reads ``detail.records``; the old field no longer grades."""
+    project = _audit(tmp_path)
+    path = doctor._selftest_report_path(project)
+    path.parent.mkdir(parents=True)
+
+    def grade(report: dict) -> tuple[bool, _Rec]:
+        path.write_text(json.dumps(report))
+        rec = _Rec()
+        accepted = doctor._grade_sim_bad_selftest(
+            project,
+            doctor._SelftestCase("sim_core", None, "case"),
+            subprocess.CompletedProcess([], 1, "", ""),
+            "bad sim",
+            rec.p,
+            rec.w,
+        )
+        return accepted, rec
+
+    current = _simulation_failure_report()
+    assert "records" in current["detail"]
+    accepted, rec = grade(current)
+    assert accepted, "a report with detail.records was not graded"
+    assert rec.events == [("pass", "bad sim correctly graded a failure")]
+
+    # The same report under the retired field name fails grading like a malformed report.
+    retired = _simulation_failure_report()
+    retired["detail"]["campaigns"] = retired["detail"].pop("records")
+    accepted, rec = grade(retired)
+    assert not accepted
+    assert [level for level, _ in rec.events] == ["warn"]
+    assert "fail-path unvalidated" in rec.events[0][1]

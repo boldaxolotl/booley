@@ -48,7 +48,7 @@ from .campaign.artifact_reference import (
     decode_artifact_reference,
     resolve_report_artifact_reference,
 )
-from .campaign.codec import MANIFEST_MAX_BYTES
+from .campaign.codec import MANIFEST_MAX_BYTES, raise_if_retired_schema
 from .campaign.dependency import (
     CampaignDependencyReceipt,
     dependency_receipt_files,
@@ -85,9 +85,6 @@ class _UnreadableDependencyError(CampaignRetentionError):
 # one held by this very prune) locks the sentinel byte, other handles cannot read it.
 _MANDATORY_FILE_LOCKS = sys.platform == "win32"
 _BATCH_SCHEMA = "booley.simulation-prune-batch/v1"
-# The manifest artifact kind Booley 0.4.0 wrote into report.json, which keeps its schema
-# until the report rename: recognised only to refuse a 0.4.0 resume receipt, never an alias.
-_OLDER_MANIFEST_KIND = "simulation_campaign_manifest"
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +207,14 @@ def _fail_closed_on_sharing_error(error: OSError, path: Path) -> None:
         raise _UnreadableDependencyError(f"cannot read {path}: {error}") from error
 
 
+def _refuse_older_coverage_schema(root: Path, public: Mapping[str, object]) -> None:
+    """Report a Target ``coverage.json`` an older Booley wrote as old, not damaged or standalone."""
+    try:
+        raise_if_retired_schema(public.get("$schema"))
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise CampaignRetentionError(str(exc.located(root))) from exc
+
+
 def _is_standalone_coverage(public: Mapping[str, object]) -> bool:
     """Whether a Target's ``coverage.json`` is a full Campaign, not a reference to one."""
     return public.get("$schema") != REFERENCE_SCHEMA
@@ -244,6 +249,7 @@ def _target(
     target = target_report_directory(root, selector)
     public_path = target / "coverage.json"
     public = _read_object(public_path)
+    _refuse_older_coverage_schema(root, public)
     if _is_standalone_coverage(public):
         raise _refuse_standalone_coverage(root, target)
     try:
@@ -666,7 +672,7 @@ def _report_references_campaign(
     try:
         report = _read_object(report_path)
         detail = require_dict(report.get("detail"), field="report detail")
-        campaigns = require_dict(detail.get("campaigns"), field="report campaigns")
+        campaigns = require_dict(detail.get("records"), field="report records")
     except OSError as error:
         _fail_closed_on_sharing_error(error, report_path)
         return False
@@ -678,7 +684,7 @@ def _report_references_campaign(
             artifacts = require_dict(campaign.get("artifacts"), field="campaign artifacts")
         except BoundaryError:
             continue
-        if campaign.get("campaign_id") != campaign_id:
+        if campaign.get("simulation_record_id") != campaign_id:
             continue
         if _manifest_reference_matches(
             report_path,
@@ -1074,7 +1080,10 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
 def _campaign_coverage_files(coverage: Path) -> set[Path]:
     campaign_path = coverage / "coverage.json"
     if campaign_path.exists():
-        loaded = load_coverage_campaign(campaign_path)
+        try:
+            loaded = load_coverage_campaign(campaign_path)
+        except UnsupportedSimulationCampaignFormatError as exc:
+            raise CampaignRetentionError(str(exc)) from exc
         return _coverage_owned_files(coverage, loaded)
     if not coverage.exists():
         return set()
@@ -1116,9 +1125,9 @@ def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> di
     campaign = loaded.campaign
     point_store = loaded.summary.point_store
     return {
-        "$schema": "booley.coverage-availability/v1",
-        "campaign_id": campaign.campaign_id,
-        "campaign_sha256": loaded.summary.manifest_sha256.removeprefix("sha256:"),
+        "$schema": "booley.coverage-availability/v2",
+        "coverage_record_id": campaign.campaign_id,
+        "coverage_record_sha256": loaded.summary.manifest_sha256.removeprefix("sha256:"),
         "point_store_sha256": point_store.sha256 if point_store is not None else None,
         "artifacts": _native_artifacts(campaign),
         "status": status,
@@ -1179,9 +1188,12 @@ def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
     ):
         raise CampaignRetentionError("Target does not resolve exactly in this invocation")
     target = target_report_directory(root, selector)
+    public = target / "coverage.json"
+    if public.exists():
+        # Before the Simulation Record is inspected: a 0.4.0 reference binds digests of it.
+        _refuse_older_coverage_schema(root, _read_object(public))
     manifest = target / RECORD_DIRECTORY / "manifest.json"
     if not manifest.exists():
-        public = target / "coverage.json"
         if public.exists() and _is_standalone_coverage(_read_object(public)):
             raise _refuse_standalone_coverage(root, target)
         raise CampaignRetentionError(
@@ -1266,32 +1278,24 @@ def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> 
     except (OSError, ValueError, json.JSONDecodeError):
         return False
     detail = report.get("detail")
-    campaigns = detail.get("campaigns") if isinstance(detail, dict) else None
-    receipt = (
-        report.get("flow") == "sim"
-        and report.get("exit_code") in {0, 1, 2}
-        and isinstance(campaigns, dict)
-        and set(campaigns) == set(completed)
-    )
-    if receipt:
-        _refuse_older_receipt(root, cast(dict[str, object], campaigns))
-    return receipt
-
-
-def _refuse_older_receipt(root: Path, campaigns: Mapping[str, object]) -> None:
-    """Refuse a receipt whose manifest reference carries the kind Booley 0.4.0 wrote."""
-    for campaign in campaigns.values():
-        artifacts = campaign.get("artifacts") if isinstance(campaign, dict) else None
-        manifest = artifacts.get("manifest") if isinstance(artifacts, dict) else None
-        kind = manifest.get("kind") if isinstance(manifest, dict) else None
-        if kind == _OLDER_MANIFEST_KIND:
-            raise CampaignRetentionError(
-                str(
-                    UnsupportedSimulationCampaignFormatError(
-                        "Simulation Campaign manifest reference", kind, root
-                    )
+    if not isinstance(detail, dict):
+        return False
+    if report.get("flow") == "sim" and isinstance(detail.get("campaigns"), dict):
+        # Booley 0.4.0 named the field ``campaigns``; no current Booley writes it.
+        raise CampaignRetentionError(
+            str(
+                UnsupportedSimulationCampaignFormatError(
+                    "Simulation report field", "detail.campaigns", root
                 )
             )
+        )
+    records = detail.get("records")
+    return (
+        report.get("flow") == "sim"
+        and report.get("exit_code") in {0, 1, 2}
+        and isinstance(records, dict)
+        and set(records) == set(completed)
+    )
 
 
 def main() -> None:

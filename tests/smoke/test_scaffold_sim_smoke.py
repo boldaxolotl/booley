@@ -76,7 +76,7 @@ def _write_project(root: Path, *, stealth: bool = False) -> None:
 
 
 def _assert_coverage(reports: Path, detail: dict) -> None:
-    ref = detail["targets"]["sim_wave_counter"]["coverage_campaign"]
+    ref = detail["targets"]["sim_wave_counter"]["coverage_record"]
     assert ref["path_base"] == "report_invocation"
     path = reports / "sim/1" / ref["path"]
     resolved = resolve_coverage_campaign_reference(path)

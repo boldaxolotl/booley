@@ -291,7 +291,7 @@ def test_coverage_owner_refuses_malformed_result_evidence(
     from booley.flows.sim import campaign, coverage_reference
     from booley.flows.sim.coverage_reference import CoverageCampaignReferenceError
 
-    evidence = {"kind": "coverage_campaign_manifest"}
+    evidence = {"kind": "coverage_record_manifest"}
     authenticated = SimpleNamespace(
         manifest=SimpleNamespace(document={"target": {}}),
         result=SimpleNamespace(document={"evidence": (evidence,)}),
@@ -302,7 +302,7 @@ def test_coverage_owner_refuses_malformed_result_evidence(
     monkeypatch.setattr(coverage_reference, "crossed_booley_dir_entry", lambda _path: None)
     resolved = SimpleNamespace(
         reference=SimpleNamespace(
-            document={"coverage_campaign": {}, "simulation_work_item_id": "item"}
+            document={"coverage_record": {}, "simulation_work_item_id": "item"}
         ),
         reference_path=tmp_path / "reference.json",
     )

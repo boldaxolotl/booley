@@ -24,7 +24,7 @@ import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from time import time as wall_clock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -33,6 +33,7 @@ import booley
 from booley.agent_workspace.isolation import get_category_dirs
 from booley.agent_workspace.legacy_stashes import legacy_stash_manifests
 from booley.audit import (
+    core_tree_inspection,
     design_size,
     eda_environment,
     host_environment,
@@ -53,6 +54,7 @@ from booley.audit.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
+from booley.audit.output_excerpt import output_excerpt_lines
 from booley.config.gateway import (
     GATEWAY_AUTH,
     GATEWAY_EFFORT_ENV,
@@ -71,7 +73,6 @@ from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
-    require_bool,
     require_dict,
     require_int,
     require_list,
@@ -93,11 +94,10 @@ from booley.flows.sim.config import (
 from booley.flows.target_test_plan_inspection import TargetTestPlanInspectionRequest
 from booley.flows.test_runs import parse_test_selector
 from booley.fusesoc import (
-    core_security,
     fusesoc_registry,
     selftest_overlay,
 )
-from booley.fusesoc.core_projection import STATE_CORES_SUBDIR, lexical_stealth_path
+from booley.fusesoc.core_projection import STATE_CORES_SUBDIR
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
@@ -117,6 +117,8 @@ from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
 from booley.presentation.terminal_table import render_table
 from booley.runtime import (
     auth_token,
+    core_repository_hygiene,
+    core_resolution,
     doctor_stamp,
     health,
     image_identity,
@@ -136,7 +138,6 @@ from booley.runtime.agent_errors import ModelUnavailableError
 from booley.runtime.booley_dir import (
     BOOLEY_DIR_NAME,
     contains,
-    in_checkout_booley_dir,
     own_booley_dir,
     own_booley_dir_repo_path,
     resolve_checkout_booley_dir,
@@ -241,7 +242,7 @@ _SELFTEST_FOOTPRINT_NOTE = {
 # 0 = pass, 1 = graded design failure (fail/elab_error), 2 = infra/contract error.
 _TOOL_EXIT_PASS = 0
 _TOOL_EXIT_DESIGN_FAIL = 1
-# HDL source suffixes used by Doctor's readmem scan. Design sizing owns its own
+# HDL source suffixes used by Doctor's interface-port scan. Design sizing owns its own
 # source classification in :mod:`booley.audit.design_size`.
 _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 _CONTAINER_CLI = "doc" + "ker"
@@ -252,9 +253,6 @@ _BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
 _ADVISORY_SPECIALIST_TOOLS = frozenset({"reviewer"})
 _ADVISORY_FLOW_TOOLS = frozenset({"mutation"})
 _MCP_PROBE_TIMEOUT_S = 60
-# Budget for the one Sandbox container that resolves every selected Target.
-_CORE_RESOLVE_TIMEOUT_S = 600
-
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
 Warn = Callable[..., None]
@@ -853,11 +851,11 @@ def run_doctor_result(
     docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
     flow_runtime = _DoctorFlowRuntime(project_root, docker_exe) if project is not None else None
     _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
-    _run_flow_and_core_phase(project, flow_runtime, verbose, reporter, report_progress)
+    _run_flow_and_core_phase(project, flow_runtime, reporter, report_progress)
 
     summary = None
     if deep:
-        summary = _run_deep_phase(project, docker_exe, flow_runtime, reporter)
+        summary = _run_deep_phase(project, flow_runtime, reporter)
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
@@ -1353,7 +1351,6 @@ def _run_runtime_phase(
 def _run_flow_and_core_phase(
     project: ProjectAudit | None,
     flow_runtime: _DoctorFlowRuntime | None,
-    verbose: bool,
     reporter: _Reporter,
     progress: Check,
 ) -> None:
@@ -1387,13 +1384,11 @@ def _run_flow_and_core_phase(
             reporter.fail_,
             _diagnostics=reporter.diagnostics,
             _note=reporter.note_,
-            _detail=info if verbose else None,
         )
 
 
 def _run_deep_phase(
     project: ProjectAudit | None,
-    docker_exe: str | None,
     flow_runtime: _DoctorFlowRuntime | None,
     reporter: _Reporter,
 ) -> doctor_deep.DeepAttemptSummary:
@@ -1417,19 +1412,41 @@ def _run_deep_phase(
         _diagnostics=reporter.diagnostics,
         completeness=tracker,
     )
-    _run_core_resolve_checks(
-        project,
-        docker_exe,
-        reporter.pass_,
-        reporter.skip_,
-        reporter.fail_,
-        flow_runtime=flow_runtime,
-        completeness=tracker,
-    )
+    _run_core_resolution(project, flow_runtime, reporter, tracker)
     issues = _deep_identity_reasons(image_id, sandbox_version)
     if not reporter.profile.records_health_evidence:
         tracker.require("agent-checks")
     return doctor_deep.DeepAttemptSummary(tracker.missing, issues, image_id)
+
+
+def _run_core_resolution(
+    project: ProjectAudit,
+    flow_runtime: _DoctorFlowRuntime,
+    reporter: _Reporter,
+    tracker: doctor_deep.DeepCheckTracker,
+) -> None:
+    """Deep: resolve each Doctor-selected Target in the Sandbox; track completion.
+
+    The owner grades resolvability; Doctor keeps one completeness identifier per
+    selected Target, required before the owner runs so a skip stays incomplete.
+    """
+    selected = _project_target_matrix(project).seed_targets
+    if not selected:
+        return
+    identifiers = {
+        selector: f"core.resolve.{hashlib.sha256(selector.encode()).hexdigest()[:16]}"
+        for selector in selected
+    }
+    for identifier in identifiers.values():
+        tracker.require(identifier)
+    result = core_resolution.inspect_core_resolution(
+        core_resolution.CoreResolutionRequest(
+            project.project_root, tuple(selected), flow_runtime.available, flow_runtime.command
+        )
+    )
+    reporter.diagnostics(result.report)
+    for selector in result.completed:
+        tracker.completed(identifiers[selector], True)
 
 
 def _track_developer_probe(
@@ -1462,14 +1479,6 @@ def _deep_identity_reasons(image_id: str | None, sandbox_version: str | None) ->
     elif sandbox_version != booley.__version__:
         reasons.append("booley-version-mismatch")
     return tuple(reasons)
-
-
-#: ``.core`` security violations whose verdict depends on the agent's write
-#: Scope. doctor only has a synthetic project-wide Scope, so these are
-#: advisory there; the execution Scope check at commit time is the real gate.
-#: Everything else (``fpga_hook``, ``expr_param``) is a property of the
-#: ``.core`` itself and stays a hard FAIL.
-_SCOPE_DEPENDENT_VIOLATIONS = frozenset({"in_scope_script", "unconfinable_script"})
 
 
 def _sandbox_image(project: ProjectAudit | None) -> str:
@@ -4227,7 +4236,7 @@ def _run_flow_audit(
 ) -> None:
     """Validate enabled Flows and run Sandbox dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
-    rejected_cores = _fusesoc_rejected_cores(project.project_root)
+    rejected_cores = core_tree_inspection.fusesoc_rejected_cores(project.project_root)
     for flow_name in _PLAIN_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} disabled in booley.toml")
@@ -4272,7 +4281,9 @@ def _run_flow_audit(
             _fail=_fail,
         )
         for target in targets:
-            rejected_core = _rejected_target_core(project, target, rejected_cores)
+            rejected_core = core_tree_inspection.rejected_target_core(
+                project.project_root, target, rejected_cores
+            )
             if rejected_core is not None:
                 _skip(
                     f"{flow_name} dry-run [{target}] skipped - FuseSoC rejects "
@@ -4289,22 +4300,6 @@ def _run_flow_audit(
                 timeout_s=_configured_timeout_s(project, flow_name, _DRY_RUN_TIMEOUT_S),
             )
             _diagnostics(outcome.report)
-
-
-def _rejected_target_core(
-    project: ProjectAudit,
-    target: str,
-    rejected_cores: Mapping[Path, fusesoc_registry.FuseSocCoreRejection],
-) -> Path | None:
-    """Return the FuseSoC-rejected core hosting Doctor Target *target*, if any."""
-    if not rejected_cores:
-        return None
-    try:
-        core_file = TargetCatalog.build(project.project_root).select(target).core_file
-    except FuseSocError:
-        return None  # target-resolution diagnostics report this elsewhere
-    core_file = lexical_stealth_path(project.project_root, core_file)
-    return core_file if core_file in rejected_cores else None
 
 
 def _check_flow_runtime_reality(
@@ -4473,32 +4468,6 @@ def _check_vivado_startup(
     _fail(f"{label}: {cause}", "verify Vivado runtime dependencies in the Sandbox Image")
 
 
-def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
-    """The ``.core`` files whose findings the project can act on (ADR 0036).
-
-    A core is "owned" when it hosts a Target selected by Doctor metadata (the
-    project drives it, so its defects are the project's problem) or lives in the
-    state zone (``.booley/cores/`` is always Booley-authored). Everything
-    else is vendored upstream content — advice like "fix the .core" is
-    unfollowable for a repo that must stay byte-identical to upstream.
-    """
-    owned: set[Path] = set()
-    try:
-        catalog = TargetCatalog.build(root)
-    except FuseSocError:
-        catalog = None
-    if catalog is not None:
-        for token in _project_target_matrix(project).seed_targets:
-            try:
-                owned.add(lexical_stealth_path(root, catalog.select(token).core_file))
-            except FuseSocError:
-                continue  # unresolvable config tokens are their own doctor finding
-    for core_file in fusesoc_registry.discover_cores(root):
-        if fusesoc_registry.is_stealth_core(root, core_file):
-            owned.add(core_file)
-    return owned
-
-
 def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path, str]]:
     """Return the exact ``(core_file, Target)`` pairs selected by Doctor metadata.
 
@@ -4521,210 +4490,6 @@ def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path,
             continue  # target-resolution diagnostics report this elsewhere
         selected.add((handle.core_file, handle.name))
     return selected
-
-
-def _check_core_schema(
-    project: ProjectAudit,
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-    *,
-    _note: Check | None = None,
-) -> None:
-    """Flag CAPI2 schema violations in any discovered ``.core``.
-
-    Booley's tolerant ``yaml.safe_load`` accepts a scalar — or a bare ``depend:``
-    that parses to ``None`` — where FuseSoC's schema demands an array, and an
-    unknown property (a ``booley:`` mapping beside ``flow_options``); cheap
-    enumeration then greenlights a ``.core`` the deep resolve later rejects.
-    Reproduce FuseSoC's verdict host-side (no subprocess): Booley's array-field
-    subset plus FuseSoC's own parser.
-
-    Severity follows ownership. A violation FAILs when the core is one the
-    project actually drives — it hosts a Doctor-selected Target — or
-    lives in the state zone (``.booley/cores/``, always Booley-authored,
-    ADR 0036). A vendored upstream core the project never selects (the pristine
-    YosysHQ ``picorv32.core`` ships a bare ``depend:``) is a WARN instead:
-    FuseSoC drops such a core at resolve time, so only *its own* targets are
-    unusable — the configured flows are unaffected, and "fix the .core" is
-    unfollowable advice for a repo that must stay byte-identical to upstream.
-    """
-    note_sink = _note or _pass
-    owned_cores = _owned_core_files(project, root)
-    schema_clean = True
-    for core_file in fusesoc_registry.discover_cores(root):
-        findings, rejection = _core_schema_findings(core_file)
-        if not findings:
-            continue
-        schema_clean = False
-        # A misplaced ``booley:`` marker is the project's own Doctor intent that
-        # FuseSoC's rejection hides from Booley's reader, so the core is driven.
-        owned = core_file in owned_cores or (rejection is not None and rejection.misplaced_booley)
-        for msg, fix in findings:
-            if owned:
-                _fail(f".core schema {core_file.name}: {msg}", fix)
-            else:
-                note_sink(
-                    f".core schema {core_file.name}: {msg} — vendored core, no "
-                    "Doctor Target selects it; FuseSoC skips it at resolve, "
-                    "so only that core's own Targets are unusable"
-                )
-    if schema_clean:
-        _pass(".core CAPI2 schema valid")
-
-
-_CORE_SCHEMA_FIX = (
-    "fix the .core — FuseSoC's CAPI2 schema requires this "
-    "(caught here so it does not only surface under --deep)"
-)
-
-
-def _core_schema_findings(
-    core_file: Path,
-) -> tuple[list[tuple[str, str]], fusesoc_registry.FuseSocCoreRejection | None]:
-    """Return ``([(message, fix), ...], FuseSoC's rejection)`` for one ``.core``.
-
-    Booley's host-side subset runs first; FuseSoC's own verdict follows as one
-    more row unless a FuseSoC-class subset row (array fields, per-file keys)
-    already describes the same CAPI2 entry. Booley-only metadata rows never
-    suppress it: they do not say why FuseSoC ignores the file.
-    """
-    findings = [(msg, _CORE_SCHEMA_FIX) for msg in fusesoc_registry.core_schema_errors(core_file)]
-    rejection = _fusesoc_core_rejection(core_file)
-    if rejection is None:
-        return findings, None
-    entry = rejection.entry
-    if entry is not None and any(
-        msg == entry or msg.startswith((f"{entry}.", f"{entry} "))
-        for msg, _ in findings
-        if ".flow_options.booley" not in msg
-    ):
-        return findings, rejection
-    fix = _CORE_SCHEMA_FIX
-    if rejection.misplaced_booley:
-        fix = f"move the booley: mapping under targets.{rejection.target}.flow_options"
-    findings.append(
-        (
-            f"{rejection.message} — FuseSoC ignores this whole .core, "
-            "so none of its Targets resolve",
-            fix,
-        )
-    )
-    return findings, rejection
-
-
-def _fusesoc_core_rejection(
-    core_file: Path,
-) -> fusesoc_registry.FuseSocCoreRejection | None:
-    """FuseSoC's verdict on a readable ``.core``; unreadable files have their own row."""
-    try:
-        fusesoc_registry.read_core(core_file)
-    except FuseSocError:
-        return None
-    return fusesoc_registry.fusesoc_core_rejection(core_file)
-
-
-def _fusesoc_rejected_cores(root: Path) -> dict[Path, fusesoc_registry.FuseSocCoreRejection]:
-    """Map every discovered ``.core`` FuseSoC ignores to its rejection."""
-    rejected: dict[Path, fusesoc_registry.FuseSocCoreRejection] = {}
-    for core_file in fusesoc_registry.discover_cores(root):
-        rejection = _fusesoc_core_rejection(core_file)
-        if rejection is not None:
-            rejected[core_file] = rejection
-    return rejected
-
-
-_RECURSIVE_SYMLINK_FIX = (
-    "add a FUSESOC_IGNORE marker in each link's containing directory or an enclosing "
-    "subtree (excludes all cores there); ensure markers are present in worktrees too, "
-    "or remove the links"
-)
-
-
-def _report_recursive_symlink_group(
-    root: Path,
-    target: Path,
-    paths: list[Path],
-    _fail: Fail,
-    _detail: Check | None,
-) -> None:
-    """Summarize one ancestor and expose every link in the verbose report."""
-    relative = sorted(path.relative_to(root).as_posix() for path in paths)
-    shown = ", ".join(relative[:3])
-    if len(relative) > 3:
-        shown += f", +{len(relative) - 3} more; run booley doctor --verbose for all link paths"
-    noun = "link" if len(relative) == 1 else "links"
-    verb = "resolves" if len(relative) == 1 else "resolve"
-    _fail(
-        f"FuseSoC recursive symlinks: {len(relative)} {noun} {verb} "
-        f"to ancestor {target} ({shown})",
-        _RECURSIVE_SYMLINK_FIX,
-    )
-    if _detail is not None:
-        for path in relative:
-            _detail(f"  recursive symlink {path}: directory link resolves to ancestor {target}")
-
-
-def _report_recursive_symlink_hazards(
-    root: Path,
-    hazards: list[fusesoc_registry.CoreSetupHazard],
-    _fail: Fail,
-    _detail: Check | None,
-) -> None:
-    """Group resolved ancestors without conflating unresolved chain cycles."""
-    groups: dict[Path, list[Path]] = {}
-    for hazard in hazards:
-        if hazard.kind != "recursive-symlink":
-            continue
-        if hazard.target is None:
-            rel = hazard.path.relative_to(root).as_posix()
-            _fail(f"FuseSoC recursive symlink {rel}: {hazard.detail}", _RECURSIVE_SYMLINK_FIX)
-        else:
-            groups.setdefault(hazard.target, []).append(hazard.path)
-    for target in sorted(groups, key=str):
-        _report_recursive_symlink_group(root, target, groups[target], _fail, _detail)
-
-
-def _check_core_setup_hazards(
-    project: ProjectAudit,
-    root: Path,
-    _pass: Check,
-    _fail: Fail,
-    *,
-    _note: Check | None = None,
-    _detail: Check | None = None,
-) -> None:
-    """Catch offline-provider and recursive-symlink failures before FuseSoC."""
-    note_sink = _note or _pass
-    owned_cores = _owned_core_files(project, root)
-    catalog = TargetCatalog.build(root)
-    selected_handles = []
-    for selector in _project_target_matrix(project).seed_targets:
-        try:
-            selected_handles.append(catalog.select(selector))
-        except FuseSocError:
-            continue
-    selected_closure = catalog.core_closure(selected_handles)
-    required_cores = owned_cores | set(selected_closure or ())
-    hazards = fusesoc_registry.core_setup_hazards(root)
-    if not hazards:
-        _pass(".core tree has no provider or recursive-symlink setup hazards")
-        return
-    for hazard in hazards:
-        if hazard.kind == "recursive-symlink":
-            continue
-        rel = hazard.path.relative_to(root)
-        if hazard.path in required_cores:
-            _fail(
-                f"in-tree .core {rel} has a provider block that requests a remote fetch",
-                "remove provider: from the in-tree core",
-            )
-        else:
-            note_sink(
-                f"vendored .core {rel} has a provider block, but no Doctor Target selects it"
-            )
-    _report_recursive_symlink_hazards(root, hazards, _fail, _detail)
 
 
 def _doctor_target_incompatibility(
@@ -4815,6 +4580,8 @@ def _enumerate_core_audit_targets(
     except FuseSocError as exc:
         _fail(f".core enumeration failed: {exc}", "fix the malformed .core")
         return None
+    # The first handle per name; ``core_tree_inspection.inspect_core_security``
+    # keeps the same rule over the same cached TargetCatalog snapshot.
     refs: dict[str, TargetHandle] = {}
     for handle in handles:
         refs.setdefault(handle.name, handle)
@@ -4996,48 +4763,6 @@ def _check_sim_copyto_collisions(
             )
 
 
-def _check_core_repository_hygiene(audit: _CoreAuditContext) -> None:
-    """Check that authored core inputs are represented safely in Git."""
-    _check_core_files_tracked(audit.root, audit.pass_, audit.warn)
-    _check_readmemh_targets_tracked(audit.root, audit.pass_, audit.warn)
-    _check_committed_build_artifacts(audit.root, audit.pass_, audit.warn)
-
-
-def _run_core_security_audit(
-    audit: _CoreAuditContext,
-    refs: dict[str, TargetHandle],
-) -> None:
-    """Report authored-core provenance and confinement violations."""
-    catalog = TargetCatalog.build(audit.root)
-    violations = core_security.validate_project_cores(
-        audit.root,
-        scope=_project_write_scope(audit.root),
-        audit_scope=catalog.core_closure(tuple(refs.values())),
-    )
-    for violation in violations:
-        target = f" target '{violation.target}'" if violation.target else ""
-        line = (
-            f".core security [{violation.kind}] {violation.core_file.name}"
-            f"{target}: {violation.message}"
-        )
-        if violation.kind in _SCOPE_DEPENDENT_VIOLATIONS:
-            _warning_sink(
-                audit.warn,
-                "core.security-scope-advisory",
-                subject=f"{violation.core_file.name}:{violation.target or '-'}",
-            )(
-                f"{line} (advisory: doctor audits the union of writable "
-                "category dirs, without a change-specific scope — the binding "
-                "check runs at commit time)"
-            )
-        else:
-            audit.fail(line, "ADR 0022 decision 21")
-    if not violations and refs:
-        audit.pass_(
-            ".core security validation passed (no fpga hooks / expr-params / in-scope scripts)"
-        )
-
-
 def _run_core_audit(
     project: ProjectAudit,
     _pass: Check,
@@ -5047,12 +4772,16 @@ def _run_core_audit(
     *,
     _diagnostics: Diagnostics,
     _note: Check | None = None,
-    _detail: Check | None = None,
 ) -> None:
     """Coordinate the structural, security, and metadata core audits."""
     audit = _CoreAuditContext(project, _pass, _warn, _skip, _fail, _note or _pass)
-    _check_core_setup_hazards(project, audit.root, _pass, _fail, _note=audit.note, _detail=_detail)
-    _check_core_schema(project, audit.root, _pass, _warn, _fail, _note=audit.note)
+    _diagnostics(
+        core_tree_inspection.inspect_core_tree(
+            core_tree_inspection.CoreTreeInspectionRequest(
+                project.project_root, _project_target_matrix(project).seed_targets
+            )
+        )
+    )
     catalog_and_refs = _enumerate_core_audit_targets(audit.root, _pass, _fail)
     if catalog_and_refs is None:
         return
@@ -5061,8 +4790,18 @@ def _run_core_audit(
         inputs = _CoreAuditInputs(catalog, refs)
         _check_target_metadata(audit, refs, _diagnostics)
         _check_target_sources(audit, refs, inputs)
-        _check_core_repository_hygiene(audit)
-    _run_core_security_audit(audit, refs)
+        _diagnostics(
+            core_repository_hygiene.inspect_core_repository_hygiene(
+                core_repository_hygiene.CoreRepositoryHygieneRequest(project.project_root)
+            )
+        )
+    _diagnostics(
+        core_tree_inspection.inspect_core_security(
+            core_tree_inspection.CoreSecurityInspectionRequest(
+                project.project_root, tuple(_project_write_scope(project.project_root))
+            )
+        )
+    )
     _diagnostics(
         target_test_plan_inspection.inspect_target_test_plans(
             TargetTestPlanInspectionRequest(project.project_root, project.booley_dir)
@@ -5289,7 +5028,8 @@ def _check_target_naming(
     reads in ``--target``, ``sim_pass_<target>``, and ``tests.toml`` keys. See
     :mod:`booley.targets.target_naming` for the rule.
 
-    A note, never a failure, and only for owned cores (:func:`_owned_core_files`): a
+    A note, never a failure, and only for owned cores
+    (:func:`core_tree_inspection.owned_core_files`): a
     non-conforming name still runs, and renaming a vendored upstream Target is
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
@@ -5350,7 +5090,9 @@ def _check_stray_default_targets(
     """
     _warn = _warning_sink(_warn, "core.stray-default-target")
     note_sink = _note or _pass
-    owned_cores = _owned_core_files(project, root)
+    owned_cores = core_tree_inspection.owned_core_files(
+        root, _project_target_matrix(project).seed_targets
+    )
     if not owned_cores:
         return
     depended = fusesoc_registry.depended_on_core_keys(root)
@@ -5809,238 +5551,6 @@ def _check_toplevel_interface_ports(
         )
 
 
-# A committed compiled artifact (firmware image, memory init) whose *source*
-# lives in the same directory is a "ship the toolchain, not the artifact"
-# violation (booley-setup SKILL.md): it should be rebuilt on demand inside the
-# sandbox, not frozen into git. Suffixes that read as build outputs, and the
-# sibling-source signals that mark them as buildable-in-repo.
-_BUILD_ARTIFACT_SUFFIXES = frozenset({".hex", ".mem", ".bin", ".elf"})
-_BUILD_SOURCE_SUFFIXES = frozenset({".c", ".s", ".cc", ".cpp", ".cxx", ".asm", ".rs"})
-_BUILD_SOURCE_NAMES = frozenset({"makefile", "cmakelists.txt"})
-
-
-def _looks_built_from_sibling_source(path: Path) -> bool:
-    """True when ``path``'s directory also holds compiler/assembler source.
-
-    Case-folded so ``start.S`` (assembly) and a ``Makefile`` both count. A
-    firmware ``.hex`` next to ``hello.c`` / ``start.S`` / a ``Makefile`` is a
-    build output of in-repo source, not an opaque vendored blob.
-    """
-    parent = path.parent
-    if not parent.is_dir():
-        return False
-    for entry in parent.iterdir():
-        if not entry.is_file():
-            continue
-        name = entry.name.lower()
-        if name in _BUILD_SOURCE_NAMES or entry.suffix.lower() in _BUILD_SOURCE_SUFFIXES:
-            return True
-    return False
-
-
-def _check_committed_build_artifacts(
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Warn when a compiled artifact built from in-repo source is committed.
-
-    A vendored ``firmware.hex`` sitting next to its ``*.c`` / ``*.S`` / Makefile
-    is a frozen build output: it hides the real dependency (the cross-compiler)
-    and rots on the first source change. The supported fix is to bake the
-    toolchain into the project sandbox image and rebuild on demand from a
-    post-setup hook (booley-setup SKILL.md: "ship the toolchain, not the
-    artifact"). Warn, not fail — the committed blob still simulates locally.
-    An opaque vendored blob with no sibling source is left alone (may be the
-    only option); the untracked-data trap is handled by
-    :func:`_check_core_files_tracked`. A file the ``.core`` explicitly tags
-    ``tags: [vendored]`` is exempt too — that is the maintainer asserting the
-    blob is upstream-shipped with no rebuildable in-repo source, which the
-    sibling-source heuristic cannot otherwise tell from a frozen local build.
-    (``tags`` is the CAPI2-valid marker; a bare ``vendored: true`` key breaks
-    real fusesoc and is rejected by the shallow ``.core`` check — see QA-3.)
-    """
-    referenced = fusesoc_registry.all_referenced_files(root)
-    vendored = fusesoc_registry.vendored_files(root)
-    suspects = [
-        rel
-        for rel in referenced
-        if Path(rel).suffix.lower() in _BUILD_ARTIFACT_SUFFIXES
-        and rel not in vendored
-        and (root / rel).is_file()
-        and _looks_built_from_sibling_source(root / rel)
-    ]
-    if not suspects:
-        return  # nothing that looks built-from-source; stay quiet (no _pass noise)
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--", *suspects],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return  # not a git repo / git missing — tracking is unknowable, stay quiet
-    if result.returncode != 0:
-        return
-    tracked = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    committed = [rel for rel in suspects if rel.replace("\\", "/") in tracked]
-    if committed:
-        shown = ", ".join(committed[:5]) + (", …" if len(committed) > 5 else "")
-        _warning_sink(
-            _warn,
-            "project.committed-build-artifact",
-            subject=",".join(sorted(committed)),
-        )(
-            f"{len(committed)} committed artifact(s) look built from in-repo "
-            f"source ({shown}) — ship the toolchain in the sandbox image and "
-            "rebuild on demand (project Dockerfile + post-setup hook) instead of "
-            "committing a frozen blob (booley-setup SKILL.md)"
-        )
-
-
-def _check_core_files_tracked(
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Warn when a ``.core`` references a file that exists on disk but is untracked.
-
-    The silent vendored-data trap: a data file (firmware ``.hex``, memory-init
-    image) matching the upstream ``.gitignore`` gets ``git add``-ed to no effect,
-    so it stays untracked. On disk it is present (doctor sees it), but a fresh
-    clone / CI checkout would lack it and the testbench would fail opaquely. A
-    warn with the ``git add -f`` remedy, not a fail: the local run still works.
-
-    Files in a Versioned Booley Directory (ADR 0036 stealth cores) are judged
-    against its own Git repository — ``.booley/`` is invisible to the host repo by
-    design, so asking the host is guaranteed noise. No repo there → skip them
-    (nothing knowable). Tracking is symlink-aware in both zones: a path whose
-    ancestor is a tracked symlink (a stealth core's reach-through like
-    ``cores/dhrystone -> ../../dhrystone``) arrives with a fresh clone, so it
-    counts as tracked. It is submodule-aware for the same reason — see
-    ``_tracked_set``.
-    """
-    referenced = fusesoc_registry.all_referenced_files(root)
-    on_disk = [rel for rel in referenced if (root / rel).is_file()]
-    if not on_disk:
-        return
-    state_dir = in_checkout_booley_dir(root)
-    state_prefix = state_dir.relative_to(root).as_posix()  # ".booley" or the relocated dir
-    host_files = [
-        rel for rel in on_disk if not rel.replace("\\", "/").startswith(state_prefix + "/")
-    ]
-    state_files = [rel for rel in on_disk if rel.replace("\\", "/").startswith(state_prefix + "/")]
-
-    def _tracked_set(cwd: Path) -> set[str] | None:
-        """Tracked paths under *cwd*, submodule contents included.
-
-        Plain ``git ls-files`` stops at a submodule boundary and lists only the
-        gitlink, so every file *inside* a vendored submodule read as untracked —
-        a false alarm, since the submodule's own repo tracks them and
-        `git submodule update` restores them on a fresh clone.
-        ``--recurse-submodules`` descends and reports each file at its
-        superproject-relative path, which is the vocabulary the caller compares
-        against. A git too old for the flag retries plain rather than go silent.
-        """
-        for cmd in (["git", "ls-files", "--recurse-submodules"], ["git", "ls-files"]):
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
-                )
-            except (FileNotFoundError, subprocess.SubprocessError):
-                return None  # git missing — tracking is unknowable, stay quiet
-            if result.returncode == 0:
-                return {line.strip() for line in result.stdout.splitlines() if line.strip()}
-        return None  # not a git repo
-
-    def _is_tracked(rel: str, tracked: set[str]) -> bool:
-        # git ls-files reports repo-relative forward-slash paths. An ancestor
-        # entry in the tracked set can only be a tracked symlink (git never
-        # lists directories) — reach-through content still ships with a clone.
-        norm = rel.replace("\\", "/")
-        if norm in tracked:
-            return True
-        parts = norm.split("/")
-        return any("/".join(parts[:i]) in tracked for i in range(1, len(parts)))
-
-    untracked: list[str] = []
-    host_tracked = _tracked_set(root)
-    if host_tracked is not None:
-        untracked += [rel for rel in host_files if not _is_tracked(rel, host_tracked)]
-    if state_files and (state_dir / ".git").exists():
-        state_tracked = _tracked_set(state_dir)
-        if state_tracked is not None:
-            untracked += [
-                rel
-                for rel in state_files
-                if not _is_tracked(
-                    PurePosixPath(rel.replace("\\", "/")).relative_to(state_prefix).as_posix(),
-                    state_tracked,
-                )
-            ]
-    if untracked:
-        shown = ", ".join(untracked[:5]) + (", …" if len(untracked) > 5 else "")
-        _warning_sink(
-            _warn,
-            "project.core-file-untracked",
-            subject=",".join(sorted(untracked)),
-        )(
-            f"{len(untracked)} .core-referenced file(s) exist on disk but are "
-            f"untracked by git ({shown}) — if gitignored (vendored firmware / "
-            "build artifact), force-add with `git add -f <file>` and verify with "
-            "`git ls-files <file>`; a fresh clone or CI checkout will lack them"
-        )
-    else:
-        _pass(f"all {len(on_disk)} .core-referenced on-disk file(s) tracked by git")
-
-
-# The $readmemh/$readmemb memory-load call pattern (HDL suffixes: _HDL_SUFFIXES).
-_READMEM_RE = re.compile(r"\$readmem[hb]\s*\(\s*\"([^\"]+)\"")
-
-
-def _readmem_literal_targets(root: Path) -> list[str]:
-    """Project-relative memory images named by a *literal* $readmemh/$readmemb.
-
-    Scans the ``.core``-referenced HDL for ``$readmem[hb]("path")`` calls and
-    resolves each literal against the Project Root and the calling file's own
-    directory. Only plain literals are considered; a path built from a plusarg,
-    a format specifier, or concatenation can't be resolved statically and is
-    skipped. Used to catch memory images the testbench hardcodes but that no
-    ``.core`` fileset lists — the gap :func:`_check_core_files_tracked` misses.
-    """
-    targets: set[str] = set()
-    root_res = root.resolve()
-    for rel in fusesoc_registry.all_referenced_files(root):
-        if Path(rel).suffix.lower() not in _HDL_SUFFIXES:
-            continue
-        src = root / rel
-        if not src.is_file():
-            continue
-        try:
-            text = src.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for match in _READMEM_RE.finditer(text):
-            literal = match.group(1)
-            if any(ch in literal for ch in "%{}+*?"):
-                continue  # constructed / format / plusarg / glob — not a static path
-            for base in (root, src.parent):
-                cand = base / literal
-                if cand.is_file():
-                    with contextlib.suppress(ValueError):
-                        targets.add(cand.resolve().relative_to(root_res).as_posix())
-                    break
-    return sorted(targets)
-
-
 def _git_output(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
     """Run one read-only git command; None when git is missing or times out."""
     try:
@@ -6107,55 +5617,6 @@ def _check_sim_run_cwd(project: ProjectAudit, _pass: Check, _warn: Check) -> Non
         )
         return
     _pass(f"sim run_cwd {configured} is committed")
-
-
-def _check_readmemh_targets_tracked(
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """Warn when a hardcoded $readmemh memory image exists on disk but is untracked.
-
-    A testbench that boots from ``$readmemh("firmware.vmem", mem)`` depends on a
-    file no ``.core`` fileset lists, so :func:`_check_core_files_tracked` can't
-    see it. If that image matches a blanket ``.gitignore`` (vendored firmware,
-    build output), ``git add`` no-ops and a fresh clone / CI checkout lacks it —
-    the sim then spins on uninitialized RAM (SETUP-12, and the static companion
-    to the runtime readmemh-missing guard). Warn with the ``git add -f`` remedy.
-    """
-    targets = _readmem_literal_targets(root)
-    if not targets:
-        return
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--", *targets],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return  # not a git repo / git missing — tracking is unknowable, stay quiet
-    if result.returncode != 0:
-        return
-    tracked = {line.strip() for line in result.stdout.splitlines() if line.strip()}
-    untracked = [rel for rel in targets if rel.replace("\\", "/") not in tracked]
-    if untracked:
-        shown = ", ".join(untracked[:5]) + (", …" if len(untracked) > 5 else "")
-        _warning_sink(
-            _warn,
-            "project.memory-image-untracked",
-            subject=",".join(sorted(untracked)),
-        )(
-            f"{len(untracked)} $readmemh/$readmemb memory image(s) exist on disk "
-            f"but are untracked by git ({shown}) — if gitignored (vendored "
-            "firmware / build output), force-add with `git add -f <file>`; a "
-            "fresh clone or CI checkout will lack them and the sim boots "
-            "uninitialized RAM"
-        )
-    else:
-        _pass(f"all {len(targets)} $readmemh-referenced image(s) tracked by git")
 
 
 def _project_write_scope(root: Path) -> list[str]:
@@ -6229,308 +5690,6 @@ def _native_dependency_request(project: ProjectAudit) -> pi.NativeDependencyRequ
         sources=tuple(_native_dependency_sources(project)),
         dockerfile=project.common_booley_dir / "docker" / "Dockerfile",
     )
-
-
-def _report_core_resolve(
-    name: str,
-    ok: bool,
-    err: str,
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Grade one Doctor-selected Target resolution."""
-    if ok:
-        _pass(f".core Target '{name}' resolves")
-        return
-    _fail(f".core Target '{name}' fails to resolve", "fix the .core / depends graph")
-    _print_text_excerpt(err)
-
-
-def _run_core_resolve_checks(
-    project: ProjectAudit,
-    docker_exe: str | None,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-    *,
-    flow_runtime: _DoctorFlowRuntime | None = None,
-    completeness: doctor_deep.DeepCheckTracker | None = None,
-) -> None:
-    """Deep: resolve each Doctor-selected Target through ``fusesoc``.
-
-    Resolution runs Edalize's ``configure()``, which needs the ``fusesoc``
-    console script + toolchain — that environment IS the Sandbox image, so we
-    resolve INSIDE the container (mirroring the deep Flow checks). Only when the
-    image is unavailable do we fall back to a host ``fusesoc`` if one happens to
-    be installed; failing that, the check skips rather than failing.
-
-    Transitive dependencies remain covered because FuseSoC resolves the full
-    dependency closure of every selected Target. Unselected vendored Targets
-    are not configured merely to produce advisory notes.
-    """
-    if flow_runtime is not None:
-        assert completeness is not None
-        _resolve_deep_core_targets(project, flow_runtime, completeness, _pass, _skip, _fail)
-        return
-    matrix = _project_target_matrix(project)
-    catalog = TargetCatalog.build(project.project_root)
-    refs: dict[str, TargetHandle] = {}
-    for selector in matrix.seed_targets:
-        try:
-            refs[selector] = catalog.select(selector)
-        except FuseSocError as exc:
-            _report_core_resolve(
-                selector,
-                False,
-                str(exc),
-                _pass,
-                _fail,
-            )
-    if not refs:
-        return
-
-    image = _sandbox_image(project)
-    if docker_exe and _docker_image_exists_by_name(image):
-        _announce_long_check(
-            f".core resolvability of {len(refs)} Target(s) in the Sandbox",
-            f"FuseSoC configure; timeout {format_duration(_CORE_RESOLVE_TIMEOUT_S)}",
-        )
-        _run_core_resolve_in_docker(
-            project,
-            docker_exe,
-            image,
-            refs,
-            _pass,
-            _fail,
-        )
-        return
-
-    if shutil.which("fusesoc") is None:
-        _skip(
-            ".core resolvability skipped - Sandbox image unavailable and "
-            "fusesoc not on host PATH (build the image with 'booley init')"
-        )
-        return
-    _announce_long_check(
-        f".core resolvability of {len(refs)} Target(s) on the host",
-        "FuseSoC configure; no timeout",
-    )
-    for selector, ref in sorted(refs.items()):
-        build_key = hashlib.sha256(selector.encode()).hexdigest()[:16]
-        build_root = project.booley_dir / "runtime" / "doctor" / "core-resolve" / build_key
-        try:
-            fusesoc_registry.resolve_target_handle(
-                ref,
-                build_root=build_root,
-            )
-            _report_core_resolve(selector, True, "", _pass, _fail)
-        except FuseSocError as exc:
-            _report_core_resolve(
-                selector,
-                False,
-                str(exc),
-                _pass,
-                _fail,
-            )
-
-
-def _resolve_deep_core_targets(
-    project: ProjectAudit,
-    flow_runtime: _DoctorFlowRuntime,
-    tracker: doctor_deep.DeepCheckTracker,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Resolve in the same pinned runtime as the smoke and self-test checks."""
-    selected = _project_target_matrix(project).seed_targets
-    if not selected:
-        return
-    identifiers = {
-        selector: f"core.resolve.{hashlib.sha256(selector.encode()).hexdigest()[:16]}"
-        for selector in selected
-    }
-    for identifier in identifiers.values():
-        tracker.require(identifier)
-    if not flow_runtime.available:
-        _skip(".core resolvability skipped - Sandbox runtime unavailable")
-        return
-    catalog = TargetCatalog.build(project.project_root)
-    refs = {}
-    for selector in selected:
-        try:
-            refs[selector] = catalog.select(selector)
-        except FuseSocError as exc:
-            _report_core_resolve(selector, False, str(exc), _pass, _fail)
-    if not refs:
-        return
-    completed = _execute_core_resolution(project, flow_runtime, refs, _pass, _fail)
-    for selector in completed:
-        tracker.completed(identifiers[selector], True)
-
-
-def _execute_core_resolution(
-    project: ProjectAudit,
-    flow_runtime: _DoctorFlowRuntime,
-    refs: Mapping[str, TargetHandle],
-    _pass: Check,
-    _fail: Fail,
-) -> tuple[str, ...]:
-    payload = json.dumps(_core_resolve_payload(refs), separators=(",", ":"))
-    try:
-        command = flow_runtime.command(["python3", "-c", _CORE_RESOLVE_SNIPPET, payload])
-        proc = subprocess.run(
-            command,
-            cwd=project.project_root,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError, session_runtime.SessionError) as exc:
-        _fail(f".core resolvability could not complete in the Sandbox: {exc}", "check the Sandbox")
-        return ()
-    return _grade_core_resolution(proc, refs, _pass, _fail)
-
-
-def _grade_core_resolution(
-    proc: subprocess.CompletedProcess[str],
-    refs: Mapping[str, TargetHandle],
-    _pass: Check,
-    _fail: Fail,
-) -> tuple[str, ...]:
-    """Require exactly one bounded verdict for every selected Target."""
-    marker = "[[CORE_RESOLVE_JSON]]"
-    line = next(
-        (line for line in reversed(proc.stdout.splitlines()) if line.startswith(marker)), None
-    )
-    try:
-        if line is None or proc.returncode != 0:
-            raise BoundaryError("missing completed Sandbox resolution verdict")
-        entries = require_list(json.loads(line[len(marker) :]), field="core resolution verdicts")
-        if len(entries) != len(refs):
-            raise BoundaryError("incomplete Target resolution verdicts")
-        seen: set[str] = set()
-        for raw in entries:
-            entry = require_dict(raw, field="core resolution")
-            selector = require_str(entry, "selector")
-            ok = require_bool(entry, "ok")
-            if selector not in refs or selector in seen:
-                raise BoundaryError("invalid Target resolution verdict")
-            seen.add(selector)
-            _report_core_resolve(selector, ok, str(entry.get("err", "")), _pass, _fail)
-        return tuple(sorted(seen))
-    except (ValueError, BoundaryError):
-        _fail(
-            ".core resolvability produced incomplete Sandbox evidence",
-            "check the Sandbox / FuseSoC",
-        )
-        return ()
-
-
-# Container-side resolver: resolve the host-selected Targets in one docker run
-# and emit a machine-readable JSON verdict line the host parses back into checks.
-# Kept as a module constant so the quoting is auditable in one place.
-_CORE_RESOLVE_SNIPPET = (
-    "import json, os, sys\n"
-    "from pathlib import Path\n"
-    "from booley.runtime.booley_dir import resolve_checkout_booley_dir\n"
-    "from booley.fusesoc import fusesoc_registry as fr\n"
-    "from booley.targets.catalog import TargetCatalog\n"
-    "root = os.getcwd()\n"
-    "catalog = TargetCatalog.build(root)\n"
-    "targets = json.loads(sys.argv[1])\n"
-    "out = []\n"
-    "for target in targets:\n"
-    "    selector = target['selector']\n"
-    "    br = resolve_checkout_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
-    "    try:\n"
-    "        fr.resolve_target_handle(catalog.select(selector), build_root=br)\n"
-    "        out.append({'selector': selector, 'ok': True})\n"
-    "    except fr.FuseSocError as exc:\n"
-    "        out.append({'selector': selector, 'ok': False, 'err': str(exc)})\n"
-    "print('[[CORE_RESOLVE_JSON]]' + json.dumps(out))\n"
-)
-
-
-def _core_resolve_payload(
-    refs: Mapping[str, TargetHandle],
-) -> list[dict[str, str]]:
-    """Serialize the immutable selected Target set for the Sandbox."""
-    return [
-        {
-            "selector": selector,
-            "name": ref.name,
-            "vlnv": ref.vlnv,
-            "build_key": hashlib.sha256(selector.encode()).hexdigest()[:16],
-        }
-        for selector, ref in sorted(refs.items())
-    ]
-
-
-def _run_core_resolve_in_docker(
-    project: ProjectAudit,
-    docker_exe: str,
-    image: str,
-    refs: Mapping[str, TargetHandle],
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Resolve selected ``.core`` Targets inside the Sandbox image."""
-    payload = json.dumps(_core_resolve_payload(refs), separators=(",", ":"))
-    inner = ["python3", "-c", _CORE_RESOLVE_SNIPPET, payload]
-    cmd = _docker_wrap(docker_exe, image, project.project_root, inner)
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=_CORE_RESOLVE_TIMEOUT_S,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        _fail(
-            f".core resolvability timed out after {_CORE_RESOLVE_TIMEOUT_S}s in sandbox",
-            "check the .core / depends graph for a resolution hang",
-        )
-        return
-    except OSError as exc:
-        _fail(f".core resolvability failed to start container: {exc}", "check docker")
-        return
-
-    if _sandbox_guard_failed(proc):
-        # The in-container self-assertion refused: the resolve snippet was
-        # composed for the sandbox but executed outside it (doctor misrouting,
-        # b5e8681's failure class). Loud FAIL — never let this look like a mere
-        # "no verdict" or resolve failure.
-        _fail(
-            ".core resolvability was routed into the sandbox but executed "
-            "OUTSIDE it (in-container self-assertion failed)",
-            "doctor routing bug - report this, and rebuild the image "
-            "('booley init --force') to rule out a stale sandbox",
-        )
-        return
-
-    marker = "[[CORE_RESOLVE_JSON]]"
-    line = next(
-        (ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith(marker)),
-        None,
-    )
-    if line is None:
-        _fail(
-            ".core resolvability produced no verdict from the sandbox",
-            f"exit {proc.returncode}: {(proc.stderr or proc.stdout)[-400:]}",
-        )
-        return
-    for entry in json.loads(line[len(marker) :]):
-        selector = entry["selector"]
-        _report_core_resolve(
-            selector,
-            bool(entry.get("ok")),
-            str(entry.get("err", "")),
-            _pass,
-            _fail,
-        )
 
 
 def _run_deep_checks(
@@ -6841,8 +6000,8 @@ def _read_selftest_campaign(project: ProjectAudit, case: _SelftestCase, rc: int)
         raise ValueError("report is not a Simulation Flow v3 report")
     if require_int(report.get("exit_code"), field="exit_code") != rc:
         raise ValueError("report exit code does not match this invocation")
-    campaigns = require_dict(require_dict(report.get("detail")).get("campaigns"))
-    campaign = require_dict(campaigns.get(case.target), field="selected campaign")
+    records = require_dict(require_dict(report.get("detail")).get("records"))
+    campaign = require_dict(records.get(case.target), field="selected campaign")
     if campaign.get("complete") is not True:
         raise ValueError("selected Simulation Campaign is incomplete")
     return campaign
@@ -7209,7 +6368,7 @@ def _record_output_excerpt(
     verbose_only: bool = True,
 ) -> None:
     """Attach the informative slice of *result*'s output to the last finding."""
-    for line in _output_excerpt_lines(result.stderr or result.stdout or "", max_lines):
+    for line in output_excerpt_lines(result.stderr or result.stdout or "", max_lines):
         findings.detail(line, verbose_only=verbose_only)
 
 
@@ -7640,146 +6799,9 @@ def _flow_command(
     return flow_runtime.command(inner, env=command_env)
 
 
-# In-container self-assertion (b5e8681's failure class: sandbox-semantics
-# checks silently running on the host). Every inner command routed through
-# _docker_wrap is prefixed with a POSIX-sh guard that re-verifies the command
-# really IS inside the sandbox before exec'ing it. If a wrapped command ever
-# executes outside the container (misrouting, argv recomposition dropping the
-# docker prefix), the guard refuses with a distinctive exit code + stderr
-# marker that callers convert into a loud FAIL — never a silent pass or SKIP.
-_SANDBOX_GUARD_MARKER = "[[BOOLEY_SANDBOX_GUARD_FAIL]]"
-# Distinctive code so callers can tell "guard refused" apart from ordinary Flow
-# failures (Flows exit 0/1/2) and from Docker's own 125-127 range.
-_SANDBOX_GUARD_EXIT = 97
-# The assertion is deliberately env-only, NOT a marker-file probe
-# (/.dockerenv): BOOLEY_IN_SANDBOX=1 is
-# injected by _docker_wrap's own ``-e`` below, so it proves the command went
-# through THIS wrapper's docker invocation. A /.dockerenv fallback would
-# falsely pass when doctor itself runs inside the Interactive-Mode
-# devcontainer and a misrouted "sandbox" check lands there instead of the
-# real sandbox image.
-_SANDBOX_GUARD_SCRIPT = (
-    'if [ "$BOOLEY_IN_SANDBOX" = "1" ]; then exec "$@"; fi; '
-    f'echo "{_SANDBOX_GUARD_MARKER} refusing to run: not inside the sandbox '
-    "(BOOLEY_IN_SANDBOX unset - the command did not go through doctor's "
-    'docker wrapper)" >&2; '
-    f"exit {_SANDBOX_GUARD_EXIT}"
-)
-
-
-def _sandbox_guard_failed(result: subprocess.CompletedProcess[str]) -> bool:
-    """Return whether *result* is the sandbox guard refusing a misrouted run.
-
-    Requires BOTH the reserved exit code and the stderr marker so a Flow that
-    happens to exit 97 for its own reasons is not misreported as misrouting.
-    """
-    if result.returncode != _SANDBOX_GUARD_EXIT:
-        return False
-    return _SANDBOX_GUARD_MARKER in f"{result.stderr or ''}{result.stdout or ''}"
-
-
-def _docker_wrap(
-    docker_exe: str,
-    image: str,
-    project_root: Path,
-    inner: list[str],
-    *,
-    memory: str = "",
-    doctor_selftest_kind: str | None = None,
-) -> list[str]:
-    """Wrap *inner* argv in a ``docker run`` that mounts the repo at ``/work``.
-
-    The single source of truth for how doctor executes a command inside the
-    Sandbox image: repo bind-mounted at ``/work``, network isolated, and the
-    in-container ``BOOLEY_DIR`` / ``BOOLEY_IN_SANDBOX`` env set so the
-    Flow resolves the project the same way a real sandbox run would.
-
-    The inner argv is additionally prefixed with the sandbox self-assertion
-    guard (see ``_SANDBOX_GUARD_SCRIPT``): *inner* is passed as positional
-    parameters to ``sh -c '... exec "$@"'`` — never spliced into the script
-    string — so arbitrary argv (including ``python3 -c`` snippets) survives
-    unquoted, and every command wrapped here gets the assertion for free.
-    """
-    resource_args = ["--memory", memory] if memory else []
-    selftest_env = (
-        ["-e", f"{selftest_overlay.INTERNAL_KIND_ENV}={doctor_selftest_kind}"]
-        if doctor_selftest_kind is not None
-        else []
-    )
-    return [
-        docker_exe,
-        "run",
-        "--init",
-        "--rm",
-        *resource_args,
-        "-v",
-        f"{docker_mount_path(project_root)}:/work",
-        "-w",
-        "/work",
-        "--network",
-        "none",
-        "-e",
-        f"BOOLEY_DIR={_sandbox_booley_dir(project_root)}",
-        "-e",
-        "BOOLEY_IN_SANDBOX=1",
-        *selftest_env,
-        image,
-        # $0 for the guard shell; *inner* lands in "$@" untouched.
-        "sh",
-        "-c",
-        _SANDBOX_GUARD_SCRIPT,
-        "booley-sandbox-guard",
-        *inner,
-    ]
-
-
-# Substrings that mark the informative failure lines in EDA/fusesoc output. The
-# reason for a fusesoc parse error is printed on the line AFTER
-# "Parse error. Ignoring file X:", so a first-line-only excerpt dropped it.
-_OUTPUT_ERROR_MARKERS = (
-    "error",
-    "must be array",
-    "ignoring file",
-    "could not",
-    "cannot",
-    "traceback",
-    "failed",
-    "exception",
-    "not found",
-    "requires",
-)
-
-
-def _output_excerpt_lines(text: str, max_lines: int = 8) -> list[str]:
-    """Return the informative slice of multi-line command output (indented).
-
-    A first-line-only excerpt truncated multi-line diagnostics — notably a
-    fusesoc parse error whose reason (``... must be array``) lands on the *next*
-    line. When any line looks like an error, take from the first such line
-    through the line after the last one (to catch the trailing reason); otherwise
-    fall back to the head of the output. Capped at *max_lines* with a "… N more"
-    note so the report dir is still the full record.
-    """
-    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        return []
-    flagged = [
-        i for i, ln in enumerate(lines) if any(m in ln.lower() for m in _OUTPUT_ERROR_MARKERS)
-    ]
-    if flagged and max_lines > 1:
-        selected = lines[flagged[0] : flagged[-1] + 2][:max_lines]
-    else:
-        selected = lines[:max_lines]
-    excerpt = [f"    {ln}" for ln in selected]
-    hidden = len(lines) - len(selected)
-    if hidden > 0:
-        excerpt.append(f"    … ({hidden} more line(s); see the report dir)")
-    return excerpt
-
-
 def _print_text_excerpt(text: str, max_lines: int = 8) -> None:
-    """Print :func:`_output_excerpt_lines` of *text*."""
-    for line in _output_excerpt_lines(text, max_lines):
+    """Print :func:`output_excerpt_lines` of *text*."""
+    for line in output_excerpt_lines(text, max_lines):
         info(line)
 
 

@@ -17,6 +17,7 @@ import pytest
 from booley.core.private_store import PrivateStore
 from booley.runtime import image_lifecycle, session_runtime
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
+from tests.docker_cli_guard import route_session_helpers_through_subprocess_run
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BOOLEY_RUN_REFRESH_DOCKER_PROOF") != "1",
@@ -106,6 +107,8 @@ def _instrument(monkeypatch, name, tags, containers, owned):
         return original(argv, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
+    # Timed session listings start with Popen; route them back through the guard above.
+    route_session_helpers_through_subprocess_run(monkeypatch)
     return mutations
 
 

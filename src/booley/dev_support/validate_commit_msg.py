@@ -54,8 +54,8 @@ except ImportError:
             stealth_enabled,
         )
     except ImportError:
-        import booley_commit_validation as _shared_validation
-        from booley_commit_policy import (
+        import booley_commit_validation as _shared_validation  # pyright: ignore[reportMissingImports]
+        from booley_commit_policy import (  # pyright: ignore[reportMissingImports]
             checkout_booley_dir,
             find_banned,
             is_booley_dir_repository,

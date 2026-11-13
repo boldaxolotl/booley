@@ -416,7 +416,7 @@ def test_bound_tool_deep_loads_campaign_and_publishes_audit(tmp_path, monkeypatc
 
     campaign_path = source_project(tmp_path)
     audit_path = tmp_path / "audit.json"
-    monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", str(campaign_path))
+    monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(campaign_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(audit_path))
     monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
@@ -424,7 +424,7 @@ def test_bound_tool_deep_loads_campaign_and_publishes_audit(tmp_path, monkeypatc
 
     result = coverage_evidence.query_active_coverage_evidence({"view": "overview"})
 
-    assert result["campaign_id"].startswith("campaign:")
+    assert result["coverage_record_id"].startswith("campaign:")
     audit = json.loads(audit_path.read_text())
     assert audit["queries"] == [{"point_ids": [], "returned": 0, "view": "overview"}]
     assert audit["point_references"] == {}
@@ -436,7 +436,7 @@ def test_bound_tool_uses_audit_path_as_session_identity(tmp_path, monkeypatch):
     from tests.mcp_tools.test_coverage_analyst import source_project
 
     campaign_path = source_project(tmp_path)
-    monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", str(campaign_path))
+    monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(campaign_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
     monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
     monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
@@ -460,7 +460,7 @@ def test_bound_tool_exposes_nothing_when_final_point_storage_is_corrupt(tmp_path
     stored = bytearray(point_path.read_bytes())
     stored[-1] ^= 1
     point_path.write_bytes(stored)
-    monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", str(campaign_path))
+    monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(campaign_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
     monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
     monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
@@ -475,7 +475,7 @@ def test_bound_tool_audits_terminal_query_rejection(tmp_path, monkeypatch):
 
     campaign_path = source_project(tmp_path)
     audit_path = tmp_path / "audit.json"
-    monkeypatch.setenv("BOOLEY_COVERAGE_CAMPAIGN", str(campaign_path))
+    monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(campaign_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
     monkeypatch.setenv("BOOLEY_COVERAGE_AUDIT", str(audit_path))
     monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)

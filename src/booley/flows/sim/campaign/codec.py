@@ -141,7 +141,12 @@ _RETIRED_SCHEMAS = {
     "booley.simulation-projection/v3": "Simulation projection",
     "booley.simulation-campaign-summary/v1": "Simulation Campaign summary",
     "booley.cocotb-campaign-transport/v1": "cocotb Campaign transport",
+    "booley.coverage-campaign/v1": "Coverage Campaign",
+    "booley.coverage-campaign/v2": "Coverage Campaign",
+    "booley.coverage-campaign/v3": "Coverage Campaign",
     "booley.coverage-campaign/v4": "Coverage Campaign",
+    "booley.coverage-campaign/v5": "Coverage Campaign",
+    "booley.coverage-campaign-reference/v1": "Coverage Campaign reference",
 }
 
 _MANIFEST_FIELDS = frozenset(

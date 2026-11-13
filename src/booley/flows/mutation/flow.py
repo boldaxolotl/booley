@@ -50,7 +50,14 @@ from booley.flows.mutation.build_sources import (
     validate_mutation_closure,
 )
 from booley.flows.mutation.cli import MutationArguments
-from booley.flows.mutation.generator import GENERATOR_VERSION, generate_mutants, parser_version
+from booley.flows.mutation.equivalence import generated_cpp, verilator_version
+from booley.flows.mutation.generator import (
+    GENERATOR_VERSION,
+    Mutant,
+    generate_mutants,
+    parser_version,
+    shortfall_message,
+)
 from booley.flows.mutation.operators import MissingPyslangError, MutantGeneratorError
 from booley.flows.mutation.request import MutationRequest
 from booley.flows.mutation.score import default_min_detected
@@ -179,6 +186,8 @@ _EDALIZE_BINDIR_MARKER = ".booley_edalize_bindir"
 _EDALIZE_EDA_TOOL_MARKER = ".booley_edalize_eda_tool"
 # JSON list of the Target's declared ``copyto`` runtime inputs (build-relative).
 _RUNTIME_INPUTS_MARKER = ".booley_runtime_inputs"
+# First line of ``verilator --version``, probed in the baseline build's own environment.
+_VERILATOR_VERSION_MARKER = ".booley_verilator_version"
 
 
 @dataclass(frozen=True)
@@ -459,8 +468,10 @@ def _identity_lines(identity: Mapping[str, Any]) -> list[str]:
         f"- Count: {identity['count']}",
         f"- Generator version: {identity['generator_version']}",
         f"- pyslang version: {identity['pyslang_version']}",
-        "- Scope file hashes:",
     ]
+    if "verilator_version" in identity:
+        lines.append(f"- Verilator version: {identity['verilator_version']}")
+    lines.append("- Scope file hashes:")
     lines += [f"  - `{name}`: {digest}" for name, digest in identity["scope_hashes"].items()]
     return [*lines, ""]
 
@@ -606,17 +617,45 @@ class RunResultInputs:
     coverage_gap: bool = False
     #: Exact-replacement evidence reported so the verdict is auditable.
     evidence: dict[str, Any] = field(default_factory=dict)
+    #: IDs of the Mutants dropped for building the baseline's C++, in drop order.
+    #: The Record's detail lists them; the report never does.
+    equivalent_dropped: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class GeneratedMutants:
-    """The run's Mutants, ready to build, with the plan their count settled."""
+    """The run's candidate Mutants in pick order, with the plan that resolved the first ones.
+
+    ``variants`` anchors the first ``plan.count`` candidates; ``with_proposals`` anchors a
+    replacement against the same pristine source.
+    """
 
     plan: MutationRunPlan
-    specs: list[MutationSpec]
     variants: MutationVariantPlan
     identity: dict[str, Any]
-    shortfall: str | None
+    ranked: tuple[Mutant, ...]
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """What the pristine baseline run learned that the Mutant sweep needs."""
+
+    timeouts: Mapping[str, int]  # each test's Mutant time limit
+    #: Digests of the C++ Verilator generated for the baseline; ``None`` on a Target not
+    #: simulated with Verilator, where no Mutant is compared.
+    generated_cpp: Mapping[str, str] | None = None
+    verilator_version: str | None = None
+
+
+@dataclass(frozen=True)
+class VariantSweep:
+    """The Mutants a sweep kept and scored, numbered 1..n, and the ones it dropped."""
+
+    specs: list[MutationSpec]
+    results: list[MutationResult]
+    dropped: list[str]  # IDs of the Mutants whose build equals the baseline's
+    elapsed: float
+    inconclusive: str  # why a Mutant's outcome cannot be trusted; empty when all can
 
 
 # ---------------------------------------------------------------------------
@@ -1056,33 +1095,39 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if isinstance(generated, EndpointOutcome):
             return generated
         plan = generated.plan
-        timeouts = self._run_pristine_baseline(plan)
-        if isinstance(timeouts, EndpointOutcome):
-            return timeouts
-        specs = generated.specs
-        results, elapsed, infra = self._run_variant_sweep(
-            plan, specs, generated.variants, timeouts
+        baseline = self._run_pristine_baseline(plan)
+        if isinstance(baseline, EndpointOutcome):
+            return baseline
+        sweep = self._run_variant_sweep(plan, generated, baseline)
+        if not sweep.specs:
+            return self._no_scorable_mutants(plan, sweep)
+        count = len(sweep.specs)
+        if not plan.explicit_min_detected:
+            # Fewer Mutants than requested lower the default threshold with the count.
+            plan = replace(plan, min_detected=default_min_detected(count))
+        summary = MutationSummary(specs=sweep.specs, results=sweep.results)
+        variants = generated.variants.with_proposals(sweep.specs)
+        identity = dict(generated.identity)
+        if baseline.verilator_version is not None:
+            identity["verilator_version"] = baseline.verilator_version
+        inputs = RunResultInputs(
+            summary=summary,
+            count=count,
+            tester_elapsed=sweep.elapsed,
+            variants=variants,
+            identity=identity,
+            shortfall=shortfall_message(count, plan.count),
+            coverage_gap=self._is_variant_coverage_gap(summary, plan.min_detected),
+            evidence=self._variant_evidence(variants),
+            equivalent_dropped=sweep.dropped,
         )
-        summary = MutationSummary(specs=specs, results=results)
-        if infra:
-            return self._variant_infra_error(generated, summary, infra)
+        if sweep.inconclusive:
+            return self._variant_infra_error(plan, inputs, sweep.inconclusive)
         self.emit_progress(
             f"done: {summary.detected_count}/"
             f"{summary.detected_count + summary.not_detected_count} detected"
         )
-        return self._build_run_result(
-            plan,
-            RunResultInputs(
-                summary=summary,
-                count=len(specs),
-                tester_elapsed=elapsed,
-                variants=generated.variants,
-                identity=generated.identity,
-                shortfall=generated.shortfall,
-                coverage_gap=self._is_variant_coverage_gap(summary, plan.min_detected),
-                evidence=self._variant_evidence(generated.variants),
-            ),
-        )
+        return self._build_run_result(plan, inputs)
 
     def _inspect_target(self) -> TargetInspection | None:
         """The Target's declared inputs and parameters, or ``None`` when it cannot be read."""
@@ -1140,16 +1185,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             if not selection.mutants:
                 raise MutantGeneratorError("no Mutation Operator site in the scope files")
             specs = [
-                MutationSpec(
-                    index,
-                    mutant.operator,
-                    mutant.file,
-                    mutant.line,
-                    mutant.original_code,
-                    mutant.mutated_code,
-                    mutant.id,
-                )
-                for index, mutant in enumerate(selection.mutants, start=1)
+                _spec_of(index, mutant) for index, mutant in enumerate(selection.mutants, start=1)
             ]
             variants = MutationVariantPlan.resolve(specs, plan.work_dir, plan.scope_files)
         except (MutantGeneratorError, BoundaryError, MutationVariantError) as exc:
@@ -1168,29 +1204,16 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                     work_dir=plan.work_dir,
                 ),
             )
-        if not plan.explicit_min_detected:
-            # A generator shortfall lowers the default threshold with the count.
-            plan = replace(plan, min_detected=default_min_detected(len(specs)))
-        return GeneratedMutants(plan, specs, variants, identity, selection.shortfall)
+        return GeneratedMutants(plan, variants, identity, selection.ranked)
 
-    def _run_pristine_baseline(self, plan: MutationRunPlan) -> dict[str, int] | EndpointOutcome:
+    def _run_pristine_baseline(self, plan: MutationRunPlan) -> Baseline | EndpointOutcome:
         """Build and run the byte-identical project before any Mutant is applied.
 
-        Returns each test's Mutant time limit, scaled from its baseline duration.
+        Returns each test's Mutant time limit, scaled from its baseline duration, and, on a
+        Verilator Target, the C++ Verilator generated and its version.
         """
-        run_cwd_problem = literal_run_cwd_problem(plan.work_dir)
-        if run_cwd_problem is not None:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"mutation baseline cannot run: {run_cwd_problem}",
-                detail=_failure_detail(
-                    phase="baseline_run_cwd",
-                    reason=run_cwd_problem,
-                    specs=[],
-                    work_dir=plan.work_dir,
-                    log_tail="",
-                ),
-            )
+        if (run_cwd_error := self._baseline_run_cwd_error(plan)) is not None:
+            return run_cwd_error
         build_path = workspace.baseline_build_dir()
         shutil.rmtree(build_path, ignore_errors=True)
         build_path.mkdir(parents=True, exist_ok=True)
@@ -1210,6 +1233,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 ),
             )
 
+        cpp, version = self._baseline_verilator_build(plan.work_dir, build_path)
         runs = self._run_target_test_suite(
             plan.target,
             plan.work_dir,
@@ -1230,33 +1254,63 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 exit_code=EXIT_ERROR,
                 report_text="mutation baseline failed on pristine source\n" + _tail(output, 50),
             )
-        return {run.test_name: _mutant_timeout(run.duration_s) for run in runs}
+        timeouts = {run.test_name: _mutant_timeout(run.duration_s) for run in runs}
+        return Baseline(timeouts, cpp, version)
+
+    @staticmethod
+    def _baseline_run_cwd_error(plan: MutationRunPlan) -> EndpointOutcome | None:
+        """The error that ends the run when the Target's literal run directory is unusable."""
+        run_cwd_problem = literal_run_cwd_problem(plan.work_dir)
+        if run_cwd_problem is None:
+            return None
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            report_text=f"mutation baseline cannot run: {run_cwd_problem}",
+            detail=_failure_detail(
+                phase="baseline_run_cwd",
+                reason=run_cwd_problem,
+                specs=[],
+                work_dir=plan.work_dir,
+                log_tail="",
+            ),
+        )
+
+    @staticmethod
+    def _baseline_verilator_build(
+        work_dir: Path, build_path: Path
+    ) -> tuple[dict[str, str] | None, str | None]:
+        """The baseline's generated C++ digests and Verilator version, or ``(None, None)``.
+
+        Only a Target simulated with Verilator has either; a Target that is not leaves
+        every Mutant to be simulated.
+        """
+        tool_marker = build_path / _EDALIZE_EDA_TOOL_MARKER
+        if (
+            not tool_marker.is_file()
+            or tool_marker.read_text(encoding="utf-8").strip() != "verilator"
+        ):
+            return None, None
+        generated = work_dir / (build_path / _EDALIZE_BINDIR_MARKER).read_text(encoding="utf-8")
+        version = (build_path / _VERILATOR_VERSION_MARKER).read_text(encoding="utf-8")
+        return generated_cpp(generated, build_path, work_dir), version
 
     def _variant_infra_error(
         self,
-        generated: GeneratedMutants,
-        summary: MutationSummary,
+        plan: MutationRunPlan,
+        inputs: RunResultInputs,
         reason: str,
     ) -> EndpointOutcome:
-        plan, specs, variants = generated.plan, generated.specs, generated.variants
+        """The run has no trustworthy verdict: ``inputs`` holds only the Mutants it kept."""
         detail = _failure_detail(
             phase="variant_infrastructure",
             reason=reason,
-            specs=specs,
+            specs=inputs.summary.specs,
             work_dir=plan.work_dir,
-            summary=summary,
+            summary=inputs.summary,
             min_detected=plan.min_detected,
             count=plan.count,
         )
-        inputs = RunResultInputs(
-            summary=summary,
-            count=len(specs),
-            tester_elapsed=0.0,
-            variants=variants,
-            identity=generated.identity,
-            shortfall=generated.shortfall,
-            evidence=self._variant_evidence(variants),
-        )
+        detail["equivalent_dropped"] = inputs.equivalent_dropped
         self._attach_campaign_artifacts(plan, inputs, detail)
         report_text = f"mutation campaign produced no trustworthy verdict: {reason}"
         artifact_lines = self._artifact_display_lines(detail)
@@ -1267,6 +1321,19 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             report_text=report_text,
             detail=detail,
             display_lines=artifact_lines,
+        )
+
+    def _no_scorable_mutants(self, plan: MutationRunPlan, sweep: VariantSweep) -> EndpointOutcome:
+        """Every candidate built the baseline's C++ or was not scored: nothing to report."""
+        reason = "no candidate Mutant changes what the Target builds"
+        detail = _failure_detail(
+            phase="mutant_selection", reason=reason, specs=[], work_dir=plan.work_dir
+        )
+        detail["equivalent_dropped"] = sweep.dropped
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            report_text=f"mutation: {reason}\npass --scope to choose the files to mutate",
+            detail=detail,
         )
 
     @staticmethod
@@ -1317,6 +1384,11 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         # Mutants compile through the same managed Project compiler cache as
         # ordinary Simulation; unchanged generated C++ hits across variants.
         build_environment = {**os.environ, **simulation_build_environment(prepared)}
+        if mutation is None and configured_tool == "verilator":
+            # Only the baseline's version is recorded: a Mutant builds with the same tool.
+            (build_path / _VERILATOR_VERSION_MARKER).write_text(
+                verilator_version(build_environment), encoding="utf-8"
+            )
         return subprocess.run(
             list(prepared.make_argv),
             cwd=work_dir,
@@ -1939,52 +2011,62 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _run_variant_sweep(
         self,
         plan: MutationRunPlan,
-        specs: list[MutationSpec],
-        variants: MutationVariantPlan,
-        timeouts: Mapping[str, int],
-    ) -> tuple[list[MutationResult], float, str]:
-        """Build and run every exact replacement in complete isolation."""
+        generated: GeneratedMutants,
+        baseline: Baseline,
+    ) -> VariantSweep:
+        """Build and run candidates in pick order until ``plan.count`` Mutants are kept.
+
+        Each candidate takes the next free number and build directory.  One whose build
+        equals the baseline's is dropped and its number goes to the next candidate; running
+        out of candidates leaves fewer Mutants than requested.
+        """
         start = time.monotonic()
         self._reset_mutant_logs()
+        specs: list[MutationSpec] = []
         results: list[MutationResult] = []
+        dropped: list[str] = []
         inconclusive: list[str] = []
-        for spec in specs:
-            self.emit_progress(f"build and test Mutant {spec.index}/{len(specs)}")
-            result, reason = self._run_one_variant(plan, spec, variants, timeouts)
+        for mutant in generated.ranked:
+            if len(specs) == plan.count:
+                break
+            spec = _spec_of(len(specs) + 1, mutant)
+            self.emit_progress(f"build and test Mutant {spec.index}/{plan.count}")
+            variants = generated.variants.with_proposals([spec])
+            result, reason = self._run_one_variant(plan, spec, variants, baseline)
+            if result is None:
+                dropped.append(spec.mutant_id)
+                continue
+            specs.append(spec)
             results.append(result)
             if reason:
                 inconclusive.append(f"mutation #{spec.index}: {reason}")
-        return results, time.monotonic() - start, "; ".join(inconclusive)
+        elapsed = time.monotonic() - start
+        return VariantSweep(specs, results, dropped, elapsed, "; ".join(inconclusive))
 
     def _run_one_variant(
         self,
         plan: MutationRunPlan,
         spec: MutationSpec,
         variants: MutationVariantPlan,
-        timeouts: Mapping[str, int],
-    ) -> tuple[MutationResult, str]:
+        baseline: Baseline,
+    ) -> tuple[MutationResult | None, str]:
+        """Build and test one Mutant; ``None`` for a Mutant that builds the baseline's C++."""
         build_path = workspace.variant_build_dir(spec.index)
         shutil.rmtree(build_path, ignore_errors=True)
         build_path.mkdir(parents=True, exist_ok=True)
         elab = self._run_elab(plan.target, plan.work_dir, build_path, (variants, spec.index))
         elab_output = (elab.stdout or "") + (elab.stderr or "")
         if elab.returncode != 0:
-            return (
-                MutationResult(
-                    index=spec.index,
-                    invalid=True,
-                    sim_output_snippet="variant did not elaborate: "
-                    + _tail(elab_output, 5)[-200:],
-                    log_path=self._persist_mutant_log(spec.index, elab_output),
-                ),
-                "",
-            )
+            return self._invalid_build(spec, elab_output), ""
+        if self._builds_the_baseline(plan.work_dir, build_path, baseline):
+            shutil.rmtree(build_path, ignore_errors=True)
+            return None, ""
         runs = self._run_target_test_suite(
             plan.target,
             plan.work_dir,
             build_path,
             plan.tb_top,
-            timeouts=timeouts,
+            timeouts=baseline.timeouts,
         )
         combined = self._suite_output(runs)
         verdict = self._classify_variant_suite(runs)
@@ -2005,6 +2087,27 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             ),
             verdict.inconclusive_reason,
         )
+
+    def _invalid_build(self, spec: MutationSpec, elab_output: str) -> MutationResult:
+        """The result of a Mutant whose build failed: reported ``invalid``, never scored."""
+        return MutationResult(
+            index=spec.index,
+            invalid=True,
+            sim_output_snippet="variant did not elaborate: " + _tail(elab_output, 5)[-200:],
+            log_path=self._persist_mutant_log(spec.index, elab_output),
+        )
+
+    @staticmethod
+    def _builds_the_baseline(work_dir: Path, build_path: Path, baseline: Baseline) -> bool:
+        """True if the Mutant's generated C++ equals the baseline's, so no test can tell them apart.
+
+        Never true without a baseline to compare with (a Target not simulated with
+        Verilator) or when the Mutant's build has no recognizable Verilator layout.
+        """
+        if baseline.generated_cpp is None:
+            return False
+        generated = work_dir / (build_path / _EDALIZE_BINDIR_MARKER).read_text(encoding="utf-8")
+        return generated_cpp(generated, build_path, work_dir) == baseline.generated_cpp
 
     @staticmethod
     def _scope_residue(baseline: Mapping[str, str], work_dir: Path) -> list[str]:
@@ -2071,6 +2174,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         if inputs.shortfall:
             detail["shortfall"] = inputs.shortfall
+        detail["equivalent_dropped"] = inputs.equivalent_dropped
         if auto_mode:
             detail["auto"] = True
             detail["formula_count"] = formula_count
@@ -2331,10 +2435,12 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _identity_header(inputs: RunResultInputs) -> str:
         """The first report line: how many Mutants ran and what reproduces them."""
         identity = inputs.identity
+        verilator = f", {identity['verilator_version']}" if "verilator_version" in identity else ""
         return (
             f"[mutation_test] {len(inputs.summary.specs)} Mutants "
             f"(seed {identity['seed']}, count {identity['count']}, "
-            f"generator {identity['generator_version']}, pyslang {identity['pyslang_version']})"
+            f"generator {identity['generator_version']}, pyslang {identity['pyslang_version']}"
+            f"{verilator})"
         )
 
     def _format_report_text(
@@ -2462,6 +2568,19 @@ def _failure_detail(
         ),
     )
     return detail
+
+
+def _spec_of(index: int, mutant: Mutant) -> MutationSpec:
+    """The generator's ``mutant`` as the Mutant numbered ``index`` in the run."""
+    return MutationSpec(
+        index,
+        mutant.operator,
+        mutant.file,
+        mutant.line,
+        mutant.original_code,
+        mutant.mutated_code,
+        mutant.id,
+    )
 
 
 def _mutation_detail(

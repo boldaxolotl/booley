@@ -186,10 +186,11 @@ def get_syn_output_dir(project_root: Path | None = None) -> Path:
     root = project_root or resolve_project_root()
     cfg = _load_rtl_config(project_root)
     if cfg:
+        from booley.core.boundary import require_str_value
         from booley.targets.flow_names import config_section
 
         raw = config_section(cfg.get("flows", {}), "synth").get("output_dir", "util/syn")
-        return root / raw
+        return root / require_str_value(raw, field="[flows.synth].output_dir", allow_empty=True)
     return root / "util" / "syn"
 
 

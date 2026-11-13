@@ -16,6 +16,8 @@ BACK = "esc back"
 TOP_BAR_KEYS = "←→ choose · ⏎ apply"
 RUN_KEYS = "←→ choose · ⏎ run a Flow"
 SCROLL = "↑↓ PgUp/PgDn scroll"
+FLOWS_BELOW = "↓ Flows to run"
+RUN = "⏎ run"
 SEPARATOR = " · "
 
 
@@ -29,6 +31,8 @@ def footer_hints(
     scrolling: bool,
     back_to: BackTarget,
     on_run: bool,
+    flows_below: bool,
+    run_list: bool,
 ) -> str:
     """The one footer line for the current cursor position.
 
@@ -39,11 +43,18 @@ def footer_hints(
     ``scrolling``: the side panel holds the keyboard, so arrows scroll it and
     Enter does nothing. ``back_to``: what Down returns to from the top bar
     ("list", "detail" or "Help"). ``on_run``: the top bar's cursor is on Run.
+    ``flows_below``: the detail ends with a list of Flows, which Down reaches after the last
+    line. ``run_list``: that list holds the keyboard, so Enter runs the Flow.
     """
     if top_bar:
         return f"{RUN_KEYS if on_run else TOP_BAR_KEYS}{SEPARATOR}↓ back to {back_to}"
+    if run_list:
+        hints = [MOVE, RUN, WINDOWS]
+        if nested:
+            hints.append(BACK)
+        return SEPARATOR.join(hints)
     if scrolling:
-        hints = [SCROLL, WINDOWS]
+        hints = [SCROLL, FLOWS_BELOW, WINDOWS] if flows_below else [SCROLL, WINDOWS]
         if nested:
             hints.append(BACK)
         return SEPARATOR.join(hints)

@@ -81,7 +81,7 @@ def test_cli_reports_invalid_findings_before_calling_model(tmp_path: Path) -> No
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert outcome.exit_code == 2
@@ -101,7 +101,7 @@ def test_cli_invalid_report_is_bounded_and_control_safe(tmp_path: Path) -> None:
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert outcome.exit_code == 2
@@ -198,13 +198,13 @@ def test_large_current_campaign_uses_scoped_evidence_tool_without_oversized_prom
         )
 
     result = CoverageAnalystSpecialist(model=bounded_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 0
     assert len(calls[0].prompt) < 16_384
     assert calls[0].nested_mcp_tools == ["coverage_evidence"]
-    assert calls[0].nested_mcp_env["BOOLEY_COVERAGE_CAMPAIGN"] == str(path)
+    assert calls[0].nested_mcp_env["BOOLEY_COVERAGE_RECORD"] == str(path)
     assert "coverage-points.jsonl.gz" in calls[0].prompt
     assert "points" not in result.outcome.detail["observed_evidence"]
     assert result.outcome.detail["observed_evidence"]["point_store_sha256"].startswith("sha256:")
@@ -221,7 +221,7 @@ def test_persisted_current_analysis_does_not_encode_the_complete_campaign(tmp_pa
     monkeypatch.setattr(coverage_analysis, "encode_coverage_campaign", reject_full_encode)
 
     result = CoverageAnalystSpecialist(model=Model()).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 0
@@ -240,7 +240,7 @@ def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
     model = Model()
 
     result = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -265,7 +265,7 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch):
         )
 
     analyst = CoverageAnalystSpecialist(model=querying_model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     report = analyst.coverage_analyst(path).to_dict()
 
     assert report["analysis_scope"]["points_retrieved"] == 1
@@ -300,7 +300,7 @@ def test_model_short_references_resolve_to_exact_report_point_ids(tmp_path, monk
 
     report = (
         CoverageAnalystSpecialist(model=referencing_model)
-        .execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+        .execute_cli(["--work-dir", str(tmp_path), "--record", str(path)])
         .outcome.detail
     )
 
@@ -329,7 +329,7 @@ def test_unknown_model_short_references_report_all_json_pointers(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=invalid_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -359,7 +359,7 @@ def test_delivered_legacy_exact_model_ids_remain_compatible(tmp_path, monkeypatc
         )
 
     result = CoverageAnalystSpecialist(model=legacy_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 0
@@ -380,7 +380,7 @@ def test_undelivered_legacy_exact_model_id_is_rejected(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=unsupported_legacy_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -391,10 +391,10 @@ def test_exact_campaign_wrapper_analyzes_without_native_payload_or_project_state
     path = persist_campaign(tmp_path)
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     report = analyst.coverage_analyst(path, "Explain the gaps").to_dict()
-    assert report["$schema"] == "booley.coverage-analysis/v2"
+    assert report["$schema"] == "booley.coverage-analysis/v4"
     assert report["source_access"] == "report_only"
     assert len(model.calls) == 1
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
@@ -425,7 +425,7 @@ def test_wrapper_rejects_noncanonical_or_unfinished_report_before_model(tmp_path
         projection.write_text(json.dumps(document))
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     with pytest.raises(CoverageAnalysisError):
         analyst.coverage_analyst(path)
     assert model.calls == []
@@ -462,7 +462,7 @@ def test_verified_sources_are_available_only_through_scoped_tool(tmp_path):
     path = source_project(tmp_path)
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     report = analyst.coverage_analyst(path).to_dict()
     assert report["source_access"] == "verified"
     prompt = json.loads(model.calls[0].prompt)
@@ -482,7 +482,7 @@ def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     )
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
     report = analyst.coverage_analyst(path).to_dict()
@@ -513,7 +513,7 @@ def test_source_mismatch_degrades_transactionally_to_report_only(tmp_path, defec
         symlink_or_skip(source, tmp_path / "rtl/counter.sv")
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     report = analyst.coverage_analyst(path).to_dict()
     assert report["source_access"] == "report_only"
     assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
@@ -547,7 +547,7 @@ def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch
         )
 
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
     candidate = analyst.coverage_analyst(path).to_dict()["waiver_candidates"][0]
     assert candidate["screening"] == "ready_for_human_review"
     assert candidate["point_identity"] == point["identity"]
@@ -564,7 +564,7 @@ def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatc
         [
             "--work-dir",
             str(tmp_path),
-            "--campaign",
+            "--record",
             str(path),
             "--report-dir",
             str(tmp_path / "analysis-reports"),
@@ -579,7 +579,7 @@ def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatc
 def test_cli_reports_unfinished_model_as_analysis_error(tmp_path, failure):
     path = persist_campaign(tmp_path)
     analyst = CoverageAnalystSpecialist(model=lambda params: AgentResult(**{failure: True}))
-    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--record", str(path)])
     assert result.exit_code == 2
     assert "model did not finish" in result.outcome.report_text
 
@@ -599,7 +599,7 @@ def test_cli_distinguishes_empty_and_malformed_model_output(
         model=lambda _params: AgentResult(output=output, structured=None)
     )
 
-    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--record", str(path)])
 
     assert result.exit_code == 2
     assert expected in result.outcome.report_text
@@ -634,7 +634,7 @@ def test_cli_reports_terminal_provider_failures_without_mutating_state(
         [
             "--work-dir",
             str(tmp_path),
-            "--campaign",
+            "--record",
             str(path),
             "--report-dir",
             str(report_dir),
@@ -664,7 +664,7 @@ def test_cli_reports_result_error_terminal_text(tmp_path):
         raise provider_error
 
     result = CoverageAnalystSpecialist(model=fail).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -680,7 +680,7 @@ def test_cli_does_not_misclassify_internal_runtime_error_as_provider_failure(tmp
         raise RuntimeError("internal bug")
 
     result = CoverageAnalystSpecialist(model=fail).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -702,7 +702,7 @@ def test_cli_reports_backend_input_limit_as_actionable_error(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=oversized).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -722,7 +722,7 @@ def test_cli_rejects_partial_report_after_evidence_budget_exhaustion(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=exhausted_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -743,7 +743,7 @@ def test_cli_rejects_partial_report_after_terminal_evidence_error(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=failed_evidence_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -770,7 +770,7 @@ def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
         )
 
     result = CoverageAnalystSpecialist(model=corrupting_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        ["--work-dir", str(tmp_path), "--record", str(path)]
     )
 
     assert result.exit_code == 2
@@ -783,7 +783,7 @@ def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path, 
 
     run = coverage_invocation(tmp_path, monkeypatch)
     analyst = CoverageAnalystSpecialist(model=Model())
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(run.public)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(run.public)])
     before = analyst.coverage_analyst(run.public).to_dict()
     prune_native_payload(tmp_path / "reports", 1, "sim_0")
     after = analyst.coverage_analyst(run.public).to_dict()
@@ -798,7 +798,7 @@ def test_relative_campaign_resolves_against_selected_work_dir(tmp_path):
     path = persist_campaign(tmp_path)
     analyst = CoverageAnalystSpecialist(model=Model())
     result = analyst.execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path.relative_to(tmp_path))]
+        ["--work-dir", str(tmp_path), "--record", str(path.relative_to(tmp_path))]
     )
     assert result.exit_code == 0
 
@@ -827,7 +827,7 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
             [
                 "--work-dir",
                 str(tmp_path),
-                "--campaign",
+                "--record",
                 str(path),
                 "--transcript-dir",
                 str(tmp_path / "transcripts"),
@@ -843,7 +843,7 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
     assert set(options_seen[0].mcp_servers) == {"booley"}
     server_env = options_seen[0].mcp_servers["booley"]["env"]
     assert server_env["BOOLEY_NESTED_MCP_TOOLS"] == "coverage_evidence"
-    assert server_env["BOOLEY_COVERAGE_CAMPAIGN"] == str(path)
+    assert server_env["BOOLEY_COVERAGE_RECORD"] == str(path)
     assert not Path(options_seen[0].cwd).exists()
     assert list((tmp_path / "transcripts").rglob("*.jsonl"))
 
@@ -858,7 +858,7 @@ def test_in_memory_composition_stages_v2_evidence_for_the_scoped_tool(monkeypatc
     staged_paths = []
 
     def invoke(_self, params):
-        campaign_path = Path(params.nested_mcp_env["BOOLEY_COVERAGE_CAMPAIGN"])
+        campaign_path = Path(params.nested_mcp_env["BOOLEY_COVERAGE_RECORD"])
         staged_paths.append(campaign_path)
         assert campaign_path.is_file()
         assert campaign_path.with_name("coverage-points.jsonl.gz").is_file()
@@ -870,7 +870,7 @@ def test_in_memory_composition_stages_v2_evidence_for_the_scoped_tool(monkeypatc
 
     report = analyze_coverage_campaign(campaign, None, "Explain gaps").to_dict()
 
-    assert report["$schema"] == "booley.coverage-analysis/v2"
+    assert report["$schema"] == "booley.coverage-analysis/v4"
     assert staged_paths and not staged_paths[0].exists()
 
 
@@ -878,7 +878,7 @@ def test_image_alias_analyst_binds_canonical_campaign(project_alias, monkeypatch
     alias, root = project_alias
     path = persist_campaign(root)
     specialist = CoverageAnalystSpecialist(model=Model())
-    specialist._args = specialist.parse_args(["--work-dir", str(root), "--campaign", str(path)])
+    specialist._args = specialist.parse_args(["--work-dir", str(root), "--record", str(path)])
     seen = []
     monkeypatch.setattr(
         specialist,
@@ -923,7 +923,7 @@ def test_analysis_follows_only_the_booley_dir_entry(tmp_path, monkeypatch, linke
     worktree = project / ".booley/worktrees/goal-x"
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--project", str(worktree), "--campaign", str(path)])
+    analyst.parse_args(["--project", str(worktree), "--record", str(path)])
 
     if linked == "below":
         with pytest.raises(CoverageAnalysisError, match="links or traversal"):

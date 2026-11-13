@@ -2,7 +2,7 @@
   "coverage_analyst": {
     "additionalProperties": false,
     "properties": {
-      "campaign": {
+      "record": {
         "description": "Exact canonical coverage.json path",
         "type": "string"
       },
@@ -22,7 +22,7 @@
       }
     },
     "required": [
-      "campaign"
+      "record"
     ],
     "type": "object"
   },

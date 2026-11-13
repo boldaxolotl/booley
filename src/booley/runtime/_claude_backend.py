@@ -320,14 +320,14 @@ class ClaudeSDKBackend:
                         stream_state.turn_count,
                         attempt,
                         transcript_path,
-                        model=options.model,
+                        model=_options_model(options),
                     )
         finally:
             _claude_write_markdown(transcript_path, markdown_path=paths.transcript_markdown)
 
         return _finalize_result(
             counters,
-            options.model,
+            _options_model(options),
             output_format,
             label,
             session_id=stream_state.session_id,
@@ -461,6 +461,13 @@ def _hidden_gateway_overrides() -> dict[str, str]:
     return hidden
 
 
+def _options_model(options: ClaudeAgentOptions) -> str:
+    """Return the model of options built by ``_build_sdk_options`` (the SDK types it optional)."""
+    if options.model is None:
+        raise RuntimeError("Claude SDK options carry no model")
+    return options.model
+
+
 def _build_sdk_options(
     params: AgentCallParams,
     auth_mode: str = "auto",
@@ -487,14 +494,14 @@ def _build_sdk_options(
     if params.max_turns is not None:
         options.max_turns = params.max_turns
     if params.allowed_agent_capabilities is not None:
-        options.allowed_agent_capabilities = params.allowed_agent_capabilities
+        options.allowed_tools = list(params.allowed_agent_capabilities)
     # Provider-hosted web MCP tools bypass the container network namespace. Keep
     # every harness-launched agent offline even when it runs outside Booley's
     # managed image (the image also carries an immutable Claude policy).
-    denied_mcp_tools = list(
+    denied_mcp_tools: list[str] = list(
         dict.fromkeys([*(params.disallowed_agent_capabilities or []), *_PROVIDER_WEB_MCP_TOOLS])
     )
-    options.disallowed_agent_capabilities = denied_mcp_tools
+    options.disallowed_tools = denied_mcp_tools
     if params.system_prompt is not None:
         options.system_prompt = params.system_prompt
     if params.max_budget_usd is not None:
@@ -721,7 +728,7 @@ async def _consume_claude_stream(
             _dispatch_on_event(on_event, message)
             counters.update_from_assistant(message)
             counters.capture_mcp_tool_uses(message)
-            _dispatch_usage(on_event, counters, options.model)
+            _dispatch_usage(on_event, counters, _options_model(options))
             if transcript_file is not None:
                 _write_transcript_turn(transcript_file, message)
             _capture_pending_file_edits(message, state)
@@ -729,7 +736,7 @@ async def _consume_claude_stream(
             _dispatch_completed_file_edits(on_event, message, state)
         elif isinstance(message, ResultMessage):
             counters.apply_result(message)
-            _dispatch_usage(on_event, counters, options.model)
+            _dispatch_usage(on_event, counters, _options_model(options))
             state.session_id = getattr(message, "session_id", None)
         elif isinstance(message, RateLimitEvent):
             await _handle_rate_limit_event(message)
@@ -746,7 +753,8 @@ _EDIT_PATH_FIELDS = {
 def _capture_pending_file_edits(message: AssistantMessage, state: _StreamState) -> None:
     """Remember Claude file-operation paths until their result messages arrive."""
     for block in message.content or []:
-        field_name = _EDIT_PATH_FIELDS.get(getattr(block, "name", None))
+        tool_name = getattr(block, "name", None)
+        field_name = _EDIT_PATH_FIELDS.get(tool_name) if isinstance(tool_name, str) else None
         mcp_tool_id = getattr(block, "id", None)
         mcp_tool_input = getattr(block, "input", None)
         if (
@@ -770,6 +778,8 @@ def _dispatch_completed_file_edits(
     content = message.content if isinstance(message.content, list) else []
     for block in content:
         mcp_tool_id = getattr(block, "tool_use_id", None)
+        if not isinstance(mcp_tool_id, str):
+            continue
         path = state.pending_file_edits.pop(mcp_tool_id, None)
         if path is not None and not getattr(block, "is_error", False):
             paths.append(path)
@@ -1064,21 +1074,19 @@ def _write_prompt_header(
     f.flush()
 
 
+_TRANSCRIPT_BLOCK_FIELDS = ("text", "name", "input", "content", "thinking")
+
+
 def _write_transcript_turn(f: io.TextIOBase, msg: AssistantMessage) -> None:
     """Append one AssistantMessage to the transcript JSONL file."""
     blocks = []
     for block in msg.content or []:
         b: dict[str, Any] = {"type": type(block).__name__}
-        if hasattr(block, "text"):
-            b["text"] = block.text
-        if hasattr(block, "name"):
-            b["name"] = block.name
-        if hasattr(block, "input"):
-            b["input"] = block.input
-        if hasattr(block, "content"):
-            b["content"] = block.content
-        if hasattr(block, "thinking"):
-            b["thinking"] = block.thinking
+        # Blocks are duck-typed (the SDK has one class per block kind): copy
+        # whichever of these fields the block actually carries.
+        for field_name in _TRANSCRIPT_BLOCK_FIELDS:
+            if hasattr(block, field_name):
+                b[field_name] = getattr(block, field_name)
         blocks.append(b)
 
     entry = {

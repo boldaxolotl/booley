@@ -7,13 +7,16 @@ import json
 import ntpath
 import os
 import subprocess
+import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import platform_paths, session_admission, session_issuance
+from booley.runtime import platform_paths, session_admission, session_issuance, session_runtime
 from booley.runtime.session_runtime import session_container_name
 
 
@@ -918,3 +921,82 @@ def test_vscode_inventory_inspects_a_renamed_known_container_again(tmp_path: Pat
 
     assert fresh is not stale
     assert fresh.name == "editor"
+
+
+# ---------------------------------------------------------------------------
+# Bounded commands (real processes, no Docker needed)
+# ---------------------------------------------------------------------------
+
+
+def test_default_runner_timeout_kills_the_tree_and_returns_promptly(tmp_path: Path) -> None:
+    """The default runner ends with ``TimeoutExpired`` soon and leaves no descendant running."""
+    with heartbeat_tree(tmp_path) as paths:
+        argv = parent_argv(tmp_path, sys.executable, paths, "live")
+        start = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            session_admission._run(argv, timeout=2)
+        elapsed = time.monotonic() - start
+        assert elapsed < 25, f"_run hung {elapsed:.1f}s on a pipe held by a grandchild"
+        assert paths["heartbeat"].exists(), "grandchild never started"
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), (
+            "grandchild still running after the timeout"
+        )
+
+
+def test_default_runner_keeps_its_result_contract() -> None:
+    """Success returns text, a non-zero exit is returned, a missing program raises."""
+    ok = session_admission._run(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
+    )
+    assert (ok.returncode, ok.stdout.strip(), ok.stderr.strip()) == (0, "out", "err")
+    assert session_admission._run([sys.executable, "-c", "raise SystemExit(3)"]).returncode == 3
+    with pytest.raises(FileNotFoundError):
+        session_admission._run(["booley-no-such-program-3858"])
+
+
+def test_default_runner_decodes_utf8_output_whatever_the_locale() -> None:
+    """Admission reads child output as UTF-8, so non-ASCII Sandbox labels survive on Windows."""
+    text = "Zo\u00eb \u0141"
+    script = f"import sys; sys.stdout.buffer.write({text.encode()!r})"
+    result = session_admission._run([sys.executable, "-c", script])
+    assert result.stdout == text
+
+
+def _hung_docker(timeouts: list[float | None], hung: list[str]):
+    """The session runtime's own runner with ``docker ps`` replaced by a hanging child.
+
+    Records each call's ``timeout`` and runs the hung child with a 1 s timeout when
+    the listing gave one.
+    """
+
+    def run(argv: list[str], *, timeout: float | None = None, **_kwargs):
+        assert argv[:2] == ["docker", "ps"], argv
+        timeouts.append(timeout)
+        return session_runtime._run(hung, timeout=1 if timeout else None)
+
+    return run
+
+
+def test_every_listing_is_bounded_through_the_session_runner(tmp_path: Path) -> None:
+    """Each inventory listing hands its runner a finite timeout, so a hung ``docker ps`` ends."""
+    project = tmp_path / "project"
+    project.mkdir()
+    listings = {
+        "running_sandboxes": lambda run: session_admission.running_sandboxes(run=run),
+        "vscode_sandboxes": lambda run: session_admission.vscode_sandboxes(project, run=run),
+        "running_project_sandboxes": lambda run: session_admission.running_project_sandboxes(
+            project, run=run
+        ),
+    }
+    hung = [sys.executable, "-c", "import time; time.sleep(10)"]
+    for name, listing in listings.items():
+        timeouts: list[float | None] = []
+        hung_docker = _hung_docker(timeouts, hung)
+
+        start = time.monotonic()
+        with pytest.raises((session_admission.AdmissionError, subprocess.TimeoutExpired)):
+            listing(hung_docker)
+        elapsed = time.monotonic() - start
+        assert elapsed < 25, f"{name} hung {elapsed:.1f}s"
+        assert timeouts, name
+        assert all(t is not None and t > 0 for t in timeouts), (name, timeouts)

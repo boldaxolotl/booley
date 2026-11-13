@@ -28,9 +28,7 @@ def test_group_identity_is_captured_from_spawn_not_rediscovered() -> None:
     assert group == process_group.ProcessGroup(417)
 
 
-def test_windows_spawn_uses_new_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
-
+def test_windows_spawn_uses_new_process_group() -> None:
     assert process_group.new_group_kwargs(is_windows=True) == {"creationflags": 0x200}
 
 

@@ -115,7 +115,9 @@ when there is more to say than "everything passed at the Default Seed" (a
 failure, another seed or Variant, a Test that ran more than once, or a
 [`--trace`](#waveforms) run that saved a waveform). Each failed Test Run comes
 with a command that reruns it with the same seed, and every Test Run that did
-not pass names its log:
+not pass names its log.
+
+Example (Verilator):
 
 ```text
 sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
@@ -147,7 +149,9 @@ them failed, that reruns the whole batch at that seed:
 </details>
 
 In a `--trace` run the card also names each waveform, and lists the Test Runs
-even when all of them passed:
+even when all of them passed.
+
+Example (Verilator):
 
 ```text
 sim_dma: PASS (Simulation Campaign 7b1c44d0-…)
@@ -302,31 +306,46 @@ no trace path. Each traced Target becomes session `@<target>`, so
 `bwave @<target> list` reads it. The session points at the waveform of the
 last Test Run that did not pass if any, else of the last Test Run. The last
 Target's waveform also becomes the default session, so `bwave list` alone reads
-the newest trace. The session store is one file per temporary directory (one
-per Sandbox), shared by every agent session in it: the latest traced run owns
-`@<target>` and the default session. A shell
-sees the sessions when it shares the temporary directory of the process that
-ran the simulation, which is the default. A failure to register never changes
-the run's result. A per-checkout store is tracked in
-[#3483](https://github.com/boldaxolotl/Booley/issues/3483).
+the newest trace. Each checkout, the main checkout or a linked worktree, keeps
+its own sessions in its Booley Directory, so `@<target>` and the default session
+are that checkout's latest traced run. A shell or an agent reads the sessions of
+the checkout it works in, and a new worktree starts with none. Outside any
+Project, or in a checkout without a Booley Directory of its own, sessions stay in
+the temporary directory instead. A failure to
+register never changes the run's result.
 
 Booley stores every waveform as FST, a compact format that B-Wave and common
-viewers (GTKWave, VaporView) read. The simulator can write either format:
+viewers (GTKWave, VaporView) read. An FST file from the simulator is used as
+it is; a VCD file is converted to FST for you. How tracing is switched on, and
+when the conversion runs, depends on the simulator.
 
-- **FST**: Booley uses the file as it is.
-- **VCD**: Booley converts it to FST for you. With Verilator the conversion
-  runs while the test runs, so the full VCD never lands on disk. Icarus
-  writes the VCD first and Booley converts it after the run (Verilator does
-  the same on Windows).
+<details markdown>
+<summary>With Icarus</summary>
 
-How tracing is switched on depends on the Target:
+Booley adds its own waveform dump module, so the testbench needs no changes.
+Icarus writes a VCD, and Booley converts it after the run.
 
-- **Icarus**: Booley adds its own waveform dump module, so the testbench needs
-  no changes.
-- **Verilator**: Booley builds with tracing and passes `+trace` and
-  `+tracefile=<file>` to the simulation, which the Target's C++ `main()` must
-  handle. A Target built with `--trace-fst` writes FST directly; otherwise
-  the dump is VCD.
+</details>
+
+<details markdown>
+<summary>With Verilator</summary>
+
+Booley builds with tracing and passes `+trace` and `+tracefile=<file>` to the
+simulation, which the Target's C++ `main()` must handle. A Target built with
+`--trace-fst` writes FST directly. Otherwise the dump is VCD, converted while
+the test runs, so the full VCD never lands on disk.
+
+If your `main()` takes other options, declare them in `trace_args`.
+`{file}` becomes the waveform path, and the list replaces the default pair.
+Without it, a binary that doesn't know `+trace` ignores it and writes an empty
+waveform:
+
+```toml
+[flows.sim]
+trace_args = ["--trace={file}"]
+```
+
+</details>
 
 <details markdown>
 <summary>With a cocotb testbench</summary>
@@ -336,16 +355,6 @@ drives the dump itself, writes the VCD and converts it after the run; see
 [Tracing a Cocotb Target](#tracing-a-cocotb-target).
 
 </details>
-
-If your Verilator `main()` takes other options, declare them in `trace_args`.
-`{file}` becomes the waveform path, and the list replaces the default pair.
-Without it, a binary that doesn't know `+trace` ignores it and writes an empty
-waveform:
-
-```toml
-[flows.sim]
-trace_args = ["--trace={file}"]
-```
 
 If an HDL testbench writes its dump to a fixed file name of its own, tell
 Booley where to find it:
@@ -378,9 +387,11 @@ in the Target's simulation work directory, next to the error output.
 [`[flows.sim].trace_args`](#waveforms)
 has no effect here: Booley drives the dump itself.
 
-On a Verilator Cocotb Target, `verilator_options` may contain `--trace` or
-`--trace-vcd`, or no trace flag at all. `--trace-fst` makes a traced run fail
-with:
+<details markdown>
+<summary>With Verilator</summary>
+
+`verilator_options` may contain `--trace` or `--trace-vcd`, or no trace flag
+at all. `--trace-fst` makes a traced run fail with:
 
 ```text
 Cocotb Target '<target>' requests native FST tracing, but the Cocotb run-half currently owns a VCD dump; use a VCD trace recipe for this Target
@@ -388,6 +399,8 @@ Cocotb Target '<target>' requests native FST tracing, but the Cocotb run-half cu
 
 Replace `--trace-fst` with `--trace`, and remove any `-DVM_TRACE_FMT_FST`
 define along with it.
+
+</details>
 
 ## Elaboration checks
 
@@ -399,10 +412,10 @@ normal run, even if a test then fails.
 `--mode elab-only-standalone` also elaborates each reusable RTL module on its
 own. This catches a module that compiles only thanks to a define or include
 that the Target happens to supply. Each module is elaborated with the
-simulator of every selected Target that uses it (Icarus or Verilator), together
-with only the package and interface files of those Targets. A module shared by
-an Icarus Target and a Verilator Target is compiled by both, within the same
-sweep timeout, so a mixed-simulator project can take up to twice as long. A
+simulator of every selected Target that uses it, together with only the
+package and interface files of those Targets. A module shared by Targets with
+different simulators is compiled once per simulator, within the same sweep
+timeout, so a mixed-simulator project takes longer. A
 parse error from the Target's own compiler is a design failure (exit `1`) and
 the report names the compiler. Delete `[flows.sim].standalone_frontend` if
 your `booley.toml` sets it: every Flow refuses to run while it is set.
@@ -487,7 +500,7 @@ directories for you, so `mkdir -p` any you write into. Booley exports:
 | `BOOLEY_TEST_RUN_NAME`, `BOOLEY_TEST_VARIANT`, `BOOLEY_TEST_SEED` | The Test Run, its Variant and seed, when exactly one Test Run is prepared and it has them. |
 | `BOOLEY_RUN_CWD` | The directory the simulation runs in: `run_cwd`, or the Project Root. |
 | `BOOLEY_PROJECT_ROOT`, `BOOLEY_DIR` | The Project Root of the checkout being simulated and that checkout's own Booley Directory (`/work/.booley` for the main checkout inside the Sandbox). |
-| `BOOLEY_SIM_EDA_TOOL` | The simulator, such as `verilator`. |
+| `BOOLEY_SIM_EDA_TOOL` | The simulator: `verilator` or `icarus`. |
 
 For example, to build different firmware per Test Variant:
 
@@ -541,6 +554,16 @@ available.
 A repeat run skips the build when nothing that goes into it has changed:
 sources, cores, toolchain, flags and environment. Each Target's result says
 why a build was or wasn't reused.
+
+<details markdown>
+<summary>With Icarus</summary>
+
+Booley reuses an Icarus build only for a run without `--trace`, on a Target
+built from one local `.core` with no dependency cores, generators, VPI
+modules or `user` files, whose sources are plain Verilog or SystemVerilog
+files without `` `include ``. Any other Icarus build is rebuilt on every run.
+
+</details>
 
 <details markdown>
 <summary>With a cocotb testbench</summary>

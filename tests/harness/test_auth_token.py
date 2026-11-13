@@ -700,11 +700,6 @@ class TestCli:
         if flag:
             assert getattr(args, flag) is True
 
-    def test_dispatches_to_run_auth(self):
-        from booley.harness.auth_cmd import run_auth
-
-        assert tlr._EARLY_COMMANDS["auth"] is run_auth
-
 
 class TestClaudeMintLocation:
     def test_project_mint_uses_runtime_without_host_cli(self, tmp_path, monkeypatch):

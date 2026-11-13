@@ -293,7 +293,7 @@ def source_checkout_policy_owner(project_root: Path | None) -> bool:
         from booley.core.checkout_role import source_checkout_root
     except ImportError:
         try:
-            from checkout_role import source_checkout_root
+            from checkout_role import source_checkout_root  # pyright: ignore[reportMissingImports]
         except ImportError:
             # A source-tree hook may be launched directly before the editable
             # package is installed. Add its src/ parent and retry the canonical

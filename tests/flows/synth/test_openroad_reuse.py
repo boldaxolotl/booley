@@ -363,7 +363,7 @@ def test_project_sdc_edit_during_openroad_cannot_reach_it(bench: Bench) -> None:
         bench._openroad(build)
 
     bench.on_openroad = edit_project_sdc
-    bench.run("--fresh-openroad")
+    bench.run("--no-cache")
     bench.on_openroad = None
 
     assert (bench.slot_root / "slot.json").exists()  # stored under the bytes OpenROAD read
@@ -414,9 +414,9 @@ def test_unfinished_openroad_stage_leaves_no_hittable_slot(
     bench.on_openroad = stage
     if stage is _interrupt:
         with pytest.raises(KeyboardInterrupt):
-            bench.run("--fresh-openroad")
+            bench.run("--no-cache")
     else:
-        bench.run("--fresh-openroad")
+        bench.run("--no-cache")
     bench.on_openroad = None
 
     bench.run_fresh()
@@ -454,7 +454,7 @@ def test_input_change_during_openroad_stores_nothing(bench: Bench) -> None:
         bench._openroad(build)
 
     bench.on_openroad = edit_sdc_mid_run
-    bench.run("--fresh-openroad")
+    bench.run("--no-cache")
     bench.on_openroad = None
 
     assert not (bench.slot_root / "slot.json").exists()
@@ -479,7 +479,7 @@ def test_stale_guard_still_rejects_old_openroad_outputs(bench: Bench, case: str)
 
     bench.on_openroad = leave_old_outputs
     if case == "fresh_run":
-        _, report = bench.run("--fresh-openroad")
+        _, report = bench.run("--no-cache")
     else:
         bench.sdc = SDC.replace("4.0", "5.0")
         _, report = bench.run()
@@ -492,20 +492,18 @@ def test_stale_guard_still_rejects_old_openroad_outputs(bench: Bench, case: str)
 
 
 @pytest.mark.parametrize("surface", ["cli", "mcp"])
-def test_fresh_openroad_runs_and_refreshes_slot(bench: Bench, surface: str) -> None:
+def test_no_cache_runs_and_refreshes_slot(bench: Bench, surface: str) -> None:
     _, first = bench.run_fresh()
     bench.run_hit()
     if surface == "cli":
-        argv = ["--target", TARGET, "--fresh-openroad"]
-        assert parse_request(AsicSynthesizeFlow(), argv).fresh_openroad is True
+        argv = ["--target", TARGET, "--no-cache"]
+        assert parse_request(AsicSynthesizeFlow(), argv).no_cache is True
     else:
-        assert (
-            flow_schema(AsicSynthesizeFlow())["properties"]["fresh_openroad"]["type"] == "boolean"
-        )
-        argv = _params_to_argv({"target": TARGET, "fresh_openroad": True})
-    assert "--fresh-openroad" in argv
+        assert flow_schema(AsicSynthesizeFlow())["properties"]["no_cache"]["type"] == "boolean"
+        argv = _params_to_argv({"target": TARGET, "no_cache": True})
+    assert "--no-cache" in argv
 
-    _, refreshed = bench.run_fresh("--fresh-openroad")
+    _, refreshed = bench.run_fresh("--no-cache")
     _, reused = bench.run_hit()
 
     producer = refreshed["run_evidence"]["run_id"]

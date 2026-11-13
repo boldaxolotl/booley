@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from booley.harness import booley as tlr
+from booley.harness import bootstrap_cli
 from booley.runtime import health
 from booley.runtime.booley_dir import reset_cache
 from tests.subprocess_budget import run_bounded_child
@@ -144,7 +145,6 @@ def test_chat_parser_and_dispatch_are_registered():
     args = parser.parse_args(["chat"])
 
     assert args.command == "chat"
-    assert tlr._EARLY_COMMANDS["chat"] is tlr.run_chat
     help_text = parser.format_help()
     assert "Open this Project's default (or chosen) Agent CLI" in " ".join(help_text.split())
 
@@ -338,10 +338,11 @@ def test_bootstrap_parser_accepts_egress_mode(capsys):
 
 
 def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
-    args = tlr._build_parser().parse_args(["bootstrap"])
+    # `--check-only` keeps a mis-routed dispatch (the real handler) read-only.
+    args = tlr._build_parser().parse_args(["bootstrap", "--check-only"])
     monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
-    monkeypatch.setattr(tlr, "run_bootstrap", lambda _args: 17)
+    monkeypatch.setattr(bootstrap_cli, "run_bootstrap", lambda _args: 17)
     monkeypatch.setattr(
         tlr,
         "find_project_root",
@@ -379,7 +380,7 @@ def test_main_renders_lifecycle_timeout_once_without_traceback(
     monkeypatch.setattr(tlr, "_require_command_project", lambda *_args: None)
     monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
     if command == "bootstrap":
-        monkeypatch.setattr(tlr, "run_bootstrap", raise_timeout)
+        monkeypatch.setattr(bootstrap_cli, "run_bootstrap", raise_timeout)
     else:
         monkeypatch.setitem(tlr._EARLY_COMMANDS, command, raise_timeout)
 

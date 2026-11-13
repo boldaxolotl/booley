@@ -52,6 +52,9 @@ class PhasePlan:
         ``None`` (change nothing) when the phase has no pending run, when no
         planned run remains (the reservation is held through reporting), or when
         the remaining estimate is not positive or not lower than the held value.
+        A planned phase that never reports its end (``sim_prepare`` in a
+        simulation Job) stays pending, so after the last reported run the claim
+        drops to that phase's estimate instead of being held through reporting.
         """
         phase_id = (target, phase, test_run)
         if self._pending.get(phase_id, 0) <= 0:

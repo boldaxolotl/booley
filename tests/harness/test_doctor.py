@@ -33,7 +33,7 @@ from booley.audit.diagnostic_results import (
     Severity,
 )
 from booley.audit.doctor_waivers import load_doctor_waivers
-from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
+from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import developer_probe, doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
 from booley.presentation import colors
@@ -384,7 +384,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             }
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
         if "CORE_RESOLVE_JSON" in " ".join(str(part) for part in cmd):
-            # The deep .core-resolvability snippet (docker-wrapped): report the
+            # The deep .core-resolvability snippet (Sandbox command): report the
             # selected Targets as resolvable via the marker line it scrapes.
             selected = json.loads(cmd[-1])
             verdicts = json.dumps(
@@ -1001,7 +1001,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     _healthy_doctor_backend(monkeypatch)
     _set_venue(monkeypatch, True)
     monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
-    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *a, **k: None)
+    monkeypatch.setattr(doctor, "_run_core_resolution", lambda *a, **k: None)
     rss_calls, model_calls = [], []
 
     def measure(root):
@@ -1166,48 +1166,6 @@ def test_deep_check_routing_truth_table(
     assert cmd[:3] == ["doc" + "ker", "exec", "-e"]
     assert "booley-session-test" in cmd
     assert "booley.flows.sim" in cmd
-    assert doctor._SANDBOX_GUARD_SCRIPT not in cmd
-
-
-def test_sandbox_guard_execs_inside_and_refuses_outside(tmp_path):
-    """Run the P3 guard through a real ``sh`` both ways.
-
-    Inside (env injected by _docker_wrap): exec's the inner argv untouched.
-    Outside (no env, no container markers): refuses with the reserved exit
-    code + stderr marker that _sandbox_guard_failed() recognizes.
-    """
-    argv = [
-        "sh",
-        "-c",
-        doctor._SANDBOX_GUARD_SCRIPT,
-        "booley-sandbox-guard",
-        "echo",
-        "inner ran",
-    ]
-
-    inside = subprocess.run(
-        argv,
-        env={**os.environ, "BOOLEY_IN_SANDBOX": "1"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert inside.returncode == 0
-    assert inside.stdout.strip() == "inner ran"
-    assert not doctor._sandbox_guard_failed(inside)
-
-    if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
-        pytest.skip("test host is itself a container; guard would rightly pass")
-    outside = subprocess.run(
-        argv,
-        env={k: v for k, v in os.environ.items() if k != "BOOLEY_IN_SANDBOX"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert outside.returncode == doctor._SANDBOX_GUARD_EXIT
-    assert doctor._SANDBOX_GUARD_MARKER in outside.stderr
-    assert doctor._sandbox_guard_failed(outside)
 
 
 def test_session_runtime_startup_failure_fails_loudly(tmp_path, monkeypatch):
@@ -1249,255 +1207,6 @@ def test_session_capacity_refusal_keeps_capacity_remedy(tmp_path, monkeypatch):
     assert [finding.fix for finding in outcome.report.findings] == [
         "free Sandbox capacity using the command in the refusal, then retry"
     ]
-
-
-def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
-    """A Flow exiting 97 for its own reasons must NOT be reported as
-    misrouting — the guard verdict requires the stderr marker too."""
-    project, _calls = _tool_check_harness(
-        tmp_path,
-        monkeypatch,
-        lambda cmd: subprocess.CompletedProcess(
-            cmd,
-            doctor._SANDBOX_GUARD_EXIT,
-            stdout="",
-            stderr="boom",
-        ),
-    )
-
-    outcome = _run_flow_check(project, dry_run=False)
-
-    [finding] = outcome.report.findings
-    assert finding.severity is Severity.FAIL
-    assert "failed with exit 97" in finding.message
-    assert "OUTSIDE" not in finding.message
-
-
-def test_core_resolve_misroute_fails_loudly(tmp_path, monkeypatch):
-    """P3 at the second _docker_wrap call site: the in-container .core
-    resolver refusing the guard is a misroute FAIL, not a 'no verdict'."""
-    refusal = f"{doctor._SANDBOX_GUARD_MARKER} refusing to run: not inside the sandbox"
-    monkeypatch.setattr(
-        doctor.subprocess,
-        "run",
-        lambda cmd, **kw: subprocess.CompletedProcess(
-            cmd,
-            doctor._SANDBOX_GUARD_EXIT,
-            stdout="",
-            stderr=refusal,
-        ),
-    )
-    project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        booley_dir=tmp_path / ".booley",
-        booley_toml={},
-        configs_toml={"fast": {"defines": []}},
-        first_target="fast",
-    )
-    rec = _Rec()
-
-    doctor._run_core_resolve_in_docker(
-        project,
-        "doc" + "ker",
-        "img",
-        {
-            "sim": fusesoc_registry.TargetRef(
-                name="sim",
-                vlnv="::sim:0",
-                core_file=tmp_path / "sim.core",
-            )
-        },
-        rec.p,
-        rec.f,
-    )
-
-    assert rec.kinds() == {"fail"}
-    assert "executed OUTSIDE it" in rec.fails()[0]
-
-
-def test_deep_core_resolution_only_runs_doctor_selected_targets(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    targets = [
-        "  sim_selected:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        "  fpga_selected:\n"
-        "    flow: generic\n"
-        "    flow_options: {tool: vivado, booley: {doctor: [fpga]}}\n",
-    ]
-    targets.extend(
-        f"  vendored_{index:03d}:\n    flow: sim\n    flow_options: {{tool: verilator}}\n"
-        for index in range(200)
-    )
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\nname: ::design:0\ntargets:\n" + "".join(targets),
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
-    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
-    monkeypatch.setattr(
-        doctor.fusesoc_registry,
-        "resolve_target_handle",
-        lambda handle, **_kwargs: calls.append((handle.name, handle.vlnv)),
-    )
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(
-        project,
-        None,
-        rec.p,
-        rec.s,
-        rec.f,
-    )
-
-    assert calls == [("fpga_selected", "::design:0"), ("sim_selected", "::design:0")]
-    assert rec.kinds() == {"pass"}
-    assert len(rec.events) == 2
-
-
-def test_sandbox_core_resolution_receives_only_canonical_selected_targets(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "first.core").write_text(
-        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "second.core").write_text(
-        "CAPI=2:\nname: acme:ip:second:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: generic\n"
-        "    flow_options: {tool: yosys, booley: {doctor: [synth]}}\n"
-        "  unused:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    seen: list[dict[str, str]] = []
-
-    def fake_run(cmd, **_kwargs):
-        payload = json.loads(cmd[-1]) if len(cmd) == 4 else []
-        seen.extend(payload)
-        verdict = [{"selector": item["selector"], "ok": True} for item in payload]
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            stdout=f"[[CORE_RESOLVE_JSON]]{json.dumps(verdict)}\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
-    monkeypatch.setattr(doctor, "_docker_wrap", lambda _exe, _image, _root, inner: inner)
-    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
-
-    assert [(item["selector"], item["name"], item["vlnv"]) for item in seen] == [
-        ("first#smoke", "smoke", "acme:ip:first:1"),
-        ("second#smoke", "smoke", "acme:ip:second:1"),
-    ]
-    assert rec.kinds() == {"pass"}
-
-
-def test_core_resolve_announces_before_container_run(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "first.core").write_text(
-        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    printed_before_run: list[str] = []
-
-    def fake_run(cmd, **_kwargs):
-        printed_before_run.append(capsys.readouterr().out)
-        payload = json.loads(cmd[-1])
-        verdict = [{"selector": item["selector"], "ok": True} for item in payload]
-        return subprocess.CompletedProcess(
-            cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{json.dumps(verdict)}\n", stderr=""
-        )
-
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
-    monkeypatch.setattr(doctor, "_docker_wrap", lambda _exe, _image, _root, inner: inner)
-    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
-
-    assert (
-        "  ▸  .core resolvability of 1 Target(s) in the Sandbox "
-        "(FuseSoC configure; timeout 10m 00s)" in colors.strip_ansi(printed_before_run[0])
-    )
-
-
-def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\nname: acme:ip:top:1\nfilesets:\n"
-        "  rtl: {depend: [acme:ip:missing]}\n"
-        "targets:\n"
-        "  sim_top:\n"
-        "    flow: sim\n"
-        "    filesets: [rtl]\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
-    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
-
-    def fail_resolution(name, **kwargs):
-        assert (name, kwargs["vlnv"]) == ("sim_top", "acme:ip:top:1")
-        raise fusesoc_registry.TargetResolutionError("missing dependency acme:ip:missing")
-
-    monkeypatch.setattr(doctor.fusesoc_registry, "_resolve_target", fail_resolution)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
-
-    assert rec.kinds() == {"fail"}
-    assert "sim_top" in rec.fails()[0]
-
-
-def test_selected_target_that_no_longer_resolves_fails_before_dispatch(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    matrix = MagicMock(seed_targets=("removed_target",))
-    monkeypatch.setattr(doctor, "_project_target_matrix", lambda _project: matrix)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
-
-    assert rec.kinds() == {"fail"}
-    assert "removed_target" in rec.fails()[0]
 
 
 def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
@@ -2586,59 +2295,6 @@ targets:
         assert reporter.counts["waived"] == 1
         assert reporter.finish() == 0
 
-    def test_in_scope_script_is_advisory_not_a_hard_fail(self, tmp_path: Path):
-        """F-10: doctor's Scope is synthetic, so it cannot hard-fail on it.
-
-        Ibex's upstream `check_tool_requirements.core` references a script
-        under `util/`, which doctor classes as writable — so the audit failed
-        the whole setup gate over a generator the configured Targets never
-        invoke. The binding check is the per-change-specific scope at commit time.
-        """
-        (tmp_path / "design.core").write_text(
-            _CLEAN_SIM_CORE
-            + """\
-generators:
-  check_reqs:
-    command: rtl/check_tool_requirements.py
-""",
-            encoding="utf-8",
-        )
-        (tmp_path / "rtl").mkdir(exist_ok=True)
-        (tmp_path / "rtl" / "check_tool_requirements.py").write_text("#!/usr/bin/env python3\n")
-
-        rec = _audit(tmp_path)
-
-        assert rec.fails() == []
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("in_scope_script" in m for m in warns)
-        # The advisory must say why it is not a gate, or it reads as a bug.
-        assert any("at commit time" in m for m in warns)
-
-    def test_structural_core_violation_still_hard_fails(self, tmp_path: Path):
-        """Scope-independent violations are properties of the .core itself."""
-        (tmp_path / "design.core").write_text(
-            """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv]}
-  tb: {files: [tb/tb_dut.sv], tags: [tb]}
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator}
-    filesets: [rtl, tb]
-    toplevel: tb_dut
-parameters:
-  width:
-    datatype: expression
-    paramtype: vlogparam
-""",
-            encoding="utf-8",
-        )
-        rec = _audit(tmp_path)
-        assert any("expr_param" in m for m in rec.fails())
-
     def test_untagged_tb_sim_fails(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(
             """\
@@ -2847,22 +2503,6 @@ targets:
         rec = _audit(tmp_path)
         assert not any("collision" in m for m in rec.fails())
         assert any(".core Targets enumerated" in m for lvl, m in rec.events if lvl == "pass")
-
-    def test_fpga_hook_fails_security(self, tmp_path: Path):
-        (tmp_path / "impl.core").write_text(
-            """\
-CAPI=2:
-name: ::demo:0
-targets:
-  impl:
-    flow_options: {tool: vivado}
-    hooks:
-      post_build: [run_bitstream]
-""",
-            encoding="utf-8",
-        )
-        rec = _audit(tmp_path)
-        assert any("[fpga_hook]" in m for m in rec.fails())
 
     def test_bad_tests_toml_fails(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
@@ -3316,154 +2956,6 @@ def _schema_audit(tmp_path, booley_toml=None) -> doctor.ProjectAudit:
     )
 
 
-_BAD_FILE_KEY_CORE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl:
-    files: [rtl/dut.sv: {file_type: systemVerilogSource, vendored: true}]
-targets:
-  sim:
-    flow: sim
-    flow_options: {booley: {doctor: [sim]}}
-    filesets: [rtl]
-"""
-
-
-@pytest.mark.parametrize(
-    ("core_text", "expected"),
-    [
-        (_BAD_DEPEND_CORE, "depend must be array"),
-        (_BAD_FILE_KEY_CORE, "vendored"),
-    ],
-    ids=["scalar-depend", "per-file-key"],
-)
-def test_check_core_schema_flags_single_fuse_soc_class_violation(tmp_path, core_text, expected):
-    """A schema violation in a core the project drives is exactly one FAIL.
-
-    The Booley subset and FuseSoC's own verdict describe the same CAPI2 entry,
-    so the FuseSoC row must not duplicate the subset row.
-    """
-    _write_core(tmp_path, core_text)
-    project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert len(c.failed) == 1
-    assert expected in c.failed[0][0]
-
-
-def test_check_core_setup_hazards_fails_selected_provider(tmp_path):
-    core = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-provider: {name: github, user: acme, repo: demo}
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator, booley: {doctor: [sim]}}
-""",
-    )
-    project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
-    rec = _Rec()
-    doctor._check_core_setup_hazards(project, tmp_path, rec.p, rec.f, _note=rec.n)
-    assert len(rec.fails()) == 1
-    assert core.name in rec.fails()[0]
-    assert "remote fetch" in rec.fails()[0]
-
-
-def test_check_core_setup_hazards_notes_unselected_provider(tmp_path):
-    _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-provider: {name: github, user: acme, repo: demo}
-targets:
-  sim: {flow: sim, flow_options: {tool: verilator}}
-""",
-    )
-    rec = _Rec()
-    doctor._check_core_setup_hazards(_schema_audit(tmp_path), tmp_path, rec.p, rec.f, _note=rec.n)
-    assert not rec.fails()
-    assert any(
-        "no Doctor Target selects it" in msg for level, msg in rec.events if level == "note"
-    )
-
-
-def test_check_core_setup_hazards_fails_provider_in_dependency_closure(tmp_path):
-    _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: acme:demo:top:0
-filesets:
-  rtl:
-    depend: [acme:demo:dep]
-targets:
-  sim:
-    flow: sim
-    flow_options: {tool: verilator, booley: {doctor: [sim]}}
-    filesets: [rtl]
-""",
-        name="top.core",
-    )
-    dep = _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: acme:demo:dep:0
-provider: {name: github, user: acme, repo: dep}
-targets:
-  default: {}
-""",
-        name="dep.core",
-    )
-    project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
-    rec = _Rec()
-    doctor._check_core_setup_hazards(project, tmp_path, rec.p, rec.f, _note=rec.n)
-    assert len(rec.fails()) == 1
-    assert dep.name in rec.fails()[0]
-
-
-def test_check_core_schema_vendored_core_is_a_note(tmp_path):
-    """The same violation in a core no configured Target selects is a NOTE:
-    FuseSoC skips the core at resolve, the configured flows are unaffected, and
-    'fix the .core' is unfollowable for a pristine upstream checkout (the
-    YosysHQ picorv32.core ships a bare ``depend:``)."""
-    _write_core(
-        tmp_path,
-        _BAD_DEPEND_CORE.replace("    flow_options: {booley: {doctor: [sim]}}\n", ""),
-    )
-    project = _schema_audit(tmp_path)
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail, _note=c._note)
-    assert not c.failed
-    assert not c.warned
-    assert any("depend must be array" in m and "vendored" in m for m in c.noted)
-
-
-def test_check_core_schema_state_zone_core_fails_even_unconfigured(tmp_path):
-    """State-zone cores (ADR 0036) are always Booley-authored — a schema
-    violation there is ours to fix regardless of configuration."""
-    state_cores = tmp_path / ".booley" / "cores"
-    state_cores.mkdir(parents=True)
-    _write_core(state_cores, _BAD_DEPEND_CORE)
-    project = _schema_audit(tmp_path)
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert any("depend must be array" in msg for msg, _ in c.failed)
-
-
-def test_check_core_schema_passes_clean_core(tmp_path):
-    _write_core(tmp_path, _GOOD_CORE)
-    c = _Collector()
-    doctor._check_core_schema(_schema_audit(tmp_path), tmp_path, c._pass, c._warn, c._fail)
-    assert not c.failed
-    assert any("schema valid" in m for m in c.passed)
-
-
 _MISPLACED_BOOLEY_CORE = """\
 CAPI=2:
 name: acme:ip:picorv32_impl:0
@@ -3487,20 +2979,6 @@ targets:
     booley: {doctor: [fpga]}
     filesets: [rtl]
     toplevel: top
-"""
-
-_UNKNOWN_PROPERTY_CORE = """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  lint:
-    filesetz: [rtl]
-    flow: lint
-    flow_options: {tool: verilator, booley: {doctor: [lint]}}
-    filesets: [rtl]
-    toplevel: dut
 """
 
 
@@ -3527,7 +3005,6 @@ def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_pat
     doctor._run_flow_and_core_phase(
         project,
         doctor._DoctorFlowRuntime(tmp_path, None),
-        False,
         reporter,
         lambda _message: None,
     )
@@ -3544,65 +3021,6 @@ def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_pat
     for target in ("lint_core", "synth_core"):
         assert any(target in m and "picorv32_impl.core" in m for m in skips), skips
     assert any("fpga has no Doctor Target" in m and "picorv32_impl.core" in m for m in skips)
-
-
-def test_check_core_schema_fails_unknown_target_property(tmp_path):
-    """Another property FuseSoC's CAPI2 schema forbids is one FAIL naming the key."""
-    _write_core(tmp_path, _UNKNOWN_PROPERTY_CORE)
-    project = _schema_audit(tmp_path, {"flows": {"lint": {}}})
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert len(c.failed) == 1
-    message, fix = c.failed[0]
-    assert "design.core" in message
-    assert "targets.lint" in message
-    assert "filesetz" in message
-    assert "flow_options" not in fix
-
-
-_SOLE_MISPLACED_CORE = """\
-CAPI=2:
-name: ::solo:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-targets:
-  fpga_core:
-    flow: generic
-    flow_options: {tool: vivado, part: xc7a35tcsg324-1}
-    booley: {doctor: [fpga]}
-    filesets: [rtl]
-    toplevel: dut
-"""
-
-
-def test_misplaced_booley_in_sole_target_core_is_an_owned_fail_with_hint(tmp_path):
-    """The misplaced marker is the core's only Doctor intent, yet the core is driven.
-
-    No Doctor-selected Target remains for Booley's reader, so ownership must come
-    from the misplaced marker; otherwise the row is a hint-less vendored-core NOTE.
-    """
-    _write_core(tmp_path, _SOLE_MISPLACED_CORE)
-    project = _schema_audit(tmp_path, {"flows": {"fpga": {}}})
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail, _note=c._note)
-    assert c.noted == []
-    assert len(c.failed) == 1
-    message, fix = c.failed[0]
-    assert "fpga_core" in message
-    assert "targets.fpga_core.flow_options" in fix
-
-
-def test_booley_only_schema_row_does_not_hide_fusesoc_reason(tmp_path):
-    """An unsupported Booley key does not say why FuseSoC ignores the file."""
-    _write_core(
-        tmp_path,
-        _UNKNOWN_PROPERTY_CORE.replace("{doctor: [lint]}", "{doctor: [lint], bogus: 1}"),
-    )
-    project = _schema_audit(tmp_path, {"flows": {"lint": {}}})
-    c = _Collector()
-    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert any("not a supported Booley Target key" in msg for msg, _ in c.failed)
-    assert any("filesetz" in msg for msg, _ in c.failed)
 
 
 def test_no_doctor_target_skip_is_limited_to_flows_the_misplaced_marker_names(tmp_path):
@@ -3670,336 +3088,6 @@ targets:
     doctor._check_yosys_targets_have_arch(tmp_path, refs, c._pass, c._warn)
     assert not c.warned
     assert any("declares flow_options.arch" in m for m in c.passed)
-
-
-def test_untracked_referenced_file_warns(tmp_path):
-    # A real git repo: firmware.hex referenced by the .core but not tracked.
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-    (tmp_path / "firmware").mkdir()
-    (tmp_path / "firmware" / "firmware.hex").write_text("00\n", encoding="utf-8")
-    _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl:
-    files:
-      - rtl/dut.sv: {file_type: systemVerilogSource}
-      - firmware/firmware.hex: {file_type: user}
-targets:
-  sim: {flow: sim, filesets: [rtl]}
-""",
-    )
-    subprocess.run(["git", "add", "rtl/dut.sv", "design.core"], cwd=tmp_path, check=True)
-    c = _Collector()
-    doctor._check_core_files_tracked(tmp_path, c._pass, c._warn)
-    assert any("untracked" in m and "firmware.hex" in m for m in c.warned)
-
-
-def test_all_referenced_files_tracked_passes(tmp_path):
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-    _write_core(tmp_path, _GOOD_CORE)
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-    c = _Collector()
-    doctor._check_core_files_tracked(tmp_path, c._pass, c._warn)
-    assert not c.warned
-
-
-def test_submodule_files_count_as_tracked(tmp_path):
-    """A .core referencing a vendored submodule's file is NOT the untracked trap.
-
-    `git ls-files` stops at the gitlink, so every file inside the submodule read
-    as untracked and the warning's own claim ("a fresh clone will lack them")
-    was false: `git submodule update` restores exactly these.
-    """
-    dep = tmp_path / "dep"
-    dep.mkdir()
-    (dep / "vendor.sv").write_text("module vendor; endmodule\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=dep, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=dep, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "dep"],
-        cwd=dep,
-        check=True,
-    )
-
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
-    subprocess.run(
-        ["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(dep), "lib/dep"],
-        cwd=proj,
-        check=True,
-    )
-    _write_core(
-        proj,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl: {files: [lib/dep/vendor.sv: {file_type: systemVerilogSource}]}
-targets:
-  sim: {flow: sim, filesets: [rtl]}
-""",
-    )
-    subprocess.run(["git", "add", "design.core"], cwd=proj, check=True)
-
-    c = _Collector()
-    doctor._check_core_files_tracked(proj, c._pass, c._warn)
-    assert not c.warned
-    assert c.passed
-
-    # The real trap still fires inside a submodule: a file the submodule's own
-    # repo does not track genuinely vanishes on a fresh `submodule update`.
-    (proj / "lib" / "dep" / "generated.hex").write_text("00\n", encoding="utf-8")
-    _write_core(
-        proj,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl:
-    files:
-      - lib/dep/vendor.sv: {file_type: systemVerilogSource}
-      - lib/dep/generated.hex: {file_type: user}
-targets:
-  sim: {flow: sim, filesets: [rtl]}
-""",
-    )
-    c2 = _Collector()
-    doctor._check_core_files_tracked(proj, c2._pass, c2._warn)
-    assert any("generated.hex" in m and "untracked" in m for m in c2.warned)
-
-
-def test_stealth_core_files_judged_against_state_repo(tmp_path):
-    """ADR 0036: a stealth core's files are tracked by the Booley Directory's OWN
-    repo — asking the host repo about them is guaranteed noise. Reach-through
-    symlinks count as tracked for the content behind them (a clone ships the
-    link, and the link's target is host-tracked upstream source)."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-
-    state_cores = tmp_path / ".booley" / "cores"
-    state_cores.mkdir(parents=True)
-    (state_cores / "fw").mkdir()
-    (state_cores / "fw" / "boot.hex").write_text("00\n", encoding="utf-8")
-    (state_cores / "rtl").symlink_to("../../rtl")  # reach-through to host RTL
-    _write_core(
-        state_cores,
-        """\
-CAPI=2:
-name: ::demo-booley:0
-filesets:
-  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
-  fw:
-    files:
-      - fw/boot.hex: {file_type: user, copyto: boot.hex}
-targets:
-  sim: {flow: sim, filesets: [rtl, fw]}
-""",
-    )
-    state_dir = tmp_path / ".booley"
-    subprocess.run(["git", "init", "-q"], cwd=state_dir, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=state_dir, check=True)
-
-    c = _Collector()
-    doctor._check_core_files_tracked(tmp_path, c._pass, c._warn)
-    assert not c.warned
-
-    # The vendored-data trap still fires inside the state zone: a fw image the
-    # nested repo does NOT track would vanish from a fresh clone.
-    subprocess.run(["git", "rm", "--cached", "-q", "cores/fw/boot.hex"], cwd=state_dir, check=True)
-    c2 = _Collector()
-    doctor._check_core_files_tracked(tmp_path, c2._pass, c2._warn)
-    assert any("boot.hex" in m and "untracked" in m for m in c2.warned)
-
-
-def test_core_files_tracked_judges_relocated_state_repo(tmp_path):
-    """#2917: files under a relocated (two-component) Booley Directory are judged by
-    that directory's own repo, not the host's."""
-    run_bounded_child(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "booley.toml").write_text('[project]\ndir = "tools/booley"\n', encoding="utf-8")
-    state_dir = tmp_path / "tools" / "booley"
-    state_cores = state_dir / "cores"
-    (state_cores / "fw").mkdir(parents=True)
-    (state_cores / "fw" / "boot.hex").write_text("00\n", encoding="utf-8")
-    _write_core(
-        state_cores,
-        """\
-CAPI=2:
-name: ::demo-booley:0
-filesets:
-  fw:
-    files:
-      - fw/boot.hex: {file_type: user, copyto: boot.hex}
-targets:
-  sim: {flow: sim, filesets: [fw]}
-""",
-    )
-    run_bounded_child(["git", "init", "-q"], cwd=state_dir, check=True)
-    run_bounded_child(["git", "add", "-A"], cwd=state_dir, check=True)
-
-    c = _Collector()
-    doctor._check_core_files_tracked(tmp_path, c._pass, c._warn)
-    assert not c.warned
-
-    run_bounded_child(
-        ["git", "rm", "--cached", "-q", "cores/fw/boot.hex"], cwd=state_dir, check=True
-    )
-    c2 = _Collector()
-    doctor._check_core_files_tracked(tmp_path, c2._pass, c2._warn)
-    assert any("boot.hex" in m and "untracked" in m for m in c2.warned)
-
-
-def _readmem_repo(tmp_path) -> None:
-    """A repo whose TB boots via $readmemh from a memory image NOT in any .core."""
-    run_bounded_child(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "tb").mkdir()
-    (tmp_path / "tb" / "tb.sv").write_text(
-        'module tb; reg [7:0] mem[0:255];\n  initial $readmemh("fw/boot.vmem", mem);\nendmodule\n',
-        encoding="utf-8",
-    )
-    (tmp_path / "fw").mkdir()
-    (tmp_path / "fw" / "boot.vmem").write_text("00\n", encoding="utf-8")
-    _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  tb:
-    files:
-      - tb/tb.sv: {file_type: systemVerilogSource}
-targets:
-  sim: {flow: sim, filesets: [tb]}
-""",
-    )
-
-
-def test_readmemh_untracked_image_warns(tmp_path):
-    # SETUP-12: the memory image is $readmemh'd but listed in no .core fileset,
-    # and it is untracked (gitignored-style). _check_core_files_tracked can't see
-    # it; the readmemh check must.
-    _readmem_repo(tmp_path)
-    subprocess.run(["git", "add", "tb/tb.sv", "design.core"], cwd=tmp_path, check=True)
-    c = _Collector()
-    doctor._check_readmemh_targets_tracked(tmp_path, c._pass, c._warn)
-    assert any("$readmemh" in m and "boot.vmem" in m and "untracked" in m for m in c.warned)
-
-
-def test_readmemh_tracked_image_passes(tmp_path):
-    _readmem_repo(tmp_path)
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-    c = _Collector()
-    doctor._check_readmemh_targets_tracked(tmp_path, c._pass, c._warn)
-    assert not c.warned
-    assert any("$readmemh-referenced image" in m for m in c.passed)
-
-
-def test_readmemh_constructed_path_ignored(tmp_path):
-    # A path built from a plusarg / format specifier can't be resolved statically.
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "tb").mkdir()
-    (tmp_path / "tb" / "tb.sv").write_text(
-        "module tb; string f;\n"
-        '  initial begin $value$plusargs("mem=%s", f); $readmemh(f, mem); end\n'
-        '  initial $readmemh({basedir, "/x.vmem"}, mem2);\n'
-        "endmodule\n",
-        encoding="utf-8",
-    )
-    _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  tb: {files: [tb/tb.sv: {file_type: systemVerilogSource}]}
-targets:
-  sim: {flow: sim, filesets: [tb]}
-""",
-    )
-    # Neither call is a resolvable literal → no targets, no warning.
-    assert doctor._readmem_literal_targets(tmp_path) == []
-    c = _Collector()
-    doctor._check_readmemh_targets_tracked(tmp_path, c._pass, c._warn)
-    assert not c.warned and not c.passed
-
-
-def _artifact_repo(tmp_path, *, with_source: bool, vendored: bool = False) -> None:
-    """A git repo whose .core references a tracked firmware.hex; source optional.
-
-    ``vendored`` tags the hex ``tags: [vendored]`` in the .core (the explicit
-    "upstream blob, no rebuildable source" opt-out of the heuristic — the
-    CAPI2-valid marker, not the fusesoc-rejected bare ``vendored: true`` key).
-    """
-    run_bounded_child(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-    (tmp_path / "firmware").mkdir()
-    (tmp_path / "firmware" / "firmware.hex").write_text("00\n", encoding="utf-8")
-    if with_source:
-        # sibling C + assembly source → the hex is a build output, not a blob.
-        (tmp_path / "firmware" / "hello.c").write_text("int main(){}\n", encoding="utf-8")
-        (tmp_path / "firmware" / "start.S").write_text(".global _start\n", encoding="utf-8")
-    hex_attrs = "{file_type: user, tags: [vendored]}" if vendored else "{file_type: user}"
-    _write_core(
-        tmp_path,
-        f"""\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl:
-    files:
-      - rtl/dut.sv: {{file_type: systemVerilogSource}}
-      - firmware/firmware.hex: {hex_attrs}
-targets:
-  sim: {{flow: sim, filesets: [rtl]}}
-""",
-    )
-    run_bounded_child(["git", "add", "-A"], cwd=tmp_path, check=True)
-
-
-def test_committed_build_artifact_with_sibling_source_warns(tmp_path):
-    _artifact_repo(tmp_path, with_source=True)
-    c = _Collector()
-    doctor._check_committed_build_artifacts(tmp_path, c._pass, c._warn)
-    assert any("built from in-repo source" in m and "firmware.hex" in m for m in c.warned)
-
-
-def test_committed_opaque_blob_without_source_stays_quiet(tmp_path):
-    # A vendored hex with no sibling source may be the only option — don't nag.
-    _artifact_repo(tmp_path, with_source=False)
-    c = _Collector()
-    doctor._check_committed_build_artifacts(tmp_path, c._pass, c._warn)
-    assert not c.warned
-
-
-def test_vendored_annotated_artifact_stays_quiet_despite_sibling_source(tmp_path):
-    # `tags: [vendored]` is the maintainer asserting the blob is upstream-shipped
-    # with no rebuildable in-repo source — exempt even with sibling C/asm around.
-    _artifact_repo(tmp_path, with_source=True, vendored=True)
-    c = _Collector()
-    doctor._check_committed_build_artifacts(tmp_path, c._pass, c._warn)
-    assert not c.warned
-
-
-def test_untracked_build_artifact_not_flagged_as_committed(tmp_path):
-    # The artifact exists with sibling source but is NOT git-tracked → nothing to
-    # nag about (the untracked trap is _check_core_files_tracked's job, not this).
-    _artifact_repo(tmp_path, with_source=True)
-    subprocess.run(
-        ["git", "rm", "-q", "--cached", "firmware/firmware.hex"], cwd=tmp_path, check=True
-    )
-    c = _Collector()
-    doctor._check_committed_build_artifacts(tmp_path, c._pass, c._warn)
-    assert not c.warned
 
 
 def test_repo_footprint_scaffolding_warns(tmp_path):
@@ -6048,7 +5136,7 @@ class TestDeveloperProbe:
         """Issue #885: RUN line precedes the agent call; summary reports spend."""
         _set_venue(monkeypatch, True)
         monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
-        monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *a, **k: None)
+        monkeypatch.setattr(doctor, "_run_core_resolution", lambda *a, **k: None)
         seen_before_call: list[str] = []
 
         def fake_measure(_root):
@@ -6066,9 +5154,7 @@ class TestDeveloperProbe:
         project = _adr28_project(tmp_path)
         reporter = doctor._Reporter.create(profile=doctor._DoctorProfile(deep=True))
 
-        doctor._run_deep_phase(
-            project, None, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter
-        )
+        doctor._run_deep_phase(project, doctor._DoctorFlowRuntime(tmp_path, "docker"), reporter)
         reporter.finish()
 
         assert (
@@ -7896,28 +6982,6 @@ def test_agent_usage_summary_edge_cases(calls, expected) -> None:
     assert doctor._agent_usage_summary(calls) == expected
 
 
-def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch, capsys) -> None:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (tmp_path / "first.core").write_text(
-        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
-        "  smoke:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
-        encoding="utf-8",
-    )
-    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
-    rec = _Rec()
-
-    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
-
-    assert (
-        "  ▸  .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
-        in colors.strip_ansi(capsys.readouterr().out)
-    )
-
-
 class _FixCollector(_Collector):
     """Collector that keeps each WARN's ``fix`` hint next to its message."""
 
@@ -9417,9 +8481,7 @@ def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
     audit = doctor.ProjectAudit(root, project, {}, {}, "sim")
 
     probe = doctor._mcp_probe_command(audit, "docker", "booley:test")
-    wrapped = doctor._docker_wrap("docker", "booley:test", root, ["true"])
     assert "BOOLEY_DIR=/work/tools/booley" in probe
-    assert "BOOLEY_DIR=/work/tools/booley" in wrapped
 
     # In-Sandbox Doctor sees the relocated directory at /work/tools/booley.
     sandbox_dir = Path("/work/tools/booley")
@@ -9475,7 +8537,6 @@ def _flow_phase_output(tmp_path, monkeypatch, capsys, *, verbose: bool) -> tuple
     doctor._run_flow_and_core_phase(
         project,
         doctor._DoctorFlowRuntime(tmp_path, docker_exe),
-        verbose,
         reporter,
         lambda _message: None,
     )

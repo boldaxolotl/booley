@@ -1,3 +1,6 @@
+# pyright: reportIncompatibleMethodOverride=true, reportIncompatibleVariableOverride=true
+# The directive makes a mismatch between SimulateFlow and the host declarations in
+# elab_only.py, standalone.py and test_selection.py a type error; keep it.
 """SimulateFlow — BooleyFlow for running RTL simulation.
 
 Runs RTL simulation for one or more configs via the Edalize sim flow + a
@@ -273,7 +276,7 @@ class SimulateFlow(
     CampaignResumeMixin,
     SimulationTestSelectionMixin,
     StandaloneMixin,
-    BuiltinFlow,
+    BuiltinFlow[SimRequest],
 ):
     """Run RTL simulation for one or more Targets."""
 
@@ -410,8 +413,9 @@ class SimulateFlow(
                 outcome, outcomes, self._simulation_acceptance_outcomes
             )
             raise
-        # After acceptance, in this process (never a sim child with a private TMPDIR).
-        register_trace_sessions(outcomes)
+        # After acceptance, in this process. ``work_dir`` is the candidate checkout again
+        # (``_in_checkout`` restored it): never a baseline worktree, the cwd or BOOLEY_DIR.
+        register_trace_sessions(outcomes, Path(self.args.work_dir))
         return True
 
     def generic_binding_gate_applies(self) -> bool:
@@ -451,7 +455,7 @@ class SimulateFlow(
         outcomes = self._simulation_campaign_outcomes
         invocation = self._reserved_invocation_dir
         if outcomes and invocation is not None:
-            result.detail["campaigns"] = _campaign_structured_details(outcomes, invocation)
+            result.detail["records"] = _campaign_structured_details(outcomes, invocation)
 
     def report_candidate_workloads(
         self, prepared: PreparedSimulationEndpoint
@@ -519,7 +523,7 @@ class SimulateFlow(
         return SimulationCampaignInvocation(self, prepared)
 
     def memory_job_requests(self, handles: tuple[TargetHandle, ...]) -> tuple[JobRequest, ...]:
-        """An elaboration-only Job runs no simulator process: only its build is sized."""
+        """An elaboration-only Job runs no simulator process: its preparation and build are sized."""
         flags = self._resource_flags()
         return tuple(
             JobRequest("sim", handle.selector, test_runs=(), flags=flags) for handle in handles
@@ -1666,7 +1670,7 @@ class SimulateFlow(
         if isinstance(error, SimulationCampaignCancellationError):
             return self._campaign_cancelled_outcome(error)
         detail: dict[str, object] = (
-            {"campaigns": _campaign_structured_details(outcomes)} if outcomes else {}
+            {"records": _campaign_structured_details(outcomes)} if outcomes else {}
         )
         if isinstance(error, SimulationBuildInfrastructureError):
             detail.update(_build_infrastructure_detail(error))
@@ -2108,7 +2112,7 @@ class SimulateFlow(
             invocation,
             coverage_campaigns,
         )
-        detail: dict[str, object] = {"campaigns": campaigns}
+        detail: dict[str, object] = {"records": campaigns}
         firings, current_keys = _campaign_hook_inputs(outcomes, invocation)
         pre_sim_detail, hook_lines = _pre_sim_projection(firings, current_keys, invocation)
         detail.update(pre_sim_detail)

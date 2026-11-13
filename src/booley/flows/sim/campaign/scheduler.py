@@ -12,9 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.terminal_progress import progress_lane
+from booley.runtime import oom_priority
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, job_attempt
 from booley.runtime.supervised_execution import supervised_execution_scope
 
-from .capacity import HeavyCapacity, LeaseLostError
+from .capacity import ChildHeavyPermit, HeavyCapacity, LeaseLostError
 
 _TURN_POLL_SECONDS = 0.05
 
@@ -90,6 +92,11 @@ class BoundedCampaignScheduler:
     item whose claim is ``None`` runs under the Flow's reservation and keeps the
     turn until it ends; otherwise the turn passes on once the claim is admitted,
     so the claims decide how many items run at once.
+
+    An item with a claim of its own runs as its own Job attempt: an out-of-memory
+    kill of its commands stops only that item. When its executor reports the
+    attempt as unpublished (``True``), the item goes to the back of the queue and
+    runs once more, alone and unarmed (ADR 0087).
     """
 
     def __init__(
@@ -97,7 +104,7 @@ class BoundedCampaignScheduler:
         capacity: HeavyCapacity,
         *,
         allocate: Callable[[Mapping[str, object]], ScheduledAttempt],
-        execute: Callable[[ScheduledAttempt, str | None], None],
+        execute: Callable[[ScheduledAttempt, str | None], bool | None],
         prepare_child: Callable[[ScheduledAttempt, str], None] | None = None,
     ) -> None:
         self._capacity = capacity
@@ -117,6 +124,9 @@ class BoundedCampaignScheduler:
         # Terminal progress is lane-scoped only while items really overlap.
         self._lanes_concurrent = False
         self._turn: _StartTurn | None = None
+        # Work item IDs already requeued after an out-of-memory kill: never requeued again.
+        self._requeued: set[str] = set()
+        self._requeued_gate = threading.Lock()
 
     def _stopped(self) -> bool:
         return self._stop.is_set() or self._capacity.shutdown_requested
@@ -240,7 +250,7 @@ class BoundedCampaignScheduler:
                         item = ready.get_nowait()
                     except queue.Empty:
                         return
-                if not self._run_lane_item(item, outer):
+                if not self._run_lane_item(item, outer, ready):
                     return
                 item = None
         finally:
@@ -262,20 +272,29 @@ class BoundedCampaignScheduler:
                 item = ready.get_nowait()
             except queue.Empty:
                 return False
-            return self._run_lane_item(item, outer, hold)
+            return self._run_lane_item(item, outer, ready, hold)
         finally:
             hold.pass_on()
 
     def _run_lane_item(
-        self, item: Mapping[str, object], outer: bool, hold: _TurnHold | None = None
+        self,
+        item: Mapping[str, object],
+        outer: bool,
+        ready: queue.Queue[Mapping[str, object]],
+        hold: _TurnHold | None = None,
     ) -> bool:
         """Run one item; ``False`` retires the lane because the item failed.
 
         A lost lease ends only its item. The outer lane takes the next item (its
-        permit is a fresh claim, or the Flow's own); a child lane retires.
+        permit is a fresh claim, or the Flow's own); a child lane retires. An item
+        killed by the out-of-memory killer goes to the back of *ready*, so this
+        lane goes on even when every other lane already left.
         """
         try:
-            self._run_item(item, outer, hold)
+            if self._run_item(item, outer, hold):
+                with self._requeued_gate:
+                    self._requeued.add(str(item["work_item_id"]))
+                ready.put(item)
         except LeaseLostError as exc:
             if self._capacity.shutdown_requested:
                 self._fail_campaign(exc)
@@ -297,20 +316,32 @@ class BoundedCampaignScheduler:
 
     def _run_item(
         self, item: Mapping[str, object], outer: bool, hold: _TurnHold | None = None
-    ) -> None:
-        """Run one item. Under memory admission (*hold* is the start turn) any lane asks
-        for the item's claim and passes the turn on once it is admitted."""
+    ) -> bool:
+        """Run one item; ``True`` when its attempt was OOM-killed and must run again.
+
+        Under memory admission (*hold* is the start turn) any lane asks for the
+        item's claim and passes the turn on once it is admitted.
+        """
+        with self._requeued_gate:
+            requeued = item.get("work_item_id") in self._requeued
         with self._allocation_gate:
             attempt = self._allocate(item)
         with self._collision_permit(attempt.collision_key), self._lane_scope(attempt):
             # The outer lane (and every lane under memory admission) runs under the
             # Flow's claim, unless the item takes its own.
             asks = outer or hold is not None
-            memory = self._capacity.work_item_claim(item) if asks else None
+            memory = None
+            if asks:
+                memory = (
+                    self._capacity.work_item_claim(item, alone=True)
+                    if requeued
+                    else self._capacity.work_item_claim(item)
+                )
             if asks and memory is None:
                 with supervised_execution_scope(self._capacity.outer_scope(self._stop.is_set)):
                     self._execute(attempt, None)
-                return
+                return False
+            killed = False
             with (
                 self._capacity.child_permit(
                     str(item["work_item_id"]),
@@ -319,12 +350,37 @@ class BoundedCampaignScheduler:
                     attempt_directory=attempt.directory,
                     publish=lambda child: self._prepare_child(attempt, str(child)),
                     memory=memory,
+                    queue_reason=OOM_REQUEUE_REASON if requeued else None,
                 ) as permit,
                 supervised_execution_scope(permit.scope),
             ):
                 if hold is not None:
                     hold.pass_on()
-                self._execute(attempt, str(permit.child_execution_id))
+                if memory is None:
+                    self._execute(attempt, str(permit.child_execution_id))
+                else:
+                    killed = self._run_own_claim_item(attempt, permit, requeued=requeued)
+        if killed:
+            # The claim is released: the item queues again and takes the whole budget.
+            print(
+                f"[requeue] {_lane_label(attempt)}: {OOM_REQUEUE_REASON}; it runs again alone",
+                flush=True,
+            )
+        return killed
+
+    def _run_own_claim_item(
+        self, attempt: ScheduledAttempt, permit: ChildHeavyPermit, *, requeued: bool
+    ) -> bool:
+        """Run an item holding its own claim as its own Job attempt; ``True`` to run it again.
+
+        Its processes rank as their own Job. The first attempt is armed: a kill
+        stops only this item. The requeued attempt is the last one and never armed.
+        """
+        with (
+            oom_priority.work_item_processes(permit.token.lease_id, permit.scope.processes),
+            job_attempt(stop_on_oom=not requeued, work_item=True),
+        ):
+            return bool(self._execute(attempt, str(permit.child_execution_id)))
 
     def _lane_scope(self, attempt: ScheduledAttempt) -> AbstractContextManager[None]:
         """Scope terminal progress to this attempt when lanes run concurrently."""

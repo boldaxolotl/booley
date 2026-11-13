@@ -311,6 +311,11 @@ def state_volume_name(app: str, project_id: str, policy: str = "auto") -> str | 
     """
     if app not in _APP_STATE_DIR:
         return None
+    return _state_volume_name(app, project_id, policy)
+
+
+def _state_volume_name(app: str, project_id: str, policy: str) -> str:
+    """Format the state-volume name; the caller has checked that *app* persists state."""
     suffix = "" if policy == "auto" else f"-{policy}"
     return f"booley-{app}-state-{project_id}{suffix}"
 
@@ -335,8 +340,7 @@ def state_volume_mount(app: str, project_id: str, policy: str = "auto") -> str |
     target = _APP_STATE_DIR.get(app)
     if target is None:
         return None
-    name = state_volume_name(app, project_id, policy)
-    return _volume_mount(name, target)
+    return _volume_mount(_state_volume_name(app, project_id, policy), target)
 
 
 def _parse_mount(mount: object) -> dict[str, str]:

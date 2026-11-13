@@ -9,7 +9,7 @@ import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.config.project_config import (
     lookup_target_section,
@@ -62,8 +62,10 @@ from .build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
     classify_build_outcome,
+    measured_setup_runner,
     prepare_simulation_build,
     setup_failure_outcome,
+    setup_timeout_s,
     simulation_build_script,
     simulation_setup_command,
 )
@@ -77,6 +79,14 @@ from .build_session import (
 from .execution.artifacts import artifact_path_component as _artifact_path_component
 from .standalone import _StandaloneOutcome, _StandalonePlanRecipe
 from .test_selection import _get_test_envs
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.mode import SimulationMode
+    from booley.flows.sim.request import SimRequest
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +131,49 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 class ElabOnlyMixin:
     """Elaboration Check execution for `SimulateFlow`."""
+
+    if TYPE_CHECKING:
+        # Host members SimulateFlow provides; Pyright checks them against the host.
+        name: str
+        _reserved_invocation_dir: Path | None
+
+        @property
+        def args(self) -> SimRequest: ...
+        @property
+        def state(self) -> DevelopmentState: ...
+        @property
+        def _mode(self) -> SimulationMode: ...
+        def _target_identity(self, target: str) -> str: ...
+        def _target_handle(self, target: str) -> TargetHandle: ...
+        def _with_campaign_paths(
+            self, result: EndpointOutcome, published: Sequence[Path] = ()
+        ) -> EndpointOutcome: ...
+        def _with_live_progress(self, run: Callable[[], EndpointOutcome]) -> EndpointOutcome: ...
+        def _flow_enabled(self) -> bool: ...
+        def _resolve_requested_targets(self) -> list[str] | EndpointOutcome: ...
+        def _validate_interactive_args(self, targets: list[str]) -> EndpointOutcome | None: ...
+        def _effective_build_timeout_ms(self) -> int: ...
+        def _effective_timeout_ms(self) -> int: ...
+        def _standalone_requested(self) -> bool: ...
+        def _plan_standalone_check(self, targets: list[str]) -> _StandalonePlanRecipe: ...
+        def _run_standalone_check(
+            self, targets: list[str], *, primary_ok: bool = True
+        ) -> _StandaloneOutcome: ...
+        def reserve_invocation_dir(self) -> Path | None: ...
+        def _record_eda_tool(self, target: str, eda_tool: str | None) -> None: ...
+        def _open_run_log(self, target: str, log_dir: Path) -> None: ...
+        def _execute_boundary(
+            self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
+        ) -> SubprocessResult: ...
+        def set_criterion(
+            self,
+            key: str,
+            met: bool,
+            *,
+            detail: dict[str, Any] | None = None,
+            source_target: str | None = None,
+        ) -> None: ...
+        def _dry_run_result(self, plan: object) -> EndpointOutcome: ...
 
     def _target_sim_env(self, target: str) -> dict[str, str]:
         """*target*'s declared simulator environment (tests.toml ``env``, F-5).
@@ -548,6 +601,11 @@ class ElabOnlyMixin:
                 handle,
                 build_root=build_root,
                 environment=self._target_sim_env(target),
+                setup_runner=measured_setup_runner(
+                    self._execute_boundary,
+                    target=handle.selector,
+                    timeout_s=setup_timeout_s(max(1, self._effective_build_timeout_ms() // 1000)),
+                ),
             )
         except SimulationBuildPreparationError as exc:
             logger.debug("sim elab-only setup failed for %s", target, exc_info=True)

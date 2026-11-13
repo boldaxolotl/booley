@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
 
 import pytest
@@ -473,6 +474,9 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
         "flows.sim.backends.cocotb_target_checks",
         "runtime.vaporview",
         "flows.target_test_plan_inspection",
+        "audit.core_tree_inspection",
+        "runtime.core_repository_hygiene",
+        "runtime.core_resolution",
         "runtime.project_image",
     ],
 )
@@ -498,6 +502,7 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
         root / "harness" / "setup",
         root / "flows",
         root / "flows" / "sim",
+        root / "audit",
         root / "flows" / "sim" / "backends",
         root / "presentation",
         root / "runtime",
@@ -516,6 +521,101 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     assert "D26" in report
     assert f"booley.{owner}" in report
     assert f"booley.{target}" in report
+
+
+def test_core_tree_owner_is_a_d26_diagnostic_owner(tmp_path):
+    """The ``.core`` tree owner may not import command orchestration or rendering."""
+    owner = "audit.core_tree_inspection"
+    for target in (
+        "harness.doctor",
+        "harness.init_cmd",
+        "harness.booley",
+        "presentation.colors",
+        "harness.setup.common",
+    ):
+        for location in ("ordinary", "deferred", "type-only"):
+            root = tmp_path / target.replace(".", "-") / location / "booley"
+            for package in (
+                root,
+                root / "audit",
+                root / "harness",
+                root / "harness" / "setup",
+                root / "presentation",
+            ):
+                package.mkdir(parents=True, exist_ok=True)
+                (package / "__init__.py").touch()
+            statement = f"import booley.{target}\n"
+            if location == "deferred":
+                statement = "def helper():\n    " + statement
+            elif location == "type-only":
+                statement = "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    " + statement
+            (root / (target.replace(".", "/") + ".py")).write_text("value = 1\n")
+            (root / (owner.replace(".", "/") + ".py")).write_text(statement)
+            report = format_problems(
+                evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+            )
+            assert "D26" in report, (target, location)
+            assert f"booley.{owner}" in report
+            assert f"booley.{target}" in report
+
+
+def test_core_repository_hygiene_owner_is_a_d26_diagnostic_owner(tmp_path):
+    """The core repository hygiene owner may not import command orchestration or rendering."""
+    owner = "runtime.core_repository_hygiene"
+    for target in (
+        "harness.doctor",
+        "harness.init_cmd",
+        "harness.booley",
+        "presentation.colors",
+        "harness.setup.common",
+    ):
+        for location in ("ordinary", "deferred", "type-only"):
+            root = tmp_path / target.replace(".", "-") / location / "booley"
+            for package in (
+                root,
+                root / "runtime",
+                root / "harness",
+                root / "harness" / "setup",
+                root / "presentation",
+            ):
+                package.mkdir(parents=True, exist_ok=True)
+                (package / "__init__.py").touch()
+            statement = f"import booley.{target}\n"
+            if location == "deferred":
+                statement = "def helper():\n    " + statement
+            elif location == "type-only":
+                statement = "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    " + statement
+            (root / (target.replace(".", "/") + ".py")).write_text("value = 1\n")
+            (root / (owner.replace(".", "/") + ".py")).write_text(statement)
+            report = format_problems(
+                evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+            )
+            assert "D26" in report, (target, location)
+            assert f"booley.{owner}" in report
+            assert f"booley.{target}" in report
+
+
+def test_core_resolution_owner_is_a_d26_diagnostic_owner(tmp_path):
+    """The real core resolution owner obeys D26; the contract catches a forbidden import."""
+    owner = "runtime.core_resolution"
+    importlib.import_module(f"booley.{owner}")  # fails until the production owner exists
+    real = format_problems(
+        evaluate_contract(analyze_imports(_SOURCE_ROOT), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert f"booley.{owner}" not in real
+
+    root = tmp_path / "booley"
+    for package in (root, root / "runtime", root / "harness"):
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "__init__.py").touch()
+    (root / "harness" / "doctor.py").write_text("value = 1\n")
+    (root / "runtime" / "core_resolution.py").write_text("import booley.harness.doctor\n")
+    report = format_problems(
+        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
+    )
+    assert "D26" in report
+    assert f"booley.{owner}" in report
+    assert "booley.harness.doctor" in report
 
 
 @pytest.mark.parametrize(

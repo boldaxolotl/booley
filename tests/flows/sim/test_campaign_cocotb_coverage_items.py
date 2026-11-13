@@ -327,9 +327,7 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
     assert first.complete is True
     assert resumed.complete is True
     assert len(native.runs) == 2
-    assert resumed.coverage_reference["coverage_campaign"]["schema"] == (
-        "booley.coverage-campaign/v5"
-    )
+    assert resumed.coverage_reference["coverage_record"]["schema"] == ("booley.coverage-record/v1")
 
 
 @pytest.mark.parametrize(
@@ -444,7 +442,7 @@ def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> No
     assert detail["abort_remaining"] is True
     assert detail["passed"] is False
     assert detail["simulation"] == "aborted"
-    assert "coverage_campaign" not in detail
+    assert "coverage_record" not in detail
 
 
 def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_time(

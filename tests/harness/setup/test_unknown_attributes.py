@@ -49,6 +49,7 @@ def _checkout(tmp_path: Path, *, default: bool = True):
     root.mkdir()
     _git(root, "init", "-q")
     _git(root, "config", "core.autocrlf", "false")
+    _git(root, "config", "core.eol", "lf")
     _git(root, "config", "core.attributesFile", "")
     (root / ".gitignore").write_text(".booley/\n")
     _git(root, "add", ".gitignore")

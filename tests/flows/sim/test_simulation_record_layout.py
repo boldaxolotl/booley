@@ -95,7 +95,7 @@ def test_a_coverage_run_writes_the_record_layout(tmp_path: Path, monkeypatch) ->
     assert len(coverage) == 1
     assert not list(target.rglob("coverage-campaign"))
     reference = json.loads((target / "coverage.json").read_bytes())
-    nested = reference["coverage_campaign"]["path"]
+    nested = reference["coverage_record"]["path"]
     assert nested.startswith("record/work-items/")
     assert nested.endswith("/coverage-record/coverage.json")
     projection = json.loads((target / "simulation.json").read_bytes())
@@ -232,8 +232,12 @@ def test_coverage_analysis_refuses_an_older_layout(reports: Path) -> None:
     with pytest.raises(CoverageAnalysisError) as excinfo:
         read_coverage_campaign(invocation / "targets" / "sim_0" / "coverage.json")
 
-    # The reference names the nested path; the refusal still tells the user what to delete.
-    _assert_refused(str(excinfo.value), "Coverage Campaign path campaign/", invocation)
+    # The 0.4.0 reference is refused by its schema before its nested path is read.
+    _assert_refused(
+        str(excinfo.value),
+        "Coverage Campaign reference booley.coverage-campaign-reference/v1",
+        invocation,
+    )
     assert "fully pruned" not in str(excinfo.value)
 
 
@@ -254,7 +258,11 @@ def test_a_persisted_coverage_reference_into_an_older_layout_is_refused(reports:
 
     assert not isinstance(excinfo.value, CoverageCampaignReferenceError)
     _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), "Coverage Campaign path campaign/", invocation)
+    _assert_refused(
+        str(excinfo.value),
+        "Coverage Campaign reference booley.coverage-campaign-reference/v1",
+        invocation,
+    )
 
 
 # --- AC4: the old names are not aliases --------------------------------------------------

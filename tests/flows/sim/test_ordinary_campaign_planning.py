@@ -173,7 +173,7 @@ def _assert_dry_run_output(outcome: Any) -> None:
     """The dry run lists the baseline campaign, then the candidate's, unchanged."""
     assert outcome.report_text == "sim_a: 1 pending work item(s)\nsim_a: 1 pending work item(s)"
     assert outcome.detail["mutated"] is False
-    entries = outcome.detail["campaign_preview"]
+    entries = outcome.detail["record_preview"]
     for entry in entries:
         del entry["target"]["project_identity"]  # a digest of the temporary project path
     revision = _REVISION

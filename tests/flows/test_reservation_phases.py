@@ -40,7 +40,13 @@ def _record(phase: str, peak_mib: float, test_run: str = "") -> dict[str, Any]:
 
 
 # History peaks of 6,553.6 and 40 MiB are 8,192 and 50 MiB with the estimate margin.
-SIM_HISTORY = [_record("sim_build", 6553.6), _record("sim_run", 40, "smoke")]
+# FuseSoC setup (8 MiB, 10 with the margin) is a planned phase of every sim Job but never
+# reports its end, so it stays reserved until the Job ends (#3787).
+SIM_HISTORY = [
+    _record("sim_prepare", 8),
+    _record("sim_build", 6553.6),
+    _record("sim_run", 40, "smoke"),
+]
 SIM_REQUEST = (JobRequest("sim", TARGET, test_runs=("smoke",)),)
 
 
@@ -85,9 +91,10 @@ def test_sim_job_holds_build_estimate_then_run_estimate(tmp_path: Path) -> None:
         assert _reservation(token) == 8192
         rp.report_phase_end(TARGET, "sim_build")
         assert _reservation(token) == 50
-        # The last planned run ends: the claim is held through reporting.
+        # The last planned run ends. Setup never reports its end, so its estimate
+        # (10 MiB) stays pending and is what the Job holds through reporting.
         rp.report_phase_end(TARGET, "sim_run", tests=("smoke",))
-        assert _reservation(token) == 50
+        assert _reservation(token) == 10
 
 
 def test_queued_job_starts_when_build_phase_ends(tmp_path: Path) -> None:
@@ -111,6 +118,7 @@ def test_queued_job_starts_when_build_phase_ends(tmp_path: Path) -> None:
 def _three_phase_plan(tmp_path: Path):
     """A Job of one build (800 MiB) and two runs of different tests (300 and 100 MiB)."""
     records = [
+        _record("sim_prepare", 8),
         _record("sim_build", 640),
         _record("sim_run", 240, "a"),
         _record("sim_run", 80, "b"),
@@ -139,8 +147,9 @@ def test_no_phase_sequence_grows_the_reservation() -> None:
                 phase_plan.accept(lowered)
             held.append(phase_plan.held_mb)
         assert held == sorted(held, reverse=True), ordering
-        # Whatever the order, the reservation stays within the planned estimates.
-        assert 100.0 <= phase_plan.held_mb <= 800.0
+        # Whatever the order, the reservation stays within the planned estimates; setup
+        # (10 MiB) never reports its end, so it is the floor.
+        assert 10.0 <= phase_plan.held_mb <= 800.0
 
 
 def test_phase_plan_counts_repeated_keys_and_ignores_unplanned_ends() -> None:
@@ -195,7 +204,8 @@ def test_only_sim_synth_fpga_plans_have_phases() -> None:
     def phases(*requests: JobRequest, history=records) -> tuple[Any, ...]:
         return plan_memory_claim(requests, history, BUDGET_MIB, None).phases
 
-    assert len(phases(JobRequest("sim", TARGET, test_runs=("t", "t")))) == 3
+    # Setup, build and the two runs.
+    assert len(phases(JobRequest("sim", TARGET, test_runs=("t", "t")))) == 4
     assert len(phases(JobRequest("synth", TARGET), JobRequest("fpga", TARGET))) == 2
     assert phases(JobRequest("sim", TARGET, test_runs=("t",), flags=("coverage",))) == ()
     assert phases(JobRequest("lint", TARGET)) == ()

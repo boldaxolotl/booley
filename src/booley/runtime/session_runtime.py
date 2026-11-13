@@ -40,6 +40,7 @@ from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.platform_paths import (
     docker_mount_path,
     host_path_from_docker_mount,
+    run_captured_bounded,
     same_host_path,
 )
 
@@ -353,7 +354,7 @@ def docker_run_argv(
 
     _append_environment(argv, spec, workspace, frozenset(_forwarded_gateway_keys(spec)))
     if policy == "api_key":
-        key = auth_token.API_KEY_ENV.get(remote.get("BOOLEY_AGENT_APP"))
+        key = auth_token.API_KEY_ENV.get(remote.get("BOOLEY_AGENT_APP", ""))
         if key and (
             (key not in remote and key not in (spec.get("containerEnv") or {}))
             or not argv.environment.get(key)
@@ -531,10 +532,23 @@ def _warn_on_stale_session_containers(spec: dict, workspace: Path) -> None:
 def _run(
     argv: list[str], *, capture: bool = True, timeout: int | None = None
 ) -> subprocess.CompletedProcess:
+    """Run *argv*, by default capturing its text output.
+
+    A captured call with a *timeout* is bounded: on timeout the whole process
+    tree is killed and ``subprocess.TimeoutExpired`` is raised within a bounded
+    margin even if a descendant still holds the output pipes. A call without a
+    *timeout* waits for the command; an uncaptured call with a *timeout* uses
+    ``subprocess.run``'s timeout, which kills only the direct child.
+    """
     logger.debug("running: %s", " ".join(argv))
+    env = argv.environment if isinstance(argv, DockerRunArgv) else None
+    if capture and timeout is not None:
+        # subprocess.run kills only the direct child on timeout and, on Windows,
+        # then waits on the output pipes with no limit.
+        return run_captured_bounded(argv, timeout=timeout, env=env)
     return subprocess.run(
         argv,
-        env=argv.environment if isinstance(argv, DockerRunArgv) else None,
+        env=env,
         capture_output=capture,
         timeout=timeout,
         text=True,
@@ -570,7 +584,11 @@ def _strict_refresh_container(name: str) -> dict[str, Any] | None:
     config = state.get("Config")
     runtime_state = state.get("State")
     network_settings = state.get("NetworkSettings")
-    if not all(isinstance(item, dict) for item in (config, runtime_state, network_settings)):
+    if (
+        not isinstance(config, dict)
+        or not isinstance(runtime_state, dict)
+        or not isinstance(network_settings, dict)
+    ):
         raise SessionError(f"Docker returned incomplete inspection for Sandbox {name!r}")
     labels = config.get("Labels")
     networks = network_settings.get("Networks")
@@ -1428,7 +1446,7 @@ def issued_runtime_drift_fix(
 
 def _reconcile_stopped_vscode_containers(
     workspace: Path,
-    issuance: object,
+    issuance: Issuance,
     *,
     remove_unavailable_current: bool = True,
     selected_editor_id: str | None = None,
@@ -1445,7 +1463,7 @@ def _reconcile_stopped_vscode_containers(
 
 def _stopped_vscode_reconcile_candidates(
     workspace: Path,
-    issuance: object,
+    issuance: Issuance,
     *,
     remove_unavailable_current: bool,
     selected_editor_id: str | None = None,
@@ -1670,15 +1688,17 @@ def _project_data_mount_root_is_pinned(
         )
     ):
         by_target = {}
-    project_data = by_target.get("/work/.booley" if canonical_alias else "/booley-project")
-    if not _writable_bind(project_data):
+    project_data = _writable_bind(
+        by_target.get("/work/.booley" if canonical_alias else "/booley-project")
+    )
+    if project_data is None:
         return False
     raw_source = project_data.get("Source", "")
     source = host_path_from_docker_mount(raw_source) if isinstance(raw_source, str) else None
     if source is None or source != local_source:
         return False
-    workspace_view = by_target.get("/work/.booley")
-    if not _writable_bind(workspace_view):
+    workspace_view = _writable_bind(by_target.get("/work/.booley"))
+    if workspace_view is None:
         return False
     ws_raw = workspace_view.get("Source", "")
     ws_source = host_path_from_docker_mount(ws_raw) if isinstance(ws_raw, str) else None
@@ -1697,13 +1717,16 @@ def _decode_container_inspect(raw: str) -> dict | None:
     return decoded[0]
 
 
-def _writable_bind(raw: object) -> bool:
-    return (
+def _writable_bind(raw: object) -> dict[str, object] | None:
+    """Return the inspected mount when it is a writable bind with a string source."""
+    if (
         isinstance(raw, dict)
         and raw.get("Type") == "bind"
         and raw.get("RW") is True
         and isinstance(raw.get("Source"), str)
-    )
+    ):
+        return raw
+    return None
 
 
 def container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect ladder
