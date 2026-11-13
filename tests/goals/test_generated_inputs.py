@@ -154,7 +154,7 @@ def classified(
     manifest = finalize_manifest(
         {
             "$schema": MANIFEST_SCHEMA,
-            "campaign_id": str(uuid4()),
+            "simulation_record_id": str(uuid4()),
             "created_at": "2026-10-07T10:00:00Z",
             "origin": {"execution_id": ("c" if foreign_origin else "b") * 32, "invocation_id": 7},
             "target": target,
@@ -175,7 +175,7 @@ def classified(
         path, raw, digest, retired_manifest, older_layout_invocation
     )
     facts = campaign_facts()
-    facts.update(campaign_id=manifest.document["campaign_id"], manifest_sha256=digest)
+    facts.update(campaign_id=manifest.document["simulation_record_id"], manifest_sha256=digest)
     recorder = GoalEvidenceRecorder(bind(layout))
     state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
     shadow = DevelopmentState.from_json_object(state.to_dict())

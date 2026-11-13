@@ -149,7 +149,7 @@ class HeavyCapacity:
                 raise ClaimAbortedError("campaign shutdown requested")
             token = self._acquire_child(store, child_id)
         except BaseException:
-            self._lanes.mark_terminal(prepared, "campaign_error")
+            self._lanes.mark_terminal(prepared, "record_error")
             raise
         with self._held_lane(store, work_item_id, prepared, token) as permit:
             yield permit
@@ -172,7 +172,7 @@ class HeavyCapacity:
         with self._gate:
             self._held[token.lease_id] = permit
         lease_lost = f"heavy lease lost for child execution {child_id}"
-        cause = "campaign_error"
+        cause = "record_error"
         try:
             try:
                 try:
@@ -192,9 +192,7 @@ class HeavyCapacity:
                 self._retire(store, child_id, token)
         except BaseException:
             # A "completed" cause here means marking it terminal itself failed.
-            self._lanes.mark_terminal(
-                prepared, "campaign_error" if cause == "completed" else cause
-            )
+            self._lanes.mark_terminal(prepared, "record_error" if cause == "completed" else cause)
             raise
 
     def _retire(self, store, child_id: ExecutionId, token: SlotToken) -> None:
@@ -215,7 +213,7 @@ class HeavyCapacity:
         from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 
         stopped = isinstance(exc.__cause__, PreSimScopeStoppedError)
-        return "lease_lost" if stopped and permit.lease_health.lost.is_set() else "campaign_error"
+        return "lease_lost" if stopped and permit.lease_health.lost.is_set() else "record_error"
 
     def _child_cancellation_cause(self, permit: ChildHeavyPermit) -> str | None:
         if permit.lease_health.lost.is_set():

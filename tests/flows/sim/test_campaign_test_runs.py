@@ -33,7 +33,7 @@ from booley.flows.test_runs import (
 from tests.flows.sim import test_campaign_resume_diagnostics as resume_support
 from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
 
-_V4 = "booley.simulation-campaign-manifest/v4"
+_V4 = "booley.simulation-record-manifest/v1"
 
 
 def _hdl_plan(
@@ -372,7 +372,7 @@ def _stored_result(tmp_path: Path):
 
 def test_written_results_are_v3_and_name_their_test_run(tmp_path: Path):
     outcome, results = _stored_result(tmp_path)
-    assert [result.document["$schema"] for result in results] == ["booley.simulation-result/v3"]
+    assert [result.document["$schema"] for result in results] == ["booley.simulation-result/v4"]
     observations = results[0].document["observations"]
     assert [(item["test"], item["test_run"]) for item in observations] == [
         ("count", "count"),
@@ -407,7 +407,7 @@ def test_result_v3_round_trips(tmp_path: Path):
 @pytest.mark.parametrize(
     ("alter", "message"),
     [
-        (lambda document: document.update({"$schema": "booley.simulation-result/v4"}), "schema"),
+        (lambda document: document.update({"$schema": "booley.simulation-result/v5"}), "schema"),
     ],
 )
 def test_result_v3_refusals(tmp_path: Path, alter, message):

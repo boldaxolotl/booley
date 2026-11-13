@@ -29,11 +29,11 @@ if TYPE_CHECKING:
     from .coordinator import WorkExecutionRequest
     from .model import SimulationAttempt, SimulationCampaignManifest
 
-_SCHEMA = "booley.pre-sim-evidence/v1"
+_SCHEMA = "booley.pre-sim-evidence/v2"
 _FIELDS = frozenset(
     (
         "$schema",
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "work_item_id",
         "attempt_id",
@@ -77,7 +77,7 @@ class PreSimFiringRecord(SimulationCampaignDocument):
 
 def _firing_key(value: Mapping[str, object]) -> tuple[str, str, str, int]:
     return (
-        cast(str, value["campaign_id"]),
+        cast(str, value["simulation_record_id"]),
         cast(str, value["work_item_id"]),
         cast(str, value["attempt_id"]),
         cast(int, value["ordinal"]),
@@ -147,7 +147,7 @@ class PreSimFiringDecoder:
         self, item: Mapping[str, object], attempt_id: str, invocation: int
     ) -> dict[str, object]:
         return {
-            "campaign_id": self.manifest.document["campaign_id"],
+            "simulation_record_id": self.manifest.document["simulation_record_id"],
             "manifest_sha256": self.manifest_sha256,
             "work_item_id": item["work_item_id"],
             "attempt_id": attempt_id,
@@ -175,7 +175,7 @@ class PreSimFiringDecoder:
         try:
             _validate_fields(value)
             binding = {
-                "campaign_id": self.manifest.document["campaign_id"],
+                "simulation_record_id": self.manifest.document["simulation_record_id"],
                 "manifest_sha256": self.manifest_sha256,
                 "workload_sha256": self.manifest.document["fingerprints"]["workload_sha256"],
                 "work_item_id": item["work_item_id"],

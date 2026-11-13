@@ -221,10 +221,10 @@ def _publish_waiting_lane(booley_dir: Path, *, context_execution_id: str | None 
     atomic_write_json(
         paths.context,
         {
-            "$schema": "booley.supervised-child-context/v1",
+            "$schema": "booley.supervised-child-context/v2",
             "child_execution_id": context_execution_id or str(execution_id),
             "parent_execution_id": "a" * 32,
-            "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            "simulation_record_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
             "manifest_sha256": "sha256:" + "1" * 64,
             "work_item_id": "item:0000:0123456789abcdef",
             "attempt_id": "550e8400-e29b-41d4-a716-446655440001",

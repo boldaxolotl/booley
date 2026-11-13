@@ -296,7 +296,7 @@ def test_legacy_interrupted_campaign_new_source_mapping_refuses_before_attempt(
         )
         reports, manifest, executions = _interrupted_campaign(tmp_path, legacy)
     document = json.loads(manifest.read_bytes())
-    assert document["$schema"] == "booley.simulation-campaign-manifest/v4"
+    assert document["$schema"] == "booley.simulation-record-manifest/v1"
     assert "source_path" not in document["planning_disclosures"][0]["generated_files"][0]
     before = _snapshot(manifest.parent)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")

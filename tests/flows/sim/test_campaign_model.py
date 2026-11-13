@@ -46,8 +46,8 @@ from booley.flows.sim.campaign.model import (
 
 def _attempt() -> dict[str, object]:
     return {
-        "$schema": "booley.simulation-attempt/v1",
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "$schema": "booley.simulation-attempt/v2",
+        "simulation_record_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
         "manifest_sha256": "sha256:" + "1" * 64,
         "workload_sha256": "sha256:" + "2" * 64,
         "work_item_id": "item:0000:0123456789abcdef",

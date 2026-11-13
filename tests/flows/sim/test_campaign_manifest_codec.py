@@ -158,7 +158,7 @@ def _manifest() -> dict[str, object]:
     variants, items = _manifest_work(target, source_recipe, build_recipe, workload)
     manifest = {
         "$schema": MANIFEST_SCHEMA,
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "simulation_record_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
         "created_at": "2026-09-21T10:00:00Z",
         "origin": {"execution_id": "", "invocation_id": 1},
         "target": target,
@@ -296,7 +296,7 @@ def _manifest_fingerprints(manifest, target, source_recipe, build_recipe, varian
 def _baseline_manifest():
     document = _manifest()
     document.pop("fingerprints")
-    document["campaign_id"] = "550e8400-e29b-41d4-a716-446655440000"
+    document["simulation_record_id"] = "550e8400-e29b-41d4-a716-446655440000"
     target = document["target"]
     target.update(  # type: ignore[union-attr]
         {
@@ -368,9 +368,9 @@ def _linked_campaign_stores(tmp_path: Path, *, topology_revisions=None):
                 "bytes": len(raw),
                 "sha256": manifest_digest(baseline),
                 "kind": "simulation_campaign_manifest",
-                "owner": baseline_json["campaign_id"],
+                "owner": baseline_json["simulation_record_id"],
             },
-            "campaign_id": baseline_json["campaign_id"],
+            "simulation_record_id": baseline_json["simulation_record_id"],
             "target": baseline_json["target"],
             "required_observation": "cycle_count",
             "work_item_id": baseline_json["work_items"][0]["work_item_id"],
@@ -1211,7 +1211,7 @@ def test_independent_container_additions_preserve_raw_fallback(region):
             {
                 "role": "cycle_count_baseline",
                 "target": target,
-                "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+                "simulation_record_id": "550e8400-e29b-41d4-a716-446655440000",
                 "work_item_id": "item:0000:0123456789abcdef",
                 "required_observation": "cycle_count",
                 "manifest": {

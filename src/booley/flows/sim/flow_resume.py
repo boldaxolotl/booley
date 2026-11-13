@@ -346,7 +346,7 @@ class CampaignResumeMixin:
 
             register_campaign_dependency(
                 validated.path,
-                campaign_id=cast(str, validated.manifest.document["campaign_id"]),
+                campaign_id=cast(str, validated.manifest.document["simulation_record_id"]),
                 manifest_sha256=validated.sha256,
                 dependent_invocation=invocation,
             )

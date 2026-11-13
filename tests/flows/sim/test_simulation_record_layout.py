@@ -4,12 +4,12 @@
 ``interrupted`` and ``coverage``) that Booley 0.4.0's own ``SimulateFlow`` wrote over the
 tag's fake simulator. They are captured data, not test cases: each text file embeds its
 capture's temporary root, replaced by ``/booley-0.4.0-capture``; the lock files, run logs
-and simulator executables were dropped. Its record schemas are the current ones, so the
-old ``campaign/`` and ``coverage-campaign/`` directory names are the only thing that
-refuses it. Content changed after 0.4.0 without a schema bump (for example the
-``simulation.json`` ``tests[]`` rows gained ``log`` and ``trace``, and ``CHANGELOG.md``
-Unreleased), which the schema-retiring parts of ADR 0090 (#3686-#3688) must allow for:
-this part refuses on the layout before it reads any content.
+and simulator executables were dropped. The old ``campaign/`` and ``coverage-campaign/``
+directory names refuse it before any record is read; the record schemas it holds are
+retired too (``test_simulation_record_names.py``). Content changed after 0.4.0 without a
+schema bump (for example the ``simulation.json`` ``tests[]`` rows gained ``log`` and
+``trace``, and ``CHANGELOG.md`` Unreleased), which the schema-retiring parts of ADR 0090
+(#3687-#3688) must allow for: the layout check refuses before it reads any content.
 """
 
 from __future__ import annotations
@@ -293,7 +293,7 @@ def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) 
 
 @pytest.mark.timeout(120)
 def test_finish_refuses_an_older_layout_producer_manifest(layout) -> None:
-    """A Goal's 0.4.0 producer decodes as current: only its ``campaign/`` directory marks it old."""
+    """A Goal's 0.4.0 producer manifest is refused: its ``campaign/`` directory marks it old first."""
     fixture = Path(__file__).parents[1] / "fixtures" / "booley_0_4_0" / "complete" / "sim" / "1"
     classified(layout, copyto="dhrystone/dhry.hex", older_layout_invocation=fixture)
     with pytest.raises(LifecycleError) as excinfo:

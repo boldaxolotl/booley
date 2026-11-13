@@ -18,6 +18,7 @@ from booley.runtime.execution_records import (
     atomic_write_json,
     child_context_matches,
     execution_paths,
+    is_older_child_context,
     read_json,
     request_cancellation,
 )
@@ -184,7 +185,9 @@ def recover_execution(
     """Request cancellation and prove a failed supervisor's execution tree empty."""
     execution_id = ExecutionId(raw_execution_id)
     paths = execution_paths(execution_id, booley_dir=booley_dir)
-    if not child_context_matches(paths, execution_id):
+    if not (
+        child_context_matches(paths, execution_id) or is_older_child_context(paths, execution_id)
+    ):
         return False
     record = read_json(paths.record)
     if record is not None and record.get("state") == "terminal":

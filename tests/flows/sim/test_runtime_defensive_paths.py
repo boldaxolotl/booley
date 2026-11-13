@@ -135,6 +135,7 @@ def test_recovery_short_circuits_unsafe_or_live_executions(monkeypatch, tmp_path
     paths = SimpleNamespace(record=tmp_path / "record")
     monkeypatch.setattr(execution_recovery, "execution_paths", lambda *_a, **_k: paths)
     monkeypatch.setattr(execution_recovery, "child_context_matches", lambda *_a: False)
+    monkeypatch.setattr(execution_recovery, "is_older_child_context", lambda *_a: False)
     assert execution_recovery.recover_execution(execution_id, booley_dir=tmp_path) is False
 
     monkeypatch.setattr(execution_recovery, "child_context_matches", lambda *_a: True)
