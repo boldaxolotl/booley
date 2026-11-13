@@ -7,6 +7,7 @@ preselected worktree would find none. Only the launcher is faked (it records sub
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -175,7 +176,7 @@ async def test_choosing_a_flow_opens_the_form_with_worktree_and_target_filled_in
                 assert [row.split()[-1] for row in pick_rows(wizard)] == ["wide", "narrow"]
                 await pilot.press("escape")
             await review_command(app, pilot, wizard)
-            command = f"cd {wt_a} && booley flow {flow} --target {selector}"
+            command = f"cd {shlex.quote(str(wt_a))} && booley flow {flow} --target {selector}"
             assert shown(wizard, "#run-command") == command
             # Review, the form, then the detail, then the Targets list for the next Target.
             await pilot.press("escape", "escape", "escape")
