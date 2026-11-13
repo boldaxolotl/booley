@@ -1091,6 +1091,21 @@ class TestLineEndingsStep:
         assert ctx.results[-1].name == "line_endings"
         assert ctx.results[-1].status == "ok"
 
+    def test_check_only_names_the_pending_eol_pin(self, tmp_path: Path, capsys):
+        from booley.harness.setup.git_hooks import _step_line_endings
+
+        # A repository an earlier Booley pinned: only core.autocrlf is set locally.
+        _git_init(tmp_path)
+        _run_git(tmp_path, "config", "core.autocrlf", "false")
+        self._add_file(tmp_path, "a.v", b"module a;\nendmodule\n")
+        ctx = _ctx(tmp_path, check_only=True)
+
+        _step_line_endings(ctx)
+
+        assert ctx.results[-1].status == "ok"
+        assert ctx.results[-1].detail == "core.autocrlf/core.eol pin pending"
+        assert "working tree is container-safe" in capsys.readouterr().out
+
     def test_dirty_crlf_tree_is_left_untouched(self, tmp_path: Path, capsys):
         # The real F-15 shape: core.autocrlf=true stores LF in the index and
         # checks CRLF out, so index and worktree disagree (`i/lf w/crlf`) and

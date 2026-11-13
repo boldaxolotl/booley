@@ -407,7 +407,7 @@ def discover_line_ending_repositories(
 def _git_output(
     root: Path, args: tuple[str, ...], *, stdin: bytes | None = None, timeout: int = 60
 ) -> tuple[bytes | None, str | None]:
-    """Run one read-only Git command: its stdout, or None with a readable failure."""
+    """Run one Git command under the read-only selector environment: its stdout, or None on failure."""
     command = f"git -C {root} {' '.join(args)}"
     try:
         proc = subprocess.run(
@@ -973,6 +973,8 @@ def _restore_mtimes(
                 rewritten.append(name)
                 continue
             os.utime(path, ns=(metadata.st_atime_ns, original))
+        except FileNotFoundError:
+            continue  # Git removed it and could not write it back; the failure hint says how to restore
         except OSError:
             unrestored.append(name)
     return rewritten, unrestored
@@ -1037,8 +1039,21 @@ def _settle_failed_checkout(root: Path, shifted: dict[str, tuple[int, int]], err
     if rewritten:
         stat_error = _reset_index_stat(root, tuple(rewritten))
         if stat_error is None:
+            # autocrlf=input compares an unrewritten CRLF file by its LF content, so its entry
+            # is refreshed as clean even when no text rule covers it; the file stays CRLF.
             _output, stat_error = _git_output(
-                root, ("update-index", "-q", "--unmerged", "--refresh"), timeout=300
+                root,
+                (
+                    "-c",
+                    "core.autocrlf=input",
+                    "-c",
+                    "core.fsmonitor=false",
+                    "update-index",
+                    "-q",
+                    "--unmerged",
+                    "--refresh",
+                ),
+                timeout=300,
             )
     if stat_error is not None:
         notes.append(f"could not refresh the index after the failure: {stat_error}")
@@ -1814,7 +1829,9 @@ def _refresh_action(plan: _RepositoryPlan) -> LineEndingActionResult:
     error = _reset_index_stat(root, plan.phantom_paths)
     if error is None:
         _output, error = _git_output(
-            root, ("update-index", "-q", "--unmerged", "--refresh"), timeout=300
+            root,
+            ("-c", "core.fsmonitor=false", "update-index", "-q", "--unmerged", "--refresh"),
+            timeout=300,
         )
     state = LineEndingActionState.COMPLETED if error is None else LineEndingActionState.FAILED
     return _action(

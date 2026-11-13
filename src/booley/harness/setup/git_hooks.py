@@ -283,6 +283,10 @@ def _safe_line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
         (detail for kind, detail in _COMPLETED_ACTION_DETAILS if kind in completed),
         None,
     )
+    if completed_detail is None and report.actions:
+        planned = {action.kind for action in report.actions}
+        if planned == {LineEndingActionKind.PIN_AUTOCRLF}:
+            return "core.autocrlf/core.eol pin pending"
     return (
         completed_detail or "+".join(action.kind.value for action in report.actions) or "no CRLF"
     )
@@ -336,7 +340,12 @@ def _render_repository_line_endings(report: RepositoryLineEndingReport) -> str |
     for action in report.actions:
         _render_line_ending_action(action)
     unknown = bool(unknown_attributes_policy_details(report))
-    if report.status is LineEndingStatus.SAFE and not report.actions and not unknown:
+    only_planned_pin = all(
+        action.kind is LineEndingActionKind.PIN_AUTOCRLF
+        and action.state is LineEndingActionState.PLANNED
+        for action in report.actions
+    )
+    if report.status is LineEndingStatus.SAFE and only_planned_pin and not unknown:
         ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
     if report.status is LineEndingStatus.UNSAFE or unknown:
         return f"{repository.role}: {_line_ending_summary_detail(report)}"

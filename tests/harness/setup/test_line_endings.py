@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import struct
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1829,6 +1830,36 @@ def test_partial_recheckout_failure_leaves_no_phantom_modifications(tmp_path: Pa
     retry = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
     assert retry.status is LineEndingStatus.SAFE
     assert (tmp_path / "locked" / "b.v").read_bytes() == b"module b;\nendmodule\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs a read-only directory")
+def test_partial_failure_keeps_unrewritten_crlf_files_stat_clean_without_a_text_rule(
+    tmp_path: Path,
+):
+    # Stealth Mode over an upstream .gitattributes publishes no `text=auto` default, so a CRLF
+    # file Git did not rewrite would show as modified once its stat is no longer fresh.
+    data = _stealth_repo(tmp_path)
+    assert _git(tmp_path, "config", "core.autocrlf", "true").returncode == 0
+    _commit_file(tmp_path, ".gitattributes", b"*.png binary\n")
+    for name in ("a.v", "locked/b.v"):
+        _commit_file(tmp_path, name, b"module m;\nendmodule\n")
+        _recheckout_again(tmp_path, name)
+    assert _git(tmp_path, "status", "--porcelain", "--untracked-files=no").stdout == b""
+    time.sleep(1.1)  # Git compares ctime in whole seconds; the shift must land in a later one
+    locked = tmp_path / "locked"
+    locked.chmod(0o555)
+    try:
+        if os.access(locked, os.W_OK):
+            pytest.skip("directory permissions are not enforced for this user")
+        failed = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    finally:
+        locked.chmod(0o755)
+
+    assert _normalize_action(failed).state is LineEndingActionState.FAILED
+    assert _git(tmp_path, "status", "--porcelain", "--untracked-files=no").stdout == b""
+    retry = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert retry.status is LineEndingStatus.SAFE
+    assert (tmp_path / "a.v").read_bytes() == b"module m;\nendmodule\n"
 
 
 def test_failed_stat_refresh_after_partial_checkout_is_reported(tmp_path: Path):

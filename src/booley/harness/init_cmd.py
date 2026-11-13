@@ -2314,8 +2314,9 @@ def _step_line_endings_and_guidance(
             ctx.step_banner("line endings")
             names = ", ".join(link.name for link in release.stuck)
             err(
-                f"refusing the line-ending repair: could not release guidance hardlink(s) {names}; "
-                f"close what holds them, then re-run {runtime_context.booley_init_hint(code=True)}"
+                f"refusing the line-ending repair: could not release guidance hardlink(s) {names} "
+                "(held open by another program, or their Git tracking could not be read); "
+                f"fix that, then re-run {runtime_context.booley_init_hint(code=True)}"
             )
             ctx.record("line_endings", "err", "guidance hardlink not released")
             _step_guidance_links(ctx, guidance_plan)
