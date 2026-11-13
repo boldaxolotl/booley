@@ -1029,7 +1029,7 @@ def _publication_failure_detail(
             detail,
             failure.target_root / "coverage.json",
             report_invocation,
-            str(failure.coverage_reference.document["simulation_campaign_id"]),
+            str(failure.coverage_reference.document["simulation_record_id"]),
         )
     return detail
 

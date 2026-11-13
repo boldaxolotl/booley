@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaignValidationError,
     CoveragePoint,
@@ -21,7 +22,7 @@ from booley.flows.sim.coverage_campaign import (
     encode_coverage_point_id,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V5,
+    CAMPAIGN_SCHEMA,
     MAX_MANIFEST_BYTES,
     CoverageCampaignStoreError,
     load_coverage_campaign,
@@ -260,7 +261,7 @@ def test_publish_separates_summary_from_lossless_points(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
 
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    assert manifest["$schema"] == CAMPAIGN_SCHEMA_V5
+    assert manifest["$schema"] == CAMPAIGN_SCHEMA
     assert manifest["scoring"] == {"status": "valid", "reason": None}
     assert "points" not in manifest
     assert manifest["rollups"][0]["percent"] == 100.0
@@ -501,11 +502,26 @@ def _load_bytes(path: Path, target: DurableTargetIdentity):
 
 
 @pytest.mark.parametrize("reader", [load_coverage_campaign, _load_bytes])
-@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
-def test_readers_reject_pre_v3_campaigns(tmp_path: Path, reader, version: str) -> None:
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5"])
+def test_readers_refuse_every_coverage_campaign_booley_0_4_0_wrote_as_older(
+    tmp_path: Path, reader, version: str
+) -> None:
     path = tmp_path / "coverage.json"
     document = _valid_document()
     document["$schema"] = f"booley.coverage-campaign/{version}"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(UnsupportedSimulationCampaignFormatError, match="older Booley"):
+        reader(path, TARGET)
+
+
+@pytest.mark.parametrize("reader", [load_coverage_campaign, _load_bytes])
+def test_readers_keep_the_unsupported_schema_error_for_an_unknown_schema(
+    tmp_path: Path, reader
+) -> None:
+    path = tmp_path / "coverage.json"
+    document = _valid_document()
+    document["$schema"] = "booley.coverage-record/v2"
     path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(CoverageCampaignStoreError, match="recollect coverage") as error:
@@ -644,16 +660,16 @@ def _publish_campaign_as_written_by_booley_0_3_0(root: Path):
     return paths
 
 
-def test_a_campaign_written_by_booley_0_3_0_is_refused_naming_its_directory(
+def test_a_campaign_written_by_booley_0_3_0_is_refused_as_older(
     tmp_path: Path,
 ) -> None:
     paths = _publish_campaign_as_written_by_booley_0_3_0(tmp_path)
 
-    with pytest.raises(CoverageCampaignStoreError) as error:
+    with pytest.raises(UnsupportedSimulationCampaignFormatError) as error:
         load_coverage_campaign(paths.campaign, TARGET)
 
-    assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
-    assert str(paths.campaign.parent) in str(error.value)
+    # Outside a report layout no invocation directory can be named.
+    assert "booley.coverage-campaign/v4 was written by an older Booley" in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -681,11 +697,13 @@ def test_a_run_without_its_test_run_identity_is_refused(
         assert ("COV_FIELD_REQUIRED", f"/tests/runs/0/{field}") in findings
 
 
-# Pinned on the base commit, before the load recomputed anything: the sha256 of the
-# manifest Booley then wrote for ``_evaluated_campaign(1, 2, Fraction(50))``, with
-# the zlib-dependent ``point_store.sha256`` and ``point_store.bytes`` dropped.
+# Pinned on the base commit, before the load recomputed anything, and re-pinned for the
+# Coverage Record names of #3688 (only the schema, point store schema and identity key
+# changed): the sha256 of the manifest Booley then wrote for
+# ``_evaluated_campaign(1, 2, Fraction(50))``, with the zlib-dependent
+# ``point_store.sha256`` and ``point_store.bytes`` dropped.
 _PRE_CHANGE_MANIFEST_SHA256 = (
-    "sha256:ccb00a40f16b8d95f1dd9eddbb15fe7721970ac03fc14445e749d2a6fd25e2ee"
+    "sha256:5c6f2c0842a7ef78408c3e51c0f823257608eb019235c726a101dcde968886b1"
 )
 
 

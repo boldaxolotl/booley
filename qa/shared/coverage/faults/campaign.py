@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-REFERENCE_SCHEMA = "booley.coverage-campaign-reference/v1"
+REFERENCE_SCHEMA = "booley.coverage-record-reference/v1"
 #: Booley's uncompressed point-store ceiling (coverage_campaign_store.MAX_UNCOMPRESSED_BYTES).
 POINT_CEILING_BYTES = 512 * 1024 * 1024
 #: Faults that damage only the point store; the manifest and reference stay as published.
@@ -21,8 +21,9 @@ POINT_FAULTS = frozenset(
         "symlink",
     }
 )
-#: Campaign schema versions Booley no longer reads; each has an unsupported-schema mode.
-RETIRED_SCHEMAS = frozenset({"v1", "v2", "v3", "v4"})
+#: Coverage Campaign schema versions (Booley 0.4.0 and earlier) Booley no longer reads;
+#: each has an unsupported-schema mode.
+RETIRED_SCHEMAS = frozenset({"v1", "v2", "v3", "v4", "v5"})
 
 
 def canonical(value: object) -> bytes:
@@ -96,7 +97,7 @@ def nested_campaign(reference: Path, owned: Path) -> tuple[Path, dict]:
     document = json.loads(reference.read_text())
     if document.get("$schema") != REFERENCE_SCHEMA:
         raise ValueError(f"expected the Target coverage.json ({REFERENCE_SCHEMA})")
-    nested = document["coverage_campaign"]
+    nested = document["coverage_record"]
     if nested.get("path_base") != "origin_target":
         raise ValueError("unsupported reference path_base")
     path = reference.parent / nested["path"]
@@ -107,7 +108,7 @@ def nested_campaign(reference: Path, owned: Path) -> tuple[Path, dict]:
 def rebind_reference(reference: Path, document: dict, campaign: Path) -> None:
     """Update the reference envelope so validation reaches the mutated Campaign."""
     raw = campaign.read_bytes()
-    document["coverage_campaign"].update(
+    document["coverage_record"].update(
         bytes=len(raw), sha256="sha256:" + hashlib.sha256(raw).hexdigest()
     )
     reference.write_bytes(canonical(document))

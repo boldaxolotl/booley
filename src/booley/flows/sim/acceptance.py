@@ -695,7 +695,7 @@ def _coverage_detail(evidence: _OutcomeEvidence) -> dict[str, object]:
     outcome = evidence.outcome
     coverage = evidence.coverage()
     campaign = coverage.resolved.loaded.campaign
-    nested = outcome.coverage_reference["coverage_campaign"]
+    nested = outcome.coverage_reference["coverage_record"]
     assert isinstance(nested, Mapping)
     report_root = outcome.manifest_path.parents[5]
     relative_public_path = coverage.path.relative_to(report_root).as_posix()

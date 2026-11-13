@@ -14,7 +14,7 @@ SOURCE_METRICS = {"line", "branch", "expression", "toggle"}
 
 
 #: Must equal the Campaign schema Booley writes; tests/qa guards the match.
-CAMPAIGN_SCHEMA = "booley.coverage-campaign/v5"
+CAMPAIGN_SCHEMA = "booley.coverage-record/v1"
 
 
 def require(condition: bool, message: str) -> None:
@@ -42,8 +42,8 @@ def read_campaign(path: Path) -> tuple[dict, list[dict]]:
     require(len(raw) == ref["uncompressed_bytes"], "uncompressed bytes mismatch")
     records = [json.loads(line) for line in raw.splitlines()]
     header, *points = records
-    require(header["$schema"] == "booley.coverage-points/v1", "point schema")
-    require(header["campaign_id"] == manifest["campaign_id"], "Campaign binding")
+    require(header["$schema"] == "booley.coverage-points/v2", "point schema")
+    require(header["coverage_record_id"] == manifest["coverage_record_id"], "Campaign binding")
     require(header["target_identity"] == manifest["target"]["identity"], "Target binding")
     require(len(points) == ref["point_count"], "point count mismatch")
     require(len({p["id"] for p in points}) == len(points), "duplicate points")

@@ -252,7 +252,7 @@ def test_oracle_reads_campaign_the_product_publishes(tmp_path):
     published = _nested_campaign(tmp_path / "target")
     manifest, points = oracle.read_campaign(published)
     document = json.loads(published.read_text())
-    assert manifest["campaign_id"] == document["campaign_id"]
+    assert manifest["coverage_record_id"] == document["coverage_record_id"]
     assert len(points) == document["point_store"]["point_count"]
 
 
