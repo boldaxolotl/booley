@@ -78,4 +78,5 @@ def test_mutant_timeout_counts_as_kill_not_invalid(tmp_path: Path) -> None:
     verdict = endpoint._classify_variant_suite(runs)
     assert verdict.detected is True
     assert verdict.timed_out is True
+    assert verdict.first_killing_test == "wedged"
     assert verdict.inconclusive_reason == ""
