@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import sys
@@ -12,10 +14,11 @@ from typing import Any
 
 import pytest
 import yaml
-from tests.subprocess_budget import run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.goals.model import parse_goal_arg
 from booley.runtime import dockerfile_syntax
+from booley.runtime.docker_base_contract import stable_base_inputs
 
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 
@@ -124,38 +127,157 @@ def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
     assert events["workflow_dispatch"] is None
 
 
-def test_demo_uses_and_retains_the_pulled_immutable_image_identity() -> None:
+def _demo_job(name: str = "demo-contract") -> dict[str, Any]:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    steps = workflow["jobs"]["demo-contract"]["steps"]
-    resolver = next(
-        step for step in steps if step.get("name") == "Pull and resolve RISC-V Sandbox"
-    )
-    upload = next(step for step in steps if step.get("name") == "Retain RISC-V Sandbox identity")
-    verify = next(
-        step
-        for step in steps
-        if step.get("name") == "Verify public demo contract with current Booley source"
-    )
+    job = workflow["jobs"][name]
+    assert isinstance(job, dict)
+    return job
 
-    assert resolver["id"] == "runtime-image"
-    assert ".github/scripts/pull_image_identity.py" in resolver["run"]
-    assert '--image "${IMAGE}"' in resolver["run"]
-    assert '--github-output "${GITHUB_OUTPUT}"' in resolver["run"]
-    assert '--evidence "${RUNNER_TEMP}/picorv32-demo/image-identity.json"' in resolver["run"]
-    assert upload["if"] == "always()"
-    assert str(upload["uses"]).startswith("actions/upload-artifact@")
-    assert upload["with"] == {
-        "name": "picorv32-image-identity-${{ github.run_id }}-${{ github.run_attempt }}",
-        "path": "${{ runner.temp }}/picorv32-demo/image-identity.json",
-        "if-no-files-found": "error",
-        "retention-days": 14,
-    }
-    assert '"${{ steps.runtime-image.outputs.image }}"' in verify["run"]
-    assert '"${IMAGE}" bash' not in verify["run"]
-    # Published images can still own a legacy /booley-project symlink.
-    # Docker resolves mount destinations through it, recreating the old layout.
-    assert "dst=/booley-project" not in verify["run"]
-    assert "-e BOOLEY_DIR=/work/.booley" in verify["run"]
+
+def _demo_step(name: str) -> dict[str, Any]:
+    steps = _demo_job()["steps"]
+    return next(step for step in steps if step.get("name") == name)
+
+
+def _glob_matches(pattern: str, path: str) -> bool:
+    """Match a workflow ``paths`` entry: an exact file, or a ``dir/**`` prefix."""
+    if pattern.endswith("/**"):
+        return path.startswith(pattern[:-2])
+    assert "*" not in pattern, pattern
+    return path == pattern
+
+
+def test_demo_never_runs_on_the_released_riscv_image() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "booley-sandbox-riscv" not in text, "workflow still references booley-sandbox-riscv"
+
+    job = _demo_job()
+    steps = job["steps"]
+    names = [step.get("name") for step in steps]
+    verify = steps[names.index("Verify public demo contract with current Booley source")]
+    build = steps[names.index("Build RISC-V Sandbox candidate")]
+    select = steps[names.index("Select compatible stable runtime base")]
+
+    # The demo runs in the candidate the build produced, after the base choice.
+    assert "booley-riscv-test bash" in verify["run"]
+    assert ".github/scripts/riscv_candidate.sh build" in build["run"]
+    assert steps.index(select) < steps.index(build) < steps.index(verify)
+    # A failed build fails the check: nothing may continue past it, and no
+    # build may write the shared cache (the Tests workflow stays its writer).
+    assert not any(step.get("continue-on-error") for step in steps)
+    assert not [step for step in steps if "cache-to" in yaml.safe_dump(step)]
+    # A failed base selection fails the check instead of skipping it.
+    assert str(job["if"]).startswith("${{ !cancelled() && (")
+    assert steps[0]["name"] == "Require RISC-V Sandbox base selection"
+    assert steps[0]["if"] == "needs.base-plan.result != 'success'"
+    assert "exit 1" in steps[0]["run"]
+
+
+_FAKE_IDENTITY_DOCKER = """#!/usr/bin/env bash
+# docker image inspect --format '{{.Id}}' <tag>: a distinct ID per tag.
+case "$*" in
+  "image inspect --format {{.Id}} booley-riscv-test") echo sha256:%(candidate)s ;;
+  "image inspect --format {{.Id}} booley-runtime-base:ci") echo sha256:%(built_base)s ;;
+  *) echo "unexpected docker $*" >&2; exit 9 ;;
+esac
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="workflow steps run under bash")
+def test_demo_evidence_names_candidate_digest_and_base_source(tmp_path: Path) -> None:
+    step = next(
+        (
+            step
+            for step in _demo_job()["steps"]
+            if step.get("name") == "Record RISC-V Sandbox candidate identity"
+        ),
+        None,
+    )
+    assert step is not None, "no step records the candidate image identity"
+    candidate, built_base = "c" * 64, "b" * 64
+    published = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "a" * 64
+    docker = tmp_path / "bin" / "docker"
+    docker.parent.mkdir()
+    docker.write_text(_FAKE_IDENTITY_DOCKER % {"candidate": candidate, "built_base": built_base})
+    docker.chmod(0o755)
+    runner_temp = tmp_path / "runner"
+    evidence = runner_temp / "picorv32-image-evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "tooling-source.json").write_text('{"source": "registry"}\n', encoding="utf-8")
+
+    def record(build: str, base_image: str) -> dict[str, Any]:
+        result = run_bounded_child(
+            ["bash", "-e", "-c", step["run"]],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "PATH": f"{docker.parent}{os.pathsep}{os.environ['PATH']}",
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+                "BUILD_STABLE_BASE": build,
+                "BASE_IMAGE": base_image,
+                "SOURCE_REVISION": "f" * 40,
+            },
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_S,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads((evidence / "image-identity.json").read_text(encoding="utf-8"))
+
+    from_published = record("false", published)
+    assert from_published["image_id"] == f"sha256:{candidate}"
+    assert from_published["base_source"] == "published"
+    assert from_published["base_image"] == published
+    assert from_published["base_digest"] == "sha256:" + "a" * 64
+    assert from_published["riscv_tooling_source"] == "registry"
+    assert from_published["source_revision"] == "f" * 40
+
+    from_source = record("true", "booley-runtime-base:ci")
+    assert from_source["base_source"] == "source-build"
+    assert from_source["base_digest"] == f"sha256:{built_base}"
+    assert from_source["image_id"] == f"sha256:{candidate}"
+    assert "source-build" in (tmp_path / "summary.md").read_text(encoding="utf-8")
+
+    # The record is retained even when a later step fails, but only once it exists.
+    upload = _demo_step("Retain RISC-V Sandbox identity")
+    assert upload["if"] == f"always() && steps.{step['id']}.outcome == 'success'"
+    uploaded = Path(upload["with"]["path"].replace("${{ runner.temp }}", str(runner_temp)))
+    assert (evidence / "image-identity.json").is_relative_to(uploaded)
+    assert upload["with"]["if-no-files-found"] == "error"
+
+
+def test_stable_base_changes_run_demo_on_a_source_built_base() -> None:
+    root = Path(__file__).parents[2]
+    patterns = _workflow_events()["pull_request"]["paths"]
+    inputs = (
+        *stable_base_inputs(root),
+        "src/booley/data/docker/stable-base-inputs.txt",
+    )
+    unmatched = [
+        path for path in inputs if not any(_glob_matches(pattern, path) for pattern in patterns)
+    ]
+    assert not unmatched, f"stable-base inputs that do not trigger the demo: {unmatched}"
+
+    plan = _demo_job("base-plan")
+    decide = next(step for step in plan["steps"] if "--publish-decision" in step.get("run", ""))
+    assert "ghcr.io/boldaxolotl/booley-sandbox-base:main" in decide["run"]
+    assert plan["outputs"]["build"] == f"${{{{ steps.{decide['id']}.outputs.publish }}}}"
+    select = _demo_step("Select compatible stable runtime base")
+    assert select["env"]["BUILD_STABLE_BASE"] == "${{ needs.base-plan.outputs.build == 'true' }}"
+    assert _demo_job()["needs"] == "base-plan"
+
+
+def test_demo_keeps_90_minute_timeout_unless_it_builds_the_base() -> None:
+    timeout = _demo_job()["timeout-minutes"]
+    assert isinstance(timeout, str), "the demo timeout has no stable-base build branch"
+    match = re.fullmatch(
+        r"\$\{\{ needs\.base-plan\.outputs\.build == 'true' && (\d+) \|\| (\d+) \}\}", timeout
+    )
+    assert match is not None, timeout
+    building, reusing = map(int, match.groups())
+    assert reusing == 90
+    assert building == 180
+    assert _demo_job("base-plan")["timeout-minutes"] == 10
 
 
 def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
@@ -230,6 +352,15 @@ def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> Non
         for step in job.get("steps", [])
         if str(step.get("uses", "")).startswith("actions/upload-artifact@")
     ]
+    if path == WORKFLOW:
+        # The demo also uploads image identity; the readiness upload is the
+        # one that keeps this evidence, whatever the verify step did.
+        upload = next(
+            step for step in uploads if step["with"]["name"].startswith("picorv32-goal-readiness")
+        )
+        assert str(upload["if"]).startswith("always()")
+        assert f"/{directory}/" in upload["with"]["path"]
+        return
     assert any(
         step.get("if") == "always()" and f"/{directory}/" in step["with"]["path"]
         for step in uploads
