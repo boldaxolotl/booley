@@ -1224,12 +1224,11 @@ def test_two_items_building_in_parallel_each_get_half_the_cores(
 
         def first_waits_for_a_sibling() -> None:
             # t01 is admitted alone; t02 is then admitted beside it, and t03 (which would
-            # not fit beside both) only after t01 returns its claim.
+            # not fit beside both) only after t01 returns its claim. t01 holds on until t02
+            # has fixed its thread count: that count is read a moment after t02's claim is
+            # admitted, and a t01 that returned sooner would leave t02 the whole machine.
             _jobs_option(scenario, "t01")()
-            _wait_until(
-                lambda: len(scenario.store.observe(CLASS_MEMORY)[0]) >= 3,
-                _PARALLEL_SYNC_TIMEOUT_S,
-            )
+            _wait_until(lambda: "t02" in scenario.threads, _PARALLEL_SYNC_TIMEOUT_S)
 
         scenario.hooks["t01"] = first_waits_for_a_sibling
         together = _barrier(2)
