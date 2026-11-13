@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import shlex
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -10,8 +14,14 @@ import pytest
 from booley.config.host_config import SandboxHostPolicy
 from booley.harness import bootstrap
 from booley.harness import host_sidecars as sidecars
+from booley.runtime import session_runtime
 from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.image_lifecycle import Intent
+from tests.harness.session_docker_fake import (
+    headless_session_entry,
+    route_session_commands,
+    run_cli,
+)
 
 
 def _cp(
@@ -1046,6 +1056,16 @@ class _EgressDocker:
         if state is not None:
             self.containers[name]["state"] = state
 
+    def add_headless_session(
+        self, name: str, root: Path, *, networks: tuple[str, ...] = ()
+    ) -> None:
+        """Add a headless Sandbox whose Project is identified by its `/work` bind."""
+        self.add_session(name, networks=networks)
+        entry = self.containers[name]
+        description = headless_session_entry(name, root)
+        entry["labels"] = description["Config"]["Labels"]
+        entry["session"] = description
+
     def mutations(self) -> list[list[str]]:
         return [call for call in self.calls if "inspect" not in call and call[0] != "ps"]
 
@@ -1065,6 +1085,7 @@ class _EgressDocker:
         return {
             "ps": self._ps,
             "rm": self._remove,
+            "stop": lambda _args: _cp(),
             "build": self._build,
             "run": self._run,
             "start": lambda _args: _cp(),
@@ -1076,17 +1097,33 @@ class _EgressDocker:
         image_id, labels = self.images[args[2]]
         return _cp(stdout=json.dumps({"Id": image_id, "Config": {"Labels": labels}}))
 
+    def _find(self, key: str) -> str | None:
+        """Resolve a container name or, for a headless Session, its Id."""
+        for name, entry in self.containers.items():
+            session = entry.get("session")
+            if key == name or (session is not None and key == session["Id"]):  # type: ignore[index]
+                return name
+        return None
+
     def _inspect_container(self, args: list[str]) -> subprocess.CompletedProcess[str]:
-        entry = self.containers.get(args[2])
-        if entry is None:
+        name = self._find(args[2])
+        if name is None:
             return _cp(1, stderr="No such container")
+        entry = self.containers[name]
         document = {
             "Image": entry["image"],
             "Config": {"Labels": entry["labels"]},
             "State": {"Running": entry["running"]},
-            "NetworkSettings": {"Networks": {name: {} for name in entry["networks"]}},
+            "NetworkSettings": {"Networks": {net: {} for net in entry["networks"]}},
             "Mounts": [],
         }
+        if (session := entry.get("session")) is not None:
+            # Full identity, so Session admission accepts the container as a Sandbox.
+            document = {
+                **session,  # type: ignore[dict-item]
+                "State": {**session["State"], "Running": entry["running"]},  # type: ignore[index]
+                "NetworkSettings": document["NetworkSettings"],
+            }
         return _cp(stdout=json.dumps(document))
 
     def _inspect_network(self, _args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1124,15 +1161,26 @@ class _EgressDocker:
             role = entry["labels"].get(sidecars.ROLE_LABEL)  # type: ignore[union-attr]
             if role != sidecars.SESSION_ROLE:
                 continue
-            if "-a" in args:
+            session = entry.get("session")
+            if "--no-trunc" in args:
+                # Session admission's Project listing: id, name, folder, project-id, role.
+                if entry["running"] and session is not None:
+                    labels = session["Config"]["Labels"]  # type: ignore[index]
+                    rows.append(
+                        f"{session['Id']}\t{name}\t\t{labels['booley.project-id']}\t{role}"  # type: ignore[index]
+                    )
+            elif "-a" in args:
                 state = entry.get("state") or ("running" if entry["running"] else "exited")
                 rows.append(f"{name}\t{name}\t{state}")
             elif entry["running"]:
-                rows.append(f"{name}\t{name}")
+                ident = session["Id"] if session is not None else name  # type: ignore[index]
+                rows.append(f"{ident}\t{name}")
         return _cp(stdout="".join(f"{row}\n" for row in rows))
 
     def _remove(self, args: list[str]) -> subprocess.CompletedProcess[str]:
-        self.containers.pop(args[-1], None)
+        name = self._find(args[-1])
+        if name is not None:
+            del self.containers[name]
         return _cp()
 
     def _build(self, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1223,6 +1271,23 @@ def test_unproxied_bootstrap_removes_idle_proxy_and_network(
     assert not docker.network
 
 
+def test_active_session_blocker_names_vscode_owner_remedy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    docker = _egress_docker(monkeypatch)
+    docker.add_session("booley-session-vscode")  # carries the VS Code folder label
+    docker.add_headless_session("booley-session-headless", tmp_path / "proj")
+
+    summary = sidecars._active_session_summary(sidecars._active_sessions(docker))
+
+    headless, vscode = summary.split(", ")  # sorted by name
+    assert "booley-session-vscode" in vscode
+    assert "/projects/a" in vscode
+    assert "close its VS Code window or stop it with Dev Containers" in vscode
+    assert "session down" not in vscode
+    assert f"booley session down --project {tmp_path / 'proj'}" in headless
+
+
 @pytest.mark.parametrize("blocker", ["running", "parked-predecessor", "foreign-attachment"])
 def test_unproxied_bootstrap_keeps_proxy_while_sandboxes_exist(
     monkeypatch: pytest.MonkeyPatch, blocker: str
@@ -1231,7 +1296,12 @@ def test_unproxied_bootstrap_keeps_proxy_while_sandboxes_exist(
     _leftover_egress(docker, reaper=False)
     if blocker == "running":
         docker.add_session("booley-session-a", networks=(sidecars.legacy.EGRESS_NETWORK,))
-        expected = ["booley-session-a", "/projects/a", "booley session down --project"]
+        # The fake Session carries the VS Code folder label: `session down` refuses it.
+        expected = [
+            "booley-session-a",
+            "/projects/a",
+            "close its VS Code window or stop it with Dev Containers",
+        ]
     elif blocker == "parked-predecessor":
         name = "booley-session-a-pre-refresh"
         docker.add_session(name, running=False)
@@ -1253,6 +1323,38 @@ def test_unproxied_bootstrap_keeps_proxy_while_sandboxes_exist(
     assert not any(call[0] == "rm" or call[:2] == ["network", "rm"] for call in docker.calls)
     assert docker.network
     assert sidecars.legacy.PROXY_CONTAINER in docker.containers
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the hint uses cmd quoting, which shlex cannot parse")
+def test_bootstrap_replaces_proxy_after_deleted_project_session_down(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    docker = _egress_docker(monkeypatch)
+    _leftover_egress(docker, reaper=False)
+    root = tmp_path / "gone"
+    root.mkdir()
+    name = session_runtime.session_container_name(root)
+    docker.add_headless_session(name, root, networks=(sidecars.legacy.EGRESS_NETWORK,))
+    shutil.rmtree(root)
+    route_session_commands(
+        monkeypatch, tmp_path, lambda argv, **_kw: docker.run(argv[1:]), docker.containers
+    )
+
+    blocked = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    hint = next(finding.detail for finding in blocked.findings if "session down" in finding.detail)
+    command = re.search(r"`(booley session down [^`]+)`", hint)
+    assert command, hint
+    assert run_cli(monkeypatch, shlex.split(command.group(1))[1:]) == 0
+    assert name not in docker.containers, "session down must remove the deleted Project's Session"
+
+    result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
+
+    assert sidecars.SidecarState.ERROR not in {state for _, state in _states(result)}
+    assert sidecars.legacy.PROXY_CONTAINER not in docker.containers
+    assert ["rm", "-f", sidecars.legacy.PROXY_CONTAINER] in docker.calls
+    removed = [call[-1] for call in docker.calls if call[:2] == ["rm", "-f"]]
+    assert removed.count(f"id-{name}") == 1, "only `session down` removes the Session"
 
 
 def test_unproxied_mode_flip_keeps_current_reaper(monkeypatch: pytest.MonkeyPatch) -> None:
