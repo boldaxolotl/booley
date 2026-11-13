@@ -12,6 +12,7 @@ from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -75,6 +76,8 @@ from tests.flows.sim.simulation_record_test_support import (
     _outer_claim,
     _parallel_environment,
     _ParallelExecution,
+    _remove_child_lease,
+    _remove_slot_entry,
     _run_identity,
     _scheduled_attempt,
     _three_item_manifest,
@@ -82,6 +85,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _wait_until,
 )
 from tests.oom_priority_support import FakeProc
+from tests.sharing_error_support import sharing_error
 
 
 def _unique_execution_id() -> ExecutionId:
@@ -247,7 +251,7 @@ def test_child_permit_checks_lease_loss_before_return(tmp_path: Path) -> None:
             pytest.raises(CampaignCapacityError, match="lease lost"),
             _child_permit(capacity) as permit,
         ):
-            permit.token.path.unlink()
+            _remove_slot_entry(store, permit.token)
     finally:
         store.release(outer)
 
@@ -657,6 +661,43 @@ def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) ->
 def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_stop: bool | str
 ) -> None:
+    slots, registry, campaign_store, child_ids = _run_lease_loss_scheduler(
+        tmp_path, monkeypatch, scope_stop
+    )
+    _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_stop)
+    assert slots.snapshot(CLASS_MEMORY) == ([], [])
+
+
+def test_scheduler_lease_loss_removal_retries_a_windows_sharing_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient WinError 32 on the child's entry removal is retried, not raised (#3982)."""
+    memory_dir = tmp_path / "slots" / CLASS_MEMORY
+    real_unlink = Path.unlink
+    denials_left = 2
+    denial_lock = threading.Lock()
+
+    def sharing_violating_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+        """Deny the first two holder-entry removals, like a concurrent reader's open handle."""
+        nonlocal denials_left
+        if path.parent == memory_dir and path.name.startswith("h-"):
+            with denial_lock:
+                if denials_left > 0:
+                    denials_left -= 1
+                    raise sharing_error()
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", sharing_violating_unlink)
+    slots, registry, campaign_store, child_ids = _run_lease_loss_scheduler(
+        tmp_path, monkeypatch, False
+    )
+    assert denials_left == 0
+    _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, False)
+    assert slots.snapshot(CLASS_MEMORY) == ([], [])
+
+
+def _run_lease_loss_scheduler(tmp_path, monkeypatch, scope_stop):
+    """Run two lanes whose first one loses its lease; return what the assertions read."""
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "record")
@@ -691,8 +732,7 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     finally:
         child_finished.set()
         slots.release(outer)
-    _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_stop)
-    assert slots.snapshot(CLASS_MEMORY) == ([], [])
+    return slots, registry, campaign_store, child_ids
 
 
 def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
@@ -710,11 +750,7 @@ def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
         scope = current_supervised_execution()
         assert scope is not None
         _wait_until(lambda: len(slots.snapshot(CLASS_MEMORY)[0]) == 3)
-        for token in slots.snapshot(CLASS_MEMORY)[0]:
-            if str(token.execution_id) == child_id:
-                with slots._lease_gate(token) as acquired:
-                    assert acquired
-                    token.path.unlink()
+        _remove_child_lease(slots, child_id)
         _wait_until(scope.cancelled)
         child_finished.set()
         if scope_stop == "coverage":

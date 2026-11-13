@@ -1119,6 +1119,31 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
 _PARALLEL_SYNC_TIMEOUT_S = 20.0
 
 
+def _remove_slot_entry(slots: SlotStore, token: SlotToken) -> None:
+    """Remove *token*'s entry the way a reaper does, one pass after another.
+
+    Each pass takes the lease gate and removes through the store's own
+    bounded entry removal, so a concurrent reader's Windows sharing
+    violation is retried like a real reap (#3982). A pass that cannot take
+    the gate (a renewal holds it through its ~1.1 s read/replace retries)
+    or exhausts the removal bound is retried on the next pass, until
+    ``_PARALLEL_SYNC_TIMEOUT_S``.
+    """
+
+    def removed() -> bool:
+        with slots._lease_gate(token) as acquired:
+            return acquired and slots._unlink_entry(token.path)
+
+    _wait_until(removed, timeout=_PARALLEL_SYNC_TIMEOUT_S)
+
+
+def _remove_child_lease(slots: SlotStore, child_id: str) -> None:
+    """Make exactly this child's lease disappear, as a reaper reclaiming it does."""
+    for token in slots.snapshot(CLASS_MEMORY)[0]:
+        if str(token.execution_id) == child_id:
+            _remove_slot_entry(slots, token)
+
+
 def _scheduled_attempt(store: CampaignStore, item) -> ScheduledAttempt:
     attempt_id = os.urandom(16).hex()
     ordinal, directory = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
