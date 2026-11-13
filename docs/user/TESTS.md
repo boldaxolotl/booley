@@ -113,7 +113,6 @@ How the seed reaches the simulation depends on the Target:
 | Verilator, HDL testbench | `+verilator+seed+<seed>`, plus the `seed` template when the Target declares one |
 | Icarus, HDL testbench | the `seed` template; without one the Target is **unseeded** |
 | Cocotb Target | cocotb's seed variable: `COCOTB_RANDOM_SEED` on cocotb 2.x, `RANDOM_SEED` on 1.x |
-| Any other simulator, HDL testbench | nothing; the Target is **unseeded** |
 
 ```toml
 [sim_soc]
@@ -127,8 +126,15 @@ default_seed = 7             # this Target's Default Seed; 1 when not set
   to 2147483647. Set it when your existing regression uses a fixed seed
   other than 1.
 - An **unseeded** Target cannot apply a seed, so Booley refuses any request
-  for one, including a `default_seed` key, and its results carry no seed. To seed an Icarus Target, give its
-  testbench a seed argument and declare the `seed` template.
+  for one, including a `default_seed` key, and its results carry no seed.
+
+<details markdown>
+<summary>With Icarus</summary>
+
+An Icarus Target is unseeded until it declares a `seed` template. To seed
+it, give its testbench a seed argument and declare the template.
+
+</details>
 
 <details markdown>
 <summary>With a cocotb testbench</summary>
@@ -200,8 +206,8 @@ Any other key fails to load, and `booley doctor` names it.
   quotes or backslashes, does not start with `-`, is not `default`, and
   appears once per list. `booley doctor` prints the full rule.
 - **Arguments.** `select`, `seed` and every Variant argument are each one
-  token with no spaces, starting with `+` (a plusarg) or `-` (an argument for
-  the simulation binary's own `main`), and not with `++` or `+-`. `select`
+  token with no spaces, starting with `+` (a plusarg) or `-` (an option the
+  simulation program parses itself), and not with `++` or `+-`. `select`
   uses `{index}` (0-based position in `tests`) or `{name}`; `seed` uses
   `{seed}` exactly once and cannot be `+verilator+seed+`. `select` and `seed`
   cannot set the same option.
