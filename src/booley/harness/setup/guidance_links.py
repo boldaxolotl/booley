@@ -123,10 +123,10 @@ def _apply_guidance_action(action: InitAction) -> None:
 def detach_guidance_hardlinks(project_root: Path, booley_dir: Path) -> tuple[Path, ...]:
     """Remove Booley's root hardlinks to the canonical guidance file.
 
-    On Windows without Developer Mode the root links are hardlinks, which make
-    the canonical file ineligible for line-ending normalization: rewriting one
-    name of a hardlinked file would silently split it from the others, so the
-    line-ending repair refuses. Only untracked root entries sharing the
+    On Windows without Developer Mode the root links are hardlinks. The
+    line-ending repair re-checks the canonical file out through Git, which
+    replaces its inode and would silently split it from these links, so they
+    are released first. Only untracked root entries sharing the
     canonical file's identity are removed; their content lives on in the
     canonical file, and :func:`ensure_guidance_links` recreates them. Tracked
     files, symlinks, and copies are left alone. Failed probes or removals leave

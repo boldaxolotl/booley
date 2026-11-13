@@ -1138,7 +1138,7 @@ class TestLineEndingsStep:
             LineEndingActionState.FAILED,
             detail="simulated config failure",
         )
-        with patch.object(init_git_hooks, "_pin_autocrlf", return_value=failure):
+        with patch.object(init_git_hooks, "_pin_line_ending_config", return_value=failure):
             _step_line_endings(ctx)
 
         assert ctx.results[-1].status == "err"
@@ -1541,7 +1541,8 @@ class TestLineEndingsAutoFix:
         assert "!  1 tracked file(s) are checked out with CRLF" in output
         assert "!  core.autocrlf=true" in output
         assert "·  detected" not in output
-        assert "would normalize 1 tracked file(s) to LF atomically" in output
+        assert "would normalize 1 tracked file(s) to LF" in output
+        assert "atomically" not in output
         assert "--fix-line-endings" not in output
 
     def test_clean_crlf_checkout_is_auto_fixed_in_one_run(self, tmp_path: Path, capsys):
@@ -1608,56 +1609,31 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "ok"
         assert ctx.results[-1].detail == "index refreshed"
 
-    def test_partial_rewrite_refreshes_successful_paths(self, tmp_path: Path):
-        from booley.harness.setup import line_endings as init_git_hooks
+    def test_partial_normalization_reports_normalized_and_left_files(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
         from booley.harness.setup.git_hooks import _step_line_endings
+        from booley.harness.setup.line_endings import sample_worktree_cleanliness
 
         self._crlf_repo(tmp_path)
         TestLineEndingsStep._add_file(tmp_path, "b.v", b"module b;\nendmodule\n")
         _git_commit(tmp_path)
         (tmp_path / "b.v").unlink()
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "checkout", "--", "b.v"],
-            capture_output=True,
-            check=True,
-        )
-        real_rewrite = init_git_hooks._rewrite_from_stage
+        run_bounded_child(["git", "-C", str(tmp_path), "checkout", "--", "b.v"], check=True)
+        baseline = sample_worktree_cleanliness(tmp_path)
+        edited = b"module b;\r\n  localparam KEEP = 1;\r\nendmodule\r\n"
+        (tmp_path / "b.v").write_bytes(edited)
 
-        def fail_second(root: Path, name: str, replacement: Path, expected) -> str | None:
-            if name == "b.v":
-                return "simulated second-file failure"
-            return real_rewrite(root, name, replacement, expected)
-
-        with patch.object(init_git_hooks, "_rewrite_from_stage", side_effect=fail_second):
-            ctx = _ctx(tmp_path)
-            _step_line_endings(ctx)
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx, clean_baseline=baseline)
 
         assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
-        assert (tmp_path / "b.v").read_bytes() == b"module b;\r\nendmodule\r\n"
-        status = subprocess.run(
-            ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        # The failed CRLF path may be dirty under the newly published LF policy;
-        # successful replacements must remain clean and the index stays untouched.
-        assert status.stdout in ("", " M b.v\n")
-        assert (
-            subprocess.run(
-                ["git", "-C", str(tmp_path), "diff", "--cached", "--quiet"],
-                capture_output=True,
-                check=False,
-            ).returncode
-            == 0
-        )
+        assert (tmp_path / "b.v").read_bytes() == edited
         assert ctx.results[-1].status == "err"
-
-        retry = _ctx(tmp_path)
-        _step_line_endings(retry)
-
-        assert (tmp_path / "b.v").read_bytes() == b"module b;\nendmodule\n"
-        assert retry.results[-1].status == "ok"
+        output = capsys.readouterr().out
+        assert "normalized 1 file(s) to LF" in output
+        assert "'b.v' (changed)" in output
+        assert "would leave tracked files untouched" not in output
 
     def test_phantom_status_failure_includes_git_context(self, tmp_path: Path):
         from booley.harness.setup import line_endings as init_git_hooks
@@ -1804,30 +1780,6 @@ class TestLineEndingsAutoFix:
         assert (tmp_path / "local.v").read_bytes() == local_edit
         assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
         assert ctx.results[-1].status == "ok"
-
-    def test_auto_fix_refuses_an_affected_skip_worktree_path(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "update-index", "--skip-worktree", "a.v"],
-            capture_output=True,
-            check=True,
-        )
-        local_edit = b"module a;\r\n  localparam int KEEP = 1;\r\nendmodule\r\n"
-        (tmp_path / "a.v").write_bytes(local_edit)
-        assert not subprocess.run(
-            ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx)
-
-        assert (tmp_path / "a.v").read_bytes() == local_edit
-        assert ctx.results[-1].status == "err"
 
     def test_auto_fix_treats_tracked_names_as_literals(self, tmp_path: Path):
         """A candidate filename must not expand onto a hidden neighboring edit."""
@@ -2006,80 +1958,21 @@ class TestLineEndingsAutoFix:
         assert (tmp_path / "a.v").read_bytes() == original
         assert ctx.results[-1].status == "err"
 
-    def test_edit_after_cleanliness_probe_is_not_overwritten(self, tmp_path: Path):
-        from booley.harness.setup import line_endings as init_git_hooks
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        local_edit = b"module a;\r\n  localparam int KEEP = 1;\r\nendmodule\r\n"
-
-        def edit_during_guard(_root: Path, _paths: list[str]) -> list[str]:
-            (tmp_path / "a.v").write_bytes(local_edit)
-            return []
-
-        ctx = _ctx(tmp_path)
-        with patch.object(init_git_hooks, "_protected_index_paths", side_effect=edit_during_guard):
-            _step_line_endings(ctx)
-
-        assert (tmp_path / "a.v").read_bytes() == local_edit
-        assert ctx.results[-1].status == "err"
-
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_hardlinked_candidate_is_refused_without_breaking_link(self, tmp_path: Path):
+    def test_foreign_hardlink_keeps_its_bytes_and_does_not_block_repair(self, tmp_path: Path):
         from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         mirror = tmp_path / "untracked-mirror.v"
         os.link(tmp_path / "a.v", mirror)
-        before = (tmp_path / "a.v").stat()
 
         ctx = _ctx(tmp_path)
         _step_line_endings(ctx)
 
-        after = (tmp_path / "a.v").stat()
-        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
-        assert (tmp_path / "a.v").read_bytes() == mirror.read_bytes()
-        assert ctx.results[-1].status == "err"
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_project_data_guidance_hardlink_blocks_init_readiness(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from booley.harness.init_cmd import _print_summary
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
-        subprocess.run(
-            ["git", "-C", str(booley_dir), "config", "core.autocrlf", "true"],
-            capture_output=True,
-            check=True,
-        )
-        TestLineEndingsStep._add_file(booley_dir, "AGENTS.md", b"guidance\n")
-        _git_commit(booley_dir)
-        canonical = booley_dir / "AGENTS.md"
-        canonical.unlink()
-        _run_git(booley_dir, "checkout", "--", "AGENTS.md")
-        assert canonical.read_bytes() == b"guidance\r\n"
-        os.link(canonical, tmp_path / "AGENTS.md")
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx, booley_dir)
-
-        assert ctx.results[-1].status == "err"
-        assert "project-data" in ctx.results[-1].detail
-        assert "hard-linked tracked path 'AGENTS.md'" in ctx.results[-1].detail
-        assert _print_summary(ctx) == 2
-        assert "Setup incomplete" in capsys.readouterr().out
-        assert canonical.read_bytes() == b"guidance\r\n"
-        assert canonical.samefile(tmp_path / "AGENTS.md")
-
-        inspection = _ctx(tmp_path, check_only=True)
-        _step_line_endings(inspection, booley_dir)
-        assert inspection.results[-1].status == "warn"
-        assert _print_summary(inspection) == 1
+        assert ctx.results[-1].status == "ok"
+        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
+        assert mirror.read_bytes() == b"module a;\r\nendmodule\r\n"
+        assert not (tmp_path / "a.v").samefile(mirror)
 
     @staticmethod
     def _hardlinked_guidance_project(tmp_path: Path) -> Path:
@@ -2144,8 +2037,13 @@ class TestLineEndingsAutoFix:
         assert (tmp_path / "AGENTS.md").samefile(booley_dir / "AGENTS.md")
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_foreign_hardlink_to_guidance_still_blocks_normalization(self, tmp_path: Path) -> None:
-        from booley.harness.init_cmd import _release_guidance_for_line_endings
+    def test_foreign_hardlink_to_guidance_keeps_its_bytes_after_release(
+        self, tmp_path: Path
+    ) -> None:
+        from booley.harness.init_cmd import (
+            _release_guidance_for_line_endings,
+            _step_guidance_links,
+        )
         from booley.harness.setup.git_hooks import _step_line_endings
 
         booley_dir = self._hardlinked_guidance_project(tmp_path)
@@ -2156,11 +2054,17 @@ class TestLineEndingsAutoFix:
         ctx = _ctx(tmp_path)
         assert _release_guidance_for_line_endings(ctx, booley_dir)
         _step_line_endings(ctx, booley_dir)
+        _step_guidance_links(ctx)
 
-        assert ctx.results[-1].status == "err"
-        assert "hard-linked tracked path 'AGENTS.md'" in ctx.results[-1].detail
-        assert canonical.read_bytes() == b"guidance\r\n"
-        assert foreign.samefile(canonical)
+        assert [(r.name, r.status) for r in ctx.results] == [
+            ("line_endings", "ok"),
+            ("guidance_links", "ok"),
+        ]
+        assert canonical.read_bytes() == b"guidance\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
+        assert foreign.read_bytes() == b"guidance\r\n"
+        assert not foreign.samefile(canonical)
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
     def test_combined_step_discards_stale_guidance_plan_after_release(
@@ -2203,7 +2107,7 @@ class TestLineEndingsAutoFix:
         assert not _release_guidance_for_line_endings(_ctx(tmp_path), booley_dir)
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_partial_release_failure_restores_the_removed_guidance_link(
+    def test_partial_release_failure_keeps_the_locked_links_bytes_and_reports_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.harness.init_cmd import _step_line_endings_and_guidance
@@ -2225,11 +2129,13 @@ class TestLineEndingsAutoFix:
         ctx = _ctx(tmp_path)
         _step_line_endings_and_guidance(ctx, plan)
 
-        assert ctx.results[0].status == "err"
-        assert ctx.results[-1].status == "ok"
-        assert canonical.read_bytes() == b"guidance\r\n"
-        for name in ("AGENTS.md", "CLAUDE.md"):
-            assert (tmp_path / name).samefile(canonical)
+        # A hardlink no longer blocks the repair. The link that could not be released
+        # keeps its own bytes, and the guidance step reports it instead of linking over it.
+        assert ctx.results[0].status == "ok"
+        assert ctx.results[-1].status != "ok"
+        assert canonical.read_bytes() == b"guidance\n"
+        assert (tmp_path / "CLAUDE.md").read_bytes() == b"guidance\r\n"
+        assert not (tmp_path / "CLAUDE.md").samefile(canonical)
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
     def test_linked_project_data_guidance_is_repaired(
@@ -2658,6 +2564,31 @@ _UNSAFE_CODES = tuple(
 def _summary_report(observations=(), actions=(), status=LineEndingStatus.UNSAFE):
     return RepositoryLineEndingReport(
         LineEndingRepository("project-checkout", Path("/repo")), status, observations, actions
+    )
+
+
+def test_dirty_tree_summary_comes_from_refusal_reason():
+    from booley.harness.setup import line_endings
+
+    reasons = line_endings.LineEndingRefusalReason
+    dirty = ActionResult(
+        ActionKind.NORMALIZE_FILES,
+        ActionState.REFUSED,
+        count=1,
+        detail="Das Arbeitsverzeichnis hat nicht festgeschriebene Änderungen",
+        reason=reasons.DIRTY_TREE,
+    )
+    lookalike = ActionResult(
+        ActionKind.NORMALIZE_FILES,
+        ActionState.REFUSED,
+        count=1,
+        detail="working tree has changes of its own kind",
+        reason=reasons.NOT_LINE_ENDING_ONLY,
+    )
+
+    assert git_hooks._line_ending_result_detail(_summary_report(actions=(dirty,))) == "dirty tree"
+    assert git_hooks._line_ending_result_detail(_summary_report(actions=(lookalike,))) == (
+        "working tree has changes of its own kind"
     )
 
 

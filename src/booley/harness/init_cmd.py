@@ -2243,10 +2243,11 @@ def _release_guidance_for_line_endings(ctx: InitContext, booley_dir: Path | None
     """Detach Booley's own guidance hardlinks when the canonical file needs LF.
 
     The Windows guidance fallback hardlinks the root ``AGENTS.md``/``CLAUDE.md``
-    to the canonical file, and line-ending repair rightly refuses to rewrite a
-    hardlinked path. Those links are Booley's, so release them first; the
-    guidance step right after line endings recreates them against the
-    normalized file. Other hardlinks still block the repair.
+    to the canonical file. Git's re-checkout replaces the canonical file's inode,
+    which would leave those links on the old CRLF bytes. They are Booley's, so
+    release them first; the guidance step right after line endings recreates them
+    against the normalized file. Other hardlinks do not block the repair; they keep
+    their bytes.
     """
     if ctx.check_only or booley_dir is None:
         return False
