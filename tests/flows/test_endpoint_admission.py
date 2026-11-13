@@ -966,6 +966,175 @@ def _assert_unadmitted_without_switch(
         assert len(_held(memory_runtime, job_slots.CLASS_MEMORY)) == 1
 
 
+# --- Seat Caps for licensed EDA tools under the switch (#3244) -----------------------
+
+
+def _fpga_prepared(work_dir: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: bool = True):
+    """An FPGA Job over Target ``a`` (its Vivado Job needs one seat), as Target selection."""
+    from booley.flows.fpga.flow import FpgaImplFlow
+    from booley.flows.prepared_invocation import TargetSelectionInvocation
+    from tests.target_test_support import make_target_handle
+
+    flow = FpgaImplFlow()
+    handle = make_target_handle(work_dir, "a", drivable_by=("fpga",))
+    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
+    flow._args = SimpleNamespace(work_dir=work_dir, target="a")
+    monkeypatch.setattr(FpgaImplFlow, "_flow_enabled", lambda _self: enabled)
+    selection = SimpleNamespace(handles=(handle,), matches=lambda *_args: True)
+    invocation = TargetSelectionInvocation(flow, selection, flow._run)  # type: ignore[arg-type]
+    return flow, _prepared_for(invocation)
+
+
+def _write_jobs(booley_dir: Path, seats: str | None) -> None:
+    """Write ``[jobs]`` with the 1,000 MiB Memory Budget, and *seats* as ``[jobs.seats]`` if given."""
+    seats_table = "" if seats is None else f"\n[jobs.seats]\n{seats}\n"
+    (booley_dir / "booley.toml").write_text(
+        f'[jobs]\nmemory_budget = "1000m"\n{seats_table}', encoding="utf-8"
+    )
+
+
+def _hold_vivado_seat(booley_dir: Path, cap: int) -> tuple[job_slots.SlotStore, Any]:
+    """A running Job that holds one Vivado seat and 100 MiB, as another process would."""
+    import os
+
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=MAX_HEAVY))
+    pid = os.getpid()
+    token = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=pid,
+        argv=endpoint_admission._proc_cmdline(pid) or [],
+        memory=job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=100.0, seats=(("vivado", cap),)
+        ),
+    )
+    return store, token
+
+
+def test_fpga_job_queues_for_its_vivado_seat_while_memory_fits(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_jobs(memory_runtime, "vivado = 1")
+    _seed_records(memory_runtime, ("a", "fpga_impl", 400))
+    flow, prepared = _fpga_prepared(runtime, monkeypatch)
+    store, first = _hold_vivado_seat(memory_runtime, cap=1)
+    positions: list[int] = []
+    details: list[str] = []
+
+    def narrator(*args: object, **_kwargs: object) -> Callable[[int], None]:
+        details.append(str(args[-1]))
+
+        def narrate(position: int) -> None:
+            positions.append(position)
+            raise _QueuedError
+
+        return narrate
+
+    monkeypatch.setattr(endpoint_admission, "_queue_narrator", narrator)
+
+    try:
+        # 100 + 500 MiB fit the 1,000 MiB budget: only the seat holds the Job back.
+        with pytest.raises(_QueuedError), AdmissionGate(flow, prepared).enter():
+            pytest.fail("the Job entered while the only Vivado seat was held")
+
+        assert positions == [0]
+        assert "needs a vivado seat (cap 1)" in details[0]
+        assert [token.seq for token in _held(memory_runtime, job_slots.CLASS_MEMORY)] == [
+            first.seq
+        ]
+    finally:
+        store.release(first)
+
+
+def test_fpga_job_runs_beside_another_vivado_job_under_a_cap_of_two(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_jobs(memory_runtime, "vivado = 2")
+    _seed_records(memory_runtime, ("a", "fpga_impl", 400))
+    flow, prepared = _fpga_prepared(runtime, monkeypatch)
+    store, first = _hold_vivado_seat(memory_runtime, cap=2)
+
+    try:
+        with AdmissionGate(flow, prepared).enter():
+            holders = _held(memory_runtime, job_slots.CLASS_MEMORY)
+            (mine,) = (token for token in holders if token.seq != first.seq)
+            assert mine.memory == job_slots.MemoryClaim(
+                budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25, seats=(("vivado", 2),)
+            )
+            assert len(holders) == 2
+    finally:
+        store.release(first)
+
+
+def test_fpga_job_without_a_vivado_seat_cap_is_refused_before_admission(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import ExitStack
+
+    _write_jobs(memory_runtime, None)
+    flow, prepared = _fpga_prepared(runtime, monkeypatch)
+
+    with pytest.raises(EndpointRejectedError) as refused, ExitStack() as held:
+        endpoint_admission._enter_admission(flow, held, prepared)
+
+    assert refused.value.outcome.exit_code == EXIT_ERROR
+    assert "[jobs.seats] vivado = <seats you own>" in refused.value.outcome.report_text
+    assert refused.value.outcome.report_text.startswith("fpga: ")
+    for job_class in job_slots.JOB_CLASSES:
+        assert _held(memory_runtime, job_class) == []
+
+
+def test_fpga_job_with_a_non_positive_vivado_seat_cap_is_refused_before_admission(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import ExitStack
+
+    _write_jobs(memory_runtime, "vivado = 0")
+    flow, prepared = _fpga_prepared(runtime, monkeypatch)
+
+    with pytest.raises(EndpointRejectedError) as refused, ExitStack() as held:
+        endpoint_admission._enter_admission(flow, held, prepared)
+
+    assert "[jobs.seats].vivado" in refused.value.outcome.report_text
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+
+
+def test_switch_unset_fpga_job_takes_a_heavy_slot_without_a_seat_cap(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_jobs(memory_runtime, None)
+    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
+    flow, prepared = _fpga_prepared(runtime, monkeypatch)
+
+    with AdmissionGate(flow, prepared).enter() as context:
+        assert context.mode == "managed"
+        assert len(_held(memory_runtime, job_slots.CLASS_HEAVY)) == 1
+        assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+
+
+def test_jobs_owing_no_seat_ignore_seat_caps(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A synth Job runs no licensed tool: a bad [jobs.seats] refuses nothing and adds no seat.
+    _write_jobs(memory_runtime, "vivado = 0")
+    _seed_history(memory_runtime, ("a", 400))
+    flow = AsicSynthesizeFlow()
+    with AdmissionGate(flow, _selection_prepared(flow, runtime)).enter():
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.memory == job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25
+        )
+
+    # A disabled FPGA Flow reaches its own refusal instead of a seat refusal.
+    _write_jobs(memory_runtime, None)
+    _seed_records(memory_runtime, ("a", "fpga_impl", 400))
+    fpga, prepared = _fpga_prepared(runtime, monkeypatch, enabled=False)
+    with AdmissionGate(fpga, prepared).enter():
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.memory == job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=500.0, wall_s=1.25
+        )
+
+
 def _two_target_synth_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExecution:
     """The preparation of *flow* as a Target-selection invocation over Targets ``a`` and ``b``."""
     from booley.flows.prepared_invocation import TargetSelectionInvocation

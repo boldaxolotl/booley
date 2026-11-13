@@ -456,6 +456,14 @@ class EndpointState(ABC):
         """The Job Class this call belongs to, or None for unclassed endpoints."""
         return self.JOB_CLASS
 
+    def _licensed_tools(self) -> tuple[str, ...]:
+        """The licensed EDA tools one Job of this endpoint runs (it holds one seat of each).
+
+        Memory admission judges each against its Seat Cap (ADR 0087); an endpoint
+        that runs no licensed tool owes no seat.
+        """
+        return ()
+
     def _memory_admitted(self) -> bool:
         """Whether the development switch admits this Job by Memory Reservation (ADR 0087).
 
