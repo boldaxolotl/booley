@@ -1067,3 +1067,22 @@ def test_memory_admitted_job_keeps_a_project_set_thread_count(
     # The authored -j2 passes through untouched; the same Job's other Target is shared.
     assert authored == ()
     assert plain == ("-j4", "VM_PARALLEL_BUILDS=1")
+
+
+def test_failed_thread_count_releases_the_memory_reservation(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(*_args: object) -> int:
+        raise OSError("slot directory unreadable")
+
+    monkeypatch.setattr(endpoint_admission, "job_threads_at_start", unreadable)
+    _seed_history(memory_runtime, ("a", 40))
+    flow = AsicSynthesizeFlow()
+    with (
+        pytest.raises(OSError, match="unreadable"),
+        AdmissionGate(flow, _selection_prepared(flow, runtime)).enter(),
+    ):
+        pytest.fail("admission must not be entered")
+
+    # The claim was admitted before the count failed; nothing may stay reserved.
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []

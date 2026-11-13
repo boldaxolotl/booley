@@ -587,13 +587,11 @@ def _background_slot(
     """Hold one background-priority claim of the Flow's Job Class while measuring.
 
     The supervisor, the process recorded on the Job, owns the claim so Job
-    status shows the wait. The wait spends the Job's own remaining budget:
-    a starved baseline ends unavailable rather than as a live Job that
-    readers report failed. Under the memory admission switch a heavy Job holds
+    status shows the wait, spending the Job's own remaining budget: a starved
+    baseline ends unavailable, not as a live Job readers report failed. Under the memory admission switch a heavy Job holds
     a background Memory Reservation (sized from *work*, the ``(checkout,
     target, units)`` it measures) instead of a heavy slot. Yields the claim and
-    the Job's thread count, fixed once the claim is admitted (``None`` without
-    a Memory Reservation).
+    the Job's thread count (``None`` without a Memory Reservation).
     """
     from booley.config.jobs import parse_caps
     from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S

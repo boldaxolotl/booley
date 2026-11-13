@@ -220,7 +220,8 @@ def verilator_backend_arguments(
         return ()
     if lane_kind == "heavy" and memory_admission_enabled():
         # Under memory admission the Job, not a heavy lane, shares the cores: its
-        # count was fixed at admission; without one nothing else is admitted.
+        # count was fixed at admission. No count means no admission root, so no
+        # other Job is tracked: use every available core.
         threads = job_thread_count()
         make_jobs = available_cpu_count() if threads is None else threads
     else:

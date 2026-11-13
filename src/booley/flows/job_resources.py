@@ -504,7 +504,8 @@ def history_records(
     tests = ",".join(label.tests)
     # Absent when unknown, never zero.
     size = {} if label.source_bytes is None else {"source_bytes": label.source_bytes}
-    # The Job's thread count, when it has one; absent otherwise.
+    # The Job's share of the cores (not each tool's setting; a Project may override
+    # it), when it has one; absent otherwise.
     job_threads = job_thread_count()
     threads = {} if job_threads is None else {"threads": job_threads}
     return [

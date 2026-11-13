@@ -432,5 +432,10 @@ def _acquire_memory_reservation(
         ),
         memory=plan.claim,
     )
-    threads = job_threads_at_start(store, available_cpu_count())
+    try:
+        threads = job_threads_at_start(store, available_cpu_count())
+    except BaseException:
+        # The caller never sees the token, so it cannot release it.
+        store.release(token)
+        raise
     return _Claim(store, token, plan.warning, threads)
