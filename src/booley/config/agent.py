@@ -20,6 +20,7 @@ from booley.config.jobs import SlotCaps, parse_caps
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.booley_dir import own_booley_dir, resolve_checkout_booley_dir
 from booley.core.config_paths import resolve_toml
+from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
 if TYPE_CHECKING:
     pass
@@ -93,6 +94,20 @@ def decode_cli_policies(raw: str) -> dict[str, str]:
 SPECIALISTS = frozenset({"reviewer", "coverage_analyst"})
 # ``[models]`` keys of the retired tier scheme; they get their own migration error.
 RETIRED_MODEL_KEYS = frozenset({"heavy", "standard", "light", "roles"})
+
+
+def unknown_models_key_message(name: str) -> str:
+    """The loader's and Doctor's text for a ``[models]`` key that names no Specialist."""
+    if flow := RETIRED_SPECIALIST_TO_FLOW.get(name):
+        return (
+            f"booley.toml [models] {name} is retired: the {name} Specialist is now the "
+            f"{flow} Flow and uses no model; delete the key."
+        )
+    return (
+        f"booley.toml [models] has an unknown key {name!r}; "
+        f"valid keys are {', '.join(sorted(SPECIALISTS))}; delete [models] {name}."
+    )
+
 
 # Built-in models. Every Specialist takes the same default per Agent CLI; the internal
 # model serves Booley's own calls (Doctor memory probe), never a Specialist.
@@ -472,14 +487,11 @@ def parse_models_section(
     """
     if RETIRED_MODEL_KEYS & set(models):
         raise _retired_models_error(models, default_cli)
+    # Sorted so the loader names the same key Doctor does when several are bad.
+    if unknown := sorted(set(models) - SPECIALISTS):
+        raise BackendConfigError(unknown_models_key_message(unknown[0]))
     pins: dict[str, str | tuple[str, ...]] = {}
     for name, value in models.items():
-        if name not in SPECIALISTS:
-            raise BackendConfigError(
-                f"booley.toml [models] has an unknown key {name!r}; "
-                f"valid keys are {', '.join(sorted(SPECIALISTS))}; "
-                f"delete [models] {name} or rename it to a valid key."
-            )
         if isinstance(value, list):
             if not value:
                 raise BackendConfigError(
