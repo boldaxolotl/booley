@@ -1527,7 +1527,7 @@ class TestBwaveDispatch:
     def _patch_dispatch(self, monkeypatch):
         calls = []
 
-        async def fake_run(cmd, timeout=600):
+        async def fake_run(cmd, **_kwargs):
             calls.append(cmd)
             return 0, "ok", "", False
 
@@ -1589,7 +1589,7 @@ class TestBwaveDispatch:
         assert events[1]["duration_s"] >= 0
 
     def test_bwave_nonzero_exit_and_stderr_are_preserved(self, tmp_path, monkeypatch):
-        async def fake_run(cmd, timeout=600):
+        async def fake_run(cmd, **_kwargs):
             return 9, "", "bad virtual signal", False
 
         def fake_text_content(**kwargs):
@@ -1620,8 +1620,55 @@ class TestBwaveDispatch:
         assert events[-1]["type"] == "endpoint_end"
         assert events[-1]["exit_code"] == 9
 
+    def test_routed_call_reads_the_worktree_store(self, tmp_path, monkeypatch):
+        """A routed bwave call resolves `@<alias>` from the caller's checkout store (#3483)."""
+        import booley
+        from booley.mcp.application import McpRequestContext
+
+        main = tmp_path / "main"
+        worktree = tmp_path / "worktree"
+        for checkout, marker in ((main, "main_mark"), (worktree, "tree_mark")):
+            store = checkout / ".booley" / ".runtime" / "bwave"
+            store.mkdir(parents=True)
+            session = {"dut": {"trace": "trace.fst", "markers": {marker: 7}}}
+            (store / "bwave_sessions.json").write_text(json.dumps(session), encoding="utf-8")
+        (tmp_path / "private-tmp").mkdir()
+        for name in ("TMPDIR", "TEMP", "TMP"):
+            monkeypatch.setenv(name, str(tmp_path / "private-tmp"))
+        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+        monkeypatch.setenv("PYTHONPATH", str(Path(booley.__file__).resolve().parents[1]))
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+        monkeypatch.chdir(main)
+        monkeypatch.setattr(
+            self.mcp_server,
+            "TextContent",
+            lambda **kwargs: SimpleNamespace(type=kwargs["type"], text=kwargs["text"]),
+        )
+
+        def call(request_context):
+            result = asyncio.run(
+                self.mcp_server._dispatch_application_tool(
+                    "bwave",
+                    {"extra_args": ["markers", "@dut", "list"]},
+                    {},
+                    jobs=MagicMock(),
+                    status_mcp_tool_names=[],
+                    mcp_tool_call_counts={},
+                    request_context=request_context,
+                )
+            )
+            return result[0].text
+
+        routed = call(McpRequestContext(checkout=worktree))
+        unrouted = call(None)
+
+        assert "tree_mark" in routed and "main_mark" not in routed
+        assert "main_mark" in unrouted and "tree_mark" not in unrouted
+
     def test_bwave_spawn_error_still_closes_console_activity(self, tmp_path, monkeypatch):
-        async def fail_to_spawn(cmd, timeout=600):
+        async def fail_to_spawn(cmd, **_kwargs):
             raise OSError("spawn failed")
 
         monkeypatch.setattr(self.mcp_server, "_run_subprocess", fail_to_spawn)

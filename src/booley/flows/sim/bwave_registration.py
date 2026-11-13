@@ -5,8 +5,8 @@ waveform with ``bwave @<target> ...`` (or without any path) instead of hunting
 for the trace file. Registration runs in the process that owns the Flow
 result, after acceptance, and never changes the run's verdict or exit code.
 
-The bwave session store is one file per Sandbox temporary directory, so the
-latest traced run in the Sandbox owns ``@<target>`` and the default session.
+The bwave session store belongs to the run's checkout, so ``@<target>`` and
+the default session are that checkout's latest traced run.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
+from booley.bwave.sessions import register_trace, session_store
 from booley.flows.sim.campaign import CampaignOutcome
 from booley.flows.sim.campaign.test_run_report import (
     campaign_test_run_files_by_row,
@@ -47,22 +48,23 @@ def session_traces(outcomes: Sequence[CampaignOutcome]) -> list[tuple[str, Path]
     return chosen
 
 
-def register_trace_sessions(outcomes: Sequence[CampaignOutcome]) -> None:
-    """Register each traced Target's waveform as bwave session ``<target>``.
+def register_trace_sessions(outcomes: Sequence[CampaignOutcome], project_root: Path) -> None:
+    """Register each traced Target's waveform as session ``<target>`` of *project_root*.
 
-    ``register_trace`` also makes every registration the default session, so
-    the last Target in run order (the newest trace) ends as the default. An
-    untraced run never opens the store. Any failure is logged and swallowed:
-    the store is external JSON on a shared temp directory, and a session is a
-    convenience that must not turn a finished simulation into an error.
+    The store is the run's own checkout's, so ``@<target>`` and the default
+    session belong to that checkout's latest traced run (issue #3483).
+    ``register_trace`` makes every registration the default session, so the
+    last Target in run order (the newest trace) ends as the default. An
+    untraced run never resolves or opens the store. Any failure is logged and
+    swallowed: the store is external JSON, and a session is a convenience that
+    must not turn a finished simulation into an error.
     """
     try:
-        # Imported here, not at module level: ``booley.bwave.sessions`` resolves
-        # its session store from the temp directory at import, and importing the
-        # Flow must not fix that location before the process has set up its own.
-        from booley.bwave.sessions import register_trace
-
-        for name, trace in session_traces(outcomes):
-            register_trace(trace, alias=name)
+        traces = session_traces(outcomes)
+        if not traces:
+            return
+        store = session_store(project_root)
+        for name, trace in traces:
+            register_trace(trace, alias=name, store=store)
     except Exception:
         logger.warning("bwave: could not register this run's waveforms as sessions", exc_info=True)

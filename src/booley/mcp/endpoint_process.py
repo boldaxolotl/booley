@@ -227,8 +227,11 @@ async def _run_subprocess(
     watchdog_tick: float = _WATCHDOG_TICK_SECONDS,
     cancel_grace: float = CANCEL_GRACE_SECONDS,
     log_path: Path | None = None,
+    cwd: Path | None = None,
 ) -> tuple[int, str, str, bool]:
     """Run a grouped child with bounded tails and wall-clock or active-time budget.
+
+    The child runs in *cwd* (default: this process's working directory).
 
     With *log_path* the child's full combined output is also written there as it
     arrives; a log failure never fails the run and is reported as a final
@@ -240,6 +243,7 @@ async def _run_subprocess(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            cwd=cwd,
             **_async_process_group_kwargs(),
         )
     except OSError as exc:
