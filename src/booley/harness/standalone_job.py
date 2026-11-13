@@ -68,6 +68,11 @@ def standalone_request_path(booley_dir: Path, run_id: str) -> Path:
     return standalone_log_root(booley_dir) / run_id / "request.json"
 
 
+def standalone_transcript_dir(booley_dir: Path, run_id: str) -> Path:
+    """Where a detached Specialist Job records its transcript, beside its ``job.log``."""
+    return standalone_log_root(booley_dir) / run_id / "transcripts"
+
+
 def checkout_report_root(project_root: Path) -> str | None:
     """The Project's resolved checkout Booley Directory, where this run's reports land."""
     from booley.runtime.booley_dir import resolve_checkout_booley_dir
