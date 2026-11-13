@@ -175,9 +175,6 @@ def _unsafe_line_ending_observation_detail(report: RepositoryLineEndingReport) -
     for code, detail in _OBSERVATION_RESULT_DETAILS:
         if code in observations:
             return detail
-    if report.status is LineEndingStatus.UNSAFE and observations:
-        observation = next(iter(observations.values()))
-        return observation.detail or observation.code.value
     return None
 
 
@@ -293,7 +290,7 @@ def _record_line_ending_summary(
     ctx: InitContext, report: LineEndingReport, details: list[str], mode: LineEndingMode
 ) -> None:
     if report.status is LineEndingStatus.SAFE:
-        status = "warn" if details else "ok"
+        status = "ok"
     else:
         # Only a full repair can fail to fix an unsafe tree; the other modes report it.
         status = "err" if mode is LineEndingMode.REPAIR else "warn"

@@ -2553,27 +2553,6 @@ def test_line_ending_result_detail_unsafe_codes(code, completed):
     assert git_hooks._line_ending_result_detail(report) == expected
 
 
-@pytest.mark.parametrize("detail", ["specific unsafe cause", None, ""])
-@pytest.mark.parametrize("completed", [False, True])
-def test_line_ending_result_detail_unmapped(monkeypatch, detail, completed):
-    monkeypatch.setattr(
-        git_hooks,
-        "_OBSERVATION_RESULT_DETAILS",
-        tuple(
-            pair
-            for pair in git_hooks._OBSERVATION_RESULT_DETAILS
-            if pair[0] is not ObservationCode.STALE_INDEX
-        ),
-    )
-    observations = (Observation(ObservationCode.STALE_INDEX, detail=detail),)
-    actions = (
-        (ActionResult(ActionKind.NORMALIZE_FILES, ActionState.COMPLETED),) if completed else ()
-    )
-    assert git_hooks._line_ending_result_detail(_summary_report(observations, actions)) == (
-        detail or ObservationCode.STALE_INDEX.value
-    )
-
-
 def test_line_ending_result_detail_refusal():
     report = _summary_report(
         actions=(

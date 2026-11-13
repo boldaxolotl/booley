@@ -1,4 +1,4 @@
-"""The managed line-ending rule shared by Initialization and committed-byte proofs."""
+"""The managed line-ending rule earlier Booley versions wrote, read by Goal Finish."""
 
 import re
 from collections.abc import Iterator
@@ -15,7 +15,7 @@ def _policy_lines(content: bytes) -> Iterator[bytes]:
 
 
 def has_managed_attributes(content: bytes, *, replayable: bool = False) -> bool:
-    """Recognize the managed rule, optionally requiring init-compatible extra content."""
+    """Recognize the managed rule, optionally requiring no other policy content."""
     lines = list(_policy_lines(content))
     rule = GITATTRIBUTES_RULE.encode()
     if not replayable:
@@ -26,7 +26,7 @@ def has_managed_attributes(content: bytes, *, replayable: bool = False) -> bool:
 
 
 def local_policy_owned(content: bytes) -> bool:
-    """Whether local policy prevents Initialization from prepending its default."""
+    """Whether the content holds attribute policy beyond export-ignore/export-subst."""
     unrelated = {b"export-ignore", b"-export-ignore", b"export-subst", b"-export-subst"}
     for line in _policy_lines(content):
         fields = re.split(rb"[ \t\r\n]+", line)

@@ -37,13 +37,15 @@ The Linux container then sees every file as changed. `booley init` fixes this
 for you:
 
 - It turns off Git's line-ending conversion for the repository
-  (`core.autocrlf=false`) and pins `core.eol=lf`, so a checkout writes LF.
+  (`core.autocrlf=false`) and pins `core.eol=lf`, so a checkout writes the
+  bytes Git has stored.
 - It converts files already checked out with CRLF back to LF, but only on a
   clean tree.
 
-Booley sets no commit-side policy and never creates or edits a
-`.gitattributes` file. If you want Git to normalize CRLF when you commit, add
-your own `.gitattributes`, for example with `* text=auto eol=lf`.
+Booley does not change how Git converts line endings when you commit, and it
+adds no line-ending rule to any `.gitattributes` file. If you want Git to
+normalize CRLF when you commit, add your own `.gitattributes`, for example with
+`* text=auto eol=lf`.
 
 If init does not convert the files, it says why. Commit or stash your
 uncommitted changes, or clear an `assume-unchanged` or `skip-worktree` flag
@@ -56,7 +58,7 @@ it is, and init lists it.
 <details markdown>
 <summary>In stealth mode</summary>
 
-`booley doctor` also checks line endings in the Booley Directory's own
+`booley doctor` checks line endings in the Booley Directory's own
 repository. See [STEALTH.md](STEALTH.md).
 
 </details>
