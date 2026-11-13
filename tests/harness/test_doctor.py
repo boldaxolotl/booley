@@ -9892,3 +9892,49 @@ def test_deep_synth_calibration_follows_flow_check_findings(tmp_path, monkeypatc
     assert "timed out" in events[0][1]
     assert len(tracker.missing) == 1
     assert tracker.missing[0].startswith("synth.smoke.")
+
+
+_SEAT_FPGA_TABLE = {"flows": {"fpga": {"enabled": True}}}
+_SEAT_VIVADO_DECLARED = {"eda": {"vivado": {"provisioning": "host"}}}
+
+
+class TestSeatCapCheck:
+    """ADR 0087: memory admission needs a Seat Cap for every licensed EDA tool in use."""
+
+    def _run(self, tmp_path, booley_toml):
+        rec = _Rec()
+        doctor._check_seat_caps(_adr28_project(tmp_path, booley_toml=booley_toml), rec.p, rec.f)
+        return rec
+
+    def test_fails_when_a_used_vivado_has_no_seat_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+        for booley_toml in (_SEAT_FPGA_TABLE, _SEAT_VIVADO_DECLARED):
+            rec = self._run(tmp_path, booley_toml)
+            assert rec.kinds() == {"fail"}, booley_toml
+            (message,) = rec.fails()
+            assert "vivado has no Seat Cap" in message
+            (fix,) = rec.fix_hints
+            assert "[jobs.seats] vivado = <seats you own>" in fix
+
+    def test_passes_or_stays_silent_when_no_seat_cap_is_owed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+        capped = {**_SEAT_FPGA_TABLE, "jobs": {"seats": {"vivado": 2}}}
+        rec = self._run(tmp_path, capped)
+        assert rec.events == [("pass", "Seat Cap: vivado = 2")]
+        # Vivado is declared but the FPGA Flow is off: Booley provisions none, no seat is owed.
+        disabled = {**_SEAT_VIVADO_DECLARED, "flows": {"fpga": {"enabled": False}}}
+        assert self._run(tmp_path, disabled).events == []
+        # No FPGA Flow and no Vivado: nothing licensed is in use.
+        assert self._run(tmp_path, {}).events == []
+        # A malformed table is the schema audit's finding, not a second FAIL here.
+        malformed = {**_SEAT_FPGA_TABLE, "jobs": {"seats": {"vivado": 0}}}
+        assert self._run(tmp_path, malformed).events == []
+        # No Project, no check.
+        rec = _Rec()
+        doctor._check_seat_caps(None, rec.p, rec.f)
+        assert rec.events == []
+
+    def test_switch_unset_reports_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION", raising=False)
+        assert self._run(tmp_path, _SEAT_FPGA_TABLE).events == []
+        assert self._run(tmp_path, _SEAT_VIVADO_DECLARED).events == []

@@ -400,8 +400,9 @@ def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 
 def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate the undocumented ``[jobs].memory_budget`` override."""
+    """Validate the undocumented ``[jobs].memory_budget`` override and ``[jobs.seats]``."""
     from booley.audit.resource_policy import configured_memory_budget
+    from booley.config.jobs import SeatCapError, parse_seat_caps
 
     try:
         configured_memory_budget(data)
@@ -409,6 +410,14 @@ def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         return failure(
             f"booley.toml {exc}",
             'set [jobs].memory_budget to a positive size such as "24g", or delete it',
+        )
+    try:
+        parse_seat_caps(data)
+    except SeatCapError as exc:
+        return failure(
+            f"booley.toml {exc}",
+            "set [jobs.seats] <tool> = <seats you own> (a positive whole number), "
+            "or delete the entry",
         )
     return ConfigTableAudit()
 

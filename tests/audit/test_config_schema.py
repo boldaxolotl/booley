@@ -517,6 +517,17 @@ def test_jobs_memory_budget_is_accepted() -> None:
     assert project_schema.audit_jobs_table({}).findings == ()
 
 
+def test_jobs_seats_audit_fails_a_malformed_count_naming_the_key() -> None:
+    assert project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 2}}}).is_valid
+
+    audit = project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 0}}})
+
+    assert not audit.is_valid
+    (finding,) = audit.findings
+    assert "[jobs.seats].vivado" in finding.message
+    assert "[jobs.seats]" in finding.fix
+
+
 def test_jobs_memory_budget_audit_fails_invalid_value_naming_key() -> None:
     audit = project_schema.audit_jobs_table({"jobs": {"memory_budget": "-1g"}})
 

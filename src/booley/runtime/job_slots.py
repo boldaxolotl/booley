@@ -32,7 +32,11 @@ The **memory** class (ADR 0087) admits by Memory Reservation instead of a slot
 count: a claim holds while the reservations of every holder plus its own fit
 its budget, or alone when it is marked run-alone. Order is the same total
 order; the first waiter that does not fit blocks every claim behind it, and an
-entry whose claim cannot be read counts as not fitting.
+entry whose claim cannot be read counts as not fitting. A claim may also hold
+a **seat** of a licensed EDA tool, judged against the tool's Seat Cap: it
+starts only while fewer seats of that tool are held than the cap, and keeps the
+cap it was created with, so a cap changed while Jobs wait applies to new claims
+only. A seat is held exactly as long as the entry (and so the reservation) is.
 
 Pure + stdlib-only, like ``runtime.job_records`` (whose deadline/identity
 guards it reuses): PID liveness, ``/proc`` reads, the clock, and sleep are
@@ -231,15 +235,21 @@ class MemoryClaim:
     a reloaded token equals its owner's). Exactly one of ``reservation_mb`` and
     ``run_alone`` is given. A reservation above the budget could never start
     and would block the queue forever, so the caller must mark it run-alone.
+    ``seats`` lists the licensed EDA tools the Job holds one seat of, each with
+    the Seat Cap it is judged against (persisted like ``budget_mb``).
     """
 
     budget_mb: float
     reservation_mb: float | None = None
     run_alone: bool = False
+    seats: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_alone, bool):
             raise ValueError(f"run_alone must be a bool, got {self.run_alone!r}")
+        for tool, cap in self.seats:
+            if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+                raise ValueError(f"Seat Cap of {tool!r} must be a whole number >= 1, got {cap!r}")
         if require_finite_number(self.budget_mb, field="budget_mb") < 0:
             raise ValueError(f"budget_mb must be >= 0, got {self.budget_mb!r}")
         if self.run_alone:
@@ -256,11 +266,12 @@ class MemoryClaim:
                 "mark the claim run_alone"
             )
 
-    def to_payload(self) -> dict[str, float | bool | None]:
+    def to_payload(self) -> dict[str, object]:
         return {
             "budget_mb": self.budget_mb,
             "reservation_mb": self.reservation_mb,
             "run_alone": self.run_alone,
+            "seats": dict(self.seats),
         }
 
     @staticmethod
@@ -268,11 +279,15 @@ class MemoryClaim:
         """The claim an entry persisted, or None when absent or malformed."""
         if not isinstance(value, dict):
             return None
+        seats = value.get("seats", {})  # an entry written before seats existed holds none
         try:
+            if not isinstance(seats, dict):
+                raise ValueError(f"seats must be a table, got {seats!r}")
             return MemoryClaim(
                 budget_mb=value["budget_mb"],
                 reservation_mb=value.get("reservation_mb"),
                 run_alone=value.get("run_alone") is True,
+                seats=tuple(seats.items()),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
@@ -286,6 +301,7 @@ class _MemoryLoad:
     used_mb: float = 0.0
     running: int = 0
     alone: bool = False
+    seats_used: dict[str, int] = field(default_factory=dict[str, int])
     stopped: bool = False  # an earlier claim could not start: nothing behind it may
 
     def admit(self, claim: MemoryClaim | None) -> bool:
@@ -293,10 +309,15 @@ class _MemoryLoad:
         if claim is None:
             self.stopped = True  # unreadable: an unknown reservation never fits
             return False
-        fits = not self.stopped and (
-            self.running == 0
-            if claim.run_alone
-            else not self.alone and self.used_mb + (claim.reservation_mb or 0.0) <= self.budget_mb
+        fits = (
+            not self.stopped
+            and (
+                self.running == 0
+                if claim.run_alone
+                else not self.alone
+                and self.used_mb + (claim.reservation_mb or 0.0) <= self.budget_mb
+            )
+            and all(self.seats_used.get(tool, 0) < cap for tool, cap in claim.seats)
         )
         if not fits:
             self.stopped = True
@@ -308,6 +329,8 @@ class _MemoryLoad:
         self.running += 1
         self.alone = self.alone or claim.run_alone
         self.used_mb += claim.reservation_mb or 0.0
+        for tool, _cap in claim.seats:
+            self.seats_used[tool] = self.seats_used.get(tool, 0) + 1
 
 
 def _memory_queue(
@@ -320,8 +343,10 @@ def _memory_queue(
     Returns ``(starts_now, position, blocked)``. The walk starts each claim in
     order against *claim*'s budget: a run-alone claim starts only when nothing
     runs, any other claim only when nothing run-alone runs and its reservation
-    still fits. The first claim that does not start blocks every claim behind
-    it. ``None`` (an unreadable claim) never fits, so an unknown reservation
+    still fits. A claim holding a seat of a licensed tool also needs a free seat
+    under its own Seat Cap, which each claim carries (a cap changed while Jobs
+    wait applies to new claims only). The first claim that does not start blocks
+    every claim behind it. ``None`` (an unreadable claim) never fits, so an unknown reservation
     cannot overcommit. ``starts_now`` is the promotion rule (no waiter ahead,
     and the claim starts); ``blocked`` says the claim itself cannot start, and
     ``position`` counts the blocked claims ahead of it, which is what

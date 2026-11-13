@@ -313,3 +313,67 @@ def test_vanished_holder_does_not_refuse_a_claim_that_fits(root, world, monkeypa
 
     monkeypatch.setattr(store, "_read_memory_claim", read_after_release)
     assert store.refresh(join(store, world, 102, claim(100))).state == HOLDING
+
+
+# --- Seat Caps for licensed EDA tools (#3244, ADR 0087) ------------------------------
+
+
+def seated(reservation_mb: float, cap: int, tool: str = "vivado"):
+    """A claim that also holds one *tool* seat, judged against a Seat Cap of *cap*."""
+    return job_slots.MemoryClaim(
+        budget_mb=BUDGET_MB, reservation_mb=reservation_mb, seats=((tool, cap),)
+    )
+
+
+def test_seat_cap_queues_a_claim_that_fits_memory_while_the_seats_are_taken(root, world):
+    store = make_store(root, world)
+    first = join(store, world, 101, seated(100, 1))
+    second = join(store, world, 102, seated(100, 1))
+    other_tool = join(store, world, 103, claim(100))
+    assert store.refresh(first).state == HOLDING
+    # Memory fits (200 of 1,000 MiB) but the only vivado seat is held.
+    assert store.refresh(second) == TokenState(QUEUED, position=0)
+    # The seat-blocked claim blocks the claims behind it, as a memory-blocked one does.
+    assert store.refresh(other_tool) == TokenState(QUEUED, position=1)
+    store.release(first)
+    assert store.refresh(second).state == HOLDING
+    assert store.refresh(other_tool).state == HOLDING
+
+
+def test_seat_cap_of_two_holds_two_claims_together(root, world):
+    store = make_store(root, world)
+    first = join(store, world, 101, seated(100, 2))
+    second = join(store, world, 102, seated(100, 2))
+    third = join(store, world, 103, seated(100, 2))
+    assert store.refresh(first).state == HOLDING
+    assert store.refresh(second).state == HOLDING
+    assert store.refresh(third) == TokenState(QUEUED, position=0)
+    # A lease renewal rewrites the entry: it must keep the seat.
+    assert store.renew(first) and store.renew(second)
+    assert store.refresh(third) == TokenState(QUEUED, position=0)
+    store.release(second)
+    assert store.refresh(third).state == HOLDING
+
+
+def test_malformed_seats_field_is_read_as_no_claim(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, seated(100, 2))
+    assert store.refresh(holder).state == HOLDING
+    payload = json.loads(holder.path.read_text(encoding="utf-8"))
+    assert payload["memory"]["seats"] == {"vivado": 2}
+    for malformed in ({"vivado": 0}, {"vivado": True}, {"vivado": "two"}, ["vivado"]):
+        payload["memory"]["seats"] = malformed
+        holder.path.write_text(json.dumps(payload), encoding="utf-8")
+        reloaded = store._load_token(holder.path)
+        assert reloaded is not None and reloaded.memory is None, malformed
+    # An entry written before seats existed carries none.
+    del payload["memory"]["seats"]
+    holder.path.write_text(json.dumps(payload), encoding="utf-8")
+    reloaded = store._load_token(holder.path)
+    assert reloaded is not None and reloaded.memory == claim(100)
+
+
+def test_seat_cap_shape_is_validated():
+    for cap in (0, -1, True, 1.5, "1"):
+        with pytest.raises(ValueError):
+            seated(100, cast(Any, cap))

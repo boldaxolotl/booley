@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import sys
@@ -12,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from booley.config.jobs import parse_caps
+from booley.config.jobs import SeatCapError, parse_caps, required_seats
 from booley.core.boundary import as_float
 from booley.flows.endpoint_events import (
     _endpoint_progress_event,
@@ -249,13 +250,17 @@ def _enter_admission(
         job_slots.QueueFullError,
         job_slots.ClaimLostError,
         AdmissionIdentityError,
+        SeatCapError,
     ) as exc:
         raise EndpointRejectedError(_admission_rejection(endpoint, exc)) from exc
 
 
 def _admission_rejection(
     endpoint: EndpointState,
-    exc: job_slots.QueueFullError | job_slots.ClaimLostError | AdmissionIdentityError,
+    exc: job_slots.QueueFullError
+    | job_slots.ClaimLostError
+    | AdmissionIdentityError
+    | SeatCapError,
 ) -> EndpointOutcome:
     """Map one admission failure to the outcome every endpoint reports."""
     if isinstance(exc, job_slots.QueueFullError):
@@ -267,6 +272,9 @@ def _admission_rejection(
             f"CANCELLED: this queued '{endpoint.name}' run was "
             f"withdrawn (booley_cancel) before it started."
         )
+    elif isinstance(exc, SeatCapError):
+        logger.error("%s admission refused: %s", endpoint.name, exc)
+        text = f"{endpoint.name}: {exc}"
     else:
         logger.error(
             "%s admission refused: invalid %s: %s", endpoint.name, RUNTIME_EXECUTION_ENV, exc
@@ -394,9 +402,14 @@ def _acquire_memory_reservation(
         return (None, None, None)
     project, root = found
     config = load_job_budget_config(booley_dir=project)
+    # Refused before any sizing or store entry: a Job that runs a licensed tool
+    # without a Seat Cap never queues (SeatCapError is mapped by _enter_admission).
+    seats = required_seats(endpoint._licensed_tools(), config)
     store = job_slots.SlotStore(root, parse_caps(config))
     requests = None if prepared is None else prepared.invocation.job_requests()
     plan = measure_memory_claim(project, config, requests)
+    claim = dataclasses.replace(plan.claim, seats=seats)
+    seat_detail = "".join(f"; needs a {tool} seat (cap {cap})" for tool, cap in seats)
     pid = os.getpid()
     token = store.acquire(
         job_slots.CLASS_MEMORY,
@@ -405,8 +418,12 @@ def _acquire_memory_reservation(
         role=job_slots.ROLE_INTERACTIVE,
         timeout_s=_holder_deadline_seconds(),
         on_queued=_queue_narrator(
-            endpoint, store, job_slots.CLASS_MEMORY, "memory", f": {plan.describe()}"
+            endpoint,
+            store,
+            job_slots.CLASS_MEMORY,
+            "memory",
+            f": {plan.describe()}{seat_detail}",
         ),
-        memory=plan.claim,
+        memory=claim,
     )
     return (store, token, plan.warning)
