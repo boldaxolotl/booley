@@ -9,6 +9,7 @@ simulators are fake.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import threading
@@ -26,6 +27,9 @@ from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
 from booley.flows.endpoint_session import _attach_memory_warning
 from booley.flows.job_estimates import JobRequest
+from booley.flows.memory_admission import job_thread_count
+from booley.flows.sim.build_parallelism import verilator_backend_arguments
+from booley.flows.sim.campaign import capacity
 from booley.flows.sim.campaign.capacity import HeavyCapacityError, LeaseLostError
 from booley.flows.sim.campaign.codec import canonical_json_bytes
 from booley.flows.sim.campaign.coordinator import (
@@ -62,6 +66,8 @@ from tests.flows.sim.campaign_test_support import (
     _validated_campaign,
     _wait_until,
 )
+from tests.flows.sim.test_build_parallelism import _inspection
+from tests.flows.test_endpoint_admission import _selection_prepared
 from tests.oom_priority_support import FakeProc
 
 NAMES = ("alpha", "beta", "gamma")
@@ -131,6 +137,12 @@ class _Scenario:
     hooks: dict[str, Callable[[], None]] = field(default_factory=dict)
     # Per item: does its own child execution hold a Memory Reservation while it runs?
     holds_own: dict[str, bool] = field(default_factory=dict)
+    # Per item: the Job thread count it saw while it ran (``None`` when it has none).
+    threads: dict[str, int | None] = field(default_factory=dict)
+    # Memory claims held before the Flow was admitted, so the Flow's own count is below the cores.
+    early_holders: list[job_slots.SlotToken] = field(default_factory=list)
+    # Per item: the Verilator ``-j`` option a hook recorded (see ``_jobs_option``).
+    jobs_options: dict[str, str] = field(default_factory=dict)
     # Items running now, the most at once, and the Campaign lane threads that ran items.
     active: int = 0
     peak: int = 0
@@ -153,6 +165,7 @@ class _Scenario:
         self.holds_own[name] = own_id is not None and any(
             token.execution_id == own_id for token in holders
         )
+        self.threads[name] = job_thread_count()
         if name in self.hooks:
             self.hooks[name]()
 
@@ -222,8 +235,12 @@ def _scenario(
     switch: bool = True,
     cores: int = 1,
     max_heavy: int = 1,
+    held_at_admission: int = 0,
 ) -> Iterator[_Scenario]:
-    """The Flow of a Campaign, admitted under a 1,000 MiB Memory Budget on *cores* cores."""
+    """The Flow of a Campaign, admitted under a 1,000 MiB Memory Budget on *cores* cores.
+
+    *held_at_admission* 50 MiB claims are held (``early_holders``) when the Flow is admitted.
+    """
     tmp_path.mkdir(parents=True, exist_ok=True)
     project, state = _parallel_environment(tmp_path, "alpha", 0)
     state.barrier = threading.Barrier(1)  # one item at a time: nothing waits for a peer
@@ -261,8 +278,17 @@ def _scenario(
         else SimpleNamespace(invocation=SimpleNamespace(job_requests=lambda: tuple(flow_requests)))
     )
     store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), SlotCaps(max_heavy=max_heavy))
+    early = [
+        store.acquire(
+            CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=50.0),
+            poll_interval=0.01,
+        )
+        for _ in range(held_at_admission)
+    ]
     with AdmissionGate(AsicSynthesizeFlow(), prepared).enter() as admission:  # type: ignore[arg-type]
-        scenario = _Scenario(tmp_path, project, state, admission, store)
+        scenario = _Scenario(tmp_path, project, state, admission, store, early_holders=early)
         state.observe = scenario.observe
         state.running = scenario.running
         yield scenario
@@ -891,6 +917,9 @@ def test_switch_unset_campaign_keeps_heavy_cap_lanes_on_many_cores(
     assert _campaign_lanes(scenario) == {"booley-campaign-outer", "booley-campaign-child-1"}
     assert any(_own_lanes(scenario))  # items of the child lane ran on heavy slots
     assert scenario.store.observe(CLASS_MEMORY) == ([], [])
+    # No Job thread count exists with the switch off: no item gets one.
+    assert set(scenario.threads) == set(names)
+    assert set(scenario.threads.values()) == {None}
 
 
 def test_waiting_campaign_queues_one_item_claim_in_manifest_order(
@@ -943,3 +972,196 @@ def test_waiting_campaign_queues_one_item_claim_in_manifest_order(
     assert outcome.complete is True
     assert sorted(scenario.state.completion_order) == list(names)
     assert list(scenario.seen) == list(names)  # items start in manifest order
+
+
+# --- Each item's own thread count (#3788) ---
+
+EIGHT_CORES = 8
+
+
+def _jobs_option(scenario: _Scenario, name: str) -> Callable[[], None]:
+    """A hook that records the Verilator ``-j`` option item *name* would build with."""
+
+    def hook() -> None:
+        scenario.jobs_options[name] = verilator_backend_arguments(_inspection())[0]
+
+    return hook
+
+
+def _record_then_meet(
+    record: Callable[[], None], barrier: threading.Barrier
+) -> Callable[[], None]:
+    """A hook that runs *record*, then waits until the other parties of *barrier* run beside it."""
+
+    def hook() -> None:
+        record()
+        barrier.wait()
+
+    return hook
+
+
+def test_two_items_building_in_parallel_each_get_half_the_cores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = _names(4)
+    with _scenario(
+        tmp_path,
+        monkeypatch,
+        flow_requests=_flow_requests(names),
+        history=_sized_history(names, 320.0),  # 400 MiB per item: two fit the 1,000 MiB budget
+        cores=EIGHT_CORES,
+    ) as scenario:
+
+        def first_waits_for_a_sibling() -> None:
+            # t01 is admitted alone; t02 is then admitted beside it, and t03 (which would
+            # not fit beside both) only after t01 returns its claim.
+            _jobs_option(scenario, "t01")()
+            _wait_until(
+                lambda: len(scenario.store.observe(CLASS_MEMORY)[0]) >= 3,
+                _PARALLEL_SYNC_TIMEOUT_S,
+            )
+
+        scenario.hooks["t01"] = first_waits_for_a_sibling
+        together = _barrier(2)
+        for name in ("t02", "t03"):
+            scenario.hooks[name] = _record_then_meet(_jobs_option(scenario, name), together)
+        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+
+    assert outcome.complete is True
+    # Admitted alone, t01 has every core; t02 and t03 each share the cores with one sibling.
+    assert scenario.threads["t01"] == EIGHT_CORES
+    assert scenario.threads["t02"] == EIGHT_CORES // 2
+    assert scenario.threads["t03"] == EIGHT_CORES // 2
+    assert scenario.jobs_options["t02"] == "-j4"
+    assert scenario.jobs_options["t03"] == "-j4"
+
+
+def test_lone_item_after_the_flow_drop_gets_every_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = _names(2)
+    with _scenario(
+        tmp_path,
+        monkeypatch,
+        flow_requests=_flow_requests(names),
+        history=_sized_history(names, 100.0),
+        cores=EIGHT_CORES,
+        held_at_admission=1,
+    ) as scenario:
+
+        def release_the_early_holder() -> None:
+            _jobs_option(scenario, "t00")()
+            for token in scenario.early_holders:
+                scenario.store.release(token)
+
+        scenario.hooks["t00"] = release_the_early_holder
+        scenario.hooks["t01"] = _jobs_option(scenario, "t01")
+        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+
+    assert outcome.complete is True
+    # Under the Flow's claim the early holder was counted: half the cores.
+    assert scenario.threads["t00"] == EIGHT_CORES // 2
+    assert scenario.jobs_options["t00"] == "-j4"
+    # On its own claim, with the Flow at zero and the holder gone, the item is alone.
+    assert scenario.holds_own["t01"]
+    assert scenario.threads["t01"] == EIGHT_CORES
+    assert scenario.jobs_options["t01"] == "-j8"
+
+
+def test_another_job_counts_the_flow_token_and_the_item_claims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = _names(2)
+    history = [*_sized_history(names, 100.0), _record("a", "synth", 40.0)]
+    with _scenario(
+        tmp_path,
+        monkeypatch,
+        flow_requests=_flow_requests(names),
+        history=history,
+        cores=EIGHT_CORES,
+    ) as scenario:
+        seen: dict[str, int | None] = {}
+
+        def admit_another_job() -> None:
+            def run() -> None:
+                flow = AsicSynthesizeFlow()
+                with AdmissionGate(flow, _selection_prepared(flow, tmp_path / "other")).enter():
+                    seen["count"] = job_thread_count()
+
+            # A plain thread with a fresh context, as another process's Job would have.
+            thread = threading.Thread(target=contextvars.Context().run, args=(run,))
+            thread.start()
+            thread.join(_PARALLEL_SYNC_TIMEOUT_S)
+            assert not thread.is_alive()
+
+        scenario.hooks["t01"] = admit_another_job
+        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+
+    assert outcome.complete is True
+    assert scenario.holds_own["t01"]
+    # The Flow's zero token, the running item's claim and the Job itself: three holders.
+    assert seen["count"] == EIGHT_CORES // 3
+
+
+def test_item_thread_count_stays_fixed_while_holders_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = _names(2)
+    with _scenario(
+        tmp_path,
+        monkeypatch,
+        flow_requests=_flow_requests(names),
+        history=_sized_history(names, 100.0),
+        cores=EIGHT_CORES,
+        held_at_admission=1,
+    ) as scenario:
+        counts: list[int | None] = []
+
+        def release_the_early_holder() -> None:
+            for token in scenario.early_holders:
+                scenario.store.release(token)
+
+        def watch_the_count() -> None:
+            counts.append(job_thread_count())
+            foreign = scenario.store.acquire(
+                CLASS_MEMORY,
+                pid=os.getpid(),
+                memory=MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=50.0),
+                poll_interval=0.01,
+            )
+            counts.append(job_thread_count())
+            scenario.store.release(foreign)
+            counts.append(job_thread_count())
+
+        scenario.hooks["t00"] = release_the_early_holder
+        scenario.hooks["t01"] = watch_the_count
+        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+
+    assert outcome.complete is True
+    # Fixed at the item's admission, alone on 8 cores; the foreign holder never shrinks it.
+    assert counts == [EIGHT_CORES] * 3
+
+
+def test_failed_item_thread_count_releases_the_item_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = _names(2)
+
+    def unreadable(*_args: object, **_kwargs: object) -> int:
+        raise OSError("slot directory unreadable")
+
+    with _scenario(
+        tmp_path,
+        monkeypatch,
+        flow_requests=_flow_requests(names),
+        history=_sized_history(names, 100.0),
+        cores=CORES,
+    ) as scenario:
+        monkeypatch.setattr(capacity, "job_threads_at_start", unreadable)
+        with pytest.raises(OSError, match="unreadable"):
+            scenario.campaign().run(scenario.request(_manifest_for(names)))
+        holders, waiters = scenario.store.observe(CLASS_MEMORY)
+
+    # Only the Flow's own claim remains: the item's claim was released with its lane.
+    assert [token.lease_id for token in holders] == [scenario.flow_token.lease_id]
+    assert waiters == []
