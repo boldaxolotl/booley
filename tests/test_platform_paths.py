@@ -7,10 +7,14 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
+
+from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime import platform_paths
@@ -268,10 +272,6 @@ def test_run_captured_bounded_replaces_undecodable_bytes_by_default():
     assert "�" in platform_paths.run_captured_bounded(_EMIT_INVALID_UTF8, timeout=30).stdout
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Popen.communicate decodes in reader threads on Windows, which swallow the error",
-)
 def test_run_captured_bounded_decodes_strictly_on_request():
     """``errors`` selects the decoding mode; strict never turns a timeout into a decode error."""
     emit = _EMIT_INVALID_UTF8
@@ -284,3 +284,86 @@ def test_run_captured_bounded_decodes_strictly_on_request():
     ]
     with pytest.raises(subprocess.TimeoutExpired):
         platform_paths.run_captured_bounded(truncated, timeout=2, errors="strict")
+
+
+# ---------------------------------------------------------------------------
+# run_captured_bounded: stdin input, stdin stream, output stream, bytes (#3861)
+# ---------------------------------------------------------------------------
+
+#: Echo stdin, then append a CRLF and a byte that is not UTF-8.
+_ECHO_STDIN_WITH_TAIL = [
+    sys.executable,
+    "-c",
+    "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read() + b'\\r\\n\\xff')",
+]
+
+
+def test_run_captured_bounded_feeds_input_and_streams(tmp_path: Path):
+    # Bytes mode keeps the raw output; text mode decodes and translates newlines.
+    raw = platform_paths.run_captured_bounded(
+        _ECHO_STDIN_WITH_TAIL, timeout=30, input=b"in", text=False
+    )
+    assert raw.stdout == b"in\r\n\xff"
+    text = platform_paths.run_captured_bounded(_ECHO_STDIN_WITH_TAIL, timeout=30, input=b"in")
+    assert text.stdout == "in\n\ufffd"
+
+    # Input far larger than a pipe buffer is written in full while the child reads.
+    count = [sys.executable, "-c", "import sys; print(len(sys.stdin.buffer.read()))"]
+    big = platform_paths.run_captured_bounded(count, timeout=30, input=b"x" * (1 << 20))
+    assert big.stdout.strip() == str(1 << 20)
+
+    # A stdin stream is read by the child; a stdout stream receives its output.
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"streamed")
+    sink = tmp_path / "sink.bin"
+    with source.open("rb") as stdin_stream, sink.open("wb") as stdout_stream:
+        streamed = platform_paths.run_captured_bounded(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read());"
+                " sys.stderr.write('warn')",
+            ],
+            timeout=30,
+            stdin=stdin_stream,
+            stdout=stdout_stream,
+        )
+    assert sink.read_bytes() == b"streamed"
+    assert streamed.stdout is None
+    assert streamed.stderr == "warn"
+
+
+def _assert_hung_tree_is_stopped(tmp_path: Path, **mode) -> subprocess.TimeoutExpired:
+    """Run a hung child tree that ignores stdin under *mode*; it must be stopped in time."""
+    with heartbeat_tree(tmp_path) as paths:
+        argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired) as raised:
+            platform_paths.run_captured_bounded(argv, timeout=2, **mode)
+        # timeout + the helper's 32 s Windows margin, below the tree's 40 s self-exit
+        assert time.monotonic() - started < 38
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
+    return raised.value
+
+
+def test_run_captured_bounded_stops_a_hung_tree_fed_input(tmp_path: Path):
+    # 1 MiB overflows the pipe buffer, so the feeder blocks on a child that never reads.
+    _assert_hung_tree_is_stopped(tmp_path, input=b"x" * (1 << 20))
+    assert not [t for t in threading.enumerate() if t.name == "bounded-capture-input"]
+
+
+def test_run_captured_bounded_stops_a_hung_tree_reading_a_stdin_stream(tmp_path: Path):
+    stream = tmp_path / "stdin.bin"
+    stream.write_bytes(b"x" * 4096)
+    with stream.open("rb") as handle:
+        _assert_hung_tree_is_stopped(tmp_path, stdin=handle)
+
+
+def test_run_captured_bounded_stops_a_hung_tree_writing_an_output_stream(tmp_path: Path):
+    with (tmp_path / "stdout.bin").open("wb") as handle:
+        _assert_hung_tree_is_stopped(tmp_path, stdout=handle)
+
+
+def test_run_captured_bounded_stops_a_hung_tree_capturing_bytes(tmp_path: Path):
+    expired = _assert_hung_tree_is_stopped(tmp_path, text=False)
+    assert expired.stderr is None or isinstance(expired.stderr, bytes)

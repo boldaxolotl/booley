@@ -606,7 +606,7 @@ def test_scratch_git_failure_retains_context_and_selected_policy(
 
     from booley.runtime import git_ignore
 
-    original = subprocess.run
+    original = git_ignore.platform_paths.run_captured_bounded
 
     def fail(command, **kwargs):
         if command[1] != "check-ignore":
@@ -615,7 +615,7 @@ def test_scratch_git_failure_retains_context_and_selected_policy(
             raise subprocess.TimeoutExpired(command, 30)
         return subprocess.CompletedProcess(command, 128, b"", b"index unavailable")
 
-    monkeypatch.setattr(git_ignore.subprocess, "run", fail)
+    monkeypatch.setattr(git_ignore.platform_paths, "run_captured_bounded", fail)
     with pytest.raises(ValueError) as raised:
         execution._ignored_destination(scratch_policy.worktree, "abcdef1")
     message = str(raised.value)
