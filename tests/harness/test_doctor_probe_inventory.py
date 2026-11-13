@@ -35,7 +35,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit), or a named public owner entry point.
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_viewer_bridge$|inspect_native_dependencies$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_viewer_bridge$|inspect_native_dependencies$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -147,11 +147,10 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     "_run_core_audit": frozenset(
         {
             "_check_core_repository_hygiene",
-            "_check_core_schema",
-            "_check_core_setup_hazards",
             "_check_target_metadata",
             "_check_target_sources",
-            "_run_core_security_audit",
+            "inspect_core_security",
+            "inspect_core_tree",
             "inspect_native_dependencies",
             "inspect_target_test_plans",
         }
@@ -302,3 +301,45 @@ def test_doctor_holds_no_cocotb_rules() -> None:
     assert "ast" not in imported_modules, "doctor.py parses Python source again"
     cocotb_functions = sorted(name for name in _module_functions() if "cocotb" in name)
     assert not cocotb_functions, f"cocotb rules moved back into Doctor: {cocotb_functions}"
+
+
+def test_core_audit_inventory_names_the_core_tree_owner_calls() -> None:
+    """The core audit calls the owner; no Doctor check stands in for its operations."""
+    refs = _probe_refs("_run_core_audit")
+    assert {"inspect_core_tree", "inspect_core_security"} <= refs
+    assert not refs & {
+        "_check_core_schema",
+        "_check_core_setup_hazards",
+        "_run_core_security_audit",
+    }
+
+
+def test_doctor_holds_no_core_tree_rules() -> None:
+    """The .core schema, setup-hazard, security, ownership and rejection rules live in the owner."""
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    moved = {
+        "_owned_core_files",
+        "_fusesoc_rejected_cores",
+        "_rejected_target_core",
+        "_check_core_schema",
+        "_core_schema_findings",
+        "_fusesoc_core_rejection",
+        "_check_core_setup_hazards",
+        "_report_recursive_symlink_hazards",
+        "_report_recursive_symlink_group",
+        "_run_core_security_audit",
+        "_CORE_SCHEMA_FIX",
+        "_RECURSIVE_SYMLINK_FIX",
+        "_SCOPE_DEPENDENT_VIOLATIONS",
+    }
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+    assert not moved & defined, (
+        f"core-tree rules moved back into Doctor: {sorted(moved & defined)}"
+    )

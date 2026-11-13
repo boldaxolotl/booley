@@ -44,7 +44,7 @@ def _manifest(header: dict, rollup: dict, compressed: bytes, raw: bytes) -> dict
     ]
     return {
         "$schema": measurements.CAMPAIGN_SCHEMA,
-        "campaign_id": "qa-control",
+        "coverage_record_id": "qa-control",
         "target": {"identity": header["target_identity"]},
         "tests": {"runs": [{"id": "r1", "test": "half"}]},
         "evaluation": {"status": "fail"},
@@ -74,8 +74,8 @@ def specimen(root: Path) -> tuple[Path, dict]:
         "percent": 50,
     }
     header = {
-        "$schema": "booley.coverage-points/v1",
-        "campaign_id": "qa-control",
+        "$schema": "booley.coverage-points/v2",
+        "coverage_record_id": "qa-control",
         "target_identity": "booley:qa:coverage:1#sim_toggle",
     }
     raw = b"".join(json.dumps(row).encode() + b"\n" for row in [header, *points])

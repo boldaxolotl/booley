@@ -761,7 +761,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
     monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
     monkeypatch.setattr(doctor, "_run_project_phase", lambda *_args, **_kw: (None, audit))
 
-    def health(_project, _runtime, _verbose, reporter, _progress):
+    def health(_project, _runtime, reporter, _progress):
         if health_failure:
             reporter.fail_("unrelated project health failed", "repair project")
 

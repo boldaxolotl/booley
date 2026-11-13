@@ -245,6 +245,7 @@ DIRECTION_RULES = (
             exact("booley.flows.sim.backends.cocotb_target_checks"),
             exact("booley.runtime.vaporview"),
             exact("booley.flows.target_test_plan_inspection"),
+            exact("booley.audit.core_tree_inspection"),
             exact("booley.runtime.project_image"),
         ),
         (

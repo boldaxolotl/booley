@@ -22,7 +22,7 @@ def test_exact_eligible_campaign_produces_versioned_advisory_report():
 
     report = CoverageAnalyzer(model).analyze_coverage_campaign(campaign, None, "Explain gaps")
     document = report.to_dict()
-    assert document["$schema"] == "booley.coverage-analysis/v1"
+    assert document["$schema"] == "booley.coverage-analysis/v3"
     assert document["eligibility"] == "eligible"
     assert document["closure_recommendation"] == "ungated_no_recommendation"
     assert document["observed_evidence"]["evaluation"]["status"] == "not_requested"
@@ -84,7 +84,7 @@ def test_unusable_campaign_rejects_before_model_invocation(change):
     if change == "nonterminal":
         document["collection"]["status"] = "running"
     elif change == "invalid":
-        del document["campaign_id"]
+        del document["coverage_record_id"]
     else:
         document["points"] = []
         document["rollups"] = []
@@ -149,8 +149,8 @@ def test_invalid_reference_diagnostics_aggregate_paths_and_categories():
         CoverageAnalyzer(lambda prompt: response).analyze_coverage_campaign(campaign, None, "")
 
     message = str(captured.value)
-    assert "/hypotheses/0/point_ids/0: cp1_not_in_campaign" in message
-    assert "/hypotheses/1/point_ids/0: cp1_not_in_campaign" in message
+    assert "/hypotheses/0/point_ids/0: cp1_not_in_record" in message
+    assert "/hypotheses/1/point_ids/0: cp1_not_in_record" in message
     assert "/recommendations/0/point_ids/0: malformed_cp1" in message
     assert foreign_id not in message
 
@@ -428,7 +428,7 @@ def test_analysis_input_carries_recomputed_rollups_and_evaluation(tmp_path):
         .to_dict()
     )
 
-    evidence = report["observed_evidence"]["campaign_manifest"]
+    evidence = report["observed_evidence"]["coverage_record_manifest"]
     assert evidence["rollups"] == honest_manifest["rollups"]
     assert evidence["evaluation"] == honest_manifest["evaluation"]
     assert report["closure_recommendation"] == "coverage_ready"
