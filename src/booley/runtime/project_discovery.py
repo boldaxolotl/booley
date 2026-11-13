@@ -222,7 +222,13 @@ def _session_owner(checkout: Path) -> Path:
     return common.parent
 
 
-def _session_checkout(selected: Path) -> Path:
+def containing_checkout(selected: Path) -> Path | None:
+    """The checkout containing *selected*, or ``None`` outside any Project.
+
+    That is its nearest Git checkout (a linked worktree is its own checkout);
+    otherwise, for an initialized non-Git Project, the nearest ancestor with a
+    Booley Directory of its own.
+    """
     current, checkouts = _checkout_candidates(selected)
     if checkouts:
         return checkouts[0]
@@ -230,7 +236,14 @@ def _session_checkout(selected: Path) -> Path:
     for parent in (current, *current.parents):
         if parent != Path.home() and resolve_authoritative_booley_dir(parent).is_dir():
             return parent
-    raise _session_error()
+    return None
+
+
+def _session_checkout(selected: Path) -> Path:
+    checkout = containing_checkout(selected)
+    if checkout is None:
+        raise _session_error()
+    return checkout
 
 
 def discover_session_context(

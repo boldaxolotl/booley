@@ -109,6 +109,8 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         ".runtime/mcp-tool-reports/": _SOURCE_TIED,
         ".runtime/display.jsonl": _SOURCE_TIED,
         ".runtime/prompts/": _SOURCE_TIED,
+        # bwave's session store: its sessions name this checkout's traces (#3483).
+        ".runtime/bwave/": _SOURCE_TIED,
         "tmp/fusesoc-isolated-cores/": _SOURCE_TIED,
         # Common: ADR rows.
         "goals/": _COMMON,

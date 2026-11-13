@@ -2,8 +2,9 @@
 
 Tests run a real Campaign through the faked process edge of ``campaign_boundary``
 (so the traces are the evidence files a Campaign records) and then look the
-sessions up the way an agent shell does: a separate process that resolves the
-bwave session store through its own default temporary directory.
+sessions up the way an agent shell does: a separate process in the run's
+checkout, with its own temporary directory, that resolves the checkout's bwave
+session store (issue #3483).
 """
 
 from __future__ import annotations
@@ -18,8 +19,6 @@ from pathlib import Path
 import pytest
 
 import booley
-from booley.bwave import cli as bwave_cli
-from booley.bwave.sessions import _load_sessions
 from booley.flows.base import SubprocessResult
 from tests.flows.sim.campaign_boundary import CampaignSimRun, Launch, run_campaign_sim
 from tests.subprocess_budget import run_bounded_child
@@ -30,14 +29,19 @@ _RESOLVE_CHILD = (
 )
 
 
-@pytest.fixture(autouse=True)
-def shell_session_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the in-process store at the default a child with this ``TMPDIR`` resolves."""
-    shell_tmp = tmp_path / "shell-tmp"
-    shell_tmp.mkdir()
-    store = shell_tmp / "bwave" / "bwave_sessions.json"
-    monkeypatch.setattr(bwave_cli, "SESSION_FILE", store)
-    return store
+@pytest.fixture
+def checkout_store(tmp_path: Path) -> Path:
+    """The session store of the run's checkout (``tmp_path`` is the Project Root)."""
+    return tmp_path / ".booley" / ".runtime" / "bwave" / "bwave_sessions.json"
+
+
+def _sessions(tmp_path: Path) -> dict[str, dict[str, str]]:
+    """The checkout store's entries with each trace joined to the checkout when relative."""
+    store = tmp_path / ".booley" / ".runtime" / "bwave" / "bwave_sessions.json"
+    sessions = json.loads(store.read_text("utf-8"))
+    for entry in sessions.values():
+        entry["trace"] = str(tmp_path / entry["trace"])
+    return sessions
 
 
 def _simulate(launch: Launch, *, failing: frozenset[str], traced: bool) -> SubprocessResult:
@@ -80,16 +84,18 @@ def _trace_of(tmp_path: Path, target: str, test: str) -> Path:
 
 
 def _bwave_resolves(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess[str]:
-    """Run ``bwave`` trace resolution for *argv* in a fresh process with its own ``TMPDIR``."""
-    shell_tmp = str(tmp_path / "shell-tmp")
+    """Run ``bwave`` trace resolution for *argv* from the checkout, with its own ``TMPDIR``."""
+    shell_tmp = tmp_path / "shell-tmp"
+    shell_tmp.mkdir(exist_ok=True)
     env = {
         **os.environ,
-        "TMPDIR": shell_tmp,
-        "TEMP": shell_tmp,
-        "TMP": shell_tmp,
+        "TMPDIR": str(shell_tmp),
+        "TEMP": str(shell_tmp),
+        "TMP": str(shell_tmp),
         "PYTHONPATH": str(Path(booley.__file__).resolve().parents[1]),
     }
-    return run_bounded_child([sys.executable, "-c", _RESOLVE_CHILD, *argv], env=env)
+    env.pop("BOOLEY_DIR", None)
+    return run_bounded_child([sys.executable, "-c", _RESOLVE_CHILD, *argv], cwd=tmp_path, env=env)
 
 
 def test_traced_run_registers_the_target_session_for_a_later_bwave_process(
@@ -120,7 +126,7 @@ def test_pathless_bwave_query_resolves_the_runs_newest_trace(
 def test_session_prefers_a_non_passing_test_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _run(tmp_path, monkeypatch, {"lite": ["a", "b", "c"]}, failing=("b",))
 
-    assert _load_sessions()["lite"]["trace"] == str(_trace_of(tmp_path, "lite", "b"))
+    assert _sessions(tmp_path)["lite"]["trace"] == str(_trace_of(tmp_path, "lite", "b"))
 
 
 def test_session_takes_the_last_test_run_when_all_pass(
@@ -128,30 +134,41 @@ def test_session_takes_the_last_test_run_when_all_pass(
 ):
     _run(tmp_path, monkeypatch, {"lite": ["a", "b", "c"]})
 
-    assert _load_sessions()["lite"]["trace"] == str(_trace_of(tmp_path, "lite", "c"))
+    assert _sessions(tmp_path)["lite"]["trace"] == str(_trace_of(tmp_path, "lite", "c"))
+
+
+def test_traced_run_registers_into_its_checkout_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkout_store: Path
+):
+    _run(tmp_path, monkeypatch, {"lite": ["smoke"]})
+
+    assert "lite" in json.loads(checkout_store.read_text("utf-8"))
+    # A later process of the checkout finds it whatever its temporary directory is.
+    child = _bwave_resolves(tmp_path, "@lite", "list")
+    assert child.returncode == 0, child.stderr
+    assert Path(child.stdout.strip()) == _trace_of(tmp_path, "lite", "smoke")
 
 
 def test_untraced_run_leaves_existing_sessions_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shell_session_store: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkout_store: Path
 ):
     _run(tmp_path, monkeypatch, {"lite": ["smoke"]})
-    assert "lite" in _load_sessions()
-    before = shell_session_store.read_bytes()
+    assert "lite" in _sessions(tmp_path)
+    before = checkout_store.read_bytes()
 
-    (tmp_path / "again").mkdir()
-    _run(tmp_path / "again", monkeypatch, {"lite": ["smoke"]}, traced=False)
+    _run(tmp_path, monkeypatch, {"lite": ["smoke"]}, traced=False)
 
-    assert shell_session_store.read_bytes() == before
+    assert checkout_store.read_bytes() == before
     child = _bwave_resolves(tmp_path, "@lite", "list")
     assert Path(child.stdout.strip()) == _trace_of(tmp_path, "lite", "smoke")
 
 
 def test_untraced_run_registers_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shell_session_store: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checkout_store: Path
 ):
     _run(tmp_path, monkeypatch, {"lite": ["smoke"]}, traced=False)
 
-    assert not shell_session_store.parent.exists()
+    assert not checkout_store.parent.exists()
 
 
 @pytest.mark.parametrize(
@@ -164,9 +181,9 @@ def test_registration_failure_keeps_the_verdict(
     failing: tuple[str, ...],
     exit_code: int,
 ):
-    blocker = tmp_path / "blocker"
+    blocker = tmp_path / ".booley" / ".runtime" / "bwave"
+    blocker.parent.mkdir(parents=True)
     blocker.write_text("a file where the store's directory should be", encoding="utf-8")
-    monkeypatch.setattr(bwave_cli, "SESSION_FILE", blocker / "bwave_sessions.json")
 
     with caplog.at_level(logging.WARNING, logger="booley.flows.sim.bwave_registration"):
         run = _run(tmp_path, monkeypatch, {"lite": ["smoke"]}, failing=failing)
