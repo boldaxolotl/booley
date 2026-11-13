@@ -321,9 +321,12 @@ made-up output is provisional at best.
   `src/booley` except the modules in `[tool.pyright] exclude` in
   `pyproject.toml`, which still fail basic mode. To remove a module from the
   list, fix its type errors and lower `EXCLUDE_CEILING` in
-  `tests/ci/test_pyright_scope.py` in the same change. When you rename an
-  excluded module, rename its entry. Never add a module: new code is checked by
-  default, so fix its errors instead (tracker #3653).
+  `tests/ci/test_pyright_scope.py` in the same change; that test fails when
+  the entry count and the ceiling differ. When you rename an excluded module,
+  rename its entry and keep the list sorted. Never add a module: new code is
+  checked by default, so fix its errors instead. The burn-down of the listed
+  modules is tracked in
+  [#3653](https://github.com/boldaxolotl/booley/issues/3653).
 - **Register tests of Sandbox-only code.** Windows CI skips the test modules
   listed in `tests/sandbox_only.py`, because their code never runs on a
   Windows host. See [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests)

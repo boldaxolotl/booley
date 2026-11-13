@@ -1714,3 +1714,10 @@ def test_session_git_config_is_idempotent_and_keeps_inherited_entries(
     monkeypatch.setenv("GIT_CONFIG_COUNT", "")
     _disable_git_auto_maintenance_for_children()
     assert os.environ["GIT_CONFIG_COUNT"] == "2"
+
+
+def test_pyright_platform_is_pinned_to_the_ci_platform() -> None:
+    """Local Pyright runs on macOS or Windows must match the Linux CI error set."""
+    pyproject = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["tool"]["pyright"]["pythonPlatform"] == "Linux"

@@ -326,6 +326,9 @@ skip_empty = true
 # ---------------------------------------------------------------------------
 [tool.pyright]
 pythonVersion = "3.11"
+# CI lints on Linux; pinning the platform keeps local runs on macOS and Windows hosts
+# (Agent Readiness) on the same error set as CI and the exclude list below.
+pythonPlatform = "Linux"
 # Pyright checks the whole package; `strict` marks the trust boundaries.
 typeCheckingMode = "basic"
 include = ["src/booley"]
