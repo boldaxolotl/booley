@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -1324,6 +1325,7 @@ def test_unproxied_bootstrap_keeps_proxy_while_sandboxes_exist(
     assert sidecars.legacy.PROXY_CONTAINER in docker.containers
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the hint uses cmd quoting, which shlex cannot parse")
 def test_bootstrap_replaces_proxy_after_deleted_project_session_down(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
