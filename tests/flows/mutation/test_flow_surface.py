@@ -61,13 +61,7 @@ def test_cli_defaults_leave_count_scope_and_threshold_to_the_run(tmp_path) -> No
     )
 
 
-@pytest.mark.parametrize(
-    ("count", "seed", "message"),
-    [(0, 0, "--count must be positive"), (2, -1, "--seed must be a non-negative integer")],
-)
-def test_invalid_values_end_the_run_with_exit_two(
-    tmp_path, monkeypatch, count, seed, message
-) -> None:
+def test_invalid_seed_ends_the_run_with_exit_two(tmp_path, monkeypatch) -> None:
     from tests.flows.mutation.test_flow import (
         _SCOPE,
         _make_endpoint,
@@ -76,21 +70,26 @@ def test_invalid_values_end_the_run_with_exit_two(
     )
 
     _prepare_scope_files(tmp_path, [_SCOPE])
-    flow = _make_endpoint(tmp_path, monkeypatch, count=count, seed=seed, extra_args=["--dry-run"])
+    flow = _make_endpoint(tmp_path, monkeypatch, count=2, seed=-1, extra_args=["--dry-run"])
 
     result, _ = _run_count_preview(flow, monkeypatch)
 
     assert result.exit_code == EXIT_ERROR
-    assert message in result.report_text
+    assert "--seed must be a non-negative integer" in result.report_text
 
 
-def test_count_rejects_text_that_is_not_auto_or_an_integer(tmp_path) -> None:
+def test_count_rejects_text_that_is_not_auto_or_an_integer(tmp_path, capsys) -> None:
     from booley.flows.mutation.flow import MutationFlow
 
-    with pytest.raises(SystemExit):
-        MutationFlow().parse_args(
-            ["--work-dir", str(tmp_path), "--target", "sim_soc", "--count", "many"]
-        )
+    for bad_count in ("abc", "many", "0", "-3", "1.5"):
+        with pytest.raises(SystemExit) as exit_info:
+            MutationFlow().parse_args(
+                ["--work-dir", str(tmp_path), "--target", "sim_soc", "--count", bad_count]
+            )
+        stderr = capsys.readouterr().err
+        assert exit_info.value.code == 2, bad_count
+        assert "argument --count: must be a positive integer or 'auto'" in stderr, bad_count
+        assert "_count_type" not in stderr, bad_count
 
 
 def test_mcp_definition_is_a_flow_with_the_mutation_schema(monkeypatch) -> None:

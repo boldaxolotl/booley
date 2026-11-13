@@ -314,6 +314,7 @@ _METRICS = {
     "reg2reg_fmax_mhz": "Register Fmax",
     "latches": "Latches",
     "unexpected_latches": "Unexpected latches",
+    "unexpected_comb_loops": "Unexpected combinational loops",
     "lut_count": "LUTs",
     "ff_count": "FFs",
     "bram_count": "BRAMs",
