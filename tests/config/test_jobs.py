@@ -49,6 +49,14 @@ def test_malformed_seat_caps_are_config_errors_naming_the_key() -> None:
         parse_seat_caps({"jobs": {"seats": {"verilator": 1}}})
 
 
+@pytest.mark.parametrize("count", [-1, 2.0])
+def test_negative_and_fractional_seat_counts_are_config_errors(count: object) -> None:
+    from booley.config.jobs import SeatCapError, parse_seat_caps
+
+    with pytest.raises(SeatCapError, match=r"\[jobs\.seats\]\.vivado"):
+        parse_seat_caps({"jobs": {"seats": {"vivado": count}}})
+
+
 def test_absent_or_unreadable_jobs_table_has_no_seat_caps() -> None:
     from booley.config.jobs import parse_seat_caps
 

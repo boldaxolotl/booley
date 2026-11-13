@@ -404,22 +404,27 @@ def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     from booley.audit.resource_policy import configured_memory_budget
     from booley.config.jobs import SeatCapError, parse_seat_caps
 
+    findings: list[Any] = []
     try:
         configured_memory_budget(data)
     except ValueError as exc:
-        return failure(
-            f"booley.toml {exc}",
-            'set [jobs].memory_budget to a positive size such as "24g", or delete it',
+        findings.extend(
+            failure(
+                f"booley.toml {exc}",
+                'set [jobs].memory_budget to a positive size such as "24g", or delete it',
+            ).findings
         )
     try:
         parse_seat_caps(data)
     except SeatCapError as exc:
-        return failure(
-            f"booley.toml {exc}",
-            "set [jobs.seats] <tool> = <seats you own> (a positive whole number), "
-            "or delete the entry",
+        findings.extend(
+            failure(
+                f"booley.toml {exc}",
+                "set [jobs.seats] <tool> = <seats you own> (a positive whole number), "
+                "or delete the entry",
+            ).findings
         )
-    return ConfigTableAudit()
+    return ConfigTableAudit(tuple(findings))
 
 
 def audit_goals_table(data: Mapping[str, Any]) -> ConfigTableAudit:
