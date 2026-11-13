@@ -619,26 +619,15 @@ def _result_from(
     last = reports[-1][1] if reports else {}
     detail = as_dict(last.get("detail"))
     read = {} if detail is None else report_metric_values(request.flow, detail)
-    metrics = {
-        target: value
-        for target, value in read.items()
-        if not isinstance(value, MetricsUnavailable)
-    }
-    unavailable = {
-        target: value.reason
-        for target, value in read.items()
-        if isinstance(value, MetricsUnavailable)
-    }
-    timed_out_status = status is CheckoutFlowStatus.TIMED_OUT
+    metrics, unavailable = _split_unavailable(read)
     excerpt = None
     if status is not CheckoutFlowStatus.PASSED or unavailable or not metrics:
         report_text = last.get("report_text")
         excerpt = _failure_excerpt(
-            request.timeout_s if timed_out_status else None,
+            request.timeout_s if status is CheckoutFlowStatus.TIMED_OUT else None,
             unavailable,
             report_text if isinstance(report_text, str) else "",
             log_path,
-            timed_out=timed_out_status,
         )
     return CheckoutFlowResult(
         run_id=run_id,
@@ -652,28 +641,36 @@ def _result_from(
     )
 
 
+def _split_unavailable(
+    read: Mapping[str, FlowMetricValues | MetricsUnavailable],
+) -> tuple[dict[str, FlowMetricValues], dict[str, str]]:
+    """Split a report's per-Target entries into typed values and unavailable reasons."""
+    metrics: dict[str, FlowMetricValues] = {}
+    unavailable: dict[str, str] = {}
+    for target, value in read.items():
+        if isinstance(value, MetricsUnavailable):
+            unavailable[target] = value.reason
+        else:
+            metrics[target] = value
+    return metrics, unavailable
+
+
 def _failure_excerpt(
     timeout_s: float | None,
     unavailable: Mapping[str, str],
     report_text: str,
     log_path: Path,
-    *,
-    timed_out: bool,
 ) -> str:
     """Why a run failed or measured nothing, from the Flow's own words, bounded.
 
-    A timeout line comes first, then each unavailable Target's reason (500 characters),
+    A timeout line (when ``timeout_s`` is set, meaning the run timed out) comes first, then each unavailable Target's reason (500 characters),
     then the first 20 lines of the report text (2,000 characters), where a Flow puts
     its cause. A run that left no report text falls back to the last 20 lines of
     ``job.log``, which is where a child that died abruptly prints.
     """
     parts: list[str] = []
-    if timed_out:
-        parts.append(
-            "the run timed out"
-            if timeout_s is None
-            else f"the run timed out after {timeout_s:g} s"
-        )
+    if timeout_s is not None:
+        parts.append(f"the run timed out after {timeout_s:g} s")
     parts.extend(
         f"{target}: {reason[:_EXCERPT_TARGET_CHARS]}" for target, reason in unavailable.items()
     )

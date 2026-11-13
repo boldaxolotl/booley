@@ -141,8 +141,8 @@ def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
     ).flow_metrics()
 
 
-# Flows whose reports do not carry their metric values yet, so no report reader exists.
-_FLOWS_WITHOUT_REPORT_READER = {"coverage"}  # read by the ``sim`` reader
+# Flows with no report reader of their own: ``coverage`` has no Flow, the ``sim`` reader serves it.
+_FLOWS_WITHOUT_REPORT_READER = {"coverage"}
 
 # Every Flow that declares metrics maps to a run that returns its typed values.
 _SAMPLE_RUNS: dict[str, Callable[[Path, pytest.MonkeyPatch], Any]] = {
