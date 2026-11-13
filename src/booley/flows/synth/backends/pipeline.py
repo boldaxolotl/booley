@@ -547,8 +547,9 @@ _DESIGN_PATTERNS = {
 
 def _design_diagnostic(stage: str | None, text: str) -> str | None:
     """Recognize audited frontend diagnostics with positive RTL evidence."""
+    patterns = _DESIGN_PATTERNS.get(stage, ()) if stage is not None else ()
     for line in text.splitlines():
-        if any(re.search(pattern, line) for pattern in _DESIGN_PATTERNS.get(stage, ())):
+        if any(re.search(pattern, line) for pattern in patterns):
             return line.strip()[:500]
     return None
 

@@ -82,15 +82,18 @@ def worst_clock(per_clock: dict[str, ClockTiming]) -> ClockTiming | None:
     """Return the timing-worst clock using stable metric fallbacks."""
     if not per_clock:
         return None
-    with_fmax = [timing for timing in per_clock.values() if timing.fmax_mhz is not None]
+    # (metric, timing) pairs keep the non-None metric typed for the comparison.
+    with_fmax = [(t.fmax_mhz, t) for t in per_clock.values() if t.fmax_mhz is not None]
     if with_fmax:
-        return min(with_fmax, key=lambda timing: timing.fmax_mhz)
-    with_path = [timing for timing in per_clock.values() if timing.critical_path_ps is not None]
+        return min(with_fmax, key=lambda pair: pair[0])[1]
+    with_path = [
+        (t.critical_path_ps, t) for t in per_clock.values() if t.critical_path_ps is not None
+    ]
     if with_path:
-        return max(with_path, key=lambda timing: timing.critical_path_ps)
-    with_wns = [timing for timing in per_clock.values() if timing.wns_ns is not None]
+        return max(with_path, key=lambda pair: pair[0])[1]
+    with_wns = [(t.wns_ns, t) for t in per_clock.values() if t.wns_ns is not None]
     if with_wns:
-        return min(with_wns, key=lambda timing: timing.wns_ns)
+        return min(with_wns, key=lambda pair: pair[0])[1]
     return next(iter(per_clock.values()))
 
 

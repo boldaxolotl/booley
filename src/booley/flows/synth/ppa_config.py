@@ -256,7 +256,7 @@ def _append_positive_int_config(cmd: list[str], cfg: Mapping[str, Any], key: str
     cmd.extend([f"--{key.replace('_', '-')}", str(value)])
 
 
-def _append_cli_overrides(cmd: list[str], args: argparse.Namespace) -> None:
+def _append_cli_overrides(cmd: list[str], args: SynthRequest | argparse.Namespace) -> None:
     """Append explicit per-call expert overrides after the selected profile."""
     for name in ("abc_recipe", "abc_script", "abc_delay_ps"):
         _append_cli_value(cmd, args, name)
