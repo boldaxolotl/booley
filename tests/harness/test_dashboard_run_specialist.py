@@ -149,7 +149,10 @@ async def test_reviewer_launches_with_the_shown_command_submitted(checkout, spaw
         await review_command(app, pilot, wizard)
         command = shown(wizard, "#run-command")
         expected = ["--category", "rtl", "--focus", "bugs", "--scope", "fifo.v"]
-        assert command == f"cd {checkout} && booley specialist reviewer {' '.join(expected)}"
+        assert (
+            command
+            == f"cd {shlex.quote(str(checkout))} && booley specialist reviewer {' '.join(expected)}"
+        )
         assert shown(wizard, "#run-review").splitlines()[0].startswith("Runs now")
         await pilot.press("down", "enter")  # Copy command
         assert copied == [command]
