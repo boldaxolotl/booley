@@ -196,7 +196,7 @@ def test_failing_diagnostic_test_run_is_reported_prominently(tmp_path, monkeypat
     passing = {**test_run_document(_run("reset")), "grade": "pass"}
     result = EndpointOutcome(
         report_text="sim: ran",
-        detail={"campaigns": {"sim": {"test_runs": [frozen_row, other_row, passing]}}},
+        detail={"records": {"sim": {"test_runs": [frozen_row, other_row, passing]}}},
     )
     flow._with_diagnostic_test_run_note(result)
     # The frozen run is Goal evidence, not diagnostic, whatever its grade.
@@ -226,7 +226,7 @@ def test_a_goal_written_with_the_target_identity_is_not_listed_as_diagnostic(
     monkeypatch.setattr(flow, "_target_names", lambda target: {target, f"lib:ip:core#{target}"})
     frozen_row = {**test_run_document(_SUITE.runs[0]), "grade": "fail"}
     result = EndpointOutcome(
-        report_text="sim: ran", detail={"campaigns": {"sim": {"test_runs": [frozen_row]}}}
+        report_text="sim: ran", detail={"records": {"sim": {"test_runs": [frozen_row]}}}
     )
     flow._with_diagnostic_test_run_note(result)
     assert "diagnostic_test_runs" not in result.detail
@@ -278,7 +278,7 @@ def test_a_diagnostic_run_names_the_goals_whose_frozen_runs_it_ran(tmp_path, mon
     frozen_row = {**test_run_document(_SUITE.runs[0]), "grade": "fail"}
     other = {**test_run_document(_run("reset")), "grade": "fail"}
     result = EndpointOutcome(
-        report_text="sim: ran", detail={"campaigns": {"sim": {"test_runs": [frozen_row, other]}}}
+        report_text="sim: ran", detail={"records": {"sim": {"test_runs": [frozen_row, other]}}}
     )
     flow._with_diagnostic_test_run_note(result)
     assert result.detail["diagnostic_test_runs"] == {
@@ -297,7 +297,7 @@ def test_a_diagnostic_run_names_the_goals_whose_frozen_runs_it_ran(tmp_path, mon
     assert "sim_pass_sim" not in result.report_text
     # A diagnostic run of other Test Runs only says nothing more.
     plain = EndpointOutcome(
-        report_text="sim: ran", detail={"campaigns": {"sim": {"test_runs": [other]}}}
+        report_text="sim: ran", detail={"records": {"sim": {"test_runs": [other]}}}
     )
     assert flow._with_diagnostic_test_run_note(plain).report_text == "sim: ran"
 

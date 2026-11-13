@@ -158,10 +158,10 @@ def test_console_lifecycle_reports_executed_suite_not_criterion_list(
     ]
     assert {
         observation["test"]
-        for campaign in result.outcome.detail["campaigns"].values()
+        for campaign in result.outcome.detail["records"].values()
         for observation in campaign["observations"]
     } == {"half", "reset", "wrap", "carry", "zero", "gap", "overflow", "underflow", "saturate"}
-    for campaign in result.outcome.detail["campaigns"].values():
+    for campaign in result.outcome.detail["records"].values():
         path = tmp_path / "reports/sim/1" / campaign["artifacts"]["coverage"]["path"]
         evaluation = resolve_coverage_campaign_reference(path).loaded.campaign.evaluation
         assert evaluation["status"] == "blocked"
@@ -249,7 +249,7 @@ def _assert_card_names_run_files(report_text: str, tmp_path: Path) -> None:
 
 
 def _assert_ungated_report(result, tmp_path: Path) -> None:
-    campaign_id = result.outcome.detail["campaigns"]["sim_0"]["campaign_id"]
+    campaign_id = result.outcome.detail["records"]["sim_0"]["simulation_record_id"]
     expected_headline = (
         "sim_0: simulation PASS · coverage collection COMPLETE · "
         f"evaluation NOT_REQUESTED (Simulation Campaign {campaign_id})"
@@ -333,7 +333,7 @@ def _assert_enclosing_result_is_authenticated(campaign_path, resolved) -> None:
 def _assert_campaign_report_schema(tmp_path: Path, campaign: dict[str, object]) -> None:
     report = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
     assert report["$schema"] == "booley.simulation-report/v3"
-    assert report["detail"]["campaigns"]["sim_0"]["artifacts"] == campaign["artifacts"]
+    assert report["detail"]["records"]["sim_0"]["artifacts"] == campaign["artifacts"]
 
 
 def _assert_projection_tamper_rejected(campaign_path: Path) -> None:
@@ -369,7 +369,7 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     assert result.exit_code == 0
     _assert_card_names_run_files(result.outcome.report_text, tmp_path)
     target = result.outcome.detail["targets"]["sim_0"]
-    coverage_reference = target["coverage_campaign"]
+    coverage_reference = target["coverage_record"]
     assert coverage_reference["path_base"] == "report_invocation"
     campaign_path = tmp_path / "reports/sim/1" / coverage_reference["path"]
     assert campaign_path == tmp_path / "reports/sim/1/targets/sim_0/coverage.json"
@@ -377,8 +377,8 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     resolved = resolve_coverage_campaign_reference(campaign_path)
     assert resolved.loaded.campaign.evaluation["status"] == "not_requested"
     _assert_ungated_report(result, tmp_path)
-    campaign = result.outcome.detail["campaigns"]["sim_0"]
-    assert campaign["dependency"] == "local_campaign"
+    campaign = result.outcome.detail["records"]["sim_0"]
+    assert campaign["dependency"] == "local_record"
     assert campaign["artifacts"]["manifest"]["path"] == ("targets/sim_0/record/manifest.json")
     assert campaign["artifacts"]["simulation"]["path"] == ("targets/sim_0/simulation.json")
     assert campaign["artifacts"]["coverage"]["path"] == "targets/sim_0/coverage.json"
@@ -853,9 +853,9 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     assert result.exit_code == 2
     assert request.target == "sim_2,sim_0,sim_1"
     assert list(result.outcome.detail["targets"]) == ["sim_2", "sim_0", "sim_1"]
-    assert list(result.outcome.detail["campaigns"]) == ["sim_2", "sim_0", "sim_1"]
+    assert list(result.outcome.detail["records"]) == ["sim_2", "sim_0", "sim_1"]
     assert result.outcome.detail["targets"]["sim_2"]["collection"] == "complete"
-    campaign_id = result.outcome.detail["campaigns"]["sim_1"]["campaign_id"]
+    campaign_id = result.outcome.detail["records"]["sim_1"]["simulation_record_id"]
     campaign_path = next(
         (tmp_path / "reports/sim/1/targets/sim_1").rglob("coverage-record/coverage.json")
     )
@@ -965,9 +965,9 @@ def test_shared_execution_failure_terminalizes_without_losing_completed_reports(
     )
     nested = load_coverage_campaign(nested_path).campaign
     assert outer == nested.evaluation["status"] == "not_requested"
-    assert set(result.outcome.detail["campaigns"]) == {"sim_0", "sim_1", "sim_2"}
-    assert result.outcome.detail["campaigns"]["sim_1"]["grade"] == "error"
-    assert result.outcome.detail["campaigns"]["sim_2"]["grade"] == "pass"
+    assert set(result.outcome.detail["records"]) == {"sim_0", "sim_1", "sim_2"}
+    assert result.outcome.detail["records"]["sim_1"]["grade"] == "error"
+    assert result.outcome.detail["records"]["sim_2"]["grade"] == "pass"
     assert result.outcome.detail["pending_targets"] == []
     assert "completion_error" not in result.outcome.detail
     assert list((target_root / "record").glob("work-items/*/result.json"))
@@ -1205,7 +1205,7 @@ def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monke
     )
 
     assert result.exit_code == 0
-    campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]
+    campaign_id = result.outcome.detail["records"]["sim_custom"]["simulation_record_id"]
     assert _target_headline(result.outcome.report_text, "sim_custom") == (
         "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation PASS "
         f"(Simulation Campaign {campaign_id})"
@@ -1229,7 +1229,7 @@ def test_gated_suite_mismatch_headline_attaches_diagnostic_to_evaluation(tmp_pat
     )
 
     assert result.exit_code == 2
-    campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]
+    campaign_id = result.outcome.detail["records"]["sim_custom"]["simulation_record_id"]
     assert _target_headline(result.outcome.report_text, "sim_custom") == (
         "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation BLOCKED "
         f"(COV_EVAL_SUITE_MISMATCH) (Simulation Campaign {campaign_id})"
@@ -1299,9 +1299,9 @@ def test_shared_build_prerequisite_failure_publishes_durable_terminal_results(
     target = result.outcome.detail["targets"]["sim_0"]
     assert target["passed"] is False
     assert target["simulation"] == "aborted"
-    assert result.outcome.detail["campaigns"]["sim_0"]["grade"] == "error"
+    assert result.outcome.detail["records"]["sim_0"]["grade"] == "error"
     assert "completion_error" not in result.outcome.detail
-    assert "coverage_campaign" in target
+    assert "coverage_record" in target
     progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
     assert progress["phase"] == "aborted"
     assert progress["complete"] is True
@@ -1428,8 +1428,8 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     assert document["coverage_record"]["path_base"] == "origin_target"
     assert not (resumed_reports / "sim/2/targets/sim_0/simulation.json").exists()
     resume_report = json.loads((resumed_reports / "sim/2/report.json").read_text())
-    resume_campaign = resume_report["detail"]["campaigns"]["sim_0"]
-    assert resume_campaign["dependency"] == "external_origin_campaign"
+    resume_campaign = resume_report["detail"]["records"]["sim_0"]
+    assert resume_campaign["dependency"] == "external_origin_record"
     assert resume_campaign["artifacts"]["manifest"]["path_base"] == "reports_root"
     assert resume_campaign["artifacts"]["manifest"]["path"] == (
         "sim/1/targets/sim_0/record/manifest.json"
@@ -1474,7 +1474,7 @@ def test_full_pruning_refuses_resume_dependent_unless_explicitly_included(tmp_pa
     assert list((reports / "sim/.pruned-1").iterdir()) == []
     assert list((reports / "sim/.pruned-2").iterdir()) == []
     report = json.loads(survivor_report.read_text())
-    campaign = report["detail"]["campaigns"]["sim_0"]
+    campaign = report["detail"]["records"]["sim_0"]
     for reference in campaign["artifacts"].values():
         resolved = resolve_report_artifact_reference(
             survivor_report,
@@ -1695,7 +1695,7 @@ def test_cross_root_dependent_pruning_rejects_forged_report_reference(tmp_path, 
     assert result.exit_code == 0
     report_path = resumed / "sim/1/report.json"
     report = json.loads(report_path.read_text())
-    reference = report["detail"]["campaigns"]["sim_0"]["artifacts"]["manifest"]
+    reference = report["detail"]["records"]["sim_0"]["artifacts"]["manifest"]
     reference.pop("bytes")
     report_path.write_text(json.dumps(report), encoding="utf-8")
 
@@ -1726,7 +1726,7 @@ def test_cross_root_dependent_pruning_rejects_matching_forged_digests(tmp_path, 
     receipt.write_text(json.dumps(receipt_document), encoding="utf-8")
     report_path = resumed / "sim/1/report.json"
     report = json.loads(report_path.read_text())
-    reference = report["detail"]["campaigns"]["sim_0"]["artifacts"]["manifest"]
+    reference = report["detail"]["records"]["sim_0"]["artifacts"]["manifest"]
     reference["sha256"] = forged_digest
     report_path.write_text(json.dumps(report), encoding="utf-8")
 
@@ -1839,16 +1839,16 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
     report_path = tmp_path / "resumed/sim/1/report.json"
     report = json.loads(report_path.read_text())
     detail = report["detail"]
-    campaign = detail["campaigns"]["sim_0"]
-    assert campaign["dependency"] == "external_origin_campaign"
+    campaign = detail["records"]["sim_0"]
+    assert campaign["dependency"] == "external_origin_record"
     assert set(campaign["artifacts"]) == {"manifest", "simulation", "coverage"}
     assert {reference["path_base"] for reference in campaign["artifacts"].values()} == {
         "external_origin_target"
     }
-    assert detail["targets"]["sim_0"]["coverage_campaign"] == campaign["artifacts"]["coverage"]
+    assert detail["targets"]["sim_0"]["coverage_record"] == campaign["artifacts"]["coverage"]
     assert result.outcome.report_text == (
         "sim_0: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
-        f"(Simulation Campaign {campaign['campaign_id']})\n"
+        f"(Simulation Campaign {campaign['simulation_record_id']})\n"
         f"  manifest: {manifest.resolve()}\n"
         f"  report: {(tmp_path / 'resumed/sim/1/report.json').resolve()}\n"
         "  coverage: line 100.0%\n"
@@ -1858,7 +1858,7 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
         report_path,
         campaign["artifacts"]["manifest"],
         expected_kind="simulation_record_manifest",
-        expected_owner=campaign["campaign_id"],
+        expected_owner=campaign["simulation_record_id"],
         maximum=1024 * 1024,
         external_origin_target=manifest.parents[1],
     )
@@ -2048,7 +2048,7 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
     assert failed["simulation"] == "pass"
     assert failed["collection"] == "complete"
     assert failed["evaluation"] == "not_requested"
-    assert ("coverage_campaign" in failed) is (boundary == "after:coverage_reference")
+    assert ("coverage_record" in failed) is (boundary == "after:coverage_reference")
     completed_runs = tuple(runs)
     manifest = public.parent / "record/manifest.json"
 
@@ -2159,7 +2159,7 @@ def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeyp
     assert detail["passed"] is True
     assert detail["simulation"] == "pass"
     assert detail["error"] == "injected resumed reference failure"
-    assert "coverage_campaign" not in detail
+    assert "coverage_record" not in detail
 
 
 @pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
@@ -2206,7 +2206,7 @@ def test_unreadable_publication_evidence_preserves_simulation_truth(
     assert detail["collection"] == "infrastructure_error"
     assert detail["evaluation"] == "not_requested"
     assert [test["name"] for test in detail["tests"]] == ["reset", "wrap"]
-    assert "coverage_campaign" not in detail
+    assert "coverage_record" not in detail
 
 
 def _run_with_retention_reference_failure(monkeypatch, request, execution=None):
@@ -2257,7 +2257,7 @@ def test_resumed_retention_failure_matches_fresh_failed_target(tmp_path, monkeyp
     assert detail["collection"] == "infrastructure_error"
     assert detail["evaluation"] == "not_requested"
     assert detail["abort_remaining"] is True
-    assert "coverage_campaign" not in detail
+    assert "coverage_record" not in detail
     assert [test["name"] for test in detail["tests"]] == ["reset", "wrap"]
     assert execution.runs == []
 
@@ -2283,7 +2283,7 @@ def test_retention_failure_preserves_in_memory_campaign_truth(tmp_path, monkeypa
     assert detail["collection"] == "infrastructure_error"
     assert detail["evaluation"] == "not_requested"
     assert detail["error"] == "injected retention reference failure"
-    assert "coverage_campaign" not in detail
+    assert "coverage_record" not in detail
     assert [(test["name"], test["verdict"]) for test in detail["tests"]] == [("reset", "pass")]
 
 
@@ -2397,7 +2397,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     campaign = next(tmp_path.rglob("targets/sim_0/coverage.json"))
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(campaign)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(campaign)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     report = analyst.coverage_analyst(campaign).to_dict()
     assert report["$schema"] == "booley.coverage-analysis/v4"
@@ -3141,7 +3141,7 @@ def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, 
     assert loaded.campaign.target.selector == "sim_0"
     projection = json.loads(path.with_name("simulation.json").read_text())
     assert (
-        result.outcome.detail["targets"]["sim_0"]["coverage_campaign"]["path_base"]
+        result.outcome.detail["targets"]["sim_0"]["coverage_record"]["path_base"]
         == "report_invocation"
     )
     assert projection["simulation_record_manifest"]["path"]
@@ -3208,7 +3208,7 @@ def test_job_report_coverage_metrics_match_campaign(tmp_path, monkeypatch):
         assert detail["simulation"] == "pass" and detail["collection"] == "complete"
         assert detail["evaluation"] == ("fail" if selector == "sim_0" else "not_requested")
         assert detail["target"] == selector and detail["abort_remaining"] is False
-        assert detail["coverage_campaign"] and "coverage_overall" not in detail
+        assert detail["coverage_record"] and "coverage_overall" not in detail
     assert report["detail"]["targets"]["sim_0"]["coverage_metrics"]["line"]["met"] is True
 
 
@@ -3450,12 +3450,12 @@ def test_coverage_dry_run_previews_each_target_without_admission_or_mutation(
     printed = capsys.readouterr().out
     assert all(line in printed for line in lines)
     detail = result.outcome.detail
-    assert [entry["target"]["selector"] for entry in detail["campaign_preview"]] == [
+    assert [entry["target"]["selector"] for entry in detail["record_preview"]] == [
         "sim_0",
         "sim_1",
     ]
-    assert all(entry["work_items"] == 1 for entry in detail["campaign_preview"])
-    assert all(entry["build_variants"] >= 1 for entry in detail["campaign_preview"])
+    assert all(entry["work_items"] == 1 for entry in detail["record_preview"])
+    assert all(entry["build_variants"] >= 1 for entry in detail["record_preview"])
     assert detail["mutated"] is False
     assert detail["coverage"] is True
     assert adapter.registered == []
