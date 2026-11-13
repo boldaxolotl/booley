@@ -154,9 +154,15 @@ class Specialist(McpTool):
             )
         return None
 
+    def model_call_timeout_ms(self, asked_ms: int) -> int:
+        """The timeout a model call really gets: *asked_ms*, raised to this Specialist's minimum."""
+        return max(asked_ms, self.min_timeout * 1000)
+
     def timeout_seconds(self, timeout_ms: int | None = None) -> int:
-        """Convert model-call milliseconds to the provider's whole seconds."""
-        milliseconds = self.args.timeout_ms if timeout_ms is None else timeout_ms
+        """Convert model-call milliseconds to the provider's whole seconds, never below the minimum."""
+        milliseconds = self.model_call_timeout_ms(
+            self.args.timeout_ms if timeout_ms is None else timeout_ms
+        )
         return (milliseconds + 999) // 1000
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:

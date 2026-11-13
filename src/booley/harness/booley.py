@@ -56,6 +56,8 @@ from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
@@ -1867,6 +1869,22 @@ def _endpoint_help_candidate(args: argparse.Namespace) -> bool:
     )
 
 
+class _CancelledRun(KeyboardInterrupt):
+    """A Ctrl-C the Standalone Job runner already recorded as cancelled and reported."""
+
+
+def _quiet_keyboard_interrupt(
+    previous: Callable[[type[BaseException], BaseException, TracebackType | None], object],
+) -> Callable[[type[BaseException], BaseException, TracebackType | None], None]:
+    """Return an excepthook that drops ``KeyboardInterrupt`` and delegates everything else."""
+
+    def hook(exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None) -> None:
+        if not issubclass(exc_type, KeyboardInterrupt):
+            previous(exc_type, exc, tb)
+
+    return hook
+
+
 def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: bool) -> int:
     """Dispatch a Flow or Specialist through its execution adapter.
 
@@ -1911,7 +1929,12 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
             runtime_context.ensure_proxy_env()
         if job is None:
             return _invoke_endpoint(endpoint, argv, args)
-        return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
+        try:
+            return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
+        except KeyboardInterrupt:
+            # The Job runner records a started run as cancelled with exit 130 (when it can).
+            print("interrupted; run cancelled", file=sys.stderr)
+            raise _CancelledRun from None
     finally:
         if job is not None:
             job.discard()
@@ -2538,6 +2561,12 @@ def main() -> int:
     ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    except _CancelledRun:
+        # Die by SIGINT like any interrupted program, so a calling shell loop stops
+        # too; only the traceback is dropped. Re-raise the plain class: Python 3.11
+        # exits by SIGINT only for exactly KeyboardInterrupt, not a subclass (exit 1).
+        sys.excepthook = _quiet_keyboard_interrupt(sys.excepthook)
+        raise KeyboardInterrupt from None
 
 
 if __name__ == "__main__":

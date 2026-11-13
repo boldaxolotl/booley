@@ -176,7 +176,7 @@
       "run": 41,
       "message": "only 41 Mutants could be scored (50 requested)",
       "message_source": "code",
-      "threshold_by_doc": "ceil(0.8 x 50) = 40, which 33 detected cannot reach: the doc implies FAIL, exit 1; a PASS is a finding to record"
+      "threshold_by_doc": "ceil(0.8 x 41) = 33 (an unset --min-detected follows the number scored), which 33 detected reaches: PASS, exit 0; a FAIL or a label naming 80% of --count is a finding to record"
     }
   }
 }

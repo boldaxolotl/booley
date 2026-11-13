@@ -108,23 +108,45 @@ def test_model_roles_are_reviewer_and_coverage_analyst():
     assert {"reviewer", "coverage_analyst"} == bc.SPECIALISTS
 
 
-def test_stale_mutation_tester_key_fails_with_delete_hint(tmp_path):
-    """A ``[models] mutation_tester`` left from an older release is reported with its fix."""
+def test_stale_mutation_tester_key_reports_retired_flow(tmp_path):
+    """A ``[models] mutation_tester`` left from an older release is reported as retired."""
     from booley.audit.agent_schema import audit_models_table
 
+    expected = (
+        "booley.toml [models] mutation_tester is retired: the mutation_tester Specialist "
+        "is now the mutation Flow and uses no model; delete the key."
+    )
     body = '[models]\nmutation_tester = "claude-opus-5-5"\n'
     _write_toml(tmp_path, body)
 
-    with pytest.raises(BackendConfigError, match=r"unknown key 'mutation_tester'") as excinfo:
+    with pytest.raises(BackendConfigError) as excinfo:
         load_agent_settings(tmp_path)
-    assert str(excinfo.value).endswith(
-        "delete [models] mutation_tester or rename it to a valid key."
-    )
+    assert str(excinfo.value) == expected
 
     (finding,) = audit_models_table(tomllib.loads(body)).findings
     assert finding.severity is ConfigFindingSeverity.FAIL
+    assert finding.message == expected
     assert "delete [models] mutation_tester" in finding.fix
-    assert "coverage_analyst, reviewer" in finding.fix
+
+
+def test_unknown_models_key_says_delete_without_rename(tmp_path):
+    """A typo'd ``[models]`` key gets delete-only advice, identical in loader and Doctor."""
+    from booley.audit.agent_schema import audit_models_table
+
+    expected = (
+        "booley.toml [models] has an unknown key 'reviwer'; "
+        "valid keys are coverage_analyst, reviewer; delete [models] reviwer."
+    )
+    body = '[models]\nreviwer = "claude-opus-5-5"\n'
+    _write_toml(tmp_path, body)
+
+    with pytest.raises(BackendConfigError) as excinfo:
+        load_agent_settings(tmp_path)
+    assert str(excinfo.value) == expected
+    assert "rename" not in str(excinfo.value)
+
+    (finding,) = audit_models_table(tomllib.loads(body)).findings
+    assert finding.message == expected
 
 
 _RETIRED_MODEL_KEYS_FAIL_WITH_MIGRATION_ENTRIES_CASES = [

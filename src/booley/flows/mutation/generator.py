@@ -27,7 +27,7 @@ from booley.flows.mutation.operators import (
 
 # Bump whenever the operator table, site rules, anchoring, ID recipe, or selection
 # rule changes: the same inputs give the same Mutants only for the same version.
-GENERATOR_VERSION = "4"
+GENERATOR_VERSION = "5"
 
 _ID_LENGTH = 20  # hex characters of the SHA-256 digest kept in a Mutant ID
 

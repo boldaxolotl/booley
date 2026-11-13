@@ -503,8 +503,7 @@ def generate_results_markdown(
     lines = [
         "# Mutation Test Results",
         "",
-        f"Detected: {summary.detected_count}/{valid} "
-        f"(required: {min_detected}/{valid}) -- **{status}**",
+        f"Detected: {summary.detected_count}/{valid} (required: {min_detected}) -- **{status}**",
         "",
         f"- Detected: {summary.detected_count}",
         f"- Detected (timeout): {summary.detected_timeout_count} (included in Detected)",
@@ -1076,6 +1075,11 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             if plan.auto_mode
             else [f"count source: fixed; count={plan.count} (not auto-derived)"]
         )
+        if not plan.explicit_min_detected:
+            lines.append(
+                "min_detected: default 80% of --count; if fewer Mutants are scored "
+                "than --count, it follows the number scored",
+            )
         lines.append(summary)
         result = self._dry_run_outcome(
             summary="\n".join(lines),
@@ -2126,11 +2130,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         results: list[MutationResult] = []
         dropped: list[str] = []
         inconclusive: list[str] = []
+        # Progress counts to the Mutants that can run: a generator shortfall has
+        # fewer candidates than the requested count.
+        planned = min(plan.count, len(generated.ranked))
         for mutant in generated.ranked:
             if len(specs) == plan.count:
                 break
             spec = _spec_of(len(specs) + 1, mutant)
-            self.emit_progress(f"build and test Mutant {spec.index}/{plan.count}")
+            self.emit_progress(f"build and test Mutant {spec.index}/{planned}")
             variants = generated.variants.with_proposals([spec])
             result, reason = self._run_one_variant(plan, spec, variants, baseline)
             if result is None:
@@ -2564,7 +2571,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         valid_count = summary.detected_count + summary.not_detected_count
         passed = summary.detected_count >= min_detected
         gate = "PASS" if passed else "FAIL"
-        source = "explicit" if plan.explicit_min_detected else "default 80% of --count"
+        source = _threshold_source(plan, inputs.count)
         lines: list[str] = [self._identity_header(inputs)]
         if inputs.shortfall:
             lines.append(f"[mutation_test] {inputs.shortfall}")
@@ -2579,7 +2586,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         lines.append(
             f"  detected: {summary.detected_count}/{valid_count} "
-            f"(required: {min_detected}/{valid_count}, {source})",
+            f"(required: {min_detected}, {source})",
         )
         if summary.invalid_count:
             lines.append(f"  {_invalid_mutants_line(summary.invalid_count)}")
@@ -2693,6 +2700,20 @@ def _failure_detail(
         ),
     )
     return detail
+
+
+def _threshold_source(plan: MutationRunPlan, scored: int) -> str:
+    """Name what the pass threshold was computed from.
+
+    An unset ``--min-detected`` is 80 % of ``--count``, re-based on the Mutants scored
+    when fewer than ``--count`` ran (ADR 0088); the label says which base applied.
+    ``scored`` counts every Mutant that ran, invalid ones included.
+    """
+    if plan.explicit_min_detected:
+        return "explicit"
+    if scored == plan.count:
+        return "default 80% of --count"
+    return f"default 80% of {scored} scored, {plan.count} requested"
 
 
 def _spec_of(index: int, mutant: Mutant) -> MutationSpec:

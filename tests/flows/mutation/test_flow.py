@@ -439,7 +439,26 @@ def test_auto_dry_run_explains_source_size_count(tmp_path, monkeypatch, sizes, t
         assert f"rtl/{name}: {lines} lines ({10 * lines} bytes)" in result.report_text
     assert f"total: {sum(sizes)} lines" in result.report_text
     assert f"time cap: max(3, {timeout}s // 150) = 12" in result.report_text
-    assert f") = {count}" in result.display_lines[-2]
+    assert any(f") = {count}" in line for line in result.display_lines)
+
+
+def test_auto_count_is_case_insensitive_in_dry_run(tmp_path, monkeypatch):
+    """``--count AUTO`` prints the same auto explanation as ``--count auto``."""
+    for name in ("mod_a.sv", "mod_b.sv"):
+        source = tmp_path / "rtl" / name
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(b"// source\n" * 4)
+    extra_args = ["--dry-run", "--timeout-ms", "1800000"]
+    baseline_endpoint = _make_endpoint(tmp_path, monkeypatch, count="auto", extra_args=extra_args)
+    baseline, _ = _run_count_preview(baseline_endpoint, monkeypatch)
+    assert "count (auto):" in baseline.report_text
+
+    for spelling in ("AUTO", "Auto", " auto "):
+        endpoint = _make_endpoint(tmp_path, monkeypatch, count=spelling, extra_args=extra_args)
+        assert endpoint.args.count == "auto"
+        result, _ = _run_count_preview(endpoint, monkeypatch)
+        assert result.exit_code == EXIT_SUCCESS, spelling
+        assert result.report_text == baseline.report_text, spelling
 
 
 def test_fixed_dry_run_identifies_given_count(tmp_path, monkeypatch):
@@ -1491,6 +1510,14 @@ def test_explicit_min_detected_overrides_the_default(tmp_path: Path, monkeypatch
     )
 
     assert default_result.detail["min_detected"] == 8  # what the overrides replace
+    rebase_line = (
+        "min_detected: default 80% of --count; if fewer Mutants are scored than --count, "
+        "it follows the number scored"
+    )
+    assert rebase_line in default_result.display_lines[:-1]  # before the summary line
+    assert default_result.display_lines[-1].startswith("mutation dry-run:")
+    assert rebase_line not in cli_result.display_lines
+    assert rebase_line not in criterion_result.display_lines
     assert cli_result.detail["min_detected"] == 3
     assert (criterion_result.detail["count"], criterion_result.detail["min_detected"]) == (7, 5)
 
@@ -1535,16 +1562,46 @@ def test_invalid_mutants_are_named_against_the_threshold(tmp_path: Path, monkeyp
     assert (result.detail["detected"], result.detail["invalid"]) == (7, 3)
     assert "3 invalid Mutants could not be judged" in result.report_text
     assert "RESULT: FAIL (7/7 detected, need 8)" in result.report_text
+    assert "  detected: 7/7 (required: 8, default 80% of --count)" in result.report_text
+    assert "required: 8/7" not in result.report_text
+    assert "(required: 8)" in _results_markdown(tmp_path, result)
     assert "3 invalid Mutants could not be judged" in _results_markdown(tmp_path, result)
+
+
+def test_all_invalid_run_names_no_zero_denominator(tmp_path: Path, monkeypatch) -> None:
+    def nothing_builds(index: int | None) -> subprocess.CompletedProcess:
+        # The pristine baseline (no index) builds; every Mutant does not.
+        return _fake_proc(rc=0 if index is None else 2, stderr="error: does not elaborate")
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count=3, run=_detects_every_mutant, build=nothing_builds
+    )
+
+    assert result.exit_code == EXIT_FAILURE, result.report_text
+    assert "(required: 3, default 80% of --count)" in result.report_text
+    assert "required: 3/0" not in result.report_text
+    assert "required: 3/0" not in _results_markdown(tmp_path, result)
+    assert "3 invalid Mutants could not be judged" in result.report_text
 
 
 def test_generator_shortfall_lowers_the_default_threshold(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "rtl").mkdir()
     (tmp_path / _SCOPE).write_text("module m;\n  assign y = a + b;\nendmodule\n", encoding="utf-8")
 
+    progress: list[str] = []
+    monkeypatch.setattr(MutationFlow, "emit_progress", lambda _self, line: progress.append(line))
+
     _, result, _ = _campaign(tmp_path, monkeypatch, count=10, run=_detects_every_mutant)
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert [line for line in progress if line.startswith("build and test Mutant")] == [
+        "build and test Mutant 1/2",
+        "build and test Mutant 2/2",
+    ]
+    assert (
+        "  detected: 2/2 (required: 2, default 80% of 2 scored, 10 requested)"
+        in result.report_text
+    )
     expected = "only 2 Mutants could be scored (10 requested)"
     assert result.detail["shortfall"] == expected
     assert expected in result.report_text

@@ -666,3 +666,17 @@ def credential_warnings(plan: CredentialPlan) -> tuple[str, ...]:
             "Claude config records interactive API-key approval/rejection state; source selection does not attest interactive approval",
         )
     return ()
+
+
+def missing_credential_fix(cli: str, policy: str) -> str:
+    """The sign-in that *policy* accepts for *cli* (see ``allowed_credential_keys``)."""
+    if cli == APP_CLAUDE:
+        if policy == "api_key":
+            return f"export {API_KEY_ENV[cli]}"
+        return "run claude and use /login, or on the host: booley auth --cli claude"
+    host_login = f"booley auth --cli {cli}"
+    if policy == "subscription":
+        return "codex login"
+    if policy == "api_key":
+        return f"export {API_KEY_ENV[cli]}, or on the host: {host_login}"
+    return f"codex login, or on the host: {host_login}"

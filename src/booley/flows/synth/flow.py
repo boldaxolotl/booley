@@ -54,6 +54,7 @@ from booley.flows.eda_failures import (
     first_tool_diagnostic,
     strip_failure_markers,
 )
+from booley.flows.flow_config import expected_count
 from booley.flows.job_resources import SYNTH_PHASES, resolved_source_bytes, resource_phase
 from booley.flows.metric_declarations import (
     Better,
@@ -232,25 +233,6 @@ def _resolve_synth_timeout_ms(
     return resolve_timeout_ms("synth", work_dir, requested)
 
 
-def _expected_latches(work_dir: Path) -> int:
-    """``[flows.synth].expected_latches`` — declared intentional latches.
-
-    A standard-cell integrated clock gater is built from a deliberate
-    ``always_latch``; lowRISC's generic ``prim_clock_gating`` contains exactly
-    one. Failing on any latch at all makes such a design unsynthesizable
-    through Booley even though the RTL is correct (F-19). Declaring the count
-    keeps the check meaningful — one more latch than declared still fails, and
-    the raw count is always reported — while letting a correct design pass.
-
-    A negative or non-integer value is ignored (treated as 0) rather than
-    silently widening the gate.
-    """
-    raw = _load_flow_config(work_dir).get("expected_latches", 0)
-    if isinstance(raw, bool) or not isinstance(raw, int):
-        return 0
-    return max(0, raw)
-
-
 def _fail_on_timing_violation(work_dir: Path) -> bool:
     """``[flows.synth].fail_on_timing_violation`` — timing gates the exit code.
 
@@ -366,6 +348,10 @@ class SynthMetrics:
     unwaivable error made a correct design unsynthesizable (F-19). Latches
     are always reported; only the count above this is a critical condition."""
     comb_loops: int = 0
+    expected_comb_loops: int = 0
+    """Combinational loops the design is declared to contain on purpose
+    (``[flows.synth].expected_comb_loops``). Loops are always reported; only
+    the count above this is a critical condition."""
     multi_driven: int = 0
     warning_summary: WarningSummary = field(default_factory=WarningSummary)
     returncode: int = 0
@@ -463,6 +449,8 @@ class SynthMetrics:
             "expected_latches": self.expected_latches,
             "unexpected_latches": self.unexpected_latches,
             "comb_loops": self.comb_loops,
+            "expected_comb_loops": self.expected_comb_loops,
+            "unexpected_comb_loops": self.unexpected_comb_loops,
             "multi_driven": self.multi_driven,
             "warning_summary": self.warning_summary.to_detail(),
         }
@@ -495,10 +483,15 @@ class SynthMetrics:
         return max(0, self.latches - self.expected_latches)
 
     @property
+    def unexpected_comb_loops(self) -> int:
+        """Combinational loops beyond the declared count (never negative)."""
+        return max(0, self.comb_loops - self.expected_comb_loops)
+
+    @property
     def has_critical(self) -> bool:
         return self.structural_checks_complete and (
             self.unexpected_latches > 0
-            or self.comb_loops > 0
+            or self.unexpected_comb_loops > 0
             or self.multi_driven > 0
             or self.process_count > 0
         )
@@ -673,6 +666,24 @@ def _latch_diagnostic(metrics: SynthMetrics) -> str:
     )
 
 
+def _comb_loop_diagnostic(metrics: SynthMetrics) -> str:
+    """Actual, expected, and excess combinational loops for console and excerpts."""
+    return (
+        f"{metrics.comb_loops} comb loops (actual={metrics.comb_loops}, "
+        f"expected={metrics.expected_comb_loops}, excess={metrics.unexpected_comb_loops})"
+    )
+
+
+def _critical_diagnostic(metrics: SynthMetrics) -> str:
+    """Name each critical structural count that exceeds its declared allowance."""
+    parts = []
+    if metrics.unexpected_latches:
+        parts.append(_latch_diagnostic(metrics))
+    if metrics.unexpected_comb_loops:
+        parts.append(_comb_loop_diagnostic(metrics))
+    return "; ".join(parts) or "critical structural conditions"
+
+
 # Header prepended to a design diagnostic when the tool exited 0 but its log
 # still reported an error; it describes the exit code, not the design problem.
 _EXIT_ZERO_ERROR_HEADER = "ERROR: synthesis log reports an error despite exit 0:"
@@ -683,8 +694,15 @@ def _design_failure_reason(metrics: SynthMetrics) -> str:
     if "unmapped generic cell:" in metrics.failure_output:
         reason = "unmapped generic cell"
         return f"{reason}; {_latch_diagnostic(metrics)}" if metrics.latches else reason
-    if metrics.latches:
-        return _latch_diagnostic(metrics)
+    if metrics.latches or metrics.unexpected_comb_loops:
+        return "; ".join(
+            part
+            for part in (
+                _latch_diagnostic(metrics) if metrics.latches else "",
+                _comb_loop_diagnostic(metrics) if metrics.unexpected_comb_loops else "",
+            )
+            if part
+        )
     if "unmapped latch:" in metrics.failure_output:
         return "unmapped latch"
     # The exit-0 header names the exit code, not the design problem: skip it.
@@ -974,6 +992,7 @@ def _target_summary(
         "has_critical": metrics.has_critical,
         "unexpected_latches": metrics.unexpected_latches,
         "comb_loops": metrics.comb_loops,
+        "unexpected_comb_loops": metrics.unexpected_comb_loops,
         "multi_driven": metrics.multi_driven,
         **metrics.warning_detail(),
         # The aggregate detail is what reaches the agent as MCP
@@ -1225,7 +1244,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         "backend settings; synth_mode remains Target-owned. [flows.synth] in "
         "booley.toml is only for enablement, verdict, and report "
         "policy such as enabled, timeout_ms, expected_latches, "
-        "fail_on_timing_violation, and timing_report_paths."
+        "expected_comb_loops, fail_on_timing_violation, and timing_report_paths."
     )
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
@@ -1712,7 +1731,10 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         output: str,
     ) -> None:
         """Apply terminal and mode-specific completeness policy to metrics."""
-        metrics.expected_latches = _expected_latches(self.args.work_dir)
+        metrics.expected_latches = expected_count("synth", self.args.work_dir, "expected_latches")
+        metrics.expected_comb_loops = expected_count(
+            "synth", self.args.work_dir, "expected_comb_loops"
+        )
         metrics.warning_summary = outcome.diagnostics.warnings
         metrics.returncode = result.returncode
         metrics.timed_out = result.timed_out
@@ -1824,11 +1846,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         elif getattr(outcome, "design_diagnostic", None):
             diagnostic = outcome.design_diagnostic
         elif result.returncode == 0 and metrics.has_critical:
-            diagnostic = (
-                _latch_diagnostic(metrics)
-                if metrics.unexpected_latches
-                else "critical structural conditions"
-            )
+            diagnostic = _critical_diagnostic(metrics)
         elif (
             metrics.has_critical
             and result.returncode != 0
@@ -3257,8 +3275,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         parts = []
         if cur.unexpected_latches:
             parts.append(_latch_diagnostic(cur))
-        if cur.comb_loops:
-            parts.append(f"{cur.comb_loops} comb loop")
+        if cur.unexpected_comb_loops:
+            parts.append(_comb_loop_diagnostic(cur))
         if cur.multi_driven:
             parts.append(f"{cur.multi_driven} multi-driven")
         return note_line(tgt, "CRITICAL", ", ".join(parts))
