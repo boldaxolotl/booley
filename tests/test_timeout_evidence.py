@@ -17,7 +17,28 @@ from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 # CPython's crash probe bypasses ctypes' Windows SEH wrapper and disables core
 # dumps / Windows Error Reporting before dereferencing NULL in native code.
-_NATIVE_CRASH = "__import__('faulthandler')._read_null()"
+_READ_NULL = "__import__('faulthandler')._read_null()"
+# On Linux that probe only sets RLIMIT_CORE to 0, which a piped core_pattern
+# (Ubuntu Apport) ignores: the crash would still reach the host's crash
+# reporter. A non-dumpable process makes the kernel skip the dump before the
+# helper starts. The child still dies by SIGSEGV/SIGBUS and faulthandler still
+# writes the fatal stack. If marking fails, the crash goes ahead anyway.
+_CLEAR_LINUX_DUMPABLE = """\
+try:
+    import ctypes
+    PR_SET_DUMPABLE = 4  # not exposed by the stdlib
+    # prctl is variadic and the kernel reads arguments as unsigned long.
+    zero = ctypes.c_ulong(0)
+    ctypes.CDLL(None).prctl(PR_SET_DUMPABLE, zero, zero, zero, zero)
+except Exception:
+    pass
+"""
+# One source line, so it embeds in the one-line test and conftest bodies below.
+_NATIVE_CRASH = (
+    f"exec({_CLEAR_LINUX_DUMPABLE!r}); {_READ_NULL}"
+    if sys.platform.startswith("linux")
+    else _READ_NULL
+)
 _NATIVE_EXIT_CODES = (
     {0xC0000005}
     if os.name == "nt"
