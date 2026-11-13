@@ -43,9 +43,6 @@ NEW_IMAGE = "sha256:new"
 UNCHANGED = "The running Sandbox is unchanged."
 RERUN = "Run `booley session refresh` again once the cause is fixed."
 
-# The real primitive, captured before the `host` fixture replaces it with a fake.
-_REAL_START = sr.start_refreshed_sandbox
-
 
 def _image(
     selected_id: str = NEW_IMAGE, *, graph_changed: bool = True
@@ -87,6 +84,8 @@ class _Host:
     lookup_broken: bool = False
     vscode_appears_after_removal: bool = False
     docker_calls: list[list[str]] = field(default_factory=list)
+    # The real primitive, captured before the fixture replaces it with a fake.
+    real_start: Callable[..., str] | None = None
 
     @property
     def canonical(self) -> str:
@@ -176,7 +175,7 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
-    fake = _Host(project)
+    fake = _Host(project, real_start=sr.start_refreshed_sandbox)
     monkeypatch.setattr(sr, "vscode_session_container", lambda _project: None)
     monkeypatch.setattr(
         session_admission, "has_pending_claim", lambda _project: fake.pending_claim
@@ -661,7 +660,7 @@ def test_vscode_appearing_during_start_is_reported_untouched(
     host.run_old_sandbox()
     host.vscode_appears_after_removal = True
     # The real start refuses while any Sandbox runs, before it makes any Docker call.
-    monkeypatch.setattr(sr, "start_refreshed_sandbox", _REAL_START)
+    monkeypatch.setattr(sr, "start_refreshed_sandbox", host.real_start)
 
     with pytest.raises(sr.SessionError) as caught:
         session_refresh.refresh(host.project, _images(host, _image()))
