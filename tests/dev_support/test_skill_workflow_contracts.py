@@ -577,6 +577,16 @@ def test_setup_surfaces_missing_replacements_and_latch_policy():
     assert "a passing allowance is not replacement evidence" in project_config
 
 
+def test_setup_sets_structural_allowances_from_evidence():
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+    project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+
+    assert "expected_comb_loops" in plan
+    assert "expected_comb_loops" in project_config
+    assert "[flows.fpga]" in project_config
+    assert "never raise an allowance to make a run pass" in project_config
+
+
 def test_setup_implements_one_authoritative_frontend_definition():
     project_config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
 
