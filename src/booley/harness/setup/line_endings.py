@@ -1035,28 +1035,29 @@ def _settle_failed_checkout(root: Path, shifted: dict[str, tuple[int, int]], err
     """
     rewritten, unrestored = _restore_mtimes(root, shifted)
     notes: list[str] = []
-    stat_error: str | None = None
-    if rewritten:
-        stat_error = _reset_index_stat(root, tuple(rewritten))
-        if stat_error is None:
-            # autocrlf=input compares an unrewritten CRLF file by its LF content, so its entry
-            # is refreshed as clean even when no text rule covers it; the file stays CRLF.
-            _output, stat_error = _git_output(
-                root,
-                (
-                    "-c",
-                    "core.autocrlf=input",
-                    "-c",
-                    "core.fsmonitor=false",
-                    "update-index",
-                    "-q",
-                    "--unmerged",
-                    "--refresh",
-                ),
-                timeout=300,
-            )
-    if stat_error is not None:
-        notes.append(f"could not refresh the index after the failure: {stat_error}")
+    stat_error = _reset_index_stat(root, tuple(rewritten)) if rewritten else None
+    # Every shifted path, rewritten or not, now has a changed ctime. autocrlf=input compares an
+    # unrewritten CRLF file by its LF content, so its entry is refreshed as clean even when no
+    # text rule covers it; the file stays CRLF.
+    _output, refresh_error = _git_output(
+        root,
+        (
+            "-c",
+            "core.autocrlf=input",
+            "-c",
+            "core.fsmonitor=false",
+            "update-index",
+            "-q",
+            "--unmerged",
+            "--refresh",
+        ),
+        timeout=300,
+    )
+    if stat_error := stat_error or refresh_error:
+        notes.append(
+            f"could not refresh the index after the failure: {stat_error}; once that is fixed "
+            "run `git -c core.autocrlf=input update-index --refresh`"
+        )
     if unrestored:
         notes.append(f"could not restore the mtime of {', '.join(map(repr, unrestored[:3]))}")
     return "; ".join([error, *notes])

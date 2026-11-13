@@ -1832,9 +1832,22 @@ def test_partial_recheckout_failure_leaves_no_phantom_modifications(tmp_path: Pa
     assert (tmp_path / "locked" / "b.v").read_bytes() == b"module b;\nendmodule\n"
 
 
+def _wait_for_next_second() -> None:
+    """Git compares ctime in whole seconds; return once the clock is in a later one."""
+    start = int(time.time())
+    deadline = time.monotonic() + 5
+    while int(time.time()) == start and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="needs a read-only directory")
-def test_partial_failure_keeps_unrewritten_crlf_files_stat_clean_without_a_text_rule(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "crlf_names",
+    [("a.v", "locked/b.v"), ("locked/b.v",)],
+    ids=["one-rewritten", "none-rewritten"],
+)
+def test_failed_recheckout_keeps_crlf_files_stat_clean_without_a_text_rule(
+    tmp_path: Path, crlf_names: tuple[str, ...]
 ):
     # Stealth Mode over an upstream .gitattributes publishes no `text=auto` default, so a CRLF
     # file Git did not rewrite would show as modified once its stat is no longer fresh.
@@ -1843,9 +1856,10 @@ def test_partial_failure_keeps_unrewritten_crlf_files_stat_clean_without_a_text_
     _commit_file(tmp_path, ".gitattributes", b"*.png binary\n")
     for name in ("a.v", "locked/b.v"):
         _commit_file(tmp_path, name, b"module m;\nendmodule\n")
+    for name in crlf_names:
         _recheckout_again(tmp_path, name)
     assert _git(tmp_path, "status", "--porcelain", "--untracked-files=no").stdout == b""
-    time.sleep(1.1)  # Git compares ctime in whole seconds; the shift must land in a later one
+    _wait_for_next_second()
     locked = tmp_path / "locked"
     locked.chmod(0o555)
     try:
@@ -1859,7 +1873,27 @@ def test_partial_failure_keeps_unrewritten_crlf_files_stat_clean_without_a_text_
     assert _git(tmp_path, "status", "--porcelain", "--untracked-files=no").stdout == b""
     retry = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
     assert retry.status is LineEndingStatus.SAFE
-    assert (tmp_path / "a.v").read_bytes() == b"module m;\nendmodule\n"
+    assert (tmp_path / "locked" / "b.v").read_bytes() == b"module m;\nendmodule\n"
+
+
+def test_path_git_removed_and_could_not_write_is_not_an_mtime_failure(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    real_run = subprocess.run
+
+    def remove_then_fail(*args, **kwargs):
+        command = args[0]
+        if "checkout-index" in command and "--temp" not in command:
+            (tmp_path / "a.v").unlink()  # Git unlinked the path, then could not write it back
+            return subprocess.CompletedProcess(command, 1, b"", b"simulated failure")
+        return real_run(*args, **kwargs)
+
+    with patch.object(subprocess, "run", side_effect=remove_then_fail):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    detail = _normalize_action(report).detail or ""
+    assert "simulated failure" in detail
+    assert "git checkout -- <path>" in detail
+    assert "could not restore the mtime" not in detail
 
 
 def test_failed_stat_refresh_after_partial_checkout_is_reported(tmp_path: Path):

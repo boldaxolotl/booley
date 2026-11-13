@@ -42,12 +42,15 @@ for you:
   line-ending policy. The rule goes in the root `.gitattributes`, which you
   commit only if you want to share it.
 - It converts files already checked out with CRLF back to LF, but only on a
-  clean tree. A file whose checkout differs from the committed one by more than
-  line endings, for example through a Git filter, stays as it is and init lists
-  it. An uncommitted edit makes init skip the whole repair. If init refuses to
-  convert the files, commit or stash your changes, clear any `assume-unchanged`
-  or `skip-worktree` flag (`git update-index --no-assume-unchanged <file>` or
-  `--no-skip-worktree <file>`), and run `booley init` again.
+  clean tree.
+
+If init does not convert the files, it says why. Commit or stash your
+uncommitted changes, or clear an `assume-unchanged` or `skip-worktree` flag
+(init names the file; use `git update-index --no-assume-unchanged <file>` or
+`git update-index --no-skip-worktree <file>`), then run `booley init` again.
+The Git settings above still apply. A file that Git cannot re-create with LF
+endings, for example one that a Git filter changes on every checkout, stays as
+it is, and init lists it.
 
 <details markdown>
 <summary>In stealth mode</summary>
