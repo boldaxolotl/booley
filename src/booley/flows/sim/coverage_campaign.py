@@ -56,7 +56,7 @@ _METRIC_SEMANTICS = {
 }
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 #: Fingerprint of a run that records no Test Variant: no declared arguments or
-#: environment. It is what a run of a document older than storage v5 had.
+#: environment. It is what a run of a document older than the stored Coverage Record had.
 NO_DECLARED_INPUTS_FINGERPRINT = declared_inputs_fingerprint((), {})
 _TOP_LEVEL_FIELDS = (
     ("coverage_record_id", "string"),

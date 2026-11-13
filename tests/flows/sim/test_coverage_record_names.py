@@ -274,6 +274,7 @@ def test_a_0_4_0_coverage_record_is_refused_naming_its_invocation(reports: Path)
         load_coverage_campaign_bytes(storage.parent / "coverage.json", manifest)
     _assert_unsupported_type(unlocated.value)
     _assert_refused(str(unlocated.value), _OLD_RECORD)
+    assert "delete its Simulation invocation directory" in str(unlocated.value)
 
 
 def test_a_0_4_0_coverage_record_reference_is_refused_naming_its_invocation(
@@ -416,6 +417,20 @@ def _record_alias_refusals(run: CoverageInvocation) -> list[str]:
     with pytest.raises(CoverageCampaignStoreError) as header:
         load_coverage_campaign_bytes(record_path, record_path.read_bytes())
     refusals.append(str(header.value))
+    points_path.write_bytes(genuine_points)
+
+    # The old point store schema in the header, under the new identity key.
+    old_schema_header = {
+        "$schema": "booley.coverage-points/v1",
+        "coverage_record_id": record["coverage_record_id"],
+        "target_identity": record["target"]["identity"],
+    }
+    points_path.write_bytes(
+        gzip.compress(canonical_json_bytes(old_schema_header) + b"".join(lines[1:]), mtime=0)
+    )
+    with pytest.raises(CoverageCampaignStoreError) as old_schema:
+        load_coverage_campaign_bytes(record_path, record_path.read_bytes())
+    refusals.append(str(old_schema.value))
     points_path.write_bytes(genuine_points)
     return refusals
 

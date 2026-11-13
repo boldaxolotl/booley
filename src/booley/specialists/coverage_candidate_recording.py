@@ -55,7 +55,7 @@ def _binding(
 ) -> store.CampaignBinding:
     if summary is None or summary.source_schema != CAMPAIGN_SCHEMA:
         raise ValueError("only point-store Campaigns (storage v5) can bind Waiver Candidates")
-    assert summary.point_store is not None  # a v5 Campaign always carries a point store
+    assert summary.point_store is not None  # a stored Coverage Record always carries a point store
     try:
         relative = canonical_project_alias_path(campaign_path.absolute()).relative_to(
             canonical_project_alias_path(flow_reports_root.absolute())
