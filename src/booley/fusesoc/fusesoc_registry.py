@@ -830,18 +830,16 @@ def portable_core_data(data: Any) -> Mapping[str, Any]:
     return {**data, "filesets": filesets}
 
 
-class PortableCoreParser:
-    """Keep FuseSoC parsing portable across host path conventions.
+class PortableCoreParser(Core2Parser):
+    """FuseSoC's CAPI2 parser, kept portable across host path conventions.
 
     Shared by Target inspection and Doctor's FuseSoC verdict so both accept the
-    same Windows-separator fileset paths.
+    same Windows-separator fileset paths. A ``Core2Parser`` subclass so FuseSoC's
+    ``CoreManager`` accepts it; only ``read`` differs.
     """
 
-    def __init__(self, parser: Any) -> None:
-        self._parser = parser
-
     def read(self, core_file: str, validate_core: bool = True) -> Mapping[str, Any]:
-        return portable_core_data(self._parser.read(core_file, validate_core))
+        return portable_core_data(super().read(core_file, validate_core))
 
 
 @dataclass(frozen=True)
@@ -856,13 +854,13 @@ class FuseSocCoreRejection:
 
 
 @functools.cache
-def _fusesoc_core_parser() -> PortableCoreParser:
+def fusesoc_core_parser() -> PortableCoreParser:
     """FuseSoC's CAPI2 parser, built on first use (schema compilation is slow).
 
-    Wrapped like Target inspection's parser, with FuseSoC's default settings, so
+    Shared with Target inspection and built with FuseSoC's default settings, so
     Doctor's verdict and a Flow's resolution agree.
     """
-    return PortableCoreParser(Core2Parser())
+    return PortableCoreParser()
 
 
 def _fusesoc_rejection_message(raw: str) -> str:
@@ -896,7 +894,7 @@ def _rejection_from(exc: BaseException) -> FuseSocCoreRejection:
                 and isinstance(offenders, Mapping)
                 and "booley" in offenders
             )
-            if misplaced_booley:
+            if misplaced_booley and isinstance(offenders, Mapping):
                 misplaced_flows = _misplaced_doctor_flows(offenders["booley"])
     return FuseSocCoreRejection(message, entry, target, misplaced_booley, misplaced_flows)
 
@@ -934,7 +932,7 @@ def fusesoc_core_rejection(core_file: Path | str) -> FuseSocCoreRejection | None
     if not _has_capi2_header(core_file):
         return None
     try:
-        FuseSocCore(parser=_fusesoc_core_parser(), core_file=str(core_file))
+        FuseSocCore(parser=fusesoc_core_parser(), core_file=str(core_file))
     except (SyntaxError, ImportError, ValueError, yaml.YAMLError) as exc:
         return _rejection_from(exc)
     return None
@@ -1678,11 +1676,8 @@ def _possible_expression_values(value: str) -> list[str]:
 
 
 def _parse_capi2_expression(value: str) -> list[Any]:
-    """Parse a CAPI2 expression across FuseSoC 2.4.x parser APIs."""
-    parser = getattr(_fusesoc_exprs, "parse", None)
-    if parser is not None:
-        return parser(value)
-    return _fusesoc_exprs.Exprs(value).ast
+    """Parse a CAPI2 expression with FuseSoC's expression parser."""
+    return _fusesoc_exprs.parse(value)
 
 
 def possible_target_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:

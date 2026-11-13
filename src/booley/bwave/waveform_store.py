@@ -747,7 +747,7 @@ def _run_build(
                 command,
                 124,
                 stdout=exc.stdout or b"",
-                stderr=f"{stderr}\n{timeout_note}".strip(),
+                stderr=f"{stderr}\n{timeout_note}".strip().encode(),
             )
 
 

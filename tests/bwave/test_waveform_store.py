@@ -529,7 +529,7 @@ def test_build_timeout_returns_bounded_completed_process(tmp_path: Path, monkeyp
     result = stores._run_build("bwave", source, tmp_path / "trace.fst", None)
 
     assert result.returncode == 124
-    assert "timed out after" in result.stderr
+    assert b"timed out after" in result.stderr
 
 
 @pytest.mark.skipif(os.name == "nt", reason="FIFO requires POSIX")
