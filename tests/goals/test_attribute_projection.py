@@ -11,11 +11,7 @@ from booley.goals.committed_export import export_tree, materializations_unchange
 from booley.goals.finish import finish_goal
 from booley.goals.input_identity import root_bindings
 from booley.goals.lifecycle import LifecycleError
-from booley.runtime.git_attributes_policy import (
-    GITATTRIBUTES_RULE,
-    has_attribute_policy,
-    local_policy_owned,
-)
+from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE, local_policy_owned
 from booley.runtime.pinned_history import raw_git
 from tests.conftest import symlink_or_skip
 from tests.goals.conftest import enter_goals, git
@@ -408,10 +404,7 @@ def test_recovery_ambient_drift_has_a_distinct_message(projection):
 def test_non_git_whitespace_is_policy_not_a_comment_or_blank(projection, separator):
     root, project = projection
     content = separator + b"#x eol=crlf\n"
-    assert all(
-        has_attribute_policy(value) and local_policy_owned(value)
-        for value in (separator + b"\n", content)
-    )
+    assert all(local_policy_owned(value) for value in (separator + b"\n", content))
     info = managed_attributes(root)
     info.write_bytes(info.read_bytes() + content)
     name = separator + b"#x"

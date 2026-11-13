@@ -160,7 +160,7 @@ def test_setup_greenfield_scaffolds_on_host_after_plain_init():
     assert "Keep Booley out of your git history?" in greenfield
     assert "Do not pass `--provider` or `--auth`" in greenfield
     assert "removes an empty inner `.booley` repository" in greenfield
-    assert "undo that init's non-Stealth line-ending" in greenfield
+    assert "non-Stealth line-ending" not in greenfield
     # The container comes after the scaffold, and the Doctor gate is unchanged.
     scaffolded = greenfield.index("record `scaffold: applied`")
     assert scaffolded < greenfield.index("**Reopen in Container**")

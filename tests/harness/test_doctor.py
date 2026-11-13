@@ -7,6 +7,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -217,7 +218,6 @@ def _seed_interactive(root: Path) -> None:
     dc.write_devcontainer(root, build_spec(dc.APP_NONE, image=doctor.pi.project_image_name(root)))
     info_dir = root / ".git" / "info"
     info_dir.mkdir(parents=True, exist_ok=True)
-    (info_dir / "attributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
     (info_dir / "exclude").write_text(
         "/.devcontainer\n/.booley\n",
         encoding="utf-8",
@@ -482,7 +482,6 @@ def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, cap
 @pytest.mark.parametrize("concise", [False, True])
 def test_doctor_clean_run_records_freshness_stamp(tmp_path, monkeypatch, capsys, concise):
     booley_dir = _write_project(tmp_path)
-    _disable_line_ending_stealth(tmp_path)
     (tmp_path / ".git").mkdir(exist_ok=True)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     # This broad integration fixture intentionally leaves several environmental
@@ -5998,7 +5997,6 @@ class TestLineEndingsCheck:
         )
 
     def test_lf_tree_with_autocrlf_off_passes(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
         report = _inspect_line_endings(tmp_path)
@@ -6008,7 +6006,6 @@ class TestLineEndingsCheck:
         assert not _findings(report, Severity.FAIL)
 
     def test_lf_tree_with_stale_crlf_index_stat_fails(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="true")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
         (tmp_path / "a.v").unlink()
@@ -6111,8 +6108,7 @@ class TestLineEndingsCheck:
         assert not _findings(report, Severity.WARN)
         assert not _findings(report, Severity.FAIL)
 
-    def test_missing_gitattributes_rule_alone_is_silent(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
+    def test_lf_tree_without_attributes_is_silent(self, tmp_path: Path):
         # Most vendored upstreams (the pristine picorv32 among them) will never
         # carry the rule, and on an LF host it changes nothing. Warning here
         # would be unfollowable advice on every Linux project.
@@ -6129,7 +6125,6 @@ class TestLineEndingsCheck:
         assert not _findings(report, Severity.FAIL)
 
     def test_nested_crlf_failure_names_project_data_repository(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
         booley_dir = tmp_path / ".booley"
@@ -6153,7 +6148,6 @@ class TestLineEndingsCheck:
         assert any("Project Root" in f.message for f in _findings(report, Severity.PASS))
 
     def test_nested_autocrlf_warning_has_project_data_subject(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir(exist_ok=True)
@@ -6272,7 +6266,7 @@ class TestLineEndingsCheck:
         assert len(warned) == 1
         assert "git diff timed out" in warned[0].message
 
-    def test_crlf_failure_precedes_candidate_warning(
+    def test_crlf_failure_precedes_unreadable_warning(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         from booley.harness.setup.line_endings import (
@@ -6290,8 +6284,8 @@ class TestLineEndingsCheck:
             (
                 LineEndingObservation(LineEndingObservationCode.CRLF_MISMATCH, count=1),
                 LineEndingObservation(
-                    LineEndingObservationCode.CANDIDATE_UNSAFE,
-                    detail="hard-linked candidate",
+                    LineEndingObservationCode.STATUS_UNREADABLE,
+                    detail="git diff timed out",
                 ),
             ),
             (),
@@ -6994,31 +6988,34 @@ targets:
         assert not c.warned and not c.passed
 
 
-def _disable_line_ending_stealth(root: Path) -> None:
-    data = root / ".booley"
-    data.mkdir(parents=True, exist_ok=True)
-    config = data / "booley.toml"
-    existing = config.read_text() if config.exists() else ""
-    config.write_text(existing + "\n[stealth]\nenabled = false\n")
-    # This fixture starts non-Stealth; it is not an on-to-off migration case.
-    (root / ".git/info/attributes").unlink(missing_ok=True)
+def test_doctor_emits_no_attributes_policy_check_ids(tmp_path):
+    removed = {"git.attributes-policy-unknown", "git.line-ending-migration"}
+    for stealth in (True, False):
+        root = tmp_path / f"stealth-{stealth}"
+        root.mkdir()
+        TestLineEndingsCheck._repo(root, autocrlf="false")
+        run_bounded_child(["git", "-C", str(root), "config", "core.eol", "lf"], check=True)
+        TestLineEndingsCheck._commit(root, ".gitignore", b".booley/\n")
+        data = root / ".booley"
+        data.mkdir()
+        (data / "booley.toml").write_text(f"[stealth]\nenabled = {str(stealth).lower()}\n")
+        if stealth:
+            # A registered worktree whose directory is gone used to leave its attributes unknown.
+            sibling = tmp_path / "sibling"
+            run_bounded_child(
+                ["git", "-C", str(root), "worktree", "add", "-q", str(sibling), "-b", "side"],
+                check=True,
+            )
+            shutil.rmtree(sibling)
+        else:
+            # A shared default written by an earlier Booley used to await an opt-out migration.
+            (root / ".git/info/attributes").write_text("* text=auto eol=lf\n")
 
+        report = _inspect_line_endings(root, data)
 
-def test_doctor_stealth_missing_local_policy_is_read_only(tmp_path):
-    TestLineEndingsCheck._repo(tmp_path, autocrlf="false")
-    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley/\n")
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
-    paths = [tmp_path / ".git/config", tmp_path / ".git/index"]
-    before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
-    report = _inspect_line_endings(tmp_path, data)
-    warned = _findings(report, Severity.WARN)
-    assert warned and not _findings(report, Severity.PASS) and not _findings(report, Severity.FAIL)
-    assert str(tmp_path / ".git/info/attributes") in warned[0].message
-    assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
-    assert not (tmp_path / ".git/info/attributes").exists()
-    assert not (tmp_path / ".gitattributes").exists()
+        assert {finding.check_id for finding in report.findings}.isdisjoint(removed)
+        assert _findings(report, Severity.PASS)
+        assert not _findings(report, Severity.WARN) and not _findings(report, Severity.FAIL)
 
 
 def test_containment_report_alias_and_symlinks(tmp_path, monkeypatch):
@@ -7584,35 +7581,29 @@ def test_goal_history_broken_pair_is_active_and_preserves_exclusion(tmp_path, ig
     assert exclude.read_bytes() == before
 
 
-def test_doctor_opt_out_migration_read_only_and_direct_init_hint(tmp_path):
+def test_booley_written_rules_stay_untouched_and_unreported(tmp_path):
     from booley.harness.setup.line_endings import LineEndingMode, reconcile_project_line_endings
 
-    TestLineEndingsCheck._repo(tmp_path, autocrlf="false")
-    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley/\n")
-    data = tmp_path / ".booley"
-    data.mkdir()
-    config = data / "booley.toml"
-    config.write_text("[stealth]\nenabled = true\n")
-    reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
-    config.write_text("[stealth]\nenabled = false\n")
-    paths = [
-        tmp_path / ".git/config",
-        tmp_path / ".git/index",
-        tmp_path / ".git/info/attributes",
-        config,
-    ]
-    before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths]
-    report = _inspect_line_endings(tmp_path, data)
-    warned = _findings(report, Severity.WARN)
-    assert warned and not _findings(report, Severity.FAIL) and not _findings(report, Severity.PASS)
-    assert "migration" in warned[0].message
-    assert "booley init" in warned[0].fix
-    assert "cannot prove ownership" not in warned[0].message
-    assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths] == before
-    reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
-    report = _inspect_line_endings(tmp_path, data)
-    assert _findings(report, Severity.PASS)
-    assert not _findings(report, Severity.WARN) and not _findings(report, Severity.FAIL)
+    rule = b"* text=auto eol=lf\n"
+    for stealth in (True, False):
+        for location in (".gitattributes", ".git/info/attributes"):
+            root = tmp_path / f"{'stealth' if stealth else 'plain'}-{location.replace('/', '_')}"
+            root.mkdir()
+            TestLineEndingsCheck._repo(root, autocrlf="false")
+            TestLineEndingsCheck._commit(root, ".gitignore", b".booley/\n")
+            data = root / ".booley"
+            data.mkdir()
+            (data / "booley.toml").write_text(f"[stealth]\nenabled = {str(stealth).lower()}\n")
+            written = root / location
+            written.parent.mkdir(exist_ok=True)
+            written.write_bytes(rule)
+
+            reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+            report = _inspect_line_endings(root, data)
+
+            assert written.read_bytes() == rule
+            assert len(_findings(report, Severity.PASS)) == 1
+            assert not _findings(report, Severity.WARN) and not _findings(report, Severity.FAIL)
 
 
 @pytest.mark.parametrize("ignored", [False, True])
