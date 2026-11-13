@@ -991,6 +991,8 @@ def eight_cores(monkeypatch: pytest.MonkeyPatch) -> None:
     """8 available cores, and the old per-lane rule pinned to ``-j1`` (1 GiB heavy lane)."""
     import importlib
 
+    from booley.flows.sim import build_parallelism
+
     # Admission reads the cores from cpu_budget; the lane rule from build_parallelism.
     # Resolved by name so a tree without cpu_budget still reaches its assertions.
     for name in ("booley.runtime.cpu_budget", "booley.flows.sim.build_parallelism"):
