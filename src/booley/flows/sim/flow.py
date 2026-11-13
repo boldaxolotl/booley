@@ -1880,7 +1880,7 @@ class SimulateFlow(
             "path": manifest_path.as_posix(),
             "bytes": len(raw),
             "sha256": manifest_digest(plan.manifest),
-            "kind": "simulation_campaign_manifest",
+            "kind": "simulation_record_manifest",
             "owner": plan.manifest.document["simulation_record_id"],
         }
         baseline_target = dict(cast(Mapping[str, object], plan.manifest.document["target"]))

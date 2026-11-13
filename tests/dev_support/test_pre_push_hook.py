@@ -2293,3 +2293,79 @@ def test_local_destination_history_preserved(repo, monkeypatch, capsys, case):
         assert _git(repo, "rev-parse", "refs/remotes/destination/main") == tip
     assert _push(tip, old) == 1
     assert forbidden[:12] in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Remote ref names (issue #3608)
+# ---------------------------------------------------------------------------
+
+
+def _ref_line(local_ref: str, remote_ref: str, repo: Path, *, delete: bool = False) -> str:
+    """One pre-push protocol line; a deletion carries the all-zero local object."""
+    local = _ZERO_SHA if delete else _head(repo)
+    old = _head(repo) if delete else _ZERO_SHA
+    return f"{local_ref} {local} {remote_ref} {old}\n"
+
+
+@pytest.mark.parametrize(
+    ("local_ref", "remote_ref", "delete", "blocked"),
+    [
+        pytest.param("refs/heads/main", "refs/heads/booley/s1", False, True, id="branch"),
+        pytest.param("refs/tags/v1", "refs/tags/booley-v1", False, True, id="tag"),
+        pytest.param("refs/heads/main", "refs/for/booley", False, True, id="other-namespace"),
+        pytest.param("(delete)", "refs/heads/booley/s1", True, False, id="deletion"),
+        pytest.param("(delete)", "refs/tags/booley-v1", True, False, id="tag-deletion"),
+        pytest.param(
+            "refs/heads/booley/s1", "refs/heads/wt/s1", False, False, id="renamed-to-clean-name"
+        ),
+        pytest.param("refs/heads/main", "refs/heads/main", False, False, id="clean"),
+    ],
+)
+def test_ref_name_check(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    local_ref: str,
+    remote_ref: str,
+    delete: bool,
+    blocked: bool,
+) -> None:
+    monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+    line = _ref_line(local_ref, remote_ref, repo, delete=delete)
+    if blocked:
+        _forbid_discovery(monkeypatch)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(line))
+    assert main() == (1 if blocked else 0)
+    error = capsys.readouterr().err
+    if blocked:
+        assert f"{remote_ref}: booley" in error
+        assert "git push <remote> <local>:<new-name>" in error
+    else:
+        assert "banned" not in error
+
+
+def test_ref_name_check_only_scans_the_name_below_the_namespace(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git's own `refs/heads/` words are not user content."""
+    (repo / ".booley" / "booley.toml").write_text(
+        '[stealth]\nenabled = true\nbanned_words = ["heads", "tags"]\n', encoding="utf-8"
+    )
+    monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+    for ref in ("refs/heads/main", "refs/tags/v1"):
+        monkeypatch.setattr(sys, "stdin", io.StringIO(_ref_line(ref, ref, repo)))
+        assert main() == 0
+
+
+@pytest.mark.parametrize("mode", ["stealth-off", "skip-env"])
+def test_ref_name_check_is_skipped(repo: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    if mode == "stealth-off":
+        (repo / ".booley" / "booley.toml").write_text(
+            "[stealth]\nenabled = false\n", encoding="utf-8"
+        )
+        monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+    else:
+        monkeypatch.setenv("BOOLEY_SKIP_PUSH_GUARD", "1")
+    line = _ref_line("refs/heads/main", "refs/heads/booley/s1", repo)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(line))
+    assert main() == 0

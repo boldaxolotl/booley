@@ -246,7 +246,7 @@ def _prerequisite_entry() -> dict[str, object]:
             "path": "targets/base/record/manifest.json",
             "bytes": 1,
             "sha256": "sha256:" + "a" * 64,
-            "kind": "simulation_campaign_manifest",
+            "kind": "simulation_record_manifest",
             "owner": "550e8400-e29b-41d4-a716-446655440000",
         },
         "simulation_record_id": "550e8400-e29b-41d4-a716-446655440000",
