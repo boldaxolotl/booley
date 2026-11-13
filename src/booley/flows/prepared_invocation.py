@@ -46,9 +46,14 @@ class OrdinaryRunInvocation(PreparedInvocation):
     """The endpoint's own run: Project-local endpoints, Custom Flows, Specialists, doubles."""
 
     run_endpoint: Callable[[], EndpointOutcome]
+    # What the run asks of the Memory Budget; ``None`` is unknown (the Job runs alone).
+    requests: tuple[JobRequest, ...] | None = None
 
     def run(self, admission: object | None) -> EndpointOutcome:
         return self.run_endpoint()
+
+    def job_requests(self) -> tuple[JobRequest, ...] | None:
+        return self.requests
 
     def report_scope(self, endpoint: EndpointState) -> ReportScope:
         return planned_scope(endpoint, (), endpoint.report_families(), set())

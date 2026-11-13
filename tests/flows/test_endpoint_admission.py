@@ -362,6 +362,10 @@ class _StubEndpoint:
     def _resolve_job_class(self) -> str | None:
         return self._job_class
 
+    def _memory_admitted(self) -> bool:
+        # The production policy, so the Specialist guard exercises it rather than a copy.
+        return EndpointState._memory_admitted(self)  # type: ignore[arg-type]
+
     def _get_head_sha(self) -> str | None:
         return None
 
@@ -580,21 +584,26 @@ def test_target_authorization_precedes_job_admission(
 # --- memory admission behind BOOLEY_DEV_MEMORY_ADMISSION (#3701) ---------------------
 
 
-def _seed_history(booley_dir: Path, *peaks: tuple[str, float]) -> None:
-    """Write a Resource History whose records say each Target's synth peak (MiB)."""
+def _seed_records(booley_dir: Path, *peaks: tuple[str, str, float]) -> None:
+    """Write a Resource History whose records say each (Target, phase) peak (MiB)."""
     from booley.runtime.resource_history import SCHEMA
 
     records = [
         {
-            "key": {"target": target, "phase": "synth", "flags": [], "test_run": ""},
+            "key": {"target": target, "phase": phase, "flags": [], "test_run": ""},
             "peak_memory_mb": peak,
             "wall_s": 1.0,
         }
-        for target, peak in peaks
+        for target, phase, peak in peaks
     ]
     path = booley_dir / "runtime" / "resources" / "history.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"$schema": SCHEMA, "records": records}), encoding="utf-8")
+
+
+def _seed_history(booley_dir: Path, *peaks: tuple[str, float]) -> None:
+    """Write a Resource History whose records say each Target's synth peak (MiB)."""
+    _seed_records(booley_dir, *((target, "synth", peak) for target, peak in peaks))
 
 
 @pytest.fixture
@@ -780,3 +789,158 @@ def test_unparseable_holder_timeout_is_ignored(monkeypatch: pytest.MonkeyPatch) 
     assert endpoint_admission._holder_deadline_seconds() == 60.0
     monkeypatch.delenv("BOOLEY_SLOT_TIMEOUT_S")
     assert endpoint_admission._holder_deadline_seconds() is None
+
+
+# --- lint and Custom Flow Jobs under the switch (#3703) ------------------------------
+
+
+def _prepared_for(flow: Any, invocation: Any) -> PreparedExecution:
+    return PreparedExecution(
+        display_target=None,
+        display_label=None,
+        dry_run=False,
+        non_persisting_dry_run=False,
+        invocation=invocation,
+    )
+
+
+def _lint_prepared(work_dir: Path) -> tuple[Any, PreparedExecution]:
+    """A lint Job over Targets ``a`` and ``b``, prepared as a Target-selection invocation."""
+    from booley.flows.lint.flow import LintFlow
+    from booley.flows.prepared_invocation import TargetSelectionInvocation
+    from tests.target_test_support import make_target_handle
+
+    flow = LintFlow()
+    handles = tuple(make_target_handle(work_dir, name, drivable_by=("lint",)) for name in "ab")
+    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
+    flow._args = SimpleNamespace(work_dir=work_dir, target="a,b")
+    selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
+    invocation = TargetSelectionInvocation(flow, selection, flow._run)  # type: ignore[arg-type]
+    return flow, _prepared_for(flow, invocation)
+
+
+def _custom_flow(target: str) -> tuple[Any, PreparedExecution]:
+    """A Custom Flow given *target*, prepared through the real ``prepare_endpoint_invocation``."""
+    import argparse
+
+    from booley.flows.base import BooleyFlow
+
+    class EchoFlow(BooleyFlow):
+        name = "echo_flow"
+        description = "Custom Flow for admission tests"
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            """This Flow takes no options of its own."""
+
+        def _run(self) -> EndpointOutcome:
+            return EndpointOutcome()
+
+    flow = EchoFlow()
+    flow._args = SimpleNamespace(target=target)  # type: ignore[assignment]
+    invocation = flow.prepare_endpoint_invocation()
+    assert not isinstance(invocation, EndpointOutcome)
+    return flow, _prepared_for(flow, invocation)
+
+
+def _admitted_job(kind: str, work_dir: Path, booley_dir: Path) -> tuple[Any, PreparedExecution]:
+    """A lint or Custom Flow Job whose history says it needs a known reservation."""
+    if kind == "lint":
+        _seed_records(booley_dir, ("a", "lint", 400), ("b", "lint", 600))
+        return _lint_prepared(work_dir)
+    _seed_records(booley_dir, ("echo", "echo_flow", 400))
+    return _custom_flow("echo")
+
+
+def test_lint_job_reserves_its_largest_target_estimate(
+    memory_runtime: Path, runtime: Path
+) -> None:
+    flow, prepared = _admitted_job("lint", runtime, memory_runtime)
+
+    with AdmissionGate(flow, prepared).enter() as context:
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        # The 600 MiB peak of Target b, with the estimator's headroom.
+        assert holder.memory == job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=750.0)
+        assert _held(memory_runtime, job_slots.CLASS_HEAVY) == []
+        assert _held(memory_runtime, job_slots.CLASS_LIGHT) == []
+        assert context.mode == "managed"
+
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+
+
+@pytest.mark.parametrize(
+    ("target", "key_target"), (("echo", "echo"), ("", "")), ids=["echo", "no-target"]
+)
+def test_custom_flow_job_reserves_its_flow_phase(
+    target: str, key_target: str, memory_runtime: Path
+) -> None:
+    _seed_records(memory_runtime, (key_target, "echo_flow", 400))
+    flow, prepared = _custom_flow(target)
+
+    with AdmissionGate(flow, prepared).enter():
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.memory == job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=500.0)
+        assert _held(memory_runtime, job_slots.CLASS_HEAVY) == []
+
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+
+
+class _QueuedError(Exception):
+    """Raised from the queue narrator to stop the wait once the Job is known to be QUEUED."""
+
+
+@pytest.mark.parametrize("kind", ("lint", "custom"))
+def test_lint_and_custom_flow_jobs_queue_behind_a_run_alone_job(
+    kind: str, memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    flow, prepared = _admitted_job(kind, runtime, memory_runtime)
+    store = job_slots.SlotStore(job_slots.slots_dir(memory_runtime), SlotCaps(max_heavy=MAX_HEAVY))
+    pid = os.getpid()
+    first = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=pid,
+        argv=endpoint_admission._proc_cmdline(pid) or [],
+        memory=job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True),
+    )
+    positions: list[int] = []
+
+    def narrator(*_args: object, **_kwargs: object) -> Callable[[int], None]:
+        def narrate(position: int) -> None:
+            positions.append(position)
+            raise _QueuedError
+
+        return narrate
+
+    monkeypatch.setattr(endpoint_admission, "_queue_narrator", narrator)
+
+    try:
+        with pytest.raises(_QueuedError), AdmissionGate(flow, prepared).enter():
+            pytest.fail("the Job entered while a run-alone Job held the budget")
+
+        # Queued behind the first holder, then withdrawn when the wait ended.
+        assert positions == [0]
+        remaining = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert [token.seq for token in remaining] == [first.seq]
+    finally:
+        store.release(first)
+
+
+@pytest.mark.parametrize("kind", ("lint", "custom"))
+def test_switch_unset_leaves_lint_and_custom_flow_jobs_unadmitted(
+    kind: str, memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow, prepared = _admitted_job(kind, runtime, memory_runtime)
+    monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION")
+
+    with AdmissionGate(flow, prepared).enter() as context:
+        assert context.mode == "unmanaged"
+        assert context.outer_token is None
+        for job_class in job_slots.JOB_CLASSES:
+            assert _held(memory_runtime, job_class) == []
+
+    # The contrast: the same Job under the switch holds a Memory Reservation.
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    flow, prepared = _admitted_job(kind, runtime, memory_runtime)
+    with AdmissionGate(flow, prepared).enter():
+        assert len(_held(memory_runtime, job_slots.CLASS_MEMORY)) == 1

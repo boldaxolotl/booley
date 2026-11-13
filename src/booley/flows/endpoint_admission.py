@@ -97,9 +97,12 @@ class AdmissionGate:
         self._entered = False
 
     def _claim(self) -> tuple[job_slots.SlotStore | None, object | None, str | None]:
-        """Claim the Job's admission: a Memory Reservation under the switch, else a slot."""
+        """Claim the Job's admission: a Memory Reservation under the switch, else a slot.
+
+        Under the switch heavy Jobs, lint and Custom Flows are memory-admitted.
+        """
         endpoint = self._endpoint
-        if memory_admission_enabled() and endpoint._resolve_job_class() == job_slots.CLASS_HEAVY:
+        if memory_admission_enabled() and endpoint._memory_admitted():
             return _acquire_memory_reservation(endpoint, self._prepared)
         store, token = endpoint._acquire_job_slot()
         return store, token, None
@@ -380,7 +383,7 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
 def _acquire_memory_reservation(
     endpoint: EndpointState, prepared: PreparedExecution | None
 ) -> tuple[job_slots.SlotStore | None, object | None, str | None]:
-    """Claim this heavy Job's Memory Reservation, waiting in queue order if needed.
+    """Claim this memory-admitted Job's Memory Reservation, waiting in queue order if needed.
 
     Returns ``(store, token, warning)``; ``(None, None, None)`` when nothing is
     claimed, as for :func:`_acquire_job_slot`. That check comes before any

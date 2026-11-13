@@ -263,6 +263,49 @@ def test_target_selection_invocation_sizes_its_prepared_targets(tmp_path: Path) 
     assert invocation(_selection(handle, matches=False)).job_requests() is None
 
 
+def test_lint_requests_every_target_it_lints() -> None:
+    from booley.flows.job_estimates import HistoryKey, phase_keys
+    from booley.flows.lint.flow import LintFlow
+    from tests.target_test_support import make_target_handle
+
+    handles = tuple(make_target_handle("/work", name, drivable_by=("lint",)) for name in "ab")
+
+    requests = LintFlow().memory_job_requests(handles)
+
+    assert requests == (JobRequest("lint", "a"), JobRequest("lint", "b"))
+    assert phase_keys(requests[0]) == (HistoryKey("a", "lint", (), ""),)
+
+
+@pytest.mark.parametrize("target", ("echo", ""), ids=["echo", "no-target"])
+def test_custom_flow_invocation_sizes_its_flow_phase(target: str) -> None:
+    import argparse
+
+    from booley.flows.base import BooleyFlow
+    from booley.flows.job_estimates import HistoryKey, phase_keys
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    class EchoFlow(BooleyFlow):
+        name = "echo_flow"
+        description = "Custom Flow for sizing tests"
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            """This Flow takes no options of its own."""
+
+        def _run(self) -> EndpointOutcome:
+            return EndpointOutcome()
+
+    flow = EchoFlow()
+    flow._args = SimpleNamespace(target=target)  # type: ignore[assignment]
+
+    invocation = flow.prepare_endpoint_invocation()
+
+    assert isinstance(invocation, OrdinaryRunInvocation)
+    assert invocation.job_requests() == (JobRequest("echo_flow", target),)
+    # The key the recorder writes for an unlabelled Custom Flow command.
+    (request,) = invocation.job_requests() or ()
+    assert phase_keys(request) == (HistoryKey(target, "echo_flow", (), ""),)
+
+
 def test_ordinary_run_invocation_is_unknown() -> None:
     assert OrdinaryRunInvocation(lambda: None).job_requests() is None  # type: ignore[arg-type,return-value]
 

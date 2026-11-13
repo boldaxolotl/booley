@@ -1,6 +1,6 @@
-"""Memory admission of heavy Jobs behind a development switch (ADR 0087 rollout).
+"""Memory admission of heavy, lint and Custom Flow Jobs behind a development switch (ADR 0087).
 
-With ``BOOLEY_DEV_MEMORY_ADMISSION=1`` a heavy Job is admitted in the ``memory``
+With ``BOOLEY_DEV_MEMORY_ADMISSION=1`` such a Job is admitted in the ``memory``
 Job Class: it holds a Memory Reservation estimated from the Resource History
 and runs beside other Jobs while the reservations fit the Memory Budget. A Job
 that cannot be sized runs alone, and a Job is never refused.
@@ -33,7 +33,7 @@ _BYTES_PER_MIB = 1024 * 1024
 
 
 def memory_admission_enabled() -> bool:
-    """Whether heavy Jobs are admitted by Memory Reservation instead of a heavy slot."""
+    """Whether memory-admitted Jobs (heavy, lint, Custom Flow) take a Memory Reservation."""
     return os.environ.get(MEMORY_ADMISSION_ENV) == "1"
 
 

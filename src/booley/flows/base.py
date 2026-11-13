@@ -424,6 +424,18 @@ class FlowMechanics:
 class BooleyFlow(FlowMechanics, EndpointContext):
     """Source-compatible Custom Flow extension with its historical CLI hooks."""
 
+    def _memory_admitted(self) -> bool:
+        """A Custom Flow runs commands in the Sandbox, so the switch admits it (ADR 0087)."""
+        return True
+
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
+        """The ordinary run, sized as the Flow's one phase for the Target it was given.
+
+        The phase is keyed by the Flow's name and the ``--target`` value, or the
+        empty Target when none was given: the key ``_execute_local`` records.
+        """
+        return OrdinaryRunInvocation(self._run, (JobRequest(self.name, self._selected_target),))
+
 
 RequestT = TypeVar("RequestT", bound=FlowRequest)
 
