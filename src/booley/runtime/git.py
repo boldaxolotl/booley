@@ -376,14 +376,8 @@ def _iter_git_process_cmdlines_windows() -> list[str]:
         "ForEach-Object { $_.CommandLine }"
     )
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-            check=False,
+        result = platform_paths.run_captured_bounded(
+            ["powershell", "-NoProfile", "-Command", script], timeout=5
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return []

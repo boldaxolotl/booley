@@ -414,14 +414,13 @@ def _transfer_objects(source: Path, destination: Path, commit: str, relative: Pa
             prefix="booley-submodule-", suffix=".pack", delete=False
         ) as pack:
             pack_path = Path(pack.name)
-            packed = subprocess.run(
+            packed = platform_paths.run_captured_bounded(
                 _git_command(source, "pack-objects", "--stdout", "--revs"),
                 input=f"{commit}\n".encode(),
                 stdout=pack,
-                stderr=subprocess.PIPE,
                 env=_offline_env(),
                 timeout=_TIMEOUT_S,
-                check=False,
+                text=False,
             )
         if packed.returncode != 0:
             detail = packed.stderr.decode(errors="replace").strip()
@@ -429,14 +428,12 @@ def _transfer_objects(source: Path, destination: Path, commit: str, relative: Pa
                 f"local objects for submodule {relative.as_posix()} are incomplete: {detail}"
             )
         with pack_path.open("rb") as pack_input:
-            indexed = subprocess.run(
+            indexed = platform_paths.run_captured_bounded(
                 _git_command(destination, "index-pack", "--stdin", "--fix-thin"),
                 stdin=pack_input,
-                capture_output=True,
-                text=True,
                 env=_offline_env(),
                 timeout=_TIMEOUT_S,
-                check=False,
+                errors="strict",
             )
         if indexed.returncode != 0:
             _raise_git(f"installing local objects for {relative.as_posix()}", indexed)
