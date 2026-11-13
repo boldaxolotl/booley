@@ -9,6 +9,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -1209,3 +1210,155 @@ def test_core_resolution_deep_output_is_pinned(tmp_path, monkeypatch, capsys):
     assert len(results) == 1, "the rows must reach Doctor as one owner report"
     assert (reporter.counts["pass"], reporter.counts["fail"]) == (1, 1)
     assert not reporter.result(1).clean
+
+
+def _runtime_scenario_project(root: Path, flow: str) -> doctor.ProjectAudit:
+    """A Project whose only enabled Flow is *flow*, with one Target for it."""
+    if flow == "fpga":
+        core = (
+            "CAPI=2:\nname: ::design:0\ntargets:\n  fpga_board:\n    flow: generic\n"
+            "    flow_options: {tool: verilator, part: xc7a35tcsg324-1, booley: {doctor: [fpga]}}\n"
+        )
+    else:
+        core = (
+            "CAPI=2:\nname: ::design:0\ntargets:\n  lint_style:\n    flow: lint\n"
+            "    flow_options: {tool: verilator, booley: {doctor: [lint]}}\n"
+        )
+    (root / "design.core").write_text(core, encoding="utf-8")
+    flows: dict[str, object] = {
+        name: {"enabled": name == flow} for name in ("sim", "lint", "synth", "fpga")
+    }
+    return doctor.ProjectAudit(
+        project_root=root,
+        booley_dir=root / ".booley",
+        booley_toml={"flows": flows},
+        configs_toml={},
+        first_target="",
+    )
+
+
+def _recording(ran: list[tuple[str, Any]], entry: str, real: Any) -> Any:
+    """Wrap an owner entry point so each request it receives is recorded."""
+
+    def wrapper(request):
+        ran.append((entry, request))
+        return real(request)
+
+    return wrapper
+
+
+def _run_runtime_scenario(
+    root: Path,
+    monkeypatch,
+    capsys,
+    *,
+    flow: str,
+    available: bool = True,
+    returncode: int = 0,
+    spy: bool = True,
+):
+    """Run the Flow audit for *flow* with a scripted Sandbox answer.
+
+    Returns the rendered ANSI-stripped rows from the Flow's ``executes in the
+    Sandbox`` row through its dry-run row, the exit code, and the owner
+    entry points that ran (``[]`` when *spy* is false).
+    """
+    from booley.presentation import colors
+
+    project = _runtime_scenario_project(root, flow)
+    runtime = SimpleNamespace(
+        inside=False, available=available, command=lambda argv, **_kw: ["sandbox", *argv]
+    )
+    ran: list[tuple[str, Any]] = []
+    if spy:
+        for module_name, entry in (
+            ("booley.flows.runtime_reality", "inspect_flow_runtime_reality"),
+            ("booley.flows.fpga.vivado_startup", "inspect_vivado_startup"),
+        ):
+            owner = importlib.import_module(module_name)
+            monkeypatch.setattr(owner, entry, _recording(ran, entry, getattr(owner, entry)))
+    monkeypatch.setattr(doctor, "_check_design_size", lambda *_args, **_kwargs: None)
+    dry_run = DiagnosticReport((DiagnosticFinding(Severity.PASS, f"{flow} dry-run passed"),))
+    monkeypatch.setattr(
+        doctor, "_run_flow_check", lambda *_args, **_kwargs: SimpleNamespace(report=dry_run)
+    )
+
+    def run(argv, **_kwargs):
+        if argv[0] != "sandbox":
+            raise AssertionError(f"unexpected command: {argv}")
+        return subprocess.CompletedProcess(argv, returncode, "", "")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    reporter = doctor._Reporter.create()
+    doctor._run_flow_audit(
+        project,
+        runtime,
+        reporter.pass_,
+        reporter.note_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        _diagnostics=reporter.diagnostics,
+    )
+    lines = colors.strip_ansi(capsys.readouterr().out).splitlines()
+    start = lines.index(f"  ✓  {flow} executes in the Sandbox")
+    end = lines.index(f"  ✓  {flow} dry-run passed") + 1
+    return lines[start:end], reporter.finish(), ran
+
+
+_RUNTIME_SCENARIOS = {
+    "binary present": ({"flow": "lint"}, 0, ["lint"]),
+    "binary missing": ({"flow": "lint", "returncode": 1}, 1, ["lint"]),
+    "runtime unavailable": ({"flow": "lint", "available": False}, 0, ["lint"]),
+    "vivado inner timeout": ({"flow": "fpga", "returncode": 124}, 1, ["fpga"]),
+}
+_RUNTIME_ROWS = {
+    "binary present": [
+        "  ✓  lint executes in the Sandbox",
+        "  ✓  lint: 'verilator' on the Sandbox PATH",
+        "  ✓  lint dry-run passed",
+    ],
+    "binary missing": [
+        "  ✓  lint executes in the Sandbox",
+        "  ✗  lint: 'verilator' is not on the issued Sandbox PATH",
+        "     → bake verilator into the Sandbox Image and rebuild (booley init --force)",
+        "  ✓  lint dry-run passed",
+    ],
+    "runtime unavailable": [
+        "  ✓  lint executes in the Sandbox",
+        "  ·  lint: 'verilator' on the Sandbox PATH - container runtime unavailable",
+        "  ✓  lint dry-run passed",
+    ],
+    "vivado inner timeout": [
+        "  ✓  fpga executes in the Sandbox",
+        "  ✗  fpga: Vivado batch startup: Vivado did not start within 27s",
+        "     → verify Vivado runtime dependencies in the Sandbox Image",
+        "  ✓  fpga dry-run passed",
+    ],
+}
+
+
+def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys):
+    """The Flow runtime rows keep their text, position, owner routing and exit code.
+
+    The literal rows were captured from Doctor's own probes before they moved to
+    their owners. Each scenario sits between the Flow's ``executes in the
+    Sandbox`` row and its dry-run row, and the exit code follows the severity.
+    """
+    for name, (options, exit_code, flows) in _RUNTIME_SCENARIOS.items():
+        root = tmp_path / name.replace(" ", "-")
+        root.mkdir()
+        with monkeypatch.context() as patch:
+            rows, code, ran = _run_runtime_scenario(root, patch, capsys, **options)
+        assert rows == _RUNTIME_ROWS[name], name
+        assert code == exit_code, name
+        owner_for = {
+            "lint": "inspect_flow_runtime_reality",
+            "fpga": "inspect_vivado_startup",
+        }
+        assert [(entry, request.flow_name) for entry, request in ran] == [
+            (owner_for[flow], flow) for flow in flows
+        ], name
+        assert [request.targets for _entry, request in ran] == [
+            ("fpga_board",) if flows == ["fpga"] else ("lint_style",)
+        ], name

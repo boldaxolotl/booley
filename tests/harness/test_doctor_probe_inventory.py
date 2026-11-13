@@ -36,7 +36,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit), or a named public owner entry point.
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_viewer_bridge$|inspect_native_dependencies$|inspect_core_resolution$|inspect_mcp_server$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_viewer_bridge$|inspect_native_dependencies$|inspect_core_resolution$|inspect_mcp_server$|inspect_flow_runtime_reality$|inspect_vivado_startup$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -118,6 +118,18 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
         }
     ),
     "_run_core_resolution": frozenset({"inspect_core_resolution"}),
+    "_run_flow_audit": frozenset(
+        {
+            "_check_design_size",
+            "_check_doctor_targets",
+            "_check_sim_run_cwd",
+            "_run_flow_check",
+            "_run_flow_runtime_inspection",
+        }
+    ),
+    "_run_flow_runtime_inspection": frozenset(
+        {"inspect_flow_runtime_reality", "inspect_vivado_startup"}
+    ),
     "_run_project_phase": frozenset(
         {
             "inspect_host",
@@ -462,3 +474,41 @@ def test_mcp_checks_inventory_names_the_mcp_server_owner_call() -> None:
     refs = _probe_refs("_run_mcp_checks")
     assert "inspect_mcp_server" in refs
     assert "_run_mcp_probe" not in refs
+
+
+def test_flow_audit_inventory_names_the_flow_runtime_owner_calls() -> None:
+    """The Flow audit calls the runtime wrapper, which calls both owners; no Doctor probe stands in."""
+    assert "_run_flow_runtime_inspection" in _probe_refs("_run_flow_audit")
+    assert "_check_flow_runtime_reality" not in _probe_refs("_run_flow_audit")
+    assert _probe_refs("_run_flow_runtime_inspection") == {
+        "inspect_flow_runtime_reality",
+        "inspect_vivado_startup",
+    }
+
+
+def test_doctor_holds_no_flow_runtime_probe_rules() -> None:
+    """The Flow runtime-reality and Vivado startup rules live in their owners, not Doctor."""
+    moved = {
+        "_check_flow_runtime_reality",
+        "_runtime_probe_binaries",
+        "_check_session_binary",
+        "_vivado_startup_command",
+        "_check_vivado_startup",
+        "_EDA_TOOL_BINARIES",
+    }
+    tree = ast.parse(_DOCTOR_SRC.read_text(encoding="utf-8"))
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Assign):
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+    assert not moved & defined, (
+        f"Flow runtime probe rules moved back into Doctor: {sorted(moved & defined)}"
+    )
+    reality = importlib.import_module("booley.flows.runtime_reality")
+    startup = importlib.import_module("booley.flows.fpga.vivado_startup")
+    assert callable(reality.inspect_flow_runtime_reality)
+    assert callable(startup.inspect_vivado_startup)
