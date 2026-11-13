@@ -14,7 +14,7 @@ sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
 # Number of modules `[tool.pyright] exclude` may hold. Lower it in the same change
 # that fixes an excluded module and deletes its entry; never raise it to add a module.
-EXCLUDE_CEILING = 80
+EXCLUDE_CEILING = 58
 
 
 def _violations(config: dict[str, Any], ceiling: int) -> list[str]:
