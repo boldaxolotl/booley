@@ -106,7 +106,7 @@ def test_empty_batch_needs_no_repository(tmp_path):
 def test_git_error_transport_remains_oserror(repository, monkeypatch, failure):
     from booley.runtime import git_ignore
 
-    original = subprocess.run
+    original = git_ignore.platform_paths.run_captured_bounded
 
     def fail(command, **kwargs):
         if command[1] != "check-ignore":
@@ -115,7 +115,7 @@ def test_git_error_transport_remains_oserror(repository, monkeypatch, failure):
             raise subprocess.TimeoutExpired(command, 30)
         return subprocess.CompletedProcess(command, 128, b"", b"test Git failure")
 
-    monkeypatch.setattr(git_ignore.subprocess, "run", fail)
+    monkeypatch.setattr(git_ignore.platform_paths, "run_captured_bounded", fail)
     with pytest.raises(OSError, match="timed out" if failure == "timeout" else "test Git failure"):
         ignored_paths(repository, [repository / "absent"])
 
